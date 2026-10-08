@@ -40,3 +40,7 @@ flow-failure-initializer-discard	(let* [a (observe "first") b (if (observe false
 flow-failure-argument-return	((let* [x (observe "callee")] (fn* [a b] (observe "body"))) (do (observe "first-arg") (.fail js/lightHost "type")) (observe "later-arg"))	{"status":"threw","error":{"category":"type-error"}}	["callee","first-arg",["throw","type"]]	""
 flow-failure-method-receiver	(.method (do (observe "receiver-start") (.fail js/lightHost "range")) (observe "arg1") (observe "arg2"))	{"status":"threw","error":{"category":"range-error"}}	["receiver-start",["throw","range"]]	""
 flow-failure-method-argument	(.method (let* [target (.receiver js/lightHost)] target) (if (observe true) (.fail js/lightHost "type") (observe "else")) (observe "later-arg"))	{"status":"threw","error":{"category":"type-error"}}	["receiver","method-get",true,["throw","type"]]	""
+# Adapted free-call hypotheses; source map and retained Apache notice are in
+# ../reference/secondary-repositories-evidence.md.
+secondary-detached-property-call	((.-slice "hello") (observe 1))	{"status":"threw","error":{"category":"type-error"}}	[1]	""
+secondary-detached-local-call	(let* [slice (.-slice "hello")] (slice (observe 1)))	{"status":"threw","error":{"category":"type-error"}}	[1]	""

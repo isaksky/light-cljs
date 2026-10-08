@@ -344,3 +344,10 @@ fourth namespace comparison bring the passing runtime corpus to **238** cases;
 source-ordered globals, macro-name shadowing, slash bindings and explicit host
 references remain supported. The retained slash statement-context reproducer
 records a reference emission limitation outside the passing corpus.
+
+The [secondary repository audit](../tests/reference/secondary-repositories-evidence.md)
+maps the bounded Clojure, Shadow CLJS, Closure Compiler and Closure Library
+survey. Six additional primitive/interop regressions bring runtime coverage to
+**244** programs against both standard baselines. These check numeric receivers,
+receiver capture across argument effects, detached methods and null/digit string
+emission; secondary runtime/tooling semantics remain explicit exclusions.

@@ -355,3 +355,21 @@ both baselines. The explicit boundary comparison is included in the required
 CI conformance invocation. It documents the release/checkout change for an
 ampersand local and preserves a slash statement-context emission reproducer
 outside the passing corpus instead of weakening the supported assertions.
+
+## Secondary repository audit update
+
+The [2026-10-08 secondary audit](secondary-repositories-evidence.md) records
+bounded inspections of all four remaining research repositories at their exact
+clean revisions: Clojure, Shadow CLJS, Closure Compiler and Closure Library.
+It maps overlapping primitive cases and excludes JVM, build/package/module,
+optimization and runtime-library behavior without treating it as a
+ClojureScript oracle. Clojure, Shadow CLJS and Closure Library contribute no
+new distinct executable case within the inspected scope.
+
+Five adapted hypotheses from Closure Compiler and one original extension add
+numeric receivers, receiver capture before argument redefinition, detached
+method calls and null/digit string emission. All **244** runtime cases agree
+with both standard baselines. Exact source anchors, reductions, preserved
+Apache attribution and no-case dispositions are recorded in the linked audit
+and provenance sidecar; no verbatim import or complete upstream-suite coverage
+is claimed.

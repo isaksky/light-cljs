@@ -208,3 +208,9 @@ binding-ampersand-within-name	(let* [a&b 11] ((fn* [a&b] a&b) a&b))	11	[]
 special-dispatch-before-local	(let* [if (fn* [] 0) do (fn* [] 0) def (fn* [] 0)] (do (def boundary-special-value 12) (if true boundary-special-value 0)))	12	[]
 macro-shadow-catalog-locals	(let* [let observe fn observe defn observe defmacro observe when observe when-not observe cond observe and observe or observe loop observe letfn observe -> observe ->> observe if-let observe when-let observe] (let 1) (fn 2) (defn 3) (defmacro 4) (when 5) (when-not 6) (cond 7) (and 8) (or 9) (loop 10) (letfn 11) (-> 12) (->> 13) (if-let 14) (when-let 15))	15	[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
 macro-shadow-global	(def when (fn* [x] x)) (when 16)	16	[]
+# Secondary-repository adaptations; source map and retained Apache notices are in
+# ../reference/secondary-repositories-evidence.md. Signed receivers are independent.
+secondary-numeric-receiver	(.toString 64)	"64"	[]
+secondary-signed-receivers	(observe (.toString -1)) (.valueOf -0.0)	{"$number":"-0"}	["-1"]
+secondary-receiver-before-redefinition	(def target js/lightHost) (.method target (do (def target nil) (observe "a")) (observe "b"))	40	["method-get","a","b",["call","a","b"]]
+secondary-null-followed-by-digit	(let* [s "\u00003"] (observe (.-length s)) (observe (.charCodeAt s 0)) (.charCodeAt s 1))	51	[2,0]
