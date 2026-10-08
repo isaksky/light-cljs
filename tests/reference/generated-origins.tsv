@@ -1,0 +1,14 @@
+# Original generated cases; no imported or adapted upstream assertions.
+# generator_version\tdecimal_seed\toriginal_source_fnv1a64\toriginal_nodes\toriginal_depth
+v1	0	59b1227a0c6bc638	35	8
+v1	1	3c6333bfbc2d6394	40	9
+v1	2	7471db29ae17c397	29	8
+v1	3	d218b27bc0f5c2cf	41	11
+v1	17	05b02680e2016ee2	38	10
+v1	42	a0408151bb6b95e2	34	8
+v1	99	92e052fbd7f47bd9	37	11
+v1	255	ac08e1ee3b93a8ce	39	8
+v1	1024	d3593ca120e6912e	40	10
+v1	65535	b2f9c3466f45f1f4	54	10
+v1	24301	1a723c2af25e044a	38	10
+v1	18446744073709551615	c75d41181f632130	36	9

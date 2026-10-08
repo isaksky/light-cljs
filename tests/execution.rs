@@ -8,13 +8,16 @@ use std::{
 
 use light_cljs::compile;
 
+#[path = "support/generated.rs"]
+mod generated;
+
 #[derive(Clone, Debug)]
 struct Case {
-    id: &'static str,
+    id: String,
     source: String,
     outcome: String,
-    trace: &'static str,
-    stdout: &'static str,
+    trace: String,
+    stdout: String,
 }
 
 fn rows(text: &'static str) -> impl Iterator<Item = Vec<&'static str>> {
@@ -28,22 +31,22 @@ fn cases() -> Vec<Case> {
         .map(|row| {
             let [id, source, value, trace]: [&str; 4] = row.try_into().unwrap();
             Case {
-                id,
+                id: id.into(),
                 source: source.into(),
                 outcome: format!("{{\"status\":\"returned\",\"value\":{value}}}"),
-                trace,
-                stdout: "\"\"",
+                trace: trace.into(),
+                stdout: "\"\"".into(),
             }
         })
         .chain(
             rows(include_str!("fixtures/execution-outcomes.tsv")).map(|row| {
                 let [id, source, outcome, trace, stdout]: [&str; 5] = row.try_into().unwrap();
                 Case {
-                    id,
+                    id: id.into(),
                     source: source.into(),
                     outcome: outcome.into(),
-                    trace,
-                    stdout,
+                    trace: trace.into(),
+                    stdout: stdout.into(),
                 }
             }),
         )
@@ -62,11 +65,11 @@ fn cases() -> Vec<Case> {
                 )
                 .unwrap();
                 Case {
-                    id,
+                    id: id.into(),
                     source,
                     outcome: format!("{{\"status\":\"returned\",\"value\":{value}}}"),
-                    trace,
-                    stdout: "\"\"",
+                    trace: trace.into(),
+                    stdout: "\"\"".into(),
                 }
             }),
         )
@@ -172,8 +175,12 @@ fn node(script: &str) -> String {
 }
 
 fn compiled_results() -> String {
+    compiled_cases(&cases())
+}
+
+fn compiled_cases(cases: &[Case]) -> String {
     let mut script = String::from("globalThis.lightCases = [\n");
-    for case in cases() {
+    for case in cases {
         let source = format!("(fn* [observe] {})", case.source);
         script.push_str(
             &compile(&source)
@@ -182,10 +189,10 @@ fn compiled_results() -> String {
         script.push_str(",\n");
     }
     script.push_str("];\nglobalThis.lightCaseMetadata = [\n");
-    for case in cases() {
+    for case in cases {
         script.push_str(&format!(
             "[{},{}],\n",
-            json_string(case.id),
+            json_string(&case.id),
             json_string(&case.source)
         ));
     }
@@ -197,7 +204,7 @@ fn compiled_results() -> String {
 fn outcomes<'a>(output: &'a str, cases: &[Case]) -> Result<Vec<&'a str>, String> {
     let lines: Vec<_> = output.lines().collect();
     for (index, case) in cases.iter().enumerate() {
-        let prefix = format!("{{\"id\":{},\"outcome\":", json_string(case.id));
+        let prefix = format!("{{\"id\":{},\"outcome\":", json_string(&case.id));
         if !lines
             .get(index)
             .is_some_and(|line| line.starts_with(&prefix))
@@ -229,7 +236,7 @@ fn tiny_programs_execute_with_expected_values_and_effects() {
             actual,
             format!(
                 "{{\"id\":{},\"outcome\":{},\"trace\":{},\"stdout\":{}}}",
-                json_string(case.id),
+                json_string(&case.id),
                 case.outcome,
                 case.trace,
                 case.stdout
@@ -439,11 +446,11 @@ fn missing_duplicate_reordered_and_extra_outcomes_fail() {
     )]);
     let output = node(&script);
     let case = Case {
-        id: "silent-exit",
+        id: "silent-exit".into(),
         source: "(js/process.exit 0)".into(),
         outcome: String::new(),
-        trace: "[]",
-        stdout: "\"\"",
+        trace: "[]".into(),
+        stdout: "\"\"".into(),
     };
     let error = outcomes(&output, &[case]).unwrap_err();
     assert!(

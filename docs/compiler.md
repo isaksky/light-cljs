@@ -351,3 +351,13 @@ survey. Six additional primitive/interop regressions bring runtime coverage to
 **244** programs against both standard baselines. These check numeric receivers,
 receiver capture across argument effects, detached methods and null/digit string
 emission; secondary runtime/tooling semantics remain explicit exclusions.
+
+The [bounded generated audit](../tests/reference/generated-evidence.md) adds
+**48** programs (12 fixed seeds with original, alpha-renamed, identity-binding
+and single-form-do variants), separately from the 244-case fixture corpus.
+Generation tracks lexical scope and callable arity, forbids recursion, and caps
+source size, form depth, case count and subprocess time. Ordered observations
+expose effect changes even when returned values agree. Fast tests compare
+metamorphic counterparts; the required selectable reference job also compares
+all variants with standard ClojureScript. The audit documents single-seed replay,
+retained-source replay, a reduction procedure and separate generated origins.
