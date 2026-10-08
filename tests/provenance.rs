@@ -1,7 +1,12 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 3] = [
+const CASE_FILES: [(&str, &str, usize); 4] = [
+    (
+        "tests/fixtures/execution-literals.tsv",
+        include_str!("fixtures/execution-literals.tsv"),
+        4,
+    ),
     (
         "tests/fixtures/execution.tsv",
         include_str!("fixtures/execution.tsv"),
@@ -111,6 +116,7 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
             match local_path {
                 "tests/fixtures/execution.tsv"
                 | "tests/fixtures/execution-outcomes.tsv"
+                | "tests/fixtures/execution-literals.tsv"
                 | "tests/reference/lexical-reference-limits.tsv" => {
                     assert!(
                         cases.contains(&(local_path, id)),

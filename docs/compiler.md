@@ -69,6 +69,13 @@ conditionals, and reader anonymous functions report unsupported constructs.
 Parser comment/discard handling is retained. Unresolved symbols are errors even
 in unselected branches. No implicit JavaScript global lookup occurs.
 
+The safe-integer limit applies to integer tokens. Explicit floating tokens use
+double rounding, so `9007199254740993.0` becomes `9007199254740992`, while
+`9007199254740993` is rejected. Inputs that round to a finite boundary value
+remain accepted; inputs that round to infinity fail analysis. Negative underflow
+retains negative zero. Big integers, decimal literals, ratios (including `1/1`)
+and symbolic numbers have distinct unsupported-category diagnostics.
+
 ## Context, truthiness, and the macro boundary
 
 Expressions carry `Value`, `Discard`, or `Return` context during analysis. The
@@ -215,6 +222,14 @@ serializer and runner against literal expectations, so a shared harness error
 cannot count as compiler agreement. See the [outcome protocol and evidence](../tests/reference/outcome-evidence.md).
 Separate tests cover complete files, CLI diagnostics, invalid binding forms,
 and resolved IDs.
+
+`tests/fixtures/execution-literals.tsv` carries byte-exact UTF-8 sources as hex
+for actual CR/CRLF, nulls and other control characters. Both compilers decode
+these bytes before compilation and use the same result/effect protocol. An
+independent Node probe checks lone surrogate and control-unit serialization.
+The [numeric and UTF-16 audit](../tests/reference/literal-evidence.md) records
+**230** passing runtime cases against both baselines, exact diagnostic spans,
+upstream provenance and intentional numeric restrictions.
 
 ```sh
 cargo test

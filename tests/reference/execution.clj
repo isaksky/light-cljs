@@ -77,20 +77,35 @@
             "No fixture analysis settings were observed")
     (println "REFERENCE SETTINGS" (pr-str expected-settings))))
 
+(defn read-cases [path hex-source?]
+  (->> (str/split-lines (slurp path))
+       (remove #(or (str/blank? %) (str/starts-with? % "#")))
+       (mapv (fn [row]
+               (let [[id source] (str/split row #"\t")]
+                 [id (if hex-source?
+                       (do
+                         (assert (re-matches #"(?:[0-9a-f]{2})+" source)
+                                 (str "Invalid hex source: " id))
+                         (String. (byte-array (map #(unchecked-byte (Integer/parseInt % 16))
+                                                  (re-seq #".." source))) "UTF-8"))
+                       source)])))))
+
 (try
   (let [[kind identity checkout output mode input entry] *command-line-args*]
-    (assert output (str "Usage: execution.clj release 1.12.134 - OUTPUT [cases TSV | program SOURCE_ROOT ENTRY_NS]"
-                        " or checkout COMMIT CHECKOUT OUTPUT [cases TSV | program SOURCE_ROOT ENTRY_NS]"))
+    (assert output (str "Usage: execution.clj release 1.12.134 - OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS]"
+                        " or checkout COMMIT CHECKOUT OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS]"))
     (checked-reference kind identity checkout)
     (case (or mode "cases")
-      "cases"
+      ("cases" "cases-hex")
       (let [src (io/file output "src")
             source-file (io/file src "semantic" "reference.cljs")
-            cases (->> (or (some-> input vector)
-                           ["tests/fixtures/execution.tsv" "tests/fixtures/execution-outcomes.tsv"])
-                       (mapcat #(str/split-lines (slurp %)))
-                       (remove #(or (str/blank? %) (str/starts-with? % "#")))
-                       (mapv #(vec (take 2 (str/split % #"\t")))))
+            cases (if input
+                    (read-cases input (= mode "cases-hex"))
+                    (do
+                      (assert (not= mode "cases-hex") "cases-hex requires a TSV path")
+                      (vec (concat (read-cases "tests/fixtures/execution.tsv" false)
+                                   (read-cases "tests/fixtures/execution-outcomes.tsv" false)
+                                   (read-cases "tests/fixtures/execution-literals.tsv" true)))))
             namespaces (mapv #(symbol (str "semantic.case" %)) (range (count cases)))]
         (assert (seq cases) "The reference fixture contains no cases")
         ;; Give each case its own namespace, like each independent light-cljs
@@ -98,7 +113,7 @@
         (doseq [[case-ns [id source]] (map vector namespaces cases)]
           (let [file (io/file src "semantic" (str (last (str/split (str case-ns) #"\.")) ".cljs"))]
             (io/make-parents file)
-            (spit file (str "; Case " id ": " source "\n"
+            (spit file (str "; Case " id "\n"
                             "(ns " case-ns ")\n(def run (fn* [observe] " source "))\n"))))
         (io/make-parents source-file)
         (spit source-file

@@ -11,7 +11,7 @@ use light_cljs::compile;
 #[derive(Clone, Debug)]
 struct Case {
     id: &'static str,
-    source: &'static str,
+    source: String,
     outcome: String,
     trace: &'static str,
     stdout: &'static str,
@@ -29,7 +29,7 @@ fn cases() -> Vec<Case> {
             let [id, source, value, trace]: [&str; 4] = row.try_into().unwrap();
             Case {
                 id,
-                source,
+                source: source.into(),
                 outcome: format!("{{\"status\":\"returned\",\"value\":{value}}}"),
                 trace,
                 stdout: "\"\"",
@@ -40,10 +40,33 @@ fn cases() -> Vec<Case> {
                 let [id, source, outcome, trace, stdout]: [&str; 5] = row.try_into().unwrap();
                 Case {
                     id,
-                    source,
+                    source: source.into(),
                     outcome: outcome.into(),
                     trace,
                     stdout,
+                }
+            }),
+        )
+        .chain(
+            rows(include_str!("fixtures/execution-literals.tsv")).map(|row| {
+                let [id, hex, value, trace]: [&str; 4] = row.try_into().unwrap();
+                let (pairs, remainder) = hex.as_bytes().as_chunks::<2>();
+                assert!(remainder.is_empty(), "incomplete source byte for {id}");
+                let source = String::from_utf8(
+                    pairs
+                        .iter()
+                        .map(|pair| {
+                            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+                        })
+                        .collect(),
+                )
+                .unwrap();
+                Case {
+                    id,
+                    source,
+                    outcome: format!("{{\"status\":\"returned\",\"value\":{value}}}"),
+                    trace,
+                    stdout: "\"\"",
                 }
             }),
         )
@@ -163,7 +186,7 @@ fn compiled_results() -> String {
         script.push_str(&format!(
             "[{},{}],\n",
             json_string(case.id),
-            json_string(case.source)
+            json_string(&case.source)
         ));
     }
     script.push_str("];\n");
@@ -286,6 +309,28 @@ fn harness_encodes_special_values_and_continues_after_failures_independently() {
 }
 
 #[test]
+fn harness_preserves_utf16_units_and_embedded_controls_independently() {
+    // Never pass a lone surrogate through a UTF-8 conversion. JSON escapes it,
+    // while a valid pair may use its scalar UTF-8 spelling without losing units.
+    let script = harness_script(&[(
+        "utf16",
+        "host-only UTF-16 and control probe",
+        r#"observe => {
+            const s = "\ud800A\udc00\ud83d\ude00\u0000\r\n\t\b\f";
+            observe(Array.from({length: s.length}, (_, i) => s.charCodeAt(i)));
+            return s;
+        }"#,
+    )]);
+    assert_eq!(
+        node(&script),
+        concat!(
+            r#"{"id":"utf16","outcome":{"status":"returned","value":"\ud800A\udc00😀\u0000\r\n\t\b\f"},"trace":[[55296,65,56320,55357,56832,0,13,10,9,8,12]],"stdout":""}"#,
+            "\n",
+        )
+    );
+}
+
+#[test]
 fn harness_rejects_invalid_cases_and_unserializable_values() {
     for script in [
         format!(
@@ -395,7 +440,7 @@ fn missing_duplicate_reordered_and_extra_outcomes_fail() {
     let output = node(&script);
     let case = Case {
         id: "silent-exit",
-        source: "(js/process.exit 0)",
+        source: "(js/process.exit 0)".into(),
         outcome: String::new(),
         trace: "[]",
         stdout: "\"\"",

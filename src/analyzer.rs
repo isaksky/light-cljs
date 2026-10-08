@@ -327,7 +327,9 @@ impl Analyzer<'_> {
             } => return self.list(id, children, context),
             other => {
                 let description = match other {
-                    NodeKind::Number(_) => "big integers, decimals, and ratios",
+                    NodeKind::Number(NumberKind::BigInteger) => "big integers",
+                    NodeKind::Number(NumberKind::Decimal) => "decimal literals",
+                    NodeKind::Number(NumberKind::Ratio) => "ratios",
                     NodeKind::Keyword { .. } => "keywords",
                     NodeKind::Character(_) => "characters",
                     NodeKind::SymbolicValue(_) => "symbolic numbers",

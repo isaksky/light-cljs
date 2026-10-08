@@ -439,13 +439,71 @@ fn numeric_limits_are_reported_instead_of_silently_losing_integer_precision() {
     for source in [
         "9007199254740992",
         "-9007199254740992",
+        "+9007199254740993",
+        "-9007199254740993",
         "0x20000000000000",
+        "-0X20000000000000",
+        "+0400000000000000000",
+        "-0400000000000000000",
+        "2r100000000000000000000000000000000000000000000000000000",
+        "-2R100000000000000000000000000000000000000000000000000000",
+        "36r2gosa7pa2gw",
+        "-36R2gosa7pa2gw",
         "99999999999999999999999999999",
+        "-99999999999999999999999999999",
+        "1.7976931348623159e308",
+        "-1.7976931348623159e308",
         "1e999",
+        "-1E+999",
     ] {
         let error = analyze(source, &parse(source).unwrap()).unwrap_err();
         assert_eq!(error.kind, Error::NumberOutOfRange, "{source}");
         assert_eq!(error.span, 0..source.len());
+
+        // Byte offsets must still identify the whole literal after non-ASCII
+        // source and newlines, including an unselected branch.
+        let prefix = "(let* [λ 0]\n  (if false ";
+        let nested = format!("{prefix}{source} λ))");
+        let CompileError::Analysis(error) = compile(&nested).unwrap_err() else {
+            panic!("numeric boundary reached the wrong stage: {nested}")
+        };
+        assert_eq!(error.kind, Error::NumberOutOfRange, "{nested}");
+        assert_eq!(error.span, prefix.len()..prefix.len() + source.len());
+        assert!(
+            error
+                .to_string()
+                .contains("safe integers and finite doubles")
+        );
+    }
+}
+
+#[test]
+fn unsupported_number_categories_have_precise_diagnostics() {
+    for (literal, category) in [
+        ("0N", "big integers"),
+        ("-42N", "big integers"),
+        ("+0xFFN", "big integers"),
+        ("077N", "big integers"),
+        ("1M", "decimal literals"),
+        ("-1.25M", "decimal literals"),
+        ("1e-10M", "decimal literals"),
+        ("09M", "decimal literals"),
+        ("1/2", "ratios"),
+        ("1/1", "ratios"),
+        ("-13/2", "ratios"),
+        ("+01/002", "ratios"),
+        ("##NaN", "symbolic numbers"),
+        ("##Inf", "symbolic numbers"),
+        ("##-Inf", "symbolic numbers"),
+    ] {
+        let prefix = "(let* [λ 0]\n  (do ";
+        let source = format!("{prefix}{literal} λ))");
+        let CompileError::Analysis(error) = compile(&source).unwrap_err() else {
+            panic!("unsupported number reached the wrong stage: {source}")
+        };
+        assert_eq!(error.kind, Error::Unsupported(category.into()), "{literal}");
+        assert_eq!(error.span, prefix.len()..prefix.len() + literal.len());
+        assert!(error.to_string().contains(category));
     }
 }
 

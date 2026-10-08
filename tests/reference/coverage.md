@@ -101,6 +101,17 @@ observable results or traces. Existing dependency/source-order tests are reused
 and identified explicitly. All 202 cases and the three namespace comparisons
 pass against both baselines; no emitter change was needed.
 
+## Numeric and UTF-16 audit update
+
+The [2026-10-08 numeric and UTF-16 audit](literal-evidence.md) adds **28**
+execution cases (**5 adapted**, **23 independent**) for **230** passing runtime
+programs against both baselines. It maps the literal assertions and local reader
+snapshots, covers signed bases, safe-integer endpoints, float rounding and
+extremes, and preserves exact string code units. Four hex-source fixtures carry
+actual control bytes and line endings. Focused numeric diagnostics assert exact
+source spans, and the evidence distinguishes intentional numeric exclusions
+from supported conformance behavior.
+
 ## Inspected upstream sections
 
 ### Analyzer and compiler suites

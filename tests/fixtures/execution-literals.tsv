@@ -1,0 +1,6 @@
+# id	source_utf8_hex	value_json	trace_json
+# Raw control characters and line endings must survive fixture transport.
+string-raw-line-endings	22610d0a620d0c630d6422	"a\nb\nc\nd"	[]
+string-raw-controls	22610009080c0a7a22	"a\u0000\t\b\f\nz"	[]
+string-raw-separators	286f627365727665202241e280a842e280a94322292022415c7532303238425c75323032394322	"A B C"	["A B C"]
+string-raw-supplementary	22f0908080f48fbfbf22	"𐀀􏿿"	[]
