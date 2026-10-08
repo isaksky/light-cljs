@@ -86,23 +86,30 @@
       "cases"
       (let [src (io/file output "src")
             source-file (io/file src "semantic" "reference.cljs")
-            cases (->> (str/split-lines (slurp (or input "tests/fixtures/execution.tsv")))
+            cases (->> (or (some-> input vector)
+                           ["tests/fixtures/execution.tsv" "tests/fixtures/execution-outcomes.tsv"])
+                       (mapcat #(str/split-lines (slurp %)))
                        (remove #(or (str/blank? %) (str/starts-with? % "#")))
-                       (map #(second (str/split % #"\t"))))
+                       (mapv #(vec (take 2 (str/split % #"\t")))))
             namespaces (mapv #(symbol (str "semantic.case" %)) (range (count cases)))]
         (assert (seq cases) "The reference fixture contains no cases")
         ;; Give each case its own namespace, like each independent light-cljs
         ;; compilation. Definitions must not leak between differential cases.
-        (doseq [[case-ns source] (map vector namespaces cases)]
+        (doseq [[case-ns [id source]] (map vector namespaces cases)]
           (let [file (io/file src "semantic" (str (last (str/split (str case-ns) #"\.")) ".cljs"))]
             (io/make-parents file)
-            (spit file (str "(ns " case-ns ")\n(def run (fn* [observe] " source "))\n"))))
+            (spit file (str "; Case " id ": " source "\n"
+                            "(ns " case-ns ")\n(def run (fn* [observe] " source "))\n"))))
         (io/make-parents source-file)
         (spit source-file
               (str "(ns semantic.reference (:require "
                    (str/join " " (map #(str "[" % "]") namespaces)) "))\n"
                    "(set! (.-lightCases js/globalThis) (array\n"
-                   (str/join "\n" (map #(str % "/run") namespaces)) "))\n"))
+                   (str/join "\n" (map #(str % "/run") namespaces)) "))\n"
+                   "(set! (.-lightCaseMetadata js/globalThis) (array\n"
+                   (str/join "\n" (map (fn [[id source]]
+                                         (str "(array " (pr-str id) " " (pr-str source) ")")) cases))
+                   "))\n"))
         (checked-build src output 'semantic.reference
                        (conj (set namespaces) 'semantic.reference)))
       "program"

@@ -1,44 +1,97 @@
 use std::{
     fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 
 use light_cljs::compile;
 
-fn cases() -> Vec<[&'static str; 4]> {
-    include_str!("fixtures/execution.tsv")
-        .lines()
+#[derive(Clone, Debug)]
+struct Case {
+    id: &'static str,
+    source: &'static str,
+    outcome: String,
+    trace: &'static str,
+    stdout: &'static str,
+}
+
+fn rows(text: &'static str) -> impl Iterator<Item = Vec<&'static str>> {
+    text.lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
-        .map(|line| line.split('\t').collect::<Vec<_>>().try_into().unwrap())
+        .map(|line| line.split('\t').collect())
+}
+
+fn cases() -> Vec<Case> {
+    rows(include_str!("fixtures/execution.tsv"))
+        .map(|row| {
+            let [id, source, value, trace]: [&str; 4] = row.try_into().unwrap();
+            Case {
+                id,
+                source,
+                outcome: format!("{{\"status\":\"returned\",\"value\":{value}}}"),
+                trace,
+                stdout: "\"\"",
+            }
+        })
+        .chain(
+            rows(include_str!("fixtures/execution-outcomes.tsv")).map(|row| {
+                let [id, source, outcome, trace, stdout]: [&str; 5] = row.try_into().unwrap();
+                Case {
+                    id,
+                    source,
+                    outcome: outcome.into(),
+                    trace,
+                    stdout,
+                }
+            }),
+        )
         .collect()
 }
 
-fn run(mut command: Command, input: Vec<u8>, timeout: Duration) -> Output {
+// Enough JSON for fixture metadata and exact expected protocol lines, without
+// relying on the encoder under test to manufacture its own expected values.
+fn json_string(value: &str) -> String {
+    let mut result = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            c if c.is_control() => result.push_str(&format!("\\u{:04x}", c as u32)),
+            c => result.push(c),
+        }
+    }
+    result.push('"');
+    result
+}
+
+struct RunFailure {
+    message: String,
+    _dir: TempDir,
+}
+
+fn try_run(mut command: Command, input: &[u8], timeout: Duration) -> Result<Output, RunFailure> {
+    let dir = TempDir::new("process");
     let description = format!("{command:?}");
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error| panic!("required tool unavailable: {description}: {error}"));
-    // Drain both output pipes concurrently so a verbose compiler cannot deadlock.
-    let mut stdin = child.stdin.take().unwrap();
-    let writer = std::thread::spawn(move || stdin.write_all(&input));
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).unwrap();
-        bytes
-    });
-    let mut stderr = child.stderr.take().unwrap();
-    let errors = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).unwrap();
-        bytes
-    });
+    fs::write(dir.0.join("invocation.txt"), &description).unwrap();
+    fs::write(dir.0.join("input.js"), input).unwrap();
+    // File-backed streams retain partial progress on a crash/hang, with no pipe
+    // reader/writer joins that could outlive the process timeout.
+    let child = command
+        .stdin(fs::File::open(dir.0.join("input.js")).unwrap())
+        .stdout(fs::File::create(dir.0.join("stdout.txt")).unwrap())
+        .stderr(fs::File::create(dir.0.join("stderr.txt")).unwrap())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            return Err(RunFailure {
+                message: format!("required tool unavailable: {description}: {error}"),
+                _dir: dir,
+            });
+        }
+    };
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
@@ -50,61 +103,308 @@ fn run(mut command: Command, input: Vec<u8>, timeout: Duration) -> Output {
             child.kill().unwrap();
             break child.wait().unwrap();
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(Duration::from_millis(10));
     };
-    // A failed launcher can leave descendants holding inherited pipes. Fail
-    // before joining the readers so that those handles cannot defeat the bound.
-    assert!(
-        !timed_out,
-        "required tool timed out after {timeout:?}: {description}"
-    );
     let output = Output {
         status,
-        stdout: reader.join().unwrap(),
-        stderr: errors.join().unwrap(),
+        stdout: fs::read(dir.0.join("stdout.txt")).unwrap(),
+        stderr: fs::read(dir.0.join("stderr.txt")).unwrap(),
     };
-    let written = writer.join().unwrap();
-    assert!(
-        output.status.success(),
-        "required tool failed: {description}\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    written.unwrap();
-    output
+    if timed_out || !status.success() {
+        let reason = if timed_out {
+            format!("timed out after {timeout:?}")
+        } else {
+            format!("failed ({status})")
+        };
+        return Err(RunFailure {
+            message: format!(
+                "required tool {reason}: {description}\nartifacts: {}\n{}\n{}",
+                dir.0.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            _dir: dir,
+        });
+    }
+    Ok(output)
+}
+
+fn run(command: Command, input: Vec<u8>, timeout: Duration) -> Output {
+    try_run(command, &input, timeout).unwrap_or_else(|error| panic!("{}", error.message))
+}
+
+fn node_command() -> Command {
+    let mut command = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()));
+    command.arg("-");
+    command
 }
 
 fn node(script: &str) -> String {
-    let mut command = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()));
-    command.arg("-");
-    let output = run(command, script.as_bytes().to_vec(), Duration::from_secs(30));
+    let output = run(
+        node_command(),
+        script.as_bytes().to_vec(),
+        Duration::from_secs(30),
+    );
     String::from_utf8(output.stdout).unwrap()
 }
 
 fn compiled_results() -> String {
     let mut script = String::from("globalThis.lightCases = [\n");
-    for [name, source, _, _] in cases() {
-        let source = format!("(fn* [observe] {source})");
-        script.push_str(&compile(&source).unwrap_or_else(|error| panic!("{name}: {error}")));
+    for case in cases() {
+        let source = format!("(fn* [observe] {})", case.source);
+        script.push_str(
+            &compile(&source)
+                .unwrap_or_else(|error| panic!("{}: {}: {error}", case.id, case.source)),
+        );
         script.push_str(",\n");
+    }
+    script.push_str("];\nglobalThis.lightCaseMetadata = [\n");
+    for case in cases() {
+        script.push_str(&format!(
+            "[{},{}],\n",
+            json_string(case.id),
+            json_string(case.source)
+        ));
     }
     script.push_str("];\n");
     script.push_str(include_str!("support/execution.js"));
     node(&script)
 }
 
+fn outcomes<'a>(output: &'a str, cases: &[Case]) -> Result<Vec<&'a str>, String> {
+    let lines: Vec<_> = output.lines().collect();
+    for (index, case) in cases.iter().enumerate() {
+        let prefix = format!("{{\"id\":{},\"outcome\":", json_string(case.id));
+        if !lines
+            .get(index)
+            .is_some_and(|line| line.starts_with(&prefix))
+        {
+            return Err(format!(
+                "missing, duplicate, or out-of-order outcome for {}: {} at index {index}; got {:?}",
+                case.id,
+                case.source,
+                lines.get(index)
+            ));
+        }
+    }
+    if lines.len() != cases.len() {
+        return Err(format!(
+            "expected {} outcomes, got {}: {output}",
+            cases.len(),
+            lines.len()
+        ));
+    }
+    Ok(lines)
+}
+
 #[test]
 fn tiny_programs_execute_with_expected_values_and_effects() {
     let output = compiled_results();
-    let results: Vec<_> = output.lines().collect();
-    assert_eq!(results.len(), cases().len());
-    for ([name, source, value, trace], actual) in cases().into_iter().zip(results) {
+    let cases = cases();
+    for (case, actual) in cases.iter().zip(outcomes(&output, &cases).unwrap()) {
         assert_eq!(
             actual,
-            format!("{{\"value\":{value},\"trace\":{trace}}}"),
-            "{name}: {source}"
+            format!(
+                "{{\"id\":{},\"outcome\":{},\"trace\":{},\"stdout\":{}}}",
+                json_string(case.id),
+                case.outcome,
+                case.trace,
+                case.stdout
+            ),
+            "{}: {}",
+            case.id,
+            case.source
         );
     }
+}
+
+fn harness_script(programs: &[(&str, &str, &str)]) -> String {
+    let functions = programs
+        .iter()
+        .map(|(_, _, function)| *function)
+        .collect::<Vec<_>>()
+        .join(",");
+    let metadata = programs
+        .iter()
+        .map(|(id, source, _)| format!("[{},{}]", json_string(id), json_string(source)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "globalThis.lightCases = [{functions}];\nglobalThis.lightCaseMetadata = [{metadata}];\n{}",
+        include_str!("support/execution.js")
+    )
+}
+
+#[test]
+fn harness_encodes_special_values_and_continues_after_failures_independently() {
+    // JavaScript probes intentionally bypass both compilers. Literal expected
+    // bytes catch shared serializer/runner mistakes that differential tests miss.
+    let script = harness_script(&[
+        (
+            "special",
+            "host-only special-value probe",
+            r#"observe => {
+            const value = [null, undefined, -0, NaN, Infinity, -Infinity];
+            observe(value);
+            observe({missing: undefined, nested: [NaN], literalTag: {$number: "NaN"}});
+            return value;
+        }"#,
+        ),
+        (
+            "throw",
+            "host-only thrown-value probe",
+            r#"observe => {
+            observe(undefined);
+            lightHost.value = 99;
+            console.log("before");
+            process.stdout.write(Buffer.from([0xc3]));
+            process.stdout.write(Buffer.from([0xa9]));
+            throw undefined;
+        }"#,
+        ),
+        (
+            "after",
+            "host-only continuation probe",
+            r#"observe => {
+            console.log("after");
+            observe(lightHost.value);
+            return null;
+        }"#,
+        ),
+    ]);
+    assert_eq!(
+        node(&script),
+        concat!(
+            r#"{"id":"special","outcome":{"status":"returned","value":[null,{"$value":"undefined"},{"$number":"-0"},{"$number":"NaN"},{"$number":"+Infinity"},{"$number":"-Infinity"}]},"trace":[[null,{"$value":"undefined"},{"$number":"-0"},{"$number":"NaN"},{"$number":"+Infinity"},{"$number":"-Infinity"}],{"$object":{"missing":{"$value":"undefined"},"nested":[{"$number":"NaN"}],"literalTag":{"$object":{"$number":"NaN"}}}}],"stdout":""}"#,
+            "\n",
+            r#"{"id":"throw","outcome":{"status":"threw","error":{"category":"thrown-value","value":{"$value":"undefined"}}},"trace":[{"$value":"undefined"}],"stdout":"before\né"}"#,
+            "\n",
+            r#"{"id":"after","outcome":{"status":"returned","value":null},"trace":[40],"stdout":"after\n"}"#,
+            "\n",
+        )
+    );
+}
+
+#[test]
+fn harness_rejects_invalid_cases_and_unserializable_values() {
+    for script in [
+        format!(
+            "globalThis.lightCases = []; globalThis.lightCaseMetadata = []; {}",
+            include_str!("support/execution.js")
+        ),
+        format!(
+            "globalThis.lightCases = [() => 1]; globalThis.lightCaseMetadata = []; {}",
+            include_str!("support/execution.js")
+        ),
+        harness_script(&[
+            ("duplicate", "one", "() => 1"),
+            ("duplicate", "two", "() => 2"),
+        ]),
+        harness_script(&[("function", "unsupported host function", "() => () => 1")]),
+        harness_script(&[(
+            "cycle",
+            "cyclic host array",
+            "() => { const a = []; a.push(a); return a; }",
+        )]),
+        harness_script(&[(
+            "trace",
+            "unsupported trace value",
+            "observe => { observe(Symbol()); return 1; }",
+        )]),
+    ] {
+        let error = try_run(node_command(), script.as_bytes(), Duration::from_secs(5))
+            .expect_err("invalid harness data must fail");
+        assert!(
+            error.message.contains("required tool failed"),
+            "{}",
+            error.message
+        );
+        assert!(
+            fs::read(error._dir.0.join("stdout.txt"))
+                .unwrap()
+                .is_empty(),
+            "harness failure must not become a program outcome"
+        );
+    }
+}
+
+#[test]
+fn process_failures_and_timeouts_retain_current_case_identity_and_source() {
+    for (id, source, program, timeout, reason) in [
+        (
+            "crash-probe",
+            "(js/process.exit 7)",
+            "() => { process.exit(7); }",
+            Duration::from_secs(5),
+            "failed",
+        ),
+        (
+            "hang-probe",
+            "host-only infinite loop",
+            "() => { while (true) {} }",
+            Duration::from_secs(2),
+            "timed out",
+        ),
+    ] {
+        let script = harness_script(&[(id, source, program)]);
+        let started = Instant::now();
+        let error = try_run(node_command(), script.as_bytes(), timeout)
+            .expect_err("process failure must not succeed");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "process timeout must remain bounded"
+        );
+        for expected in [reason, "CASE START", id, source] {
+            assert!(
+                error.message.contains(expected),
+                "missing {expected}: {}",
+                error.message
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(error._dir.0.join("input.js")).unwrap(),
+            script
+        );
+    }
+}
+
+#[test]
+fn missing_duplicate_reordered_and_extra_outcomes_fail() {
+    let cases: Vec<_> = cases().into_iter().take(2).collect();
+    let nil = r#"{"id":"nil","outcome":{"status":"returned","value":null},"trace":[],"stdout":""}"#;
+    let yes =
+        r#"{"id":"true","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#;
+    assert!(outcomes(&format!("{nil}\n{yes}\n"), &cases).is_ok());
+    for output in [
+        String::new(),
+        format!("{nil}\n"),
+        format!("{nil}\n{nil}\n"),
+        format!("{yes}\n{nil}\n"),
+        format!("{nil}\n{yes}\n{yes}\n"),
+    ] {
+        assert!(
+            outcomes(&output, &cases).is_err(),
+            "accepted incomplete/ambiguous output: {output}"
+        );
+    }
+    let script = harness_script(&[(
+        "silent-exit",
+        "(js/process.exit 0)",
+        "() => { process.exit(0); }",
+    )]);
+    let output = node(&script);
+    let case = Case {
+        id: "silent-exit",
+        source: "(js/process.exit 0)",
+        outcome: String::new(),
+        trace: "[]",
+        stdout: "\"\"",
+    };
+    let error = outcomes(&output, &[case]).unwrap_err();
+    assert!(
+        error.contains("silent-exit") && error.contains("(js/process.exit 0)"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -131,11 +431,31 @@ fn deeply_nested_accepted_source_compiles_and_executes() {
 }
 
 struct TempDir(PathBuf);
+impl TempDir {
+    fn new(label: &str) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "light-cljs-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!(
+                    "cannot create execution artifacts at {}: {error}",
+                    path.display()
+                ),
+            }
+        }
+    }
+}
 impl Drop for TempDir {
     fn drop(&mut self) {
         if std::thread::panicking() {
             eprintln!(
-                "Reference failure artifacts retained at {}",
+                "Execution failure artifacts retained at {}",
                 self.0.display()
             );
         } else {
@@ -257,12 +577,7 @@ fn run_reference(mut command: Command, dir: &Path, timeout: Duration) -> String 
 
 fn reference_build(reference: &Reference, label: &str, args: &[&str]) -> TempDir {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dir = TempDir(std::env::temp_dir().join(format!(
-        "light-cljs-reference-{label}-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-    )));
-    fs::create_dir(&dir.0).unwrap();
+    let dir = TempDir::new(&format!("reference-{label}"));
     let (kind, identity, checkout, dependency) = match reference {
         Reference::Release => (
             "release",
@@ -378,6 +693,10 @@ fn reference_results(label: &str, args: &[&str], driver: &str) -> Vec<ReferenceR
             fs::write(dir.0.join("driver.js"), &script).unwrap();
             let output = node(&script);
             fs::write(dir.0.join("results.txt"), &output).unwrap();
+            if label == "cases" {
+                outcomes(&output, &cases())
+                    .unwrap_or_else(|error| panic!("{reference:?}: {error}"));
+            }
             ReferenceResult {
                 identity: format!("{reference:?}"),
                 output,
@@ -402,18 +721,19 @@ fn programs_match_standard_clojurescript_results_and_effects() {
     let actual = compiled_results();
     for result in &references {
         let reference = &result.output;
-        assert_eq!(reference.lines().count(), cases().len());
-        assert_eq!(actual.lines().count(), cases().len());
-        for (([name, source, _, _], actual), reference) in cases()
-            .into_iter()
-            .zip(actual.lines())
-            .zip(reference.lines())
-        {
-            assert_eq!(actual, reference, "{}: {name}: {source}", result.identity);
+        let cases = cases();
+        let actual = outcomes(&actual, &cases).unwrap();
+        let expected = outcomes(reference, &cases).unwrap();
+        for ((case, actual), reference) in cases.iter().zip(actual).zip(expected) {
+            assert_eq!(
+                actual, reference,
+                "{}: {}: {}",
+                result.identity, case.id, case.source
+            );
         }
         eprintln!(
-            "Matched {} programs and effect traces against {}",
-            cases().len(),
+            "Matched {} program outcomes, traces, and stdout against {}",
+            cases.len(),
             result.identity
         );
     }

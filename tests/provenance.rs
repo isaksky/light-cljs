@@ -1,7 +1,18 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASES: &str = include_str!("fixtures/execution.tsv");
+const CASE_FILES: [(&str, &str, usize); 2] = [
+    (
+        "tests/fixtures/execution.tsv",
+        include_str!("fixtures/execution.tsv"),
+        4,
+    ),
+    (
+        "tests/fixtures/execution-outcomes.tsv",
+        include_str!("fixtures/execution-outcomes.tsv"),
+        5,
+    ),
+];
 const ORIGINS: &str = include_str!("reference/fixture-origins.tsv");
 
 fn rows(text: &str) -> impl Iterator<Item = &str> {
@@ -61,20 +72,27 @@ fn validate_origin(row: &str) -> Result<[&str; 9], &'static str> {
 #[test]
 fn fixture_ids_are_unique_and_have_complete_provenance() {
     let mut cases = HashSet::new();
-    for row in rows(CASES) {
-        let fields: Vec<_> = row.split('\t').collect();
-        assert_eq!(fields.len(), 4, "invalid execution fixture: {row}");
-        let id = fields[0];
-        assert!(
-            !id.is_empty()
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
-            "invalid stable execution ID: {id}"
-        );
-        assert!(cases.insert(id), "duplicate execution ID: {id}");
+    for (path, text, columns) in CASE_FILES {
+        for row in rows(text) {
+            let fields: Vec<_> = row.split('\t').collect();
+            assert_eq!(fields.len(), columns, "invalid execution fixture: {row}");
+            let id = fields[0];
+            assert!(
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                "invalid stable execution ID: {id}"
+            );
+            assert!(cases.insert((path, id)), "duplicate execution ID: {id}");
+        }
     }
     assert!(!cases.is_empty());
+    assert_eq!(
+        cases.iter().map(|(_, id)| id).collect::<HashSet<_>>().len(),
+        cases.len(),
+        "execution IDs must be unique across fixture files"
+    );
 
     let mut documented = HashSet::new();
     let mut covered_cases = HashSet::new();
@@ -86,9 +104,12 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "duplicate provenance for {local_path}::{id}"
             );
             match local_path {
-                "tests/fixtures/execution.tsv" => {
-                    assert!(cases.contains(id), "unknown execution ID: {id}");
-                    covered_cases.insert(id);
+                "tests/fixtures/execution.tsv" | "tests/fixtures/execution-outcomes.tsv" => {
+                    assert!(
+                        cases.contains(&(local_path, id)),
+                        "unknown execution ID: {id}"
+                    );
+                    covered_cases.insert((local_path, id));
                 }
                 "tests/namespaces.rs" => assert!(
                     include_str!("namespaces.rs").contains(&format!("#[test]\nfn {id}()")),

@@ -51,6 +51,15 @@ behavior is exercised; it does not claim that the whole upstream test was ported
 | Host access | `js-math` through `js-branch-method` | Global paths, getters and property reads, receiver retention, evaluation order, local host-root shadowing, undefined properties. |
 | Namespace runtime | `namespaces::acceptance_program_prints_four_from_api_and_cli`, `namespaces::globals_keep_namespace_identity_and_lexical_shadowing`; `execution::namespace_program_matches_standard_clojurescript_stdout`, `execution::dependency_initialization_matches_standard_clojurescript` | Two-namespace stdout `4`, aliases/full qualifiers, dependency/source ordering, shared dependency once, global redefinition across namespaces. |
 
+## Additional hand-authored outcome probes
+
+The subsequent [outcome harness work](outcome-evidence.md) adds **17** independent
+cases in `tests/fixtures/execution-outcomes.tsv`, for **122** executable cases.
+Their five columns are stable ID, source, outcome JSON, trace JSON, and stdout
+JSON. The original 105 cases and their expectations remain unchanged. The new
+sidecar record identifies these as hand-authored host-boundary/failure probes;
+no additional upstream assertion or suite-port coverage is claimed.
+
 ## Inspected upstream sections
 
 ### Analyzer and compiler suites
@@ -177,9 +186,9 @@ local_path  local_ids  origin  repository  commit  source_path  anchor  rational
 
 The separators are actual tabs. `local_ids` is a comma-separated list of explicit
 stable IDs; grouping is allowed only when the remaining metadata accurately
-applies to every listed case. An execution ID is unique within
-`tests/fixtures/execution.tsv` and must not be renamed just because its position
-changes. A Rust regression uses its named `#[test]` function as its ID. The pair
+applies to every listed case. An execution ID is unique across
+`tests/fixtures/execution.tsv` and `tests/fixtures/execution-outcomes.tsv` and
+must not be renamed just because its position changes. A Rust regression uses its named `#[test]` function as its ID. The pair
 `local_path` + ID identifies a fixture in the sidecar.
 
 - `hand-authored`: an independent example. The four upstream-source fields are
@@ -245,10 +254,11 @@ local fixture source in that test when adding a new fixture location.
    For namespace programs use `program SOURCE_ROOT ENTRY_NS` in place of
    `cases PATH.tsv`, then run `node reference.js` from `OUTPUT` and compare exact
    stdout/order. The harness prints and asserts the effective pinned version and
-   settings. For runtime failures, use an explicit named failure test and compare
-   the failure category; the ordinary TSV runner intentionally fails on a crash
-   and is not a general exception oracle. Never weaken an expectation to match
-   a suspected compiler defect.
+   settings. For runtime failures, add a named row to `execution-outcomes.tsv`
+   and compare its failure category, preceding trace, and captured stdout with
+   the same runner. A runtime throw is an outcome; a crashed or timed-out runner,
+   missing outcome, serialization error, or reference build failure fails the
+   test. Never weaken an expectation to match a suspected compiler defect.
 6. Run the relevant Rust/Node tests and the differential test after adding or
    changing executable fixtures. The shared commands are:
 

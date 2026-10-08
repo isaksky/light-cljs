@@ -193,9 +193,20 @@ JSON values/effect traces. The execution harness wraps each program in
 returns it. A reset host object supplies getters and receiver-sensitive methods
 for interop probes; these are harness helpers, not implemented source forms. The cases cover shadowing and closures, self-recursion,
 all three emission contexts, callee/argument/initializer order, branch effects,
-truthiness, numeric spellings, and UTF-16 values. Negative zero and `undefined`
-are represented explicitly in test output. Separate tests cover complete files,
-CLI diagnostics, invalid binding forms, and resolved IDs.
+truthiness, numeric spellings, and UTF-16 values.
+
+`tests/fixtures/execution-outcomes.tsv` adds runtime failures, stdout, and host
+boundary values without changing the original fixture format. Both compilers
+use the same per-case `{id, outcome, trace, stdout}` protocol: an outcome either
+returns an encoded value or throws a stable error category. The harness retains
+effects and stdout before a throw and runs the next case with fresh host state.
+Nil/null, `undefined`, negative zero, NaN, and both infinities stay distinct,
+including inside trace arrays. Unsupported source literals remain unsupported;
+host callbacks supply special values. Independent JavaScript probes check the
+serializer and runner against literal expectations, so a shared harness error
+cannot count as compiler agreement. See the [outcome protocol and evidence](../tests/reference/outcome-evidence.md).
+Separate tests cover complete files, CLI diagnostics, invalid binding forms,
+and resolved IDs.
 
 ```sh
 cargo test
@@ -218,7 +229,7 @@ cargo test --release --test parser_corpus -- --ignored --nocapture
 Normal execution tests require Node.js (`NODE` can select its executable).
 The explicit differential tests invoke `tests/reference/execution.clj` using
 Clojure CLI, Java, and Maven ClojureScript **1.12.134**. They compile temporary
-Node programs and compare results, effects, and namespace program stdout with
+Node programs and compare returned values or failures, effects, and stdout with
 the Rust compiler. Options are explicitly pinned to `:optimizations :none` and
 `:static-fns false`; the actual fixture analysis environment has
 `:def-emits-var false` for ordinary compilation. The harness asserts the active
@@ -257,7 +268,11 @@ Each build prints its exact shell invocation, reference identity, Java/Clojure
 runtime and Node versions, and verified compiler settings. On failure, the
 printed temporary directory retains generated source, `invocation.sh`,
 `build.stdout`, `build.stderr`, and (when execution was reached) `driver.js`,
-`node-version.txt`, and `results.txt`. Successful comparisons remove their
+`node-version.txt`, and `results.txt`. Node subprocesses also use file-backed
+input/stdout/stderr and a 30-second timeout. Crashes and hangs retain the active
+case ID/source in stderr progress records and keep their script and partial
+output in a separately reported process directory. Every expected case must
+produce exactly one outcome with its correct ID and position. Successful comparisons remove their
 temporary builds. See [checkout evidence](../tests/reference/checkout-evidence.md)
 for upstream harness inspection, standalone reproduction, and actual runs.
 
