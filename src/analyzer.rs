@@ -146,7 +146,7 @@ impl fmt::Display for AnalysisError {
             AnalysisErrorKind::Unsupported(what) => write!(f, "unsupported construct: {what}"),
             AnalysisErrorKind::InvalidForm(message) => f.write_str(message),
             AnalysisErrorKind::InvalidBinding => {
-                f.write_str("binding must be a simple symbol without '/', '.', or '&'")
+                f.write_str("binding must be an unqualified symbol without '.' and cannot be '&'")
             }
             AnalysisErrorKind::DuplicateParameter(name) => write!(f, "duplicate parameter: {name}"),
             AnalysisErrorKind::NumberOutOfRange => {
@@ -282,7 +282,8 @@ impl Analyzer<'_> {
     fn binding_name(&self, node: NodeId) -> Result<&str, AnalysisError> {
         let name = self.spelling(node);
         if !matches!(self.syntax.nodes[node.0].kind, NodeKind::Symbol)
-            || name.contains(['/', '.'])
+            || (name != "/" && name.contains('/'))
+            || name.contains('.')
             || name == "&"
         {
             return Err(self.error(node, AnalysisErrorKind::InvalidBinding));
@@ -378,8 +379,8 @@ impl Analyzer<'_> {
                 name if name.starts_with('.') && name != "." => {
                     return self.interop(id, name, args, context);
                 }
-                "ns" | "loop*" | "letfn*" | "recur" | "throw" | "try" | "set!" | "new" | "."
-                | "js*" | "quote" | "var" | "deftype*" | "defrecord*" => {
+                "ns" | "ns*" | "loop*" | "letfn*" | "recur" | "throw" | "try" | "set!" | "new"
+                | "." | "js*" | "quote" | "var" | "deftype*" | "defrecord*" | "case*" | "&" => {
                     return Err(self.error(
                         operator,
                         AnalysisErrorKind::Unsupported(self.spelling(operator).into()),
@@ -436,7 +437,8 @@ impl Analyzer<'_> {
                 });
             return Ok(ExprKind::JsGlobal(global));
         }
-        let (namespace, symbol) = if let Some((qualifier, symbol)) = name.split_once('/') {
+        let qualified = (name != "/").then(|| name.split_once('/')).flatten();
+        let (namespace, symbol) = if let Some((qualifier, symbol)) = qualified {
             let namespace = self
                 .aliases
                 .iter()
@@ -528,6 +530,14 @@ impl Analyzer<'_> {
         }
         if args.is_empty() || (field && args.len() != 1) {
             return Err(self.error(id, AnalysisErrorKind::InvalidForm("property reads require one receiver; method calls require a receiver followed by arguments")));
+        }
+        if matches!(self.syntax.nodes[args[0].0].kind, NodeKind::Nil) {
+            return Err(self.error(
+                args[0],
+                AnalysisErrorKind::InvalidForm(
+                    "JavaScript member access cannot target literal nil",
+                ),
+            ));
         }
         let receiver = self.form(args[0], ExprContext::Value)?;
         let kind = if field {
@@ -710,6 +720,27 @@ impl Analyzer<'_> {
                 children,
             }) => {
                 if args.len() != 1 {
+                    for &method in args {
+                        let NodeKind::Collection {
+                            kind: CollectionKind::List,
+                            children,
+                        } = &self.syntax.nodes[method.0].kind
+                        else {
+                            return Err(self.error(
+                                method,
+                                AnalysisErrorKind::InvalidForm(
+                                    "fn* arities must be lists beginning with a parameter vector",
+                                ),
+                            ));
+                        };
+                        let Some(&params) = children.first() else {
+                            return Err(self.error(
+                                method,
+                                AnalysisErrorKind::InvalidForm("fn* requires a parameter vector"),
+                            ));
+                        };
+                        self.vector(params, "fn* requires a parameter vector")?;
+                    }
                     return Err(self.error(
                         id,
                         AnalysisErrorKind::Unsupported("multiple function arities".into()),

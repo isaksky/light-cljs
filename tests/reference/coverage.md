@@ -126,10 +126,10 @@ are not local compatibility contracts.
 | `analyzer_tests.clj`, `analyze-ops`: scalar constants (628–633), do (658–670), let/local/shadow chains (671–687, 1126–1147) | Scalar fixture groups, `empty-do`, `do-result`, `do-order`, `empty-let`, `sequential-let`, `same-scope-shadow`, `shadow-initializer`; `analyzer::closures_resolve_to_distinct_persistent_binding_ids`, `analyzer::initializer_references_the_previous_binding`. Keyword/collection ASTs excluded. |
 | `analyzer_tests.clj`, `analyze-ops`: fn (800–859), if (860–873), invoke (874–884) | `empty-function`, `function-body`, `single-method`, named/self recursion and closure IDs; `missing-else`, selected-branch/effect IDs; `function-callee`, `callee-and-argument-order`. Upstream keyword/core-function invocation examples are operation-class analogues, not directly ported cases. Variadic/multiple methods excluded. |
 | `analyzer_tests.clj`, `analyze-ops`: def (770–783) | `def-value`, `global-read`, `global-uninitialized`, `def-uninitialized-value`, `global-function-value`; `analyzer::global_identity_is_stable_and_distinct_from_lexical_and_host_identity`. Covers declaration/initializer/qualified identity; upstream AST assertions alone do not verify returned values or redefinition. |
-| `analyzer_tests.clj`, `spec-validation` (69, 75, 81/87, 93, 153, 159, 171) | The attributed namespace validation adaptation covers malformed require libraries, unknown/repeated options, non-symbol/conflicting aliases, unknown clauses. `:refer`, `:rename`, `:use` assertions are excluded; repeated `:require` clause at 177 is a gap below. |
+| `analyzer_tests.clj`, `spec-validation` (69, 75, 81/87, 93, 153, 159, 171) | The attributed namespace validation adaptation covers malformed require libraries, unknown/repeated options, non-symbol/conflicting aliases, unknown clauses. `:refer`, `:rename`, `:use` execution remains excluded; the boundary audit now checks the relevant rejection classifications and repeated `:require` clause at 177. |
 | `analyzer_tests.clj`, `test-cljs-3320` (1538–1543) | `namespaces::aliases_cannot_duplicate_or_redirect_namespace_qualifiers` rejects `js` alias. Upstream warns; local rejection is a deliberate stricter boundary, not warning-text equivalence. |
 | `analyzer_tests.clj`, `analyze-ops`: ns (1095–1097), host access (1080–1094), JS vars (1109–1112), local JS shadow (697–705); `test-cljs-1785-js-shadowed-by-local` (416–423) | Named namespace runtime tests; `js-property`, `js-method`, `js-method-receiver`, `js-property-once`, `js-math`, `js-local-shadow`, `js-global-distinct`. Quoted receivers require reduction; warnings, expanded dot syntax, and invalid/non-finite host identifier `js/-Infinity` excluded. |
-| `analyzer/spec_tests.clj`, `test-binding`, `test-const`, `test-def`, `test-do`, `test-fn`, `test-if`, `test-let`, `test-local` (19–180) | Same primitive/definition fixture mappings as above. `test-let` (164) and `test-fn` (96) have missing exact empty-body shapes noted below. Schema assertions are excluded. `test-invoke` uses unsupported core functions; generic-call overlap only. |
+| `analyzer/spec_tests.clj`, `test-binding`, `test-const`, `test-def`, `test-do`, `test-fn`, `test-if`, `test-let`, `test-local` (19–180) | Same primitive/definition fixture mappings as above. `test-let` (164) and `test-fn` (96) empty-body shapes are resolved below. Schema assertions are excluded. `test-invoke` uses unsupported core functions; generic-call overlap only. |
 | `analyzer/spec_tests.clj`, `test-host-call` (109–115), `test-host-field` (117–123), `test-js-var` (155–158), `test-ns` (217–222) | Shorthand `.substring`/`.-length`, host vars and one-item require vectors map to host and namespace tests. Explicit `(. target ...)`, Goog runtime loading and upstream AST schema excluded. |
 | `compiler_tests.clj`, `test-amp-as-local-clj-2954` (411–433, primitive let assertion 423–426) | `analyzer::invalid_special_forms_have_source_diagnostics` rejects `&` bindings/parameters. The upstream `loop*` case is unsupported. |
 | `compiler_tests.clj`, `fn-scope-munge` (69–90) | `named-recursion`, `self-captured`, `javascript-reserved-local`, `unicode-local` and the new adapted `nested-named-function`/`nested-named-host-collision` cover semantic name isolation; exact generated-name format excluded. |
@@ -210,10 +210,10 @@ resolved shapes from the separately documented reference-compiler limitations.
 
 | Source anchor | Missing direct coverage / observed limit |
 | --- | --- |
-| `analyzer_tests/spec-validation` (175–180) | Upstream rejects multiple `:require` clauses. `src/compiler.rs` currently loops over clauses without a repeated-clause guard, and local namespace tests do not cover the shape. Source inspection indicates a compatibility difference when both libraries exist; no new runtime probe was executed in this audit. It is an applicable validation gap, not a macro/runtime exclusion. |
+| `analyzer_tests/spec-validation` (175–180) | Resolved by the repeated-clause guard and `ns-require-repeated` in the boundary audit. API/CLI checks use two existing libraries and assert the second clause's exact span; both reference versions reject the header. |
 | `compiler_tests/test-3368-global-shadowing` (376–383) | Resolved for the faithful known-host reduction by `same-host-name-initializer`. The original proposed Math reduction exposes a reference limitation in return context; see the lexical evidence instead of treating it as equivalent to upstream window. |
 | `analyzer/spec_tests/test-let` (164), `test-fn` (96) | Resolved shapes: `let-empty-body-effects`, `fn-parameter-empty`, and `fn-method-parameter-empty` execute empty bodies with effectful initializers/arguments. These are behavioral mappings, not schema assertions. |
-| `analyzer_tests/test-cljs-1346` (548–564) | Nested ns rejection. Standalone-ns rejection and first-header loader tests are indirect; no exact nested def/fn diagnostic fixture exists. |
+| `analyzer_tests/test-cljs-1346` (548–564) | Nested-function rejection now has the exact `special-nested-ns` API/CLI fixture, including an unselected-branch wrapper; both reference versions reject it. The upstream nested-def and map/macro variants exercise the same boundary but are not separate direct ports. |
 | `core_test/test-cljs-1536` (1262–1274) | Resolved by `def-from-same-local` and the three companion function-definition adaptations in the lexical audit. |
 | `core_test/test-580` and preceding defs (767–771) | New independent `global-declared-call-from-closure` executes declaration, intervening caller creation, assignment, and invocation. The original map/keyword invocation assertion remains excluded; see the function audit. |
 | `self_host/test-CLJS-1330` (657), `test-cljs-2367` (1372) | Number-literal method receiver and a def nested inside an initialized def. String/object receivers and def-in-let values are covered. |
@@ -336,3 +336,22 @@ programs still produced their expected values and traces. The prior successful
 release comparison is retained in [milestone evidence](milestone-evidence.md);
 no new executable case or semantic change required repeating it for this audit.
 No hosted CI result or full upstream-suite conformance is claimed.
+
+## Analyzer boundary audit update
+
+The [2026-10-08 boundary audit](boundary-evidence.md) maps 119 source cases to
+local diagnostics and separately verified release/checkout classifications.
+It audits malformed primitives, binding names, scope leakage, special-form
+precedence, macro shadowing, reader/runtime exclusions, definitions, namespace
+headers and JavaScript interop. Analyzer/API/CLI checks assert exact original
+UTF-8 byte spans, line/byte-column, nonzero exit and no partial output, including
+unselected branches. One `&` regression is adapted with its upstream notice;
+the other cases and eight new executable probes remain hand-authored.
+
+The audit repairs repeated `:require`, literal-nil receivers, unqualified `/`
+identity, malformed arity diagnostics and missing special-form categories.
+All **238** executable programs and **four** namespace comparisons pass against
+both baselines. The explicit boundary comparison is included in the required
+CI conformance invocation. It documents the release/checkout change for an
+ampersand local and preserves a slash statement-context emission reproducer
+outside the passing corpus instead of weakening the supported assertions.

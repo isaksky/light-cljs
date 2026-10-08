@@ -49,7 +49,10 @@ do not change binding identity.
 | Multiple source forms | An implicit `do`; the file's result is its last value, or `nil` when empty. Top-level lexical scopes do not leak into following forms. |
 
 Bindings must be simple symbols: no namespace slash, dot, destructuring, or `&`.
-Duplicate function parameters are rejected. Calls to a single fixed method do
+The standalone symbol `/` is unqualified and is supported, including as a global
+whose qualified spelling is `namespace//`. Embedded ampersands, such as `a&b`,
+are ordinary name characters. Duplicate function parameters are rejected as a
+deliberate restriction; the reference accepts them. Calls to a single fixed method do
 not check argument counts: missing parameters receive JavaScript `undefined`,
 and extra arguments still evaluate before the body, which ignores them. This
 matches the pinned standard compiler's runtime behavior; known local/global
@@ -152,6 +155,7 @@ namespace. Names and aliases contain dot-separated ASCII components matching
 ```
 
 Aliases and full names of directly required namespaces can qualify globals.
+Only one `:require` clause may appear in a namespace declaration.
 The current namespace can qualify its own globals. Transitive-only and unknown
 qualifiers are errors. Duplicate aliases (even to the same target), conflicting
 aliases, or an alias redirecting a required/current full namespace name are
@@ -199,6 +203,8 @@ receiver. A host path's getter/receiver is evaluated before arguments and only
 once. The tests include a getter-backed method depending on `this`, nested
 paths, side effects, and missing properties. Constructors, property writes,
 raw `js*`, explicit `.` syntax, and package imports remain unsupported.
+Literal `nil` receivers are rejected during analysis, as in the reference.
+A supported receiver expression that produces nil still fails at runtime.
 
 ## Verification
 
@@ -327,3 +333,14 @@ initializers, bodies, callees and arguments. Ordered traces and host failures
 expose duplicated evaluation, eager branches, dropped discarded effects and
 premature returns. Existing namespace comparisons verify dependency/source order;
 method probes verify exactly-once receiver/getter/argument evaluation and `this`.
+
+The [analyzer boundary audit](../tests/reference/boundary-evidence.md) checks
+119 rejection/subset cases through the analyzer/API and CLI, with exact UTF-8
+byte locations, unselected branches and empty output on failure. A required
+reference comparison distinguishes analyzer errors, emitter errors, invalid
+JavaScript, warnings and accepted syntax. Release and checkout classifications
+remain distinct where upstream changed. Eight positive execution cases and a
+fourth namespace comparison bring the passing runtime corpus to **238** cases;
+source-ordered globals, macro-name shadowing, slash bindings and explicit host
+references remain supported. The retained slash statement-context reproducer
+records a reference emission limitation outside the passing corpus.

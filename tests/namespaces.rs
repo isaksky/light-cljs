@@ -392,3 +392,12 @@ fn namespace_cli_rejects_bad_flags_without_partial_javascript() {
         );
     }
 }
+
+#[test]
+fn slash_is_an_unqualified_name_and_qualified_namespace_member() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namespaces");
+    assert_eq!(
+        execute(&compile_namespace("boundary.main", &[root]).unwrap()),
+        "7\n7\n8\n8\n9\n"
+    );
+}

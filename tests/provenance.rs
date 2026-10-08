@@ -1,7 +1,12 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 4] = [
+const CASE_FILES: [(&str, &str, usize); 5] = [
+    (
+        "tests/fixtures/analysis-boundaries.tsv",
+        include_str!("fixtures/analysis-boundaries.tsv"),
+        9,
+    ),
     (
         "tests/fixtures/execution-literals.tsv",
         include_str!("fixtures/execution-literals.tsv"),
@@ -85,23 +90,44 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
     for (path, text, columns) in CASE_FILES {
         for row in rows(text) {
             let fields: Vec<_> = row.split('\t').collect();
-            assert_eq!(fields.len(), columns, "invalid execution fixture: {row}");
+            assert_eq!(fields.len(), columns, "invalid fixture: {row}");
+            if path == "tests/fixtures/analysis-boundaries.tsv" {
+                assert!(
+                    matches!(fields[1], "expr" | "ns" | "statement" | "cljc"),
+                    "invalid reference context: {row}"
+                );
+                assert!(!fields[3].is_empty(), "missing diagnostic span: {row}");
+                for classification in &fields[7..] {
+                    assert!(
+                        matches!(
+                            *classification,
+                            "reader-error"
+                                | "analysis-error"
+                                | "emit-error"
+                                | "javascript-error"
+                                | "warning"
+                                | "accepted"
+                        ),
+                        "unverified classification: {row}"
+                    );
+                }
+            }
             let id = fields[0];
             assert!(
                 !id.is_empty()
                     && id
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
-                "invalid stable execution ID: {id}"
+                "invalid stable fixture ID: {id}"
             );
-            assert!(cases.insert((path, id)), "duplicate execution ID: {id}");
+            assert!(cases.insert((path, id)), "duplicate fixture ID: {id}");
         }
     }
     assert!(!cases.is_empty());
     assert_eq!(
         cases.iter().map(|(_, id)| id).collect::<HashSet<_>>().len(),
         cases.len(),
-        "execution IDs must be unique across fixture files"
+        "fixture IDs must be unique across fixture files"
     );
 
     let mut documented = HashSet::new();
@@ -117,10 +143,11 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "tests/fixtures/execution.tsv"
                 | "tests/fixtures/execution-outcomes.tsv"
                 | "tests/fixtures/execution-literals.tsv"
+                | "tests/fixtures/analysis-boundaries.tsv"
                 | "tests/reference/lexical-reference-limits.tsv" => {
                     assert!(
                         cases.contains(&(local_path, id)),
-                        "unknown execution ID: {id}"
+                        "unknown fixture ID: {id}"
                     );
                     covered_cases.insert((local_path, id));
                 }
@@ -136,10 +163,7 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
             }
         }
     }
-    assert_eq!(
-        covered_cases, cases,
-        "every execution case needs provenance"
-    );
+    assert_eq!(covered_cases, cases, "every fixture needs provenance");
 }
 
 #[test]

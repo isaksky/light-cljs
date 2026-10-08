@@ -1,0 +1,126 @@
+# The let-binding-amp adaptation retains upstream attribution:
+# Copyright (c) Rich Hickey. All rights reserved.
+# The use and distribution terms for this software are covered by the
+# Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php).
+# By using this software in any fashion, you are agreeing to be bound by
+# the terms of this license. You must not remove this notice.
+# id	mode	before	rejected	after	local_category	diagnostic	release_classification	checkout_classification
+if-empty	expr		(if)		invalid-form	if requires	analysis-error	analysis-error
+if-one	expr		(if true)		invalid-form	if requires	analysis-error	analysis-error
+if-extra	expr		(if missing 1 2 3)		invalid-form	if requires	analysis-error	analysis-error
+let-missing	expr		(let*)		invalid-form	binding vector	analysis-error	analysis-error
+let-non-vector	expr	(let* 	(missing 1)	 missing)	invalid-form	binding vector	analysis-error	analysis-error
+let-odd	expr	(let* 	[missing]	 missing)	invalid-form	even number	analysis-error	analysis-error
+let-binding-qualified	expr	(let* [	a/b	 missing] 0)	invalid-binding	binding must	analysis-error	analysis-error
+let-binding-dot	expr	(let* [	a.b	 missing] 0)	invalid-binding	binding must	analysis-error	analysis-error
+let-binding-amp	expr	(let* [	&	 42] &)	invalid-binding	binding must	accepted	analysis-error
+let-binding-vector	expr	(let* [	[x]	 missing] 0)	invalid-binding	binding must	analysis-error	analysis-error
+let-binding-number	expr	(let* [	1	 missing] 0)	invalid-binding	binding must	analysis-error	analysis-error
+let-binding-keyword	expr	(let* [	:x	 missing] 0)	invalid-binding	binding must	warning	warning
+let-binding-nil	expr	(let* [	nil	 missing] 0)	invalid-binding	binding must	analysis-error	analysis-error
+fn-missing	expr		(fn*)		invalid-form	parameter vector	analysis-error	analysis-error
+fn-name-only	expr		(fn* named)		invalid-form	parameter vector	analysis-error	analysis-error
+fn-empty-method	expr		(fn* ())		invalid-form	parameter vector	accepted	accepted
+fn-non-vector	expr	(fn* 	1	)	invalid-form	parameter vector	analysis-error	analysis-error
+fn-method-non-vector	expr	(fn* (	x	))	invalid-form	parameter vector	analysis-error	analysis-error
+fn-malformed-arity	expr	(fn* ([] 1) 	2	)	invalid-form	arities must be lists	analysis-error	analysis-error
+fn-malformed-second-vector	expr	(fn* ([] 1) (	x	))	invalid-form	parameter vector	analysis-error	analysis-error
+fn-binding-qualified	expr	(fn* [	a/b	] 0)	invalid-binding	binding must	analysis-error	analysis-error
+fn-binding-dot	expr	(fn* [	a.b	] 0)	invalid-binding	binding must	javascript-error	javascript-error
+fn-binding-vector	expr	(fn* [	[x]	] 0)	invalid-binding	binding must	analysis-error	analysis-error
+fn-binding-number	expr	(fn* [	1	] 0)	invalid-binding	binding must	analysis-error	analysis-error
+fn-binding-keyword	expr	(fn* [	:x	] 0)	invalid-binding	binding must	accepted	accepted
+fn-qualified-name	expr	(fn* 	a/b	 [] 1)	invalid-binding	binding must	javascript-error	javascript-error
+fn-duplicate	expr	(fn* [x 	x	] x)	duplicate-parameter	duplicate parameter: x	accepted	accepted
+fn-variadic	expr	(fn* [x 	&	 xs] x)	unsupported	variadic parameters	accepted	accepted
+fn-multiple	expr		(fn* ([] 1) ([x] x))		unsupported	multiple function arities	accepted	accepted
+nil-call	expr	(	nil	 missing)	invalid-form	cannot call nil	analysis-error	analysis-error
+self-init	expr	(let* [x 	x	] x)	unresolved	unresolved symbol:	warning	warning
+forward-local	expr	(let* [x 	later	 later 2] x)	unresolved	unresolved symbol:	warning	warning
+self-closure	expr	(let* [f (fn* [] 	f	)] (f))	unresolved	unresolved symbol:	warning	warning
+leaked-local	expr	(do (let* [x 1] x) 	x	)	unresolved	unresolved symbol:	warning	warning
+leaked-param	expr	(do (fn* [p] p) 	p	)	unresolved	unresolved symbol:	warning	warning
+leaked-fn-name	expr	(do (fn* named [] named) 	named	)	unresolved	unresolved symbol:	warning	warning
+forward-global	expr	(do (def f (fn* [] 	later	)) (def later 1))	unresolved	unresolved symbol:	warning	warning
+unknown-global	expr		console		unresolved	unresolved symbol:	warning	warning
+unqualified-host	expr	(	console.log	 1)	unresolved	unresolved symbol:	accepted	accepted
+unknown-alias	expr		absent/value		unresolved	unresolved symbol:	warning	warning
+macro-env	expr		&env		unresolved	unresolved symbol:	warning	warning
+reader-vector	expr		[]		unsupported	collection literals	accepted	accepted
+reader-map	expr		{}		unsupported	collection literals	accepted	accepted
+reader-set	expr		#{}		unsupported	collection literals	accepted	accepted
+reader-list	expr		()		unsupported	empty list	accepted	accepted
+reader-keyword	expr		:key		unsupported	keywords	accepted	accepted
+reader-character	expr		\a		unsupported	characters	accepted	accepted
+reader-regex	expr		#"x"		unsupported	regular expressions	accepted	accepted
+reader-quote	expr		'x		unsupported	reader prefixes	accepted	accepted
+reader-syntax-quote	expr		`x		unsupported	reader prefixes	accepted	accepted
+reader-deref	expr		@js/x		unsupported	reader prefixes	accepted	accepted
+reader-metadata	expr		^:private x		unsupported	metadata	warning	warning
+reader-tag	expr		#js []		unsupported	tagged literals	accepted	accepted
+reader-conditional	cljc		#?(:cljs 1)		unsupported	reader conditionals	accepted	accepted
+reader-ns-map	expr		#:a{:x 1}		unsupported	namespaced maps	accepted	accepted
+reader-reader-fn	expr		#(1)		unsupported	collection literals	accepted	accepted
+macro-let	expr	(	let	 [x 1] x)	unsupported	macro execution	accepted	accepted
+macro-fn	expr	(	fn	 [] 1)	unsupported	macro execution	accepted	accepted
+macro-cljs-core-let	expr	(	cljs.core/let	 [x 1] x)	unsupported	macro execution	accepted	accepted
+macro-when	expr	(	when	 true 1)	unsupported	macro execution	accepted	accepted
+macro-defn	expr	(	defn	 f [] 1)	unsupported	macro execution	accepted	accepted
+macro-defmacro	expr	(	defmacro	 m [] 1)	unsupported	macro execution	accepted	accepted
+special-loopstar	expr	(	loop*	 [x 1] x)	unsupported	unsupported construct: loop*	accepted	accepted
+special-letfnstar	expr	(	letfn*	 [f (fn* [] 1)] (f))	unsupported	unsupported construct: letfn*	accepted	accepted
+special-recur	expr	(fn* [] (	recur	))	unsupported	unsupported construct: recur	accepted	accepted
+special-throw	expr	(	throw	 1)	unsupported	unsupported construct: throw	accepted	accepted
+special-try	expr	(	try	 1)	unsupported	unsupported construct: try	accepted	accepted
+special-setbang	expr	(	set!	 js/x 1)	unsupported	unsupported construct: set!	accepted	accepted
+special-new	expr	(	new	 js/Date)	unsupported	unsupported construct: new	accepted	accepted
+special-dot	expr	(	.	 "x" -length)	unsupported	unsupported construct: .	accepted	accepted
+special-jsstar	expr	(	js*	 "1")	unsupported	unsupported construct: js*	accepted	accepted
+special-quote	expr	(	quote	 x)	unsupported	unsupported construct: quote	accepted	accepted
+special-var	expr	(	var	 cljs.core/inc)	unsupported	unsupported construct: var	accepted	accepted
+special-deftypestar	statement	(	deftype*	 T [] {} nil)	unsupported	unsupported construct: deftype*	accepted	accepted
+special-defrecordstar	statement	(	defrecord*	 T [] {} nil)	unsupported	unsupported construct: defrecord*	accepted	accepted
+special-nsstar	statement	(	ns*	 (:require '[boundary.lib :as b]))	unsupported	unsupported construct: ns*	accepted	accepted
+special-casestar	expr	(let* [x 1] (	case*	 x [[1]] [2] 3))	unsupported	unsupported construct: case*	accepted	accepted
+special-amp	expr	(	&	)	unsupported	unsupported construct: &	analysis-error	analysis-error
+def-missing	expr		(def)		invalid-form	def requires	analysis-error	analysis-error
+def-extra	expr		(def x 1 2)		invalid-form	def requires	analysis-error	analysis-error
+def-docstring	expr		(def x "doc" 1)		invalid-form	def requires	accepted	accepted
+def-qualified	expr	(def 	other/x	 1)	invalid-binding	binding must	analysis-error	analysis-error
+def-same-ns	expr	(def 	cljs.user/x	 1)	invalid-binding	binding must	accepted	accepted
+def-dot	expr	(def 	a.b	 1)	invalid-binding	binding must	accepted	accepted
+def-vector	expr	(def 	[x]	 1)	invalid-binding	binding must	analysis-error	analysis-error
+def-amp	expr	(def 	&	 1)	invalid-binding	binding must	accepted	accepted
+property-missing	expr		(.-length)		invalid-form	require	analysis-error	analysis-error
+property-extra	expr		(.-length "x" missing)		invalid-form	require	analysis-error	analysis-error
+method-missing	expr		(.slice)		invalid-form	require	analysis-error	analysis-error
+property-nil	expr	(.-length 	nil	)	invalid-form	cannot target literal nil	analysis-error	analysis-error
+method-nil	expr	(.slice 	nil	 missing)	invalid-form	cannot target literal nil	analysis-error	analysis-error
+host-hyphen	expr		js/a-b		unsupported	ASCII identifier components	accepted	accepted
+host-empty-path	expr		js/Math..sqrt		unsupported	ASCII identifier components	accepted	accepted
+member-hyphen	expr		(.-a-b js/x)		unsupported	ASCII identifier	accepted	accepted
+member-qualified	expr		(.a/b js/x)		unsupported	ASCII identifier	accepted	accepted
+ns-missing	ns		(ns)		namespace	requires a namespace name	analysis-error	analysis-error
+ns-name	ns	(ns 	:boundary	)	namespace	namespace must use	analysis-error	analysis-error
+ns-require-empty	ns	(ns boundary (:require 	[]	))	namespace	cannot be empty	analysis-error	analysis-error
+ns-require-map	ns	(ns boundary (:require 	{:foo :bar}	))	namespace	require expects	analysis-error	analysis-error
+ns-require-lib	ns	(ns boundary (:require [	:foo	 :as f]))	namespace	require library	analysis-error	analysis-error
+ns-as-value	ns	(ns boundary (:require [boundary.lib :as 	[]	]))	namespace	:as alias	analysis-error	analysis-error
+ns-as-missing	ns	(ns boundary (:require 	[boundary.lib :as]	))	namespace	require options	analysis-error	analysis-error
+ns-as-repeated	ns	(ns boundary (:require 	[boundary.lib :as a :as b]	))	namespace	require options	analysis-error	analysis-error
+ns-unknown-option	ns	(ns boundary (:require 	[boundary.lib :plop true]	))	namespace	require options	analysis-error	analysis-error
+ns-refer	ns	(ns boundary (:require 	[boundary.lib :refer [value]]	))	namespace	require options	warning	warning
+ns-rename	ns	(ns boundary (:require 	[boundary.lib :rename {value v}]	))	namespace	require options	analysis-error	analysis-error
+ns-as-conflict	ns	(ns boundary (:require [boundary.lib :as x] [other :as 	x	]))	namespace	duplicate or conflicting	analysis-error	analysis-error
+ns-as-duplicate	ns	(ns boundary (:require [boundary.lib :as x] [boundary.lib :as 	x	]))	namespace	duplicate or conflicting	warning	warning
+ns-as-js	ns	(ns boundary (:require [boundary.lib :as 	js	]))	namespace	js is reserved	warning	warning
+ns-require-repeated	ns	(ns boundary (:require boundary.lib) 	(:require other)	)	namespace	only one :require	analysis-error	analysis-error
+ns-unknown-clause	ns	(ns boundary 	(:unless [])	)	namespace	unsupported namespace clause	analysis-error	analysis-error
+ns-import	ns	(ns boundary 	(:import goog.Uri)	)	namespace	unsupported namespace clause	warning	warning
+ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	namespace	unsupported namespace clause	warning	warning
+ns-refer-clojure	ns	(ns boundary 	(:refer-clojure :exclude [+])	)	namespace	unsupported namespace clause	warning	warning
+ns-package	ns	(ns boundary (:require [	"package"	 :as p]))	namespace	JavaScript package imports	warning	warning
+macro-shadow-exit	expr	(do (let* [when (fn* [x] x)] (when 1)) (	when	 true 1))	unsupported	macro execution	accepted	accepted
+special-nested-ns	expr	(fn* [] (	ns	 nested.core))	unsupported	unsupported construct: ns	analysis-error	analysis-error
+fn-variadic-missing-rest	expr	(fn* [	&	] 1)	unsupported	variadic parameters	emit-error	emit-error
+fn-malformed-empty-arity	expr	(fn* ([] 1) 	()	)	invalid-form	parameter vector	warning	warning

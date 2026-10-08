@@ -151,6 +151,7 @@ impl NamespaceSource {
             ));
         }
         let mut alias_nodes = Vec::new();
+        let mut saw_require = false;
         for clause in forms.into_iter().skip(2) {
             let parts = self
                 .collection(clause, CollectionKind::List)
@@ -167,6 +168,10 @@ impl NamespaceSource {
                     "unsupported namespace clause; only (:require ...) is supported",
                 ));
             }
+            if saw_require {
+                return Err(self.error(clause, "only one :require clause is allowed per namespace"));
+            }
+            saw_require = true;
             for spec in parts.into_iter().skip(1) {
                 let items = if self.symbol(spec).is_some() {
                     vec![spec]

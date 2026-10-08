@@ -689,11 +689,97 @@ fn reference_build(reference: &Reference, label: &str, args: &[&str]) -> TempDir
         "missing verified reference settings: {settings}"
     );
     assert!(
-        dir.0.join("reference.js").is_file(),
-        "reference compiler produced no launcher"
+        dir.0
+            .join(if args.first() == Some(&"analysis") {
+                "analysis.tsv"
+            } else {
+                "reference.js"
+            })
+            .is_file(),
+        "reference compiler produced no results"
     );
     eprintln!("{}", settings.trim());
     dir
+}
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
+fn analyzer_boundary_classifications_match_reference() {
+    let selection = match std::env::var("LIGHT_CLJS_REFERENCE") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => "release".into(),
+        Err(error) => panic!("invalid LIGHT_CLJS_REFERENCE: {error}"),
+    };
+    let selected = references(
+        &selection,
+        std::env::var_os("LIGHT_CLJS_REFERENCE_CHECKOUT").map(PathBuf::from),
+        std::env::var("LIGHT_CLJS_REFERENCE_REVISION").ok(),
+    )
+    .unwrap();
+    let mut outputs = Vec::new();
+    let mut artifacts = Vec::new();
+    for reference in selected {
+        let dir = reference_build(
+            &reference,
+            "analysis",
+            &["analysis", "tests/fixtures/analysis-boundaries.tsv"],
+        );
+        let output = fs::read_to_string(dir.0.join("analysis.tsv")).unwrap();
+        let actual: Vec<_> = output.lines().collect();
+        let expected: Vec<_> = rows(include_str!("fixtures/analysis-boundaries.tsv")).collect();
+        assert_eq!(actual.len(), expected.len(), "missing boundary outcomes");
+        for (actual, expected) in actual.iter().zip(&expected) {
+            let columns: Vec<_> = actual.split('\t').collect();
+            assert_eq!(columns.len(), 4, "malformed boundary result: {actual}");
+            assert_eq!(
+                columns[0], expected[0],
+                "missing/reordered boundary outcome"
+            );
+            let expected_column = if reference == Reference::Release {
+                7
+            } else {
+                8
+            };
+            assert_eq!(
+                columns[1], expected[expected_column],
+                "{reference:?}: {actual}"
+            );
+            if columns[1] == "warning" {
+                assert!(
+                    !columns[2].is_empty(),
+                    "warning category needs warning evidence"
+                );
+            }
+        }
+        eprintln!(
+            "Matched {} analyzer boundary classifications against {reference:?}",
+            actual.len()
+        );
+        outputs.push(output);
+        artifacts.push(dir);
+    }
+    if outputs.len() == 2 {
+        for ((release, checkout), expected) in outputs[0]
+            .lines()
+            .zip(outputs[1].lines())
+            .zip(rows(include_str!("fixtures/analysis-boundaries.tsv")))
+        {
+            let release: Vec<_> = release.split('\t').collect();
+            let checkout: Vec<_> = checkout.split('\t').collect();
+            if expected[7] == expected[8] {
+                assert_eq!(
+                    &release[..3],
+                    &checkout[..3],
+                    "UPSTREAM DISCREPANCY: unexpected boundary outcomes/warnings"
+                );
+            } else {
+                eprintln!(
+                    "Documented upstream difference for {}: release {}, checkout {}",
+                    expected[0], expected[7], expected[8]
+                );
+            }
+        }
+    }
 }
 
 fn reference_driver(dir: &TempDir) -> String {
@@ -855,6 +941,29 @@ fn lexical_namespace_bindings_match_standard_clojurescript() {
         );
         eprintln!(
             "light-cljs and {} matched lexical captures, aliases, namespace identity and redefinition",
+            result.identity
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
+fn slash_bindings_match_standard_clojurescript_across_namespaces() {
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namespaces");
+    let references = reference_results(
+        "slash-bindings",
+        &["program", source_root.to_str().unwrap(), "boundary.main"],
+        "",
+    );
+    let actual = node(&light_cljs::compile_namespace("boundary.main", &[source_root]).unwrap());
+    for result in &references {
+        assert_eq!(
+            result.output, "7\n7\n8\n8\n9\n",
+            "reference slash binding output"
+        );
+        assert_eq!(
+            actual, result.output,
+            "{}: slash binding identity",
             result.identity
         );
     }

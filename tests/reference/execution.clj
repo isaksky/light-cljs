@@ -92,10 +92,15 @@
 
 (try
   (let [[kind identity checkout output mode input entry] *command-line-args*]
-    (assert output (str "Usage: execution.clj release 1.12.134 - OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS]"
-                        " or checkout COMMIT CHECKOUT OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS]"))
+    (assert output (str "Usage: execution.clj release 1.12.134 - OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS | analysis TSV]"
+                        " or checkout COMMIT CHECKOUT OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS | analysis TSV]"))
     (checked-reference kind identity checkout)
     (case (or mode "cases")
+      "analysis"
+      (do
+        (assert input "Analysis mode requires a boundary TSV")
+        (load-file "tests/reference/analysis_boundaries.clj")
+        ((resolve 'check-analysis-boundaries) output input))
       ("cases" "cases-hex")
       (let [src (io/file output "src")
             source-file (io/file src "semantic" "reference.cljs")
