@@ -1,0 +1,52 @@
+name: Conformance
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-tests:
+    name: Rust and Node tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - run: cargo test --locked
+
+  conformance:
+    name: Required ClojureScript 1.12.134 conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Clojure CLI
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --output install-clojure.sh https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x install-clojure.sh
+          sudo ./install-clojure.sh
+          clojure -Sdescribe
+          java -version
+          node --version
+          rustc --version
+      - name: Provision pinned reference compiler
+        run: clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -P
+      - name: Required result and effect comparisons
+        env:
+          LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
+        run: cargo test --locked --test execution -- --ignored --nocapture

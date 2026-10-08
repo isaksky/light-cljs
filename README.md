@@ -36,8 +36,19 @@ let javascript = emit_js(&program);
 ```
 
 Compilation errors include source locations and produce no partial JavaScript.
-Ordinary `let` and `fn` macros, globals, definitions, namespaces, collections,
-interop, and general macro execution are outside this milestone. See the
+Definitions and narrow JavaScript interop are also supported. Compile the
+included two-namespace example with explicit source roots:
+
+```sh
+cargo run --quiet -- --compile --entry demo.main \
+  --source-root examples/namespaces > /tmp/light-demo.js
+node /tmp/light-demo.js
+# 4
+```
+
+Namespace loading supports ordinary `:require` and `:as` aliases. General
+macros (`let`, `fn`, `defn`), collections, library/runtime integration,
+constructors, property writes, and optimization remain unsupported. See the
 [executable core contract](docs/compiler.md) for exact limits and testing.
 
 ## Lexer API
@@ -196,7 +207,7 @@ cargo bench --bench parser -- --samples 9 --ms 100
 # Optional: requires the gitignored reference checkout.
 cargo test --release --test corpus -- --ignored --nocapture
 cargo test --release --test parser_corpus -- --ignored --nocapture
-# Optional differential execution against ClojureScript 1.12.134 (Java/Clojure CLI).
+# Required CI conformance, run explicitly locally (Java/Clojure CLI).
 cargo test --test execution -- --ignored --nocapture
 cargo bench --bench tokenizer -- --samples 9 --ms 150 \
   research/clojurescript/src/main/cljs/cljs/core.cljs \

@@ -1,8 +1,9 @@
 # Executable core
 
-The compiler now supports the milestone “small programs execute correctly.”
-It deliberately stops before definitions, namespaces, macros, collections,
-library/runtime integration, or optimization.
+The compiler supports small programs with lexical closures, mutable globals,
+minimal namespaces, and narrow JavaScript interop. The two-namespace example
+prints exactly `4\n`. General macros, collections, library/runtime integration,
+and optimization remain outside this subset.
 
 ## Pipeline and ownership
 
@@ -13,9 +14,11 @@ and distinguishes parser errors from analysis errors. `--compile` accepts files,
 stdin, or `--text`; `--analyze` prints the resolved representation. Existing token
 and parser CLI modes retain their behavior.
 
-`Program` owns `Vec<Expr>`, binding records, and UTF-16 string values. `ExprId`,
-`LocalId`, and `StringId` are integer indices into those arrays. Expression and
-binding records retain original byte spans. Analysis requires the exact source
+`Program` owns `Vec<Expr>`, lexical/global binding records, JavaScript paths, and
+UTF-16 string values. `ExprId`, `LocalId`, `GlobalId`, `JsGlobalId`, and `StringId`
+are integer indices into those arrays. Expression and binding records retain
+original byte spans and a source index (zero for standalone analysis; the
+namespace's dependency-order index for a combined program). Analysis requires the exact source
 used to parse the syntax; the resulting program no longer borrows that source.
 IDs are local to a single compilation unit, and the emitter expects an
 analyzer-produced program.
@@ -51,8 +54,8 @@ invocation; this stage does not add arity checks or support collection/protocol
 invocation. A literal `nil` callee is rejected during analysis. Other non-callable
 values fail when invoked in JavaScript. There is no tail-call elimination.
 
-Globals and built-in library functions, including arithmetic, are unresolved.
-Characters, keywords, regexes, symbolic numbers, big integers, decimals, ratios,
+Bare built-in library functions, including arithmetic, are unresolved; `+` has
+no special arithmetic treatment. Characters, keywords, regexes, symbolic numbers, big integers, decimals, ratios,
 empty lists, collection literals, reader prefixes, metadata, tags, reader
 conditionals, and reader anonymous functions report unsupported constructs.
 Parser comment/discard handling is retained. Unresolved symbols are errors even
@@ -70,22 +73,125 @@ out of branches or call arguments.
 The generated unit has a local truth helper, testing `value != null && value !==
 false`. Thus `0`, negative zero, and empty strings are true. The nullish check
 also handles `undefined` when a compiled function is invoked by a host harness.
-Output includes no printing: evaluating it produces the program's value.
+Evaluating output produces the program's value; explicit host calls such as
+`js/console.log` can print.
 
 List analysis dispatches primitive special forms before touching binding vectors
 or other operands. The macro hook then runs inside the analyzer, where the current
 lexical environment and expression context are available, before ordinary call
 analysis. Macro execution is unsupported. A small diagnostic catalog recognizes
 common core macro spellings such as `let` and `fn`; it is not a complete macro
-resolver. Locals shadow those macro names. Unknown names remain unresolved.
+resolver. Lexical bindings and defined globals shadow those macro names.
+Unknown names remain unresolved.
+
+## Definitions and globals
+
+`(def name initializer)` registers a namespace-qualified global before analyzing
+its initializer. The initializer executes once whenever that expression runs;
+the expression yields its assigned value. Redefinitions reuse `GlobalId` and
+ordinary mutable JavaScript storage (`g0`, `g1`, …). A closure that reads a
+global observes later redefinitions; a closure capturing a local retains that
+lexical binding. Global functions can recurse and be passed as values. There
+are no Var boxes. Locals take precedence over unqualified globals; qualified
+`namespace/name` references identify globals even under lexical shadowing.
+Standalone `compile`/`analyze` use namespace `cljs.user`.
+
+`(def name)` declares a global without resetting existing storage. An initially
+uninitialized global reads as JavaScript `undefined`. As a discarded expression
+it has no effect; in tail position its result is `undefined`, including after
+an earlier initialized definition. Uninitialized definitions in required value
+positions, such as `(let* [x (def a)] x)`, are rejected: the pinned reference
+emits invalid JavaScript for this shape. Definitions accept simple symbols and
+an optional initializer, without metadata/docstrings.
+
+Resolution is source ordered: a definition is visible to its own initializer
+and later analyzed forms. Undeclared/forward references are errors, including
+inside functions and unselected branches. This is a deliberate stricter subset
+of the standard compiler's warning-and-emit behavior. An explicit preceding
+`(def name)` permits a later assignment to that identity. No namespace/global
+state survives across separate calls to `compile` or `compile_namespace`.
+
+## Namespace loading
+
+```sh
+cargo run --quiet -- --compile --entry demo.main \
+  --source-root examples/namespaces > /tmp/light-demo.js
+node /tmp/light-demo.js
+# 4
+```
+
+The library entry point is
+`compile_namespace(entry: &str, source_roots: &[PathBuf])`. At least one explicit
+root is required; CLI `--source-root DIR` may be repeated after `--entry NS`.
+Every root must exist as a directory. Namespace dots become directories and
+hyphens become underscores; only `.cljs` files are searched. Canonical duplicate
+roots/files are deduplicated. Two distinct matching files are an ambiguity
+error, rather than assigning precedence to one source root.
+
+Each file must begin with `(ns NAME ...)` and declare exactly its requested
+namespace. Names and aliases contain dot-separated ASCII components matching
+`[A-Za-z_][A-Za-z0-9_-]*`; `js` is reserved. Supported require clauses are:
+
+```clojure
+(ns demo.main (:require demo.side [demo.math] [demo.util :as u]))
+```
+
+Aliases and full names of directly required namespaces can qualify globals.
+The current namespace can qualify its own globals. Transitive-only and unknown
+qualifiers are errors. Duplicate aliases (even to the same target), conflicting
+aliases, or an alias redirecting a required/current full namespace name are
+rejected. Namespace docstrings/metadata, `:refer`, `:rename`, macro imports,
+JavaScript packages, and all other clauses/options are unsupported. The loader
+validates names and clauses before resolving their dependencies.
+
+A sequential depth-first walk uses Unseen/Loading/Loaded states. Dependencies
+initialize before consumers, in require order; each namespace loads once,
+including shared dependencies. Source forms execute in order within each
+file. Loading an already-Loading namespace reports the cycle path. Missing
+sources, mismatched declarations, analysis errors, and parse errors include the
+originating file/location when available. No output is emitted on failure.
+The result is one combined JavaScript expression whose value is the entry
+namespace's final form. There is no caching, package manager, incremental
+invalidation, or parallel scheduler.
+
+Existing standalone file/stdin/text modes are preserved and now accept `def`
+and interop. A standalone `(ns ...)` remains unsupported: select an entry with
+explicit roots to request filesystem loading.
+
+## JavaScript interop
+
+| Form | Behavior |
+| --- | --- |
+| `js/Math`, `js/Math.sqrt` | Resolve a host global or property path. |
+| `(js/Math.sqrt 256)` | Call a JavaScript path, retaining its final receiver. |
+| `(.-length "hello")` | Evaluate the receiver once, then read a property. |
+| `(.slice "hello" 1)` | Evaluate receiver, look up method, evaluate arguments left to right, and invoke with the receiver as `this`. |
+
+Host roots are properties of `globalThis`; host lexical variables outside that
+object are excluded. Missing roots throw `ReferenceError`; missing properties
+produce `undefined`, while traversing a nullish intermediate fails with normal
+JavaScript behavior. Paths and members accept ASCII JavaScript identifiers
+`[A-Za-z_$][A-Za-z0-9_$]*`, emitted through validated bracket properties rather
+than raw source interpolation. This subset excludes property munging of
+hyphenated names and general Unicode host identifiers. As in the reference,
+`js/x` resolves to a same-spelled lexical `x` when present; a ClojureScript
+global `x` does not shadow `js/x`.
+
+`MethodCall` has an explicit receiver and remains distinct from `Call`.
+Ordinary non-host calls use `.call(null, ...)` with the callee evaluated once;
+extracting a method as an ordinary function does not preserve its original
+receiver. A host path's getter/receiver is evaluated before arguments and only
+once. The tests include a getter-backed method depending on `this`, nested
+paths, side effects, and missing properties. Constructors, property writes,
+raw `js*`, explicit `.` syntax, and package imports remain unsupported.
 
 ## Verification
 
 `tests/fixtures/execution.tsv` contains the shared tiny programs and their expected
 JSON values/effect traces. The execution harness wraps each program in
 `(fn* [observe] ...)` and supplies a host function that records its argument and
-returns it. This checks effects without adding interop or a runtime library to
-the compiled language. The cases cover shadowing and closures, self-recursion,
+returns it. A reset host object supplies getters and receiver-sensitive methods
+for interop probes; these are harness helpers, not implemented source forms. The cases cover shadowing and closures, self-recursion,
 all three emission contexts, callee/argument/initializer order, branch effects,
 truthiness, numeric spellings, and UTF-16 values. Negative zero and `undefined`
 are represented explicitly in test output. Separate tests cover complete files,
@@ -104,9 +210,28 @@ cargo test --release --test parser_corpus -- --ignored --nocapture
 ```
 
 Normal execution tests require Node.js (`NODE` can select its executable).
-The optional differential test invokes `tests/reference/execution.clj` using
-Clojure CLI, Java, and Maven ClojureScript **1.12.134**, compiles a temporary Node
-program, and compares results and effects with the Rust compiler. Only that
-reference harness uses the standard runtime and namespaces. It downloads Maven
-dependencies if absent and removes its temporary build on completion. JavaScript
-text is never compared. The repository corpora remain parser regression tests.
+The explicit differential tests invoke `tests/reference/execution.clj` using
+Clojure CLI, Java, and Maven ClojureScript **1.12.134**. They compile temporary
+Node programs and compare results, effects, and namespace program stdout with
+the Rust compiler. Options are explicitly pinned to `:optimizations :none` and
+`:static-fns false`; the actual fixture analysis environment has
+`:def-emits-var false` for ordinary compilation. The harness asserts the active
+version/options instead of relying on defaults. Reference-only runtime/macros
+are harness machinery, not a claim that light-cljs implements them.
+
+The `conformance` CI job provisions Node, Java, Clojure CLI, and the pinned Maven
+release, then runs all ignored execution comparisons. It is an unconditional
+required job in the workflow (repository branch-protection settings are outside
+this source change). Missing tools, reference build failure, timeout, absent
+output, and mismatches fail the test; there is no passing skip. Fast Rust/Node
+tests remain separate and require no Java. Successful temporary reference
+builds are removed; failed builds are retained with diagnostics. See
+[milestone evidence](../tests/reference/milestone-evidence.md) for exact local
+commands, tools, effective settings, actual results, and intentional limitations.
+No hosted CI run is claimed by these local results. The original 74 hand-authored
+cases already passed before this milestone and passed again with the explicit
+settings before capabilities were added. New probes are also hand-authored;
+source inspection/adaptations are identified in the evidence and loader tests.
+The research checkout is consulted for implementation semantics, not silently
+substituted for the pinned release oracle. JavaScript text is never the
+conformance criterion; repository corpora remain reader regression tests.

@@ -1,8 +1,9 @@
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
+    time::{Duration, Instant},
 };
 
 use light_cljs::compile;
@@ -15,25 +16,68 @@ fn cases() -> Vec<[&'static str; 4]> {
         .collect()
 }
 
-fn node(script: &str) -> String {
-    let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .arg("-")
+fn run(mut command: Command, input: Vec<u8>, timeout: Duration) -> Output {
+    let description = format!("{command:?}");
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("execution tests require Node.js on PATH (or NODE=/path/to/node)");
-    // Write concurrently so large input and Node's output cannot deadlock pipes.
-    let mut input = child.stdin.take().unwrap();
-    let script = script.to_owned();
-    let writer = std::thread::spawn(move || input.write_all(script.as_bytes()));
-    let output = child.wait_with_output().unwrap();
-    writer.join().unwrap().unwrap();
+        .unwrap_or_else(|error| panic!("required tool unavailable: {description}: {error}"));
+    // Drain both output pipes concurrently so a verbose compiler cannot deadlock.
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let mut stderr = child.stderr.take().unwrap();
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let start = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            timed_out = true;
+            child.kill().unwrap();
+            break child.wait().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    // A failed launcher can leave descendants holding inherited pipes. Fail
+    // before joining the readers so that those handles cannot defeat the bound.
+    assert!(
+        !timed_out,
+        "required tool timed out after {timeout:?}: {description}"
+    );
+    let output = Output {
+        status,
+        stdout: reader.join().unwrap(),
+        stderr: errors.join().unwrap(),
+    };
+    let written = writer.join().unwrap();
     assert!(
         output.status.success(),
-        "{}",
+        "required tool failed: {description}\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    written.unwrap();
+    output
+}
+
+fn node(script: &str) -> String {
+    let mut command = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()));
+    command.arg("-");
+    let output = run(command, script.as_bytes().to_vec(), Duration::from_secs(30));
     String::from_utf8(output.stdout).unwrap()
 }
 
@@ -89,42 +133,69 @@ fn deeply_nested_accepted_source_compiles_and_executes() {
 struct TempDir(PathBuf);
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        if std::thread::panicking() {
+            eprintln!(
+                "Reference failure artifacts retained at {}",
+                self.0.display()
+            );
+        } else {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }
 
-#[test]
-#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
-fn programs_match_standard_clojurescript_results_and_effects() {
+fn reference_build(label: &str, args: &[&str]) -> TempDir {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dir =
-        TempDir(std::env::temp_dir().join(format!("light-cljs-reference-{}", std::process::id())));
+    let dir = TempDir(std::env::temp_dir().join(format!(
+        "light-cljs-reference-{label}-{}",
+        std::process::id()
+    )));
     fs::create_dir_all(&dir.0).unwrap();
-    let output = Command::new("clojure")
+    let mut command = Command::new(std::env::var_os("CLOJURE").unwrap_or_else(|| "clojure".into()));
+    command
         .current_dir(&root)
         .args([
+            "-Srepro",
             "-Sdeps",
             "{:deps {org.clojure/clojurescript {:mvn/version \"1.12.134\"}}}",
             "-M",
             "tests/reference/execution.clj",
         ])
         .arg(&dir.0)
-        .output()
-        .expect("Clojure CLI is required for the differential test");
+        .args(args);
+    let timeout = std::env::var("LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .expect("reference timeout must be seconds")
+        })
+        .unwrap_or(180);
+    assert!(timeout > 0, "reference timeout must be positive");
+    let output = run(command, Vec::new(), Duration::from_secs(timeout));
+    let settings = String::from_utf8(output.stdout).unwrap();
+    assert!(settings.contains("REFERENCE SETTINGS 1.12.134 {:optimizations :none, :static-fns false, :def-emits-var false}"), "missing verified reference settings: {settings}");
     assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        dir.0.join("reference.js").is_file(),
+        "reference compiler produced no launcher"
     );
+    eprintln!("{}", settings.trim());
+    dir
+}
+
+fn reference_driver(dir: &TempDir) -> String {
     // The reference Node launcher resolves its asset path from the process cwd.
-    let driver = format!(
-        "process.chdir({:?});\nrequire({:?});\n{}",
+    format!(
+        "process.chdir({:?});\nrequire({:?});\n",
         dir.0.to_str().unwrap(),
         dir.0.join("reference.js").to_str().unwrap(),
-        include_str!("support/execution.js")
-    );
-    let reference = node(&driver);
+    )
+}
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
+fn programs_match_standard_clojurescript_results_and_effects() {
+    let dir = reference_build("cases", &[]);
+    let reference = node(&(reference_driver(&dir) + include_str!("support/execution.js")));
     let actual = compiled_results();
     assert_eq!(reference.lines().count(), cases().len());
     assert_eq!(actual.lines().count(), cases().len());
@@ -135,4 +206,43 @@ fn programs_match_standard_clojurescript_results_and_effects() {
     {
         assert_eq!(actual, reference, "{name}: {source}");
     }
+    eprintln!(
+        "Matched {} programs and effect traces against Maven ClojureScript 1.12.134",
+        cases().len()
+    );
+}
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
+fn namespace_program_matches_standard_clojurescript_stdout() {
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/namespaces");
+    let dir = reference_build(
+        "namespaces",
+        &["program", source_root.to_str().unwrap(), "demo.main"],
+    );
+    let reference = node(&reference_driver(&dir));
+    let js = light_cljs::compiler::compile_namespace("demo.main", &[source_root]).unwrap();
+    let actual = node(&js);
+    assert_eq!(reference, "4\n", "reference acceptance output");
+    assert_eq!(actual, reference, "two-namespace acceptance output");
+    eprintln!("Both compilers produced exactly stdout 4\\n for demo.main");
+}
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
+fn dependency_initialization_matches_standard_clojurescript() {
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namespaces");
+    let dir = reference_build(
+        "dependency-order",
+        &["program", source_root.to_str().unwrap(), "order.main"],
+    );
+    let reference = node(&reference_driver(&dir));
+    let js = light_cljs::compiler::compile_namespace("order.main", &[source_root]).unwrap();
+    let actual = node(&js);
+    assert_eq!(reference, "shared\nleft\nright\nmain\n10\n20\n7\n7\n40\n");
+    assert_eq!(
+        actual, reference,
+        "diamond dependency order and global values"
+    );
+    eprintln!("Both compilers initialized the shared dependency once, in matching order");
 }

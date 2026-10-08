@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use crate::analyzer::{ExprContext, ExprId, ExprKind, LocalId, Program};
+use crate::analyzer::{ExprContext, ExprId, ExprKind, GlobalId, LocalId, Program};
 
 /// Emit one JavaScript expression whose value is the last source form (or nil).
 /// The result is self-contained, including its ClojureScript truth predicate.
@@ -13,6 +13,12 @@ pub fn emit_js(program: &Program) -> String {
         indent: 1,
     };
     emitter.output.push_str("(() => {\n  \"use strict\";\n  const truth = (value) => value != null && value !== false;\n");
+    if !program.js_globals.is_empty() {
+        emitter.output.push_str("  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n");
+    }
+    for global in 0..program.globals.len() {
+        writeln!(emitter.output, "  let g{global};").unwrap();
+    }
     emitter.emit(program.root, ExprContext::Return);
     emitter.output.push_str("})()\n");
     emitter.output
@@ -33,6 +39,24 @@ impl Emitter<'_> {
 
     fn local(&mut self, id: LocalId) {
         write!(self.output, "l{}", id.0).unwrap();
+    }
+
+    fn global(&mut self, id: GlobalId) {
+        write!(self.output, "g{}", id.0).unwrap();
+    }
+
+    fn member(&mut self, name: &str) {
+        // Analyzer validates an ASCII identifier; quotes cannot reach this path.
+        write!(self.output, "[\"{name}\"]").unwrap();
+    }
+
+    fn arguments(&mut self, args: &[ExprId]) {
+        for (index, &arg) in args.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            self.value(arg);
+        }
     }
 
     fn emit(&mut self, id: ExprId, context: ExprContext) {
@@ -119,6 +143,44 @@ impl Emitter<'_> {
                 self.output.push('"');
             }
             ExprKind::Local(local) => self.local(*local),
+            ExprKind::Global(global) => self.global(*global),
+            ExprKind::JsGlobal(global) => {
+                let path = &self.program.js_globals[global.0].path;
+                write!(self.output, "host(\"{}\")", path[0]).unwrap();
+                for part in &path[1..] {
+                    self.member(part);
+                }
+            }
+            ExprKind::Def { global, init } => {
+                if let Some(init) = init {
+                    self.output.push('(');
+                    self.global(*global);
+                    self.output.push_str(" = ");
+                    self.value(*init);
+                    self.output.push(')');
+                } else {
+                    self.output.push_str("void 0");
+                }
+            }
+            ExprKind::Property { receiver, property } => {
+                self.output.push('(');
+                self.value(*receiver);
+                self.output.push(')');
+                self.member(property);
+            }
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                self.output.push('(');
+                self.value(*receiver);
+                self.output.push(')');
+                self.member(method);
+                self.output.push('(');
+                self.arguments(args);
+                self.output.push(')');
+            }
             ExprKind::If { test, yes, no } => {
                 self.output.push_str("(truth(");
                 self.value(*test);
@@ -159,13 +221,16 @@ impl Emitter<'_> {
             ExprKind::Call { callee, args } => {
                 self.output.push('(');
                 self.value(*callee);
-                self.output.push_str(")(");
-                for (index, &arg) in args.iter().enumerate() {
-                    if index > 0 {
+                if matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) {
+                    // A JS path is a host invocation and retains its final receiver.
+                    self.output.push_str(")(");
+                } else {
+                    self.output.push_str(").call(null");
+                    if !args.is_empty() {
                         self.output.push_str(", ");
                     }
-                    self.value(arg);
                 }
+                self.arguments(args);
                 self.output.push(')');
             }
         }

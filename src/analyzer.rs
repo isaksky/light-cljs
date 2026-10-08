@@ -1,6 +1,6 @@
 //! Resolve the executable core to an arena with stable lexical binding IDs.
 
-use std::{fmt, ops::Range};
+use std::{collections::HashMap, fmt, ops::Range};
 
 use crate::{CollectionKind, NodeId, NodeKind, NumberKind, SyntaxTree};
 
@@ -14,6 +14,36 @@ pub struct LocalId(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct StringId(pub usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct GlobalId(pub usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct JsGlobalId(pub usize);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalBinding {
+    pub namespace: String,
+    pub name: String,
+    pub span: Span,
+    pub source_index: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JsGlobal {
+    /// Validated ASCII JavaScript identifiers, never raw source interpolation.
+    pub path: Vec<String>,
+}
+
+/// A namespace whose dependencies have already been placed earlier in the slice.
+/// The caller validates its first `ns` form and the dependency graph.
+pub struct NamespaceInput<'a> {
+    pub name: &'a str,
+    pub source: &'a str,
+    pub syntax: &'a SyntaxTree,
+    pub aliases: &'a [(String, String)],
+    pub requires: &'a [String],
+}
 
 /// Both analysis (including the future macro hook) and emission track value use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +60,21 @@ pub enum ExprKind {
     Number(f64),
     String(StringId),
     Local(LocalId),
+    Global(GlobalId),
+    JsGlobal(JsGlobalId),
+    Def {
+        global: GlobalId,
+        init: Option<ExprId>,
+    },
+    Property {
+        receiver: ExprId,
+        property: String,
+    },
+    MethodCall {
+        receiver: ExprId,
+        method: String,
+        args: Vec<ExprId>,
+    },
     If {
         test: ExprId,
         yes: ExprId,
@@ -56,6 +101,7 @@ pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
     pub context: ExprContext,
+    pub source_index: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,12 +109,15 @@ pub struct LocalBinding {
     /// Diagnostic spelling only. References and emitted names use LocalId.
     pub name: String,
     pub span: Span,
+    pub source_index: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub exprs: Vec<Expr>,
     pub locals: Vec<LocalBinding>,
+    pub globals: Vec<GlobalBinding>,
+    pub js_globals: Vec<JsGlobal>,
     /// Owned UTF-16 preserves even lone surrogate escapes.
     pub strings: Vec<Vec<u16>>,
     pub root: ExprId,
@@ -120,24 +169,81 @@ struct Analyzer<'a> {
     syntax: &'a SyntaxTree,
     program: Program,
     env: Environment,
+    globals: HashMap<(String, String), GlobalId>,
+    namespace: &'a str,
+    aliases: &'a [(String, String)],
+    requires: &'a [String],
+    source_index: usize,
+}
+
+fn empty_program() -> Program {
+    Program {
+        exprs: Vec::new(),
+        locals: Vec::new(),
+        globals: Vec::new(),
+        js_globals: Vec::new(),
+        strings: Vec::new(),
+        root: ExprId(0),
+    }
 }
 
 /// Analyze a parser-produced tree against its exact original source buffer.
-/// No globals, namespace lookup, reader expansion, or macro execution yet.
+/// Standalone input has namespace `cljs.user`; filesystem loading is explicit.
 pub fn analyze(source: &str, syntax: &SyntaxTree) -> Result<Program, AnalysisError> {
     let mut analyzer = Analyzer {
         source,
         syntax,
-        program: Program {
-            exprs: Vec::new(),
-            locals: Vec::new(),
-            strings: Vec::new(),
-            root: ExprId(0),
-        },
+        program: empty_program(),
         env: Environment::default(),
+        globals: HashMap::new(),
+        namespace: "cljs.user",
+        aliases: &[],
+        requires: &[],
+        source_index: 0,
     };
     analyzer.program.root = analyzer.body(&syntax.roots, 0..source.len(), ExprContext::Return)?;
     Ok(analyzer.program)
+}
+
+/// Analyze validated namespaces in dependency-first order into one shared unit.
+pub fn analyze_namespaces(
+    inputs: &[NamespaceInput<'_>],
+) -> Result<Program, (usize, AnalysisError)> {
+    let mut program = empty_program();
+    let mut globals = HashMap::new();
+    let mut roots = Vec::new();
+    for (source_index, input) in inputs.iter().enumerate() {
+        let mut analyzer = Analyzer {
+            source: input.source,
+            syntax: input.syntax,
+            program,
+            env: Environment::default(),
+            globals,
+            namespace: input.name,
+            aliases: input.aliases,
+            requires: input.requires,
+            source_index,
+        };
+        let context = if source_index + 1 == inputs.len() {
+            ExprContext::Return
+        } else {
+            ExprContext::Discard
+        };
+        let root = analyzer
+            .body(&input.syntax.roots[1..], 0..input.source.len(), context)
+            .map_err(|error| (source_index, error))?;
+        roots.push(root);
+        program = analyzer.program;
+        globals = analyzer.globals;
+    }
+    program.root = ExprId(program.exprs.len());
+    program.exprs.push(Expr {
+        kind: ExprKind::Do(roots),
+        span: 0..0,
+        context: ExprContext::Return,
+        source_index: 0,
+    });
+    Ok(program)
 }
 
 impl Analyzer<'_> {
@@ -147,6 +253,7 @@ impl Analyzer<'_> {
             kind,
             span,
             context,
+            source_index: self.source_index,
         });
         id
     }
@@ -189,6 +296,7 @@ impl Analyzer<'_> {
         self.program.locals.push(LocalBinding {
             name,
             span: self.syntax.nodes[node.0].span.clone(),
+            source_index: self.source_index,
         });
         self.env.scopes.last_mut().expect("binding scope").push(id);
         Ok(id)
@@ -210,10 +318,8 @@ impl Analyzer<'_> {
                 ExprKind::String(id)
             }
             NodeKind::Symbol => {
-                let name = self.spelling(id);
-                ExprKind::Local(self.lookup(name).ok_or_else(|| {
-                    self.error(id, AnalysisErrorKind::UnresolvedSymbol(name.to_owned()))
-                })?)
+                let name = self.spelling(id).to_owned();
+                self.resolve(id, &name)?
             }
             NodeKind::Collection {
                 kind: CollectionKind::List,
@@ -260,13 +366,18 @@ impl Analyzer<'_> {
         }
         // Binding forms must be recognized before their children are analyzed.
         if matches!(self.syntax.nodes[operator.0].kind, NodeKind::Symbol) {
-            match self.spelling(operator) {
+            let operator_name = self.spelling(operator).to_owned();
+            match operator_name.as_str() {
                 "if" => return self.if_form(id, args, context),
                 "do" => return self.body(args, self.syntax.nodes[id.0].span.clone(), context),
                 "let*" => return self.let_form(id, args, context),
                 "fn*" => return self.fn_form(id, args, context),
-                "def" | "ns" | "loop*" | "letfn*" | "recur" | "throw" | "try" | "set!" | "new"
-                | "." | "js*" | "quote" | "var" | "deftype*" | "defrecord*" => {
+                "def" => return self.def_form(id, args, context),
+                name if name.starts_with('.') && name != "." => {
+                    return self.interop(id, name, args, context);
+                }
+                "ns" | "loop*" | "letfn*" | "recur" | "throw" | "try" | "set!" | "new" | "."
+                | "js*" | "quote" | "var" | "deftype*" | "defrecord*" => {
                     return Err(self.error(
                         operator,
                         AnalysisErrorKind::Unsupported(self.spelling(operator).into()),
@@ -292,6 +403,150 @@ impl Analyzer<'_> {
         ))
     }
 
+    fn resolve(&mut self, id: NodeId, name: &str) -> Result<ExprKind, AnalysisError> {
+        if let Some(local) = self.lookup(name) {
+            return Ok(ExprKind::Local(local));
+        }
+        if let Some(path) = name.strip_prefix("js/") {
+            // Standard ClojureScript resolves js/x to a same-named lexical x.
+            if let Some(local) = self.lookup(path) {
+                return Ok(ExprKind::Local(local));
+            }
+            let path: Vec<_> = path.split('.').map(str::to_owned).collect();
+            if path.iter().any(|part| !js_identifier(part)) {
+                return Err(self.error(
+                    id,
+                    AnalysisErrorKind::Unsupported(
+                        "JavaScript paths require ASCII identifier components".into(),
+                    ),
+                ));
+            }
+            let global = self
+                .program
+                .js_globals
+                .iter()
+                .position(|global| global.path == path)
+                .map(JsGlobalId)
+                .unwrap_or_else(|| {
+                    let id = JsGlobalId(self.program.js_globals.len());
+                    self.program.js_globals.push(JsGlobal { path });
+                    id
+                });
+            return Ok(ExprKind::JsGlobal(global));
+        }
+        let (namespace, symbol) = if let Some((qualifier, symbol)) = name.split_once('/') {
+            let namespace = self
+                .aliases
+                .iter()
+                .find(|(alias, _)| alias == qualifier)
+                .map(|(_, namespace)| namespace.as_str())
+                .unwrap_or(qualifier);
+            if namespace != self.namespace
+                && !self.requires.iter().any(|required| required == namespace)
+            {
+                return Err(self.error(
+                    id,
+                    AnalysisErrorKind::UnresolvedSymbol(format!(
+                        "{name} (unknown namespace or alias {qualifier})"
+                    )),
+                ));
+            }
+            (namespace, symbol)
+        } else {
+            (self.namespace, name)
+        };
+        self.globals
+            .get(&(namespace.into(), symbol.into()))
+            .copied()
+            .map(ExprKind::Global)
+            .ok_or_else(|| self.error(id, AnalysisErrorKind::UnresolvedSymbol(name.into())))
+    }
+
+    fn def_form(
+        &mut self,
+        id: NodeId,
+        args: &[NodeId],
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
+        if !(1..=2).contains(&args.len()) {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::InvalidForm("def requires a name and optional initializer"),
+            ));
+        }
+        if args.len() == 1 && context == ExprContext::Value {
+            return Err(self.error(id, AnalysisErrorKind::Unsupported(
+                "uninitialized def in a value position (the reference emits invalid JavaScript)".into())));
+        }
+        let name = self.binding_name(args[0])?.to_owned();
+        let key = (self.namespace.to_owned(), name.clone());
+        let global = if let Some(&global) = self.globals.get(&key) {
+            global
+        } else {
+            let global = GlobalId(self.program.globals.len());
+            self.program.globals.push(GlobalBinding {
+                namespace: self.namespace.into(),
+                name,
+                span: self.syntax.nodes[args[0].0].span.clone(),
+                source_index: self.source_index,
+            });
+            self.globals.insert(key, global);
+            global
+        };
+        // Registration precedes analysis, so self-reference sees stable storage.
+        let init = args
+            .get(1)
+            .map(|&init| self.form(init, ExprContext::Value))
+            .transpose()?;
+        Ok(self.push(
+            ExprKind::Def { global, init },
+            self.syntax.nodes[id.0].span.clone(),
+            context,
+        ))
+    }
+
+    fn interop(
+        &mut self,
+        id: NodeId,
+        operator: &str,
+        args: &[NodeId],
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
+        let (property, field) = operator
+            .strip_prefix(".-")
+            .map(|name| (name, true))
+            .unwrap_or((&operator[1..], false));
+        if !js_identifier(property) {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::Unsupported(
+                    "JavaScript members require an ASCII identifier".into(),
+                ),
+            ));
+        }
+        if args.is_empty() || (field && args.len() != 1) {
+            return Err(self.error(id, AnalysisErrorKind::InvalidForm("property reads require one receiver; method calls require a receiver followed by arguments")));
+        }
+        let receiver = self.form(args[0], ExprContext::Value)?;
+        let kind = if field {
+            ExprKind::Property {
+                receiver,
+                property: property.into(),
+            }
+        } else {
+            let args = args[1..]
+                .iter()
+                .map(|&arg| self.form(arg, ExprContext::Value))
+                .collect::<Result<_, _>>()?;
+            ExprKind::MethodCall {
+                receiver,
+                method: property.into(),
+                args,
+            }
+        };
+        Ok(self.push(kind, self.syntax.nodes[id.0].span.clone(), context))
+    }
+
     fn expand_macro(
         &self,
         operator: NodeId,
@@ -301,7 +556,11 @@ impl Analyzer<'_> {
             return Ok(None);
         }
         let name = self.spelling(operator);
-        if self.lookup(name).is_some() {
+        if self.lookup(name).is_some()
+            || self
+                .globals
+                .contains_key(&(self.namespace.into(), name.into()))
+        {
             return Ok(None);
         }
         // A small diagnostic catalog, not a macro implementation or resolver.
@@ -526,4 +785,10 @@ fn number(text: &str, kind: NumberKind) -> Option<f64> {
     } else {
         magnitude as f64
     })
+}
+
+fn js_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
 }

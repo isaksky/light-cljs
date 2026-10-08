@@ -17,10 +17,11 @@ mod literals;
 pub mod parser;
 
 pub use analyzer::{
-    AnalysisError, AnalysisErrorKind, Expr, ExprContext, ExprId, ExprKind, LocalBinding, LocalId,
-    Program, Span, StringId, analyze,
+    AnalysisError, AnalysisErrorKind, Expr, ExprContext, ExprId, ExprKind, GlobalBinding, GlobalId,
+    JsGlobal, JsGlobalId, LocalBinding, LocalId, NamespaceInput, Program, Span, StringId, analyze,
+    analyze_namespaces,
 };
-pub use compiler::{CompileError, compile};
+pub use compiler::{CompileError, NamespaceCompileError, compile, compile_namespace};
 pub use emitter::emit_js;
 
 pub use parser::{

@@ -3,12 +3,41 @@ use std::{
     error::Error,
     fs,
     io::{self, Read, Write},
+    path::PathBuf,
     process::ExitCode,
 };
 
-use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, emit_js, parse};
+use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, compile_namespace, emit_js, parse};
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+
+fn run_namespace(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+    let mut entry = None;
+    let mut roots = Vec::new();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--entry") => {
+                if entry.is_some() {
+                    return Err("--entry may only be specified once".into());
+                }
+                entry = Some(
+                    args.next()
+                        .ok_or("--entry requires a namespace")?
+                        .into_string()
+                        .map_err(|_| "entry namespace must be valid UTF-8")?,
+                );
+            }
+            Some("--source-root") => roots.push(PathBuf::from(
+                args.next().ok_or("--source-root requires a directory")?,
+            )),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
+    let output = compile_namespace(&entry, &roots)?;
+    io::stdout().lock().write_all(output.as_bytes())?;
+    Ok(())
+}
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
@@ -21,6 +50,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     if mode != "tokens" {
         first = args.next();
+    }
+    if matches!(
+        first.as_deref().and_then(|arg| arg.to_str()),
+        Some("--entry" | "--source-root")
+    ) {
+        if mode != "compile" {
+            return Err("namespace options require --compile".into());
+        }
+        return run_namespace(first.into_iter().chain(args));
     }
     let source = match first.as_deref() {
         Some(arg) if arg == "--help" || arg == "-h" => {

@@ -68,7 +68,6 @@ fn unresolved_names_never_fall_back_to_javascript_globals() {
         ("(do (fn* f [] f) f)", "f"),
         ("(let* [x 1] x) x", "x"),
         ("(console.log 1)", "console.log"),
-        ("(js/alert 1)", "js/alert"),
         ("(+ 1 2)", "+"),
         ("(if false unknown 0)", "unknown"),
     ] {
@@ -149,7 +148,6 @@ fn unsupported_reader_forms_macros_and_language_forms_are_explicit() {
         "(let [x 1] x)",
         "(fn [] 1)",
         "(cljs.core/let [x 1] x)",
-        "(def x 1)",
         "(ns app)",
         "(loop* [x 1] x)",
         "(recur)",
@@ -220,4 +218,83 @@ fn analysis_owns_its_values_and_compile_distinguishes_error_stages() {
     assert_eq!(program.locals[0].name, "λ");
     assert!(matches!(compile("["), Err(CompileError::Parse(_))));
     assert!(matches!(compile("x"), Err(CompileError::Analysis(_))));
+}
+
+#[test]
+fn global_identity_is_stable_and_distinct_from_lexical_and_host_identity() {
+    use light_cljs::{GlobalId, JsGlobalId};
+    let source = "(def x 10) (def read (fn* [] x)) (def x 20) (let* [x 30] x) cljs.user/x js/Math.sqrt js/Math.sqrt";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    assert_eq!(program.globals.len(), 2);
+    assert_eq!(program.globals[0].name, "x");
+    assert_eq!(program.globals[0].namespace, "cljs.user");
+    let definitions: Vec<_> = program
+        .exprs
+        .iter()
+        .filter_map(|expr| match expr.kind {
+            ExprKind::Def { global, .. } => Some(global),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(definitions, [GlobalId(0), GlobalId(1), GlobalId(0)]);
+    assert!(
+        program
+            .exprs
+            .iter()
+            .any(|expr| expr.kind == ExprKind::Local(LocalId(0)))
+    );
+    assert_eq!(program.js_globals.len(), 1);
+    assert!(
+        program
+            .exprs
+            .iter()
+            .any(|expr| expr.kind == ExprKind::JsGlobal(JsGlobalId(0)))
+    );
+}
+
+#[test]
+fn definitions_and_interop_reject_unsupported_shapes_with_spans() {
+    for source in [
+        "(def)",
+        "(def x 1 2)",
+        "(def a/b 1)",
+        "(def a.b 1)",
+        "(def [x] 1)",
+        "(.-length)",
+        "(.-length \"x\" 2)",
+        "(.slice)",
+        "(js/Math..sqrt 4)",
+        "js/a-b",
+        "(.-a-b js/lightHost)",
+        "(.a/b js/lightHost)",
+        "(js*/alert)",
+        "(let* [x (def a)] x)",
+    ] {
+        let error = analyze(source, &parse(source).unwrap()).unwrap_err();
+        assert!(!error.span.is_empty(), "{source}");
+        assert!(source.get(error.span).is_some(), "{source}");
+    }
+}
+
+#[test]
+fn globals_are_source_ordered_and_definition_self_reference_is_registered_first() {
+    for source in [
+        "x (def x 1)",
+        "(def f (fn* [] later)) (def later 1)",
+        "other/x",
+    ] {
+        let error = analyze(source, &parse(source).unwrap()).unwrap_err();
+        assert!(
+            matches!(error.kind, Error::UnresolvedSymbol(_)),
+            "{source}: {error}"
+        );
+    }
+    let source = "(def f (fn* [done] (if done 7 (f true))))";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    assert!(
+        program
+            .exprs
+            .iter()
+            .any(|expr| expr.kind == ExprKind::Global(light_cljs::GlobalId(0)))
+    );
 }
