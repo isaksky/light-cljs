@@ -343,6 +343,54 @@ fn invalid_special_forms_have_source_diagnostics() {
 }
 
 #[test]
+fn fixed_function_signature_boundaries_have_precise_diagnostics() {
+    // The single-method spelling has the same binding restrictions as the
+    // direct vector spelling. Arity-mismatched calls themselves are executable
+    // fixtures: these errors concern declarations, not argument counts.
+    for (before, invalid, after, kind) in [
+        ("(fn* ", "a/b", " ([] 1))", Error::InvalidBinding),
+        ("(fn* named ([", "a/b", "] 1))", Error::InvalidBinding),
+        ("(fn* named ([", "a.b", "] 1))", Error::InvalidBinding),
+        ("(fn* named ([", "[x]", "] x))", Error::InvalidBinding),
+        ("(fn* named ([", "1", "] 1))", Error::InvalidBinding),
+        (
+            "(fn* named ([x ",
+            "x",
+            "] x))",
+            Error::DuplicateParameter("x".into()),
+        ),
+        (
+            "(fn* named ([x ",
+            "&",
+            " rest] x))",
+            Error::Unsupported("variadic parameters".into()),
+        ),
+        (
+            "",
+            "(fn* named ([] 1) ([x] x))",
+            "",
+            Error::Unsupported("multiple function arities".into()),
+        ),
+        (
+            "(fn* named (",
+            "x",
+            "))",
+            Error::InvalidForm("fn* requires a parameter vector"),
+        ),
+        ("(", "nil", " 1)", Error::InvalidForm("cannot call nil")),
+    ] {
+        let source = format!("{before}{invalid}{after}");
+        let error = analyze(&source, &parse(&source).unwrap()).unwrap_err();
+        assert_eq!(error.kind, kind, "{source}");
+        assert_eq!(
+            error.span,
+            before.len()..before.len() + invalid.len(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn unsupported_reader_forms_macros_and_language_forms_are_explicit() {
     for source in [
         "[]",

@@ -49,10 +49,18 @@ do not change binding identity.
 | Multiple source forms | An implicit `do`; the file's result is its last value, or `nil` when empty. Top-level lexical scopes do not leak into following forms. |
 
 Bindings must be simple symbols: no namespace slash, dot, destructuring, or `&`.
-Duplicate function parameters are rejected. Calls use plain JavaScript function
-invocation; this stage does not add arity checks or support collection/protocol
-invocation. A literal `nil` callee is rejected during analysis. Other non-callable
-values fail when invoked in JavaScript. There is no tail-call elimination.
+Duplicate function parameters are rejected. Calls to a single fixed method do
+not check argument counts: missing parameters receive JavaScript `undefined`,
+and extra arguments still evaluate before the body, which ignores them. This
+matches the pinned standard compiler's runtime behavior; known local/global
+arity mismatches warn there, while light-cljs has no arity-warning API.
+Collection/protocol invocation remains unsupported. A literal `nil` callee is
+rejected during analysis. Dynamic non-callables produce JavaScript TypeError.
+Ordinary calls first access the callee's `.call` property: a nullish callee fails
+before argument effects, while numbers, booleans, and plain host objects evaluate
+arguments before the invocation fails. There is no tail-call elimination.
+The [function audit](../tests/reference/function-evidence.md) records executable
+evidence for these boundaries and both accepted signature spellings.
 
 Bare built-in library functions, including arithmetic, are unresolved; `+` has
 no special arithmetic treatment. Characters, keywords, regexes, symbolic numbers, big integers, decimals, ratios,
@@ -288,3 +296,11 @@ binding assertions, verifies restored `LocalId` targets and namespace-aware
 globals, and records the 143-case release/checkout comparison. It also retains
 explicit reference limitations for returned-let spelling collisions and host
 initializers; those differences are not counted as passing conformance cases.
+
+The [function/invocation audit](../tests/reference/function-evidence.md) adds
+36 cases for **179** passing runtime programs against both baselines. It covers
+empty and multiple-expression bodies, returned/self-capturing closures,
+higher-order callee/argument effects, saved function values versus live globals,
+redefinition during argument evaluation, fixed-method argument-count behavior,
+and dynamic non-callable failures. Its source map explicitly excludes upstream
+multi-arity, variadic, protocol, collection invocation, recur, and apply assertions.

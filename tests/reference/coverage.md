@@ -77,6 +77,18 @@ emits invalid JavaScript, and a same-named Math initializer. The linked evidence
 explains the contexts, results, exclusions, attribution, and exact reproduction.
 The original 105-case inventory and the 17 outcome probes remain distinguishable.
 
+## Function and invocation audit update
+
+The [2026-10-08 function audit](function-evidence.md) adds **36** cases
+(**7 adapted**, **29 independent**), bringing the passing runtime corpus to
+**179**. It maps the fn/invoke analyzer assertions, higher-order compiler/runtime
+fixtures, and relevant core/primitives bodies to exact reductions or exclusions.
+Both baseline compilers agree on all runtime results, including missing/extra
+arguments and the effect traces preceding dynamic invocation failures. New
+source-span checks preserve explicit signature restrictions. Warning behavior,
+local/global function redefinition, and the boundary between a single fixed
+method and multi-arity/runtime dispatch are documented separately.
+
 ## Inspected upstream sections
 
 ### Analyzer and compiler suites
@@ -177,10 +189,10 @@ resolved shapes from the separately documented reference-compiler limitations.
 | --- | --- |
 | `analyzer_tests/spec-validation` (175–180) | Upstream rejects multiple `:require` clauses. `src/compiler.rs` currently loops over clauses without a repeated-clause guard, and local namespace tests do not cover the shape. Source inspection indicates a compatibility difference when both libraries exist; no new runtime probe was executed in this audit. It is an applicable validation gap, not a macro/runtime exclusion. |
 | `compiler_tests/test-3368-global-shadowing` (376–383) | Resolved for the faithful known-host reduction by `same-host-name-initializer`. The original proposed Math reduction exposes a reference limitation in return context; see the lexical evidence instead of treating it as equivalent to upstream window. |
-| `analyzer/spec_tests/test-let` (164), `test-fn` (96) | Nonempty let bindings with an empty body now have `let-empty-body-effects`. Empty-body functions with nonempty parameters remain an absent exact fixture shape. |
+| `analyzer/spec_tests/test-let` (164), `test-fn` (96) | Resolved shapes: `let-empty-body-effects`, `fn-parameter-empty`, and `fn-method-parameter-empty` execute empty bodies with effectful initializers/arguments. These are behavioral mappings, not schema assertions. |
 | `analyzer_tests/test-cljs-1346` (548–564) | Nested ns rejection. Standalone-ns rejection and first-header loader tests are indirect; no exact nested def/fn diagnostic fixture exists. |
 | `core_test/test-cljs-1536` (1262–1274) | Resolved by `def-from-same-local` and the three companion function-definition adaptations in the lexical audit. |
-| `core_test/test-580` and preceding defs (767–771) | Declaration then assignment with an intervening closure reading that global. Existing declaration, self-reference and redefinition cases cover the components, not this combination. |
+| `core_test/test-580` and preceding defs (767–771) | New independent `global-declared-call-from-closure` executes declaration, intervening caller creation, assignment, and invocation. The original map/keyword invocation assertion remains excluded; see the function audit. |
 | `self_host/test-CLJS-1330` (657), `test-cljs-2367` (1372) | Number-literal method receiver and a def nested inside an initialized def. String/object receivers and def-in-let values are covered. |
 | `cljs/static/core_test.cljs` namespace purpose; `primitives_test/test-dot` (659–678) | Reserved namespace coverage is now provided by `lexical.static`. Property read of a computed method result and a two-argument string method remain absent exact forms; related nested/generic-argument cases exist. |
 
