@@ -1,0 +1,6 @@
+# Experimental reference limitations, excluded from passing conformance fixtures.
+# id	source	light_cljs_value_json	light_cljs_trace_json
+return-spelling-collision	(let* [a-b 1 a_b 2] (observe a-b) a_b)	2	[1]
+return-keyword-collision	(let* [class 1 class$ 2] (observe class) class$)	2	[1]
+unicode-local-invalid-js	(let* [C♯ 5] C♯)	5	[]
+return-host-initializer	((fn* [] (let* [Math js/Math] (.sqrt Math 16))))	4	[]

@@ -105,3 +105,33 @@ js-global-distinct	(def Math 7) (js/Math.sqrt 16)	4	[]
 js-emitter-name-collision	(let* [host 1 truth 2 l0 3 g0 4] (js/Math.sqrt 16))	4	[]
 js-discarded-method	(.method js/lightHost (observe 1) (observe 2)) 9	9	["method-get",1,2,["call",1,2]]
 js-branch-method	(if false (.receiver js/lightHost) (.-value js/lightHost))	40	[]
+# Lexical audit adaptations and independent regressions; see lexical-evidence.md.
+# Adaptations from ClojureScript:
+# Copyright (c) Rich Hickey. All rights reserved.
+# The use and distribution terms for this software are covered by the
+# Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)
+# which can be found in the file epl-v10.html at the root of this distribution.
+# By using this software in any fashion, you are agreeing to be bound by
+# the terms of this license.
+# You must not remove this notice, or any other, from this software.
+let-first-of-two	(let* [a 1 b 2] a)	1	[]
+let-shadow-chain-effects	(let* [a (observe 1) a (observe 2) a (observe 3)] (observe a) a)	3	[1,2,3,3]
+closure-statement-shadow	(let* [x "original"] (def original-closure-stmt (fn* [] x))) (let* [x "overwritten"] (original-closure-stmt))	"original"	[]
+closure-sequential-shadow	(let* [x "original" oce (fn* [] x) x "overwritten"] (oce))	"original"	[]
+def-from-same-local	(let* [foo-1536 2] (def foo-1536 foo-1536)) foo-1536	2	[]
+defn-from-same-local	(let* [foo-1536-2 1] (def foo-1536-2 (fn* [] foo-1536-2))) (foo-1536-2)	1	[]
+defn-local-returned	((let* [z 1] (def z (fn* [] z))))	1	[]
+defn-local-called	(let* [w 1] ((def w (fn* [] w))))	1	[]
+nested-named-function	(def foo (fn* [] (fn* bar [done] (if done 7 (bar true))))) ((foo) false)	7	[]
+nested-named-host-collision	(((fn* [] (fn* console [done] (if done 8 (console true))))) false)	8	[]
+same-host-name-initializer	((fn* [] (let* [console js/console] (if (.-log console) 4 5))))	4	[]
+let-empty-body-effects	(let* [x (observe 1)])	null	[1]
+scope-restoration-effects	(let* [x (observe 1)] (let* [x (observe 2)] (observe x)) (observe x))	1	[1,2,2,1]
+initializer-nested-scope	(let* [x 1 x (do (let* [x 2] (observe x)) (observe x))] x)	1	[2,1]
+parameter-and-capture	(let* [x 10 f (fn* [] x) g (fn* [x] (observe (f)) (fn* [] x)) h (g 20) x 30] (observe x) (observe (f)) (h))	20	[10,30,10]
+named-scope-restores-outer	(let* [self 1 f (fn* self [done] (if done 2 (self true))) g (fn* [] self)] (observe (f false)) (g))	1	[2]
+sibling-captures-after-exit	(let* [a (let* [x 1] (fn* [] x)) b (let* [x 2] (fn* [] x)) x 3] (observe (a)) (observe (b)) x)	3	[1,2]
+keyword-and-helper-spellings	(def g0 9) (let* [class 1 class$ 2 arguments 3 await 4 truth 5 host 6 globalThis 7 l0 8] (observe class) (observe class$) (observe arguments) (observe await) (observe truth) (observe host) (observe globalThis) (observe l0) (observe (if true (js/Math.sqrt 16) g0))) 4	4	[1,2,3,4,5,6,7,8,4]
+local-global-host-math	(def Math 1) (let* [Math 2 read-local (fn* [] Math)] (def Math 3) (observe (read-local)) (observe js/Math) (observe (js/Math.sqrt 16))) Math	3	[2,2,4]
+captured-global-snapshot	(def x 1) (def read-global (fn* [] x)) (let* [x x read-local (fn* [] x)] (def x 2) (observe (read-global)) (observe (read-local))) (read-global)	2	[2,1]
+different-source-spellings	(let* [a-b 1 a_b 2 + 3 _PLUS_ 4] (observe a-b) (observe a_b) (observe +) (observe _PLUS_)) 5	5	[1,2,3,4]

@@ -18,7 +18,7 @@ reader corpus measures syntax handling, not executable semantics.
 ## Local identities and origins
 
 [fixture-origins.tsv](fixture-origins.tsv) explicitly assigns an origin to each
-of the **105** existing [execution fixtures](../fixtures/execution.tsv), using
+of the **105** initial [execution fixtures](../fixtures/execution.tsv), using
 its first-column name as its stable ID. The original **74**, from `nil` through
 `discard-reader-form`, remain hand-authored; the **31** milestone probes from
 `def-value` through `js-branch-method` also remain hand-authored. Similarity to an
@@ -60,6 +60,23 @@ JSON. The original 105 cases and their expectations remain unchanged. The new
 sidecar record identifies these as hand-authored host-boundary/failure probes;
 no additional upstream assertion or suite-port coverage is claimed.
 
+## Lexical audit update
+
+The [2026-10-08 lexical audit](lexical-evidence.md) records the detailed
+assertion dispositions for the let/local, shadow-chain, symbol-munging,
+fn-scope, and related runtime sections. It adds **21** execution rows
+(**11 adapted**, **10 independent**) and a shared namespace fixture, bringing
+the passing runtime corpus to **143** cases. New ID/span checks establish
+scope restoration, distinct same-spelled bindings, and namespace-aware global
+references. All passing cases and the new namespace output agree with both
+Maven 1.12.134 and the pinned checkout.
+
+That audit also retains four explicit reference-limit reproducers outside the
+passing corpus: returned-let spelling collisions, a Unicode spelling that
+emits invalid JavaScript, and a same-named Math initializer. The linked evidence
+explains the contexts, results, exclusions, attribution, and exact reproduction.
+The original 105-case inventory and the 17 outcome probes remain distinguishable.
+
 ## Inspected upstream sections
 
 ### Analyzer and compiler suites
@@ -80,8 +97,8 @@ are not local compatibility contracts.
 | `analyzer/spec_tests.clj`, `test-binding`, `test-const`, `test-def`, `test-do`, `test-fn`, `test-if`, `test-let`, `test-local` (19–180) | Same primitive/definition fixture mappings as above. `test-let` (164) and `test-fn` (96) have missing exact empty-body shapes noted below. Schema assertions are excluded. `test-invoke` uses unsupported core functions; generic-call overlap only. |
 | `analyzer/spec_tests.clj`, `test-host-call` (109–115), `test-host-field` (117–123), `test-js-var` (155–158), `test-ns` (217–222) | Shorthand `.substring`/`.-length`, host vars and one-item require vectors map to host and namespace tests. Explicit `(. target ...)`, Goog runtime loading and upstream AST schema excluded. |
 | `compiler_tests.clj`, `test-amp-as-local-clj-2954` (411–433, primitive let assertion 423–426) | `analyzer::invalid_special_forms_have_source_diagnostics` rejects `&` bindings/parameters. The upstream `loop*` case is unsupported. |
-| `compiler_tests.clj`, `fn-scope-munge` (69–90) | `named-recursion`, `self-captured`, `javascript-reserved-local`, `unicode-local` cover semantic name isolation; exact generated-name format excluded. |
-| `compiler_tests.clj`, `test-3368-global-shadowing` (376–383) | Specifically `[window js/window]`: current `js-local-shadow`, `shadow-initializer`, `js-emitter-name-collision` provide indirect coverage; exact host-initializer shape is a gap. |
+| `compiler_tests.clj`, `fn-scope-munge` (69–90) | `named-recursion`, `self-captured`, `javascript-reserved-local`, `unicode-local` and the new adapted `nested-named-function`/`nested-named-host-collision` cover semantic name isolation; exact generated-name format excluded. |
+| `compiler_tests.clj`, `test-3368-global-shadowing` (376–383) | Specifically `[window js/window]`: new `same-host-name-initializer` faithfully uses analyzer-known host `console`; the lexical audit records the separate return-context Math limitation. |
 | `compiler_tests.clj`, `test-optimized-invoke-emit` (264–305; JS path 281–282) | `js-path-receiver`, `js-path-order`, `callee-and-argument-order`, `nested-argument-order` cover semantic order/receiver concerns. Static/variadic/protocol dispatch and exact optimized JS remain excluded. |
 | `analyzer_api_tests.clj`, all six tests: `cljs-warning-test`, `with-warning-handlers-test`, `vary-warning-handlers-test`, `get-options-test`, `get-js-index-test`, `throw-test` | Warning handlers, compiler-state/options/index inspection and API lookup failures; no applicable executable primitive assertion. API `throw-test` is not a source-language throw regression. |
 | `analyzer_pass_tests.clj`, `test-walk`, `remove-local`, `test-and-or-*`, `test-core-predicates`, `test-cljs-3309`, `test-lite-mode-pass` | Upstream AST walking/mutation, macro/type/boolean optimizations, exact code and core vector rewriting are excluded. Host words inside an optimizer test do not make the optimizer assertion covered by basic interop. |
@@ -115,15 +132,15 @@ this table start at `src/test/`.
 
 | Path and inspected body / assertion anchor | Applicable behavior and current coverage / exclusion |
 | --- | --- |
-| `cljs/cljs/core_test.cljs`, `original-closure-stmt` setup and `test-401-411` (557–566) | Retained earlier lexical value and sequential let capture map to `closure-example`, `closure-before-rebinding`, `shadow-initializer`, `sequential-let`. Macro wrappers would need faithful primitive reduction. |
+| `cljs/cljs/core_test.cljs`, `original-closure-stmt` setup and `test-401-411` (557–566) | Retained earlier lexical value and sequential let capture map to the existing hand-authored closure fixtures and the new attributed `closure-statement-shadow`/`closure-sequential-shadow` primitive reductions. |
 | `cljs/cljs/core_test.cljs`, `foo580` definitions and `test-580` (767–771) | Declaration followed by initialization with a global self-reference: related `global-uninitialized`, `global-self-reference`, `global-self-init`. Its map/keyword-call wrapper is excluded; declaration with an intervening reader closure lacks an exact local case. |
-| `cljs/cljs/core_test.cljs`, `test-cljs-1274` (1228–1232), `test-cljs-1536` and preceding lets (1262–1274) | Qualified/unqualified global reads map to `namespaces::globals_keep_namespace_identity_and_lexical_shadowing`. Same-named lexical initializer entering a def is a direct-case gap. Qualified def setup is unsupported. This runtime `test-cljs-1536` differs from the same-named analyzer test. |
+| `cljs/cljs/core_test.cljs`, `test-cljs-1274` (1228–1232), `test-cljs-1536` and preceding lets (1262–1274) | Qualified/unqualified global reads map to `namespaces::globals_keep_namespace_identity_and_lexical_shadowing`. All four same-named lexical definition/capture shapes now map to `def-from-same-local`, `defn-from-same-local`, `defn-local-returned`, and `defn-local-called`. Qualified def setup is unsupported. This runtime `test-cljs-1536` differs from the same-named analyzer test. |
 | `cljs/cljs/core_test.cljs`, `test-cljs-2267` and const setup (1438 onward) | Seven `if` assertions include truthy zero/empty string and false nil/false; `truth-zero`, `truth-empty-string`, `truth-nil`, `truth-false` cover those values. Const propagation/keyword result values are excluded, so removing their wrappers would be an adaptation, not constant-folding coverage. |
 | `cljs/cljs/primitives_test.cljs`, `test-dot` (659–678) | `.-length`, shorthand substring calls and nested method/property access overlap with `js-property`, `js-method`, `js-nested-method`, `js-property-once`. Explicit-dot and `memfn` assertions are excluded. Numeric receiver and computed-result property cases are noted below. |
 | `cljs/cljs/primitives_test.cljs`, `test-3352` (956 onward) | Integer `-0` versus floating `-0.0`: `integer-zero`, `negative-zero`. Upstream division/infinity operations are excluded; this does not establish radix/UTF-16 upstream provenance. |
 | `cljs/cljs/invoke_test.cljs`, complete file (50 lines): `hof-fn-expr-should-be-bound`, `hof-arg-should-be-bound`, `hof-fn-expr+args-should-be-bound` (20–31), JS path call (40) | Compiler fixture shapes, with no runtime assertions in those forms. `callee-and-argument-order`, `nested-argument-order`, `js-path-order` supply independent semantic checks. Variadic/multiple arities, complement, delay, keyword calls, records and Closure library alias loading excluded. |
 | `cljs/cljs/specials_test.cljs`, complete file (25 lines), `test-cljs-3125` | All four assertions concern `set!` result values for host/global/record mutation. Mutation and record/runtime wrappers excluded; def redefinition and property reads do not cover writes. |
-| `cljs/static/core_test.cljs`, complete file (17 lines), namespace header/comment and `foo-test` | Specifically exercises namespace component `static`, a JavaScript reserved word, with trivial equality. It is not a static-function-dispatch suite. Local generated binding IDs suggest applicability, but no exact reserved-namespace runtime fixture exists. |
+| `cljs/static/core_test.cljs`, complete file (17 lines), namespace header/comment and `foo-test` | Specifically exercises namespace component `static`, a JavaScript reserved word, with trivial equality. It is not a static-function-dispatch suite. New `lexical.static`/`lexical.main` fixtures independently execute the reserved-namespace behavior and compare it to both baselines. |
 | `self/self_host/test.cljs`, `test-compile-str` (176 onward) | Empty `(fn [])` maps to `empty-function`; function-valued if maps to `truth-function`; `(.toString "a")` maps to string-method behavior. The ordinary versus `:static-fns true` call assertions distinguish compilation modes. Exact JS, core-runtime calls, self-host API and static dispatch are excluded. |
 | `self/self_host/test.cljs`, `test-CLJS-1330` (657 onward) | Evaluates `(.toString 1)` to `"1"`: numeric method receiver is applicable but lacks a direct fixture. |
 | `self/self_host/test.cljs`, `test-eval-str-with-require` (843 onward), first require/qualified-call assertion; `test-cljs-2356` (1320 onward) | Minimal require/qualified access maps to namespace acceptance/identity tests; circular `circular.a`/`circular.b` error maps to `namespaces::cycles_report_the_dependency_path`. Bootstrap loader APIs/runtime integration are excluded. |
@@ -152,19 +169,20 @@ predicates, exceptions, atoms, mutation or JS literal emission. In particular,
 ### Applicable gaps and limits of current evidence
 
 These are findings about the inspected assertions and current coverage, not a
-second task queue. Except for the source-inferred validation difference, they
-are absent direct fixture shapes, not observed compiler failures.
+second task queue. The original inventory identified absent direct fixture
+shapes and a source-inferred validation difference. Updated rows distinguish
+resolved shapes from the separately documented reference-compiler limitations.
 
 | Source anchor | Missing direct coverage / observed limit |
 | --- | --- |
 | `analyzer_tests/spec-validation` (175–180) | Upstream rejects multiple `:require` clauses. `src/compiler.rs` currently loops over clauses without a repeated-clause guard, and local namespace tests do not cover the shape. Source inspection indicates a compatibility difference when both libraries exist; no new runtime probe was executed in this audit. It is an applicable validation gap, not a macro/runtime exclusion. |
-| `compiler_tests/test-3368-global-shadowing` (376–383) | Binding a local from the same-named host root, e.g. `(let* [Math js/Math] (.sqrt Math 16))`. Current host-shadow and initializer tests cover these concerns separately. |
-| `analyzer/spec_tests/test-let` (164), `test-fn` (96) | Nonempty bindings/parameters with an empty body. Existing `empty-let` and `empty-function` have empty vectors; effects in the former shapes are not directly asserted. |
+| `compiler_tests/test-3368-global-shadowing` (376–383) | Resolved for the faithful known-host reduction by `same-host-name-initializer`. The original proposed Math reduction exposes a reference limitation in return context; see the lexical evidence instead of treating it as equivalent to upstream window. |
+| `analyzer/spec_tests/test-let` (164), `test-fn` (96) | Nonempty let bindings with an empty body now have `let-empty-body-effects`. Empty-body functions with nonempty parameters remain an absent exact fixture shape. |
 | `analyzer_tests/test-cljs-1346` (548–564) | Nested ns rejection. Standalone-ns rejection and first-header loader tests are indirect; no exact nested def/fn diagnostic fixture exists. |
-| `core_test/test-cljs-1536` (1262–1274) | A def initialized from a same-spelled lexical binding, e.g. `(let* [x 2] (def x x)) x`; current global/lexical shadow tests do not use this initializer shape. |
+| `core_test/test-cljs-1536` (1262–1274) | Resolved by `def-from-same-local` and the three companion function-definition adaptations in the lexical audit. |
 | `core_test/test-580` and preceding defs (767–771) | Declaration then assignment with an intervening closure reading that global. Existing declaration, self-reference and redefinition cases cover the components, not this combination. |
 | `self_host/test-CLJS-1330` (657), `test-cljs-2367` (1372) | Number-literal method receiver and a def nested inside an initialized def. String/object receivers and def-in-let values are covered. |
-| `cljs/static/core_test.cljs` namespace purpose; `primitives_test/test-dot` (659–678) | Reserved namespace component; property read of a computed method result; a two-argument string method. Related name-isolation/nested/generic-argument cases exist, but no exact local forms. |
+| `cljs/static/core_test.cljs` namespace purpose; `primitives_test/test-dot` (659–678) | Reserved namespace coverage is now provided by `lexical.static`. Property read of a computed method result and a two-argument string method remain absent exact forms; related nested/generic-argument cases exist. |
 
 Ordinary global/function redefinition observed by an existing closure is covered
 by `global-redefinition`, `global-function-redefinition`,

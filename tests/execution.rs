@@ -790,3 +790,27 @@ fn dependency_initialization_matches_standard_clojurescript() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies"]
+fn lexical_namespace_bindings_match_standard_clojurescript() {
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namespaces");
+    let references = reference_results(
+        "lexical-namespaces",
+        &["program", source_root.to_str().unwrap(), "lexical.main"],
+        "",
+    );
+    let actual = node(&light_cljs::compile_namespace("lexical.main", &[source_root]).unwrap());
+    for result in &references {
+        assert_eq!(result.output, "40\n30\n12\n12\n11\n12\n30\n32\n33\n");
+        assert_eq!(
+            actual, result.output,
+            "{}: lexical captures and qualified globals",
+            result.identity
+        );
+        eprintln!(
+            "light-cljs and {} matched lexical captures, aliases, namespace identity and redefinition",
+            result.identity
+        );
+    }
+}

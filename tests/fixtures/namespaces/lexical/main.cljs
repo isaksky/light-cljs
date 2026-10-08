@@ -1,0 +1,16 @@
+(ns lexical.main (:require [lexical.static :as lib]))
+(def value 30)
+(def read-global (fn* [] value))
+(let* [value 40 lib 50]
+  (js/console.log value)
+  (js/console.log lexical.main/value)
+  (js/console.log lib/value)
+  (js/console.log lexical.static/value)
+  (js/console.log (lib/read-local))
+  (js/console.log (lib/read-global)))
+(js/console.log value)
+(let* [value 32]
+  (def read-local (fn* [] value)))
+(def value 33)
+(js/console.log (read-local))
+(js/console.log (read-global))

@@ -282,3 +282,9 @@ subset exclusions. Its provenance sidecar preserves hand-authored origins and
 records pinned sources/reductions for adaptations. `cargo test --test provenance`
 validates the metadata without the research checkout; the index also documents
 the procedure for adding and verifying an upstream regression.
+
+The [lexical audit](../tests/reference/lexical-evidence.md) maps the detailed
+binding assertions, verifies restored `LocalId` targets and namespace-aware
+globals, and records the 143-case release/checkout comparison. It also retains
+explicit reference limitations for returned-let spelling collisions and host
+initializers; those differences are not counted as passing conformance cases.

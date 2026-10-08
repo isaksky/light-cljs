@@ -57,6 +57,225 @@ fn initializer_references_the_previous_binding() {
 }
 
 #[test]
+fn scope_exit_retains_binding_ids_and_restores_reference_targets() {
+    let source = "(let* [x 1
+        captured (fn* [] x)
+        x (do (let* [x 2] x) x)]
+        (let* [x 3] (fn* [x] x))
+        (fn* [] x))";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    // Locate records by their source declarations, never their generated names
+    // or an assumed arena allocation order. All records survive scope exit.
+    let binding = |declaration: &str| {
+        let start = source.find(declaration).unwrap();
+        LocalId(
+            program
+                .locals
+                .iter()
+                .position(|local| local.span == (start..start + 1))
+                .unwrap(),
+        )
+    };
+    let outer = binding("x 1");
+    let inner_initializer = binding("x 2");
+    let rebound = binding("x (do");
+    let inner_body = binding("x 3");
+    let parameter = binding("x] x");
+    let ids = [outer, inner_initializer, rebound, inner_body, parameter];
+    assert_eq!(
+        ids.into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        5
+    );
+    let references: Vec<_> = program
+        .exprs
+        .iter()
+        .filter_map(|expr| match expr.kind {
+            ExprKind::Local(local) => {
+                assert_eq!(&source[expr.span.clone()], "x");
+                Some(local)
+            }
+            _ => None,
+        })
+        .collect();
+    // Capture before rebinding; exit initializer scope; exit parameter/body
+    // scopes; capture the most recent surviving binding.
+    assert_eq!(
+        references,
+        [outer, inner_initializer, outer, parameter, rebound]
+    );
+    for local in &program.locals {
+        assert_eq!(&source[local.span.clone()], local.name);
+    }
+}
+
+#[test]
+fn named_function_and_parameter_ids_restore_enclosing_local() {
+    let source = "(let* [self 1 f (fn* self [self] self)] self)";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let self_bindings: Vec<_> = program
+        .locals
+        .iter()
+        .enumerate()
+        .filter(|(_, local)| local.name == "self")
+        .map(|(id, _)| LocalId(id))
+        .collect();
+    assert_eq!(self_bindings.len(), 3);
+    let references: Vec<_> = program
+        .exprs
+        .iter()
+        .filter_map(|expr| match expr.kind {
+            ExprKind::Local(local) => Some(local),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(references, [self_bindings[2], self_bindings[0]]);
+}
+
+#[test]
+fn different_spellings_have_distinct_ids_even_when_munging_would_collide() {
+    let source =
+        "(let* [a-b 1 a_b 2 + 3 _PLUS_ 4 class 5 class$ 6 C♯ 7] a-b a_b + _PLUS_ class class$ C♯)";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let references: Vec<_> = program
+        .exprs
+        .iter()
+        .filter_map(|expr| {
+            if let ExprKind::Local(local) = expr.kind {
+                let binding = &program.locals[local.0];
+                assert_eq!(&source[expr.span.clone()], binding.name);
+                assert_eq!(&source[binding.span.clone()], binding.name);
+                Some(local)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(references.len(), 7);
+    assert_eq!(
+        references
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        7
+    );
+}
+
+#[test]
+fn namespace_and_alias_references_ignore_same_spelled_lexical_bindings() {
+    use light_cljs::{GlobalId, NamespaceInput, analyze_namespaces};
+    let sources = [
+        "(ns lexical.static) (def value 10) (let* [value 11] (def captured (fn* [] value))) (def read-value (fn* [] value)) (def value 12)",
+        "(ns lexical.main (:require [lexical.static :as lib])) (def value 30) (let* [value 40 lib 50] value lexical.main/value lib/value lexical.static/value) value",
+    ];
+    let syntax = sources.map(|source| parse(source).unwrap());
+    let program = analyze_namespaces(&[
+        NamespaceInput {
+            name: "lexical.static",
+            source: sources[0],
+            syntax: &syntax[0],
+            aliases: &[],
+            requires: &[],
+        },
+        NamespaceInput {
+            name: "lexical.main",
+            source: sources[1],
+            syntax: &syntax[1],
+            aliases: &[("lib".into(), "lexical.static".into())],
+            requires: &["lexical.static".into()],
+        },
+    ])
+    .unwrap();
+    let global = |namespace| {
+        GlobalId(
+            program
+                .globals
+                .iter()
+                .position(|binding| binding.name == "value" && binding.namespace == namespace)
+                .unwrap(),
+        )
+    };
+    let local = |source_index| {
+        LocalId(
+            program
+                .locals
+                .iter()
+                .position(|binding| binding.name == "value" && binding.source_index == source_index)
+                .unwrap(),
+        )
+    };
+    let dep = global("lexical.static");
+    let main = global("lexical.main");
+    assert_ne!(dep, main);
+    assert_ne!(local(0), local(1));
+    let references: Vec<_> = program
+        .exprs
+        .iter()
+        .filter(|expr| matches!(expr.kind, ExprKind::Local(_) | ExprKind::Global(_)))
+        .map(|expr| {
+            (
+                expr.source_index,
+                &sources[expr.source_index][expr.span.clone()],
+                expr.kind.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        references,
+        [
+            (0, "value", ExprKind::Local(local(0))),
+            (0, "value", ExprKind::Global(dep)),
+            (1, "value", ExprKind::Local(local(1))),
+            (1, "lexical.main/value", ExprKind::Global(main)),
+            (1, "lib/value", ExprKind::Global(dep)),
+            (1, "lexical.static/value", ExprKind::Global(dep)),
+            (1, "value", ExprKind::Global(main)),
+        ]
+    );
+    for binding in &program.locals {
+        assert_eq!(
+            &sources[binding.source_index][binding.span.clone()],
+            binding.name
+        );
+    }
+}
+
+#[test]
+fn unresolved_initializers_and_exited_scopes_report_exact_byte_spans() {
+    // Build each source around the particular rejected occurrence, including
+    // multibyte text before it so byte spans cannot accidentally be columns.
+    for (before, name, after) in [
+        ("(let* [x ", "x", "] x)"),
+        ("(let* [λ 1 x ", "later", " later 2] x)"),
+        ("(let* [f (fn* [] ", "f", ")] (f))"),
+        ("(let* [x (let* [inner 1] inner) y ", "inner", "] y)"),
+        ("(let* [λ 1] (let* [x 2] x) ", "x", ")"),
+        ("(let* [f (fn* [parameter] parameter)] ", "parameter", ")"),
+        ("(let* [f (fn* named [] named)] ", "named", ")"),
+        (
+            "(let* [f (fn* [] (let* [hidden 1] hidden))] ",
+            "hidden",
+            ")",
+        ),
+        (
+            "(do (let* [first 1] first) (let* [second ",
+            "first",
+            "] second))",
+        ),
+    ] {
+        let source = format!("{before}{name}{after}");
+        let error = analyze(&source, &parse(&source).unwrap()).unwrap_err();
+        assert_eq!(error.kind, Error::UnresolvedSymbol(name.into()), "{source}");
+        assert_eq!(
+            error.span,
+            before.len()..before.len() + name.len(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn unresolved_names_never_fall_back_to_javascript_globals() {
     for (source, name) in [
         ("x", "x"),

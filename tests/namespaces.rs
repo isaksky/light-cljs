@@ -105,6 +105,29 @@ fn globals_keep_namespace_identity_and_lexical_shadowing() {
 }
 
 #[test]
+fn lexical_captures_and_qualified_globals_survive_shadowing_and_redefinition() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/namespaces");
+    assert_eq!(
+        execute(&compile_namespace("lexical.main", &[root]).unwrap()),
+        "40\n30\n12\n12\n11\n12\n30\n32\n33\n"
+    );
+}
+
+#[test]
+fn lexical_bindings_do_not_leak_between_namespaces() {
+    let sources = Sources::new();
+    sources.write("scope/dep.cljs", "(ns scope.dep) (let* [secret 1] secret)");
+    let source = "(ns scope.main (:require [scope.dep :as dep]))\n(let* [λ 1] secret)";
+    sources.write("scope/main.cljs", source);
+    let error = sources.compile("scope.main").unwrap_err();
+    assert!(error.message.contains("unresolved symbol: secret"));
+    assert!(error.path.unwrap().ends_with("scope/main.cljs"));
+    let start = source.find("secret").unwrap();
+    assert_eq!(error.span, Some(start..start + "secret".len()));
+    assert_eq!(error.line_column, Some((2, 14)));
+}
+
+#[test]
 fn namespace_paths_munge_hyphens_and_multiple_roots_are_explicit() {
     let entry = Sources::new();
     let deps = Sources::new();

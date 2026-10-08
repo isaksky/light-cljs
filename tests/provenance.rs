@@ -1,7 +1,7 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 2] = [
+const CASE_FILES: [(&str, &str, usize); 3] = [
     (
         "tests/fixtures/execution.tsv",
         include_str!("fixtures/execution.tsv"),
@@ -11,6 +11,11 @@ const CASE_FILES: [(&str, &str, usize); 2] = [
         "tests/fixtures/execution-outcomes.tsv",
         include_str!("fixtures/execution-outcomes.tsv"),
         5,
+    ),
+    (
+        "tests/reference/lexical-reference-limits.tsv",
+        include_str!("reference/lexical-reference-limits.tsv"),
+        4,
     ),
 ];
 const ORIGINS: &str = include_str!("reference/fixture-origins.tsv");
@@ -104,7 +109,9 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "duplicate provenance for {local_path}::{id}"
             );
             match local_path {
-                "tests/fixtures/execution.tsv" | "tests/fixtures/execution-outcomes.tsv" => {
+                "tests/fixtures/execution.tsv"
+                | "tests/fixtures/execution-outcomes.tsv"
+                | "tests/reference/lexical-reference-limits.tsv" => {
                     assert!(
                         cases.contains(&(local_path, id)),
                         "unknown execution ID: {id}"
@@ -114,6 +121,10 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "tests/namespaces.rs" => assert!(
                     include_str!("namespaces.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown namespace test: {id}"
+                ),
+                "tests/analyzer.rs" => assert!(
+                    include_str!("analyzer.rs").contains(&format!("#[test]\nfn {id}()")),
+                    "unknown analyzer test: {id}"
                 ),
                 _ => panic!("register a local fixture source before using it: {local_path}"),
             }
