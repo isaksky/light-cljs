@@ -235,3 +235,10 @@ source inspection/adaptations are identified in the evidence and loader tests.
 The research checkout is consulted for implementation semantics, not silently
 substituted for the pinned release oracle. JavaScript text is never the
 conformance criterion; repository corpora remain reader regression tests.
+
+The [coverage and provenance index](../tests/reference/coverage.md) maps inspected
+upstream assertions to stable local fixture IDs, applicable gaps, and deliberate
+subset exclusions. Its provenance sidecar preserves hand-authored origins and
+records pinned sources/reductions for adaptations. `cargo test --test provenance`
+validates the metadata without the research checkout; the index also documents
+the procedure for adding and verifying an upstream regression.
