@@ -1,4 +1,5 @@
-//! Borrowing lexical scanning and arena-based syntax parsing of ClojureScript.
+//! Borrowing syntax parsing, lexical analysis, and JavaScript emission for a
+//! deliberately small executable ClojureScript core.
 //!
 //! Tokens retain raw byte spans, including quotes, escapes, and reader prefixes.
 //! Whitespace and commas are skipped; comments are emitted. Atom classification,
@@ -8,9 +9,19 @@
 
 use std::{iter::FusedIterator, ops::Range};
 
+pub mod analyzer;
 mod char_classes;
+pub mod compiler;
+pub mod emitter;
 mod literals;
 pub mod parser;
+
+pub use analyzer::{
+    AnalysisError, AnalysisErrorKind, Expr, ExprContext, ExprId, ExprKind, LocalBinding, LocalId,
+    Program, Span, StringId, analyze,
+};
+pub use compiler::{CompileError, compile};
+pub use emitter::emit_js;
 
 pub use parser::{
     CollectionKind, ErrorKind, LineIndex, Node, NodeId, NodeKind, NumberKind, ParseError, Parser,

@@ -1,9 +1,46 @@
 # light-cljs
 
-A borrowing Rust lexer and handwritten syntax parser for ClojureScript source.
-The parser pulls tokens into a node arena, while reader expansion and compiler
-semantics remain later stages. The library has no dependencies or unsafe code.
+A small Rust compiler for an executable ClojureScript core, with a borrowing
+lexer, handwritten syntax parser, semantic analyzer, and JavaScript emitter.
+The parser pulls tokens into a node arena; analysis resolves local references
+to binding IDs in a separate expression arena. General reader expansion and
+macro execution remain unsupported. The library has no dependencies or unsafe code.
 Tokens never allocate text; syntax leaves keep byte spans wherever possible.
+
+## Execute small programs
+
+```sh
+cargo run --quiet -- --compile examples/closure.cljs \
+  | node --print 'eval(require("fs").readFileSync(0, "utf8"))'
+# 10
+
+cargo run -- --compile program.cljs > program.js
+cargo run -- --analyze --text '(let* [x 10] x)'
+```
+
+`--compile` emits a self-contained JavaScript expression whose value is the
+last source form. Supported forms are `nil`, booleans, safe integers, finite
+floating-point numbers, strings, `if`, `do`, sequential `let*`, and single fixed
+arity `fn*` functions and calls. Closures capture lexical bindings; named `fn*`
+supports self-recursion. Empty bodies return `nil`. Only `nil` and `false` are
+false in conditionals, including when tests produce `0` or `""`.
+
+```rust
+use light_cljs::{analyze, emit_js, parse};
+
+let source = "(let* [x 10 f (fn* [] x)] (let* [x 20] (f)))";
+let syntax = parse(source).unwrap();
+let program = analyze(source, &syntax).unwrap();
+let javascript = emit_js(&program);
+// Or use light_cljs::compile(source) for all three stages.
+```
+
+Compilation errors include source locations and produce no partial JavaScript.
+Ordinary `let` and `fn` macros, globals, definitions, namespaces, collections,
+interop, and general macro execution are outside this milestone. See the
+[executable core contract](docs/compiler.md) for exact limits and testing.
+
+## Lexer API
 
 ```rust
 use light_cljs::Tokenizer;
@@ -159,10 +196,16 @@ cargo bench --bench parser -- --samples 9 --ms 100
 # Optional: requires the gitignored reference checkout.
 cargo test --release --test corpus -- --ignored --nocapture
 cargo test --release --test parser_corpus -- --ignored --nocapture
+# Optional differential execution against ClojureScript 1.12.134 (Java/Clojure CLI).
+cargo test --test execution -- --ignored --nocapture
 cargo bench --bench tokenizer -- --samples 9 --ms 150 \
   research/clojurescript/src/main/cljs/cljs/core.cljs \
   research/clojurescript/src/main/clojure/cljs/analyzer.cljc
 ```
+
+Normal execution and CLI tests require Node.js on `PATH`, or `NODE` set to its
+executable path. The differential test uses the same tiny programs and compares
+values and observable effects; it may download the pinned Maven dependencies.
 
 The benchmark prepares eight fixtures before timing and accepts additional UTF-8
 files. It consumes full tokens through `black_box`, emits raw CSV on stdout, and

@@ -6,15 +6,20 @@ use std::{
     process::ExitCode,
 };
 
-use light_cljs::{LineIndex, TokenKind, Tokenizer, parse};
+use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, emit_js, parse};
 
-const USAGE: &str = "Usage: light-cljs [--parse] [FILE|-]\n       light-cljs [--parse] --text SOURCE\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nErrors cause a nonzero exit status; parser diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mut first = args.next();
-    let parsing = first.as_deref().is_some_and(|arg| arg == "--parse");
-    if parsing {
+    let mode = match first.as_deref().and_then(|arg| arg.to_str()) {
+        Some("--parse") => "parse",
+        Some("--analyze") => "analyze",
+        Some("--compile") => "compile",
+        _ => "tokens",
+    };
+    if mode != "tokens" {
         first = args.next();
     }
     let source = match first.as_deref() {
@@ -40,7 +45,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    if parsing {
+    if mode != "tokens" {
         let tree = parse(&source).map_err(|error| {
             let lines = LineIndex::new(&source);
             let (line, column) = lines.line_column(error.span.start).unwrap();
@@ -57,6 +62,24 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             message
         })?;
+        if mode != "parse" {
+            let program = analyze(&source, &tree).map_err(|error| {
+                let (line, column) = LineIndex::new(&source)
+                    .line_column(error.span.start)
+                    .unwrap();
+                format!(
+                    "{line}:{column}: {error} (bytes {}..{})",
+                    error.span.start, error.span.end
+                )
+            })?;
+            if mode == "compile" {
+                write!(out, "{}", emit_js(&program))?;
+            } else {
+                writeln!(out, "{program:#?}")?;
+            }
+            out.flush()?;
+            return Ok(());
+        }
         writeln!(out, "roots: {:?}", tree.roots)?;
         for (id, node) in tree.nodes.iter().enumerate() {
             writeln!(
