@@ -1,0 +1,18 @@
+rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: aarch64-apple-darwin
+release: 1.99.0
+LLVM version: 23.1.2
+cargo 1.99.0 (5f94df478 2026-08-27) (Homebrew)
+ProductName:		macOS
+ProductVersion:		15.7.3
+BuildVersion:		24G419
+arm64
+machdep.cpu.brand_string: Apple M3 Ultra (Virtual)
+hw.memsize: 34359738368
+hw.physicalcpu: 24
+hw.logicalcpu: 24
+hw.model: VirtualMac2,1
+RUSTFLAGS unset

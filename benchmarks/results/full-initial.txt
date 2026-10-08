@@ -1,0 +1,26 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `bench` profile [optimized] target(s) in 0.39s
+     Running benches/tokenizer.rs (target/release/deps/tokenizer-ab2263a49b0262d6)
+Token: 24 bytes; Tokenizer: 24 bytes
+9 samples, target 150 ms/sample, >=20 ms calibration per input/variant; single thread, warm resident inputs
+No I/O, input generation, or allocation in timed scans; black_box per token and per traversal
+short-atoms: 262154 bytes, 91184 tokens
+long-atoms: 263780 bytes, 484 tokens
+dense-parens: 262150 bytes, 262150 tokens
+whitespace-heavy: 262612 bytes, 1808 tokens
+unicode: 262170 bytes, 67970 tokens
+large-mixed: 16777384 bytes, 178230 tokens
+reader-syntax: 263048 bytes, 55020 tokens
+large-reader: 16777844 bytes, 3509310 tokens
+research/clojurescript/src/main/cljs/cljs/core.cljs: 375722 bytes, 72391 tokens
+research/clojurescript/src/main/clojure/cljs/analyzer.cljc: 209684 bytes, 32545 tokens
+full-usize       short-atoms            604.9 MB/s     210.4 Mtokens/s (range 580.2..616.8 MB/s)
+full-usize       long-atoms            2098.3 MB/s       3.9 Mtokens/s (range 1938.1..2133.3 MB/s)
+full-usize       dense-parens           422.6 MB/s     422.6 Mtokens/s (range 392.9..436.0 MB/s)
+full-usize       whitespace-heavy      2680.4 MB/s      18.5 Mtokens/s (range 2417.7..2736.9 MB/s)
+full-usize       unicode                521.7 MB/s     135.3 Mtokens/s (range 494.9..529.4 MB/s)
+full-usize       large-mixed           2071.4 MB/s      22.0 Mtokens/s (range 1989.9..2130.0 MB/s)
+full-usize       reader-syntax          850.9 MB/s     178.0 Mtokens/s (range 796.1..868.1 MB/s)
+full-usize       large-reader           836.0 MB/s     174.9 Mtokens/s (range 796.6..855.8 MB/s)
+full-usize       research/clojurescript/src/main/cljs/cljs/core.cljs     546.7 MB/s     105.3 Mtokens/s (range 487.6..561.5 MB/s)
+full-usize       research/clojurescript/src/main/clojure/cljs/analyzer.cljc     620.0 MB/s      96.2 Mtokens/s (range 570.7..642.9 MB/s)

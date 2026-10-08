@@ -1,0 +1,14 @@
+[package]
+name = "light-cljs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bench]]
+name = "tokenizer"
+harness = false
+
+[[bench]]
+name = "subset"
+harness = false

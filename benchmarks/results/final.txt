@@ -1,0 +1,34 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `bench` profile [optimized] target(s) in 0.36s
+     Running benches/tokenizer.rs (target/release/deps/tokenizer-ab2263a49b0262d6)
+Token: 24 bytes; CompactToken: 12 bytes; Tokenizer: 24 bytes
+9 samples, target 150 ms/sample, >=20 ms calibration per input/variant; single thread, warm resident inputs
+No I/O, input generation, or allocation in timed scans; black_box per token and per traversal
+short-atoms: 262154 bytes, 91184 tokens
+long-atoms: 263780 bytes, 484 tokens
+dense-parens: 262150 bytes, 262150 tokens
+whitespace-heavy: 262612 bytes, 1808 tokens
+unicode: 262170 bytes, 67970 tokens
+large-mixed: 16777384 bytes, 178230 tokens
+target/benchmark-inputs/large-irregular.cljs: 33554524 bytes, 982033 tokens
+match-usize      short-atoms           1079.4 MB/s     375.5 Mtokens/s (range 1013.7..1095.8 MB/s)
+table-usize      short-atoms           1185.3 MB/s     412.3 Mtokens/s (range 1148.6..1205.4 MB/s)
+match-u32        short-atoms           1092.0 MB/s     379.8 Mtokens/s (range 1072.4..1099.1 MB/s)
+match-usize      long-atoms            2292.9 MB/s       4.2 Mtokens/s (range 2189.5..2356.2 MB/s)
+table-usize      long-atoms            3234.7 MB/s       5.9 Mtokens/s (range 2952.2..3287.3 MB/s)
+match-u32        long-atoms            2304.5 MB/s       4.2 Mtokens/s (range 2212.6..2332.7 MB/s)
+match-usize      dense-parens           854.4 MB/s     854.4 Mtokens/s (range 781.3..872.3 MB/s)
+table-usize      dense-parens           964.8 MB/s     964.8 Mtokens/s (range 907.3..996.4 MB/s)
+match-u32        dense-parens           876.6 MB/s     876.6 Mtokens/s (range 819.0..883.2 MB/s)
+match-usize      whitespace-heavy      1899.0 MB/s      13.1 Mtokens/s (range 1767.0..1934.3 MB/s)
+table-usize      whitespace-heavy      2852.4 MB/s      19.6 Mtokens/s (range 2757.4..2923.6 MB/s)
+match-u32        whitespace-heavy      1822.2 MB/s      12.5 Mtokens/s (range 1671.5..1906.1 MB/s)
+match-usize      unicode               1292.9 MB/s     335.2 Mtokens/s (range 1227.4..1313.0 MB/s)
+table-usize      unicode               1435.9 MB/s     372.3 Mtokens/s (range 1367.7..1459.6 MB/s)
+match-u32        unicode               1281.5 MB/s     332.2 Mtokens/s (range 1194.5..1313.7 MB/s)
+match-usize      large-mixed           2131.8 MB/s      22.6 Mtokens/s (range 1948.5..2162.9 MB/s)
+table-usize      large-mixed           2993.7 MB/s      31.8 Mtokens/s (range 2797.9..3028.9 MB/s)
+match-u32        large-mixed           2108.4 MB/s      22.4 Mtokens/s (range 1924.4..2139.5 MB/s)
+match-usize      target/benchmark-inputs/large-irregular.cljs    1961.6 MB/s      57.4 Mtokens/s (range 1806.6..2010.9 MB/s)
+table-usize      target/benchmark-inputs/large-irregular.cljs    2560.2 MB/s      74.9 Mtokens/s (range 2502.5..2579.3 MB/s)
+match-u32        target/benchmark-inputs/large-irregular.cljs    1974.2 MB/s      57.8 Mtokens/s (range 1851.8..2004.2 MB/s)

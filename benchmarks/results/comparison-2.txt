@@ -1,0 +1,29 @@
+    Finished `bench` profile [optimized] target(s) in 0.01s
+     Running benches/tokenizer.rs (target/release/deps/tokenizer-ab2263a49b0262d6)
+Token: 24 bytes; CompactToken: 12 bytes; Tokenizer: 24 bytes
+9 samples, target 150 ms/sample, >=20 ms calibration per input/variant; single thread, warm resident inputs
+No I/O, input generation, or allocation in timed scans; black_box per token and per traversal
+short-atoms: 262154 bytes, 91184 tokens
+long-atoms: 263780 bytes, 484 tokens
+dense-parens: 262150 bytes, 262150 tokens
+whitespace-heavy: 262612 bytes, 1808 tokens
+unicode: 262170 bytes, 67970 tokens
+large-mixed: 16777384 bytes, 178230 tokens
+match-usize      short-atoms           1085.5 MB/s     377.6 Mtokens/s (range 994.3..1093.0 MB/s)
+table-usize      short-atoms           1165.4 MB/s     405.4 Mtokens/s (range 1086.0..1197.9 MB/s)
+match-u32        short-atoms           1080.1 MB/s     375.7 Mtokens/s (range 986.7..1101.8 MB/s)
+match-usize      long-atoms            2308.3 MB/s       4.2 Mtokens/s (range 2136.4..2321.6 MB/s)
+table-usize      long-atoms            3211.6 MB/s       5.9 Mtokens/s (range 3012.0..3265.6 MB/s)
+match-u32        long-atoms            2280.6 MB/s       4.2 Mtokens/s (range 2147.4..2322.4 MB/s)
+match-usize      dense-parens           867.8 MB/s     867.8 Mtokens/s (range 823.9..886.6 MB/s)
+table-usize      dense-parens           968.2 MB/s     968.2 Mtokens/s (range 916.5..988.7 MB/s)
+match-u32        dense-parens           876.2 MB/s     876.2 Mtokens/s (range 833.5..883.1 MB/s)
+match-usize      whitespace-heavy      1873.3 MB/s      12.9 Mtokens/s (range 1741.0..1931.1 MB/s)
+table-usize      whitespace-heavy      2850.0 MB/s      19.6 Mtokens/s (range 2689.0..2873.9 MB/s)
+match-u32        whitespace-heavy      1948.1 MB/s      13.4 Mtokens/s (range 1751.1..2011.8 MB/s)
+match-usize      unicode               1265.1 MB/s     328.0 Mtokens/s (range 1214.8..1312.9 MB/s)
+table-usize      unicode               1391.5 MB/s     360.8 Mtokens/s (range 1285.2..1439.5 MB/s)
+match-u32        unicode               1278.3 MB/s     331.4 Mtokens/s (range 1178.7..1305.1 MB/s)
+match-usize      large-mixed           2121.4 MB/s      22.5 Mtokens/s (range 2032.7..2134.7 MB/s)
+table-usize      large-mixed           2942.2 MB/s      31.3 Mtokens/s (range 2695.7..2991.6 MB/s)
+match-u32        large-mixed           2143.2 MB/s      22.8 Mtokens/s (range 1982.6..2180.9 MB/s)
