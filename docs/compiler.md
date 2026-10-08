@@ -304,3 +304,11 @@ higher-order callee/argument effects, saved function values versus live globals,
 redefinition during argument evaluation, fixed-method argument-count behavior,
 and dynamic non-callable failures. Its source map explicitly excludes upstream
 multi-arity, variadic, protocol, collection invocation, recur, and apply assertions.
+
+The [control-flow audit](../tests/reference/control-flow-evidence.md) brings the
+runtime corpus to **202** passing programs against both baselines. Its matrix
+checks if/do/let* in Value, Discard and Return contexts, including nested tests,
+initializers, bodies, callees and arguments. Ordered traces and host failures
+expose duplicated evaluation, eager branches, dropped discarded effects and
+premature returns. Existing namespace comparisons verify dependency/source order;
+method probes verify exactly-once receiver/getter/argument evaluation and `this`.

@@ -34,3 +34,9 @@ failure-host-object-call	(let* [f js/lightHost] (f (observe "argument")))	{"stat
 failure-undefined-call	(let* [f (.boundary js/lightHost "undefined")] (f (observe "argument")))	{"status":"threw","error":{"category":"type-error"}}	[]	""
 failure-callee-expression	((do (observe "callee") nil) (observe "argument"))	{"status":"threw","error":{"category":"type-error"}}	["callee"]	""
 failure-extra-argument-before-body	((fn* [] (observe "unreachable")) (.fail js/lightHost "type"))	{"status":"threw","error":{"category":"type-error"}}	[["throw","type"]]	""
+# Independent control-flow failure frontiers; see control-flow-evidence.md.
+flow-failure-test-value	(observe (if (do (observe "test") (.fail js/lightHost "type")) (observe "then") (observe "else"))) (observe "after")	{"status":"threw","error":{"category":"type-error"}}	["test",["throw","type"]]	""
+flow-failure-initializer-discard	(let* [a (observe "first") b (if (observe false) (observe "then") (do (observe "selected") (.fail js/lightHost "range"))) c (observe "later-init")] (observe "body")) (observe "after")	{"status":"threw","error":{"category":"range-error"}}	["first",false,"selected",["throw","range"]]	""
+flow-failure-argument-return	((let* [x (observe "callee")] (fn* [a b] (observe "body"))) (do (observe "first-arg") (.fail js/lightHost "type")) (observe "later-arg"))	{"status":"threw","error":{"category":"type-error"}}	["callee","first-arg",["throw","type"]]	""
+flow-failure-method-receiver	(.method (do (observe "receiver-start") (.fail js/lightHost "range")) (observe "arg1") (observe "arg2"))	{"status":"threw","error":{"category":"range-error"}}	["receiver-start",["throw","range"]]	""
+flow-failure-method-argument	(.method (let* [target (.receiver js/lightHost)] target) (if (observe true) (.fail js/lightHost "type") (observe "else")) (observe "later-arg"))	{"status":"threw","error":{"category":"type-error"}}	["receiver","method-get",true,["throw","type"]]	""

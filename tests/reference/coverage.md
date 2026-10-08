@@ -89,6 +89,18 @@ source-span checks preserve explicit signature restrictions. Warning behavior,
 local/global function redefinition, and the boundary between a single fixed
 method and multi-arity/runtime dispatch are documented separately.
 
+## Control-flow audit update
+
+The [2026-10-08 control-flow audit](control-flow-evidence.md) adds **23** cases
+(**4 adapted**, **19 independent**), bringing the passing runtime corpus to
+**202**. It maps each if/do/let* form to Value, Discard and Return behavior,
+then accounts for their nested test, initializer, body, callee and argument roles.
+Dynamic truthiness, empty bodies, omitted else, unselected failure paths,
+global initialization, receiver preservation and abrupt completion all have
+observable results or traces. Existing dependency/source-order tests are reused
+and identified explicitly. All 202 cases and the three namespace comparisons
+pass against both baselines; no emitter change was needed.
+
 ## Inspected upstream sections
 
 ### Analyzer and compiler suites
