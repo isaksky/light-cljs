@@ -82,13 +82,13 @@ consumer order, source order of initializers, identical global names in distinct
 namespaces, aliases, a passed global function, and reading a redefined global.
 The fixtures are hand-authored, not copied upstream tests.
 
-The reference build command used by the Rust tests is:
+The equivalent command for the current explicit-selection harness is:
 
 ```sh
-clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj OUTPUT
+clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj release 1.12.134 - OUTPUT
 # Optional standalone fixture/program modes:
-clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj OUTPUT cases PATH.tsv
-clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj OUTPUT program examples/namespaces demo.main
+clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj release 1.12.134 - OUTPUT cases PATH.tsv
+clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj release 1.12.134 - OUTPUT program examples/namespaces demo.main
 ```
 
 `OUTPUT` must be a fresh writable directory path. Run its generated launcher

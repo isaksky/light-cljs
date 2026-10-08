@@ -202,7 +202,13 @@ cargo test
 cargo test --release
 cargo clippy --all-targets -- -D warnings
 
-# Compile those same programs with the standard compiler and compare behavior.
+# Required pinned Maven comparison (also the default selection).
+LIGHT_CLJS_REFERENCE=release cargo test --test execution -- --ignored --nocapture
+
+# Supplemental comparison: compare both upstreams, then light-cljs against each.
+LIGHT_CLJS_REFERENCE=both \
+LIGHT_CLJS_REFERENCE_CHECKOUT="$PWD/research/clojurescript" \
+LIGHT_CLJS_REFERENCE_REVISION=a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e \
 cargo test --test execution -- --ignored --nocapture
 
 # Reader regression coverage stays independent of executable-language coverage.
@@ -235,6 +241,25 @@ source inspection/adaptations are identified in the evidence and loader tests.
 The research checkout is consulted for implementation semantics, not silently
 substituted for the pinned release oracle. JavaScript text is never the
 conformance criterion; repository corpora remain reader regression tests.
+
+`LIGHT_CLJS_REFERENCE` selects `release` (the default), `checkout`, or `both`.
+Checkout selections require an explicit path and full commit SHA; the harness
+requires a clean repository at that exact revision, uses its `deps.edn` through
+`:local/root`, and verifies compiler/analyzer/runtime resources actually came
+from that checkout. `checkout` alone is useful when investigating a failure;
+it does not satisfy the required release job. `both` reports a release-versus-
+checkout discrepancy before comparing with light-cljs, retaining both builds
+and their results. No reference is chosen because it agrees with light-cljs.
+All three selections run the same cases and namespace fixtures. Missing paths,
+revisions, dependencies, or failed builds are failures, with no fallback or skip.
+
+Each build prints its exact shell invocation, reference identity, Java/Clojure
+runtime and Node versions, and verified compiler settings. On failure, the
+printed temporary directory retains generated source, `invocation.sh`,
+`build.stdout`, `build.stderr`, and (when execution was reached) `driver.js`,
+`node-version.txt`, and `results.txt`. Successful comparisons remove their
+temporary builds. See [checkout evidence](../tests/reference/checkout-evidence.md)
+for upstream harness inspection, standalone reproduction, and actual runs.
 
 The [coverage and provenance index](../tests/reference/coverage.md) maps inspected
 upstream assertions to stable local fixture IDs, applicable gaps, and deliberate

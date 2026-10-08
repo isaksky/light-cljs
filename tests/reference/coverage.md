@@ -237,7 +237,7 @@ local fixture source in that test when adding a new fixture location.
    `(fn* [observe] ...)`. Use a fresh output directory for a standalone reduction:
 
    ```sh
-   clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj OUTPUT cases PATH.tsv
+   clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -M tests/reference/execution.clj release 1.12.134 - OUTPUT cases PATH.tsv
    # From OUTPUT, load the compiled cases and shared result driver:
    node -e 'require("./reference.js"); require("/absolute/path/to/light-cljs/tests/support/execution.js")'
    ```

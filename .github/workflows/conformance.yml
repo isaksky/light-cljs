@@ -48,5 +48,6 @@ jobs:
         run: clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -P
       - name: Required result and effect comparisons
         env:
+          LIGHT_CLJS_REFERENCE: release
           LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
         run: cargo test --locked --test execution -- --ignored --nocapture
