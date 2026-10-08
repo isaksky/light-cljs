@@ -5,10 +5,18 @@ edition = "2024"
 
 [dependencies]
 
+[features]
+# Benchmark-only allocation instrumentation, absent from normal timing runs.
+count-allocations = []
+
 [[bench]]
 name = "tokenizer"
 harness = false
 
 [[bench]]
 name = "subset"
+harness = false
+
+[[bench]]
+name = "parser"
 harness = false

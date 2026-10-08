@@ -71,3 +71,29 @@ fn reports_lexical_errors_with_spans_and_nonzero_status() {
             .contains("lexical errors")
     );
 }
+
+#[test]
+fn prints_parser_nodes_and_reports_locations() {
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--parse", "--text", "(+ 1 2)"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.starts_with("roots: [NodeId(3)]\n"));
+    assert!(text.contains("1\tNumber(Integer)\t3..4\t\"1\""));
+    assert!(
+        text.contains(
+            "Collection { kind: List, children: [NodeId(0), NodeId(1), NodeId(2)] }\t0..7"
+        )
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--parse", "--text", "(λ\n ]"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let text = String::from_utf8(output.stderr).unwrap();
+    assert!(text.contains("2:2: expected ), found ] (bytes 5..6)"));
+    assert!(text.contains("opened at 1:1 (bytes 0..1)"));
+}

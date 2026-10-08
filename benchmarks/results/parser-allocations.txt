@@ -1,0 +1,4 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `bench` profile [optimized] target(s) in 0.57s
+     Running benches/parser.rs (target/release/deps/parser-b8273ce4e643f049)
+Node: 48 bytes; NodeKind: 32; NodeId: 8; Parser: 104; SyntaxTree: 48

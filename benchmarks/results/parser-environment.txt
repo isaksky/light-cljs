@@ -1,0 +1,28 @@
+Captured 2026-10-07T20:43:04.742696-06:00
+$ rustc -Vv
+rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: aarch64-apple-darwin
+release: 1.99.0
+LLVM version: 23.1.2
+$ cargo -V
+cargo 1.99.0 (5f94df478 2026-08-27) (Homebrew)
+$ sysctl -n machdep.cpu.brand_string hw.physicalcpu hw.logicalcpu hw.memsize
+Apple M3 Ultra (Virtual)
+24
+24
+34359738368
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		15.7.3
+BuildVersion:		24G419
+$ git rev-parse HEAD
+7149c2a94ce95acf517be5f2de6e190aaedcd423
+$ git -C research/clojurescript rev-parse HEAD
+a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
+RUSTFLAGS=None
+CARGO_ENCODED_RUSTFLAGS=None
+CARGO_PROFILE_BENCH_OPT_LEVEL=None
+CARGO_PROFILE_BENCH_LTO=None

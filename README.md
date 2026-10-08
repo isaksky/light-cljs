@@ -1,9 +1,9 @@
 # light-cljs
 
-A borrowing Rust lexer for ClojureScript source. It recognizes the lexical forms
-used by ClojureScript's JVM reader while leaving form construction and reader
-semantics for the next compiler stage. There are no library dependencies, token
-text allocations, unsafe code, or SIMD.
+A borrowing Rust lexer and handwritten syntax parser for ClojureScript source.
+The parser pulls tokens into a node arena, while reader expansion and compiler
+semantics remain later stages. The library has no dependencies or unsafe code.
+Tokens never allocate text; syntax leaves keep byte spans wherever possible.
 
 ```rust
 use light_cljs::Tokenizer;
@@ -81,20 +81,50 @@ Compatibility is based on the local ClojureScript checkout at
 `read-regex`, `macros`, and `dispatch-macros` in
 `research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader.clj`.
 
-## Reader work remains separate
+## Lexer versus parser
 
 Lexical coverage does not mean a complete reader or source validator. The lexer
 preserves escape sequences and character spellings without decoding or validating
 them; for example, `"\q"` is a `String` and `\unknown` a `Character` whose values
 a reader must reject. Regex compilation, numeric/symbol/keyword validation,
 namespace resolution, tag resolution, metadata application, map arity, nested
-anonymous-function restrictions, and delimiter matching are also reader work.
+anonymous-function restrictions, and delimiter matching are also later work.
+The [parser](docs/parser.md) now handles spelling validation, string/character
+decoding, delimiters, ordinary map arity, and anonymous-function syntax. Reader
+expansion and namespace-sensitive meanings remain deferred.
 
 Context-dependent `%` notation and syntax-quote gensyms remain raw atoms. For
 example, `%&rest` and `%1:kw` each remain one atom; inside `#()` the reader must
 interpret the raw span as argument shorthand followed by another form. Outside
 `#()` the same text can be a symbol. This lexer intentionally keeps no nesting
 or reader context, and never executes reader evaluation.
+
+## Parse syntax
+
+```rust
+use light_cljs::parse;
+
+let source = "(+ 1 2)";
+let tree = parse(source).unwrap();
+let root = &tree.nodes[tree.roots[0].0];
+assert_eq!(root.span, 0..7);
+```
+
+`SyntaxTree` owns a `Vec<Node>` and root IDs; retain the original source alongside
+it. Collections store `Vec<NodeId>` children. `Parser::read_form()` also supports
+reading and inspecting one top-level form at a time. It uses one-token lookahead,
+skips comments and whole-form `#_` discards, and limits nesting to 128 levels.
+
+```sh
+cargo run -- --parse --text '(+ 1 2)'
+cargo run -- --parse tests/fixtures/parser_forms.cljs
+cargo run -- --parse research/clojurescript/src/main/cljs/cljs/core.cljs
+```
+
+Parser output is a flat arena listing with child IDs, byte spans, and escaped
+source text. Parse errors include line/byte-column, the failing span, and an
+opening span when available. See [the parser contract](docs/parser.md) and
+[measured construction costs](benchmarks/parser.md).
 
 ## Inspect tokens
 
@@ -124,9 +154,11 @@ cargo test
 cargo test --release
 cargo clippy --all-targets -- -D warnings
 cargo bench --bench tokenizer -- --samples 9 --ms 150
+cargo bench --bench parser -- --samples 9 --ms 100
 
 # Optional: requires the gitignored reference checkout.
 cargo test --release --test corpus -- --ignored --nocapture
+cargo test --release --test parser_corpus -- --ignored --nocapture
 cargo bench --bench tokenizer -- --samples 9 --ms 150 \
   research/clojurescript/src/main/cljs/cljs/core.cljs \
   research/clojurescript/src/main/clojure/cljs/analyzer.cljc

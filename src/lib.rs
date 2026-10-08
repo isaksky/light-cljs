@@ -1,13 +1,21 @@
-//! Borrowing, allocation-free lexical scanning of ClojureScript source.
+//! Borrowing lexical scanning and arena-based syntax parsing of ClojureScript.
 //!
 //! Tokens retain raw byte spans, including quotes, escapes, and reader prefixes.
 //! Whitespace and commas are skipped; comments are emitted. Atom classification,
 //! escape decoding/validation, delimiter matching, and reader-macro semantics
-//! belong to the reader. See README.md for the token contract and compatibility.
+//! belong to the parser or subsequent reader expansion. See README.md for the
+//! token contract and docs/parser.md for the syntax/semantics boundary.
 
 use std::{iter::FusedIterator, ops::Range};
 
 mod char_classes;
+mod literals;
+pub mod parser;
+
+pub use parser::{
+    CollectionKind, ErrorKind, LineIndex, Node, NodeId, NodeKind, NumberKind, ParseError, Parser,
+    PrefixKind, StringValue, SymbolicValue, SyntaxTree, parse,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LexError {

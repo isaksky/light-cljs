@@ -6,13 +6,17 @@ use std::{
     process::ExitCode,
 };
 
-use light_cljs::{TokenKind, Tokenizer};
+use light_cljs::{LineIndex, TokenKind, Tokenizer, parse};
 
-const USAGE: &str = "Usage: light-cljs [FILE|-]\n       light-cljs --text SOURCE\n\nRead UTF-8 from FILE or stdin and print token kinds, byte spans, and escaped text.\nPrints raw ClojureScript lexical tokens, including comments and reader prefixes.\nLexical errors are printed with spans and cause a nonzero exit status.";
+const USAGE: &str = "Usage: light-cljs [--parse] [FILE|-]\n       light-cljs [--parse] --text SOURCE\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nErrors cause a nonzero exit status; parser diagnostics include line/byte-column.";
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let first = args.next();
+    let mut first = args.next();
+    let parsing = first.as_deref().is_some_and(|arg| arg == "--parse");
+    if parsing {
+        first = args.next();
+    }
     let source = match first.as_deref() {
         Some(arg) if arg == "--help" || arg == "-h" => {
             println!("{USAGE}");
@@ -36,6 +40,37 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
+    if parsing {
+        let tree = parse(&source).map_err(|error| {
+            let lines = LineIndex::new(&source);
+            let (line, column) = lines.line_column(error.span.start).unwrap();
+            let mut message = format!(
+                "{line}:{column}: {error} (bytes {}..{})",
+                error.span.start, error.span.end
+            );
+            if let Some(span) = error.related {
+                let (line, column) = lines.line_column(span.start).unwrap();
+                message.push_str(&format!(
+                    "; opened at {line}:{column} (bytes {}..{})",
+                    span.start, span.end
+                ));
+            }
+            message
+        })?;
+        writeln!(out, "roots: {:?}", tree.roots)?;
+        for (id, node) in tree.nodes.iter().enumerate() {
+            writeln!(
+                out,
+                "{id}\t{:?}\t{}..{}\t{:?}",
+                node.kind,
+                node.span.start,
+                node.span.end,
+                &source[node.span.clone()]
+            )?;
+        }
+        out.flush()?;
+        return Ok(());
+    }
     let mut has_errors = false;
     for token in Tokenizer::new(&source) {
         has_errors |= matches!(token.kind, TokenKind::Error(_));
