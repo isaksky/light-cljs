@@ -1,0 +1,2 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-44/verified-baseline/bin/interpreter-allocations", "--samples", "9", "--iterations", "32", "--allocations"]
+samples=9 iterations=32 allocations=true diagnostics=false; no filesystem I/O in resident phases

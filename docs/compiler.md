@@ -2,8 +2,9 @@
 
 The compiler supports small programs with lexical closures, mutable globals,
 minimal namespaces, and narrow JavaScript interop. The two-namespace example
-prints exactly `4\n`. General macros, collections, library/runtime integration,
-and optimization remain outside this subset.
+prints exactly `4\n`. Native Rust macro expansion supports explicit user/host
+macros and selected core macros. Collections, general library/runtime integration,
+and optimization remain outside the executable JS subset.
 
 ## Pipeline and ownership
 
@@ -95,12 +96,24 @@ Evaluating output produces the program's value; explicit host calls such as
 `js/console.log` can print.
 
 List analysis dispatches primitive special forms before touching binding vectors
-or other operands. The macro hook then runs inside the analyzer, where the current
-lexical environment and expression context are available, before ordinary call
-analysis. Macro execution is unsupported. A small diagnostic catalog recognizes
-common core macro spellings such as `let` and `fn`; it is not a complete macro
-resolver. Lexical bindings and defined globals shadow those macro names.
+or other operands. The macro hook then resolves and executes macros in the native
+Rust interpreter, with the current lexical environment and expression context,
+before ordinary call analysis. It expands each call once, then analyzes its result
+and any nested calls. Lexical bindings shadow unqualified macros. Explicit macro
+imports take precedence over same-named runtime definitions; runtime definitions
+shadow the fallback core macro names. Qualified macro calls bypass simple lexical
+shadowing. `cljs.core/` and `clojure.core/` select the same supported native core
+expanders; this does not expose interpreter functions to the JS runtime.
 Unknown names remain unresolved.
+
+The parser remains unchanged. Original calls are lowered from their retained
+`SyntaxTree` into shared owned `Form` data. Returned data is appended directly to
+a private copy of the syntax arena, with indexed spelling/value/Form side tables;
+there is no printing, reparsing, JVM macro process, or JS macro executor. Generated
+forms retain their call-site spans and macro attribution. Original input objects
+retained in the result keep available source provenance. Scalar/generated leaves
+may use the entire call span. Analysis never mutates the caller's syntax tree.
+A source is retained once per analyzed runtime namespace when a macro needs it.
 
 ## Definitions and globals
 
@@ -159,8 +172,10 @@ Only one `:require` clause may appear in a namespace declaration.
 The current namespace can qualify its own globals. Transitive-only and unknown
 qualifiers are errors. Duplicate aliases (even to the same target), conflicting
 aliases, or an alias redirecting a required/current full namespace name are
-rejected. Namespace docstrings/metadata, `:refer`, `:rename`, macro imports,
-JavaScript packages, and all other clauses/options are unsupported. The loader
+rejected. Explicit compile-time imports use a separate `:require-macros` clause
+as described below. Namespace docstrings/metadata, runtime `:refer`, `:rename`,
+inferred macro imports (`:refer-macros`/`:include-macros`), JavaScript packages,
+and all other clauses/options are unsupported. The loader
 validates names and clauses before resolving their dependencies.
 
 A sequential depth-first walk uses Unseen/Loading/Loaded states. Dependencies
@@ -176,6 +191,123 @@ invalidation, or parallel scheduler.
 Existing standalone file/stdin/text modes are preserved and now accept `def`
 and interop. A standalone `(ns ...)` remains unsupported: select an entry with
 explicit roots to request filesystem loading.
+
+## Compiler macros and embedding
+
+```clojure
+;; demo/macros.clj (or .cljc, using the native :clj reader feature)
+(ns demo.macros)
+(defmacro twice [x]
+  `(let [value# ~x] (js/Math.imul value# 2)))
+
+;; A runtime .cljs source
+(ns demo.math (:require-macros [demo.macros :as m :refer [twice]]))
+(defn scale [x] (m/twice (twice x)))
+```
+
+Run the complete two-runtime-namespace example:
+
+```sh
+cargo run --quiet -- --compile --entry demo.main --source-root examples/macros > /tmp/macros.js
+node /tmp/macros.js
+# 12
+```
+
+Each `:require-macros` library may be a bare symbol or a vector with one optional
+`:as` and one optional `:refer [simple-names...]`. Full imported namespace names
+also qualify macros. Refers must identify public macro Vars, not ordinary
+interpreter functions. Duplicate aliases/refers and aliases redirecting full
+macro namespace names are errors. `cljs.core`/`clojure.core` are reserved core
+macro qualifiers. Runtime and macro alias tables are separate: the same alias can
+name a runtime namespace for a value reference and a macro namespace for a call.
+A macro import does not load `.cljs` or make interpreter Vars into runtime globals.
+
+The explicit roots are searched for `.clj` and `.cljc` macro sources through the
+native `FileSourceProvider`. Multiple distinct matching sources are ambiguous.
+Macro dependencies use the native interpreter's `ns`/`require` behavior. Each runtime namespace loads its macro imports immediately before its body is
+analyzed, after its runtime dependencies have been analyzed. Compile-time loading
+and macro effects therefore follow that dependency/source order. Macro
+files execute entirely in Rust using the native interpreter's documented subset;
+no Java classes, JS execution, or implicit filesystem/network/process functions
+are available. Native host callbacks are opt-in. `defmacro` in runtime `.cljs`
+is rejected with a directive to put it in an explicit macro namespace.
+
+Core expansion supports `let`, `fn`, `defn`, `defn-`, `when`, `when-not`, `cond`,
+`and`, `or`, `->`, `->>`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`,
+`if-let`, `when-let`, `if-some`, `when-some`, `loop`, and `letfn`. This is an
+expansion surface, not a promise that every expansion is executable: simple
+`let`/`fn`/`defn` and control/threading programs work within the existing runtime.
+Destructuring, pre/post conditions, nil-check helpers, loop/recur, multiple or
+variadic arities, and other expansions that need unavailable runtime primitives
+fail explicitly with the macro name and generated-form diagnostic. No generic
+collection or arithmetic runtime was added. Metadata/docstrings consumed by
+macros remain available during expansion; runtime annotations are not emitted.
+
+Collections, keywords, quoted forms, and shared semantic reader constructs may
+be passed as unevaluated macro data, even though they are unsupported runtime
+expressions. Auto-resolved keywords and qualified syntax-quote symbols use the
+runtime/macro alias view (macro aliases win), without installing interpreter
+aliases. `.cljs` reader conditionals are rejected, including inside macro calls;
+only macro source `.cljc` conditionals are supported. The shared reader uses the
+native Clojure syntax-quote construction rules, not the full CLJS tools.reader
+implementation. Unqualified syntax-quote resolution is therefore the native
+macro context's resolution; programs needing exact CLJS runtime qualification
+should pass explicitly qualified symbols. `#=` is never enabled.
+
+`compile`, `analyze`, and `compile_namespace` create fresh isolated macro hosts.
+The host is initialized lazily, so primitive programs do not initialize an
+interpreter. Use `compile_with_macros`, `analyze_with_macros`,
+`compile_namespace_with_macros`, or `analyze_namespaces_with_macros` for an explicit
+`MacroHost`. Runtime global storage is always fresh per compilation, even with a
+reused host. Namespace compilation installs a file provider for its explicit
+roots. A reused host loads each macro namespace once; use
+`host.load_namespace("demo.macros", Reload::Namespace)` or `Reload::All` to observe
+source changes. Macro roots/effects persist only when the caller explicitly
+reuses that host. Expansions are never cached, so reloads and macro effects remain
+observable. A runtime caller namespace alone never marks same-named macro code
+as loaded.
+
+Embedders may use `host.context_mut()` to evaluate/register macro code or configure
+native limits/effects, then `set_imports(caller, Vec<MacroImport>)` to validate
+already-loaded imports. `host.register_macro(&NativeDefinition)` installs a host
+macro using the same ABI: callback arguments are `&form`, `&env`, then unevaluated
+source arguments; declared arity includes those two implicit arguments. Native
+namespaces registered this way do not require filesystem sources. The lower-level
+`Context::expand_macro_call` accepts an explicitly resolved macro Var and a custom
+environment without applying SCI's flat lexical-map convention.
+
+The compiler's supported `&env` map follows the pinned CLJS analyzer:
+
+| Key | Supported value |
+| --- | --- |
+| `:locals` | Symbol-to-binding map for visible lexical names. Each record contains `:name`, `:form`, `:op :binding`, `:local :let/:arg/:fn`, and stable per-program `:light-cljs/id`. |
+| Binding details | Let/argument records have `:binding-form? true`; arguments have zero-based `:arg-id`; shadowed bindings appear under `:shadow`. Fn self bindings omit `:binding-form?`. |
+| `:context` | `:expr`, `:statement`, or `:return`. Fn bodies and value-position let bodies return; a multi-form value-position `do` also has a returning tail. |
+| `:ns` | `:name` caller symbol; separate `:requires`, `:require-macros`, and `:use-macros` maps. |
+| `:line`, `:column` | One-based call-site location, also attached to `&form` metadata. |
+
+`*ns*` is dynamically bound to the caller during expansion and restored afterward,
+including after failures. This is a bounded CLJS environment contract, not the
+entire upstream analyzer AST: `:defs`, inferred types, compiler internals,
+`:info`, binding source locations and other keys are absent. This compiler emits
+an expression with a returning final form; standalone/entry tails consequently
+have `:return`, rather than CLJS's usual top-level statement context. The
+[reference evidence](../tests/reference/compiler-macros.md) records the source
+anchors and observed distinctions from SCI's environment.
+
+Default `MacroLimits` allow 1,024 expansions and 100,000 generated form nodes per
+compilation, with 64 nested macro expansions (also the hard cap). Generated
+runtime analysis has a 128-frame nesting bound. Native macro calls/load operations
+also obey interpreter limits; the default host uses 1,000,000 fuel units and
+2,000,000 allocation units per interpreter operation. Embedders may lower these
+limits or supply cancellation/poll callbacks through the context. Failures are
+explicit, and no partial JS is emitted. Arbitrary native callbacks remain subject
+to the interpreter's cooperative cancellation limitations.
+
+Enable `host.context_mut().set_macro_diagnostics(true)` to retrieve
+`macro_expansion_stats()`: macro name, definition location when available,
+expansion count, generated node count and elapsed native expansion/conversion
+time. Diagnostics default off; no expansion clock reads occur in that mode.
 
 ## JavaScript interop
 

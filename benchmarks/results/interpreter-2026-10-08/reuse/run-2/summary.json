@@ -1,0 +1,960 @@
+{
+  "results": {
+    "baseline-fresh-process": {
+      "closures_loop.clj": {
+        "mad": 218583,
+        "max": 4292334,
+        "median": 3396542,
+        "min": 3119458,
+        "samples": 9
+      },
+      "collections.clj": {
+        "mad": 115000,
+        "max": 4579500,
+        "median": 4276375,
+        "min": 4131417,
+        "samples": 9
+      },
+      "lazy.clj": {
+        "mad": 43625,
+        "max": 3977416,
+        "median": 3465541,
+        "min": 3391291,
+        "samples": 9
+      },
+      "main.clj": {
+        "mad": 232667,
+        "max": 7211666,
+        "median": 6926250,
+        "min": 6625084,
+        "samples": 9
+      }
+    },
+    "baseline-interpreter": {
+      "closures_loop/analyze": {
+        "mad": 1292.9375,
+        "max": 130332.03125,
+        "median": 124783.84375,
+        "min": 121062.5,
+        "samples": 9
+      },
+      "closures_loop/eval": {
+        "mad": 1990.90625,
+        "max": 415381.53125,
+        "median": 387777.34375,
+        "min": 384786.46875,
+        "samples": 9
+      },
+      "closures_loop/gc_after_analyze": {
+        "mad": 24667.0,
+        "max": 869750.0,
+        "median": 816750.0,
+        "min": 732375.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_eval": {
+        "mad": 230917.0,
+        "max": 7975792.0,
+        "median": 7286417.0,
+        "min": 6206750.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_lower": {
+        "mad": 959.0,
+        "max": 56209.0,
+        "median": 52709.0,
+        "min": 49708.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_parse": {
+        "mad": 208.0,
+        "max": 5625.0,
+        "median": 4875.0,
+        "min": 1917.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_read": {
+        "mad": 376.0,
+        "max": 75375.0,
+        "median": 52584.0,
+        "min": 49792.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_read_analyze_eval": {
+        "mad": 285375.0,
+        "max": 8960875.0,
+        "median": 8625917.0,
+        "min": 7969250.0,
+        "samples": 9
+      },
+      "closures_loop/lower": {
+        "mad": 490.875,
+        "max": 10371.09375,
+        "median": 9295.5625,
+        "min": 8690.125,
+        "samples": 9
+      },
+      "closures_loop/parse": {
+        "mad": 97.65625,
+        "max": 2911.46875,
+        "median": 2033.875,
+        "min": 1835.9375,
+        "samples": 9
+      },
+      "closures_loop/read": {
+        "mad": 61.1875,
+        "max": 12175.78125,
+        "median": 10962.21875,
+        "min": 10355.46875,
+        "samples": 9
+      },
+      "closures_loop/read_analyze_eval": {
+        "mad": 6259.125,
+        "max": 574838.53125,
+        "median": 542774.75,
+        "min": 528877.59375,
+        "samples": 9
+      },
+      "collections/analyze": {
+        "mad": 1936.21875,
+        "max": 168847.65625,
+        "median": 160816.40625,
+        "min": 155428.375,
+        "samples": 9
+      },
+      "collections/eval": {
+        "mad": 8470.0625,
+        "max": 1007691.40625,
+        "median": 951580.75,
+        "min": 918794.28125,
+        "samples": 9
+      },
+      "collections/gc_after_analyze": {
+        "mad": 49125.0,
+        "max": 1213167.0,
+        "median": 1124667.0,
+        "min": 735958.0,
+        "samples": 9
+      },
+      "collections/gc_after_eval": {
+        "mad": 321583.0,
+        "max": 19727666.0,
+        "median": 19116375.0,
+        "min": 18471209.0,
+        "samples": 9
+      },
+      "collections/gc_after_lower": {
+        "mad": 6125.0,
+        "max": 159666.0,
+        "median": 143708.0,
+        "min": 55500.0,
+        "samples": 9
+      },
+      "collections/gc_after_parse": {
+        "mad": 1041.0,
+        "max": 98542.0,
+        "median": 88750.0,
+        "min": 4667.0,
+        "samples": 9
+      },
+      "collections/gc_after_read": {
+        "mad": 4625.0,
+        "max": 274458.0,
+        "median": 144417.0,
+        "min": 55750.0,
+        "samples": 9
+      },
+      "collections/gc_after_read_analyze_eval": {
+        "mad": 255792.0,
+        "max": 20852292.0,
+        "median": 20108334.0,
+        "min": 19657167.0,
+        "samples": 9
+      },
+      "collections/lower": {
+        "mad": 259.09375,
+        "max": 10962.25,
+        "median": 10240.875,
+        "min": 9537.75,
+        "samples": 9
+      },
+      "collections/parse": {
+        "mad": 57.28125,
+        "max": 2216.15625,
+        "median": 2145.84375,
+        "min": 1940.09375,
+        "samples": 9
+      },
+      "collections/read": {
+        "mad": 552.09375,
+        "max": 14931.0,
+        "median": 12230.46875,
+        "min": 10761.71875,
+        "samples": 9
+      },
+      "collections/read_analyze_eval": {
+        "mad": 10483.0625,
+        "max": 1176311.1875,
+        "median": 1146066.40625,
+        "min": 1122936.21875,
+        "samples": 9
+      },
+      "context/constructor_drop": {
+        "mad": 2.625,
+        "max": 582.03125,
+        "median": 528.65625,
+        "min": 523.4375,
+        "samples": 9
+      },
+      "context/namespace_init_drop": {
+        "mad": 3.9375,
+        "max": 2756.5,
+        "median": 2557.3125,
+        "min": 2520.8125,
+        "samples": 9
+      },
+      "embedding/gc_after_invoke": {
+        "mad": 4499.0,
+        "max": 448333.0,
+        "median": 433959.0,
+        "min": 425167.0,
+        "samples": 9
+      },
+      "embedding/invoke": {
+        "mad": 324.21875,
+        "max": 35868.46875,
+        "median": 34565.125,
+        "min": 33696.625,
+        "samples": 9
+      },
+      "lazy/analyze": {
+        "mad": 195.3125,
+        "max": 82085.9375,
+        "median": 80750.0,
+        "min": 75140.625,
+        "samples": 9
+      },
+      "lazy/eval": {
+        "mad": 3123.71875,
+        "max": 535865.875,
+        "median": 502274.75,
+        "min": 498433.59375,
+        "samples": 9
+      },
+      "lazy/gc_after_analyze": {
+        "mad": 34458.0,
+        "max": 487125.0,
+        "median": 395583.0,
+        "min": 299708.0,
+        "samples": 9
+      },
+      "lazy/gc_after_eval": {
+        "mad": 163500.0,
+        "max": 11352791.0,
+        "median": 10741917.0,
+        "min": 10395625.0,
+        "samples": 9
+      },
+      "lazy/gc_after_lower": {
+        "mad": 2708.0,
+        "max": 206459.0,
+        "median": 87917.0,
+        "min": 30500.0,
+        "samples": 9
+      },
+      "lazy/gc_after_parse": {
+        "mad": 1208.0,
+        "max": 65000.0,
+        "median": 60500.0,
+        "min": 3250.0,
+        "samples": 9
+      },
+      "lazy/gc_after_read": {
+        "mad": 3000.0,
+        "max": 89917.0,
+        "median": 86917.0,
+        "min": 29875.0,
+        "samples": 9
+      },
+      "lazy/gc_after_read_analyze_eval": {
+        "mad": 101416.0,
+        "max": 11964208.0,
+        "median": 11688958.0,
+        "min": 10799541.0,
+        "samples": 9
+      },
+      "lazy/lower": {
+        "mad": 108.0625,
+        "max": 6638.0,
+        "median": 5720.0625,
+        "min": 5231.75,
+        "samples": 9
+      },
+      "lazy/parse": {
+        "mad": 35.15625,
+        "max": 1210.9375,
+        "median": 1167.96875,
+        "min": 1066.40625,
+        "samples": 9
+      },
+      "lazy/read": {
+        "mad": 167.96875,
+        "max": 6981.78125,
+        "median": 6670.5625,
+        "min": 5936.1875,
+        "samples": 9
+      },
+      "lazy/read_analyze_eval": {
+        "mad": 3415.375,
+        "max": 612891.9375,
+        "median": 602084.625,
+        "min": 597690.09375,
+        "samples": 9
+      },
+      "modules/cached_require": {
+        "mad": 316.375,
+        "max": 24864.59375,
+        "median": 24196.625,
+        "min": 22929.6875,
+        "samples": 9
+      },
+      "modules/first_load": {
+        "mad": 40833.0,
+        "max": 3352542.0,
+        "median": 3102375.0,
+        "min": 3015209.0,
+        "samples": 9
+      },
+      "modules/gc_after_require": {
+        "mad": 7293.0,
+        "max": 154167.0,
+        "median": 137166.0,
+        "min": 125708.0,
+        "samples": 9
+      }
+    },
+    "baseline-parser": {
+      "dense-parens": {
+        "mad": 84222.13333333284,
+        "max": 6923883.333333333,
+        "median": 6698413.933333334,
+        "min": 6606208.333333333,
+        "samples": 9
+      },
+      "large-reader": {
+        "mad": 528458.0,
+        "max": 76276500.0,
+        "median": 72010541.0,
+        "min": 66614167.0,
+        "samples": 9
+      },
+      "long-atoms": {
+        "mad": 392.35724137930083,
+        "max": 138473.5048275862,
+        "median": 137793.27586206896,
+        "min": 136622.47172413793,
+        "samples": 9
+      },
+      "reader-syntax": {
+        "mad": 11127.403846153757,
+        "max": 1936464.75,
+        "median": 1912016.826923077,
+        "min": 1876781.25,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+        "mad": 24684.33333333349,
+        "max": 3045496.212121212,
+        "median": 2973521.484848485,
+        "min": 2910882.5757575757,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+        "mad": 25663.283783783903,
+        "max": 1373576.0135135136,
+        "median": 1333725.2297297297,
+        "min": 1256099.0945945946,
+        "samples": 9
+      },
+      "short-atoms": {
+        "mad": 130212.82142857136,
+        "max": 3661232.1428571427,
+        "median": 3465636.8928571427,
+        "min": 2987312.5,
+        "samples": 9
+      },
+      "unicode": {
+        "mad": 14486.780487804674,
+        "max": 2590913.6097560977,
+        "median": 2491743.9024390243,
+        "min": 2467332.3170731706,
+        "samples": 9
+      },
+      "whitespace-heavy": {
+        "mad": 1156.5369030390866,
+        "max": 151878.19536903038,
+        "median": 135510.97395079595,
+        "min": 134086.10709117222,
+        "samples": 9
+      },
+      "wide-vector": {
+        "mad": 81009.45454545412,
+        "max": 4292621.2272727275,
+        "median": 4000611.727272727,
+        "min": 3849500.0,
+        "samples": 9
+      }
+    },
+    "baseline-tokenizer": {
+      "dense-parens": {
+        "mad": 2640.972222222248,
+        "max": 543833.1055555556,
+        "median": 534164.8166666667,
+        "min": 531523.8444444444,
+        "samples": 9
+      },
+      "large-mixed": {
+        "mad": 29179.461538461037,
+        "max": 7652067.307692308,
+        "median": 7608548.076923077,
+        "min": 7563035.307692308,
+        "samples": 9
+      },
+      "large-reader": {
+        "mad": 53757.0,
+        "max": 17725993.166666668,
+        "median": 17591930.5,
+        "min": 17462145.833333332,
+        "samples": 9
+      },
+      "long-atoms": {
+        "mad": 871.5437788018462,
+        "max": 118694.7004608295,
+        "median": 115994.28801843317,
+        "min": 115030.14631336405,
+        "samples": 9
+      },
+      "reader-syntax": {
+        "mad": 1268.4931506849243,
+        "max": 280570.3205479452,
+        "median": 275823.51506849314,
+        "min": 274204.79452054796,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+        "mad": 6150.954285714193,
+        "max": 605244.0457142857,
+        "median": 556495.4742857143,
+        "min": 549689.0457142857,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+        "mad": 3518.7165775400936,
+        "max": 269903.4090909091,
+        "median": 261040.4411764706,
+        "min": 255721.70053475935,
+        "samples": 9
+      },
+      "short-atoms": {
+        "mad": 1517.110266159696,
+        "max": 380119.7718631179,
+        "median": 375589.1977186312,
+        "min": 370736.6920152091,
+        "samples": 9
+      },
+      "unicode": {
+        "mad": 3338.1100917431177,
+        "max": 467047.97247706424,
+        "median": 463022.5550458716,
+        "min": 457869.6467889908,
+        "samples": 9
+      },
+      "whitespace-heavy": {
+        "mad": 316.0200913242006,
+        "max": 93289.0794520548,
+        "median": 92617.69406392695,
+        "min": 91548.0593607306,
+        "samples": 9
+      }
+    },
+    "current-fresh-process": {
+      "closures_loop.clj": {
+        "mad": 35458,
+        "max": 3699333,
+        "median": 3182958,
+        "min": 2974250,
+        "samples": 9
+      },
+      "collections.clj": {
+        "mad": 136792,
+        "max": 4547125,
+        "median": 4176375,
+        "min": 3892541,
+        "samples": 9
+      },
+      "lazy.clj": {
+        "mad": 64667,
+        "max": 3589625,
+        "median": 3405209,
+        "min": 3186375,
+        "samples": 9
+      },
+      "main.clj": {
+        "mad": 153501,
+        "max": 6903541,
+        "median": 6079167,
+        "min": 5880250,
+        "samples": 9
+      }
+    },
+    "current-interpreter": {
+      "closures_loop/analyze": {
+        "mad": 3173.1875,
+        "max": 130847.65625,
+        "median": 124945.3125,
+        "min": 117031.25,
+        "samples": 9
+      },
+      "closures_loop/eval": {
+        "mad": 7257.8125,
+        "max": 343362.0,
+        "median": 333638.03125,
+        "min": 325848.9375,
+        "samples": 9
+      },
+      "closures_loop/gc_after_analyze": {
+        "mad": 39791.0,
+        "max": 978125.0,
+        "median": 756583.0,
+        "min": 687208.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_eval": {
+        "mad": 16459.0,
+        "max": 440458.0,
+        "median": 411917.0,
+        "min": 387334.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_lower": {
+        "mad": 2166.0,
+        "max": 82667.0,
+        "median": 49834.0,
+        "min": 47667.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_parse": {
+        "mad": 333.0,
+        "max": 4750.0,
+        "median": 4417.0,
+        "min": 1792.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_read": {
+        "mad": 750.0,
+        "max": 53292.0,
+        "median": 49541.0,
+        "min": 47375.0,
+        "samples": 9
+      },
+      "closures_loop/gc_after_read_analyze_eval": {
+        "mad": 46542.0,
+        "max": 1435166.0,
+        "median": 1334333.0,
+        "min": 1257542.0,
+        "samples": 9
+      },
+      "closures_loop/lower": {
+        "mad": 442.75,
+        "max": 10420.5625,
+        "median": 9756.53125,
+        "min": 8988.28125,
+        "samples": 9
+      },
+      "closures_loop/parse": {
+        "mad": 48.1875,
+        "max": 2311.1875,
+        "median": 1846.375,
+        "min": 1795.5625,
+        "samples": 9
+      },
+      "closures_loop/read": {
+        "mad": 563.78125,
+        "max": 12390.625,
+        "median": 11115.875,
+        "min": 10545.59375,
+        "samples": 9
+      },
+      "closures_loop/read_analyze_eval": {
+        "mad": 3013.03125,
+        "max": 508326.8125,
+        "median": 479942.71875,
+        "min": 464875.0,
+        "samples": 9
+      },
+      "collections/analyze": {
+        "mad": 3674.5,
+        "max": 176490.90625,
+        "median": 160641.9375,
+        "min": 150828.125,
+        "samples": 9
+      },
+      "collections/eval": {
+        "mad": 6670.59375,
+        "max": 1000233.0625,
+        "median": 950936.21875,
+        "min": 937858.09375,
+        "samples": 9
+      },
+      "collections/gc_after_analyze": {
+        "mad": 37959.0,
+        "max": 1136375.0,
+        "median": 1019750.0,
+        "min": 952792.0,
+        "samples": 9
+      },
+      "collections/gc_after_eval": {
+        "mad": 168333.0,
+        "max": 14637084.0,
+        "median": 13728292.0,
+        "min": 13070875.0,
+        "samples": 9
+      },
+      "collections/gc_after_lower": {
+        "mad": 3375.0,
+        "max": 173750.0,
+        "median": 141750.0,
+        "min": 57000.0,
+        "samples": 9
+      },
+      "collections/gc_after_parse": {
+        "mad": 2667.0,
+        "max": 124750.0,
+        "median": 89208.0,
+        "min": 7750.0,
+        "samples": 9
+      },
+      "collections/gc_after_read": {
+        "mad": 7000.0,
+        "max": 219500.0,
+        "median": 145750.0,
+        "min": 51458.0,
+        "samples": 9
+      },
+      "collections/gc_after_read_analyze_eval": {
+        "mad": 154624.0,
+        "max": 16452500.0,
+        "median": 14836542.0,
+        "min": 14139000.0,
+        "samples": 9
+      },
+      "collections/lower": {
+        "mad": 200.53125,
+        "max": 11131.5,
+        "median": 10505.21875,
+        "min": 9917.96875,
+        "samples": 9
+      },
+      "collections/parse": {
+        "mad": 52.0625,
+        "max": 2352.84375,
+        "median": 2197.90625,
+        "min": 2095.0625,
+        "samples": 9
+      },
+      "collections/read": {
+        "mad": 115.90625,
+        "max": 12634.125,
+        "median": 12382.8125,
+        "min": 11128.90625,
+        "samples": 9
+      },
+      "collections/read_analyze_eval": {
+        "mad": 14071.625,
+        "max": 1168893.25,
+        "median": 1142204.4375,
+        "min": 1120908.84375,
+        "samples": 9
+      },
+      "context/constructor_drop": {
+        "mad": 3.875,
+        "max": 1180.96875,
+        "median": 595.0625,
+        "min": 589.84375,
+        "samples": 9
+      },
+      "context/namespace_init_drop": {
+        "mad": 13.03125,
+        "max": 2902.34375,
+        "median": 2640.625,
+        "min": 2600.25,
+        "samples": 9
+      },
+      "embedding/gc_after_invoke": {
+        "mad": 167.0,
+        "max": 3208.0,
+        "median": 2167.0,
+        "min": 1791.0,
+        "samples": 9
+      },
+      "embedding/invoke": {
+        "mad": 238.28125,
+        "max": 32233.09375,
+        "median": 31410.15625,
+        "min": 30747.40625,
+        "samples": 9
+      },
+      "lazy/analyze": {
+        "mad": 761.71875,
+        "max": 82121.09375,
+        "median": 79205.71875,
+        "min": 77337.21875,
+        "samples": 9
+      },
+      "lazy/eval": {
+        "mad": 2257.8125,
+        "max": 519338.53125,
+        "median": 483524.75,
+        "min": 479425.78125,
+        "samples": 9
+      },
+      "lazy/gc_after_analyze": {
+        "mad": 10626.0,
+        "max": 479833.0,
+        "median": 386041.0,
+        "min": 301292.0,
+        "samples": 9
+      },
+      "lazy/gc_after_eval": {
+        "mad": 167041.0,
+        "max": 7822500.0,
+        "median": 6519625.0,
+        "min": 6183959.0,
+        "samples": 9
+      },
+      "lazy/gc_after_lower": {
+        "mad": 2000.0,
+        "max": 101584.0,
+        "median": 86458.0,
+        "min": 30875.0,
+        "samples": 9
+      },
+      "lazy/gc_after_parse": {
+        "mad": 750.0,
+        "max": 80834.0,
+        "median": 59417.0,
+        "min": 3250.0,
+        "samples": 9
+      },
+      "lazy/gc_after_read": {
+        "mad": 1958.0,
+        "max": 95000.0,
+        "median": 84542.0,
+        "min": 35750.0,
+        "samples": 9
+      },
+      "lazy/gc_after_read_analyze_eval": {
+        "mad": 104167.0,
+        "max": 7093709.0,
+        "median": 6912125.0,
+        "min": 6577500.0,
+        "samples": 9
+      },
+      "lazy/lower": {
+        "mad": 165.375,
+        "max": 6149.71875,
+        "median": 5656.25,
+        "min": 5437.5,
+        "samples": 9
+      },
+      "lazy/parse": {
+        "mad": 24.75,
+        "max": 1205.75,
+        "median": 1147.15625,
+        "min": 1119.8125,
+        "samples": 9
+      },
+      "lazy/read": {
+        "mad": 50.78125,
+        "max": 6833.34375,
+        "median": 6746.09375,
+        "min": 6272.125,
+        "samples": 9
+      },
+      "lazy/read_analyze_eval": {
+        "mad": 6841.125,
+        "max": 603510.40625,
+        "median": 583455.75,
+        "min": 571533.84375,
+        "samples": 9
+      },
+      "modules/cached_require": {
+        "mad": 234.375,
+        "max": 26328.125,
+        "median": 24212.25,
+        "min": 22609.375,
+        "samples": 9
+      },
+      "modules/first_load": {
+        "mad": 38125.0,
+        "max": 3085500.0,
+        "median": 2913750.0,
+        "min": 2750625.0,
+        "samples": 9
+      },
+      "modules/gc_after_require": {
+        "mad": 4542.0,
+        "max": 157958.0,
+        "median": 115417.0,
+        "min": 107625.0,
+        "samples": 9
+      }
+    },
+    "current-parser": {
+      "dense-parens": {
+        "mad": 54188.93333333358,
+        "max": 6847991.666666667,
+        "median": 6740575.0,
+        "min": 6659097.2,
+        "samples": 9
+      },
+      "large-reader": {
+        "mad": 496541.0,
+        "max": 74172208.0,
+        "median": 72393500.0,
+        "min": 71334250.0,
+        "samples": 9
+      },
+      "long-atoms": {
+        "mad": 608.9792531120474,
+        "max": 139190.40940525586,
+        "median": 138507.26141078837,
+        "min": 136407.2724757953,
+        "samples": 9
+      },
+      "reader-syntax": {
+        "mad": 26389.150943396147,
+        "max": 1974956.7547169812,
+        "median": 1927752.358490566,
+        "min": 1888621.075471698,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+        "mad": 33854.14705882361,
+        "max": 3061633.588235294,
+        "median": 2987436.2647058824,
+        "min": 2908053.911764706,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+        "mad": 7474.315068493132,
+        "max": 1397829.3424657534,
+        "median": 1363950.917808219,
+        "min": 1353523.397260274,
+        "samples": 9
+      },
+      "short-atoms": {
+        "mad": 57827.58620689623,
+        "max": 3595508.620689655,
+        "median": 3497790.206896552,
+        "min": 3073139.379310345,
+        "samples": 9
+      },
+      "unicode": {
+        "mad": 29387.5,
+        "max": 2590979.175,
+        "median": 2477575.0,
+        "min": 2445628.125,
+        "samples": 9
+      },
+      "whitespace-heavy": {
+        "mad": 1061.7701674277196,
+        "max": 139225.45662100456,
+        "median": 134390.22070015222,
+        "min": 133269.02587519027,
+        "samples": 9
+      },
+      "wide-vector": {
+        "mad": 49381.68000000017,
+        "max": 4104928.32,
+        "median": 3948058.32,
+        "min": 3865826.68,
+        "samples": 9
+      }
+    },
+    "current-tokenizer": {
+      "dense-parens": {
+        "mad": 2087.117647058796,
+        "max": 543417.5614973262,
+        "median": 538967.026737968,
+        "min": 534455.6577540106,
+        "samples": 9
+      },
+      "large-mixed": {
+        "mad": 51669.84615384601,
+        "max": 7716753.230769231,
+        "median": 7583060.923076923,
+        "min": 7525576.923076923,
+        "samples": 9
+      },
+      "large-reader": {
+        "mad": 46548.66666666791,
+        "max": 17445930.5,
+        "median": 17358798.666666668,
+        "min": 17217298.666666668,
+        "samples": 9
+      },
+      "long-atoms": {
+        "mad": 695.953757225434,
+        "max": 116215.8,
+        "median": 115370.95375722543,
+        "min": 114436.84971098266,
+        "samples": 9
+      },
+      "reader-syntax": {
+        "mad": 1615.4632152589038,
+        "max": 274474.34059945506,
+        "median": 272179.3814713897,
+        "min": 269000.34059945506,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+        "mad": 6013.736263736268,
+        "max": 558396.521978022,
+        "median": 544931.7747252748,
+        "min": 528816.6208791209,
+        "samples": 9
+      },
+      "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+        "mad": 6824.819892473111,
+        "max": 266088.70967741933,
+        "median": 256731.85483870967,
+        "min": 247836.80376344087,
+        "samples": 9
+      },
+      "short-atoms": {
+        "mad": 1291.0339622641332,
+        "max": 379572.95849056606,
+        "median": 375179.56226415094,
+        "min": 371715.24905660376,
+        "samples": 9
+      },
+      "unicode": {
+        "mad": 3355.9244444444194,
+        "max": 468015.18666666665,
+        "median": 455154.2622222222,
+        "min": 451372.96444444446,
+        "samples": 9
+      },
+      "whitespace-heavy": {
+        "mad": 489.5833333333285,
+        "max": 94651.29029304029,
+        "median": 92260.68406593407,
+        "min": 91712.0347985348,
+        "samples": 9
+      }
+    }
+  },
+  "unit": "ns/op",
+  "variation": "MAD and min/max, not confidence intervals"
+}

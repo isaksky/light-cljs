@@ -7,7 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::analyzer::{NamespaceInput, analyze_namespaces};
+use crate::analyzer::{NamespaceInput, analyze_namespaces_prepared, analyze_with_macros};
+use crate::interpreter::{FileSourceProvider, Reload};
+use crate::macro_host::{MacroHost, MacroImport};
 use crate::{
     AnalysisError, CollectionKind, LineIndex, NodeId, NodeKind, ParseError, SyntaxTree, analyze,
     emit_js, parse,
@@ -40,6 +42,13 @@ impl std::error::Error for CompileError {
 pub fn compile(source: &str) -> Result<String, CompileError> {
     let syntax = parse(source).map_err(CompileError::Parse)?;
     let program = analyze(source, &syntax).map_err(CompileError::Analysis)?;
+    Ok(emit_js(&program))
+}
+
+/// Compile using an explicitly configured native macro context.
+pub fn compile_with_macros(source: &str, macros: &mut MacroHost) -> Result<String, CompileError> {
+    let syntax = parse(source).map_err(CompileError::Parse)?;
+    let program = analyze_with_macros(source, &syntax, macros).map_err(CompileError::Analysis)?;
     Ok(emit_js(&program))
 }
 
@@ -97,6 +106,8 @@ struct NamespaceSource {
     aliases: Vec<(String, String)>,
     requires: Vec<String>,
     require_spans: Vec<Range<usize>>,
+    macro_imports: Vec<MacroImport>,
+    macro_spans: Vec<Range<usize>>,
 }
 
 impl NamespaceSource {
@@ -121,6 +132,77 @@ impl NamespaceSource {
             NodeKind::Collection { kind, children } if *kind == expected => Some(children),
             _ => None,
         }
+    }
+
+    fn read_macro_spec(&self, spec: NodeId) -> Result<MacroImport, NamespaceCompileError> {
+        let items = if self.symbol(spec).is_some() {
+            vec![spec]
+        } else {
+            self.collection(spec, CollectionKind::Vector)
+                .ok_or_else(|| {
+                    self.error(
+                        spec,
+                        "macro require expects a namespace or [namespace :as alias :refer [names]]",
+                    )
+                })?
+                .to_vec()
+        };
+        let namespace = items
+            .first()
+            .and_then(|&id| self.symbol(id))
+            .filter(|n| valid_namespace(n))
+            .ok_or_else(|| self.error(spec, "macro require needs a supported namespace symbol"))?
+            .to_owned();
+        let mut import = MacroImport {
+            namespace,
+            ..MacroImport::default()
+        };
+        let mut saw_refer = false;
+        if !items.len().is_multiple_of(2) {
+            for pair in items[1..].as_chunks::<2>().0 {
+                match self.text(pair[0]) {
+                    ":as" if import.alias.is_none() => {
+                        import.alias = Some(
+                            self.symbol(pair[1])
+                                .filter(|n| valid_namespace(n))
+                                .ok_or_else(|| {
+                                    self.error(
+                                        pair[1],
+                                        "macro :as needs a supported namespace alias",
+                                    )
+                                })?
+                                .to_owned(),
+                        );
+                    }
+                    ":refer" if !saw_refer => {
+                        saw_refer = true;
+                        let names = self
+                            .collection(pair[1], CollectionKind::Vector)
+                            .ok_or_else(|| {
+                                self.error(pair[1], "macro :refer needs a vector of simple symbols")
+                            })?;
+                        for &name in names {
+                            let name = self
+                                .symbol(name)
+                                .filter(|n| !n.contains(['/', '.']) && *n != "&")
+                                .ok_or_else(|| {
+                                    self.error(name, "macro :refer needs simple symbols")
+                                })?;
+                            import.refers.push(name.to_owned());
+                        }
+                    }
+                    _ => {
+                        return Err(self.error(
+                            spec,
+                            "unsupported or duplicate macro require option; use :as and :refer",
+                        ));
+                    }
+                }
+            }
+        } else {
+            return Err(self.error(spec, "macro require options need values"));
+        }
+        Ok(import)
     }
 
     fn read_header(&mut self) -> Result<(), NamespaceCompileError> {
@@ -152,20 +234,37 @@ impl NamespaceSource {
         }
         let mut alias_nodes = Vec::new();
         let mut saw_require = false;
+        let mut saw_macro_require = false;
         for clause in forms.into_iter().skip(2) {
             let parts = self
                 .collection(clause, CollectionKind::List)
                 .ok_or_else(|| {
                     self.error(
                         clause,
-                        "unsupported namespace clause; only (:require ...) is supported",
+                        "unsupported namespace clause; only (:require ...) and (:require-macros ...) are supported",
                     )
                 })?
                 .to_vec();
+            if parts.first().map(|&id| self.text(id)) == Some(":require-macros") {
+                if saw_macro_require {
+                    return Err(self.error(
+                        clause,
+                        "only one :require-macros clause is allowed per namespace",
+                    ));
+                }
+                saw_macro_require = true;
+                for spec in parts.into_iter().skip(1) {
+                    let import = self.read_macro_spec(spec)?;
+                    self.macro_imports.push(import);
+                    self.macro_spans
+                        .push(self.syntax.nodes[spec.0].span.clone());
+                }
+                continue;
+            }
             if parts.first().map(|&id| self.text(id)) != Some(":require") {
                 return Err(self.error(
                     clause,
-                    "unsupported namespace clause; only (:require ...) is supported",
+                    "unsupported namespace clause; only (:require ...) and (:require-macros ...) are supported",
                 ));
             }
             if saw_require {
@@ -189,7 +288,7 @@ impl NamespaceSource {
                     .to_owned();
                 if items.len() != 1 {
                     if items.len() != 3 || self.text(items[1]) != ":as" {
-                        return Err(self.error(spec, "unsupported require options; only one :as alias is supported (:refer, :rename, and macro imports are unsupported)"));
+                        return Err(self.error(spec, "unsupported require options; only one :as alias is supported (:refer, :rename, and inferred macro imports are unsupported; use :require-macros)"));
                     }
                     let alias_node = items[2];
                     let alias = self
@@ -340,6 +439,8 @@ impl Loader {
             aliases: Vec::new(),
             requires: Vec::new(),
             require_spans: Vec::new(),
+            macro_imports: Vec::new(),
+            macro_spans: Vec::new(),
         };
         file.read_header()?;
         self.states.insert(name.to_owned(), LoadState::Loading);
@@ -367,6 +468,18 @@ impl Loader {
 pub fn compile_namespace(
     entry: &str,
     source_roots: &[PathBuf],
+) -> Result<String, NamespaceCompileError> {
+    let mut macros = MacroHost::new();
+    compile_namespace_with_macros(entry, source_roots, &mut macros)
+}
+
+/// Reuse an explicit macro host. Sources are loaded once per host; callers use
+/// `MacroHost::load_namespace` with `Reload` to invalidate macro namespace code.
+/// This installs a filesystem source provider restricted to the supplied roots.
+pub fn compile_namespace_with_macros(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
 ) -> Result<String, NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
@@ -402,6 +515,15 @@ pub fn compile_namespace(
         }
     }
     loader.visit(entry)?;
+    if loader
+        .ordered
+        .iter()
+        .any(|file| !file.macro_imports.is_empty())
+    {
+        macros
+            .context_mut()
+            .set_source_provider(FileSourceProvider::new(loader.roots.clone()));
+    }
     let inputs = loader
         .ordered
         .iter()
@@ -413,7 +535,27 @@ pub fn compile_namespace(
             requires: &file.requires,
         })
         .collect::<Vec<_>>();
-    let program = analyze_namespaces(&inputs).map_err(|(index, error)| {
+    let program = analyze_namespaces_prepared(&inputs, macros, |macros, index| {
+        let file = &loader.ordered[index];
+        for (import, span) in file.macro_imports.iter().zip(&file.macro_spans) {
+            macros
+                .load_namespace(&import.namespace, Reload::None)
+                .map_err(|message| AnalysisError {
+                    kind: crate::AnalysisErrorKind::MacroExpansion(format!(
+                        "macro namespace {}: {message}",
+                        import.namespace
+                    )),
+                    span: span.clone(),
+                })?;
+        }
+        macros
+            .set_imports(&file.name, file.macro_imports.clone())
+            .map_err(|message| AnalysisError {
+                kind: crate::AnalysisErrorKind::MacroExpansion(message),
+                span: file.syntax.nodes[file.syntax.roots[0].0].span.clone(),
+            })
+    })
+    .map_err(|(index, error)| {
         let file = &loader.ordered[index];
         NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
     })?;

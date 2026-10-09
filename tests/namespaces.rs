@@ -239,10 +239,6 @@ fn malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics(
         ("(ns demo (:require [lib :refer [f]]))", ":refer"),
         ("(ns demo (:require [lib :rename {f g}]))", ":rename"),
         (
-            "(ns demo (:require-macros [lib :as m]))",
-            "unsupported namespace clause",
-        ),
-        (
             "(ns demo (:require [\"package\" :as p]))",
             "JavaScript package imports are unsupported",
         ),

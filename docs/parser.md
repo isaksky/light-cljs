@@ -50,12 +50,16 @@ implement per-form arena recycling.
   children defer arity validation until selection and splicing determine members.
 - Anonymous-function argument nodes, including splitting `%&rest` and `%1:kw`
   inside `#()`. Explicit integer indices retain their source-backed numeric node.
-  Ratio indices such as `%1/1` require later reduction and integral-value checking;
-  `%3/2` is therefore also accepted structurally. Nested `#()` is rejected.
+  Ratio indices such as `%1/1` and `%3/2` are accepted structurally; the semantic
+  reader applies its selected compatibility profile to these spellings. Nested `#()` is rejected.
 
 Comments disappear. `#_` reads and validates one complete following form, then
 removes that subtree from the arena. For `#_#_a b c`, only `c` remains. Discarded
 collections/literals can allocate temporarily; their arena capacity is reused.
+An opt-in `Parser::retaining_discards()` builder retains discarded subtrees in
+a `discarded()` root side table for semantic validation. Ordinary children and
+roots still omit them. Default `parse` and `Parser::new` retain their existing
+discard-removal behavior.
 The tree is not a lossless concrete syntax tree, although enclosing spans retain
 the original whitespace/comments/discards between their delimiters.
 

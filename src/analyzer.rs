@@ -1,6 +1,9 @@
 //! Resolve the executable core to an arena with stable lexical binding IDs.
 
-use std::{collections::HashMap, fmt, ops::Range};
+use std::{borrow::Cow, collections::HashMap, fmt, ops::Range};
+
+use crate::interpreter::{Form, FormKind, Source, ValueView};
+use crate::macro_host::MacroHost;
 
 use crate::{CollectionKind, NodeId, NodeKind, NumberKind, SyntaxTree};
 
@@ -45,7 +48,7 @@ pub struct NamespaceInput<'a> {
     pub requires: &'a [String],
 }
 
-/// Both analysis (including the future macro hook) and emission track value use.
+/// Both analysis (including native macro expansion) and emission track value use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExprContext {
     Value,
@@ -131,6 +134,7 @@ pub enum AnalysisErrorKind {
     InvalidBinding,
     DuplicateParameter(String),
     NumberOutOfRange,
+    MacroExpansion(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,6 +153,7 @@ impl fmt::Display for AnalysisError {
                 f.write_str("binding must be an unqualified symbol without '.' and cannot be '&'")
             }
             AnalysisErrorKind::DuplicateParameter(name) => write!(f, "duplicate parameter: {name}"),
+            AnalysisErrorKind::MacroExpansion(message) => write!(f, "macro expansion: {message}"),
             AnalysisErrorKind::NumberOutOfRange => {
                 f.write_str("number outside supported range (safe integers and finite doubles)")
             }
@@ -166,7 +171,15 @@ struct Environment {
 
 struct Analyzer<'a> {
     source: &'a str,
-    syntax: &'a SyntaxTree,
+    syntax: Cow<'a, SyntaxTree>,
+    generated: Vec<Option<Form>>,
+    spellings: Vec<Option<String>>,
+    numbers: Vec<Option<Option<f64>>>,
+    local_kinds: HashMap<LocalId, (&'static str, Option<usize>)>,
+    macro_host: &'a mut MacroHost,
+    macro_depth: usize,
+    analysis_depth: usize,
+    macro_source: Option<Source>,
     program: Program,
     env: Environment,
     globals: HashMap<(String, String), GlobalId>,
@@ -190,9 +203,27 @@ fn empty_program() -> Program {
 /// Analyze a parser-produced tree against its exact original source buffer.
 /// Standalone input has namespace `cljs.user`; filesystem loading is explicit.
 pub fn analyze(source: &str, syntax: &SyntaxTree) -> Result<Program, AnalysisError> {
+    analyze_with_macros(source, syntax, &mut MacroHost::new())
+}
+
+/// Analyze with an explicitly supplied native macro host and import configuration.
+pub fn analyze_with_macros(
+    source: &str,
+    syntax: &SyntaxTree,
+    macro_host: &mut MacroHost,
+) -> Result<Program, AnalysisError> {
+    macro_host.begin_compilation();
     let mut analyzer = Analyzer {
         source,
-        syntax,
+        syntax: Cow::Borrowed(syntax),
+        generated: Vec::new(),
+        spellings: Vec::new(),
+        numbers: Vec::new(),
+        local_kinds: HashMap::new(),
+        macro_host,
+        macro_depth: 0,
+        analysis_depth: 0,
+        macro_source: None,
         program: empty_program(),
         env: Environment::default(),
         globals: HashMap::new(),
@@ -209,13 +240,38 @@ pub fn analyze(source: &str, syntax: &SyntaxTree) -> Result<Program, AnalysisErr
 pub fn analyze_namespaces(
     inputs: &[NamespaceInput<'_>],
 ) -> Result<Program, (usize, AnalysisError)> {
+    analyze_namespaces_with_macros(inputs, &mut MacroHost::new())
+}
+
+pub fn analyze_namespaces_with_macros(
+    inputs: &[NamespaceInput<'_>],
+    macro_host: &mut MacroHost,
+) -> Result<Program, (usize, AnalysisError)> {
+    analyze_namespaces_prepared(inputs, macro_host, |_, _| Ok(()))
+}
+
+pub(crate) fn analyze_namespaces_prepared(
+    inputs: &[NamespaceInput<'_>],
+    macro_host: &mut MacroHost,
+    mut prepare: impl FnMut(&mut MacroHost, usize) -> Result<(), AnalysisError>,
+) -> Result<Program, (usize, AnalysisError)> {
+    macro_host.begin_compilation();
     let mut program = empty_program();
     let mut globals = HashMap::new();
     let mut roots = Vec::new();
     for (source_index, input) in inputs.iter().enumerate() {
+        prepare(macro_host, source_index).map_err(|error| (source_index, error))?;
         let mut analyzer = Analyzer {
             source: input.source,
-            syntax: input.syntax,
+            syntax: Cow::Borrowed(input.syntax),
+            generated: Vec::new(),
+            spellings: Vec::new(),
+            numbers: Vec::new(),
+            local_kinds: HashMap::new(),
+            macro_host,
+            macro_depth: 0,
+            analysis_depth: 0,
+            macro_source: None,
             program,
             env: Environment::default(),
             globals,
@@ -266,7 +322,10 @@ impl Analyzer<'_> {
     }
 
     fn spelling(&self, node: NodeId) -> &str {
-        &self.source[self.syntax.nodes[node.0].span.clone()]
+        self.spellings
+            .get(node.0)
+            .and_then(Option::as_deref)
+            .unwrap_or_else(|| &self.source[self.syntax.nodes[node.0].span.clone()])
     }
 
     fn lookup(&self, name: &str) -> Option<LocalId> {
@@ -304,12 +363,32 @@ impl Analyzer<'_> {
     }
 
     fn form(&mut self, id: NodeId, context: ExprContext) -> Result<ExprId, AnalysisError> {
-        let node = &self.syntax.nodes[id.0];
+        if self.macro_depth > 0 && self.analysis_depth >= 128 {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::MacroExpansion(
+                    "generated runtime form nesting limit exceeded".into(),
+                ),
+            ));
+        }
+        self.analysis_depth += 1;
+        let result = self.form_inner(id, context);
+        self.analysis_depth -= 1;
+        result
+    }
+
+    fn form_inner(&mut self, id: NodeId, context: ExprContext) -> Result<ExprId, AnalysisError> {
+        let node = self.syntax.nodes[id.0].clone();
         let kind = match &node.kind {
             NodeKind::Nil => ExprKind::Nil,
             NodeKind::Boolean(value) => ExprKind::Bool(*value),
             NodeKind::Number(kind @ (NumberKind::Integer | NumberKind::Float)) => {
-                let value = number(self.spelling(id), *kind)
+                let value = self
+                    .numbers
+                    .get(id.0)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| number(self.spelling(id), *kind))
                     .ok_or_else(|| self.error(id, AnalysisErrorKind::NumberOutOfRange))?;
                 ExprKind::Number(value)
             }
@@ -372,7 +451,17 @@ impl Analyzer<'_> {
             let operator_name = self.spelling(operator).to_owned();
             match operator_name.as_str() {
                 "if" => return self.if_form(id, args, context),
-                "do" => return self.body(args, self.syntax.nodes[id.0].span.clone(), context),
+                "do" => {
+                    return self.body(
+                        args,
+                        self.syntax.nodes[id.0].span.clone(),
+                        if context == ExprContext::Value && args.len() > 1 {
+                            ExprContext::Return
+                        } else {
+                            context
+                        },
+                    );
+                }
                 "let*" => return self.let_form(id, args, context),
                 "fn*" => return self.fn_form(id, args, context),
                 "def" => return self.def_form(id, args, context),
@@ -391,8 +480,21 @@ impl Analyzer<'_> {
         }
         // Macro lookup belongs HERE, with the current lexical environment and
         // expression context, before ordinary invocation analysis.
-        if let Some(expanded) = self.expand_macro(operator, context)? {
-            return self.form(expanded, context);
+        if let Some(expanded) = self.expand_macro(id, operator, context)? {
+            self.macro_depth += 1;
+            let result = self.form(expanded, context);
+            self.macro_depth -= 1;
+            return result.map_err(|error| AnalysisError {
+                kind: match error.kind {
+                    AnalysisErrorKind::MacroExpansion(_) => error.kind,
+                    _ => AnalysisErrorKind::MacroExpansion(format!(
+                        "generated by {}: {}",
+                        self.spelling(operator),
+                        error
+                    )),
+                },
+                span: error.span,
+            });
         }
         let callee = self.form(operator, ExprContext::Value)?;
         let args = args
@@ -560,48 +662,177 @@ impl Analyzer<'_> {
     }
 
     fn expand_macro(
-        &self,
+        &mut self,
+        call: NodeId,
         operator: NodeId,
-        _context: ExprContext,
+        context: ExprContext,
     ) -> Result<Option<NodeId>, AnalysisError> {
         if !matches!(self.syntax.nodes[operator.0].kind, NodeKind::Symbol) {
             return Ok(None);
         }
-        let name = self.spelling(operator);
-        if self.lookup(name).is_some()
-            || self
-                .globals
-                .contains_key(&(self.namespace.into(), name.into()))
-        {
+        let name = self.spelling(operator).to_owned();
+        if self.lookup(&name).is_some() {
             return Ok(None);
         }
-        // A small diagnostic catalog, not a macro implementation or resolver.
-        if matches!(
-            name.strip_prefix("cljs.core/").unwrap_or(name),
-            "let"
-                | "fn"
-                | "defn"
-                | "defmacro"
-                | "when"
-                | "when-not"
-                | "cond"
-                | "and"
-                | "or"
-                | "loop"
-                | "letfn"
-                | "->"
-                | "->>"
-                | "if-let"
-                | "when-let"
-        ) {
-            return Err(self.error(
-                operator,
-                AnalysisErrorKind::Unsupported(format!(
-                    "macro execution ({name}); use primitive forms"
-                )),
+        let error = |message| AnalysisError {
+            kind: AnalysisErrorKind::MacroExpansion(message),
+            span: self.syntax.nodes[call.0].span.clone(),
+        };
+        let Some(var) = self
+            .macro_host
+            .resolve(
+                self.namespace,
+                &name,
+                self.globals
+                    .contains_key(&(self.namespace.into(), name.clone())),
+            )
+            .map_err(error)?
+        else {
+            if name == "defmacro" || name == "cljs.core/defmacro" || name == "clojure.core/defmacro"
+            {
+                return Err(self.error(operator, AnalysisErrorKind::Unsupported("macro execution (defmacro); define compiler macros in an explicit .clj/.cljc macro namespace".into())));
+            }
+            return Ok(None);
+        };
+        if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
+            return Err(error(
+                "compiler macro expansion depth limit exceeded".into(),
             ));
         }
-        Ok(None)
+        let _caller = self
+            .macro_host
+            .bind_namespace(self.namespace)
+            .map_err(error)?;
+        let reader_aliases =
+            self.macro_host
+                .reader_aliases(self.namespace, self.aliases, self.requires);
+        let locals = self
+            .env
+            .scopes
+            .iter()
+            .flat_map(|s| s.iter())
+            .map(|id| {
+                let (kind, argument) = self.local_kinds.get(id).copied().unwrap_or(("let", None));
+                (self.program.locals[id.0].name.clone(), id.0, kind, argument)
+            })
+            .collect::<Vec<_>>();
+        let (line, column) = crate::LineIndex::new(self.source)
+            .line_column(self.syntax.nodes[call.0].span.start)
+            .unwrap();
+        let environment = self
+            .macro_host
+            .environment(
+                self.namespace,
+                context,
+                &locals,
+                self.aliases,
+                self.requires,
+                (line, column),
+            )
+            .map_err(error)?;
+        let form = if let Some(form) = self.generated.get(call.0).and_then(Option::as_ref) {
+            form.clone()
+        } else {
+            let c = self.macro_host.context_mut();
+            let source = self
+                .macro_source
+                .get_or_insert_with(|| c.source(self.namespace, self.source));
+            let form = c.lower_compiler_form(source, &self.syntax, call, &reader_aliases);
+            form.map_err(|e| error(e.to_string()))?
+        };
+        let expanded = self
+            .macro_host
+            .expand(&form, &var, &environment)
+            .map_err(error)?;
+        self.import_form(&expanded)
+            .map(Some)
+            .map_err(|failure| AnalysisError {
+                kind: AnalysisErrorKind::MacroExpansion(format!("generated by {name}: {failure}")),
+                span: failure.span,
+            })
+    }
+
+    /// Append semantic data directly to a private syntax arena. Spellings are
+    /// owned side-table data, never printed/reparsed or sliced from fake source.
+    fn import_form(&mut self, form: &Form) -> Result<NodeId, AnalysisError> {
+        let mut spelling = None;
+        let mut numeric = None;
+        let unsupported = |what| AnalysisError {
+            kind: AnalysisErrorKind::Unsupported(what),
+            span: form.span().bytes(),
+        };
+        let kind = match &form.node().kind {
+            FormKind::Collection { kind, .. } => {
+                let children = form
+                    .children()
+                    .iter()
+                    .map(|child| self.import_form(child))
+                    .collect::<Result<_, _>>()?;
+                NodeKind::Collection {
+                    kind: *kind,
+                    children,
+                }
+            }
+            FormKind::Scalar => match form.data().inspect() {
+                ValueView::Nil => NodeKind::Nil,
+                ValueView::Boolean(value) => NodeKind::Boolean(value),
+                ValueView::Integer(value) => {
+                    numeric = Some(
+                        (-9_007_199_254_740_991..=9_007_199_254_740_991)
+                            .contains(&value)
+                            .then_some(value as f64),
+                    );
+                    NodeKind::Number(NumberKind::Integer)
+                }
+                ValueView::Double(value) => {
+                    numeric = Some(value.is_finite().then_some(value));
+                    NodeKind::Number(NumberKind::Float)
+                }
+                ValueView::Keyword(_) => NodeKind::Keyword {
+                    auto_resolve: false,
+                },
+                ValueView::Ratio { .. } => NodeKind::Number(NumberKind::Ratio),
+                ValueView::Character(value) => {
+                    NodeKind::Character(char::from_u32(value as u32).unwrap_or('\u{fffd}'))
+                }
+                ValueView::String(value) => {
+                    NodeKind::String(crate::StringValue::Decoded(value.to_vec()))
+                }
+                ValueView::Symbol(name) => {
+                    let local = String::from_utf16(name.name()).map_err(|_| {
+                        unsupported("non-Unicode symbol generated by a macro".into())
+                    })?;
+                    spelling = Some(match name.namespace() {
+                        Some(ns) => format!(
+                            "{}/{}",
+                            String::from_utf16(ns).map_err(|_| unsupported(
+                                "non-Unicode namespace generated by a macro".into()
+                            ))?,
+                            local
+                        ),
+                        None => local,
+                    });
+                    NodeKind::Symbol
+                }
+                other => {
+                    return Err(unsupported(format!(
+                        "runtime value generated by a macro: {other:?}"
+                    )));
+                }
+            },
+        };
+        let id = NodeId(self.syntax.nodes.len());
+        self.syntax.to_mut().nodes.push(crate::Node {
+            kind,
+            span: form.span().bytes(),
+        });
+        self.generated.resize(id.0, None);
+        self.spellings.resize(id.0, None);
+        self.numbers.resize(id.0, None);
+        self.generated.push(Some(form.clone()));
+        self.spellings.push(spelling);
+        self.numbers.push(numeric);
+        Ok(id)
     }
 
     fn body(
@@ -694,7 +925,15 @@ impl Analyzer<'_> {
                 bindings.push((local, init));
             }
             let span = self.syntax.nodes[id.0].span.clone();
-            let body = self.body(body, span.clone(), context)?;
+            let body = self.body(
+                body,
+                span.clone(),
+                if context == ExprContext::Value {
+                    ExprContext::Return
+                } else {
+                    context
+                },
+            )?;
             Ok(self.push(ExprKind::Let { bindings, body }, span, context))
         })();
         self.env.scopes.pop();
@@ -746,9 +985,9 @@ impl Analyzer<'_> {
                         AnalysisErrorKind::Unsupported("multiple function arities".into()),
                     ));
                 }
-                children.as_slice()
+                children.clone()
             }
-            _ => args,
+            _ => args.to_vec(),
         };
         let Some((&params, body)) = args.split_first() else {
             return Err(self.error(
@@ -762,6 +1001,9 @@ impl Analyzer<'_> {
         self.env.scopes.push(Vec::new());
         let result = (|| {
             let name = name.map(|name| self.bind(name)).transpose()?;
+            if let Some(name) = name {
+                self.local_kinds.insert(name, ("fn", None));
+            }
             let mut params: Vec<LocalId> = Vec::with_capacity(parameters.len());
             for parameter in parameters {
                 if self.spelling(parameter) == "&" {
@@ -780,7 +1022,9 @@ impl Analyzer<'_> {
                         AnalysisErrorKind::DuplicateParameter(spelling.into()),
                     ));
                 }
-                params.push(self.bind(parameter)?);
+                let local = self.bind(parameter)?;
+                self.local_kinds.insert(local, ("arg", Some(params.len())));
+                params.push(local);
             }
             let span = self.syntax.nodes[id.0].span.clone();
             let body = self.body(body, span.clone(), ExprContext::Return)?;

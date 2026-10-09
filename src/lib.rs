@@ -13,16 +13,22 @@ pub mod analyzer;
 mod char_classes;
 pub mod compiler;
 pub mod emitter;
+pub mod interpreter;
 mod literals;
+pub mod macro_host;
 pub mod parser;
 
 pub use analyzer::{
     AnalysisError, AnalysisErrorKind, Expr, ExprContext, ExprId, ExprKind, GlobalBinding, GlobalId,
     JsGlobal, JsGlobalId, LocalBinding, LocalId, NamespaceInput, Program, Span, StringId, analyze,
-    analyze_namespaces,
+    analyze_namespaces, analyze_namespaces_with_macros, analyze_with_macros,
 };
-pub use compiler::{CompileError, NamespaceCompileError, compile, compile_namespace};
+pub use compiler::{
+    CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_with_macros,
+    compile_with_macros,
+};
 pub use emitter::emit_js;
+pub use macro_host::{MacroHost, MacroImport, MacroLimits};
 
 pub use parser::{
     CollectionKind, ErrorKind, LineIndex, Node, NodeId, NodeKind, NumberKind, ParseError, Parser,

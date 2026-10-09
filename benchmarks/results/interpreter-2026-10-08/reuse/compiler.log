@@ -1,0 +1,16 @@
+    Blocking waiting for file lock on build directory
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.91s
+     Running tests/execution.rs (target/debug/deps/execution-2ba88674580f5f0a)
+
+running 7 tests
+test namespace_program_matches_standard_clojurescript_stdout ... ok
+test dependency_initialization_matches_standard_clojurescript ... ok
+test slash_bindings_match_standard_clojurescript_across_namespaces ... ok
+test lexical_namespace_bindings_match_standard_clojurescript ... ok
+test generated::generated_programs_match_standard_clojurescript ... ok
+test programs_match_standard_clojurescript_results_and_effects ... ok
+test analyzer_boundary_classifications_match_reference ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 31.89s
+

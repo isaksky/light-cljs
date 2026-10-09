@@ -1,0 +1,106 @@
+{
+  "tokenizer": {
+    "short-atoms": {
+      "head_ns": 351455.57720588235,
+      "current_ns": 362016.08455882355,
+      "change_percent": 3.004791512173055
+    },
+    "long-atoms": {
+      "head_ns": 114380.75651189128,
+      "current_ns": 115046.4550625711,
+      "change_percent": 0.5820022274556358
+    },
+    "dense-parens": {
+      "head_ns": 519513.3248730964,
+      "current_ns": 528126.5208333334,
+      "change_percent": 1.6579355230861292
+    },
+    "whitespace-heavy": {
+      "head_ns": 90569.16126042632,
+      "current_ns": 90271.95945945945,
+      "change_percent": -0.3281490043970714
+    },
+    "unicode": {
+      "head_ns": 430490.8177966102,
+      "current_ns": 442335.1822222222,
+      "change_percent": 2.7513628481637076
+    },
+    "large-mixed": {
+      "head_ns": 7321485.142857143,
+      "current_ns": 7448346.153846154,
+      "change_percent": 1.7327223713999862
+    },
+    "reader-syntax": {
+      "head_ns": 255491.75187969924,
+      "current_ns": 265540.7824933687,
+      "change_percent": 3.9332113619077402
+    },
+    "large-reader": {
+      "head_ns": 16835284.833333332,
+      "current_ns": 16979972.166666668,
+      "change_percent": 0.8594290786625658
+    },
+    "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+      "head_ns": 516246.17346938775,
+      "current_ns": 518694.6722222222,
+      "change_percent": 0.47428898821264553
+    },
+    "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+      "head_ns": 242206.57568238213,
+      "current_ns": 250282.75240384616,
+      "change_percent": 3.3344167881117937
+    }
+  },
+  "parser": {
+    "short-atoms": {
+      "head_ns": 2970241.379310345,
+      "current_ns": 3414427.4814814813,
+      "change_percent": 14.954545622627858
+    },
+    "long-atoms": {
+      "head_ns": 132908.31090174968,
+      "current_ns": 137282.93854748603,
+      "change_percent": 3.291462825804947
+    },
+    "dense-parens": {
+      "head_ns": 6255669.466666667,
+      "current_ns": 6527972.266666667,
+      "change_percent": 4.3528962239927305
+    },
+    "whitespace-heavy": {
+      "head_ns": 135946.7857142857,
+      "current_ns": 133577.4320457797,
+      "change_percent": -1.7428537615340245
+    },
+    "unicode": {
+      "head_ns": 2429929.5476190476,
+      "current_ns": 2387052.6315789474,
+      "change_percent": -1.7645333002396235
+    },
+    "wide-vector": {
+      "head_ns": 3733055.5555555555,
+      "current_ns": 3817919.6428571427,
+      "change_percent": 2.2733143409904955
+    },
+    "reader-syntax": {
+      "head_ns": 1802648.490909091,
+      "current_ns": 1857833.3392857143,
+      "change_percent": 3.061320532257139
+    },
+    "large-reader": {
+      "head_ns": 65516542.0,
+      "current_ns": 69140041.5,
+      "change_percent": 5.5306635383778335
+    },
+    "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+      "head_ns": 2714960.794117647,
+      "current_ns": 2848897.0588235296,
+      "change_percent": 4.933266992144958
+    },
+    "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+      "head_ns": 1247158.5584415584,
+      "current_ns": 1299518.4025974027,
+      "change_percent": 4.198330982170617
+    }
+  }
+}

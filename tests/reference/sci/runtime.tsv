@@ -1,0 +1,6 @@
+format	sci-outcomes-v1
+revision	5fe89056384418be50d232b4278344cb3a1a526b
+clojure	1.12.4
+java	25.0.2
+java-vendor	Homebrew
+options	{:features #{:clj}, :read-eval false, :user [observe], :out :captured, :err :captured}

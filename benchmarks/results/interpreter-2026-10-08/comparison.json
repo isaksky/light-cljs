@@ -1,0 +1,345 @@
+{
+  "fresh-process": {
+    "closures_loop.clj": {
+      "baseline_ns": 3361459,
+      "change_percent": 2.696001944393789,
+      "current_ns": 3452084
+    },
+    "collections.clj": {
+      "baseline_ns": 4365084,
+      "change_percent": -2.3920960054835128,
+      "current_ns": 4260667
+    },
+    "lazy.clj": {
+      "baseline_ns": 3607917,
+      "change_percent": -4.115948343601028,
+      "current_ns": 3459417
+    },
+    "main.clj": {
+      "baseline_ns": 6694834,
+      "change_percent": 1.7083918734952963,
+      "current_ns": 6809208
+    }
+  },
+  "interpreter": {
+    "closures_loop/analyze": {
+      "baseline_ns": 123154.9375,
+      "change_percent": -3.4720745564910893,
+      "current_ns": 118878.90625
+    },
+    "closures_loop/eval": {
+      "baseline_ns": 390942.71875,
+      "change_percent": -1.8428371100081997,
+      "current_ns": 383738.28125
+    },
+    "closures_loop/gc_after_analyze": {
+      "baseline_ns": 841833.0,
+      "change_percent": -6.077927569957464,
+      "current_ns": 790667.0
+    },
+    "closures_loop/gc_after_eval": {
+      "baseline_ns": 7226000.0,
+      "change_percent": -2.5584694159977883,
+      "current_ns": 7041125.0
+    },
+    "closures_loop/gc_after_lower": {
+      "baseline_ns": 53458.0,
+      "change_percent": 2.2615885367952338,
+      "current_ns": 54667.0
+    },
+    "closures_loop/gc_after_parse": {
+      "baseline_ns": 4333.0,
+      "change_percent": 24.99423032540964,
+      "current_ns": 5416.0
+    },
+    "closures_loop/gc_after_read": {
+      "baseline_ns": 53584.0,
+      "change_percent": 8.086369065392663,
+      "current_ns": 57917.0
+    },
+    "closures_loop/gc_after_read_analyze_eval": {
+      "baseline_ns": 8309791.0,
+      "change_percent": -2.0693300228609823,
+      "current_ns": 8137834.0
+    },
+    "closures_loop/lower": {
+      "baseline_ns": 9092.4375,
+      "change_percent": -0.5584998522123463,
+      "current_ns": 9041.65625
+    },
+    "closures_loop/parse": {
+      "baseline_ns": 1898.4375,
+      "change_percent": 1.85185185185186,
+      "current_ns": 1933.59375
+    },
+    "closures_loop/read": {
+      "baseline_ns": 10778.625,
+      "change_percent": 1.655185610409493,
+      "current_ns": 10957.03125
+    },
+    "closures_loop/read_analyze_eval": {
+      "baseline_ns": 523859.375,
+      "change_percent": -1.0404569451486823,
+      "current_ns": 518408.84375
+    },
+    "collections/analyze": {
+      "baseline_ns": 155114.5625,
+      "change_percent": -1.9449535887386515,
+      "current_ns": 152097.65625
+    },
+    "collections/eval": {
+      "baseline_ns": 933593.75,
+      "change_percent": -0.46094728033472254,
+      "current_ns": 929290.375
+    },
+    "collections/gc_after_analyze": {
+      "baseline_ns": 1066709.0,
+      "change_percent": -6.2264403881470916,
+      "current_ns": 1000291.0
+    },
+    "collections/gc_after_eval": {
+      "baseline_ns": 18248792.0,
+      "change_percent": 0.333578244521604,
+      "current_ns": 18309666.0
+    },
+    "collections/gc_after_lower": {
+      "baseline_ns": 141875.0,
+      "change_percent": -2.4373568281938374,
+      "current_ns": 138417.0
+    },
+    "collections/gc_after_parse": {
+      "baseline_ns": 91541.0,
+      "change_percent": -0.27310167028981036,
+      "current_ns": 91291.0
+    },
+    "collections/gc_after_read": {
+      "baseline_ns": 141584.0,
+      "change_percent": -0.4710984292010445,
+      "current_ns": 140917.0
+    },
+    "collections/gc_after_read_analyze_eval": {
+      "baseline_ns": 19489416.0,
+      "change_percent": 0.0816750999619531,
+      "current_ns": 19505334.0
+    },
+    "collections/lower": {
+      "baseline_ns": 9983.09375,
+      "change_percent": -2.673895554672112,
+      "current_ns": 9716.15625
+    },
+    "collections/parse": {
+      "baseline_ns": 2013.03125,
+      "change_percent": -1.8116335749879697,
+      "current_ns": 1976.5625
+    },
+    "collections/read": {
+      "baseline_ns": 11649.71875,
+      "change_percent": -2.358157788144022,
+      "current_ns": 11375.0
+    },
+    "collections/read_analyze_eval": {
+      "baseline_ns": 1105497.40625,
+      "change_percent": 0.46029336850830216,
+      "current_ns": 1110585.9375
+    },
+    "context/constructor_drop": {
+      "baseline_ns": 535.15625,
+      "change_percent": -3.1649635036496315,
+      "current_ns": 518.21875
+    },
+    "context/namespace_init_drop": {
+      "baseline_ns": 2539.0625,
+      "change_percent": -1.9495384615384581,
+      "current_ns": 2489.5625
+    },
+    "embedding/gc_after_invoke": {
+      "baseline_ns": 430917.0,
+      "change_percent": 6.352499437246606,
+      "current_ns": 458291.0
+    },
+    "embedding/invoke": {
+      "baseline_ns": 34166.6875,
+      "change_percent": 1.566218557183796,
+      "current_ns": 34701.8125
+    },
+    "lazy/analyze": {
+      "baseline_ns": 76940.09375,
+      "change_percent": 5.220863797036901,
+      "current_ns": 80957.03125
+    },
+    "lazy/eval": {
+      "baseline_ns": 499236.96875,
+      "change_percent": -0.065205758062159,
+      "current_ns": 498911.4375
+    },
+    "lazy/gc_after_analyze": {
+      "baseline_ns": 373209.0,
+      "change_percent": 2.7574361818712756,
+      "current_ns": 383500.0
+    },
+    "lazy/gc_after_eval": {
+      "baseline_ns": 10481709.0,
+      "change_percent": -1.0291833135226303,
+      "current_ns": 10373833.0
+    },
+    "lazy/gc_after_lower": {
+      "baseline_ns": 87750.0,
+      "change_percent": 2.3270655270655194,
+      "current_ns": 89792.0
+    },
+    "lazy/gc_after_parse": {
+      "baseline_ns": 62958.0,
+      "change_percent": -3.9041900949839614,
+      "current_ns": 60500.0
+    },
+    "lazy/gc_after_read": {
+      "baseline_ns": 89792.0,
+      "change_percent": -3.20295794725588,
+      "current_ns": 86916.0
+    },
+    "lazy/gc_after_read_analyze_eval": {
+      "baseline_ns": 10844875.0,
+      "change_percent": 0.3949607533512367,
+      "current_ns": 10887708.0
+    },
+    "lazy/lower": {
+      "baseline_ns": 5411.46875,
+      "change_percent": -3.5376255291135195,
+      "current_ns": 5220.03125
+    },
+    "lazy/parse": {
+      "baseline_ns": 1135.4375,
+      "change_percent": -3.5558980569163845,
+      "current_ns": 1095.0625
+    },
+    "lazy/read": {
+      "baseline_ns": 6611.96875,
+      "change_percent": 1.9297391567375533,
+      "current_ns": 6739.5625
+    },
+    "lazy/read_analyze_eval": {
+      "baseline_ns": 596455.75,
+      "change_percent": -1.1659655808498814,
+      "current_ns": 589501.28125
+    },
+    "modules/cached_require": {
+      "baseline_ns": 23329.40625,
+      "change_percent": -3.616680128753813,
+      "current_ns": 22485.65625
+    },
+    "modules/first_load": {
+      "baseline_ns": 3057167.0,
+      "change_percent": -7.723686668081919,
+      "current_ns": 2821041.0
+    },
+    "modules/gc_after_require": {
+      "baseline_ns": 136375.0,
+      "change_percent": -6.385334555453714,
+      "current_ns": 127667.0
+    }
+  },
+  "parser": {
+    "dense-parens": {
+      "baseline_ns": 6358380.25,
+      "change_percent": 2.6672204240485,
+      "current_ns": 6527972.266666667
+    },
+    "large-reader": {
+      "baseline_ns": 70608958.5,
+      "change_percent": -2.080355001978962,
+      "current_ns": 69140041.5
+    },
+    "long-atoms": {
+      "baseline_ns": 136809.55570652173,
+      "change_percent": 0.3460159186393197,
+      "current_ns": 137282.93854748603
+    },
+    "reader-syntax": {
+      "baseline_ns": 1821908.1851851852,
+      "change_percent": 1.9718421813269105,
+      "current_ns": 1857833.3392857143
+    },
+    "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+      "baseline_ns": 2813270.2702702703,
+      "change_percent": 1.2663834303355603,
+      "current_ns": 2848897.0588235296
+    },
+    "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+      "baseline_ns": 1311298.6153846155,
+      "change_percent": -0.8983623294498422,
+      "current_ns": 1299518.4025974027
+    },
+    "short-atoms": {
+      "baseline_ns": 3620920.9655172415,
+      "change_percent": -5.7027890418553495,
+      "current_ns": 3414427.4814814813
+    },
+    "unicode": {
+      "baseline_ns": 2413730.769230769,
+      "change_percent": -1.1052656738648414,
+      "current_ns": 2387052.6315789474
+    },
+    "whitespace-heavy": {
+      "baseline_ns": 142494.24686192468,
+      "change_percent": -6.257666546204699,
+      "current_ns": 133577.4320457797
+    },
+    "wide-vector": {
+      "baseline_ns": 3850210.0,
+      "change_percent": -0.8386648297847965,
+      "current_ns": 3817919.6428571427
+    }
+  },
+  "tokenizer": {
+    "dense-parens": {
+      "baseline_ns": 518271.0597826087,
+      "change_percent": 1.9016035845911494,
+      "current_ns": 528126.5208333334
+    },
+    "large-mixed": {
+      "baseline_ns": 7508057.692307692,
+      "change_percent": -0.7952994090963728,
+      "current_ns": 7448346.153846154
+    },
+    "large-reader": {
+      "baseline_ns": 17056916.666666668,
+      "change_percent": -0.45110439069194763,
+      "current_ns": 16979972.166666668
+    },
+    "long-atoms": {
+      "baseline_ns": 113511.23595505618,
+      "change_percent": 1.352482064526872,
+      "current_ns": 115046.4550625711
+    },
+    "reader-syntax": {
+      "baseline_ns": 266082.3333333333,
+      "change_percent": -0.2035275447190843,
+      "current_ns": 265540.7824933687
+    },
+    "research/clojurescript/src/main/cljs/cljs/core.cljs": {
+      "baseline_ns": 510113.1256038647,
+      "change_percent": 1.6822830442166703,
+      "current_ns": 518694.6722222222
+    },
+    "research/clojurescript/src/main/clojure/cljs/analyzer.cljc": {
+      "baseline_ns": 247664.7614213198,
+      "change_percent": 1.0570704396951847,
+      "current_ns": 250282.75240384616
+    },
+    "short-atoms": {
+      "baseline_ns": 366413.0639097744,
+      "change_percent": -1.2000061635448644,
+      "current_ns": 362016.08455882355
+    },
+    "unicode": {
+      "baseline_ns": 447962.18942731275,
+      "change_percent": -1.2561344099787264,
+      "current_ns": 442335.1822222222
+    },
+    "whitespace-heavy": {
+      "baseline_ns": 90024.0530726257,
+      "change_percent": 0.27537794441865326,
+      "current_ns": 90271.95945945945
+    }
+  }
+}

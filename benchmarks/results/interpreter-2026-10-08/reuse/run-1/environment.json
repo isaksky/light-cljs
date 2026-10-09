@@ -1,0 +1,31 @@
+{
+  "build_environment": {},
+  "cargo": "cargo 1.99.0 (5f94df478 2026-08-27) (Homebrew)\n",
+  "command": [
+    "benchmarks/run_interpreter.py",
+    "--output",
+    "/Users/admin/.cache/light-cljs-baselines/light-cljs-45/run-1",
+    "--compare",
+    "/Users/admin/.cache/light-cljs-baselines/light-cljs-44/verified-baseline",
+    "--samples",
+    "9",
+    "--iterations",
+    "32",
+    "--frontend-ms",
+    "100",
+    "--frontend-source",
+    "research/clojurescript/src/main/cljs/cljs/core.cljs",
+    "--frontend-source",
+    "research/clojurescript/src/main/clojure/cljs/analyzer.cljc"
+  ],
+  "git_head": "5434d0f3ad3cd9f15771eece4b83614ca9bb9851",
+  "git_status": " M .github/workflows/conformance.yml\n M Cargo.toml\n M README.md\n M benchmarks/README.md\n M docs/parser.md\n M src/lib.rs\n M src/main.rs\n M src/parser.rs\n M tests/provenance.rs\n M tests/reference/fixture-origins.tsv\n?? benches/interpreter.rs\n?? benches/interpreter_gc.rs\n?? benches/interpreter_reuse.rs\n?? benches/support/interpreter_allocations.rs\n?? benches/support/interpreter_outcomes.rs\n?? benchmarks/fixtures/\n?? benchmarks/interpreter.md\n?? benchmarks/results/interpreter-2026-10-08/\n?? benchmarks/run_interpreter.py\n?? docs/interpreter.md\n?? examples/embedding.rs\n?? examples/native/\n?? src/interpreter/\n?? src/native_cli.rs\n?? tests/fixtures/sci-outcomes.tsv\n?? tests/interpreter_bindings.rs\n?? tests/interpreter_collection_core.rs\n?? tests/interpreter_collections.rs\n?? tests/interpreter_conformance.rs\n?? tests/interpreter_contextual_reader.rs\n?? tests/interpreter_control.rs\n?? tests/interpreter_coverage.rs\n?? tests/interpreter_data.rs\n?? tests/interpreter_deferred.rs\n?? tests/interpreter_diagnostics.rs\n?? tests/interpreter_embedding.rs\n?? tests/interpreter_eval.rs\n?? tests/interpreter_exceptions.rs\n?? tests/interpreter_functions.rs\n?? tests/interpreter_generated.rs\n?? tests/interpreter_io.rs\n?? tests/interpreter_iteration.rs\n?? tests/interpreter_lazy.rs\n?? tests/interpreter_limits.rs\n?? tests/interpreter_loading.rs\n?? tests/interpreter_macros.rs\n?? tests/interpreter_namespaces.rs\n?? tests/interpreter_native.rs\n?? tests/interpreter_reader.rs\n?? tests/interpreter_reclamation.rs\n?? tests/interpreter_recur.rs\n?? tests/interpreter_reuse.rs\n?? tests/interpreter_sequences.rs\n?? tests/interpreter_state.rs\n?? tests/interpreter_strings.rs\n?? tests/interpreter_syntax_quote.rs\n?? tests/interpreter_values.rs\n?? tests/interpreter_vars.rs\n?? tests/native_cli.rs\n?? tests/native_examples.rs\n?? tests/reference/sci/\n?? tests/sci_reference.rs\n?? tests/support/generated_native.rs\n?? tests/support/sci_native.rs\n?? tests/support/sci_protocol.rs\n",
+  "hardware": "hw.model: VirtualMac2,1\nhw.memsize: 34359738368\nhw.ncpu: 24\nmachdep.cpu.brand_string: Apple M3 Ultra (Virtual)\n",
+  "logical_cpus": 24,
+  "machine": "arm64",
+  "method": "single thread; fresh process, OS caches uncontrolled; resident phases primed; no affinity; release opt-level=3 unless environment/config overrides",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.2\n",
+  "utc": "2026-10-09T00:42:44Z"
+}

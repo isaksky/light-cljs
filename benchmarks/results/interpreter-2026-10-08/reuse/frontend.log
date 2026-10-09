@@ -1,0 +1,17 @@
+    Blocking waiting for file lock on build directory
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.20s
+     Running tests/corpus.rs (target/debug/deps/corpus-5eb7fc0c9a77efa8)
+
+running 1 test
+test clojurescript_checkout_has_no_lexical_errors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/parser_corpus.rs (target/debug/deps/parser_corpus-83cfe55354f27f5e)
+
+running 1 test
+test parse_clojurescript_checkout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+

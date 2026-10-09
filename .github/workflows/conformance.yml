@@ -51,3 +51,37 @@ jobs:
           LIGHT_CLJS_REFERENCE: release
           LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
         run: cargo test --locked --test execution -- --ignored --nocapture
+
+  native-conformance:
+    name: Native interpreter and pinned SCI conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Clojure CLI
+        run: |
+          curl --fail --silent --show-error --location --output install-clojure.sh https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x install-clojure.sh
+          sudo ./install-clojure.sh
+      - name: Fetch exact SCI source
+        run: |
+          git init sci-reference
+          git -C sci-reference remote add origin https://github.com/babashka/sci.git
+          git -C sci-reference fetch --depth 1 origin 5fe89056384418be50d232b4278344cb3a1a526b
+          git -C sci-reference checkout --detach FETCH_HEAD
+      - name: Check launcher failure enforcement without Java
+        run: python3 -m unittest discover -s tests/reference/sci -p 'test_regenerate.py' -v
+      - name: Compare all oracle rows and execute native suites
+        run: python3 tests/reference/sci/regenerate.py --checkout sci-reference --native
+      - name: Preserve reference and native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sci-diagnostics
+          path: /tmp/light-cljs-sci-reference-*
+          if-no-files-found: error

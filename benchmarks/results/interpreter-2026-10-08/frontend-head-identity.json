@@ -1,0 +1,14 @@
+{
+  "head": "5434d0f3ad3cd9f15771eece4b83614ca9bb9851",
+  "source_directory": "/Users/admin/.cache/light-cljs-baselines/light-cljs-44/frontend-head",
+  "build": "cargo bench --bench NAME --no-run --message-format=json",
+  "measurement": "bin/NAME --samples 9 --ms 100 research/clojurescript/src/main/cljs/cljs/core.cljs research/clojurescript/src/main/clojure/cljs/analyzer.cljc",
+  "sha256": {
+    "src/lib.rs": "9c2f9917743190b09441b9b25f462d444b31e6db07ee90a6ad9e669982487f76",
+    "src/parser.rs": "f085f8d08865fca3302fd48f95e41f09fb9f8e894e7369e2973440f1525bf87b",
+    "benches/parser.rs": "753cf0bf61272a181c1297ca8ade2b47fd33ed0a8e4f4b95235cbe3892813f6d",
+    "benches/tokenizer.rs": "99c7f0eb6253a61980bd793a8cc3b1886911b796ff28cf30a200d9daec77c825",
+    "bin/parser": "810af584f827a07cd887932123140c96a0614c87072a18d367c2135e9a54aec1",
+    "bin/tokenizer": "b926e73cfd9e410ec0be993038dbb82718801b60dedffab3ee68409faba6b807"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "baseline_archive_sha256": "c0b9d6adc696090cb97f64637780bf61f4c97a9ac3e5153a2efc405e9b247051",
+  "binaries": {
+    "baseline-allocations": "25b0e61a85231b2d2fb044018fa59000345560b20c63efb72c957d66eb1be2e2",
+    "baseline-analysis": "33da5faef1f7cbddb523a6ba81188b994fe617c0ef4f00c16c4b8cf64a588b56",
+    "baseline-outcomes": "9bc3cb9aeefb869b400d3ce4ad5e331af12161fb68a9b91fdc813f692900e598",
+    "current-allocations": "2ac191cf2ffb053c0dbf3ae3831a72f7c641a45f1fb2426a11a9adbb41b8db2d",
+    "current-analysis": "6b860a3df422cbcd351607864179a299a469f41f0b4f470472c726309749cf55",
+    "current-outcomes": "b41b1a9471347c107f0cd908b1a6bf947aeea0cf7edd4b7ce17ea41f10af94e1"
+  },
+  "harnesses": {
+    "benches/interpreter_reuse.rs": "4935a38a68481692e486bf08d3f3ff299536c98c7e155808e08e94a56e087f05",
+    "benches/support/interpreter_outcomes.rs": "34a94eabba4c46f318d4c694a0699294fb8dc25c15c36cc11d384641fd7c4328"
+  },
+  "libraries": {
+    "baseline": "0b217c84fd61b2919b71b36b9a2ef4fca1846dca5e5c97019febc97703733056",
+    "current": "3b9baa4cd0f0b846a6a837036e8e7e0ae076d6ac0b29d1cdc0ecbd9f98085d7a"
+  },
+  "outcome_rows": 2087,
+  "outcomes_sha256": "dccb85643f9f219ea77d53fcbec93f69ec444396ff70ce32f60427d96777db21",
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.2\n"
+}

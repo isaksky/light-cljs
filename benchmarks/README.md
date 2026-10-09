@@ -1,5 +1,8 @@
 # Expanded lexer measurements
 
+Native runtime measurements, source-attributed diagnostics and the reproducible
+saved-binary comparison driver are documented in [interpreter.md](interpreter.md).
+
 Measured October 7, 2026. These numbers measure raw tokenization, including
 comment tokens and reader prefixes. They exclude literal decoding/validation,
 reader semantics, parsing, and compilation. They are not full ClojureScript

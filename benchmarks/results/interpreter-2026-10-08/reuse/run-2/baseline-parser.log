@@ -1,0 +1,14 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-44/verified-baseline/bin/parser", "--samples", "9", "--ms", "100", "research/clojurescript/src/main/cljs/cljs/core.cljs", "research/clojurescript/src/main/clojure/cljs/analyzer.cljc"]
+Node: 48 bytes; NodeKind: 32; NodeId: 8; Parser: 128; SyntaxTree: 48
+9 samples; target 100 ms/sample; >=20 ms calibration; single thread; warm resident source
+Includes parse, allocations, tree barrier and drop; excludes I/O, generation, line index and reporting; no counting allocator
+short-atoms          262154 bytes, 79786 nodes, 75.6 MB/s, 23.0 Mnodes/s (range 71.6..87.8 MB/s)
+long-atoms           263780 bytes, 363 nodes, 1914.3 MB/s, 2.6 Mnodes/s (range 1904.9..1930.7 MB/s)
+dense-parens         262150 bytes, 131075 nodes, 39.1 MB/s, 19.6 Mnodes/s (range 37.9..39.7 MB/s)
+whitespace-heavy     262612 bytes, 1356 nodes, 1937.9 MB/s, 10.0 Mnodes/s (range 1729.1..1958.5 MB/s)
+unicode              262170 bytes, 58260 nodes, 105.2 MB/s, 23.4 Mnodes/s (range 101.2..106.3 MB/s)
+wide-vector          350002 bytes, 150001 nodes, 87.5 MB/s, 37.5 Mnodes/s (range 81.5..90.9 MB/s)
+reader-syntax        262944 bytes, 48960 nodes, 137.5 MB/s, 25.6 Mnodes/s (range 135.8..140.1 MB/s)
+large-reader         8388644 bytes, 1561960 nodes, 116.5 MB/s, 21.7 Mnodes/s (range 110.0..125.9 MB/s)
+research/clojurescript/src/main/cljs/cljs/core.cljs 375722 bytes, 54959 nodes, 126.4 MB/s, 18.5 Mnodes/s (range 123.4..129.1 MB/s)
+research/clojurescript/src/main/clojure/cljs/analyzer.cljc 209684 bytes, 24674 nodes, 157.2 MB/s, 18.5 Mnodes/s (range 152.7..166.9 MB/s)

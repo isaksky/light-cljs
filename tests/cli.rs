@@ -160,8 +160,8 @@ fn analysis_cli_shows_ids_and_compile_errors_never_emit_partial_javascript() {
             "2:3: unresolved symbol: unknown (bytes 4..11)",
         ),
         (
-            "1\n  (let [x 1] x)",
-            "2:4: unsupported construct: macro execution (let)",
+            "1\n  (defmacro m [] 1)",
+            "2:4: unsupported construct: macro execution (defmacro)",
         ),
         ("(λ\n ]", "2:2: expected ), found ] (bytes 5..6)"),
     ] {

@@ -3,9 +3,66 @@
 A small Rust compiler for an executable ClojureScript core, with a borrowing
 lexer, handwritten syntax parser, semantic analyzer, and JavaScript emitter.
 The parser pulls tokens into a node arena; analysis resolves local references
-to binding IDs in a separate expression arena. General reader expansion and
-macro execution remain unsupported. The library has no dependencies or unsafe code.
+to binding IDs in a separate expression arena. Compiler macros run in the native
+Rust interpreter, with explicit `.clj`/`.cljc` imports and a bounded executable JS
+subset. The library has no dependencies or unsafe code.
 Tokens never allocate text; syntax leaves keep byte spans wherever possible.
+
+A separate native SCI-style interpreter has owned scalar and immutable collection
+values, metadata, structural equality/hashing, source storage, semantic reading,
+owned forms, primitive evaluation, user/native macro expansion, and explicit garbage collection in
+`light_cljs::interpreter`. Its
+[compatibility profile](docs/interpreter.md) and
+[pinned JVM reference corpus](tests/reference/sci/README.md) define the target;
+native calls, explicit host function registration, checked arithmetic and general
+predicates, lexical closures, multiple/variadic arities, mutual recursion and
+stack-safe `loop*`/function `recur`, context-owned namespaces, definitions and
+late-bound Vars, portable exceptions, `try`/`catch`/`finally`, collection core
+functions, callable data, finite seq traversal, reductions and eager higher-order
+helpers, ordinary destructuring, `let`/`loop`/`fn`/`defn`/`letfn`, and function
+pre/post conditions, conditional/threading macros, assertions and constant-data
+`case`, memoized delays, real lazy-sequence producers, lazy `for` comprehensions,
+effectful `doseq`/`dotimes`/`while` iteration, dynamic Vars, atoms, validators,
+watches and volatiles, bounded readable printing, core string/name operations and
+the literal `clojure.string` subset, explicit host input/output, incremental read
+APIs and nested string I/O scopes, set algebra/relational operations, data walks,
+and restricted EDN reading work. Native `--eval` and `--repl` modes run scripts
+without Node, Java, SCI, or generated JavaScript.
+
+```rust
+use light_cljs::interpreter::{eval_string, ValueView};
+let result = eval_string("(let [{:keys [x]} {:x 10}] ((fn [y] (+ x y)) 2))").unwrap();
+assert_eq!(result.inspect(), ValueView::Integer(12));
+```
+
+## Run native Clojure scripts and a REPL
+
+```sh
+cargo run --quiet -- --eval --text '(reduce + (range 1 6))'
+# 15
+cargo run --quiet -- --eval --source-root examples/native examples/native/demo.clj
+# Hello from native Rust
+# {:squares [1 4 9 16 25], :sum 15}  (map order may differ)
+printf '(+ 20\n 22)\n(* *1 2)\n' | cargo run --quiet -- --repl
+# 42
+# 84
+cargo run --quiet -- --repl
+```
+
+`--eval` accepts a UTF-8 file, stdin/`-`, or `--text`. Program printing goes to
+stdout immediately; the readable last value appears only after success.
+`--repl` keeps definitions, namespaces and `*1`/`*2`/`*3`/`*e`, reads multiline
+forms, and continues after language errors. Prompts go to stderr for terminal
+input. Use `--source-root DIR` for required `.clj`/`.cljc` files; no source path
+is discovered implicitly. `--help` lists resource and result-printing controls.
+See the [native CLI contract](docs/interpreter.md#native-script-and-repl-commands)
+for stream ownership, limits, error behavior, and supported scope.
+
+The [complete native examples](examples/native) include namespace data processing,
+custom macros, a lazy pipeline, stateful callbacks and recoverable exceptions.
+[Conformance coverage](tests/reference/sci/README.md#integrated-native-conformance)
+accounts for every supported language name and executes all pinned SCI cases
+with explicit assertions for declared differences.
 
 ## Execute small programs
 
@@ -35,6 +92,19 @@ let javascript = emit_js(&program);
 // Or use light_cljs::compile(source) for all three stages.
 ```
 
+Ordinary `let`, `fn`, `defn`, and selected control/threading macros expand natively.
+User macros use explicit `:require-macros` imports; compile-time interpreter Vars
+remain separate from runtime JavaScript globals. The complete example has two
+runtime namespaces and one macro namespace:
+
+```sh
+cargo run --quiet -- --compile --entry demo.main --source-root examples/macros | node
+# 12
+```
+
+See [compiler macros and embedding](docs/compiler.md#compiler-macros-and-embedding)
+for imports, host macros, reload, `&env`, resource limits, and runtime restrictions.
+
 Compilation errors include source locations and produce no partial JavaScript.
 Definitions and narrow JavaScript interop are also supported. Compile the
 included two-namespace example with explicit source roots:
@@ -46,8 +116,8 @@ node /tmp/light-demo.js
 # 4
 ```
 
-Namespace loading supports ordinary `:require` and `:as` aliases. General
-macros (`let`, `fn`, `defn`), collections, library/runtime integration,
+Namespace loading supports ordinary `:require`/`:as` aliases and separate
+`:require-macros` imports. Runtime collections, general library integration,
 constructors, property writes, and optimization remain unsupported. See the
 [executable core contract](docs/compiler.md) for exact limits and testing.
 
@@ -214,8 +284,10 @@ cargo bench --bench tokenizer -- --samples 9 --ms 150 \
   research/clojurescript/src/main/clojure/cljs/analyzer.cljc
 ```
 
-Normal execution and CLI tests require Node.js on `PATH`, or `NODE` set to its
-executable path. The differential test uses the same tiny programs and compares
+Compiler execution and compiler CLI tests require Node.js on `PATH`, or `NODE`
+set to its executable path. Native interpreter tests need only Rust; run
+`cargo test --test native_cli` for the subprocess suite. The compiler differential
+test uses the same tiny programs and compares
 values and observable effects; it may download the pinned Maven dependencies.
 
 The benchmark prepares eight fixtures before timing and accepts additional UTF-8
@@ -225,3 +297,7 @@ reports configuration and medians on stderr. See the
 experiments are preserved separately under `cargo bench --bench subset` and
 must not be described as throughput for this expanded scanner or a complete
 ClojureScript reader/compiler.
+
+For the full native host API, run `cargo run --example embedding` or read the
+[embedding example](examples/embedding.rs) and the documented
+[options, permission and fork contracts](docs/interpreter.md#embedding-configuration-permissions-and-forks).

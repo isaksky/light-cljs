@@ -1,0 +1,24 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-45/run-2/bin/tokenizer", "--samples", "9", "--ms", "100", "research/clojurescript/src/main/cljs/cljs/core.cljs", "research/clojurescript/src/main/clojure/cljs/analyzer.cljc"]
+Token: 24 bytes; Tokenizer: 24 bytes
+9 samples, target 100 ms/sample, >=20 ms calibration per input/variant; single thread, warm resident inputs
+No I/O, input generation, or allocation in timed scans; black_box per token and per traversal
+short-atoms: 262154 bytes, 91184 tokens
+long-atoms: 263780 bytes, 484 tokens
+dense-parens: 262150 bytes, 262150 tokens
+whitespace-heavy: 262612 bytes, 1808 tokens
+unicode: 262170 bytes, 67970 tokens
+large-mixed: 16777384 bytes, 178230 tokens
+reader-syntax: 263048 bytes, 55020 tokens
+large-reader: 16777844 bytes, 3509310 tokens
+research/clojurescript/src/main/cljs/cljs/core.cljs: 375722 bytes, 72391 tokens
+research/clojurescript/src/main/clojure/cljs/analyzer.cljc: 209684 bytes, 32545 tokens
+full-usize       short-atoms            698.7 MB/s     243.0 Mtokens/s (range 690.7..705.3 MB/s)
+full-usize       long-atoms            2286.4 MB/s       4.2 Mtokens/s (range 2269.7..2305.0 MB/s)
+full-usize       dense-parens           486.4 MB/s     486.4 Mtokens/s (range 482.4..490.5 MB/s)
+full-usize       whitespace-heavy      2846.4 MB/s      19.6 Mtokens/s (range 2774.5..2863.4 MB/s)
+full-usize       unicode                576.0 MB/s     149.3 Mtokens/s (range 560.2..580.8 MB/s)
+full-usize       large-mixed           2212.5 MB/s      23.5 Mtokens/s (range 2174.2..2229.4 MB/s)
+full-usize       reader-syntax          966.5 MB/s     202.1 Mtokens/s (range 958.4..977.9 MB/s)
+full-usize       large-reader           966.5 MB/s     202.2 Mtokens/s (range 961.7..974.5 MB/s)
+full-usize       research/clojurescript/src/main/cljs/cljs/core.cljs     689.5 MB/s     132.8 Mtokens/s (range 672.9..710.5 MB/s)
+full-usize       research/clojurescript/src/main/clojure/cljs/analyzer.cljc     816.7 MB/s     126.8 Mtokens/s (range 788.0..846.1 MB/s)

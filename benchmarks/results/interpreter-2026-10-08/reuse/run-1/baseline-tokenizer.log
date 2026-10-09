@@ -1,0 +1,24 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-44/verified-baseline/bin/tokenizer", "--samples", "9", "--ms", "100", "research/clojurescript/src/main/cljs/cljs/core.cljs", "research/clojurescript/src/main/clojure/cljs/analyzer.cljc"]
+Token: 24 bytes; Tokenizer: 24 bytes
+9 samples, target 100 ms/sample, >=20 ms calibration per input/variant; single thread, warm resident inputs
+No I/O, input generation, or allocation in timed scans; black_box per token and per traversal
+short-atoms: 262154 bytes, 91184 tokens
+long-atoms: 263780 bytes, 484 tokens
+dense-parens: 262150 bytes, 262150 tokens
+whitespace-heavy: 262612 bytes, 1808 tokens
+unicode: 262170 bytes, 67970 tokens
+large-mixed: 16777384 bytes, 178230 tokens
+reader-syntax: 263048 bytes, 55020 tokens
+large-reader: 16777844 bytes, 3509310 tokens
+research/clojurescript/src/main/cljs/cljs/core.cljs: 375722 bytes, 72391 tokens
+research/clojurescript/src/main/clojure/cljs/analyzer.cljc: 209684 bytes, 32545 tokens
+full-usize       short-atoms            712.2 MB/s     247.7 Mtokens/s (range 708.3..734.7 MB/s)
+full-usize       long-atoms            2312.6 MB/s       4.2 Mtokens/s (range 2297.0..2323.0 MB/s)
+full-usize       dense-parens           492.3 MB/s     492.3 Mtokens/s (range 480.3..495.6 MB/s)
+full-usize       whitespace-heavy      2834.7 MB/s      19.5 Mtokens/s (range 2754.8..2866.7 MB/s)
+full-usize       unicode                561.0 MB/s     145.5 Mtokens/s (range 549.1..577.1 MB/s)
+full-usize       large-mixed           2214.2 MB/s      23.5 Mtokens/s (range 2193.7..2229.8 MB/s)
+full-usize       reader-syntax          970.5 MB/s     203.0 Mtokens/s (range 942.8..978.0 MB/s)
+full-usize       large-reader           964.0 MB/s     201.6 Mtokens/s (range 951.1..976.1 MB/s)
+full-usize       research/clojurescript/src/main/cljs/cljs/core.cljs     614.1 MB/s     118.3 Mtokens/s (range 412.1..695.2 MB/s)
+full-usize       research/clojurescript/src/main/clojure/cljs/analyzer.cljc     630.6 MB/s      97.9 Mtokens/s (range 282.0..759.6 MB/s)

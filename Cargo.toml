@@ -20,3 +20,15 @@ harness = false
 [[bench]]
 name = "parser"
 harness = false
+
+[[bench]]
+name = "interpreter_gc"
+harness = false
+
+[[bench]]
+name = "interpreter"
+harness = false
+
+[[bench]]
+name = "interpreter_reuse"
+harness = false

@@ -1,7 +1,12 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 5] = [
+const CASE_FILES: [(&str, &str, usize); 6] = [
+    (
+        "tests/fixtures/sci-outcomes.tsv",
+        include_str!("fixtures/sci-outcomes.tsv"),
+        7,
+    ),
     (
         "tests/fixtures/analysis-boundaries.tsv",
         include_str!("fixtures/analysis-boundaries.tsv"),
@@ -140,7 +145,8 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "duplicate provenance for {local_path}::{id}"
             );
             match local_path {
-                "tests/fixtures/execution.tsv"
+                "tests/fixtures/sci-outcomes.tsv"
+                | "tests/fixtures/execution.tsv"
                 | "tests/fixtures/execution-outcomes.tsv"
                 | "tests/fixtures/execution-literals.tsv"
                 | "tests/fixtures/analysis-boundaries.tsv"
@@ -158,6 +164,15 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "tests/analyzer.rs" => assert!(
                     include_str!("analyzer.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown analyzer test: {id}"
+                ),
+                "tests/interpreter_embedding.rs" => assert!(
+                    include_str!("interpreter_embedding.rs")
+                        .contains(&format!("#[test]\nfn {id}()")),
+                    "unknown embedding test: {id}"
+                ),
+                "tests/native_cli.rs" => assert!(
+                    include_str!("native_cli.rs").contains(&format!("#[test]\nfn {id}()")),
+                    "unknown native CLI test: {id}"
                 ),
                 _ => panic!("register a local fixture source before using it: {local_path}"),
             }

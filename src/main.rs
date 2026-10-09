@@ -9,6 +9,8 @@ use std::{
 
 use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, compile_namespace, emit_js, parse};
 
+mod native_cli;
+
 const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn run_namespace(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
@@ -42,6 +44,9 @@ fn run_namespace(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mut first = args.next();
+    if let Some(mode @ ("--eval" | "--repl")) = first.as_deref().and_then(|arg| arg.to_str()) {
+        return native_cli::run(mode == "--repl", args);
+    }
     let mode = match first.as_deref().and_then(|arg| arg.to_str()) {
         Some("--parse") => "parse",
         Some("--analyze") => "analyze",
@@ -62,7 +67,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let source = match first.as_deref() {
         Some(arg) if arg == "--help" || arg == "-h" => {
-            println!("{USAGE}");
+            println!("{USAGE}\n\n{}", native_cli::USAGE);
             return Ok(());
         }
         Some(arg) if arg == "--text" => args

@@ -103,7 +103,7 @@ pub enum NodeKind {
     },
     /// `%`, `%&`, or `%<index form>` inside #(). None is the implicit %1;
     /// explicit indices remain numeric nodes until anonymous-function expansion.
-    /// Ratio indices require later reduction and an integral-value check.
+    /// Interpretation of ratio indices belongs to the semantic reader profile.
     Argument {
         rest: bool,
         index: Option<NodeId>,
@@ -227,6 +227,8 @@ pub struct Parser<'src> {
     nesting_limit: usize,
     in_anonymous_fn: bool,
     finished: bool,
+    retain_discards: bool,
+    discarded: Vec<NodeId>,
 }
 
 impl<'src> Parser<'src> {
@@ -245,7 +247,40 @@ impl<'src> Parser<'src> {
             nesting_limit: limit.min(128),
             in_anonymous_fn: false,
             finished: false,
+            retain_discards: false,
+            discarded: Vec::new(),
         }
+    }
+
+    // Resume an owned semantic cursor without borrowing a previous parser arena.
+    // Offsets are validated by the caller against this exact source.
+    pub(crate) fn at_offset(source: &'src str, offset: usize) -> Self {
+        let mut parser = Self::new(source);
+        parser.lexer.cursor = offset;
+        parser
+    }
+
+    // An embedding reader can share its remaining traversal budget with syntax
+    // lookahead. This only tightens the established parser bound.
+    pub(crate) fn limit_nesting(&mut self, limit: usize) {
+        self.nesting_limit = self.nesting_limit.min(limit);
+    }
+
+    pub(crate) fn position(&self) -> usize {
+        self.lookahead
+            .as_ref()
+            .map_or(self.lexer.cursor, |t| t.span.start)
+    }
+
+    /// Retain discarded subtrees in a side table for semantic reader validation.
+    /// Ordinary roots/children still exclude them. Default parsing is unchanged.
+    pub fn retaining_discards(mut self) -> Self {
+        self.retain_discards = true;
+        self
+    }
+
+    pub fn discarded(&self) -> &[NodeId] {
+        &self.discarded
     }
 
     pub fn nodes(&self) -> &[Node] {
@@ -263,6 +298,7 @@ impl<'src> Parser<'src> {
             return Ok(None);
         }
         let mark = self.nodes.len();
+        let discarded_mark = self.discarded.len();
         let result = (|| {
             self.skip_discarded(0, false)?;
             if self.peek().is_none() {
@@ -274,6 +310,7 @@ impl<'src> Parser<'src> {
             self.finished = true;
             if result.is_err() {
                 self.nodes.truncate(mark);
+                self.discarded.truncate(discarded_mark);
             }
         }
         result
@@ -312,9 +349,13 @@ impl<'src> Parser<'src> {
                 return Err(self.error(ErrorKind::NestingLimit, prefix.span));
             }
             let mark = self.nodes.len();
-            self.required(depth + 1, in_collection, &prefix.span)?;
+            let form = self.required(depth + 1, in_collection, &prefix.span)?;
             // Discard the entire syntax subtree, keeping capacity for later nodes.
-            self.nodes.truncate(mark);
+            if self.retain_discards {
+                self.discarded.push(form);
+            } else {
+                self.nodes.truncate(mark);
+            }
         }
         Ok(())
     }
@@ -501,7 +542,9 @@ impl<'src> Parser<'src> {
                     _ => return Err(self.error(ErrorKind::InvalidSymbolicValue, node.span.clone())),
                 };
                 end = node.span.end;
-                self.nodes.truncate(mark);
+                if !self.retain_discards {
+                    self.nodes.truncate(mark);
+                }
                 NodeKind::SymbolicValue(value)
             }
             T::ReadEval => return Err(self.error(ErrorKind::ReadEvalDisabled, token.span)),

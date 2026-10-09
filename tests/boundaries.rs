@@ -20,6 +20,7 @@ fn category(kind: &AnalysisErrorKind) -> &'static str {
         AnalysisErrorKind::UnresolvedSymbol(_) => "unresolved",
         AnalysisErrorKind::Unsupported(_) => "unsupported",
         AnalysisErrorKind::NumberOutOfRange => "number-range",
+        AnalysisErrorKind::MacroExpansion(_) => "macro-expansion",
     }
 }
 
@@ -40,6 +41,11 @@ fn expression_boundaries_retain_exact_diagnostics_in_unselected_branches() {
             let span = start..start + rejected.len();
             let column = prefix.split_once('\n').unwrap().1.len() + before.len() + 1;
             let syntax = parse(&source).unwrap_or_else(|error| panic!("{id}: {error}"));
+            if expected == "accepted" {
+                analyze(&source, &syntax).unwrap_or_else(|error| panic!("{id}: {error}"));
+                compile(&source).unwrap_or_else(|error| panic!("{id}: {error}"));
+                continue;
+            }
             let error = analyze(&source, &syntax).unwrap_err();
             assert_eq!(category(&error.kind), expected, "{id}: {error}");
             assert_eq!(error.span, span, "{id}: {error}");
@@ -126,7 +132,7 @@ fn namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript() {
             "loader-only",
         ],
     ];
-    for [id, mode, before, rejected, after, _, message, _, _] in rows().chain(loader_cases) {
+    for [id, mode, before, rejected, after, expected, message, _, _] in rows().chain(loader_cases) {
         if mode != "ns" {
             continue;
         }
@@ -137,6 +143,11 @@ fn namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript() {
         let start = prefix.len() + before.len();
         let span = start..start + rejected.len();
         let column = before.len() + 1;
+        if expected == "accepted" {
+            compile_namespace("boundary", std::slice::from_ref(&sources.0))
+                .unwrap_or_else(|error| panic!("{id}: {error}"));
+            continue;
+        }
         let error = compile_namespace("boundary", std::slice::from_ref(&sources.0)).unwrap_err();
         assert_eq!(error.span, Some(span.clone()), "{id}: {error}");
         assert_eq!(error.line_column, Some((2, column)), "{id}: {error}");

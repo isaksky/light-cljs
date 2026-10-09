@@ -61,11 +61,11 @@ reader-tag	expr		#js []		unsupported	tagged literals	accepted	accepted
 reader-conditional	cljc		#?(:cljs 1)		unsupported	reader conditionals	accepted	accepted
 reader-ns-map	expr		#:a{:x 1}		unsupported	namespaced maps	accepted	accepted
 reader-reader-fn	expr		#(1)		unsupported	collection literals	accepted	accepted
-macro-let	expr	(	let	 [x 1] x)	unsupported	macro execution	accepted	accepted
-macro-fn	expr	(	fn	 [] 1)	unsupported	macro execution	accepted	accepted
-macro-cljs-core-let	expr	(	cljs.core/let	 [x 1] x)	unsupported	macro execution	accepted	accepted
-macro-when	expr	(	when	 true 1)	unsupported	macro execution	accepted	accepted
-macro-defn	expr	(	defn	 f [] 1)	unsupported	macro execution	accepted	accepted
+macro-let	expr	(	let	 [x 1] x)	accepted	now supported native macro expansion	accepted	accepted
+macro-fn	expr	(	fn	 [] 1)	accepted	now supported native macro expansion	accepted	accepted
+macro-cljs-core-let	expr	(	cljs.core/let	 [x 1] x)	accepted	now supported native macro expansion	accepted	accepted
+macro-when	expr	(	when	 true 1)	accepted	now supported native macro expansion	accepted	accepted
+macro-defn	expr	(	defn	 f [] 1)	accepted	now supported native macro expansion	accepted	accepted
 macro-defmacro	expr	(	defmacro	 m [] 1)	unsupported	macro execution	accepted	accepted
 special-loopstar	expr	(	loop*	 [x 1] x)	unsupported	unsupported construct: loop*	accepted	accepted
 special-letfnstar	expr	(	letfn*	 [f (fn* [] 1)] (f))	unsupported	unsupported construct: letfn*	accepted	accepted
@@ -117,10 +117,10 @@ ns-as-js	ns	(ns boundary (:require [boundary.lib :as 	js	]))	namespace	js is res
 ns-require-repeated	ns	(ns boundary (:require boundary.lib) 	(:require other)	)	namespace	only one :require	analysis-error	analysis-error
 ns-unknown-clause	ns	(ns boundary 	(:unless [])	)	namespace	unsupported namespace clause	analysis-error	analysis-error
 ns-import	ns	(ns boundary 	(:import goog.Uri)	)	namespace	unsupported namespace clause	warning	warning
-ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	namespace	unsupported namespace clause	warning	warning
+ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	accepted	now supported native macro expansion	warning	warning
 ns-refer-clojure	ns	(ns boundary 	(:refer-clojure :exclude [+])	)	namespace	unsupported namespace clause	warning	warning
 ns-package	ns	(ns boundary (:require [	"package"	 :as p]))	namespace	JavaScript package imports	warning	warning
-macro-shadow-exit	expr	(do (let* [when (fn* [x] x)] (when 1)) (	when	 true 1))	unsupported	macro execution	accepted	accepted
+macro-shadow-exit	expr	(do (let* [when (fn* [x] x)] (when 1)) (	when	 true 1))	accepted	now supported native macro expansion	accepted	accepted
 special-nested-ns	expr	(fn* [] (	ns	 nested.core))	unsupported	unsupported construct: ns	analysis-error	analysis-error
 fn-variadic-missing-rest	expr	(fn* [	&	] 1)	unsupported	variadic parameters	emit-error	emit-error
 fn-malformed-empty-arity	expr	(fn* ([] 1) 	()	)	invalid-form	parameter vector	warning	warning
