@@ -1,0 +1,14 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `release` profile [optimized] target(s) in 4.30s
+     Running unittests src/lib.rs (target/release/deps/light_cljs-e1728b0ac626ec3d)
+
+running 1 test
+native median_ns_per_call=36 range=35..38
+closure median_ns_per_call=148 range=144..167
+protocol median_ns_per_call=332 range=302..345
+defn median_ns_per_registration=51933 range=49948..57189
+protocol_registration median_ns_per_registration=65557 range=63959..67142
+test interpreter::protocols::tests::protocol_dispatch_measurement ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.12s
+

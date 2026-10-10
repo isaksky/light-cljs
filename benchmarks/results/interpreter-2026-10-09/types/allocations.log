@@ -1,0 +1,2 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-65/verified-types/bin/interpreter_types-allocations", "--samples", "9", "--iterations", "32", "--allocations"]
+samples=9 iterations=32 allocations=true; two warmup batches; GC once per batch plus explicitly named callbacks; full type/content validation before timing

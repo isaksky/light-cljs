@@ -1,0 +1,164 @@
+{
+  "node": "v24.18.0",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "binary_sha256": "1daa0419184678cbd4ed99424222fa75d504b864360c0e8444e4c665edb41a09",
+  "runtime_sha256": "6995ac40dd27f6d3f15752a74d18a1ecabbe3557ec1940bd580d6ab7195482a8",
+  "runtime_bytes": 104288,
+  "runtime_gzip_bytes": 24452,
+  "method": "Nine fresh Node processes per program. Time vm.Script compilation plus runInThisContext in milliseconds; validate the numeric result after timing. Excludes process launch and source reading. OS caches/scheduling uncontrolled; historical baseline is not paired.",
+  "programs": {
+    "primitive": {
+      "source": "42",
+      "expected": 42,
+      "sha256": "cefb7c7e86a17fe9c8fa416ae5202f7f63f914f3ac51a4c0cf4a95b214b5c774",
+      "bytes": 88,
+      "gzip_bytes": 93,
+      "samples_ms": [
+        0.08499999999999375,
+        0.09320800000000418,
+        0.09908300000000025,
+        0.10729199999999395,
+        0.0917920000000052,
+        0.08774999999999977,
+        0.09558299999999775,
+        0.09141699999999986,
+        0.08970799999999812
+      ],
+      "median_ms": 0.0917920000000052
+    },
+    "dot": {
+      "source": "(. \"abcd\" indexOf \"d\")",
+      "expected": 3,
+      "sha256": "7949a9ca8f7350f17e60e0601b7d31db39ad17fba163810dd3516b1d9e33dc78",
+      "bytes": 110,
+      "gzip_bytes": 113,
+      "samples_ms": [
+        0.09079200000000043,
+        0.08766700000000327,
+        0.08395900000000012,
+        0.08329200000000014,
+        0.10979099999999775,
+        0.08420800000000028,
+        0.08441699999999841,
+        0.08245799999999903,
+        0.08408399999999716
+      ],
+      "median_ms": 0.08420800000000028
+    },
+    "constructor": {
+      "source": "(.-x (new (fn [x] (this-as self (set! (.-x self) x))) 3))",
+      "expected": 3,
+      "sha256": "9d849b35f884d8932084f0966dcf7ed54cf2ce6c69d846a93cb43942bbf46075",
+      "bytes": 218,
+      "gzip_bytes": 167,
+      "samples_ms": [
+        0.09016599999999997,
+        0.09295799999999943,
+        0.10737500000000466,
+        0.10299999999999798,
+        0.10200000000000387,
+        0.09658299999999542,
+        0.08962500000000162,
+        0.08858299999999986,
+        0.09170800000000057
+      ],
+      "median_ms": 0.09295799999999943
+    },
+    "template": {
+      "source": "(js* \"(~{} + ~{})\" 1 2)",
+      "expected": 3,
+      "sha256": "4633731b9dbf920854061fdec2102fd5b84c39978ec9107b39fc37d7d23db59e",
+      "bytes": 102,
+      "gzip_bytes": 106,
+      "samples_ms": [
+        0.08774999999999977,
+        0.08229200000000247,
+        0.10658300000000054,
+        0.08116599999999963,
+        0.08249999999999957,
+        0.08291699999999835,
+        0.08266700000000071,
+        0.08458299999999852,
+        0.08279200000000131
+      ],
+      "median_ms": 0.08279200000000131
+    },
+    "collections": {
+      "source": "(count [1 2 3])",
+      "expected": 3,
+      "sha256": "8771f2c6e276a8f16caa1b7db49c2fa52ccd86fab81b75fc1801c0e139b447cb",
+      "bytes": 104445,
+      "gzip_bytes": 24492,
+      "samples_ms": [
+        1.7780419999999992,
+        1.9934999999999974,
+        1.7992920000000012,
+        1.7746670000000009,
+        2.1327909999999974,
+        1.8321660000000008,
+        1.8731250000000017,
+        1.834416000000001,
+        1.8513340000000014
+      ],
+      "median_ms": 1.834416000000001
+    },
+    "array-helpers": {
+      "source": "(aget (array 1 2 3) 2)",
+      "expected": 3,
+      "sha256": "1c44148281ec5cb530a6d00c5bb19337ac7a1cd6ab1fd9e5dc241191183acfa0",
+      "bytes": 104428,
+      "gzip_bytes": 24488,
+      "samples_ms": [
+        1.7416669999999996,
+        1.7905830000000016,
+        1.770707999999999,
+        1.7225420000000007,
+        1.8860419999999962,
+        1.7232500000000002,
+        1.7715829999999997,
+        1.8894589999999987,
+        1.774916000000001
+      ],
+      "median_ms": 1.7715829999999997
+    },
+    "type-mutable": {
+      "source": "(deftype T [^:mutable x] Object (increment [_] (set! x (inc x)))) (let [v (T. 6)] (.increment v))",
+      "expected": 7,
+      "sha256": "c817eaad0672f4a71296873bd9d5961fc04fe7dfe16a6bb902b1b0ba85f864b7",
+      "bytes": 104884,
+      "gzip_bytes": 24663,
+      "samples_ms": [
+        2.0519999999999996,
+        2.0615419999999993,
+        2.202874999999999,
+        2.055374999999998,
+        1.9340840000000021,
+        2.3260419999999975,
+        2.141957999999999,
+        2.160415999999998,
+        2.1242909999999995
+      ],
+      "median_ms": 2.1242909999999995
+    },
+    "type-reduce": {
+      "source": "(deftype T [xs] IReduce (-reduce [_ f] (reduce f xs)) (-reduce [_ f init] (reduce f init xs))) (reduce + (T. [1 2 4]))",
+      "expected": 7,
+      "sha256": "f975d9ba067bd02dc016c26dec1779199fe9d2f704b75ea815cc186d638dd171",
+      "bytes": 105061,
+      "gzip_bytes": 24682,
+      "samples_ms": [
+        2.123332999999999,
+        2.070875000000001,
+        2.3807919999999996,
+        2.1886660000000013,
+        2.098374999999997,
+        2.092167,
+        2.093791999999997,
+        2.0568750000000016,
+        2.0427089999999986
+      ],
+      "median_ms": 2.093791999999997
+    }
+  }
+}

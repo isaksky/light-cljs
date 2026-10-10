@@ -249,6 +249,87 @@ fn allow_policy_canonicalizes_core_names_and_keeps_language_created_vars_usable(
 }
 
 #[test]
+fn into_preserves_retained_native_var_and_interpreted_callback_permissions() {
+    for callback in ["inc", "#'inc", "(fn [x] (inc x))"] {
+        let mut c = Context::new();
+        let into = c.eval_string("into").unwrap();
+        let xf = c
+            .eval_string(&format!(
+                "(let [f {callback}] (fn [rf] (fn ([a] (rf a)) ([a x] (rf a (f x))))))"
+            ))
+            .unwrap();
+        deny(&mut c, &["inc"]);
+        let target = c.vector(&[]).unwrap();
+        let source = c.vector(&[c.integer(1)]).unwrap();
+        let error = c.invoke(&into, &[target.clone(), xf, source]).unwrap_err();
+        assert!(error.to_string().contains("PermissionDenied"), "{error}");
+        assert_eq!(target.count(), Some(0));
+    }
+}
+
+#[test]
+fn native_transforms_preserve_permissions_on_retained_callbacks() {
+    for transform in ["map", "filter", "remove", "take-while", "mapcat"] {
+        for callback in ["inc", "#'inc", "(fn [x] (inc x))"] {
+            let mut c = Context::new();
+            let xf = c.eval_string(&format!("({transform} {callback})")).unwrap();
+            let rf = c.eval_string("(completing conj)").unwrap();
+            let reducer = c.invoke(&xf, &[rf]).unwrap();
+            deny(&mut c, &["inc"]);
+            let error = c
+                .invoke(&reducer, &[c.vector(&[]).unwrap(), c.integer(1)])
+                .unwrap_err();
+            assert!(error.to_string().contains("PermissionDenied"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn retained_transducer_adapters_preserve_callback_permissions_and_ambient_boundary() {
+    for reducer in ["+", "#'+", "(fn [a x] (+ a x))"] {
+        for transform in [
+            "(fn [rf] rf)",
+            "(take 1)",
+            "(drop 0)",
+            "(take-while pos?)",
+            "cat",
+            "(mapcat identity)",
+            "(partition-all 1)",
+            "(partition-all 3)",
+        ] {
+            let mut c = Context::new();
+            let rf = c.eval_string(&format!("(completing {reducer})")).unwrap();
+            let transduce = c.eval_string("transduce").unwrap();
+            let xf = c.eval_string(transform).unwrap();
+            deny(&mut c, &["+"]);
+            let mut source = c.vector(&[c.integer(1)]).unwrap();
+            if transform.contains("cat") {
+                source = c.vector(&[source]).unwrap();
+            }
+            let error = c
+                .invoke(&transduce, &[xf, rf, c.integer(0), source])
+                .unwrap_err();
+            assert!(error.to_string().contains("PermissionDenied"), "{error}");
+        }
+    }
+    let mut c = Context::new();
+    let rf = c.eval_string("(completing + inc)").unwrap();
+    deny(&mut c, &["inc"]);
+    assert!(
+        c.invoke(&rf, &[c.integer(0)])
+            .unwrap_err()
+            .to_string()
+            .contains("PermissionDenied")
+    );
+    for source in [
+        "(transduce identity (completing (fn [a x] (slurp x))) nil [\"missing\"])",
+        "(transduce identity (completing (fn [a x] (println x))) nil [1])",
+    ] {
+        assert!(c.eval_string(source).is_err(), "{source}");
+    }
+}
+
+#[test]
 fn reader_and_loader_callbacks_inherit_current_permissions() {
     let mut c = Context::new();
     c.register_data_reader(name("increment"), &PLUS);
@@ -675,4 +756,414 @@ fn core_repl_history_vars_are_dynamic_and_fork_local_without_automatic_rotation(
             .collect::<Vec<_>>(),
         vec![ValueView::Nil; 3]
     );
+}
+
+#[test]
+fn protocol_handles_forks_and_generated_helpers_obey_permissions() {
+    let mut c = Context::new();
+    c.eval_string("(defprotocol P (f [x]))").unwrap();
+    let method = c.eval_string("f").unwrap();
+    let protocol = c.eval_string("P").unwrap();
+    let source = c.source("saved-protocol.clj", "(defprotocol P (f [x]))");
+    let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+    let code = c.analyze_form(&form).unwrap();
+    let mut fork = c.fork().unwrap();
+    drop((source, form));
+    c.collect_garbage();
+    assert!(fork.eval_string("P").unwrap().same_identity(&protocol));
+    fork.eval_string("(def f (fn [_] 9))").unwrap();
+    assert_eq!(integer(c.eval_string("(f nil)").unwrap()), 9);
+    assert!(matches!(
+        c.invoke(&method, &[c.nil()]),
+        Err(InvokeError::Dispatch(
+            EvalErrorKind::MissingProtocolImplementation { .. }
+        ))
+    ));
+    deny(&mut fork, &["user/f"]);
+    assert!(matches!(
+        fork.invoke(&method, &[fork.nil()]),
+        Err(InvokeError::Dispatch(EvalErrorKind::PermissionDenied(_)))
+    ));
+    deny(&mut c, &["clojure.core/defprotocol"]);
+    assert!(matches!(
+        c.eval_analyzed(&code).unwrap_err().kind,
+        EvalErrorKind::PermissionDenied(_)
+    ));
+    let mut fresh = Context::new();
+    assert!(fresh.eval_string("P").is_err());
+    assert!(matches!(
+        fresh.invoke(&method, &[fresh.nil()]),
+        Err(InvokeError::Dispatch(EvalErrorKind::WrongOwner))
+    ));
+    let satisfies = fresh.eval_string("satisfies?").unwrap();
+    assert!(matches!(
+        fresh.invoke(&satisfies, &[protocol, fresh.nil()]),
+        Err(InvokeError::Dispatch(EvalErrorKind::WrongOwner))
+    ));
+    let mut denied = Context::new();
+    deny(&mut denied, &["user/f"]);
+    rejected(&mut denied, "(defprotocol P (f [x]))");
+    assert!(denied.resolve_var(&name("user/P")).unwrap().is_none());
+}
+
+#[test]
+fn reify_retained_handles_survive_fork_and_reentrant_definition_replacement() {
+    static REPLACE: NativeDefinition = NativeDefinition {
+        metadata: NativeMetadata {
+            namespace: "host",
+            name: "replace-reify",
+            arity: Arity::Exact(1),
+            effects: NativeEffects::Context,
+            errors: &[],
+        },
+        callback: |c, args| {
+            assert_eq!(args[0].inspect(), ValueView::Reify);
+            c.eval_string("(defprotocol P (f [x])) (def f (fn [_] 99))")
+                .unwrap();
+            c.collect_garbage();
+            Ok(c.nil())
+        },
+    };
+    let mut c = Context::new();
+    c.register_native(&REPLACE);
+    c.eval_string("(defprotocol P (f [x]))").unwrap();
+    let method = c.eval_string("f").unwrap();
+    let object = c
+        .eval_string("(let [kept [7]] (reify P (f [this] (host/replace-reify this) (first kept))))")
+        .unwrap();
+    let mut fork = c.fork().unwrap();
+    c.reset();
+    assert!(matches!(
+        c.invoke(&method, std::slice::from_ref(&object)),
+        Err(InvokeError::Dispatch(EvalErrorKind::WrongOwner))
+    ));
+    drop(c);
+    fork.collect_garbage();
+    assert_eq!(
+        integer(fork.invoke(&method, std::slice::from_ref(&object)).unwrap()),
+        7
+    );
+    let live = fork.eval_string("f").unwrap();
+    assert_eq!(
+        integer(fork.invoke(&live, std::slice::from_ref(&object)).unwrap()),
+        99
+    );
+    // Saved protocol functions continue selecting their own object's captured method.
+    assert_eq!(
+        integer(fork.invoke(&method, std::slice::from_ref(&object)).unwrap()),
+        7
+    );
+    let mut fresh = Context::new();
+    assert!(matches!(
+        fresh.invoke(&method, &[object]),
+        Err(InvokeError::Dispatch(EvalErrorKind::WrongOwner))
+    ));
+}
+
+#[test]
+fn reify_construction_protocol_and_captured_callbacks_obey_current_permissions() {
+    let mut c = Context::new();
+    c.register_native(&PLUS);
+    c.eval_string("(defprotocol P (f [x]))").unwrap();
+    let method = c.eval_string("f").unwrap();
+    let object = c
+        .eval_string("(let [callback host/increment] (reify P (f [_] (callback 6))))")
+        .unwrap();
+    let source = c.source("reify.clj", "(reify P (f [_] 1))");
+    let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+    let code = c.analyze_form(&form).unwrap();
+    assert_eq!(
+        integer(c.invoke(&method, std::slice::from_ref(&object)).unwrap()),
+        7
+    );
+    let mut denied_callback = c.fork().unwrap();
+    deny(&mut denied_callback, &["host/increment"]);
+    assert_eq!(
+        denied_callback
+            .invoke(&method, std::slice::from_ref(&object))
+            .unwrap_err()
+            .class(),
+        ErrorClass::Diagnostic
+    );
+    let mut denied_protocol = c.fork().unwrap();
+    deny(&mut denied_protocol, &["user/P"]);
+    rejected(&mut denied_protocol, "(reify P (f [_] 1))");
+    assert!(matches!(
+        denied_protocol.eval_analyzed(&code).unwrap_err().kind,
+        EvalErrorKind::PermissionDenied(_)
+    ));
+    deny(&mut c, &["clojure.core/reify"]);
+    assert!(matches!(
+        c.eval_analyzed(&code).unwrap_err().kind,
+        EvalErrorKind::PermissionDenied(_)
+    ));
+    assert_eq!(integer(c.invoke(&method, &[object]).unwrap()), 7);
+}
+
+#[test]
+fn records_keep_host_roots_and_follow_shared_constructor_vars_across_forks() {
+    let mut c = Context::new();
+    let source = c.source("records.clj", "(defrecord R [x])");
+    c.eval_source(&source).unwrap();
+    let constructor = c.eval_string("->R").unwrap();
+    let old_type = c.eval_string("R").unwrap();
+    let old = c
+        .invoke(&constructor, &[c.vector(&[c.integer(7)]).unwrap()])
+        .unwrap();
+    let mut fork = c.fork().unwrap();
+    drop(source);
+    fork.eval_string("(defrecord R [x])").unwrap();
+    c.collect_garbage();
+    let new = c
+        .invoke(&constructor, &[c.vector(&[c.integer(7)]).unwrap()])
+        .unwrap();
+    assert!(!old.value_eq(&new));
+    assert!(!old_type.same_identity(&fork.eval_string("R").unwrap()));
+    c.reset();
+    assert_eq!(
+        old.get(&fork.keyword(Name::new(None, "x")))
+            .unwrap()
+            .unwrap()
+            .count(),
+        Some(1)
+    );
+    assert!(matches!(
+        c.invoke(&constructor, &[c.nil()]),
+        Err(InvokeError::Dispatch(EvalErrorKind::WrongOwner))
+    ));
+    assert!(matches!(
+        c.assoc(&old, &c.keyword(Name::new(None, "x")), &c.nil()),
+        Err(CollectionError::WrongOwner)
+    ));
+    fork.collect_garbage();
+    assert!(
+        new.value_eq(
+            &fork
+                .invoke(&constructor, &[fork.vector(&[fork.integer(7)]).unwrap()])
+                .unwrap()
+        )
+    );
+    deny(&mut fork, &["user/R"]);
+    assert!(matches!(
+        fork.invoke(&constructor, &[fork.nil()]),
+        Err(InvokeError::Execution(_))
+    ));
+}
+
+#[test]
+fn record_key_realization_and_walk_root_fields_across_callback_gc() {
+    static GC: NativeDefinition = NativeDefinition {
+        metadata: NativeMetadata {
+            namespace: "host",
+            name: "record-gc",
+            arity: Arity::Exact(1),
+            effects: NativeEffects::Context,
+            errors: &[],
+        },
+        callback: |c, args| {
+            c.collect_garbage();
+            Ok(args[0].clone())
+        },
+    };
+    let mut c = Context::new();
+    c.register_native(&GC);
+    assert_eq!(c.eval_string("(defrecord R [x]) (let [r (with-meta (->R (map host/record-gc [1 2 3])) {:m [9]})] [(= r (->R [1 2 3])) (get {r :ok} (->R [1 2 3])) (record? (clojure.walk/postwalk host/record-gc r))])").unwrap().elements().unwrap().iter().map(RootedValue::inspect).collect::<Vec<_>>(), vec![ValueView::Boolean(true), ValueView::Keyword(Name::new(None, "ok")), ValueView::Boolean(true)]);
+}
+
+#[test]
+fn retained_record_helpers_check_current_type_and_definition_permissions() {
+    let mut c = Context::new();
+    c.eval_string("(defrecord R [x]) (def saved-type R) (def private-construct (first (nth (nth (nth (macroexpand-1 '(defrecord R [x])) 2) 2) 2)))").unwrap();
+    let make = c.eval_string("private-construct").unwrap();
+    let record_type = c.eval_string("saved-type").unwrap();
+    let fields = c.vector(&[c.integer(7)]).unwrap();
+    assert_eq!(
+        c.invoke(&make, &[record_type.clone(), fields.clone()])
+            .unwrap()
+            .inspect(),
+        ValueView::Record(1)
+    );
+    deny(&mut c, &["user/R"]);
+    assert!(matches!(
+        c.invoke(&make, &[record_type, fields]),
+        Err(InvokeError::Dispatch(EvalErrorKind::PermissionDenied(_)))
+    ));
+}
+
+#[test]
+fn record_methods_retain_generation_fields_and_captures_across_reentrant_gc_and_context_drop() {
+    static GC: NativeDefinition = NativeDefinition {
+        metadata: NativeMetadata {
+            namespace: "host",
+            name: "record-method-gc",
+            arity: Arity::Exact(1),
+            effects: NativeEffects::Context,
+            errors: &[],
+        },
+        callback: |c, a| {
+            assert!(matches!(a[0].inspect(), ValueView::Record(_)));
+            c.eval_string("(defrecord R [x] P (p [_] (+ x 100)))")
+                .unwrap();
+            c.collect_garbage();
+            Ok(c.nil())
+        },
+    };
+    let mut c = Context::new();
+    c.register_native(&GC);
+    c.eval_string("(defprotocol P (p [r]))").unwrap();
+    let source = c.source("record-methods.clj", "(let [kept [7]] (defrecord R [x] P (p [this] (host/record-method-gc this) (+ x (first kept)))))");
+    let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+    c.eval_form(&form).unwrap();
+    let method = c.eval_string("p").unwrap();
+    let saved = c.eval_string("->R").unwrap();
+    let old = c.invoke(&saved, &[c.integer(2)]).unwrap();
+    let mut fork = c.fork().unwrap();
+    drop((source, form, c));
+    fork.collect_garbage();
+    assert_eq!(
+        integer(fork.invoke(&method, std::slice::from_ref(&old)).unwrap()),
+        9
+    );
+    let new = fork.invoke(&saved, &[fork.integer(2)]).unwrap();
+    assert_eq!(integer(fork.invoke(&method, &[new]).unwrap()), 102);
+    assert_eq!(
+        integer(fork.invoke(&method, std::slice::from_ref(&old)).unwrap()),
+        9
+    );
+    let mut other = Context::new();
+    assert!(matches!(
+        other.invoke(&method, &[old]),
+        Err(InvokeError::Dispatch(EvalErrorKind::WrongOwner))
+    ));
+}
+
+#[test]
+fn record_methods_recheck_permissions_and_retained_definition_protocols() {
+    let mut c = Context::new();
+    c.register_native(&PLUS);
+    c.eval_string("(defprotocol P (p [r])) (let [callback host/increment] (defrecord R [x] P (p [_] (callback x))))").unwrap();
+    let method = c.eval_string("p").unwrap();
+    let object = c.eval_string("(->R 6)").unwrap();
+    let source = c.source("record-policy.clj", "(defrecord R [x] P (p [_] x))");
+    let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+    let code = c.analyze_form(&form).unwrap();
+    for denied_name in ["user/P", "user/R", "clojure.core/defrecord", "def"] {
+        let mut denied = c.fork().unwrap();
+        deny(&mut denied, &[denied_name]);
+        assert!(
+            matches!(
+                denied.eval_analyzed(&code).unwrap_err().kind,
+                EvalErrorKind::PermissionDenied(_)
+            ),
+            "{denied_name}"
+        );
+    }
+    for denied_name in ["user/p", "host/increment"] {
+        let mut denied = c.fork().unwrap();
+        deny(&mut denied, &[denied_name]);
+        assert_eq!(
+            denied
+                .invoke(&method, std::slice::from_ref(&object))
+                .unwrap_err()
+                .class(),
+            ErrorClass::Diagnostic
+        );
+    }
+    assert_eq!(integer(c.invoke(&method, &[object]).unwrap()), 7);
+}
+#[test]
+fn extension_replacement_keeps_inflight_closure_rooted_and_releases_it_afterward() {
+    static REPLACE: NativeDefinition = NativeDefinition {
+        metadata: NativeMetadata {
+            namespace: "host",
+            name: "replace-extension",
+            arity: Arity::Exact(1),
+            effects: NativeEffects::Context,
+            errors: &[],
+        },
+        callback: |c, a| {
+            assert!(matches!(a[0].inspect(), ValueView::Record(_)));
+            c.eval_string("(extend-type R P (p [r] (+ 100 (:n r))))")
+                .unwrap();
+            c.collect_garbage();
+            Ok(c.nil())
+        },
+    };
+    let mut c = Context::new();
+    c.register_native(&REPLACE);
+    c.eval_string("(defprotocol P (p [x])) (defrecord R [n])")
+        .unwrap();
+    let captured = c.eval_string("(let [kept [7]] (extend-type R P (p [r] (host/replace-extension r) (+ (:n r) (first kept)))) kept)").unwrap();
+    let captured_id = captured.heap_id().unwrap();
+    drop(captured);
+    let object = c.eval_string("(->R 2)").unwrap();
+    let method = c.eval_string("p").unwrap();
+    let mut fork = c.fork().unwrap();
+    drop(c);
+    fork.collect_garbage();
+    assert!(fork.heap_value(captured_id).is_ok());
+    assert_eq!(
+        integer(fork.invoke(&method, std::slice::from_ref(&object)).unwrap()),
+        9
+    );
+    fork.collect_garbage();
+    assert!(matches!(
+        fork.heap_value(captured_id),
+        Err(HandleError::StaleId)
+    ));
+    assert_eq!(integer(fork.invoke(&method, &[object]).unwrap()), 102);
+}
+
+#[test]
+fn retained_extensions_recheck_target_protocol_and_macro_permissions() {
+    let mut c = Context::new();
+    c.register_native(&PLUS);
+    c.eval_string("(defprotocol P (p [x])) (defrecord R [n])")
+        .unwrap();
+    for source in [
+        "(extend-type R P (p [r] (:n r)))",
+        "(extend-protocol P R (p [r] (:n r)))",
+    ] {
+        let form = c.source("extension-policy.clj", source);
+        let form = c.reader(&form).unwrap().read_form().unwrap().unwrap();
+        let code = c.analyze_form(&form).unwrap();
+        for name in [
+            "user/P",
+            "user/R",
+            if source.starts_with("(extend-type") {
+                "clojure.core/extend-type"
+            } else {
+                "clojure.core/extend-protocol"
+            },
+        ] {
+            let mut denied = c.fork().unwrap();
+            deny(&mut denied, &[name]);
+            assert!(
+                matches!(
+                    denied.eval_analyzed(&code).unwrap_err().kind,
+                    EvalErrorKind::PermissionDenied(_)
+                ),
+                "{name}"
+            );
+        }
+    }
+    c.eval_string("(let [callback host/increment] (extend-type R P (p [r] (callback (:n r)))))")
+        .unwrap();
+    let method = c.eval_string("p").unwrap();
+    let object = c.eval_string("(->R 6)").unwrap();
+    for name in ["user/p", "host/increment"] {
+        let mut denied = c.fork().unwrap();
+        deny(&mut denied, &[name]);
+        assert_eq!(
+            denied
+                .invoke(&method, std::slice::from_ref(&object))
+                .unwrap_err()
+                .class(),
+            ErrorClass::Diagnostic
+        );
+    }
+    assert_eq!(integer(c.invoke(&method, &[object]).unwrap()), 7);
+    c.eval_string("(alter-meta! #'R assoc :sci/built-in true)")
+        .unwrap();
+    assert!(c.eval_string("(extend-type R P (p [_] 9))").is_err());
 }

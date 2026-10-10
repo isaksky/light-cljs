@@ -1,0 +1,2 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-58/transducers/bin/old-path-baseline-timings", "--samples", "9", "--iterations", "32"]
+samples=9 iterations=32 allocations=false diagnostics=false; no filesystem I/O in resident phases

@@ -1,0 +1,939 @@
+    Blocking waiting for file lock on package cache
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `release` profile [optimized] target(s) in 21.42s
+     Running unittests src/lib.rs (target/release/deps/light_cljs-e1728b0ac626ec3d)
+
+running 17 tests
+test interpreter::arena::tests::an_exhausted_generation_retires_the_slot ... ok
+test interpreter::collections::tests::vector_updates_copy_only_the_changed_tree_path ... ok
+test interpreter::collections::tests::map_updates_share_unaffected_branches_and_copy_at_most_one_hash_path ... ok
+test interpreter::evaluation::tests::recur_validation_tracks_try_barriers_and_resets_for_new_targets ... ok
+test interpreter::evaluation::tests::primitive_execution_visits_each_selected_member_once_in_source_order ... ok
+test interpreter::protocols::tests::protocol_dispatch_measurement ... ignored, manual release-mode protocol/native/closure timing; no performance threshold
+test interpreter::evaluation::tests::top_level_analysis_and_execution_are_interleaved_including_nested_do ... ok
+test interpreter::evaluation::tests::checked_collection_failure_follows_all_members_and_precedes_metadata ... ok
+test interpreter::protocols::tests::dispatch_recursion_and_lazy_apply_respect_controls ... ok
+test interpreter::tests::collection_reuses_root_trace_and_vacant_slot_capacity_without_dead_edges ... ok
+test interpreter::tests::collector_traces_cycles_through_units_names_and_sources_then_reclaims_them ... ok
+test interpreter::protocols::tests::retained_methods_descriptors_and_receivers_trace_cycles_without_context_roots ... ok
+test interpreter::tests::dropping_the_last_host_handle_drops_owner_even_with_an_uncollected_cycle ... ok
+test interpreter::protocols::tests::private_receivers_dispatch_through_direct_saved_apply_var_and_closure_calls ... ok
+test interpreter::protocols::tests::selected_implementation_survives_reentrant_replacement_and_collection ... ok
+test interpreter::evaluation::tests::recur_reuses_scratch_and_releases_all_frame_roots_on_exit ... ok
+test interpreter::tests::deep_graphs_use_an_iterative_trace_and_reuse_empty_scratch ... ok
+
+test result: ok. 16 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/release/deps/light_cljs-81c70bdb650b3a87)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/analyzer.rs (target/release/deps/analyzer-14b9f4be33266221)
+
+running 28 tests
+test analysis_owns_its_values_and_compile_distinguishes_error_stages ... ok
+test closures_resolve_to_distinct_persistent_binding_ids ... ok
+test core_functions_resolve_after_locals_and_globals_and_by_explicit_qualifier ... ok
+test context_tracks_discarded_returned_and_argument_values ... ok
+test definitions_and_interop_reject_unsupported_shapes_with_spans ... ok
+test different_spellings_have_distinct_ids_even_when_munging_would_collide ... ok
+test fixed_function_signature_boundaries_have_precise_diagnostics ... ok
+test globals_are_source_ordered_and_definition_self_reference_is_registered_first ... ok
+test global_identity_is_stable_and_distinct_from_lexical_and_host_identity ... ok
+test initializer_references_the_previous_binding ... ok
+test invalid_special_forms_have_source_diagnostics ... ok
+test keyword_literals_own_names_and_resolve_namespace_aliases_without_macro_execution ... ok
+test literal_keyword_arity_rejections_are_located_even_in_dead_branches ... ok
+test map_literals_lower_in_source_order_and_reader_duplicates_keep_number_categories ... ok
+test named_function_and_parameter_ids_restore_enclosing_local ... ok
+test namespace_and_alias_references_ignore_same_spelled_lexical_bindings ... ok
+test numeric_limits_are_reported_instead_of_silently_losing_integer_precision ... ok
+test quote_lowers_owned_data_without_runtime_resolution_or_macro_execution ... ok
+test reduction_core_values_have_resolved_ids_without_native_macro_initialization ... ok
+test repeated_quoted_literals_grow_linearly_without_duplicate_runtime_preludes ... ok
+test runtime_inclusion_preserves_primitive_output_and_is_once_per_combined_unit ... ok
+test scope_exit_retains_binding_ids_and_restores_reference_targets ... ok
+test sets_lower_owned_values_and_reject_only_duplicate_literal_data_with_spans ... ok
+test unresolved_initializers_and_exited_scopes_report_exact_byte_spans ... ok
+test unresolved_names_never_fall_back_to_javascript_globals ... ok
+test unsupported_number_categories_have_precise_diagnostics ... ok
+test unsupported_quoted_data_keeps_its_own_source_span ... ok
+test unsupported_reader_forms_macros_and_language_forms_are_explicit ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/benchmark_variants.rs (target/release/deps/benchmark_variants-f431cbcb971f4307)
+
+running 2 tests
+test compact_source_limit_is_checked_before_narrowing ... ok
+test experimental_scanners_agree_with_library ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running tests/boundaries.rs (target/release/deps/boundaries-0bf58cfaa184562d)
+
+running 2 tests
+test namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript ... ok
+test expression_boundaries_retain_exact_diagnostics_in_unselected_branches ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+
+     Running tests/cli.rs (target/release/deps/cli-cb891623dd33e70d)
+
+running 8 tests
+test prints_example ... ok
+test reads_stdin_and_escapes_text ... ok
+test reports_lexical_errors_with_spans_and_nonzero_status ... ok
+test rejects_missing_text ... ok
+test prints_parser_nodes_and_reports_locations ... ok
+test analysis_cli_shows_ids_and_compile_errors_never_emit_partial_javascript ... ok
+test vector_keyword_acceptance_compiles_and_executes_from_cli ... ok
+test compiles_files_and_stdin_to_executable_javascript ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/compiler_macros.rs (target/release/deps/compiler_macros-54f3d782130e0f8e)
+
+running 31 tests
+test exhausted_expansion_depth_does_not_run_macro_effects ... ok
+test generated_diagnostics_point_to_call_sites_and_explain_unsupported_runtime ... ok
+test macro_statistics_attribute_native_and_interpreted_expansion_work ... ok
+test macro_import_validation_and_loader_failures_are_located ... ok
+test macro_call_namespace_binding_is_restored_and_do_context_matches_cljs ... ok
+test quoted_generated_symbols_preserve_lone_surrogates_but_executable_names_reject_them ... ok
+test recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits ... ok
+test generated_collections_remain_macro_data_until_used_as_runtime_expressions ... ok
+test unsupported_generated_collection_program_forms_keep_file_macro_and_callsite_diagnostics ... ok
+test generated_qualified_operations_keep_core_identity_under_lexical_and_global_shadowing ... ok
+test generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality ... ok
+test macro_import_effects_follow_runtime_dependency_analysis_order ... ok
+test default_interpreter_user_identity_does_not_hide_user_macro_source ... ok
+test macro_code_uses_clj_dependencies_and_caller_aliases_without_allowing_cljs_conditionals ... ok
+test collection_macro_compilation_obeys_cancellation_and_recovers_with_the_same_host ... ok
+test runtime_caller_namespace_does_not_count_as_loaded_macro_code ... ok
+test quoted_macro_values_preserve_symbols_effects_and_generated_provenance ... ok
+test returned_forms_keep_utf16_negative_zero_and_number_boundaries ... ok
+test generated_maps_preserve_owned_children_order_keys_and_quoted_data ... ok
+test macro_aliases_do_not_create_runtime_aliases_or_expose_interpreter_vars ... ok
+test ordinary_core_macros_expand_inside_lexical_environments ... ok
+test generated_vectors_and_keyword_names_execute_with_owned_semantic_values ... ok
+test native_host_macros_use_the_same_form_env_and_arity_abi ... ok
+test direct_auto_keywords_use_the_same_macro_alias_precedence_as_macro_input ... ok
+test two_runtime_namespaces_use_native_clj_macros_through_api_and_cli ... ok
+test macros_generate_resolved_reductions_and_fixed_callbacks_without_native_execution ... ok
+test generated_sets_preserve_members_source_effects_and_quoted_data ... ok
+test locals_shadow_macros_but_explicit_macro_imports_survive_runtime_definitions ... ok
+test cljs_env_has_binding_records_context_namespace_and_unevaluated_form ... ok
+test macro_namespaces_load_once_with_clj_features_and_explicit_reload_is_observed ... ok
+test macro_namespace_effects_are_shared_once_per_host_not_across_default_compilations ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+
+     Running tests/corpus.rs (target/release/deps/corpus-280886d4a01e059d)
+
+running 1 test
+test clojurescript_checkout_has_no_lexical_errors ... ignored, requires the gitignored research/clojurescript checkout
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/execution.rs (target/release/deps/execution-9aa424e5862ccfea)
+
+running 32 tests
+test analyzer_boundary_classifications_match_reference ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test collection_namespace_macros_match_standard_clojurescript_typed_outcomes ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test dependency_initialization_matches_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test generated::generated_programs_match_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test generated::generated_seed_manifest_is_stable_and_bounded ... ok
+test lexical_namespace_bindings_match_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test namespace_program_matches_standard_clojurescript_stdout ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test programs_match_standard_clojurescript_results_and_effects ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test reference_selection_requires_explicit_checkout_identity ... ok
+test slash_bindings_match_standard_clojurescript_across_namespaces ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test harness_preserves_utf16_units_and_embedded_controls_independently ... ok
+test harness_encodes_special_values_and_continues_after_failures_independently ... ok
+test map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics ... ok
+test missing_duplicate_reordered_and_extra_outcomes_fail ... ok
+test deeply_nested_accepted_source_compiles_and_executes ... ok
+test harness_preserves_symbol_list_seq_vector_and_nil_tags_independently ... ok
+test harness_distinguishes_trusted_language_values_and_forged_host_tags ... ok
+test large_emitted_reduction_is_iterative_and_keeps_the_ordinary_call_abi ... ok
+test generated::generated_comparison_rejects_changed_traces_errors_and_missing_results ... ok
+test set_identical_effect_forms_evaluate_before_structural_deduplication ... ok
+test generated::generated_programs_preserve_results_and_traces_under_transformations ... ok
+test large_vector_literals_do_not_use_the_javascript_argument_stack ... ok
+test reduced_markers_are_opaque_harness_failures_even_when_nested_or_traced ... ok
+test empty_files_and_top_level_forms_execute ... ok
+test harness_rejects_cycles_through_language_values_and_invalid_adapters ... ok
+test collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_state ... ok
+test tiny_programs_execute_with_expected_values_and_effects ... ok
+test harness_rejects_invalid_cases_and_unserializable_values ... ok
+test set_encoder_preserves_tags_checks_duplicates_and_sorts_only_members ... ok
+test map_encoder_checks_count_duplicates_types_and_unordered_entries_independently ... ok
+test runtime_values_have_private_immutable_storage ... ok
+test process_failures_and_timeouts_retain_current_case_identity_and_source ... ok
+
+test result: ok. 24 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 2.35s
+
+     Running tests/full_lexer.rs (target/release/deps/full_lexer-fa01ae3f39171df2)
+
+running 16 tests
+test all_collection_delimiters_without_matching ... ok
+test backslash_parity_controls_string_and_regex_endings ... ok
+test atoms_keep_classification_and_context_for_the_reader ... ok
+test character_literals_include_delimiters_and_names ... ok
+test context_sensitive_percent_notation_is_preserved_for_the_reader ... ok
+test discard_and_reader_conditionals_only_emit_prefixes ... ok
+test dispatch_tags_namespaced_maps_and_symbolic_values ... ok
+test lexical_errors_have_spans_and_iteration_recovers_or_finishes ... ok
+test line_comments_preserve_text_and_stop_at_cr_or_lf ... ok
+test namespaced_map_headers_keep_symbol_boundaries_even_when_digit_leading ... ok
+test number_candidates_have_different_terminators_than_symbols ... ok
+test quote_metadata_and_deref_prefixes ... ok
+test quoted_literals_preserve_raw_escapes_and_embedded_syntax ... ok
+test whitespace_matches_jvm_reader_including_unicode_exceptions ... ok
+test malformed_and_utf8_combinations_always_progress_with_sliceable_spans ... ok
+test unicode_classes_agree_with_the_vendored_reader_snapshot ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/interpreter_bindings.rs (target/release/deps/interpreter_bindings-0fd1ecee5a20eb5d)
+
+running 6 tests
+test functions_and_destructured_local_cycles_keep_sources_alive_and_are_reclaimed ... ok
+test prepost_assertions_keep_body_once_error_provenance_and_tail_rules ... ok
+test expansion_is_executable_direct_data_and_fn_defn_have_distinct_recursion ... ok
+test malformed_bindings_fail_before_initializers_and_excluded_extensions_are_explicit ... ok
+test binding_programs_match_pinned_values_errors_and_effects ... ok
+test binding_expansion_and_recur_share_budgets_and_reanalyze_only_at_entry ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/interpreter_collection_core.rs (target/release/deps/interpreter_collection_core-fa1fefe09394e2ae)
+
+running 8 tests
+test deferred_projection_roots_and_checked_hashing_preserve_failures ... ok
+test collection_callable_abi_preserves_roots_ownership_and_vars ... ok
+test callbacks_forward_language_identity_source_frames_and_terminal_failures ... ok
+test reset_during_a_failing_higher_order_callback_is_an_owner_failure ... ok
+test sequence_metadata_and_entry_conversion_match_pinned_type_distinctions ... ok
+test every_registered_collection_name_has_checked_arity_and_owner_validation ... ok
+test persistent_outputs_keep_metadata_and_callback_gc_roots_without_deep_copying ... ok
+test collection_programs_match_all_pinned_values_errors_and_effects ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/interpreter_collections.rs (target/release/deps/interpreter_collections-617f43a10921771a)
+
+running 11 tests
+test ownership_validation_and_metadata_rejection_allocate_nothing ... ok
+test real_hash_collisions_use_equality_and_preserve_old_versions ... ok
+test shared_nested_values_metadata_and_discarded_versions_are_reclaimed ... ok
+test map_content_adapts_sci_array_based_map_assertion_without_iteration_assumptions ... ok
+test map_and_set_updates_match_independent_models_across_many_hash_paths ... ok
+test canonical_ratios_signed_zero_and_nan_contract_are_explicit ... ok
+test nested_equality_and_hashes_match_pinned_sci_observations ... ok
+test equal_keys_missing_values_and_numeric_categories_match_sci ... ok
+test deep_language_nesting_and_shared_dags_do_not_recurse_on_the_rust_stack ... ok
+test metadata_replacement_nested_maps_and_list_tails_match_sci ... ok
+test persistent_vector_boundaries_and_list_order_survive_updates ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/interpreter_conformance.rs (target/release/deps/interpreter_conformance-ee2bca59c8963797)
+
+running 2 tests
+test opaque_protocol_objects_require_scalar_observation_in_native_transport ... ok
+test complete_corpus_has_an_executable_disposition ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/interpreter_contextual_reader.rs (target/release/deps/interpreter_contextual_reader-a1f250d2073f8620)
+
+running 9 tests
+test selected_forms_retain_exact_byte_spans_and_tag_generated_origin ... ok
+test features_aliases_and_registry_updates_are_live_for_existing_readers ... ok
+test existing_parser_restrictions_and_read_eval_stay_explicit ... ok
+test inst_uuid_and_constructor_tags_require_explicit_host_implementations ... ok
+test lowering_retained_syntax_uses_context_and_keeps_terminal_callback_provenance ... ok
+test tag_callbacks_share_fuel_allocation_and_depth_scopes ... ok
+test tag_callback_failures_keep_phase_origin_body_frames_and_owner_checks ... ok
+test syntax_validation_precedes_all_callbacks_in_the_containing_top_level_form ... ok
+test contextual_reading_matches_focused_pinned_sci_values_errors_and_effects ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_control.rs (target/release/deps/interpreter_control-049b444b04319607)
+
+running 7 tests
+test wide_case_analysis_preserves_native_source_order_and_dispatches_every_branch ... ok
+test control_failures_preserve_original_subforms_and_generated_call_locations ... ok
+test malformed_macros_and_case_primitives_fail_at_the_origin_before_effects ... ok
+test every_control_macro_is_registered_and_attributed ... ok
+test control_programs_match_pinned_values_errors_and_effects ... ok
+test case_constants_and_branches_survive_gc_and_repeat_without_macro_execution ... ok
+test expansion_and_case_lookup_obey_shared_resource_limits ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/interpreter_coverage.rs (target/release/deps/interpreter_coverage-3e8ad36bb6c0f1a4)
+
+running 2 tests
+test unsupported_families_fail_explicitly ... ok
+test every_runtime_api_has_reviewed_executable_evidence ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/interpreter_data.rs (target/release/deps/interpreter_data-44e449d02b6320a3)
+
+running 12 tests
+test edn_is_a_restricted_mode_on_both_shared_reader_cursors ... ok
+test every_export_is_registered_through_require_host_initialization_and_introspection ... ok
+test callback_reentry_cannot_restart_walk_depth_budget ... ok
+test edn_callback_stream_reentry_is_explicit_and_other_streams_work ... ok
+test edn_options_are_local_owner_checked_and_preserve_callback_errors ... ok
+test edn_read_uses_explicit_io_and_keeps_exact_eof_and_error_boundaries ... ok
+test set_and_walk_types_errors_and_short_circuit_do_not_hide_failures ... ok
+test edn_explicitly_rejects_executable_syntax_numeric_extensions_and_host_values ... ok
+test walk_gc_metadata_types_replacements_and_opaque_nodes ... ok
+test callback_reentry_cannot_restart_edn_depth_budget ... ok
+test all_new_paths_share_fuel_allocation_depth_and_cancellation ... ok
+test data_libraries_match_pinned_values_errors_and_effects ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/interpreter_deferred.rs (target/release/deps/interpreter_deferred-aa9cab70be5ddf96)
+
+running 10 tests
+test direct_embedding_force_reports_exhaustion_while_caching_failure_diagnostics ... ok
+test cached_embedding_results_and_diagnostics_check_root_allocation_limits ... ok
+test deferred_values_own_captures_code_and_cached_failures_without_root_cycles ... ok
+test cancellation_unwinds_cleanup_and_preserves_the_reference_failure_state ... ok
+test macroexpanded_lazy_bodies_retry_failures_and_release_successful_captures ... ok
+test infinite_realization_and_recursive_force_obey_shared_limits ... ok
+test deferred_smoke ... ok
+test unreachable_deferred_success_failure_and_return_cycles_are_collected ... ok
+test deferred_programs_match_pinned_values_errors_and_effects ... ok
+test walking_and_discarding_infinite_prefixes_has_bounded_live_storage_and_stack ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/interpreter_diagnostics.rs (target/release/deps/interpreter_diagnostics-738e15aa479efd36)
+
+running 4 tests
+test host_macro_can_disable_diagnostics_during_its_own_expansion ... ok
+test reports_attribute_macro_definitions_and_repeated_generation_without_changing_effects ... ok
+test diagnostics_preserve_output_errors_and_live_records_and_do_not_cache_effectful_macros ... ok
+test diagnostics_do_not_consume_program_resource_budgets ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_embedding.rs (target/release/deps/interpreter_embedding-904adc2426f0e128)
+
+running 29 tests
+test allow_policy_canonicalizes_core_names_and_keeps_language_created_vars_usable ... ok
+test forks_preserve_load_records_and_detached_current_namespace_after_failed_reload ... ok
+test fork_local_io_policy_aliases_and_reader_configuration_share_explicit_resources ... ok
+test merging_native_function_and_macro_replacements_preserves_var_identity ... ok
+test into_preserves_retained_native_var_and_interpreted_callback_permissions ... ok
+test fork_copies_maps_but_shares_existing_vars_values_and_retained_code ... ok
+test core_repl_history_vars_are_dynamic_and_fork_local_without_automatic_rotation ... ok
+test options_merge_preserves_values_vars_features_aliases_and_capabilities ... ok
+test reader_and_loader_callbacks_inherit_current_permissions ... ok
+test invalid_merge_is_atomic_and_owners_and_outcomes_are_explicit ... ok
+test permission_policy_follows_var_and_native_identity_across_every_execution_route ... ok
+test record_key_realization_and_walk_root_fields_across_callback_gc ... ok
+test protocol_handles_forks_and_generated_helpers_obey_permissions ... ok
+test records_keep_host_roots_and_follow_shared_constructor_vars_across_forks ... ok
+test reify_construction_protocol_and_captured_callbacks_obey_current_permissions ... ok
+test extension_replacement_keeps_inflight_closure_rooted_and_releases_it_afterward ... ok
+test reset_in_callback_cannot_clear_policy_before_reentering ... ok
+test reify_retained_handles_survive_fork_and_reentrant_definition_replacement ... ok
+test record_methods_recheck_permissions_and_retained_definition_protocols ... ok
+test retained_primitive_code_and_callback_reconfiguration_cannot_bypass_policy ... ok
+test record_methods_retain_generation_fields_and_captures_across_reentrant_gc_and_context_drop ... ok
+test retained_record_helpers_check_current_type_and_definition_permissions ... ok
+test retained_extensions_recheck_target_protocol_and_macro_permissions ... ok
+test native_transforms_preserve_permissions_on_retained_callbacks ... ok
+test stable_dynamic_var_remapping_survives_unmapping_collection_and_multiple_forks ... ok
+test transferring_code_for_an_absent_fork_namespace_reports_an_error ... ok
+test retained_transducer_adapters_preserve_callback_permissions_and_ambient_boundary ... ok
+test synthetic_definitions_and_indirect_dynamic_binding_obey_policy ... ok
+test eval_and_context_semantics_match_pinned_sci ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/interpreter_eval.rs (target/release/deps/interpreter_eval-0696bc3e549deda4)
+
+running 7 tests
+test lexical_initializers_shadowing_and_empty_bodies_are_resolved_once ... ok
+test public_results_and_code_own_values_after_input_and_reader_drop ... ok
+test deeply_nested_accepted_source_evaluates_within_the_parser_bound ... ok
+test collections_evaluate_members_then_metadata_and_quote_retains_data ... ok
+test errors_preserve_phases_exact_spans_and_source_lifetimes ... ok
+test execution_errors_clear_scratch_roots_and_context_remains_usable ... ok
+test primitive_programs_execute_against_selected_pinned_sci_outcomes ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_exceptions.rs (target/release/deps/interpreter_exceptions-eb157bbe8f9c428a)
+
+running 7 tests
+test errors_retain_sources_frames_and_generated_origins_without_user_data_overrides ... ok
+test caught_values_causes_and_closures_remain_rooted_during_collection_and_after_reset ... ok
+test host_failures_cancellation_and_depth_limits_cannot_be_caught_or_masked ... ok
+test portable_categories_and_aliases_are_not_java_class_access ... ok
+test terminal_cleanup_is_bounded_even_when_the_original_poll_is_sticky ... ok
+test caught_failures_do_not_accumulate_temporary_arguments_or_partial_bindings ... ok
+test exceptions_execute_all_focused_pinned_sci_outcomes ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/interpreter_functions.rs (target/release/deps/interpreter_functions-1f8eabc87de9ca7b)
+
+running 13 tests
+test callable_abi_checks_owner_arity_and_preserves_body_error_source ... ok
+test function_metadata_is_rejected_explicitly_instead_of_dropping_expressions ... ok
+test malformed_letfn_and_destructuring_fail_during_analysis_without_effects ... ok
+test callbacks_can_collect_and_invoke_interpreted_arguments_with_no_storage_borrow ... ok
+test rest_is_a_counted_sequence_with_structural_equality_and_nil_at_minimum ... ok
+test returned_closures_keep_owned_code_captures_and_sources_without_reanalysis ... ok
+test sequence_data_can_reenter_the_owned_form_boundary_without_printing ... ok
+test simultaneous_factory_calls_capture_values_not_reused_local_slots ... ok
+test callbacks_reentering_interpreted_code_share_the_context_depth_bounds ... ok
+test deeply_nested_recursive_bodies_fail_before_exhausting_the_host_stack ... ok
+test mutually_recursive_and_self_returning_closures_survive_frames_and_collect_cycles ... ok
+test wide_calls_noncallables_and_failure_cleanup_are_explicit ... ok
+test closures_execute_all_focused_pinned_sci_outcomes ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/interpreter_generated.rs (target/release/deps/interpreter_generated-8a4ff0cc1d8254a9)
+
+running 3 tests
+test replay_exported_or_reduced_sci_corpus ... ok
+test focused_reduction_requires_reproducing_failure_and_terminates ... ok
+test generated_programs_are_bounded_replayable_and_match_committed_sci ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/interpreter_io.rs (target/release/deps/interpreter_io-d430921bbf461c5d)
+
+running 18 tests
+test cancellation_inside_a_callback_restores_string_scope_and_preserves_effects_once ... ok
+test host_code_stream_recovery_preserves_cursor_diagnostics_and_owner_checks ... ok
+test host_failures_are_propagated_once_and_not_catchable_as_language_errors ... ok
+test output_limits_apply_before_effects_and_capture_is_not_charged_twice ... ok
+test owned_reader_errors_fuse_and_preserve_input_and_provenance ... ok
+test owned_reader_distinguishes_nil_eof_and_captures_exact_original_bytes ... ok
+test stream_compaction_preserves_retained_forms_and_mixed_newline_locations ... ok
+test scoped_string_input_closes_escaped_handles_and_restores_after_control_failure ... ok
+test channels_flush_and_bindings_restore_without_duplicate_writes ... ok
+test stream_creation_and_input_buffering_share_allocation_limits ... ok
+test streamed_input_completes_multiline_forms_without_replaying_tag_handlers ... ok
+test io_readers_use_context_features_tags_and_never_enable_read_eval ... ok
+test utf8_adapters_validate_without_replacing_surrogates ... ok
+test defaults_have_no_ambient_capabilities_and_streams_are_owner_checked ... ok
+test streaming_semantic_prefixes_and_discards_complete_without_repeating_effects ... ok
+test streaming_returns_completed_forms_before_fetching_later_lines ... ok
+test io_matches_pinned_values_errors_and_effects ... ok
+test language_read_uses_the_same_first_form_semantics_as_the_shared_reader_corpus ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/interpreter_iteration.rs (target/release/deps/interpreter_iteration-c1724bc0938e357a)
+
+running 7 tests
+test cancellation_is_terminal_in_every_form_and_runs_finally ... ok
+test registered_macros_expand_to_owned_reusable_code ... ok
+test malformed_binding_and_modifier_forms_report_the_source_before_effects ... ok
+test retained_comprehensions_capture_values_and_keep_original_failure_spans ... ok
+test iteration_and_expansion_share_fuel_allocation_and_depth_limits ... ok
+test iteration_programs_match_pinned_values_errors_and_effects ... ok
+test discarded_prefixes_and_effectful_loops_keep_live_storage_and_stack_bounded ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/interpreter_lazy.rs (target/release/deps/interpreter_lazy-1a15faf192cbe461)
+
+running 8 tests
+test cancellation_inside_core_callbacks_is_terminal_and_runs_finally ... ok
+test partition_all_collection_arities_keep_lazy_groups_and_fractional_counts ... ok
+test native_sequences_are_unchunked_and_checked_at_numeric_boundaries ... ok
+test producer_roots_code_and_failure_provenance_survive_gc ... ok
+test lazy_registry_arity_and_context_ownership_are_checked ... ok
+test infinite_sources_and_all_consumers_observe_the_shared_budget ... ok
+test walking_discarded_core_prefixes_keeps_live_storage_bounded ... ok
+test lazy_core_programs_match_pinned_values_errors_and_effects ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/interpreter_limits.rs (target/release/deps/interpreter_limits-0955a61315eabe35)
+
+running 39 tests
+test allocation_reductions_and_collection_realization_are_bounded ... ok
+test cancellation_is_sticky_across_callback_success_and_bounded_finalizers ... ok
+test direct_lowering_entries_report_limits_without_panicking_or_partial_forms ... ok
+test ensure_reduced_respects_allocation_limits_on_both_paths ... ok
+test cat_wrappers_markers_and_nesting_charge_allocation_and_call_depth ... ok
+test entire_unwind_has_one_cleanup_allowance_and_cannot_loop_or_allocate_forever ... ok
+test forwarded_terminal_failure_keeps_its_original_inner_source ... ok
+test infinite_recur_and_ordinary_recursion_stop_at_source_with_configured_limits ... ok
+test latched_exhaustion_wins_over_later_dispatch_and_analysis_diagnostics ... ok
+test counted_process_cancellation_stops_without_completion_or_output ... ok
+test into_cancellation_is_terminal_at_transform_source_step_and_completion ... ok
+test output_is_reserved_before_effect_and_shared_by_nested_eval ... ok
+test nested_eval_cannot_reset_fuel_or_turn_terminal_failure_into_success ... ok
+test partition_cancellation_at_full_flush_and_completion_preserves_finally ... ok
+test cat_cancellation_at_both_nesting_levels_and_callbacks_skips_completion ... ok
+test protocol_registration_and_dispatch_share_allocation_fuel_and_cancellation_controls ... ok
+test read_analysis_expression_and_future_expansion_work_share_the_api ... ok
+test extended_methods_share_limits_exceptions_cancellation_and_finally ... ok
+test record_method_cancellation_keeps_receiver_and_runs_finally ... ok
+test reify_callback_cancellation_is_sticky_and_runs_bounded_finally ... ok
+test scalar_roots_are_charged_and_gc_does_not_refund_allocations ... ok
+test small_programs_and_ordinary_exceptions_keep_results_effects_and_forge_resistance ... ok
+test record_lazy_key_callback_cancellation_keeps_finally_and_gc_roots ... ok
+test reify_methods_and_construction_share_resource_controls ... ok
+test record_methods_share_call_fuel_allocation_output_and_finally_controls ... ok
+test wide_native_arguments_and_namespace_records_are_accounted ... ok
+test partition_buffer_growth_is_accounted_without_reserving_count_slots ... ok
+test record_construction_update_key_realization_and_walk_obey_small_budgets ... ok
+test into_direct_and_evaluated_calls_share_all_resource_limits ... ok
+test unbounded_counted_processes_and_empty_output_share_resource_limits ... ok
+test transduce_cancellation_is_terminal_at_every_callback_boundary ... ok
+test transduce_direct_and_evaluated_calls_share_all_resource_limits ... ok
+test partition_emission_and_completion_obey_output_and_call_depth_limits ... ok
+test native_transform_callbacks_preserve_sticky_cancellation ... ok
+test native_no_output_filters_and_applied_reducers_obey_limits ... ok
+test cleanup_exhaustion_at_every_small_boundary_preserves_original_failure ... ok
+test namespace_refer_snapshots_propagate_every_small_allocation_boundary ... ok
+test external_extensions_validate_and_build_tables_before_atomic_publication ... ok
+test quota_exhaustion_at_each_small_boundary_never_panics_or_returns_partial_success ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+
+     Running tests/interpreter_loading.rs (target/release/deps/interpreter_loading-8d9ebb222bba46b3)
+
+running 13 tests
+test default_context_has_no_source_search_and_alias_only_does_not_load ... ok
+test cancellation_from_provider_prevents_source_initialization_and_can_be_retried ... ok
+test reload_updates_var_roots_and_future_expansions_without_replaying_retained_code ... ok
+test nested_loads_restore_source_namespace_and_original_error_provenance ... ok
+test reset_in_a_loaded_callback_returns_wrong_owner_and_clears_provider ... ok
+test failed_loads_retry_without_stale_aliases_or_current_namespace_ids ... ok
+test resource_and_host_failures_unwind_loading_state_and_permit_later_retry ... ok
+test requests_states_cycles_and_normal_cache_are_observable_and_deterministic ... ok
+test libspec_validation_precedes_provider_effects ... ok
+test source_restoration_never_swallows_allocation_exhaustion ... ok
+test filesystem_adapter_is_explicit_supports_clj_cljc_and_reports_ambiguity ... ok
+test alias_repair_obeys_small_allocation_limits ... ok
+test loading_matches_pinned_sci_values_effects_and_order ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/interpreter_macros.rs (target/release/deps/interpreter_macros-80d055e615456c26)
+
+running 9 tests
+test native_macro_reset_and_foreign_return_are_checked ... ok
+test generated_forms_keep_call_site_and_origin_after_owner_reset ... ok
+test effects_happen_per_analysis_and_diagnostics_attribute_generated_work ... ok
+test cancellation_during_macro_execution_is_terminal_and_runs_bounded_finally ... ok
+test host_and_interpreted_macros_share_checked_raw_abi ... ok
+test direct_macroexpand_admission_never_clears_latched_allocation_failures ... ok
+test recursive_expansions_and_macro_execution_obey_common_depth_and_fuel ... ok
+test macro_programs_match_pinned_values_errors_and_effects ... ok
+test every_small_macro_budget_boundary_returns_terminal_failure_without_panics ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/interpreter_namespaces.rs (target/release/deps/interpreter_namespaces-769b2c5c7a674dea)
+
+running 8 tests
+test unbound_values_and_var_call_cycles_fail_without_losing_identity ... ok
+test namespace_roots_and_retained_code_trace_vars_and_reclaim_old_roots ... ok
+test top_level_do_is_incremental_and_failed_def_analysis_still_interns ... ok
+test persistent_contexts_keep_var_ids_and_resolve_lexicals_before_namespace_core ... ok
+test unmapped_recursive_var_cycles_are_reclaimed_and_raw_ids_become_stale ... ok
+test external_record_selectors_and_protocols_resolve_aliases_and_collisions ... ok
+test embedding_refers_introspection_metadata_and_owner_checks_are_explicit ... ok
+test namespaces_execute_all_focused_pinned_sci_outcomes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/interpreter_native.rs (target/release/deps/interpreter_native-0419ab76e1f7a653)
+
+running 6 tests
+test metadata_registry_is_explicit_and_arity_errors_keep_language_provenance ... ok
+test floating_bits_and_declared_representation_differences_are_explicit ... ok
+test failed_calls_still_evaluate_arguments_once_and_stop_at_first_argument_error ... ok
+test bounded_numbers_reject_unrepresentable_results_after_exact_reduction ... ok
+test host_callbacks_reenter_collect_reject_foreign_values_and_release_scratch ... ok
+test native_programs_execute_against_pinned_sci_values_errors_and_effects ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/interpreter_protocols.rs (target/release/deps/interpreter_protocols-7277404c3993361a)
+
+running 13 tests
+test private_descriptor_helpers_are_not_namespace_apis_and_macros_expand_owned_forms ... ok
+test protocol_and_method_handles_have_owner_scoped_identity_and_reclaimed_generations ... ok
+test declarations_publish_ordinary_functions_metadata_and_marker_protocols ... ok
+test reify_invalid_methods_have_qualified_diagnostics_and_source_provenance ... ok
+test dispatch_failures_and_fixed_arities_are_explicit_for_all_call_paths ... ok
+test reify_private_constructor_revalidates_tables_from_retained_expansions ... ok
+test reify_method_recur_and_language_exceptions_use_existing_execution ... ok
+test namespaced_methods_aliases_refers_and_conflicts_preserve_distinct_identity ... ok
+test reify_captures_multi_arity_partial_and_marker_implementations ... ok
+test reify_metadata_replacement_keeps_captures_but_creates_a_fresh_identity ... ok
+test same_shape_redefinition_preserves_identities_and_refreshes_metadata ... ok
+test invalid_declarations_preserve_tables_and_declaration_locations ... ok
+test reify_protocol_keys_are_qualified_and_redeclarations_keep_existing_objects ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_reader.rs (target/release/deps/interpreter_reader-4b8482ff59c1eeef)
+
+running 11 tests
+test numeric_conversion_is_checked_and_utf16_is_exact ... ok
+test discarded_forms_are_reclaimed_and_invalid_truncations_never_panic ... ok
+test retained_discard_side_table_is_opt_in_and_handles_symbolic_literal_discards ... ok
+test unsupported_features_and_read_eval_have_specific_source_diagnostics ... ok
+test source_order_and_forms_survive_syntax_source_and_context_lifetimes ... ok
+test supplied_data_preserves_metadata_surrogates_and_owner_checks ... ok
+test duplicate_literals_use_value_equality_ignore_metadata_and_keep_related_locations ... ok
+test incremental_read_adapts_sci_parse_test_and_eof_value_assertions ... ok
+test metadata_shorthand_merging_and_target_validation_match_pinned_reader ... ok
+test anonymous_parameter_relationships_gaps_rest_and_discard_match_sci ... ok
+test ordinary_source_values_and_quote_nesting_match_pinned_sci ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/interpreter_reclamation.rs (target/release/deps/interpreter_reclamation-af1b4caf6f6d7917)
+
+running 19 tests
+test collection_tree_tracing_keeps_wide_vectors_map_keys_collisions_and_sets_live ... ok
+test ensure_reduced_retains_and_reclaims_captured_code_on_both_paths ... ok
+test counted_reducer_state_survives_fork_and_reset_without_changing_owner ... ok
+test protocol_descriptors_collect_after_unmapping_and_rejected_declarations_do_not_leak ... ok
+test dropped_forks_release_private_namespaces_values_code_and_sources ... ok
+test module_reload_cache_and_retained_handles_survive_reset_and_reclaim_history ... ok
+test pending_analyzer_vars_are_roots_during_effectful_macroexpansion ... ok
+test retained_transducers_keep_source_code_and_reclaim_cyclic_process_state ... ok
+test into_repeated_processes_release_cyclic_transforms_and_targets ... ok
+test reify_receiver_capture_cycles_and_returned_closures_collect_without_slot_growth ... ok
+test retained_native_transforms_and_cyclic_partial_reducers_reclaim_all_captures ... ok
+test redefining_cyclic_closures_reclaims_old_code_sources_and_generations ... ok
+test partition_buffers_reclaim_failed_abandoned_and_cyclic_inputs ... ok
+test cat_reclaims_failed_abandoned_reducers_and_cyclic_captures ... ok
+test discarded_lazy_prefixes_and_cached_failure_cycles_return_to_the_same_baseline ... ok
+test counted_reducers_reclaim_failed_abandoned_and_cyclic_state ... ok
+test record_generations_fields_metadata_and_cycles_reclaim_to_warmed_counts ... ok
+test replaced_external_methods_and_obsolete_generations_collect_to_warmed_counts ... ok
+test record_method_generations_release_captures_and_keep_returned_closure_cycles ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/interpreter_records.rs (target/release/deps/interpreter_records-e9a5126ef56c19de)
+
+running 19 tests
+test generated_names_preserve_host_utf16_and_macroexpansion_does_not_install_types ... ok
+test declaration_validation_reports_locations_and_rejects_unknown_protocols ... ok
+test external_methods_capture_lexicals_without_implicit_fields_and_keep_type_generations ... ok
+test constructors_fill_basis_fields_keep_extras_and_discard_input_metadata ... ok
+test extensions_update_existing_records_saved_methods_and_inline_implementations ... ok
+test nested_lazy_fields_realize_for_equality_and_keys_without_borrowed_callbacks ... ok
+test invalid_methods_do_not_replace_existing_types_or_constructor_roots ... ok
+test invalid_extensions_leave_all_previous_target_methods_callable ... ok
+test namespace_constructors_and_saved_functions_resolve_current_generations ... ok
+test protocol_acceptance_and_overloads_use_ordinary_function_dispatch ... ok
+test sequences_reduction_nested_updates_and_map_composition_preserve_records ... ok
+test persistent_updates_and_basis_dissoc_preserve_snapshots_and_metadata ... ok
+test nominal_equality_and_hashing_include_all_fields_and_ignore_metadata ... ok
+test printing_obeys_record_name_length_depth_and_metadata_controls ... ok
+test partial_extensions_preserve_omitted_methods_protocols_and_marker_membership ... ok
+test walk_retains_nominal_identity_and_key_conversion_keeps_plain_maps ... ok
+test fields_capture_scope_shadowing_destructuring_and_recur ... ok
+test record_protocol_aliases_colliding_short_names_markers_and_partial_methods ... ok
+test record_generations_keep_old_methods_and_saved_methods_keep_protocol_identity ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_recur.rs (target/release/deps/interpreter_recur-4bbe694e2f687f0c)
+
+running 8 tests
+test invalid_recur_preserves_precise_source_and_generated_form_origins ... ok
+test malformed_loop_bindings_and_cross_try_recur_do_not_execute ... ok
+test returned_function_recur_keeps_captures_and_analyzed_code ... ok
+test wide_recur_has_no_small_argument_limit_and_rest_slot_does_not_redispatch ... ok
+test replacement_operands_and_old_captures_stay_rooted_across_nested_evaluation ... ok
+test zero_argument_recur_polls_and_interrupts_with_original_backedge_location ... ok
+test recur_and_loops_execute_all_focused_pinned_sci_outcomes ... ok
+test large_loops_and_function_recur_reuse_stack_and_live_frame_storage ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/interpreter_reuse.rs (target/release/deps/interpreter_reuse-b8e3b0d7ba2e41d1)
+
+running 14 tests
+test collection_prunes_analysis_using_live_namespace_bindings_and_mappings ... ok
+test exact_form_reuses_owned_bodies_but_separate_source_identity_does_not ... ok
+test mutable_roots_mapping_changes_and_fork_macro_changes_are_observed ... ok
+test macro_effects_and_definition_file_capture_are_never_cached ... ok
+test namespace_bindings_and_aliases_invalidate_resolution ... ok
+test loaded_modules_reuse_initialization_but_reload_and_failure_recovery_execute ... ok
+test protocol_forms_remain_effectful_and_fork_mutations_refresh_ordinary_calls ... ok
+test reader_features_callbacks_permissions_and_options_invalidate ... ok
+test external_extension_invalidates_shared_reuse_and_retained_calls_read_current_methods ... ok
+test resource_limits_and_analysis_polling_bypass_reuse ... ok
+test record_definitions_are_effectful_and_saved_constructors_never_pin_obsolete_types ... ok
+test reify_bodies_compile_once_and_each_evaluation_captures_a_fresh_identity ... ok
+test retained_record_method_forms_follow_live_vars_and_preserve_old_generation_tables ... ok
+test retention_is_bounded_and_dead_inputs_and_failures_release_scratch_roots ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_sequences.rs (target/release/deps/interpreter_sequences-d9d891238e469f37)
+
+running 10 tests
+test ensure_reduced_rejects_foreign_values_on_both_paths ... ok
+test deferred_capture_concatenations_survive_collection ... ok
+test applied_variadic_closure_keeps_deferred_tail_after_return_and_gc ... ok
+test nested_native_apply_is_bounded_without_host_stack_growth ... ok
+test tails_markers_and_combinators_keep_values_and_code_alive ... ok
+test iteration_polling_is_terminal_and_allows_finally_cleanup ... ok
+test sequence_registry_checks_arity_owner_and_lazy_names ... ok
+test unrooted_combinator_var_cycles_are_reclaimed ... ok
+test sequence_programs_match_all_pinned_values_errors_and_effects ... ok
+test large_flat_reduction_reuses_stack_and_live_lexical_storage ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/interpreter_state.rs (target/release/deps/interpreter_state-6603eb3f79c8a9b0)
+
+running 12 tests
+test context_reset_detaches_live_cycles_without_leaking_them_into_new_state ... ok
+test cancellation_during_validation_preserves_state_and_runs_bounded_cleanup ... ok
+test callbacks_reenter_evaluation_with_gc_and_preserve_exception_sources ... ok
+test host_cells_retain_snapshots_and_reject_foreign_owners ... ok
+test scalar_cas_uses_documented_representation_identity ... ok
+test nested_host_evaluation_and_collection_share_the_same_cell_and_retry_scope ... ok
+test terminal_callback_failures_are_not_swallowed_by_language_catch ... ok
+test callback_context_reset_and_foreign_results_fail_without_borrow_panics_or_outer_commit ... ok
+test repeated_swaps_release_obsolete_values_and_keep_identity_hash_stable ... ok
+test fuel_allocation_and_depth_limits_cover_state_callbacks_and_retry_loops ... ok
+test atom_volatile_closure_metadata_validator_and_watch_cycles_are_collected ... ok
+test state_matches_pinned_sci_values_and_effects ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/interpreter_strings.rs (target/release/deps/interpreter_strings-cb15d6c53d3c6613)
+
+running 7 tests
+test identity_cycles_and_all_supported_identity_types_print_without_forcing_delays ... ok
+test readable_data_round_trips_with_exact_types_units_and_metadata ... ok
+test utf16_operations_preserve_surrogates_and_named_components ... ok
+test hidden_lazy_values_are_not_forced_and_internal_metadata_depth_is_bounded ... ok
+test printing_and_strings_observe_shared_fuel_allocation_output_depth_and_cancellation ... ok
+test every_registered_string_operation_checks_arity_and_types_without_effects ... ok
+test strings_match_pinned_values_errors_and_effects ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/interpreter_syntax_quote.rs (target/release/deps/interpreter_syntax_quote-99d32132748ec2cb)
+
+running 6 tests
+test live_reader_uses_namespace_alias_and_refer_state_at_each_read ... ok
+test quote_values_and_deferred_splices_survive_source_owner_and_reset ... ok
+test generated_macro_diagnostics_retain_source_call_and_body_origins ... ok
+test gensym_scopes_are_fresh_and_retained_code_reuses_its_reading ... ok
+test syntax_quote_work_obeys_shared_budgets_and_reclaims_reading_storage ... ok
+test syntax_quote_programs_match_pinned_values_errors_and_effects ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/interpreter_transducers.rs (target/release/deps/interpreter_transducers-421b0157c302ec54)
+
+running 19 tests
+test interleaved_counted_reducers_keep_state_through_gc_and_initialization ... ok
+test direct_native_and_adapter_invocations_keep_exception_source_and_owner_checks ... ok
+test callbacks_reenter_and_collect_at_every_process_boundary ... ok
+test partition_buffers_are_independent_rooted_and_not_reset_by_initialization ... ok
+test into_retains_target_metadata_accumulator_and_transform_across_collection ... ok
+test bounded_adapters_trace_state_and_stop_on_callback_owner_changes ... ok
+test reset_and_foreign_callback_results_stop_before_completion ... ok
+test nested_cat_roots_callbacks_and_markers_across_collection_reentry_and_reset ... ok
+test partition_buffers_survive_callbacks_and_stop_on_owner_changes ... ok
+test native_adapters_trace_captures_and_stop_on_callback_owner_changes ... ok
+test native_partition_all_matches_pinned_sci ... ok
+test persistent_transducing_into_matches_pinned_sci ... ok
+test custom_transducer_programs_match_pinned_sci ... ok
+test native_cat_and_mapcat_match_pinned_sci ... ok
+test native_map_filter_remove_adapters_match_pinned_sci ... ok
+test native_bounded_adapters_match_pinned_sci ... ok
+test partition_emission_and_reentrant_completion_keep_roots_bounded ... ok
+test nested_cat_keeps_scratch_roots_and_stack_bounded ... ok
+test long_processes_keep_stack_and_scratch_roots_bounded ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+
+     Running tests/interpreter_values.rs (target/release/deps/interpreter_values-b2b56cb25d3f6ef2)
+
+running 11 tests
+test identity_is_distinct_from_scalar_value_equality ... ok
+test host_string_conversion_can_reenter_context_without_an_arena_borrow ... ok
+test interning_is_owner_scoped_and_keeps_symbol_keyword_categories_separate ... ok
+test raw_ids_do_not_root_and_recycled_slots_reject_old_generations ... ok
+test reset_preserves_host_roots_and_rejects_every_old_or_foreign_handle ... ok
+test retained_scalar_source_matches_sci_parse_plus_string_assertions ... ok
+test repeated_repl_sized_allocations_do_not_accumulate_interned_names_or_roots ... ok
+test source_spans_validate_utf8_boundaries_order_and_bounds ... ok
+test units_keep_constants_and_sources_live_without_original_host_roots ... ok
+test values_and_unit_provenance_outlive_source_parser_storage_and_context ... ok
+test scalar_storage_matches_selected_pinned_sci_expectations ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/interpreter_vars.rs (target/release/deps/interpreter_vars-57196bbcc7e68054)
+
+running 12 tests
+test bindings_and_redefinitions_restore_on_rust_errors_and_panics ... ok
+test allocation_and_call_depth_failures_unwind_dynamic_slots_and_raw_roots ... ok
+test host_binding_guards_root_values_restore_out_of_order_and_survive_reset ... ok
+test host_file_binding_flows_through_eval_reentry_and_definition_metadata ... ok
+test callbacks_reader_and_macro_reentry_share_dynamic_scope_without_leaks ... ok
+test macroexpansion_can_be_replayed_as_owned_data_and_keeps_cleanup ... ok
+test builtin_mutation_is_an_explicit_isolated_context_permission ... ok
+test owner_validation_is_atomic_and_foreign_values_never_enter_scopes ... ok
+test invalid_scope_syntax_is_diagnostic_and_recur_cannot_cross_binding ... ok
+test scoped_control_failures_restore_values_without_using_cleanup_budget ... ok
+test dynamic_metadata_cycles_and_saved_redefinition_roots_are_traced_and_reclaimed ... ok
+test vars_match_pinned_sci_values_and_effects ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/namespaces.rs (target/release/deps/namespaces-60320b50c0a2f90d)
+
+running 20 tests
+test missing_dependencies_report_the_requiring_file_and_span ... ok
+test parse_errors_retain_file_line_and_byte_column ... ok
+test analyzer_diagnostics_name_the_original_dependency_source ... ok
+test distinct_sources_for_the_same_namespace_are_ambiguous ... ok
+test aliases_cannot_duplicate_or_redirect_namespace_qualifiers ... ok
+test lookup_requires_valid_names_and_existing_explicit_directories ... ok
+test reserved_core_qualifiers_cannot_be_redirected ... ok
+test cycles_report_the_dependency_path ... ok
+test unknown_and_transitive_only_qualifiers_are_rejected ... ok
+test namespace_cli_rejects_bad_flags_without_partial_javascript ... ok
+test lexical_bindings_do_not_leak_between_namespaces ... ok
+test source_namespace_must_be_first_and_match_the_requested_name ... ok
+test malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics ... ok
+test lexical_captures_and_qualified_globals_survive_shadowing_and_redefinition ... ok
+test slash_is_an_unqualified_name_and_qualified_namespace_member ... ok
+test bounded_core_is_virtual_and_does_not_override_user_namespace_members ... ok
+test depth_first_dependencies_and_top_level_initializers_run_once_in_source_order ... ok
+test globals_keep_namespace_identity_and_lexical_shadowing ... ok
+test acceptance_program_prints_four_from_api_and_cli ... ok
+test namespace_paths_munge_hyphens_and_multiple_roots_are_explicit ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/native_cli.rs (target/release/deps/native_cli-27b0e04f99200a44)
+
+running 14 tests
+test invalid_utf8_repl_input_is_a_fatal_host_read_error ... ok
+test repl_continues_after_reader_analysis_execution_and_print_errors ... ok
+test script_output_and_final_result_are_distinct ... ok
+test repl_retains_history_definitions_namespace_and_current_reader_context ... ok
+test repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history ... ok
+test repl_shares_the_language_input_cursor_and_recovers_runtime_reads ... ok
+test file_execution_handles_utf8_paths_file_binding_and_runtime_stdin ... ok
+test repl_multiline_uses_parser_rules_and_preserves_single_execution ... ok
+test repl_compacts_consumed_lines_without_spending_future_form_budgets ... ok
+test script_failures_report_phase_source_byte_column_and_no_success_result ... ok
+test eval_text_stdin_empty_and_unicode_need_only_the_native_binary ... ok
+test native_options_are_validated_and_help_lists_both_families ... ok
+test isolated_copy_loads_only_explicit_clj_and_cljc_roots ... ok
+test runtime_and_rendering_limits_fail_without_partial_results ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/native_examples.rs (target/release/deps/native_examples-800dfdec1431358a)
+
+running 1 test
+test every_native_example_runs_fresh_without_java_node_or_project_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/parser.rs (target/release/deps/parser-50cda534f6d66b19)
+
+running 13 tests
+test anonymous_arguments_use_contextual_boundaries ... ok
+test characters_and_raw_regexes ... ok
+test discards_consume_whole_forms_without_retaining_nodes ... ok
+test conditionals_preserve_branches_and_defer_collection_arity ... ok
+test empty_comments_commas_and_fused_eof ... ok
+test errors_have_locations_openers_and_terminal_behavior ... ok
+test example_arena_and_incremental_top_level_forms ... ok
+test nesting_limit_includes_collections_prefixes_and_discards ... ok
+test prefixes_metadata_tags_namespaces_and_specials ... ok
+test symbols_keywords_literals_and_numbers ... ok
+test strings_decode_utf16_and_preserve_unescaped_spans ... ok
+test collections_and_wide_siblings ... ok
+test malformed_combinations_and_truncations_keep_valid_spans ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/parser_corpus.rs (target/release/deps/parser_corpus-1fadae365e52188e)
+
+running 1 test
+test parse_clojurescript_checkout ... ignored, requires the gitignored research/clojurescript checkout
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/parser_reference.rs (target/release/deps/parser_reference-aa9b06ce3a1bbf9b)
+
+running 1 test
+test literal_syntax_and_utf16_values_match_reference_snapshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/provenance.rs (target/release/deps/provenance-e6d5f51a12eab8dd)
+
+running 2 tests
+test derived_provenance_requires_pinned_traceable_sources ... ok
+test fixture_ids_are_unique_and_have_complete_provenance ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sci_reference.rs (target/release/deps/sci_reference-a1438cce34698119)
+
+running 4 tests
+test pinned_sci_reference_matches_committed_outcomes ... ignored, explicit SCI checkout/JVM reference job; requires LIGHT_CLJS_SCI_CHECKOUT
+test protocol_preserves_numeric_categories_utf16_and_collection_identity ... ok
+test protocol_rejects_lossy_unknown_malformed_and_unbounded_results ... ok
+test committed_sci_corpus_is_typed_complete_and_pinned ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/tokenizer.rs (target/release/deps/tokenizer-6418cac1ce3dfbe0)
+
+running 7 tests
+test adjacent_nested_and_unmatched_parentheses ... ok
+test atoms_at_eof_and_commas ... ok
+test empty_and_all_ascii_whitespace ... ok
+test example ... ok
+test repeated_eof_is_fused ... ok
+test utf8_uses_byte_spans ... ok
+test spans_are_sliceable_and_agree_with_character_scanner ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests light_cljs
+
+running 1 test
+test src/interpreter/embedding.rs - interpreter::embedding::ContextOptions (line 58) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

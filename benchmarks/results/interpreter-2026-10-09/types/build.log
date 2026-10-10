@@ -1,0 +1,18 @@
+["cargo", "build", "--release", "--bin", "light-cljs", "--message-format=json"]
+    Finished `release` profile [optimized] target(s) in 0.04s
+["cargo", "bench", "--no-run", "--bench", "interpreter_types", "--message-format=json"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter", "--message-format=json"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter_gc", "--message-format=json"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter_reuse", "--message-format=json"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter_types", "--message-format=json", "--features", "count-allocations"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter", "--message-format=json", "--features", "count-allocations"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter_gc", "--message-format=json", "--features", "count-allocations"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--no-run", "--bench", "interpreter_reuse", "--message-format=json", "--features", "count-allocations"]
+    Finished `bench` profile [optimized] target(s) in 0.00s

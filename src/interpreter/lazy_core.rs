@@ -422,11 +422,42 @@ enum Operation {
 fn call(c: &mut Context, a: &[RootedValue], op: Operation) -> NativeResult {
     use Operation::*;
     match op {
+        Lazy(
+            producer @ (Producer::Map
+            | Producer::Filter
+            | Producer::Remove
+            | Producer::Take
+            | Producer::Drop
+            | Producer::TakeWhile),
+        ) if a.len() == 1 => {
+            use sequence_core::{Combinator, Transform};
+            let transform = match producer {
+                Producer::Map => Transform::Map,
+                Producer::Filter => Transform::Filter,
+                Producer::Remove => Transform::Remove,
+                Producer::Take => Transform::Take,
+                Producer::Drop => Transform::Drop,
+                Producer::TakeWhile => Transform::TakeWhile,
+                _ => unreachable!(),
+            };
+            c.higher_order(Combinator::Transform(transform), a)
+        }
         Lazy(Producer::MapIndexed | Producer::KeepIndexed) => {
             let Lazy(producer) = op else { unreachable!() };
             c.lazy_core(producer, &[a[0].clone(), c.integer(0), a[1].clone()])
         }
         Lazy(producer) => c.lazy_core(producer, a),
+        Mapcat if a.len() == 1 => {
+            use sequence_core::{Combinator, Transform};
+            let mapped = c.higher_order(Combinator::Transform(Transform::Map), a)?;
+            let cat = c.native_function(
+                sequence_definitions()
+                    .iter()
+                    .find(|d| d.metadata.name == "cat")
+                    .unwrap(),
+            );
+            c.higher_order(Combinator::Comp, &[mapped, cat])
+        }
         Mapcat => {
             let mapped = c.lazy_core(Producer::Map, a)?;
             let definition = sequence_definitions()
@@ -485,6 +516,33 @@ fn call(c: &mut Context, a: &[RootedValue], op: Operation) -> NativeResult {
         Cycle => {
             let source = sequence(c, &a[0], 0)?;
             c.lazy_core(Producer::Cycle, &[source.clone(), source])
+        }
+        PartitionAll if a.len() == 1 => {
+            // The ^long transducer entry truncates numeric counts immediately;
+            // collection-taking arities deliberately keep their own semantics.
+            let invalid = || NativeError::Type {
+                argument: 0,
+                expected: "number in signed 64-bit partition range",
+            };
+            match a[0].inspect() {
+                ValueView::Integer(_) | ValueView::Ratio { .. } => {}
+                ValueView::Double(n)
+                    if n.is_nan()
+                        || (-9_223_372_036_854_775_808.0..=9_223_372_036_854_775_808.0)
+                            .contains(&n) => {}
+                _ => return Err(invalid()),
+            }
+            // At the rounded double representation of Long/MAX_VALUE the
+            // pinned host accepts the bound and saturates its primitive cast.
+            let n = if matches!(a[0].inspect(), ValueView::Double(n) if n == i64::MAX as f64) {
+                c.integer(i64::MAX)
+            } else {
+                numeric(c, a, Number::Long)?
+            };
+            c.higher_order(
+                sequence_core::Combinator::Transform(sequence_core::Transform::PartitionAll),
+                &[n],
+            )
         }
         Partition | PartitionAll => {
             let n = a[0].clone();
@@ -625,16 +683,28 @@ pub fn lazy_definitions() -> &'static [NativeDefinition] {
     use Arity::{AtLeast, Exact, Range as ArityRange};
     use Operation::*;
     static DEFINITIONS: &[NativeDefinition] = &[
-        def!("map", AtLeast(2), Lazy(Producer::Map)),
+        def!("map", AtLeast(1), Lazy(Producer::Map)),
         def!("map-indexed", Exact(2), Lazy(Producer::MapIndexed)),
-        def!("mapcat", AtLeast(2), Mapcat),
-        def!("filter", Exact(2), Lazy(Producer::Filter)),
-        def!("remove", Exact(2), Lazy(Producer::Remove)),
+        def!("mapcat", AtLeast(1), Mapcat),
+        def!(
+            "filter",
+            ArityRange { min: 1, max: 2 },
+            Lazy(Producer::Filter)
+        ),
+        def!(
+            "remove",
+            ArityRange { min: 1, max: 2 },
+            Lazy(Producer::Remove)
+        ),
         def!("keep", Exact(2), Lazy(Producer::Keep)),
         def!("keep-indexed", Exact(2), Lazy(Producer::KeepIndexed)),
-        def!("take", Exact(2), Lazy(Producer::Take)),
-        def!("drop", Exact(2), Lazy(Producer::Drop)),
-        def!("take-while", Exact(2), Lazy(Producer::TakeWhile)),
+        def!("take", ArityRange { min: 1, max: 2 }, Lazy(Producer::Take)),
+        def!("drop", ArityRange { min: 1, max: 2 }, Lazy(Producer::Drop)),
+        def!(
+            "take-while",
+            ArityRange { min: 1, max: 2 },
+            Lazy(Producer::TakeWhile)
+        ),
         def!("drop-while", Exact(2), Lazy(Producer::DropWhile)),
         def!("range", ArityRange { min: 0, max: 3 }, Range),
         def!("repeat", ArityRange { min: 1, max: 2 }, Repeat),
@@ -642,7 +712,7 @@ pub fn lazy_definitions() -> &'static [NativeDefinition] {
         def!("iterate", Exact(2), Iterate),
         def!("cycle", Exact(1), Cycle),
         def!("partition", ArityRange { min: 2, max: 4 }, Partition),
-        def!("partition-all", ArityRange { min: 2, max: 3 }, PartitionAll),
+        def!("partition-all", ArityRange { min: 1, max: 3 }, PartitionAll),
         def!("interpose", Exact(2), Lazy(Producer::Interpose)),
         def!("interleave", AtLeast(0), Lazy(Producer::Interleave)),
         def!("take-nth", Exact(2), Lazy(Producer::TakeNth)),

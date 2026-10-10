@@ -1,0 +1,12 @@
+command: ['cargo', 'bench', '--locked', '--bench', 'interpreter_gc', '--features', 'count-allocations']
+exit: 101
+    Finished `bench` profile [optimized] target(s) in 0.00s
+     Running benches/interpreter_gc.rs (target/release/deps/interpreter_gc-9d8c1118137f8ff9)
+samples=7 evaluations/sample=256 fresh_context_ns=251875 fresh_process_ns=1711167 instrumented=true
+
+thread 'main' (67063483) panicked at benches/interpreter_gc.rs:89:5:
+assertion `left == right` failed: warmed collection must reuse scratch instead of allocating per collection node
+  left: (512, 0, 8192)
+ right: (0, 0, 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: bench failed, to rerun pass `--bench interpreter_gc`

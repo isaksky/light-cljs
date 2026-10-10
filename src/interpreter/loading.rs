@@ -306,7 +306,25 @@ impl Context {
         self.invalidate_analysis();
         self.loading.borrow_mut().provider = None;
     }
+    pub(crate) fn compiler_assertions(&mut self, enabled: bool) {
+        let namespace = self
+            .find_namespace(&Name::new(None, "clojure.core"))
+            .unwrap();
+        let var = self
+            .intern_var(
+                namespace.namespace_id().unwrap(),
+                Name::new(None, "*assert*"),
+            )
+            .unwrap();
+        let metadata = self
+            .map(&[(self.keyword(Name::new(None, "dynamic")), self.boolean(true))])
+            .unwrap();
+        self.set_var_metadata(var.var_id().unwrap(), &metadata);
+        self.set_var_root(var.var_id().unwrap(), &self.boolean(enabled))
+            .unwrap();
+    }
     pub(crate) fn initialize_compiler_host(&self) {
+        self.readers.borrow_mut().compiler = true;
         // The default `user` identity is ambient reader state, not loaded user.clj.
         self.loading.borrow_mut().records.insert(
             Name::new(None, "user"),

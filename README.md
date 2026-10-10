@@ -3,23 +3,44 @@
 A small Rust compiler for an executable ClojureScript core, with a borrowing
 lexer, handwritten syntax parser, semantic analyzer, and JavaScript emitter.
 The parser pulls tokens into a node arena; analysis resolves local references
-to binding IDs in a separate expression arena. Compiler macros run in the native
-Rust interpreter, with explicit `.clj`/`.cljc` imports and a bounded executable JS
-subset. The library has no dependencies or unsafe code.
+to binding IDs in a separate expression arena. Generated JavaScript includes
+immutable vectors, lists, maps, sets, named values and a first-party core runtime
+when needed. The current library has no dependencies or unsafe code.
 Tokens never allocate text; syntax leaves keep byte spans wherever possible.
 
-A separate native SCI-style interpreter has owned scalar and immutable collection
+## Adopted evaluator architecture
+
+The project is moving to **rquickjs execution of JavaScript emitted by this Rust
+compiler**, including macro bodies and ordinary helpers. Rust keeps reading,
+resolution, analysis, semantic IR, optimization and emission. Macro and application
+execution will share canonical runtime operations and JavaScript Number semantics,
+with separate mutable state and demand-initialized compile-time helper roots.
+Macros will live in `.cljs`/`.cljc` and use ordinary `:require`.
+
+**This migration is planned, not implemented yet.** Compiler macros currently run
+in the native Rust interpreter through `.clj`/`.cljc` macro imports, and scripts,
+the REPL and embedding APIs still use native evaluation. The existing commands
+and API examples below describe that current checkout. See the
+[evaluator migration design](docs/evaluator-migration.md) for the accepted phase
+semantics, interpreter extraction, consumer migration and completion criteria.
+Pellets holds the implementation queue; evaluator migration and full intended
+language completion are separate milestones.
+
+## Current native interpreter
+
+The native SCI-style interpreter has owned scalar and immutable collection
 values, metadata, structural equality/hashing, source storage, semantic reading,
 owned forms, primitive evaluation, user/native macro expansion, and explicit garbage collection in
 `light_cljs::interpreter`. Its
 [compatibility profile](docs/interpreter.md) and
-[pinned JVM reference corpus](tests/reference/sci/README.md) define the target;
+[pinned JVM reference corpus](tests/reference/sci/README.md) define its current native profile;
 native calls, explicit host function registration, checked arithmetic and general
 predicates, lexical closures, multiple/variadic arities, mutual recursion and
 stack-safe `loop*`/function `recur`, context-owned namespaces, definitions and
 late-bound Vars, portable exceptions, `try`/`catch`/`finally`, collection core
-functions, callable data, finite seq traversal, reductions and eager higher-order
-helpers, ordinary destructuring, `let`/`loop`/`fn`/`defn`/`letfn`, and function
+functions, callable data, finite seq traversal, reductions, `completing`/`transduce`
+and three-argument `into` with custom callable transducers and composable
+`map`/`filter`/`remove`/`take`/`drop`/`take-while`/`mapcat`/`partition-all` constructors and `cat`, eager higher-order helpers, ordinary destructuring, `let`/`loop`/`fn`/`defn`/`letfn`, and function
 pre/post conditions, conditional/threading macros, assertions and constant-data
 `case`, memoized delays, real lazy-sequence producers, lazy `for` comprehensions,
 effectful `doseq`/`dotimes`/`while` iteration, dynamic Vars, atoms, validators,
@@ -28,6 +49,23 @@ the literal `clojure.string` subset, explicit host input/output, incremental rea
 APIs and nested string I/O scopes, set algebra/relational operations, data walks,
 and restricted EDN reading work. Native `--eval` and `--repl` modes run scripts
 without Node, Java, SCI, or generated JavaScript.
+
+Native `defprotocol` installs namespace-resolved method functions with doc/arglists/
+`:protocol` metadata; `satisfies?` returns false for ordinary values without an
+implementation. Native `reify` creates fresh identity objects with captured methods,
+fixed overloads, partial/marker implementations and replacement metadata. Native
+`defrecord` adds immutable nominal data with positional/map constructors, persistent
+map operations, metadata and record-preserving walks. Record protocol methods read
+receiver fields, retain definition-time lexical captures and preserve old type
+generations across redefinition. `extend-type` and `extend-protocol` update named
+record generations, including existing instances, preserving omitted methods and
+replacing supplied overload sets. Nil, built-in and host selectors remain excluded. See the
+[protocol contract](docs/interpreter.md#user-protocol-declarations).
+
+Native transducers can consume a finite prefix of an unbounded source:
+`(into [] (comp (filter odd?) (map inc) (take 3)) (range))` returns `[2 4 6]`.
+`(transduce (partition-all 3) conj [] (range 5))` returns `[[0 1 2] [3 4]]`,
+including the final partial vector flushed during completion.
 
 ```rust
 use light_cljs::interpreter::{eval_string, ValueView};
@@ -76,11 +114,36 @@ cargo run -- --analyze --text '(let* [x 10] x)'
 ```
 
 `--compile` emits a self-contained JavaScript expression whose value is the
-last source form. Supported forms are `nil`, booleans, safe integers, finite
-floating-point numbers, strings, `if`, `do`, sequential `let*`, and single fixed
-arity `fn*` functions and calls. Closures capture lexical bindings; named `fn*`
-supports self-recursion. Empty bodies return `nil`. Only `nil` and `false` are
+last source form. Supported forms include `nil`, booleans, JavaScript numbers, strings, reader
+literals, `if`, `do`, sequential `let*`, mutually recursive `letfn`/`letfn*`, and fixed/multiple/variadic `fn*`
+functions and calls. Characters, regexes, `#inst`, `#uuid`, `#js`, `#queue`, `#()`,
+metadata, namespaced maps, syntax quote, dereference and Var quote execute through
+the compiler reader/runtime boundary. Large integer spellings use Number rounding. Closures capture lexical bindings; named `fn*`
+supports self-recursion. Letfn groups keep outer captures and independent lexical
+identities, including nested and escaped functions; the [letfn audit](tests/reference/compiler-letfn.md)
+records two explicit upstream slot-reuse differences. Empty bodies return `nil`. Only `nil` and `false` are
 false in conditionals, including when tests produce `0` or `""`.
+
+JavaScript interop includes explicit/shorthand dot calls, `new` and constructor
+shorthand, property `set!`, positional/named `js*` templates, `this-as` and
+`js-arguments`. Host arrays/objects, computed access, array traversal macros,
+qualified method/constructor values and `:refer-global` work in generated browser
+JavaScript. Unqualified host paths such as `console.log`, qualified dot members
+and host-path definitions also work. Member names use CLJS munging; string keys
+keep their spelling.
+See the [interop audit](tests/reference/compiler-interop.md).
+
+Compiled definitions support docstrings/metadata, `defonce`, forward `declare`,
+`var`/`#'`, quoted-symbol `resolve`, and legal global `set!`. `binding` and
+`with-redefs` evaluate initializers in parallel and restore roots through nested
+calls and exceptions. Their scope is synchronous; later Promise callbacks see
+restored globals. Explicit boolean hints retain CLJS's JavaScript truth behavior.
+Vars preserve live dereference/invocation, symbol equality/hash, metadata and
+function test callbacks. See the [definitions audit](tests/reference/compiler-definitions.md).
+In the current implementation, runtime `.cljs` `defmacro` creates the upstream runtime function with hidden
+`&form`/`&env` parameters and macro metadata. Native compile-time macro execution
+uses an explicit `.clj`/`.cljc` macro namespace. The adopted migration replaces
+this with compile-time-only bindings and diagnostics for runtime macro use.
 
 ```rust
 use light_cljs::{analyze, emit_js, parse};
@@ -92,8 +155,23 @@ let javascript = emit_js(&program);
 // Or use light_cljs::compile(source) for all three stages.
 ```
 
-Ordinary `let`, `fn`, `defn`, and selected control/threading macros expand natively.
-User macros use explicit `:require-macros` imports; compile-time interpreter Vars
+Ordinary `let`, `loop`, `fn`, `defn`, and `letfn` execute nested sequential/map
+destructuring, rest/as bindings, named-key directives and eager defaults in generated
+JavaScript. Function pre/post conditions and assertions execute there too; method
+lowering retains receiver fields and captures. The
+[destructuring evidence](tests/reference/compiler-language/evidence.md#destructuring-and-conditions-member--2026-10-09)
+records the explicit release/checkout order difference. Named types use the
+pinned field, scope and ordinary method-body-map behavior. Extended map
+directives (`:keys!`, `:syms!`, `:strs!`, `:select`, `:all`, `:missing`,
+`:excess`, and `:defaults`) and `selector` follow the pinned checkout, with
+explicit release comparisons in the [destructuring audit](tests/reference/compiler-destructuring-completion.md).
+Conditional bindings, short-circuit/threading forms, `cond`/`condp`, grouped
+`case`, `while` and `dotimes` execute in generated JavaScript, including effects,
+failures and per-iteration captures. `MacroHost::set_assertions(false)` omits
+assertions and function pre/post checks. The [control audit](tests/reference/compiler-control.md)
+records the pinned comparisons and remaining separate helper witnesses.
+Current user macros use `:require-macros`, `:include-macros`, `:refer-macros`, or inferred
+self-required companions; compile-time interpreter Vars
 remain separate from runtime JavaScript globals. The complete example has two
 runtime namespaces and one macro namespace:
 
@@ -102,11 +180,33 @@ cargo run --quiet -- --compile --entry demo.main --source-root examples/macros |
 # 12
 ```
 
+The [collection example](examples/collections) combines three runtime namespaces,
+a shared dependency and a `.clj` macro. Compile it to one expression returning
+`batch.main/run`, then invoke it from JavaScript:
+
+```sh
+cargo run --locked --quiet -- --compile --entry batch.main \
+  --source-root examples/collections > /tmp/light-cljs-collections.js
+node --check /tmp/light-cljs-collections.js
+node -e 'const run=eval(require("fs").readFileSync("/tmp/light-cljs-collections.js","utf8")); const result=run(x=>x); if(result==null) throw Error("missing result");'
+# data
+# ops
+# main
+```
+
+`run` returns `[[1 2] [1 2 3] :pair true]`; its first observation is the
+`report` result `[6 batch/data true "batch.data"]`. Values retain their language
+types. The host callback also receives generated nested data and ordered effects.
+Core printing and explicit JavaScript conversion helpers are available. The expression
+contains one private collection runtime and needs no native interpreter, JVM,
+module import or installed `cljs.core` at execution time. See the
+[complete program contract](docs/compiler.md#complete-collection-program).
+
 See [compiler macros and embedding](docs/compiler.md#compiler-macros-and-embedding)
 for imports, host macros, reload, `&env`, resource limits, and runtime restrictions.
 
 Compilation errors include source locations and produce no partial JavaScript.
-Definitions and narrow JavaScript interop are also supported. Compile the
+Definitions and source-language JavaScript interop are also supported. Compile the
 included two-namespace example with explicit source roots:
 
 ```sh
@@ -116,10 +216,146 @@ node /tmp/light-demo.js
 # 4
 ```
 
-Namespace loading supports ordinary `:require`/`:as` aliases and separate
-`:require-macros` imports. Runtime collections, general library integration,
-constructors, property writes, and optimization remain unsupported. See the
+Namespace loading searches `.cljs` before `.cljc`, selecting shared-source
+`:cljs`/`:default` reader branches before loading dependencies. It supports namespace
+docstrings/metadata, aliases, runtime and macro refers/renames, and
+`:refer-clojure` exclusions/renames. Compile-time `.clj`/`.cljc` imports remain
+separate from runtime namespace initialization. A virtual `cljs.core` namespace provides first-class
+`keyword`, `symbol`, `vector`, `list`, `hash-map`, `hash-set`, `conj`, `assoc`,
+`dissoc`, `disj`, `seq`, `first`,
+`rest`, `next`, `name`, `namespace`, `count`, `nth`, `get`, `contains?`, `=`,
+`reduce`, arithmetic/comparisons, numeric coercions and bit operations, fundamental
+boolean/nil/numeric/named/function/collection predicates, `reduced`, `reduced?`,
+`unreduced` and bounded `deref`.
+Quote lowers symbols and nested lists/vectors/maps/sets directly to immutable data; quoted
+names never resolve or execute. Vectors use indexed calls; keywords,
+symbols, maps and sets use one/two-argument lookup calls. Lists and finite seq views remain non-callable.
+Sequential equality crosses list/vector/seq kinds, preserving their typed
+identity; empty lists differ from nil. Maps accept structural keys (equivalent lists,
+vectors and seqs find the same entry), distinguish absent keys from stored nil,
+false and undefined, and preserve old versions during updates. `assoc nil`
+creates a map; an odd trailing assoc key receives nil, while odd `hash-map`
+arguments fail. Map `conj` accepts vectors of at least two values (using the first
+two), maps, finite sequences of vector entries and nil. Map lookup and copying
+updates are O(n), plus structural key costs; iteration order is unspecified. List/seq tails share storage in O(1),
+list indexing is linear, and vector updates copy the owned array.
+Sets deduplicate structural members and support `get`, `contains?`, `conj`,
+`disj` and finite traversal. Lookup returns the first retained member, including
+nil and false; nested maps and sets can serve as members or map keys. Set updates
+preserve old versions, and no-op updates preserve identity. Duplicate readable
+set-literal forms reject before execution; dynamic distinct forms with equal results throw
+Error as in the pinned checkout, with the release difference retained explicitly.
+Set count is O(1), lookup/update is O(n), and naive construction
+and unordered equality are O(n²), before nested costs. Iteration order is unspecified.
+Ordinary `reduce` accepts two/three arguments over finite language collections,
+seq views, nil and UTF-16 strings. It calls the reducer with no arguments for an
+empty input without init, skips callbacks for a singleton without init or an
+empty input with init, and never calls completion. A step returning `reduced`
+stops immediately and unwraps one layer; `deref` supports these private
+immutable markers and quoted Vars. Numeric functions use JavaScript Number arithmetic,
+rounding and 32-bit bit operations; saved functions, aliases and `apply` share
+the same runtime. The [numeric audit](tests/reference/compiler-numeric.md) records
+arities, coercions, predicates, the direct comparison macro distinction, and
+verification against both pinned references. Functions support overload dispatch and arbitrary variadic fixed prefixes, including
+metadata wrappers, native macro expansion and namespace boundaries. The
+[function arity audit](tests/reference/compiler-functions.md) records callable
+entry points, rest sequences and pinned comparisons. All `apply` prefixes,
+callable data, metadata and captured `reify` implementations are supported, along with
+`identity`, `constantly`, `complement`, `comp`, `partial`, `juxt` and `fnil`.
+Variadic calls can consume finite prefixes of infinite argument tails. The
+[apply audit](tests/reference/compiler-apply.md) records 143 selected upstream
+assertions and 228 independent probes. Compiled sequences include lazy producers,
+collection-taking `map`/`mapcat`/filter/keep families, partitions, bounded traversal,
+and nested `for`/`doseq` comprehensions with destructuring and modifiers. Range
+and vector chunks preserve observable realization, while reduced results stop
+before requesting the next input. Saved helpers and namespace aliases use the
+same runtime. The [sequence audit](tests/reference/compiler-sequences.md) records
+314 imported assertions, 56 independent differential probes, and the complete
+arity inventory; transducer constructors remain separately scoped.
+
+Compiled `delay`, `force`, `delay?`, `realized?` and `lazy-seq` preserve deferred
+execution, retry throwing thunks, and memoize successful values. Lazy metadata
+wrappers retain independent pending state; infinite prefixes and reduced
+termination consume only the requested inputs. The [deferred-value audit](tests/reference/compiler-deferred.md)
+records 27 upstream assertions, 23 independent reference probes, deep traversal
+and GC checks.
+
+Compiled `meta`, `with-meta` and `vary-meta` preserve metadata independently of
+structural equality and hashing. Collection updates, seq tails, lazy sequence
+coercion, function/IFn wrappers, reify and records follow their CLJS metadata
+protocols. Atoms expose mutable metadata; Vars retain separate definition
+metadata. Direct, quoted and macro-generated metadata share the compiler bridge.
+The [metadata audit](tests/reference/compiler-metadata.md) records 32 upstream
+assertions and 38 independent probes against both pinned references.
+Compiled `loop`/`loop*` and function/method `recur` use constant stack space and
+preserve per-iteration closure captures, simultaneous rebinding, and variadic rest
+sequences. Declared protocol/reify methods preserve receiver conventions; `case`
+and synchronous `try` support recurrence control flow. The
+[recurrence audit](tests/reference/compiler-recur.md) records exact reference
+comparisons; the [record audit](tests/reference/compiler-records.md) adds the
+original Search1–Search4 record wrappers. `reduce-kv` supports owned
+maps/vectors, custom `IKVReduce` receivers, and reducible map-entry sequences;
+transducers remain separate.
+Compiled user protocols support marker and overloaded declarations, method Var
+metadata, namespace aliases, saved method functions and public CLJS dispatch slots.
+Dispatch checks metadata implementations first when opted in, then direct methods,
+then native/default tables. `satisfies?` and `implements?` distinguish membership
+from available methods. Named/native extensions share the core dispatch path;
+redefinition preserves existing direct implementations and uses the current method
+Var for fallback. The [protocol audit](tests/reference/compiler-protocols.md)
+records source-level tests, negative cases, core identities and both pinned oracles.
+`extend-type`, `extend-protocol`, `specify!` and `specify` support named types,
+records, built-in values, native selectors and default dispatch. Existing instances
+and saved functions observe later extensions; instance methods and metadata retain
+CLJS precedence. The [extension audit](tests/reference/compiler-extensions.md)
+includes the complete upstream native-extension tests, isolated reference runs
+and core operation fast paths.
+The [core protocol audit](tests/reference/compiler-core-protocols.md) covers public
+lookup, sequence, collection, reduction, state and printing consumers, marker/partial
+protocols, custom keys, iterator reduction and explicit release/checkout failures.
+
+Compiled persistent helpers include nested updates, key selection, merging and
+zipmap as first-class functions. Collection coercion, map entries, stack
+operations and all `into` arities preserve snapshots, metadata, custom protocols
+and early reduction. The [helper audit](tests/reference/compiler-collection-helpers.md)
+records the pinned source assertions, differential probes and output measurements.
+Additional helpers include `some-fn`, `every-pred`, `memoize`, `group-by`,
+`frequencies`, `update-keys`, `update-vals`, `reductions`, `partitionv`,
+`partitionv-all`, `splitv-at`, `iteration`, tagged literals, printing, and
+`clj->js`/`js->clj`. The [integration evidence](tests/reference/compiler-language/evidence.md)
+retains exact upstream assertions, bounded property inputs, and version differences.
+
+Compiled exceptions support ordered typed and `:default` catches, rethrowing,
+and `finally` in value, discarded and return positions. `ex-info`, `ex-data`,
+`ex-message`, `ex-cause`, `ExceptionInfo`, `instance?` and `Throwable->map` retain
+JavaScript Error identity and arbitrary thrown values. The
+[exception evidence](tests/reference/compiler-language/evidence.md#exceptions-member--2026-10-09)
+records 42 selected upstream assertions and 56 independent pinned comparisons.
+The self-contained runtime is included once only when used; primitive output
+keeps its existing small helpers. Sorted sets and transient collections remain
+intended language gaps. Whole-program reachability and specialization belong in
+the Rust compiler under the adopted roadmap; the current compiler does not yet
+provide that optimizer. Package acquisition and bundling are not migration goals,
+and a general standard library is not currently bundled. Caller-supplied library
+sources use the same supported language features. See the
+[migration and language boundaries](docs/evaluator-migration.md#language-coverage-and-completion-boundaries)
+and the
 [executable core contract](docs/compiler.md) for exact limits and testing.
+
+Compiled atoms and volatiles support dereference, all swap/reset arities,
+old/new returns, validators, synchronous watches, and mutable metadata. Custom
+`IDeref`, `ISwap`, `IReset`, `IVolatile` and `IWatchable` implementations use the
+same public functions, including saved calls and namespace aliases. ClojureScript
+`compare-and-set!` uses structural equality. The
+[state audit](tests/reference/compiler-state.md) compares 56 upstream assertions
+and 41 independent probes with both pinned references.
+
+For example, the following executable program returns `2`:
+
+```sh
+cargo run --quiet -- --compile --text '(let [v [:demo/x 1]] (count v))' | \
+  node --print 'eval(require("fs").readFileSync(0,"utf8"))'
+```
 
 ## Lexer API
 
@@ -290,6 +526,31 @@ set to its executable path. Native interpreter tests need only Rust; run
 test uses the same tiny programs and compares
 values and observable effects; it may download the pinned Maven dependencies.
 
+The [compiler language assertion inventory](tests/reference/compiler-language/evidence.md)
+reports compiled source-language behavior separately from successful parser
+and native-interpreter tests. It preserves complete upstream bodies and original
+expectations; diagnostics and version differences have separate dispositions. The
+[integration evidence](tests/reference/compiler-language-completion.md) covers the
+combined source program, deterministic interactions and completion checks. Python 3.10+ runs its accounting tests with `cargo test --test compiler_language`.
+
+```sh
+# Inspect missing capabilities without running or claiming any passes.
+python3 -B tests/reference/compiler-language/report.py --show-missing
+# Focus implementation on one section; rejected features remain missing.
+python3 -B tests/reference/compiler-language/report.py --run --feature functions-apply
+# Completion gate: selected assertions and supplemental public boundaries.
+python3 -B tests/reference/compiler-language/report.py --run --strict
+```
+
+Execution defaults to both Maven 1.12.134 and the pinned research checkout.
+`--reference none` supports a quick local run; it cannot establish conformance.
+These counts describe the inventoried feature sections, not the whole intended
+language or upstream suite. The selected inventory still excludes standard
+features including transients, transducers, sorted collections and multimethods;
+those are assigned language gaps in the
+[migration and coverage roadmap](docs/evaluator-migration.md#language-coverage-and-completion-boundaries),
+not permanent exclusions or passing assertions.
+
 The benchmark prepares eight fixtures before timing and accepts additional UTF-8
 files. It consumes full tokens through `black_box`, emits raw CSV on stdout, and
 reports configuration and medians on stderr. See the
@@ -301,3 +562,25 @@ ClojureScript reader/compiler.
 For the full native host API, run `cargo run --example embedding` or read the
 [embedding example](examples/embedding.rs) and the documented
 [options, permission and fork contracts](docs/interpreter.md#embedding-configuration-permissions-and-forks).
+
+Compiled `reify` uses a stable anonymous type per source site and fresh captured
+fields per evaluation. Protocol/IFn/Object methods support destructuring,
+overloads, closures and recurrence. Metadata copies retain type and dispatch;
+captured atoms share state intentionally while independent factories do not.
+A three-namespace update/effect/watch event example executes entirely in the
+emitted JavaScript. See [reify evidence](tests/reference/compiler-reify.md).
+
+Compiled `deftype` and `deftype*` support positional constructors, live receiver
+fields, permitted mutable assignments, nested closures, shadowing, method
+recurrence and user/core protocols. Custom callable, lookup, sequence and reduction
+objects work through normal language operations. Namespace-qualified types,
+redefinition, saved factories and existing instances retain constructor identity.
+The [type audit](tests/reference/compiler-types.md) records 30 upstream assertion
+sites, independent differential probes, diagnostics and output measurements.
+
+Compiled records support positional/map construction, extension entries, metadata,
+cloning, nominal equality, structural map/set keys and full method dispatch. Removing
+a declared field returns a plain map; extension-only updates preserve record identity.
+Raw `defrecord*`, constructor aliases, redefinition and external extensions execute
+in the generated JavaScript. See the [record audit](tests/reference/compiler-records.md)
+for source assertions, pinned comparisons and output measurements.

@@ -31,9 +31,9 @@ fn-binding-vector	expr	(fn* [	[x]	] 0)	invalid-binding	binding must	analysis-err
 fn-binding-number	expr	(fn* [	1	] 0)	invalid-binding	binding must	analysis-error	analysis-error
 fn-binding-keyword	expr	(fn* [	:x	] 0)	invalid-binding	binding must	accepted	accepted
 fn-qualified-name	expr	(fn* 	a/b	 [] 1)	invalid-binding	binding must	javascript-error	javascript-error
-fn-duplicate	expr	(fn* [x 	x	] x)	duplicate-parameter	duplicate parameter: x	accepted	accepted
-fn-variadic	expr	(fn* [x 	&	 xs] x)	unsupported	variadic parameters	accepted	accepted
-fn-multiple	expr		(fn* ([] 1) ([x] x))		unsupported	multiple function arities	accepted	accepted
+fn-duplicate	expr	(fn* [x 	x	] x)	accepted	-	accepted	accepted
+fn-variadic	expr	(fn* [x 	&	 xs] x)	accepted	-	accepted	accepted
+fn-multiple	expr		(fn* ([] 1) ([x] x))		accepted	-	accepted	accepted
 nil-call	expr	(	nil	 missing)	invalid-form	cannot call nil	analysis-error	analysis-error
 self-init	expr	(let* [x 	x	] x)	unresolved	unresolved symbol:	warning	warning
 forward-local	expr	(let* [x 	later	 later 2] x)	unresolved	unresolved symbol:	warning	warning
@@ -43,63 +43,63 @@ leaked-param	expr	(do (fn* [p] p) 	p	)	unresolved	unresolved symbol:	warning	war
 leaked-fn-name	expr	(do (fn* named [] named) 	named	)	unresolved	unresolved symbol:	warning	warning
 forward-global	expr	(do (def f (fn* [] 	later	)) (def later 1))	unresolved	unresolved symbol:	warning	warning
 unknown-global	expr		console		unresolved	unresolved symbol:	warning	warning
-unqualified-host	expr	(	console.log	 1)	unresolved	unresolved symbol:	accepted	accepted
+unqualified-host	expr	(	console.log	 1)	accepted	public source supported	accepted	accepted
 unknown-alias	expr		absent/value		unresolved	unresolved symbol:	warning	warning
 macro-env	expr		&env		unresolved	unresolved symbol:	warning	warning
-reader-vector	expr		[]		unsupported	collection literals	accepted	accepted
-reader-map	expr		{}		unsupported	collection literals	accepted	accepted
-reader-set	expr		#{}		unsupported	collection literals	accepted	accepted
-reader-list	expr		()		unsupported	empty list	accepted	accepted
-reader-keyword	expr		:key		unsupported	keywords	accepted	accepted
-reader-character	expr		\a		unsupported	characters	accepted	accepted
-reader-regex	expr		#"x"		unsupported	regular expressions	accepted	accepted
-reader-quote	expr		'x		unsupported	reader prefixes	accepted	accepted
-reader-syntax-quote	expr		`x		unsupported	reader prefixes	accepted	accepted
-reader-deref	expr		@js/x		unsupported	reader prefixes	accepted	accepted
-reader-metadata	expr		^:private x		unsupported	metadata	warning	warning
-reader-tag	expr		#js []		unsupported	tagged literals	accepted	accepted
+reader-vector	expr		[]		accepted	-	accepted	accepted
+reader-map-duplicate	expr	{:a 1 	:a	 2}	invalid-form	duplicate map key	reader-error	reader-error
+reader-set	expr		#{}		accepted	now supported immutable set literal	accepted	accepted
+reader-list	expr		()		accepted	-	accepted	accepted
+reader-keyword	expr		:key		accepted	-	accepted	accepted
+reader-character	expr		\a		accepted	-	accepted	accepted
+reader-regex	expr		#"x"		accepted	-	accepted	accepted
+reader-quote	expr		'x		accepted	-	accepted	accepted
+reader-syntax-quote	expr		`x		accepted	-	accepted	accepted
+reader-deref	expr		@js/x		accepted	-	accepted	accepted
+reader-metadata	expr		^:private x		unresolved	unresolved symbol	warning	warning
+reader-tag	expr		#js []		accepted	-	accepted	accepted
 reader-conditional	cljc		#?(:cljs 1)		unsupported	reader conditionals	accepted	accepted
-reader-ns-map	expr		#:a{:x 1}		unsupported	namespaced maps	accepted	accepted
-reader-reader-fn	expr		#(1)		unsupported	collection literals	accepted	accepted
+reader-ns-map	expr		#:a{:x 1}		accepted	-	accepted	accepted
+reader-reader-fn	expr		#(1)		accepted	-	accepted	accepted
 macro-let	expr	(	let	 [x 1] x)	accepted	now supported native macro expansion	accepted	accepted
 macro-fn	expr	(	fn	 [] 1)	accepted	now supported native macro expansion	accepted	accepted
 macro-cljs-core-let	expr	(	cljs.core/let	 [x 1] x)	accepted	now supported native macro expansion	accepted	accepted
 macro-when	expr	(	when	 true 1)	accepted	now supported native macro expansion	accepted	accepted
 macro-defn	expr	(	defn	 f [] 1)	accepted	now supported native macro expansion	accepted	accepted
-macro-defmacro	expr	(	defmacro	 m [] 1)	unsupported	macro execution	accepted	accepted
-special-loopstar	expr	(	loop*	 [x 1] x)	unsupported	unsupported construct: loop*	accepted	accepted
-special-letfnstar	expr	(	letfn*	 [f (fn* [] 1)] (f))	unsupported	unsupported construct: letfn*	accepted	accepted
-special-recur	expr	(fn* [] (	recur	))	unsupported	unsupported construct: recur	accepted	accepted
-special-throw	expr	(	throw	 1)	unsupported	unsupported construct: throw	accepted	accepted
-special-try	expr	(	try	 1)	unsupported	unsupported construct: try	accepted	accepted
-special-setbang	expr	(	set!	 js/x 1)	unsupported	unsupported construct: set!	accepted	accepted
-special-new	expr	(	new	 js/Date)	unsupported	unsupported construct: new	accepted	accepted
-special-dot	expr	(	.	 "x" -length)	unsupported	unsupported construct: .	accepted	accepted
-special-jsstar	expr	(	js*	 "1")	unsupported	unsupported construct: js*	accepted	accepted
-special-quote	expr	(	quote	 x)	unsupported	unsupported construct: quote	accepted	accepted
-special-var	expr	(	var	 cljs.core/inc)	unsupported	unsupported construct: var	accepted	accepted
-special-deftypestar	statement	(	deftype*	 T [] {} nil)	unsupported	unsupported construct: deftype*	accepted	accepted
-special-defrecordstar	statement	(	defrecord*	 T [] {} nil)	unsupported	unsupported construct: defrecord*	accepted	accepted
-special-nsstar	statement	(	ns*	 (:require '[boundary.lib :as b]))	unsupported	unsupported construct: ns*	accepted	accepted
-special-casestar	expr	(let* [x 1] (	case*	 x [[1]] [2] 3))	unsupported	unsupported construct: case*	accepted	accepted
+macro-defmacro	expr	(	defmacro	 m [] 1)	accepted	public source supported	accepted	accepted
+special-loopstar	expr	(	loop*	 [x 1] x)	accepted	-	accepted	accepted
+special-letfnstar	expr	(	letfn*	 [f (fn* [] 1)] (f))	accepted	-	accepted	accepted
+special-recur	expr	(fn* [] (	recur	))	accepted	-	accepted	accepted
+special-throw	expr	(	throw	 1)	accepted	-	accepted	accepted
+special-try	expr	(	try	 1)	accepted	-	accepted	accepted
+special-setbang	expr	(	set!	 js/x 1)	accepted	global assignment and definition docstrings supported	accepted	accepted
+special-new	expr	(	new	 js/Date)	accepted	JavaScript special form supported	accepted	accepted
+special-dot	expr	(	.	 "x" -length)	accepted	JavaScript special form supported	accepted	accepted
+special-jsstar	expr	(	js*	 "1")	accepted	JavaScript special form supported	accepted	accepted
+special-quote	expr	(	quote	 x)	accepted	-	accepted	accepted
+special-var	expr	(var 	cljs.core/inc	)	accepted	resolved core numeric Var	accepted	accepted
+special-deftypestar	statement	(	deftype*	 T [] {} nil)	accepted	-	accepted	accepted
+special-defrecordstar	statement	(	defrecord*	 T [] {} nil)	accepted	-	accepted	accepted
+special-nsstar	statement	(	ns*	 (:require '[boundary.lib :as b]))	invalid-form	Namespace declarations must appear at the top-level.	accepted	accepted
+special-casestar	expr	(let* [x 1] (	case*	 x [[1]] [2] 3))	accepted	-	accepted	accepted
 special-amp	expr	(	&	)	unsupported	unsupported construct: &	analysis-error	analysis-error
 def-missing	expr		(def)		invalid-form	def requires	analysis-error	analysis-error
 def-extra	expr		(def x 1 2)		invalid-form	def requires	analysis-error	analysis-error
-def-docstring	expr		(def x "doc" 1)		invalid-form	def requires	accepted	accepted
+def-docstring	expr		(def x "doc" 1)		accepted	global assignment and definition docstrings supported	accepted	accepted
 def-qualified	expr	(def 	other/x	 1)	invalid-binding	binding must	analysis-error	analysis-error
-def-same-ns	expr	(def 	cljs.user/x	 1)	invalid-binding	binding must	accepted	accepted
-def-dot	expr	(def 	a.b	 1)	invalid-binding	binding must	accepted	accepted
+def-same-ns	expr	(def 	cljs.user/x	 1)	accepted	qualified current-namespace definition supported	accepted	accepted
+def-dot	expr	(def 	a.b	 1)	accepted	public source supported	accepted	accepted
 def-vector	expr	(def 	[x]	 1)	invalid-binding	binding must	analysis-error	analysis-error
-def-amp	expr	(def 	&	 1)	invalid-binding	binding must	accepted	accepted
+def-amp	expr	(def 	&	 1)	accepted	public source supported	accepted	accepted
 property-missing	expr		(.-length)		invalid-form	require	analysis-error	analysis-error
 property-extra	expr		(.-length "x" missing)		invalid-form	require	analysis-error	analysis-error
 method-missing	expr		(.slice)		invalid-form	require	analysis-error	analysis-error
 property-nil	expr	(.-length 	nil	)	invalid-form	cannot target literal nil	analysis-error	analysis-error
 method-nil	expr	(.slice 	nil	 missing)	invalid-form	cannot target literal nil	analysis-error	analysis-error
-host-hyphen	expr		js/a-b		unsupported	ASCII identifier components	accepted	accepted
-host-empty-path	expr		js/Math..sqrt		unsupported	ASCII identifier components	accepted	accepted
-member-hyphen	expr		(.-a-b js/x)		unsupported	ASCII identifier	accepted	accepted
-member-qualified	expr		(.a/b js/x)		unsupported	ASCII identifier	accepted	accepted
+host-hyphen	expr		js/a-b		accepted	JavaScript member munging supported	accepted	accepted
+host-empty-path	expr		js/Math..sqrt		accepted	public source supported	accepted	accepted
+member-hyphen	expr		(.-a-b js/x)		accepted	JavaScript member munging supported	accepted	accepted
+member-qualified	expr	(	.a/b	 js/x)	accepted	public source supported	accepted	accepted
 ns-missing	ns		(ns)		namespace	requires a namespace name	analysis-error	analysis-error
 ns-name	ns	(ns 	:boundary	)	namespace	namespace must use	analysis-error	analysis-error
 ns-require-empty	ns	(ns boundary (:require 	[]	))	namespace	cannot be empty	analysis-error	analysis-error
@@ -107,20 +107,91 @@ ns-require-map	ns	(ns boundary (:require 	{:foo :bar}	))	namespace	require expec
 ns-require-lib	ns	(ns boundary (:require [	:foo	 :as f]))	namespace	require library	analysis-error	analysis-error
 ns-as-value	ns	(ns boundary (:require [boundary.lib :as 	[]	]))	namespace	:as alias	analysis-error	analysis-error
 ns-as-missing	ns	(ns boundary (:require 	[boundary.lib :as]	))	namespace	require options	analysis-error	analysis-error
-ns-as-repeated	ns	(ns boundary (:require 	[boundary.lib :as a :as b]	))	namespace	require options	analysis-error	analysis-error
+ns-as-repeated	ns	(ns boundary (:require 	[boundary.lib :as a :as b]	))	namespace	duplicate require option	analysis-error	analysis-error
 ns-unknown-option	ns	(ns boundary (:require 	[boundary.lib :plop true]	))	namespace	require options	analysis-error	analysis-error
-ns-refer	ns	(ns boundary (:require 	[boundary.lib :refer [value]]	))	namespace	require options	warning	warning
-ns-rename	ns	(ns boundary (:require 	[boundary.lib :rename {value v}]	))	namespace	require options	analysis-error	analysis-error
+ns-refer	ns	(ns boundary (:require 	[boundary.lib :refer [value]]	))	accepted	namespace import resolution supported	warning	warning
+ns-rename	ns	(ns boundary (:require 	[boundary.lib :rename {value v}]	))	namespace	:rename symbol	analysis-error	analysis-error
 ns-as-conflict	ns	(ns boundary (:require [boundary.lib :as x] [other :as 	x	]))	namespace	duplicate or conflicting	analysis-error	analysis-error
-ns-as-duplicate	ns	(ns boundary (:require [boundary.lib :as x] [boundary.lib :as 	x	]))	namespace	duplicate or conflicting	warning	warning
+ns-as-duplicate	ns	(ns boundary (:require [boundary.lib :as x] [boundary.lib :as 	x	]))	accepted	public source supported	warning	warning
 ns-as-js	ns	(ns boundary (:require [boundary.lib :as 	js	]))	namespace	js is reserved	warning	warning
 ns-require-repeated	ns	(ns boundary (:require boundary.lib) 	(:require other)	)	namespace	only one :require	analysis-error	analysis-error
 ns-unknown-clause	ns	(ns boundary 	(:unless [])	)	namespace	unsupported namespace clause	analysis-error	analysis-error
-ns-import	ns	(ns boundary 	(:import goog.Uri)	)	namespace	unsupported namespace clause	warning	warning
+ns-import	ns	(ns boundary 	(:import goog.Uri)	)	accepted	namespace host constructor imports supported	warning	warning
 ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	accepted	now supported native macro expansion	warning	warning
-ns-refer-clojure	ns	(ns boundary 	(:refer-clojure :exclude [+])	)	namespace	unsupported namespace clause	warning	warning
+ns-refer-clojure	ns	(ns boundary 	(:refer-clojure :exclude [+])	)	accepted	namespace import resolution supported	warning	warning
 ns-package	ns	(ns boundary (:require [	"package"	 :as p]))	namespace	JavaScript package imports	warning	warning
 macro-shadow-exit	expr	(do (let* [when (fn* [x] x)] (when 1)) (	when	 true 1))	accepted	now supported native macro expansion	accepted	accepted
-special-nested-ns	expr	(fn* [] (	ns	 nested.core))	unsupported	unsupported construct: ns	analysis-error	analysis-error
-fn-variadic-missing-rest	expr	(fn* [	&	] 1)	unsupported	variadic parameters	emit-error	emit-error
+special-nested-ns	expr	(fn* [] (	ns	 nested.core))	invalid-form	Namespace declarations must appear at the top-level.	analysis-error	analysis-error
+fn-variadic-missing-rest	expr	(fn* [	&	] 1)	invalid-form	requires one rest binding	emit-error	emit-error
 fn-malformed-empty-arity	expr	(fn* ([] 1) 	()	)	invalid-form	parameter vector	warning	warning
+reader-map-sequential-duplicate	expr	{[1 2] 1 	(1 2)	 2}	invalid-form	duplicate map key	reader-error	reader-error
+reader-map-unordered-duplicate	expr	{{:a 1 :b 2} 1 	{:b 2 :a 1}	 2}	invalid-form	duplicate map key	reader-error	reader-error
+reader-map-integer-duplicate	expr	{1 1 	0x1	 2}	invalid-form	duplicate map key	reader-error	reader-error
+reader-map-float-duplicate	expr	{1.0 1 	1e0	 2}	invalid-form	duplicate map key	reader-error	reader-error
+reader-map-quote-duplicate	expr	{'x 1 	(quote x)	 2}	invalid-form	duplicate map key	reader-error	reader-error
+
+reader-set-scalar-duplicate	expr	#{1 	0x1	}	invalid-form	duplicate set member	reader-error	reader-error
+reader-set-float-duplicate	expr	#{1.0 	1e0	}	invalid-form	duplicate set member	reader-error	reader-error
+reader-set-nested-duplicate	expr	#{#{1 2} 	#{2 1}	}	invalid-form	duplicate set member	reader-error	reader-error
+reader-set-map-duplicate	expr	#{ {:a 1 :b 2} 	{:b 2 :a 1}	}	invalid-form	duplicate set member	reader-error	reader-error
+reader-set-quoted-duplicate	expr	'#{[1 2] 	(1 2)	}	invalid-form	duplicate set member	reader-error	reader-error
+reader-set-symbol-duplicate	expr	'#{x 	x	}	invalid-form	duplicate set member	reader-error	reader-error
+numeric-subtract-zero	expr		(-)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-divide-zero	expr		(/)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-comparison-zero	expr		(<)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-equality-zero	expr		(==)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-inc-extra	expr		(inc 1 2)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-int-missing	expr		(int)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-bit-one	expr		(bit-xor 1)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-shift-one	expr		(bit-shift-left 1)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-qualified-missing	expr		(cljs.core/number?)		macro-expansion	invalid arity	analysis-error	analysis-error
+numeric-nil-extra	expr		(nil? 1 2)		macro-expansion	invalid arity	analysis-error	analysis-error
+fn-overload-duplicate	expr		(fn* ([a] a) ([b] b))		invalid-form	fn* cannot have two overloads with the same arity	warning	warning
+fn-overload-variadic-duplicate	expr		(fn* ([a & xs] a) ([a b & ys] b))		invalid-form	fn* cannot have more than one variadic overload	javascript-error	javascript-error
+fn-overload-fixed-too-large	expr		(fn* ([a b] a) ([a & xs] a))		invalid-form	fn* fixed arity cannot exceed the variadic fixed prefix	warning	warning
+recur-no-target	expr		(recur)		invalid-form	Can't recur here	analysis-error	analysis-error
+recur-non-tail-arg	expr	(loop* [x 0] (inc 	(recur 1)	))	invalid-form	Can't recur here	analysis-error	analysis-error
+recur-non-tail-do	expr	(loop* [x 0] (do 	(recur 1)	 2))	invalid-form	Can't recur here	analysis-error	analysis-error
+recur-wrong-count	expr	(loop* [x 1 y 2] 	(recur 3)	)	invalid-form	recur argument count mismatch	analysis-error	analysis-error
+recur-cross-try	expr	(loop* [] (try 	(recur)	))	invalid-form	Can't recur here	analysis-error	analysis-error
+recur-cross-catch	expr	(loop* [] (try (catch js/Error t 	(recur)	)))	invalid-form	Can't recur here	analysis-error	analysis-error
+recur-cross-default-catch	expr	(loop* [] (try (catch :default t 	(recur)	)))	invalid-form	Can't recur here	analysis-error	analysis-error
+recur-cross-finally	expr	(loop* [] (try (finally 	(recur)	)))	invalid-form	Can't recur here	analysis-error	analysis-error
+recur-ifn-explicit-receiver	expr	(reify IFn (-invoke [self n] 	(recur self n)	))	invalid-form	recur argument count mismatch	analysis-error	analysis-error
+recur-ifn-too-few	expr	(reify IFn (-invoke [self n] 	(recur)	))	invalid-form	recur argument count mismatch	analysis-error	analysis-error
+exception-throw-empty	expr		(throw)		invalid-form	throw requires one argument	analysis-error	analysis-error
+exception-throw-many	expr		(throw 1 2)		invalid-form	throw requires one argument	analysis-error	analysis-error
+exception-catch-qualified	expr	(try (catch js/Error 	bad/e	))	invalid-binding	binding must be an unqualified symbol	analysis-error	analysis-error
+exception-after-catch	expr	(try (catch js/Error e) 	2	)	invalid-form	try body must precede	analysis-error	analysis-error
+exception-after-finally	expr	(try (finally) 	2	)	invalid-form	try body must precede	analysis-error	analysis-error
+exception-double-finally	expr	(try (finally) 	(finally 1)	)	invalid-form	duplicate finally	analysis-error	analysis-error
+exception-catch-after-finally	expr	(try (finally) 	(catch :default e)	)	invalid-form	invalid catch clause	analysis-error	analysis-error
+exception-recur-throw	expr	(loop* [] (throw 	(recur)	))	invalid-form	Can't recur here	analysis-error	analysis-error
+exception-recur-class	expr	(loop* [] (try (catch 	(recur)	 e)))	invalid-form	Can't recur here	analysis-error	analysis-error
+control-case-duplicate	expr		(case 1 1 :a 1 :b)		macro-expansion	duplicate case	analysis-error	analysis-error
+control-case-group-duplicate	expr		(case 1 (1 2) :a 2 :b)		macro-expansion	duplicate case	analysis-error	analysis-error
+control-case-vector-duplicate	expr	(case [1] [1] :a 	[1]	 :b)	macro-expansion	duplicate case	analysis-error	analysis-error
+control-case-selector	expr	(case* 	1	 [[1]] [2] 3)	invalid-form	switch on a symbol	analysis-error	analysis-error
+control-case-group	expr	(let* [x 1] (case* x [	1	] [2] 3))	invalid-form	constant groups	analysis-error	analysis-error
+control-case-invalid-test	expr	(let* [x 1] (case* x [[	:a	]] [2] 3))	invalid-form	numbers, strings, or constants	analysis-error	analysis-error
+control-case-variable-test	expr	(let* [x 1 y 1] (case* x [[	y	]] [2] 3))	invalid-form	numbers, strings, or constants	analysis-error	analysis-error
+control-while-recur	expr	(while true 	(recur)	)	macro-expansion	Can't recur here	analysis-error	analysis-error
+control-dotimes-recur	expr	(dotimes [i 3] 	(recur 2)	)	macro-expansion	Can't recur here	analysis-error	analysis-error
+control-if-some-binding	expr		(if-some [x 1 y 2] x)		macro-expansion	exactly two forms	analysis-error	analysis-error
+control-cond-odd	expr		(cond true)		macro-expansion	even number	analysis-error	analysis-error
+control-cond-thread-odd	expr		(cond-> 1 true)		macro-expansion	test/step pairs	analysis-error	analysis-error
+definitions-const-set	expr	(do (def ^:const x 1) (set! 	x	 2))	invalid-form	Can't set! a constant	analysis-error	analysis-error
+definitions-const-redef	expr	(do (def ^:const x 1) (def 	x	 2))	invalid-form	Can't redefine a constant	analysis-error	analysis-error
+definitions-local-set	expr	(let* [x 1] (set! 	x	 2))	invalid-form	Can't set! local var	analysis-error	analysis-error
+definitions-resolve-unquoted	expr		(resolve x)		invalid-form	quoted symbol	analysis-error	analysis-error
+definitions-var-empty	expr		(var)		invalid-form	one global symbol	analysis-error	analysis-error
+definitions-var-extra	expr		(var x y)		invalid-form	one global symbol	analysis-error	analysis-error
+definitions-var-nonsymbol	expr		(var nil)		invalid-form	one global symbol	analysis-error	analysis-error
+extension-missing-target	statement		(extend-type)		invalid-form	extend-type requires a type	analysis-error	analysis-error
+extension-missing-protocol	statement		(extend-protocol)		invalid-form	extend-protocol requires a protocol	analysis-error	analysis-error
+extension-numeric-target	statement	(extend-type 	42	 ICounted (-count [_] 1))	invalid-form	extension target must	analysis-error	analysis-error
+extension-string-target	statement	(extend-type 	"number"	 ICounted (-count [_] 1))	invalid-form	extension target must	analysis-error	analysis-error
+extension-expression-target	statement	(extend-type 	(type 1)	 ICounted (-count [_] 1))	invalid-form	extension target must	analysis-error	analysis-error
+extension-ifn-ungrouped	statement	(do (deftype T []) (extend-type T IFn 	(-invoke [_] 1)	))	invalid-form	IFn extension signatures must be grouped	analysis-error	analysis-error
+extension-invalid-params	statement	(do (defprotocol P (f [x])) (extend-type number P 	(f 1 2)	))	macro-expansion	function requires method lists	analysis-error	analysis-error
+reader-set-duplicate-form	expr	#{(identity 1) 	(identity 1)	}	invalid-form	duplicate set member	reader-error	reader-error

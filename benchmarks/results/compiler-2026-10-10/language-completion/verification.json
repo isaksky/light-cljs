@@ -1,0 +1,56 @@
+{
+  "verified_at": "2026-10-10T12:43:54.714468+00:00",
+  "scope": "Selected compiler language features and independent supplemental boundaries; not the whole upstream suite or Penpot.",
+  "release": "1.12.134",
+  "checkout": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+  "settings": {
+    "optimizations": "none",
+    "static-fns": false,
+    "def-emits-var": false
+  },
+  "strict_complete": true,
+  "source_counts": {
+    "covered": 2295,
+    "verified-rejection": 43,
+    "verified-warning": 31,
+    "missing": 0,
+    "version-difference": 166,
+    "unrelated": 702
+  },
+  "supplemental_counts": {
+    "verified-version-difference": 1,
+    "verified-primitive-permissiveness": 4,
+    "verified-warning-api": 14,
+    "verified-public-runtime": 7,
+    "verified-reader-api": 1
+  },
+  "supplemental_diagnostic_probes": 32,
+  "supplemental_runtime_proofs": 13,
+  "rust": {
+    "command": "cargo test --locked -j 8 --no-fail-fast",
+    "passed": 726,
+    "failed": 0,
+    "opt_in_ignored": 47,
+    "suites": 71
+  },
+  "references": {
+    "command": "LIGHT_CLJS_REFERENCE=both LIGHT_CLJS_REFERENCE_CHECKOUT=/Users/admin/src/light-cljs/research/clojurescript LIGHT_CLJS_REFERENCE_REVISION=a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS=180 cargo test --locked --test execution -- --ignored --nocapture --test-threads=1",
+    "passed": 43,
+    "failed": 0,
+    "seconds": 548.57
+  },
+  "strict_command": "python3 -B tests/reference/compiler-language/report.py --run --strict --reference both --checkout research/clojurescript --artifacts /tmp/light-cljs-99-complete-frozen-artifacts --output /tmp/light-cljs-99-complete-frozen.json",
+  "other_passed_commands": [
+    "node tests/support/js_runtime.test.js",
+    "node tests/support/js_core_helpers.test.js",
+    "python3 -B -m unittest discover -s tests/reference/compiler-language -p test_*.py",
+    "python3 -B tests/reference/compiler-language/extract_inventory.py --check",
+    "cargo clippy --locked -j 8 --all-targets -- -D warnings",
+    "cargo fmt --all -- --check",
+    "git diff --check"
+  ],
+  "python_accounting_tests": 55,
+  "source_manifest": "verified-sources.json",
+  "local_artifacts": "/private/tmp/light-cljs-99-complete-frozen-artifacts",
+  "artifact_note": "The local detailed run directory is temporary. CI regenerates and uploads detailed artifacts; retained counts cannot replace a fresh run."
+}

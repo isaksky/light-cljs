@@ -1,5 +1,19 @@
 # Native interpreter compatibility profile
 
+**Current implementation reference; native evaluation is being replaced.**
+The adopted [evaluator architecture](evaluator-migration.md) uses this Rust
+compiler's emitted JavaScript in rquickjs for macros and retained evaluation,
+script, REPL and embedding consumers. The migration is not implemented yet;
+the APIs and commands below still describe the checkout.
+
+Compiler-owned forms, names, reader transforms, namespace views and source
+metadata must be extracted before interpreter deletion. Supported CLJS behavior
+must move to the canonical JS path. Native exact-number, shared-owner fork/GC
+and native-only descriptor contracts are explicitly retired or mapped to new
+APIs; they are not requirements for a permanent native fallback. See
+[consumer migration](evaluator-migration.md#interpreter-extraction-and-consumer-migration)
+and the separate evaluator/language completion criteria.
+
 The native interpreter is a separate execution path for a portable Clojure
 subset. Its `interpreter` module currently provides **owned scalar and immutable collection values, metadata, structural equality
 and hashing, source spans, executable constants, and explicit garbage collection**.
@@ -25,11 +39,14 @@ differences have separate exact native assertions. The
 existing ClojureScript compiler and its JavaScript semantics remain supported
 under [their own contract](compiler.md).
 
-This profile follows the `rust-sci` group context, revision **1**, and JVM SCI
+This profile records the historical `rust-sci` baseline from group context
+revision **1**, and JVM SCI
 [`5fe89056384418be50d232b4278344cb3a1a526b`](https://github.com/babashka/sci/tree/5fe89056384418be50d232b4278344cb3a1a526b).
 SCI supplies a semantic reference, including operations it obtains from host
-Clojure. Native execution will implement selected operations in Rust without a
+Clojure. That baseline implemented selected operations in Rust without a
 JVM, SCI library, subprocess evaluator, JavaScript engine, or generated JS.
+The current Pellets group contexts supersede that implementation direction with
+the rquickjs migration; the SCI corpus remains useful historical semantic evidence.
 The production crate currently uses only the standard library and safe Rust.
 
 ## Supported surface and current status
@@ -536,6 +553,244 @@ callbacks, and bounded retained storage under repeated redefinition. Dynamic
 binding and mutation are described below; explicit namespace removal remains
 separate work. Loading is described below.
 
+## User protocol declarations
+
+`defprotocol`, `reify` and `satisfies?` are native core Vars. Protocol methods are ordinary
+heap-backed function values, invoked through the same `Context::invoke` boundary
+as native functions and closures. They resolve through namespaces, aliases and
+refers; saved functions, `apply` and Var invocation retain normal behavior.
+
+```clojure
+(defprotocol Size "Size protocol" (size [receiver] "Return a size"))
+[(ifn? size) (satisfies? Size nil) (satisfies? Size [])]
+;; => [true false false]
+```
+
+A declaration returns its unqualified symbol. A marker declaration such as
+`(defprotocol Marker)` has no methods. Every method signature must be a vector of
+distinct unqualified symbols with at least the receiver; multiple distinct fixed
+arities are supported. Duplicate methods/arities, variadic signatures, invalid
+names, namespace method conflicts, metadata-driven extension and host-interface
+options fail explicitly with declaration provenance. Protocol and method Vars
+publish `:doc`; method Vars publish `:arglists` and `:protocol`, which identifies
+the protocol Var. Descriptors inspect as `ValueView::Protocol(Name)` and print as
+`#<Protocol user/Size>`; no public protocol map layout is promised.
+
+`reify` implements one or more user protocols with ordinary captured method
+closures. Each evaluation creates a distinct object; method bodies compile once
+with the enclosing function or retained analyzed form. Receiver parameters,
+destructuring, local shadowing, `recur`, exceptions and `finally` use the existing
+function evaluator:
+
+```clojure
+(defprotocol P (p [receiver] [receiver n]) (q [receiver]))
+(defprotocol Marker)
+(let [captured 4
+      o (reify P (p [_] captured) (p [_ n] (* captured n)) Marker)
+      f p]
+  [(f o) (apply f [o 3]) (satisfies? Marker o)
+   (try (q o) (catch Exception _ :missing))])
+;; => [4 12 true :missing]
+```
+
+Marker and partial implementations count nominally for `satisfies?`. Missing
+methods fail with qualified protocol/method identities and the receiver category.
+A supplied method overload must match a declared positive fixed arity; duplicate,
+unknown and variadic implementations fail with source provenance. Omitted
+overloads use ordinary function arity failures. An ordinary value such as `[]`
+has no implementation; `(size [])` fails, and wrong method argument counts fail
+before dispatch. Protocol clauses resolve normal namespace/alias Vars. Each
+table key contains protocol and declared method identity: two protocols named
+`a/P` and `b/P` with methods named `f` remain independent. This deliberately fixes
+the pinned SCI reify collision (`[:b :b]` there, `[:a :b]` here); its exact
+reference/native outcomes remain separate executable fixtures.
+
+Objects inspect as `ValueView::Reify`, print the bounded label `#<Reify>` and
+compare/hash by identity. They are not maps, collections, sequences or callables.
+Source metadata is retained. `with-meta` replaces metadata and creates a new
+identity, even for nil or unchanged metadata, while sharing method closures and
+captures. Methods read metadata from their actual receiver. No host Object or
+interface methods or customization of core protocols is provided. Nil/built-in extensions, multimethods and generated JavaScript
+protocols remain outside the delivered surface.
+
+Redeclaring exactly the same set of method names/arities preserves descriptor and
+method identities and implementation tables, while refreshing Var metadata.
+Declaration/signature order and parameter names may change. An incompatible
+shape fails before replacing tables, preserving earlier calls. SCI permits broader
+redefinitions and zero/variadic declarations; the fixture dispositions record
+these intentional native restrictions. Ordinary `(def size (fn [_] 42))` replaces
+Var lookup; a previously saved method still dispatches independently.
+
+Descriptors and methods use owner/generation-checked heap IDs and traced raw edges.
+Receiver tables retain selected closures across callbacks and collection. There is
+no dispatch cache or global registry of all types. Unreachable descriptor/method
+cycles collect; host handles survive source/context drop in a same-owner fork,
+and foreign owners are rejected. Store-owned mutations advance a shared revision
+used by bounded analysis reuse. Definitions remain effectful and cannot reuse
+analysis; forks share existing Vars while new contexts remain isolated. Private
+callable literals used by the expansion install no helper Vars and enforce the
+`defprotocol`, `def` and target-name permissions even for retained expansions.
+Reify construction also checks current `reify` and protocol-name permissions;
+retained method closures check current host callback permissions. Reify has only
+raw descriptor/closure edges, so receiver/capture cycles collect without owning
+their arena. A method returning a closure can keep its receiver/captures alive.
+Reset creates a new owner: retained values remain inspectable and callable in an
+existing same-owner fork, while the reset context rejects them as foreign.
+Declaration/table work, dispatch, applied argument traversal and callbacks share
+fuel, allocation, call-depth and cancellation accounting.
+
+`tests/interpreter_protocols.rs` exercises the public declaration/reify contract;
+embedding, limits, reclamation and reuse tests cover host callbacks, permissions,
+source drops, retained receivers, cancellation and bounded repeated make/drop.
+`benches/interpreter_protocols.rs` separately measures construction and repeated
+method invocation against captured closures without asserting a speedup.
+Private tests retain foundation dispatch/reentrant-table coverage.
+The pinned scalar fixtures and their provenance are documented in
+[the reference notes](../tests/reference/sci/README.md#native-protocol-declarations).
+
+## Immutable record data
+
+Native `(defrecord Box [items])` installs a fresh nominal type descriptor and
+ordinary namespace constructor Vars `->Box` and `map->Box`. Fields must be distinct
+unqualified symbols; mutable-field annotations fail explicitly. User protocol
+clauses use the same fixed-arity validation and ordinary fn lowering as reify.
+Constructors have definition metadata and normal alias/qualified Var resolution.
+No host classes, public reflection, record literals, or generated-JS support is added.
+
+```clojure
+(defrecord Box [items])
+[(:items (->Box [1 2 3]))
+ (:items (map->Box {:items [4 5]}))
+ (record? (->Box []))]
+;; => [[1 2 3] [4 5] true]
+```
+
+Records inspect as `ValueView::Record(count)` and descriptors as
+`ValueView::RecordType(Name)`. They support `map?`, `coll?`, `associative?`,
+`counted?`, `seqable?`, keyword lookup, get/find/contains?, keys/vals, map-entry
+sequences, reduce/reduce-kv, into/conj and persistent map updates. They are not
+callable (`ifn?` is false). `empty?` and zero-field records work; `empty` throws
+`CollectionError::UnsupportedRecordEmpty`. Map iteration order remains unspecified.
+
+Equality and hashing combine type generation with the entire map payload and
+ignore metadata. A record never equals a plain map or a different generation,
+even with identical fields. `assoc` preserves nominal identity and metadata;
+`dissoc` preserves both for extra/missing keys, but removing a declared basis key
+returns an ordinary map with the same metadata. Adding the key back cannot restore
+record identity. `map->Box` accepts maps, records and nil, fills missing basis
+fields with nil, retains extra keys, and discards input metadata. String keys stay
+extra keys. Other inputs fail, including empty vectors that pinned SCI accepts.
+Nested lazy fields realize before key hashing, outside Store borrows. Host hash
+relationships use `RootedValue::value_hash`; no public numeric `hash` API is added.
+
+Every evaluation of a record definition creates a new generation. Old records
+retain their fields/type. Both saved native constructor closures resolve the
+current type Var. Saved positional constructors retain their original fixed arity,
+so a field-count change makes their calls fail. Pinned SCI agrees for positional
+constructors but retains the old generation/basis in saved map constructors; the
+native contract and both exact outcomes are recorded in fixture dispositions.
+Private construction helpers also check current type-name permissions, even when
+retained separately from generated closures. Definitions remain effectful under
+analysis reuse. Constructors retain code/Var
+edges without retaining obsolete type generations; records trace their type,
+fields and metadata, including cycles through atom/lazy fields. Same-owner forks
+share existing Vars; fresh/reset contexts enforce the existing owner boundary.
+
+Record methods load declared fields by keyword from the actual receiver on every
+invocation and `recur` iteration. Explicit parameters shadow fields; destructured
+bindings shadow them in the method body. Fields shadow outer locals of the same
+name, while other lexical locals capture at definition time, matching pinned SCI:
+
+```clojure
+(defprotocol Size (size [x]))
+(defrecord Box [items] Size (size [_] (count items)))
+[(size (->Box [1 2 3]))
+ (:items (map->Box {:items [4 5]}))
+ (let [n 7] (size (reify Size (size [_] n))))]
+;; => [3 [4 5] 7]
+```
+
+`assoc` changes the fields observed by methods only on the updated record;
+missing map-constructor fields become nil, and extra entries introduce no locals.
+Overloads, destructuring, exceptions, `finally`, returned closures and method
+`recur` use ordinary function execution. Native pre/postconditions likewise see
+fields and parameters; pinned SCI rejects the recorded postcondition probe.
+Repeated parameter names follow native fn's last-binding-wins rule, while a
+separate receiver slot keeps field access correct. SCI retains the first receiver
+name in that unusual case; both results have explicit fixture dispositions.
+
+Each type descriptor owns its method closures and captures once. Instances keep
+their type and map data. Old instances keep old methods after redefinition; saved
+constructors follow the current type Var. Same-shape protocol redeclarations keep
+method identities and membership, while incompatible declarations are rejected.
+Rebinding a method Var affects live calls; saved protocol functions still dispatch
+by their original identity. Aliases and protocols with equal short method names
+remain independent. Marker/partial implementations count nominally; invoking a
+missing method fails explicitly. Invalid clauses and function bodies cannot
+replace existing type/constructor roots; failed analysis can still intern an
+unbound Var under the existing def convention. Duplicate/unknown methods and
+undeclared arities have explicit SCI diagnostic/permissiveness dispositions.
+
+Descriptors trace methods, captures and protocol identities. Retained old records
+and nested returned closures remain callable after defining sources and contexts
+drop in a surviving same-owner fork. Cyclic atom fields and receiver/capture graphs
+collect after their last roots disappear. Retained analyzed forms use live Vars
+without cached method tables. Method callbacks retain normal permissions, fuel,
+allocation, call-depth, output and sticky cancellation/finally accounting.
+
+### External record extension
+
+`extend-type` and `extend-protocol` accept named record type Vars and user protocol
+Vars through normal namespace and alias resolution:
+
+```clojure
+(defprotocol P (p [x] [x y]))
+(defrecord R [n])
+(def r (->R 2))
+(extend-type R P (p ([x] (:n x)) ([x y] (+ (:n x) y))))
+[(satisfies? P r) (p r) (p r 3)] ; => [true 2 5]
+```
+
+`(extend-protocol P A (p [x] (:n x)) B (p [x] (* 2 (:n x))))`
+updates both named types. External methods are ordinary captured functions with
+no implicit record field locals; use `(:n receiver)`. Methods and overloads are
+validated against the declared protocol shape before installing any method for
+a target. Each supplied method replaces its entire overload set. Omitted methods
+and other protocols remain unchanged; extending a partial protocol again can fill
+its missing methods. Marker and partial implementations count for `satisfies?`;
+calling a method that was never supplied still fails.
+
+Extension replaces inline record implementations, matching pinned SCI. Existing
+instances and saved method functions see updates to their generation. A later
+`defrecord` creates a separate generation, so updating the new type does not
+change old instances. Pinned SCI fails analysis for the recorded alias-qualified
+record selector; native alias resolution is intentional and tested separately.
+Nil, built-in values, host classes, anonymous reify objects and record instances
+are rejected as selectors. No type discovery or host hierarchy is exposed.
+
+The runtime prepares and validates a complete target table before publication;
+invalid declarations and table-building resource failures preserve that target's
+previous methods. Existing sequential effects do not gain whole-file rollback.
+Retained expansions recheck target-Var mutation, type/protocol names and the
+corresponding macro permission. Updates advance the owner-shared reuse revision;
+retained calls and forks read the current table without caching closures. A
+selected method stays rooted through reentrant replacement/GC, finishes with its
+original closure, and subsequent calls use the replacement. Replaced captures
+and unreachable old generations collect after their last roots disappear.
+
+`clojure.walk` rebuilds a record from the original record as the associative seed,
+preserving its type and metadata while transforming field values. Key-conversion
+helpers still rebuild ordinary maps. Printing uses `#namespace.Record{...}` with
+existing length, depth, metadata, output and cancellation limits. At depth zero
+native printing emits `#`; with print-meta enabled it emits record metadata.
+Pinned SCI keeps the type prefix at depth zero and omits record metadata, so these
+are explicit fixture differences. Printed record syntax is not an EDN round trip.
+
+`tests/interpreter_records.rs` and embedding/reuse/limits/reclamation tests cover
+these boundaries. The [record benchmarks](../benchmarks/interpreter.md#immutable-record-data-2026-10-08)
+compare validated map/record construction, lookup, assoc, sequence/reduce and key
+use, with stable warmed GC counts and no assumed speedup.
+
 ## Native calls and bounded numeric core
 
 Native definitions contain public name/namespace, arity, effect and error metadata,
@@ -780,7 +1035,8 @@ and dead root records are removed. Intern indexes do not keep unused symbols
 alive. Allocation does not trigger collection, so a long-lived embedder must
 call it periodically; this is not an automatic memory budget.
 Atoms trace their state, metadata, validators and watches; volatiles trace their state. Deferred nodes trace their producers, results and cached failures. Namespace
-mappings trace Var records; Vars trace namespace/name, metadata and root values;
+mappings trace Var records; Vars trace namespace/name, metadata, root values and
+retained protocol/method ownership;
 code units trace their resolved Var IDs. Current closure records trace their code units and captured values;
 active call frames retain rooted values. Analysis also roots every resolved Var
 until the executable unit is installed: a later macro callback can unmap a Var
@@ -821,6 +1077,12 @@ bounded tree structure: at most 16 hash branches, or 12 vector branches on a
 The empty trace and weak-root registry retain capacity but contain no dead
 runtime edges after collection. Vacant arena slots are reused with new
 generations; high-water capacity is not a promise that RSS shrinks.
+
+Before tracing, analysis-cache pruning resolves the current namespace with a
+retained immutable `*ns*` lookup name. It still reads the live Var mapping and
+dynamic binding, including fork-local mappings, without constructing a fresh
+name per collection. The [collector allocation repair measurements](../benchmarks/interpreter.md#warmed-collector-allocation-repair)
+cover this path with the unchanged warmed zero-allocation assertion.
 
 `tests/interpreter_reclamation.rs` combines 128 cyclic closure redefinitions,
 48 lazy-prefix/cached-failure cycles, 64 fork/drop rounds and 64 module reloads
@@ -904,7 +1166,10 @@ them through lossy Unicode replacement is prohibited.
 
 This profile does not promise all SCI Vars/tests, Java classes or reflection,
 arbitrary JavaScript interop, Java exception hierarchies, threads/futures/STM,
-async, JIT, native protocols/proxy/reify, user-defined types, transducers,
+async, JIT, nil/built-in/host protocol extensions, proxy,
+general user-defined types beyond immutable records, transducer
+constructors beyond `map`/`filter`/`remove`/`take`/`drop`/`take-while`/`mapcat`/`partition-all` and `cat`, transducer arities of `sequence`,
+`eduction`,
 sorted/transient collections, the full numeric tower, regex dialect parity, or
 cross-process code caches. Limited language exception names such as
 `Exception`, `Throwable`, and `clojure.lang.ExceptionInfo` may be provided without
@@ -1073,11 +1338,11 @@ against the clean SCI pin on 2026-10-08.
 ## Finite traversal, reductions and higher-order helpers
 
 The core registry additionally exposes `seq`, `first`, `rest`, `next`, `cons`,
-`reduce`, `reduce-kv`, `reduced`, `reduced?`, `unreduced`, `into`, `mapv`,
+`reduce`, `reduce-kv`, `reduced`, `ensure-reduced`, `reduced?`, `unreduced`, `into`, `mapv`,
 `filterv`, `some`, `every?`, `not-any?`, `not-every?`, `apply`, `comp`,
-`partial`, `complement`, `constantly` and `juxt`. `seqable?` includes nil,
+`partial`, `complement`, `constantly`, `juxt`, `completing`, `transduce` and `cat`. `seqable?` includes nil,
 strings, lists/Cons, vectors/map entries, maps, sets and existing sequence views.
-`into` supports zero, one and two arguments; transducer arities remain excluded.
+`into` supports zero through three arguments, including `(into target xf source)`.
 No eager implementations are registered as `map`, `filter`, `range`, `take`,
 `drop`, `repeat` or `iterate`. `lazy-seq` is a real deferred producer macro.
 
@@ -1094,7 +1359,10 @@ empty collection tail (Cons). A lazy Cons retains its head and deferred tail wit
 
 No-init `reduce` uses the first element, calls its reducer with zero arguments
 on empty input, and leaves a singleton untouched. Initialized reductions leave
-an empty-input initializer untouched. Each reducer result is checked for
+an empty-input initializer untouched, including an already reduced marker.
+Neither the initializer, the sole input, nor the empty-input zero-arity result
+is unwrapped. Ordinary `reduce` never calls a one-argument completion function.
+Each two-argument reducer result is checked for
 `reduced`; termination unwraps exactly one layer and does not request another
 input. `reduce-kv` supplies vector indexes or map keys; its fallback consumes
 sequences of actual map entries, including map-entry values themselves via that
@@ -1102,6 +1370,161 @@ fallback rather than vector indexes. Ordinary pair vectors in the fallback
 fail when reached. `Context::reduced` and `RootedValue::reduced_value` provide
 the corresponding owner-checked embedding operations. Markers use identity
 rather than contained-value equality; `deref` and `unreduced` unwrap one layer.
+One-argument `ensure-reduced` returns an existing marker unchanged by identity,
+or wraps any other value exactly once, including nil. A step returning nested
+markers leaves the inner marker in the reduction result.
+
+`completing` accepts a step function and an optional completion function
+(default `identity`). Its returned callable delegates zero and two arguments
+to the step function, and one argument to completion. It supplies no implicit
+initializer: a step function without a zero-argument method requires explicit
+initialization in `transduce`.
+
+`transduce` accepts `(xf rf source)` or `(xf rf init source)`. Without an explicit
+initializer it calls the original `rf` with zero arguments, then applies `xf`
+to `rf` exactly once. The transformed reducer's zero-argument method is never
+used to initialize the process. It traverses the ordinary seqable inputs with
+the shared reduction loop and invokes the transformed reducer's one-argument
+completion exactly once after normal exhaustion or an early reduced step,
+including nil/empty input. Completion receives the accumulator after exactly
+one step-marker layer has been removed, and its own return value is preserved
+unchanged, including a reduced marker. Earlier initialization, transformation,
+source, step or control failures skip completion; ordinary language `finally`
+cleanup remains separate.
+
+`into` with three arguments passes its explicit persistent destination through
+the same transducing process with a completing `conj` reducer. With the identity
+transform, empty inputs keep the target value. List/nil destinations prepend,
+vectors append, sets deduplicate
+and maps accept the usual entries with later keys replacing earlier ones.
+Persistent collection operations preserve target metadata and never mutate the
+source or target, including when a later callback or invalid map entry fails.
+Transforms can emit additional values on completion, including on empty input.
+There are no transient collections or separate traversal loop. Existing `(into)`
+returns `[]`, `(into target)` retains object identity, and two-argument `into`
+keeps its existing behavior.
+
+Custom transducers are ordinary callable adapters; native, interpreted, Var
+and callable-data reducers use `Context::invoke` with existing ownership,
+permissions and resource controls. A transform can allocate volatile state
+when applied to a reducer so repeated processes have independent state. All
+retained callables, sources and accumulators remain traced across reentrant
+callbacks and collection. For example:
+
+```clojure
+(let [double-input (fn [rf]
+                     (fn ([] (rf))
+                         ([a] (rf a))
+                         ([a x] (rf a (* 2 x)))))]
+  (transduce double-input (completing conj) [] [1 2 3]))
+;; => [2 4 6]
+```
+
+`(map f)`, `(filter pred)` and `(remove pred)` return ordinary callable
+transducers. They compose with `comp` and user adapters in either order, and work
+with `transduce` or three-argument `into`:
+
+```clojure
+(into [] (comp (filter odd?) (map inc)) [0 1 2 3]) ;; => [2 4]
+(into [] (remove odd?) [0 1 2 3])                 ;; => [0 2]
+(let [rf ((map +) conj)]
+  [(rf) (rf [] 1 2 3) (rf [7])])                ;; => [[] [6] [7]]
+```
+
+Transformed reducers forward zero-argument initialization and one-argument
+completion directly to the downstream reducer. Map invokes its callback with
+all step inputs before one downstream step; ordinary `transduce` still supplies
+one source item per step. Applied multi-input map steps preserve lazy argument
+tails. Filter/remove invoke their predicate once per item using Clojure truthiness
+(only nil/false are false), then pass the original item or return the unchanged
+accumulator. Downstream Reduced objects remain unchanged. These native adapters
+are stateless; callback captures retain their ordinary identity. Existing collection-taking
+arities, including multi-collection map, retain their lazy realization behavior.
+
+`(take n)`, `(drop n)` and `(take-while pred)` also construct transducers:
+
+```clojure
+(into [] (comp (filter odd?) (map inc) (take 3)) (range)) ;; => [2 4 6]
+(let [xf (take 2)]
+  [(into [] xf [1 2 3]) (into [] xf [4 5 6])]) ;; => [[1 2] [4 5]]
+```
+
+Take/drop allocate independent traced counters each time the transform is
+applied to a reducer. Interleaved reducers remain independent; invoking their
+zero-argument initialization delegates downstream without resetting the count.
+Counts retain bounded integer/ratio/double arithmetic: taking 1.5 inputs keeps
+the first two, dropping 1.5 skips the first two, negative take keeps none and
+negative drop forwards all. The count decrements before each step, including
+after drop begins forwarding, so checked integer underflow remains an error.
+An invalid count is first used when stepping, not at construction or on empty
+input. Take uses `ensure-reduced` when its count is exhausted; take-while returns
+a Reduced accumulator for its first false/nil predicate result. The process
+stops immediately and completes once with one termination layer removed.
+
+For the explicit unchunked source `(letfn [(src [i] (lazy-seq (observe i)
+(cons i (src (inc i)))))] ...)`, the pipeline above observes source nodes
+`[0 1 2 3 4 5]`. Transducing take 0 observes `[0]`, and take-while `#(< % 3)`
+observes `[0 1 2 3]`, including the rejected input. These are controlled-source
+observations; arbitrary sources and chunking can have different demand effects.
+Unbounded processes that never terminate, including dropping infinity, still
+consume the host's fuel/allocation budget and respond to cancellation.
+
+`cat` is itself a one-argument transducer: `(cat rf)` creates its reducer;
+`(cat)` is an arity error. It flattens one level of nested seqables, including
+nil, empty inputs, UTF-16 string units and map entries. Each inner traversal
+uses ordinary reduction without completion. A private adapter adds one Reduced
+layer when downstream terminates so removing the inner reduction's layer still
+stops every enclosing traversal. Original nested marker contents remain intact.
+Only the outer transducing process completes, including when every inner input
+is empty; source/mapper/reducer failures skip completion.
+
+```clojure
+(into [] cat [nil [] [1 2] () [3]])               ;; => [1 2 3]
+(into [] (comp cat cat (take 2)) [[[1 2 3]] [[4]]]) ;; => [1 2]
+(into [] (mapcat (fn [x] [x x])) [1 2])           ;; => [1 1 2 2]
+(into [] (comp cat (take 3)) [(range)])            ;; => [0 1 2]
+```
+
+`(mapcat f)` composes the map transducer with cat, including map's direct and
+applied multi-input step arities. Existing collection-taking mapcat keeps its
+lazy apply/concat lookahead. Nested transduction stops before requesting another
+inner element or outer input once reduced, and an invalid inner input errors
+only when reached. Inner and outer traversal both poll host controls; infinite
+outer streams of empty collections remain interruptible. Adapters retain only
+traced callbacks; each process has its own cursors and downstream state.
+
+`(partition-all n)` constructs a stateful adapter whose groups are vectors.
+Each application to a reducer creates an independent traced buffer. Full groups
+are emitted during stepping, and completion emits one pending partial group
+before calling downstream completion once. The buffer is cleared before either
+callback, including during reentry or failure. A Reduced from the partial-group
+flush loses exactly one layer before downstream completion; completion's own
+result is returned unchanged. Explicit repeated completion delegates again but
+never replays a previously flushed group. Ordinary `reduce` does not complete
+its reducer, so a caller using this adapter with `reduce` must complete it itself.
+
+```clojure
+(transduce (partition-all 3) conj [] (range 5)) ;; => [[0 1 2] [3 4]]
+(into [] (comp (take 2) (partition-all 3)) [1 2 3 4]) ;; => [[1 2]]
+(into [] (comp (partition-all 3) (take 1)) [1 2])     ;; => [[1 2]]
+```
+
+The transducer constructor follows the pinned numeric coercion: fractional and
+ratio counts truncate toward zero, `2.5` and `2.0` group by two, and zero
+(including NaN coerced to zero) buffers finite input until completion. Nil and
+non-numbers fail at construction. Negative counts construct successfully but
+fail when applied to a reducer; counts outside the signed 32-bit buffer-capacity
+range fail at that application boundary. The rounded double representation of
+Long/MAX_VALUE follows the pinned host's saturation at construction. Native
+buffers grow with actual input and allocation accounting, never by reserving
+all count slots. Unbounded zero-sized groups therefore require finite host
+limits or an upstream terminating transform. The existing two/three-argument
+lazy collection forms preserve their own count rules and sequence group kinds.
+
+The focused `interpreter_transducers` suite and `sci-transduce-*`, `sci-into-xf-*`
+`sci-xf-basic-*`, `sci-xf-bounds-*`, `sci-xf-cat-*` and `sci-xf-partition-*` corpus cover these processes, completion/error effects,
+ordinary applied calls and controlled unchunked early termination. Embedding, limits and reclamation tests cover retained permissions,
+callback reset/reentry, cancellation, bounded scratch roots and cyclic state.
 
 `mapv` stops at the shortest input; `filterv` keeps the original selected values.
 Search helpers short-circuit using Clojure truthiness. `some` returns the first
@@ -1605,8 +2028,10 @@ The core registry implements `map`, `map-indexed`, `mapcat`, `filter`, `remove`,
 `range`, `repeat`, `repeatedly`, `iterate`, `cycle`, `partition`, `partition-all`,
 `interpose`, `interleave`, `take-nth`, `doall` and `dorun`. Traversal also includes
 `second`, `ffirst`, `nfirst`, `fnext`, `nnext`, `last`, `butlast`, `nthnext`,
-`nthrest`, `split-at` and `split-with`. Collection arities are supported;
-transducer arities remain excluded.
+`nthrest`, `split-at` and `split-with`. Collection arities are supported.
+`map`, `filter`, `remove`, `take-while` and `mapcat` additionally accept a single callback
+to construct a transducer; `take`, `drop` and `partition-all` accept a single numeric count. Other
+transformation constructor arities remain excluded.
 
 Each pending node captures traced values and invokes callbacks through the common
 Context evaluator. Realized heads are memoized exactly once. Infinite ranges,
@@ -2334,7 +2759,7 @@ patch mutates state. Fresh-context handles are rejected as `OptionsError::WrongO
 Configuration patches and forks return `ActiveEvaluation` while any evaluation in
 the shared owner is active, including callback reentry. This is a host boundary,
 not an interpreted configuration operation. Unsupported SCI options such as JVM
-classes, reflection, imports, async and proxy/reify capabilities have no typed
+classes, reflection, imports, async and host proxy/reify factories have no typed
 field and fail to compile instead of being silently ignored. Defaults install no
 OS, process, network, filesystem or ambient standard-I/O capability. A
 `FileSourceProvider`, arbitrary Rust callback or stream must be explicitly supplied.
@@ -2574,8 +2999,16 @@ The existing 2,028-row offline SCI corpus remains unchanged.
 
 ## Compiler macro host
 
-The JavaScript compiler now uses this interpreter for user/native and selected
+The JavaScript compiler currently uses this interpreter for user/native and selected
 core macro expansion. Its runtime globals remain separate from interpreter Vars.
+This integration will be replaced by the
+[compiled JavaScript macro host](evaluator-migration.md#bootstrap-and-form-conversion);
+the description below documents the current bridge until that migration lands.
+Generated JavaScript has its own bounded vector/list/map/set, named-value and
+finite-reduction runtime, including complete macro/namespace collection programs; it does not
+call this interpreter, inherit native collection/arity rules, or gain the native
+protocol/record/transducer surface. See the compiler contract for its distinct
+CLJS target and executable subset.
 `Context::expand_macro_call` invokes an explicitly resolved macro Var with owned
 `Form` input and the caller-supplied environment, preserving direct data conversion,
 macro provenance, resource controls and optional expansion statistics.

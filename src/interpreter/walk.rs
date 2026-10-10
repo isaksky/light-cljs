@@ -10,6 +10,7 @@ enum Shape {
     Vector,
     Entry,
     Map,
+    Record,
     Set,
 }
 struct Traversal {
@@ -27,6 +28,7 @@ impl Traversal {
             ValueView::Vector(_) if c.is_map_entry(form) => Shape::Entry,
             ValueView::Vector(_) => Shape::Vector,
             ValueView::Map(_) => Shape::Map,
+            ValueView::Record(_) => Shape::Record,
             ValueView::Set(_) => Shape::Set,
             _ => return Ok(None),
         };
@@ -37,6 +39,7 @@ impl Traversal {
             values: Vec::new(),
             result: match shape {
                 Shape::Map => Some(c.map(&[])?),
+                Shape::Record => Some(form.clone()),
                 Shape::Set => Some(c.set(&[])?),
                 _ => None,
             },
@@ -64,7 +67,7 @@ impl Traversal {
             Shape::Seq => c.eager_sequence_value(&self.values, false)?,
             Shape::Vector => c.vector(&self.values)?,
             Shape::Entry => c.map_entry(&self.values[0], &self.values[1])?,
-            Shape::Map | Shape::Set => self.result.unwrap(),
+            Shape::Map | Shape::Record | Shape::Set => self.result.unwrap(),
         };
         if let Some(meta) = self.metadata {
             Ok(c.with_meta(&result, &meta)?)
@@ -104,7 +107,9 @@ impl Transform<'_> {
                 c.realize_key(form)?;
                 Ok(replacements.get(form)?.unwrap_or_else(|| form.clone()))
             }
-            Self::Keywords | Self::Strings if matches!(form.inspect(), ValueView::Map(_)) => {
+            Self::Keywords | Self::Strings
+                if matches!(form.inspect(), ValueView::Map(_) | ValueView::Record(_)) =>
+            {
                 // Like clojure.walk, key conversion rebuilds maps with {} and
                 // intentionally does not retain the original map's metadata.
                 let mut result = c.map(&[])?;

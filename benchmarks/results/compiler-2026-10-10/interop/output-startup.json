@@ -1,0 +1,126 @@
+{
+  "node": "v24.18.0",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "binary_sha256": "feed6e978daad0883b167b328095ca14c857d150756c6341e323bf31f1075314",
+  "runtime_sha256": "7b591972a763c225d5dc98be65e67037e23641f22714d2799e4ea34e01da2689",
+  "runtime_bytes": 84375,
+  "runtime_gzip_bytes": 19769,
+  "method": "Nine fresh Node processes per program. Time vm.Script compilation plus runInThisContext in milliseconds; validate the numeric result after timing. Excludes process launch and source reading. OS caches/scheduling uncontrolled; historical baseline is not paired.",
+  "programs": {
+    "primitive": {
+      "source": "42",
+      "expected": 42,
+      "sha256": "cefb7c7e86a17fe9c8fa416ae5202f7f63f914f3ac51a4c0cf4a95b214b5c774",
+      "bytes": 88,
+      "gzip_bytes": 93,
+      "samples_ms": [
+        0.11633299999999736,
+        0.0953749999999971,
+        0.08529199999999548,
+        0.1057090000000045,
+        0.08274999999999721,
+        0.09079200000000043,
+        0.09949999999999903,
+        0.08616700000000321,
+        0.09808300000000258
+      ],
+      "median_ms": 0.0953749999999971
+    },
+    "dot": {
+      "source": "(. \"abcd\" indexOf \"d\")",
+      "expected": 3,
+      "sha256": "7949a9ca8f7350f17e60e0601b7d31db39ad17fba163810dd3516b1d9e33dc78",
+      "bytes": 110,
+      "gzip_bytes": 113,
+      "samples_ms": [
+        0.12279100000000653,
+        0.134999999999998,
+        0.10712499999999636,
+        0.08200000000000074,
+        0.14658399999999716,
+        0.08545900000000017,
+        0.08462499999999906,
+        0.09037499999999454,
+        0.08887500000000159
+      ],
+      "median_ms": 0.09037499999999454
+    },
+    "constructor": {
+      "source": "(.-x (new (fn [x] (this-as self (set! (.-x self) x))) 3))",
+      "expected": 3,
+      "sha256": "9d849b35f884d8932084f0966dcf7ed54cf2ce6c69d846a93cb43942bbf46075",
+      "bytes": 218,
+      "gzip_bytes": 167,
+      "samples_ms": [
+        0.09558299999999775,
+        0.10450000000000159,
+        0.11220799999999542,
+        0.12250000000000227,
+        0.0954170000000012,
+        0.10333299999999923,
+        0.10333299999999923,
+        0.09533400000000114,
+        0.08916700000000333
+      ],
+      "median_ms": 0.10333299999999923
+    },
+    "template": {
+      "source": "(js* \"(~{} + ~{})\" 1 2)",
+      "expected": 3,
+      "sha256": "4633731b9dbf920854061fdec2102fd5b84c39978ec9107b39fc37d7d23db59e",
+      "bytes": 102,
+      "gzip_bytes": 106,
+      "samples_ms": [
+        0.0874159999999975,
+        0.09508399999999995,
+        0.10616699999999923,
+        0.08470899999999659,
+        0.08329200000000014,
+        0.10350000000000037,
+        0.08887500000000159,
+        0.08250000000000313,
+        0.11012500000000003
+      ],
+      "median_ms": 0.08887500000000159
+    },
+    "collections": {
+      "source": "(count [1 2 3])",
+      "expected": 3,
+      "sha256": "4353144f79defc1dc1b3f2f0c2ecf1f6b9983dc8521cdb8136fd36099c85b7f9",
+      "bytes": 84532,
+      "gzip_bytes": 19811,
+      "samples_ms": [
+        1.6584590000000006,
+        1.5239169999999973,
+        1.4807500000000005,
+        1.495750000000001,
+        1.4717909999999996,
+        1.839375000000004,
+        1.610875,
+        1.442582999999999,
+        1.7798329999999964
+      ],
+      "median_ms": 1.5239169999999973
+    },
+    "array-helpers": {
+      "source": "(aget (array 1 2 3) 2)",
+      "expected": 3,
+      "sha256": "aaec4f07ca0b7c9c7638aa88508ec9fe7ffbd3c288833ee18efef86bb9a75665",
+      "bytes": 84515,
+      "gzip_bytes": 19808,
+      "samples_ms": [
+        1.5378330000000062,
+        1.5124580000000023,
+        1.4930829999999986,
+        1.4315420000000003,
+        1.4879580000000026,
+        1.4624999999999986,
+        1.603041999999995,
+        1.4032089999999968,
+        1.467333
+      ],
+      "median_ms": 1.4879580000000026
+    }
+  }
+}

@@ -21,9 +21,9 @@ jobs:
       - run: cargo test --locked
 
   conformance:
-    name: Required ClojureScript 1.12.134 conformance
+    name: Required pinned ClojureScript conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,11 +46,36 @@ jobs:
           rustc --version
       - name: Provision pinned reference compiler
         run: clojure -Srepro -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' -P
+      - name: Fetch exact compiler source
+        run: |
+          git init research/clojurescript
+          git -C research/clojurescript remote add origin https://github.com/clojure/clojurescript.git
+          git -C research/clojurescript fetch --depth 1 origin a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
+          git -C research/clojurescript checkout --detach FETCH_HEAD
+      - name: Verify the complete assertion inventory
+        run: python3 -B tests/reference/compiler-language/extract_inventory.py --check
       - name: Required result and effect comparisons
         env:
-          LIGHT_CLJS_REFERENCE: release
+          LIGHT_CLJS_REFERENCE: both
+          LIGHT_CLJS_REFERENCE_CHECKOUT: ${{ github.workspace }}/research/clojurescript
+          LIGHT_CLJS_REFERENCE_REVISION: a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
           LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
-        run: cargo test --locked --test execution -- --ignored --nocapture
+        run: cargo test --locked --test execution -- --ignored --nocapture --test-threads=1
+      - name: Require every in-scope language assertion
+        run: |
+          python3 -B tests/reference/compiler-language/report.py --run --strict \
+            --reference both --checkout research/clojurescript \
+            --artifacts /tmp/light-cljs-language-conformance \
+            --output /tmp/light-cljs-language-conformance.json
+      - name: Preserve compiler conformance diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-language-diagnostics
+          path: |
+            /tmp/light-cljs-language-conformance*
+            /tmp/light-cljs-reference-*
+          if-no-files-found: error
 
   native-conformance:
     name: Native interpreter and pinned SCI conformance

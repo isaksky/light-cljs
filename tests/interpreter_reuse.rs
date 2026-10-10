@@ -106,6 +106,50 @@ fn namespace_bindings_and_aliases_invalidate_resolution() {
 }
 
 #[test]
+fn collection_prunes_analysis_using_live_namespace_bindings_and_mappings() {
+    let mut c = Context::new();
+    c.eval_string("(ns one) (def x 1) (ns two) (def x 2) (in-ns 'user)")
+        .unwrap();
+    let one = c.find_namespace(&Name::new(None, "one")).unwrap();
+    let two = c.find_namespace(&Name::new(None, "two")).unwrap();
+    let core = c.find_namespace(&Name::new(None, "clojure.core")).unwrap();
+    let ns_name = Name::new(None, "*ns*");
+    let ns = c.resolve_var(&ns_name).unwrap().unwrap().var_id().unwrap();
+    let x = form(&c, "x");
+    let outer = c.bind_vars(&[(ns, one)]).unwrap();
+    let original = c.analyze_form(&x).unwrap();
+    c.collect_garbage();
+    assert_eq!(
+        original.unit().id(),
+        c.analyze_form(&x).unwrap().unit().id()
+    );
+
+    let inner = c.bind_vars(&[(ns, two.clone())]).unwrap();
+    c.collect_garbage();
+    assert_eq!(c.analysis_reuse_stats().entries, 0);
+    assert_eq!(value(&mut c, &x), ValueView::Integer(2));
+    drop(inner);
+    c.collect_garbage();
+    assert_eq!(c.analysis_reuse_stats().entries, 0);
+    assert_eq!(value(&mut c, &x), ValueView::Integer(1));
+
+    // Replacing the *ns* mapping must also replace the lookup's Var identity.
+    c.unmap_var(core.namespace_id().unwrap(), &ns_name).unwrap();
+    let replacement = c.intern_var(core.namespace_id().unwrap(), ns_name).unwrap();
+    c.set_var_root(replacement.var_id().unwrap(), &two).unwrap();
+    c.collect_garbage();
+    assert_eq!(c.analysis_reuse_stats().entries, 0);
+    assert_eq!(value(&mut c, &x), ValueView::Integer(2));
+    drop(outer);
+    c.collect_garbage();
+    assert_eq!(c.current_namespace().namespace_id(), two.namespace_id());
+    assert_eq!(
+        c.eval_analyzed(&original).unwrap().inspect(),
+        ValueView::Integer(1)
+    );
+}
+
+#[test]
 fn macro_effects_and_definition_file_capture_are_never_cached() {
     let mut c = Context::new();
     c.eval_string("(def n 0) (defmacro tick [] (def n (inc n)) n)")
@@ -319,4 +363,208 @@ fn retention_is_bounded_and_dead_inputs_and_failures_release_scratch_roots() {
     assert_eq!(after.heap_values, before.heap_values);
     assert_eq!(after.sources, before.sources);
     assert_eq!(after.executable_units, before.executable_units);
+}
+
+#[test]
+fn protocol_forms_remain_effectful_and_fork_mutations_refresh_ordinary_calls() {
+    let mut c = Context::new();
+    let declaration = form(&c, "(defprotocol P (f [x]))");
+    let first = c.analyze_form(&declaration).unwrap();
+    let second = c.analyze_form(&declaration).unwrap();
+    assert_ne!(first.unit().id(), second.unit().id());
+    c.eval_analyzed(&first).unwrap();
+    let method = c.eval_string("f").unwrap();
+    let call = form(&c, "(f nil)");
+    let code = c.analyze_form(&call).unwrap();
+    assert_eq!(code.unit().id(), c.analyze_form(&call).unwrap().unit().id());
+    let mut fork = c.fork().unwrap();
+    fork.eval_string("(def f (fn [_] 42))").unwrap();
+    assert_eq!(
+        c.eval_analyzed(&code).unwrap().inspect(),
+        ValueView::Integer(42)
+    );
+    assert_ne!(code.unit().id(), c.analyze_form(&call).unwrap().unit().id());
+    c.eval_analyzed(&second).unwrap();
+    assert!(method.same_identity(&c.eval_string("f").unwrap()));
+    assert!(matches!(
+        c.eval_analyzed(&code).unwrap_err().kind,
+        EvalErrorKind::MissingProtocolImplementation { .. }
+    ));
+}
+
+#[test]
+fn reify_bodies_compile_once_and_each_evaluation_captures_a_fresh_identity() {
+    let mut c = Context::new();
+    c.eval_string("(defprotocol P (p [x])) (def n 1)").unwrap();
+    let f = form(&c, "(let [captured n] (reify P (p [_] captured)))");
+    let code = c.analyze_form(&f).unwrap();
+    // Macro executions remain effectful; explicit AnalyzedForm reuse executes
+    // the same code with fresh captures and object identity every time.
+    assert_ne!(code.unit().id(), c.analyze_form(&f).unwrap().unit().id());
+    let a = c.eval_analyzed(&code).unwrap();
+    let mut fork = c.fork().unwrap();
+    fork.eval_string("(def n 2)").unwrap();
+    let b = c.eval_analyzed(&code).unwrap();
+    let method = c.eval_string("p").unwrap();
+    assert!(!a.value_eq(&b));
+    for (object, expected) in [(a, 1), (b, 2)] {
+        assert_eq!(
+            c.invoke(&method, &[object]).unwrap().inspect(),
+            ValueView::Integer(expected)
+        );
+    }
+}
+
+#[test]
+fn record_definitions_are_effectful_and_saved_constructors_never_pin_obsolete_types() {
+    let mut c = Context::new();
+    let declaration = form(&c, "(defrecord R [x])");
+    let code = c.analyze_form(&declaration).unwrap();
+    assert_ne!(
+        code.unit().id(),
+        c.analyze_form(&declaration).unwrap().unit().id()
+    );
+    c.eval_analyzed(&code).unwrap();
+    let old_type = c.eval_string("R").unwrap().heap_id().unwrap();
+    let saved = c.eval_string("->R").unwrap();
+    let call = form(&c, "(->R 1)");
+    let call_code = c.analyze_form(&call).unwrap();
+    let old = c.eval_analyzed(&call_code).unwrap();
+    let mut fork = c.fork().unwrap();
+    fork.eval_string("(defrecord R [x])").unwrap();
+    let new = c.eval_analyzed(&call_code).unwrap();
+    assert!(!old.value_eq(&new));
+    assert!(new.value_eq(&c.invoke(&saved, &[c.integer(1)]).unwrap()));
+    assert_ne!(
+        call_code.unit().id(),
+        c.analyze_form(&call).unwrap().unit().id()
+    );
+    drop(old);
+    c.collect_garbage();
+    assert!(matches!(c.heap_value(old_type), Err(HandleError::StaleId)));
+    let before = c.eval_string("R").unwrap();
+    c.eval_analyzed(&code).unwrap();
+    assert!(!before.same_identity(&c.eval_string("R").unwrap()));
+}
+
+#[test]
+fn retained_record_method_forms_follow_live_vars_and_preserve_old_generation_tables() {
+    let mut c = Context::new();
+    c.eval_string("(defprotocol P (p [x])) (def n 7)").unwrap();
+    let declaration = form(
+        &c,
+        "(let [captured n] (defrecord R [x] P (p [_] (+ captured x))))",
+    );
+    let code = c.analyze_form(&declaration).unwrap();
+    assert_ne!(
+        code.unit().id(),
+        c.analyze_form(&declaration).unwrap().unit().id()
+    );
+    c.eval_analyzed(&code).unwrap();
+    let old = c.eval_string("(->R 2)").unwrap();
+    let saved_method = c.eval_string("p").unwrap();
+    let call = form(&c, "(p (->R 2))");
+    let call_code = c.analyze_form(&call).unwrap();
+    assert_eq!(
+        c.eval_analyzed(&call_code).unwrap().inspect(),
+        ValueView::Integer(9)
+    );
+    let mut fork = c.fork().unwrap();
+    fork.eval_string("(def n 10)").unwrap();
+    fork.eval_analyzed(&code).unwrap();
+    assert_eq!(
+        c.eval_analyzed(&call_code).unwrap().inspect(),
+        ValueView::Integer(12)
+    );
+    assert_eq!(
+        c.invoke(&saved_method, &[old]).unwrap().inspect(),
+        ValueView::Integer(9)
+    );
+    fork.eval_string("(defprotocol P (p [x]))").unwrap();
+    assert!(saved_method.same_identity(&c.eval_string("p").unwrap()));
+    assert_eq!(
+        c.eval_analyzed(&call_code).unwrap().inspect(),
+        ValueView::Integer(12)
+    );
+    fork.eval_string("(def p (fn [_] 99))").unwrap();
+    assert_eq!(
+        c.eval_analyzed(&call_code).unwrap().inspect(),
+        ValueView::Integer(99)
+    );
+    let mut separate = Context::new();
+    separate
+        .eval_string("(defprotocol P (p [x])) (defrecord R [x] P (p [_] 1))")
+        .unwrap();
+    assert_eq!(
+        separate.eval_string("(p (->R 2))").unwrap().inspect(),
+        ValueView::Integer(1)
+    );
+    assert!(separate.eval_analyzed(&code).is_err());
+}
+#[test]
+fn external_extension_invalidates_shared_reuse_and_retained_calls_read_current_methods() {
+    let mut c = Context::new();
+    c.eval_string(
+        "(defprotocol P (p [x])) (defrecord R [n] P (p [_] n)) (def r (->R 2)) (def n 10)",
+    )
+    .unwrap();
+    let call = form(&c, "(p r)");
+    let original = c.analyze_form(&call).unwrap();
+    assert_eq!(
+        c.analyze_form(&call).unwrap().unit().id(),
+        original.unit().id()
+    );
+    let extension = form(
+        &c,
+        "(let [captured n] (extend-type R P (p [x] (+ captured (:n x)))))",
+    );
+    let update = c.analyze_form(&extension).unwrap();
+    assert_ne!(
+        c.analyze_form(&extension).unwrap().unit().id(),
+        update.unit().id()
+    );
+    let mut fork = c.fork().unwrap();
+    fork.eval_analyzed(&update).unwrap();
+    assert_eq!(
+        c.eval_analyzed(&original).unwrap().inspect(),
+        ValueView::Integer(12)
+    );
+    assert_eq!(
+        fork.eval_analyzed(&original).unwrap().inspect(),
+        ValueView::Integer(12)
+    );
+    assert_ne!(
+        c.analyze_form(&call).unwrap().unit().id(),
+        original.unit().id()
+    );
+    c.eval_string("(def n 20)").unwrap();
+    c.eval_analyzed(&update).unwrap();
+    assert_eq!(
+        fork.eval_form(&call).unwrap().inspect(),
+        ValueView::Integer(22)
+    );
+    // Retained extension resolves the live target Var after redefinition.
+    c.eval_string("(def old r) (defrecord R [n]) (def r (->R 2))")
+        .unwrap();
+    c.eval_analyzed(&update).unwrap();
+    assert_eq!(
+        c.eval_string("[(p old) (p r)]")
+            .unwrap()
+            .elements()
+            .unwrap()
+            .iter()
+            .map(RootedValue::inspect)
+            .collect::<Vec<_>>(),
+        vec![ValueView::Integer(22), ValueView::Integer(22)]
+    );
+    assert!(c.analysis_reuse_stats().entries <= 32);
+    let mut separate = Context::new();
+    separate
+        .eval_string("(defprotocol P (p [x])) (defrecord R [n]) (extend-type R P (p [_] 99))")
+        .unwrap();
+    assert_eq!(
+        separate.eval_string("(p (->R 2))").unwrap().inspect(),
+        ValueView::Integer(99)
+    );
+    assert!(separate.eval_analyzed(&update).is_err());
 }

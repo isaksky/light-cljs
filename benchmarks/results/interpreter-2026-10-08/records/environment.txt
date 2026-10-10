@@ -1,0 +1,24 @@
+Measured 2026-10-09T05:39:07.968093+00:00
+macOS-15.7.3-arm64-arm-64bit-Mach-O
+$ rustc -vV
+rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: aarch64-apple-darwin
+release: 1.99.0
+LLVM version: 23.1.2
+$ cargo --version
+cargo 1.99.0 (5f94df478 2026-08-27) (Homebrew)
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		15.7.3
+BuildVersion:		24G419
+$ sysctl -n machdep.cpu.brand_string
+Apple M3 Ultra (Virtual)
+Commands:
+cargo bench --locked --bench interpreter_records
+cargo bench --locked --bench interpreter_records --features count-allocations
+cargo bench --locked --bench interpreter -- --samples 9 --iterations 32
+cargo bench --locked --bench interpreter_gc --features count-allocations
+Seven measured samples after one equal-sized warmup; 2000 operations each. Setup/analysis/GC outside timed batches. Full projected values and nominal kind validated before timing; scalar/field checksum per operation and stable live/slot counts after every batch. No comparison with another executable or JVM, and no speedup requirement.

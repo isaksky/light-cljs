@@ -1,0 +1,1 @@
+(ns boundary.conditional) (defn run [observe] (= 1 #?(:cljs 1 :clj 2))) run

@@ -1,0 +1,9 @@
+command: ['cargo', 'bench', '--locked', '--bench', 'interpreter_gc']
+exit: 0
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `bench` profile [optimized] target(s) in 7.28s
+     Running benches/interpreter_gc.rs (target/release/deps/interpreter_gc-c36dfad227de461f)
+samples=7 evaluations/sample=256 fresh_context_ns=273208 fresh_process_ns=2391875 instrumented=false
+collect_every=1 eval_ns/op=122799 gc_ns/collection=52799 gc_ns/op=52799 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 317, names: 320, sources: 1, executable_units: 1, namespaces: 6, vars: 314, roots: 6, slots: 1432 }
+collect_every=16 eval_ns/op=120661 gc_ns/collection=376768 gc_ns/op=23548 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 317, names: 320, sources: 1, executable_units: 1, namespaces: 6, vars: 314, roots: 6, slots: 2767 }
+collect_every=256 eval_ns/op=120980 gc_ns/collection=7619875 gc_ns/op=29765 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 317, names: 320, sources: 1, executable_units: 1, namespaces: 6, vars: 314, roots: 6, slots: 24127 }

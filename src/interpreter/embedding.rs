@@ -440,6 +440,7 @@ impl Context {
             current,
             core,
             current_value: self.owner.value(Value::Namespace(current)),
+            current_var_name: registry.current_var_name.clone(),
         }));
         Ok(Self {
             owner: self.owner.clone(),

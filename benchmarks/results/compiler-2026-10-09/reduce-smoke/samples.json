@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-09",
+  "node": "v24.18.0",
+  "cpu": "Apple M3 Ultra (Virtual)",
+  "platform": "darwin",
+  "arch": "arm64",
+  "release": "24.6.0",
+  "runtime_bytes": 24090,
+  "runtime_sha256": "8b242d23d4d891708962f1472f66a7264ea80aa00d44ad7a13929f2cccbc0132",
+  "method": "Resident runtime; prebuilt immutable vector, scalar sum with explicit zero init. Three warmups and seven measured samples per size/callback; nanoseconds/reduction. Parsing, source generation, runtime startup and collection construction are excluded. No per-step closure creation.",
+  "rows": [
+    {
+      "size": 1024,
+      "core_add": {
+        "iterations": 1953,
+        "samples_ns": [
+          15284.05017921147,
+          14604.540194572444,
+          14821.044546851004,
+          12239.865847414236,
+          12392.622631848417,
+          12534.839221710197,
+          11196.42857142857
+        ],
+        "median_ns": 12534.839221710197
+      },
+      "user_callback": {
+        "iterations": 1953,
+        "samples_ns": [
+          14331.02918586789,
+          14744.900665642594,
+          14223.502304147469,
+          12583.26932923705,
+          12512.52329749107,
+          11512.438300051199,
+          12372.951868919643
+        ],
+        "median_ns": 12583.26932923705
+      }
+    },
+    {
+      "size": 16384,
+      "core_add": {
+        "iterations": 122,
+        "samples_ns": [
+          219447.06557377084,
+          219816.25409836078,
+          220879.4344262291,
+          217743.85245901643,
+          218615.09016393492,
+          221133.8770491805,
+          221051.22950819682
+        ],
+        "median_ns": 219816.25409836078
+      },
+      "user_callback": {
+        "iterations": 122,
+        "samples_ns": [
+          220191.5983606559,
+          225456.62295081987,
+          220154.36885245904,
+          221300.8852459023,
+          226648.90983606546,
+          225785.8606557379,
+          221628.40983606494
+        ],
+        "median_ns": 221628.40983606494
+      }
+    },
+    {
+      "size": 150000,
+      "core_add": {
+        "iterations": 13,
+        "samples_ns": [
+          2243205.0769230747,
+          2248977.5384615487,
+          2246990.3846153836,
+          2213641,
+          2220512.846153847,
+          2285509.615384626,
+          2340608.999999998
+        ],
+        "median_ns": 2246990.3846153836
+      },
+      "user_callback": {
+        "iterations": 13,
+        "samples_ns": [
+          2381557.692307699,
+          2211086.538461534,
+          2208179.461538468,
+          2256701.9230769244,
+          2242419.923076918,
+          2203304.53846154,
+          2239198.7692307723
+        ],
+        "median_ns": 2239198.7692307723
+      }
+    }
+  ],
+  "sink": 3272910458400
+}

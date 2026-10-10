@@ -10,6 +10,7 @@ mod protocol;
 fn wire(value: &RootedValue) -> protocol::Value {
     use protocol::Value as V;
     match value.inspect() {
+        ValueView::CompilerLiteral(_) => panic!("compiler-only reader value in native fixture"),
         ValueView::LazySeq | ValueView::Delay => {
             panic!("deferred values must be projected by the evaluated fixture")
         }
@@ -23,6 +24,10 @@ fn wire(value: &RootedValue) -> protocol::Value {
         | ValueView::Input
         | ValueView::Output
         | ValueView::Volatile
+        | ValueView::Protocol(_)
+        | ValueView::Reify
+        | ValueView::Record(_)
+        | ValueView::RecordType(_)
         | ValueView::Reduced => {
             panic!("callables are outside fixture transport")
         }
@@ -412,4 +417,23 @@ fn unmapped_recursive_var_cycles_are_reclaimed_and_raw_ids_become_stale() {
         );
         previous = Some(id);
     }
+}
+#[test]
+fn external_record_selectors_and_protocols_resolve_aliases_and_collisions() {
+    let mut c = Context::new();
+    let result = c.eval_string("(ns a) (defprotocol P (p [x])) (defrecord R [n]) (ns b) (defprotocol P (p [x])) (defrecord R [n]) (ns user (:require [a :as aa] [b :as bb])) (extend-type aa/R aa/P (p [x] (:n x)) bb/P (p [x] (* 2 (:n x)))) (extend-protocol aa/P bb/R (p [x] (* 3 (:n x)))) [(aa/p (aa/->R 2)) (bb/p (aa/->R 2)) (aa/p (bb/->R 2)) (satisfies? bb/P (bb/->R 2))]").unwrap();
+    assert_eq!(
+        result
+            .elements()
+            .unwrap()
+            .iter()
+            .map(RootedValue::inspect)
+            .collect::<Vec<_>>(),
+        vec![
+            ValueView::Integer(2),
+            ValueView::Integer(4),
+            ValueView::Integer(6),
+            ValueView::Boolean(false)
+        ]
+    );
 }

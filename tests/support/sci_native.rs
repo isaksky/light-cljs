@@ -210,7 +210,7 @@ fn failure(error: &EvalError) -> Result<protocol::Outcome, String> {
     let category = match &error.kind {
         E::Read(_) => C::Reader,
         E::UnresolvedSymbol(_) => C::UnresolvedSymbol,
-        E::InvalidForm(_) => C::InvalidForm,
+        E::InvalidForm(_) | E::InvalidProtocolImplementation { .. } => C::InvalidForm,
         E::Arity { .. }
         | E::Native {
             error: NativeError::Arity { .. },
@@ -231,7 +231,8 @@ fn failure(error: &EvalError) -> Result<protocol::Outcome, String> {
             ..
         } => C::Arithmetic,
         E::DuplicateMapKey | E::DuplicateSetMember => C::DuplicateKey,
-        E::NotCallable
+        E::MissingProtocolImplementation { .. }
+        | E::NotCallable
         | E::NoMatchingClause
         | E::Collection(_)
         | E::Native {

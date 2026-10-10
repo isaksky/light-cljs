@@ -49,6 +49,7 @@ pub enum Origin {
 pub struct FormNode {
     pub kind: FormKind,
     pub metadata: Option<FormId>,
+    pub(crate) compiler_payload: Option<FormId>,
     pub origin: Origin,
 }
 
@@ -159,6 +160,7 @@ pub enum LowerErrorKind {
     UnsupportedEdnValue,
     NumericOverflow,
     InvalidMetadataTarget,
+    InvalidCompilerLiteral(&'static str),
     InvalidMetadata,
     DuplicateMapKey,
     DuplicateSetMember,
@@ -214,6 +216,7 @@ pub struct ReaderLimits {
 /// Host configuration contains no runtime roots or captured callbacks.
 #[derive(Clone)]
 pub(super) struct ReaderConfig {
+    pub(super) compiler: bool,
     features: HashSet<Name>,
     tags: HashMap<Name, &'static super::NativeDefinition>,
     default: Option<&'static super::NativeDefinition>,
@@ -221,6 +224,7 @@ pub(super) struct ReaderConfig {
 impl Default for ReaderConfig {
     fn default() -> Self {
         Self {
+            compiler: false,
             features: HashSet::from([Name::new(None, "clj")]),
             tags: HashMap::new(),
             default: None,
@@ -388,6 +392,7 @@ impl Context {
                     pending.extend(children.iter().copied());
                 }
                 pending.extend(original.node().metadata);
+                pending.extend(original.node().compiler_payload);
                 if let Some(id) = original.data().heap_id() {
                     lower.supplied.insert(id, original);
                 }
@@ -416,7 +421,7 @@ impl Context {
         }
         result
     }
-    pub(super) fn macro_form(
+    pub(crate) fn macro_form(
         &self,
         value: &RootedValue,
         call: &Form,
@@ -519,7 +524,7 @@ impl Context {
         tree: &SyntaxTree,
         root: NodeId,
     ) -> Result<Form, ReadError> {
-        self.lower_with_aliases(source, tree, root, None)
+        self.lower_with_aliases(source, tree, root, None, &[], &[])
     }
     /// Compiler-only reader view: aliases are data, never interpreter namespace
     /// mutations. Runtime .cljs inputs do not allow reader conditionals.
@@ -529,8 +534,10 @@ impl Context {
         tree: &SyntaxTree,
         root: NodeId,
         aliases: &[(String, String)],
+        discarded: &[NodeId],
+        globals: &[(String, String, String)],
     ) -> Result<Form, ReadError> {
-        self.lower_with_aliases(source, tree, root, Some(aliases))
+        self.lower_with_aliases(source, tree, root, Some(aliases), discarded, globals)
     }
     fn lower_with_aliases(
         &self,
@@ -538,9 +545,28 @@ impl Context {
         tree: &SyntaxTree,
         root: NodeId,
         aliases: Option<&[(String, String)]>,
+        discarded: &[NodeId],
+        globals: &[(String, String, String)],
     ) -> Result<Form, ReadError> {
         let _scope = self.accounting.enter();
-        let mut lower = Lowerer::new(self, source, &tree.nodes, &[], ReaderLimits::default());
+        let span = &tree.nodes[root.0].span;
+        let discarded = discarded
+            .iter()
+            .copied()
+            .filter(|id| *id != root && span.contains(&tree.nodes[id.0].span.start))
+            .collect::<Vec<_>>();
+        let mut lower = Lowerer::new(
+            self,
+            source,
+            &tree.nodes,
+            &discarded,
+            ReaderLimits::default(),
+        );
+        lower.compiler_sets = aliases.is_some();
+        lower.compiler_globals = globals
+            .iter()
+            .map(|(local, ns, name)| (Name::new(None, local), Name::new(Some(ns), name)))
+            .collect();
         if let Some(aliases) = aliases {
             lower.aliases = Some(
                 aliases
@@ -810,6 +836,7 @@ impl Context {
 }
 
 struct Anonymous {
+    unique: Option<u64>,
     names: HashMap<i64, RootedValue>,
     rest: Option<RootedValue>,
     max: usize,
@@ -850,6 +877,8 @@ struct Lowerer<'a, 'src> {
     parser_discards: usize,
     features: HashSet<Name>,
     aliases: Option<HashMap<Name, Name>>,
+    compiler_sets: bool,
+    compiler_globals: HashMap<Name, Name>,
     edn: Option<Rc<EdnOptions>>,
     splices: HashSet<FormId>,
     discarded: Vec<NodeId>,
@@ -882,6 +911,8 @@ impl<'a, 'src> Lowerer<'a, 'src> {
             parser_discards: 0,
             features: context.readers.borrow().features.clone(),
             aliases: None,
+            compiler_sets: false,
+            compiler_globals: HashMap::new(),
             edn: None,
             splices: HashSet::new(),
             discarded,
@@ -906,13 +937,23 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         }
     }
     fn syntax_quote_name(&self, name: &Name) -> Name {
+        if let Some(resolved) = self.compiler_globals.get(name) {
+            return resolved.clone();
+        }
         if let (Some(aliases), Some(namespace)) = (&self.aliases, name.namespace()) {
             return aliases
                 .get(&Name::from_utf16(None, namespace))
                 .map(|ns| Name::from_utf16(Some(ns.name()), name.name()))
                 .unwrap_or_else(|| name.clone());
         }
-        self.context.syntax_quote_name(name)
+        let resolved = self.context.syntax_quote_name(name);
+        if self.compiler_sets
+            && resolved.namespace() == Some(Name::new(None, "clojure.core").name())
+        {
+            Name::from_utf16(Some(Name::new(None, "cljs.core").name()), resolved.name())
+        } else {
+            resolved
+        }
     }
     fn error(&self, kind: LowerErrorKind, bytes: Range<usize>) -> ReadError {
         ReadError {
@@ -1234,6 +1275,7 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         self.nodes.push(FormNode {
             kind,
             metadata,
+            compiler_payload: None,
             origin,
         });
         self.values.push(value);
@@ -1259,7 +1301,10 @@ impl<'a, 'src> Lowerer<'a, 'src> {
             .iter()
             .map(|id| self.values[id.0].clone())
             .collect();
-        if matches!(kind, CollectionKind::Map | CollectionKind::Set) {
+        // Compiler analysis validates literal/quoted duplicates itself and must
+        // retain equal executable operands in the source-ordered Form children.
+        // Ordinary native reading keeps its strict data-duplicate check.
+        if kind == CollectionKind::Map || (kind == CollectionKind::Set && !self.compiler_sets) {
             if kind == CollectionKind::Map && !children.len().is_multiple_of(2) {
                 return Err(self.error(LowerErrorKind::InvalidSyntax, span));
             }
@@ -1324,11 +1369,15 @@ impl<'a, 'src> Lowerer<'a, 'src> {
             self.next_discard += 1;
             // Discards are read/validated, but Edamame does not include discarded
             // argument placeholders in the surrounding shorthand's parameter set.
-            self.suppress_arguments += 1;
+            if !self.compiler_sets {
+                self.suppress_arguments += 1;
+            }
             let mark = self.nodes.len();
             input.pending.push_front(InputForm::Syntax(id));
             let result = self.required(input, depth, self.syntax.nodes()[id.0].span.clone());
-            self.suppress_arguments -= 1;
+            if !self.compiler_sets {
+                self.suppress_arguments -= 1;
+            }
             result?;
             self.nodes.truncate(mark);
             self.values.truncate(mark);
@@ -1427,26 +1476,23 @@ impl<'a, 'src> Lowerer<'a, 'src> {
             .metadata()
             .map(|m| self.data_form(&m, span.clone(), depth + 1))
             .transpose()?;
-        Ok(self.add(value.clone(), kind, metadata, span, origin))
+        let payload = if let Some(original) = supplied
+            .as_ref()
+            .and_then(|f| f.node().compiler_payload.and_then(|id| f.at(id)))
+        {
+            Some(self.data_form(&original.data(), original.span().bytes(), depth + 1)?)
+        } else {
+            None
+        };
+        let id = self.add(value.clone(), kind, metadata, span, origin);
+        self.nodes[id.0].compiler_payload = payload;
+        Ok(id)
     }
-    fn lower(&mut self, id: NodeId, depth: usize, input: &mut Input) -> Result<FormId, ReadError> {
-        let node = self
-            .syntax
-            .nodes()
-            .get(id.0)
-            .ok_or_else(|| self.error(LowerErrorKind::InvalidSyntax, 0..0))?
-            .clone();
+    // Scalar validation allocates temporary reader values; keep them off the
+    // recursive collection frame so the established 128-level bound stays usable.
+    fn source_scalar(&mut self, node: &Node) -> Result<Option<RootedValue>, ReadError> {
         let span = node.span.clone();
-        self.resource_check(span.clone())?;
-        if depth >= 128 || self.source.text().get(span.clone()).is_none() {
-            return Err(self.error(LowerErrorKind::InvalidSyntax, span));
-        }
-        self.discard_before(span.start, depth)?;
         let text = &self.source.text()[span.clone()];
-        let origin = Origin::Source;
-        if self.edn.is_some() {
-            self.edn_node(&node)?;
-        }
         let scalar = match &node.kind {
             NodeKind::Nil => Some(self.context.nil()),
             NodeKind::Boolean(v) => Some(self.context.boolean(*v)),
@@ -1492,6 +1538,14 @@ impl<'a, 'src> Lowerer<'a, 'src> {
                 Some("reader.skipped/regex"),
                 &span.start.to_string(),
             ))),
+            NodeKind::Regex if self.context.readers.borrow().compiler => Some(
+                self.context.compiler_literal(
+                    super::CompilerLiteralKind::Regex,
+                    &self
+                        .context
+                        .string(text[2..text.len() - 1].encode_utf16().collect::<Vec<_>>()),
+                ),
+            ),
             NodeKind::Number(kind) => Some(self.number(text, *kind, span.clone())?),
             NodeKind::String(value) => {
                 if let crate::parser::StringValue::Source(bytes) = value
@@ -1509,6 +1563,26 @@ impl<'a, 'src> Lowerer<'a, 'src> {
             })),
             _ => None,
         };
+        Ok(scalar)
+    }
+    fn lower(&mut self, id: NodeId, depth: usize, input: &mut Input) -> Result<FormId, ReadError> {
+        let node = self
+            .syntax
+            .nodes()
+            .get(id.0)
+            .ok_or_else(|| self.error(LowerErrorKind::InvalidSyntax, 0..0))?
+            .clone();
+        let span = node.span.clone();
+        self.resource_check(span.clone())?;
+        if depth >= 128 || self.source.text().get(span.clone()).is_none() {
+            return Err(self.error(LowerErrorKind::InvalidSyntax, span));
+        }
+        self.discard_before(span.start, depth)?;
+        let origin = Origin::Source;
+        if self.edn.is_some() {
+            self.edn_node(&node)?;
+        }
+        let scalar = self.source_scalar(&node)?;
         if let Some(value) = scalar {
             self.discard_before(span.end, depth + 1)?;
             return Ok(self.scalar(value, span, origin));
@@ -1724,6 +1798,110 @@ impl<'a, 'src> Lowerer<'a, 'src> {
                 span,
                 Origin::Source,
             );
+        }
+        if self.edn.is_none()
+            && self.context.readers.borrow().compiler
+            && !self.context.readers.borrow().tags.contains_key(&tag)
+        {
+            use super::CompilerLiteralKind as K;
+            let tag_name = String::from_utf16_lossy(tag.name());
+            if tag.namespace().is_none()
+                && matches!(tag_name.as_str(), "inst" | "uuid" | "js" | "queue")
+            {
+                let value = self.values[data.0].clone();
+                let kind = match (tag_name.as_str(), value.inspect()) {
+                    ("inst", ValueView::String(ref text)) => {
+                        let text = String::from_utf16(text).map_err(|_| {
+                            self.error(
+                                LowerErrorKind::InvalidCompilerLiteral(
+                                    "invalid built-in tagged literal",
+                                ),
+                                span.clone(),
+                            )
+                        })?;
+                        let millis = crate::reader_literals::instant(&text).ok_or_else(|| {
+                            self.error(
+                                LowerErrorKind::InvalidCompilerLiteral("invalid #inst timestamp"),
+                                span.clone(),
+                            )
+                        })?;
+                        return Ok(self.scalar(
+                            self.context
+                                .compiler_literal(K::Instant, &self.context.double(millis as f64)),
+                            span,
+                            Origin::Source,
+                        ));
+                    }
+                    ("uuid", ValueView::String(ref text)) => {
+                        let text = String::from_utf16(text).map_err(|_| {
+                            self.error(
+                                LowerErrorKind::InvalidCompilerLiteral(
+                                    "invalid built-in tagged literal",
+                                ),
+                                span.clone(),
+                            )
+                        })?;
+                        let uuid = crate::reader_literals::uuid(&text).ok_or_else(|| {
+                            self.error(
+                                LowerErrorKind::InvalidCompilerLiteral(
+                                    "invalid #uuid representation",
+                                ),
+                                span.clone(),
+                            )
+                        })?;
+                        return Ok(self.scalar(
+                            self.context.compiler_literal(
+                                K::Uuid,
+                                &self.context.string(uuid.encode_utf16().collect::<Vec<_>>()),
+                            ),
+                            span,
+                            Origin::Source,
+                        ));
+                    }
+                    ("js", ValueView::Vector(_)) => K::JsArray,
+                    ("js", ValueView::Map(_)) => {
+                        for (key, _) in value
+                            .entries()
+                            .map_err(|e| self.collection_error(e, span.clone()))?
+                        {
+                            if !matches!(key.inspect(), ValueView::String(_))
+                                && !matches!(key.inspect(), ValueView::Keyword(ref n) if n.namespace().is_none())
+                            {
+                                return Err(self.error(
+                                    LowerErrorKind::InvalidCompilerLiteral(
+                                        "invalid built-in tagged literal",
+                                    ),
+                                    span,
+                                ));
+                            }
+                        }
+                        K::JsObject
+                    }
+                    ("queue", ValueView::Vector(_)) => {
+                        let empty = self.symbol(
+                            "cljs.core.PersistentQueue.EMPTY",
+                            span.clone(),
+                            Origin::Source,
+                        );
+                        return self.quote_call("cljs.core/into", vec![empty, data], span);
+                    }
+                    _ => {
+                        return Err(self.error(
+                            LowerErrorKind::InvalidCompilerLiteral(
+                                "invalid built-in tagged literal",
+                            ),
+                            span,
+                        ));
+                    }
+                };
+                let id = self.scalar(
+                    self.context.compiler_literal(kind, &value),
+                    span,
+                    Origin::Source,
+                );
+                self.nodes[id.0].compiler_payload = Some(data);
+                return Ok(id);
+            }
         }
         let (handler, fallback) = if let Some(options) = &self.edn {
             match options.readers.get(&tag) {
@@ -2024,6 +2202,54 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         span: Range<usize>,
     ) -> Result<RootedValue, ReadError> {
         let overflow = || self.error(LowerErrorKind::NumericOverflow, span.clone());
+        if (self.compiler_sets || self.context.readers.borrow().compiler)
+            && kind == NumberKind::Ratio
+        {
+            let (n, d) = text.split_once('/').ok_or_else(overflow)?;
+            if let Some(exact) = crate::reader_literals::integral_ratio_text(n, d) {
+                return Ok(if let Ok(n) = exact.parse::<i64>() {
+                    self.context.integer(n)
+                } else {
+                    self.context.compiler_literal(
+                        super::CompilerLiteralKind::BigInteger,
+                        &self
+                            .context
+                            .string(exact.encode_utf16().collect::<Vec<_>>()),
+                    )
+                });
+            }
+        }
+        if (self.compiler_sets || self.context.readers.borrow().compiler)
+            && kind != NumberKind::Ratio
+        {
+            if matches!(kind, NumberKind::Integer | NumberKind::BigInteger)
+                && let Some(n) = integer(if kind == NumberKind::BigInteger {
+                    text.strip_suffix('N').unwrap()
+                } else {
+                    text
+                })
+                .and_then(|n| i64::try_from(n).ok())
+            {
+                return Ok(self.context.integer(n));
+            }
+            if matches!(kind, NumberKind::Integer | NumberKind::BigInteger) {
+                let text = if kind == NumberKind::BigInteger {
+                    text.strip_suffix('N').unwrap()
+                } else {
+                    text
+                };
+                let exact = crate::reader_literals::integer_key(text);
+                return Ok(self.context.compiler_literal(
+                    super::CompilerLiteralKind::BigInteger,
+                    &self
+                        .context
+                        .string(exact.encode_utf16().collect::<Vec<_>>()),
+                ));
+            }
+            return crate::analyzer::number(text, kind)
+                .map(|v| self.context.double(v))
+                .ok_or_else(overflow);
+        }
         match kind {
             NumberKind::BigInteger => Err(self.error(
                 LowerErrorKind::Unsupported(UnsupportedSyntax::BigInteger),
@@ -2158,7 +2384,14 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         if self.anonymous.is_some() {
             return Err(self.error(LowerErrorKind::InvalidSyntax, span));
         }
+        static NEXT_ANONYMOUS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.anonymous = Some(Anonymous {
+            unique: self
+                .context
+                .readers
+                .borrow()
+                .compiler
+                .then(|| NEXT_ANONYMOUS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
             names: HashMap::new(),
             rest: None,
             max: 0,
@@ -2176,11 +2409,14 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         let args = self.anonymous.take().unwrap();
         let mut parameters = Vec::new();
         for index in 1..=args.max {
-            let value = args
-                .names
-                .get(&(index as i64))
-                .cloned()
-                .unwrap_or_else(|| self.context.symbol(Name::new(None, &format!("%{index}#"))));
+            let value = args.names.get(&(index as i64)).cloned().unwrap_or_else(|| {
+                self.context.symbol(Name::new(
+                    None,
+                    &args
+                        .unique
+                        .map_or_else(|| format!("%{index}#"), |id| format!("p{index}__{id}#")),
+                ))
+            });
             parameters.push(self.scalar(value, span.clone(), Origin::AnonymousArgument));
         }
         if let Some(rest) = args.rest {
@@ -2219,12 +2455,14 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         }
         // The pinned SCI reader treats slash spellings as ordinary symbols,
         // including %1/1; its parameter registration uses decimal integer text.
-        if index.is_some_and(|id| {
-            matches!(
-                self.syntax.nodes().get(id.0).map(|n| &n.kind),
-                Some(NodeKind::Number(NumberKind::Ratio))
-            )
-        }) {
+        if !self.compiler_sets
+            && index.is_some_and(|id| {
+                matches!(
+                    self.syntax.nodes().get(id.0).map(|n| &n.kind),
+                    Some(NodeKind::Number(NumberKind::Ratio))
+                )
+            })
+        {
             return Ok(self.symbol(text, span, Origin::Source));
         }
         let n = if rest {
@@ -2233,7 +2471,18 @@ impl<'a, 'src> Lowerer<'a, 'src> {
             1
         } else {
             text.strip_prefix('%')
-                .and_then(|s| s.parse::<i32>().ok().map(i64::from))
+                .and_then(|s| {
+                    if self.compiler_sets {
+                        integer(s).and_then(|n| i64::try_from(n).ok()).or_else(|| {
+                            let (a, b) = s.split_once('/')?;
+                            let a: i64 = a.parse().ok()?;
+                            let b: i64 = b.parse().ok()?;
+                            (b != 0 && a % b == 0).then(|| a / b)
+                        })
+                    } else {
+                        s.parse::<i32>().ok().map(i64::from)
+                    }
+                })
                 .ok_or_else(|| self.error(LowerErrorKind::InvalidAnonymousArgument, span.clone()))?
         };
         if n > 0 && n as u64 > self.limits.max_anonymous_parameters as u64 {
@@ -2245,13 +2494,27 @@ impl<'a, 'src> Lowerer<'a, 'src> {
         let args = self.anonymous.as_mut().unwrap();
         let value = if rest {
             args.rest
-                .get_or_insert_with(|| self.context.symbol(Name::new(None, "%&#")))
+                .get_or_insert_with(|| {
+                    self.context.symbol(Name::new(
+                        None,
+                        &args
+                            .unique
+                            .map_or_else(|| "%&#".into(), |id| format!("rest__{id}#")),
+                    ))
+                })
                 .clone()
         } else {
             args.max = args.max.max(n.max(0) as usize);
             args.names
                 .entry(n)
-                .or_insert_with(|| self.context.symbol(Name::new(None, &format!("%{n}#"))))
+                .or_insert_with(|| {
+                    self.context.symbol(Name::new(
+                        None,
+                        &args
+                            .unique
+                            .map_or_else(|| format!("%{n}#"), |id| format!("p{n}__{id}#")),
+                    ))
+                })
                 .clone()
         };
         Ok(self.scalar(value, span, Origin::AnonymousArgument))

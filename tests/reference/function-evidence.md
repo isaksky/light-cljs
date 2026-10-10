@@ -1,11 +1,21 @@
 # Fixed-arity function and invocation evidence
 
+The [2026-10-09 function arity audit](compiler-functions.md) supersedes this
+historical audit's multiple/variadic and repeated-parameter exclusions. Its
+single-fixed-method invocation observations remain regression requirements.
+
 Audited locally on **2026-10-08** against
 [clojure/clojurescript](https://github.com/clojure/clojurescript) at
 **a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**. All paths and anchors below refer
 to that clean checkout. This bounded audit maps the inspected assertions and
 fixture shapes; it does not claim to run or port the full upstream suites.
 [fixture-origins.tsv](fixture-origins.tsv) records exact sources and reductions.
+
+The later [compiler-language inventory](compiler-language/evidence.md) treats
+this audit's valid-source multi-arity, variadic, apply, recur, letfn and protocol
+exclusions as **missing compiler capabilities**. This document preserves the
+earlier fixed-arity milestone and its original expectations; its negative
+signature diagnostics are not successful implementations of those features.
 
 This work adds **36** executable rows: **20** in `execution.tsv` (**7 adapted**,
 **13 independent**) and **16 independent** rows in `execution-outcomes.tsv`.
@@ -32,7 +42,7 @@ Execution IDs refer to `tests/fixtures/`; analyzer names refer to
 | `src/test/cljs/cljs/invoke_test.cljs`, complete file, especially its three `hof-*` functions (20–31) | These are compiler fixtures, not runtime assertions. The three adaptations execute their callee/argument shapes with effects. Simple defn becomes fn*/let*. One-argument `complement` is reduced to a captured predicate call plus `if` boolean negation, preserving the result and predicate effects for the supplied arguments. Creation is additionally observed to check once-only evaluation. General complement/apply behavior and static dispatch are not claimed. Remaining forms have the exclusions in the compiler row above; `delay` is also unsupported. |
 | `src/test/cljs/cljs/core_test.cljs`, `original-closure-stmt`/`test-401-411` (557–566), `test-cljs-1536` and preceding lets (1262–1274) | Already faithfully reduced in the lexical audit. New `fn-returned-independent-self-closures` checks two escaped environments by repeated invocation; `fn-self-parameter-captured` checks a parameter shadowing the self-name inside another closure. These additions are independent regressions. |
 | Same file, `test-383` (537–544), `test-477` (691–693), `foo-1284`/`test-cljs-1284` (1110–1124), `test-cljs-2741` (1603–1609) | Multi-arity/variadic selection, rest-sequence construction, collection invocation, and `Invalid arity` dispatcher errors are excluded. In particular, the six assertions in `test-cljs-2741` do not specify the behavior of a single fixed method. They must not be converted into wrong-argument-count errors for this subset. |
-| Same file, `test-513` (546–550), `test-letfn-shadowing` (568–572), `test-481` (701–707), `test-541` (727–734) | Excluded: vector lookup failure/try; mutually visible letfn bindings; repeated doseq captures using atoms; letfn/core-symbol/numeric-helper evaluation. Independent capture/effect probes do not claim to implement those facilities. |
+| Same file, `test-513` (546–550), `test-letfn-shadowing` (568–572), `test-481` (701–707), `test-541` (727–734) | The letfn-shadowing assertion is now covered intact by [the letfn audit](compiler-letfn.md). The other assertions retain their separate vector lookup/try, doseq/atom and printing/Symbol-helper requirements; independent capture/effect probes do not claim them. |
 | Same file, `foo580`/`test-580` (767–771) | Map/keyword invocation is inseparable from the original indirect self-reference assertion, so the test itself is excluded. New independent `global-declared-call-from-closure` executes declaration, intervening caller creation, assignment, and a later call. Existing `global-self-reference` and new `global-self-call-after-redefinition` exercise supported global self-reference. |
 | Same file, `foo-var`/`foo-set`/`test-cljs-982-var-deref` (1012–1023), `print-foo-1187`/`test-cljs-1187` (1054–1071) | Excluded: captured Var dereferencing after set!, and Var-valued case/apply. Replacing a Var with a captured function value would change redefinition behavior. Independent `global-function-snapshot-and-live-call` demonstrates the supported distinction: saved functions keep the old value, global reads see redefinition. |
 | Same file, `incme`/`test-cljs-1225` (1091–1096), `test-1210` (1141–1146), `test-cljs-2585` (1595–1598) | Variadic local/core inc; destructuring/or with arguments; or/int?/string? plus host deletion: excluded as assertions. The last callee-expression shape has analogous independent `function-callee` coverage, not a macro/predicate port. |

@@ -43,6 +43,10 @@
                   (when-not (and (<= Long/MIN_VALUE n Long/MAX_VALUE) (<= 1 d Long/MAX_VALUE))
                     (throw (ex-info "Ratio components exceed v1 transport bounds" {})))
                   (tagged "ratio" [(str n) (str d)]))
+     ;; Nominal objects must be observed by methods/scalars (records by an
+     ;; explicit map projection), never flattened by the generic map branch.
+     (or (record? v) (instance? sci.impl.types.ICustomType v))
+     (throw (ex-info "Unsupported reference transport object; observe methods/scalars" {:class (str (class v))}))
      (vector? v) (tagged "vector" (encode-items v depth))
      (map? v) (do
                 (when (> (count v) limit) (throw (ex-info "Reference map limit" {})))

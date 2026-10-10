@@ -1,0 +1,2271 @@
+{
+  "schema_version": 1,
+  "upstream_revision": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+  "release": "1.12.134",
+  "scope": "assertions in the 11 inventoried source files; not the upstream suite",
+  "selection": {
+    "features": [],
+    "ids": [
+      "primitives_test.cljs::test-regexps::assertion-001",
+      "primitives_test.cljs::test-regexps::assertion-003",
+      "primitives_test.cljs::test-regexps::assertion-004",
+      "primitives_test.cljs::test-regexps::assertion-005",
+      "primitives_test.cljs::test-regexps::assertion-006",
+      "primitives_test.cljs::test-regexps::assertion-007",
+      "primitives_test.cljs::test-regexps::assertion-008",
+      "primitives_test.cljs::test-regexps::assertion-009",
+      "primitives_test.cljs::test-regexps::assertion-010",
+      "primitives_test.cljs::test-regexps::assertion-011",
+      "primitives_test.cljs::test-regexps::assertion-012"
+    ]
+  },
+  "counts": {
+    "covered": 11,
+    "missing": 0,
+    "version-difference": 0,
+    "unrelated": 0
+  },
+  "features": {
+    "core-helpers": {
+      "covered": 11
+    }
+  },
+  "boundary_counts": {
+    "negative-test": 60,
+    "missing-capability": 46,
+    "accepted-boundary": 21,
+    "unrelated-build-loading": 3
+  },
+  "boundaries": [
+    {
+      "id": "if-empty",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(if)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "if requires",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "if-one",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(if true)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "if requires",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "if-extra",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(if missing 1 2 3)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "if requires",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-missing",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let*)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "binding vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-non-vector",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* (missing 1) missing)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "binding vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-odd",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* [missing] missing)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "even number",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-binding-qualified",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* [a/b missing] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-binding-dot",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* [a.b missing] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-binding-amp",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(let* [& 42] &)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "accepted",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-binding-vector",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* [[x] missing] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-binding-number",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* [1 missing] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "let-binding-keyword",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(let* [:x missing] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "let-binding-nil",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(let* [nil missing] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-missing",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn*)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-name-only",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* named)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-empty-method",
+      "feature": "functions-apply",
+      "disposition": "missing-capability",
+      "source": "(fn* ())",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "fn-non-vector",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* 1)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-method-non-vector",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* (x))",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-malformed-arity",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* ([] 1) 2)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "arities must be lists",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-malformed-second-vector",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* ([] 1) (x))",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-binding-qualified",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* [a/b] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-binding-dot",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* [a.b] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "javascript-error",
+      "checkout": "javascript-error"
+    },
+    {
+      "id": "fn-binding-vector",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* [[x]] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-binding-number",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* [1] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-binding-keyword",
+      "feature": "functions-apply",
+      "disposition": "missing-capability",
+      "source": "(fn* [:x] 0)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "fn-qualified-name",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* a/b [] 1)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "javascript-error",
+      "checkout": "javascript-error"
+    },
+    {
+      "id": "fn-duplicate",
+      "feature": "functions-apply",
+      "disposition": "missing-capability",
+      "source": "(fn* [x x] x)",
+      "mode": "expr",
+      "local_category": "duplicate-parameter",
+      "diagnostic": "duplicate parameter: x",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "fn-variadic",
+      "feature": "functions-apply",
+      "disposition": "accepted-boundary",
+      "source": "(fn* [x & xs] x)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "fn-multiple",
+      "feature": "functions-apply",
+      "disposition": "missing-capability",
+      "source": "(fn* ([] 1) ([x] x))",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "multiple function arities",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "nil-call",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(nil missing)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "cannot call nil",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "self-init",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(let* [x x] x)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "forward-local",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(let* [x later later 2] x)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "self-closure",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(let* [f (fn* [] f)] (f))",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "leaked-local",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(do (let* [x 1] x) x)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "leaked-param",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(do (fn* [p] p) p)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "leaked-fn-name",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(do (fn* named [] named) named)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "forward-global",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(do (def f (fn* [] later)) (def later 1))",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "unknown-global",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "console",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "unqualified-host",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(console.log 1)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "unknown-alias",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "absent/value",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "macro-env",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "&env",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol:",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "reader-vector",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "[]",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-map-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "{:a 1 :a 2}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate map key",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "#{}",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported immutable set literal",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-list",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "()",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-keyword",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": ":key",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-character",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "\\a",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-regex",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "#\"x\"",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-quote",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "'x",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-syntax-quote",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "`x",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-deref",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "@js/x",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-metadata",
+      "feature": "reader-metadata",
+      "disposition": "missing-capability",
+      "source": "^:private x",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "reader-tag",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "#js []",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-conditional",
+      "feature": "reader-metadata",
+      "disposition": "missing-capability",
+      "source": "#?(:cljs 1)",
+      "mode": "cljc",
+      "local_category": "unsupported",
+      "diagnostic": "reader conditionals",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-ns-map",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "#:a{:x 1}",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "reader-reader-fn",
+      "feature": "reader-metadata",
+      "disposition": "accepted-boundary",
+      "source": "#(1)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "macro-let",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(let [x 1] x)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "macro-fn",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(fn [] 1)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "macro-cljs-core-let",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(cljs.core/let [x 1] x)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "macro-when",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(when true 1)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "macro-defn",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(defn f [] 1)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "macro-defmacro",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(defmacro m [] 1)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "macro execution",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-loopstar",
+      "feature": "recursion",
+      "disposition": "missing-capability",
+      "source": "(loop* [x 1] x)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: loop*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-letfnstar",
+      "feature": "recursion",
+      "disposition": "missing-capability",
+      "source": "(letfn* [f (fn* [] 1)] (f))",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: letfn*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-recur",
+      "feature": "recursion",
+      "disposition": "missing-capability",
+      "source": "(fn* [] (recur))",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: recur",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-throw",
+      "feature": "exceptions",
+      "disposition": "missing-capability",
+      "source": "(throw 1)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: throw",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-try",
+      "feature": "exceptions",
+      "disposition": "missing-capability",
+      "source": "(try 1)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: try",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-setbang",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(set! js/x 1)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: set!",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-new",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(new js/Date)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: new",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-dot",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(. \"x\" -length)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: .",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-jsstar",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(js* \"1\")",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: js*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-quote",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(quote x)",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "-",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-var",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(var cljs.core/inc)",
+      "mode": "expr",
+      "local_category": "unresolved",
+      "diagnostic": "unresolved symbol",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-deftypestar",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(deftype* T [] {} nil)",
+      "mode": "statement",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: deftype*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-defrecordstar",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(defrecord* T [] {} nil)",
+      "mode": "statement",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: defrecord*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-nsstar",
+      "feature": "language-boundaries",
+      "disposition": "unrelated-build-loading",
+      "source": "(ns* (:require '[boundary.lib :as b]))",
+      "mode": "statement",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: ns*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-casestar",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(let* [x 1] (case* x [[1]] [2] 3))",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: case*",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-amp",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(&)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: &",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "def-missing",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(def)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "def requires",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "def-extra",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(def x 1 2)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "def requires",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "def-docstring",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(def x \"doc\" 1)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "def requires",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "def-qualified",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(def other/x 1)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "def-same-ns",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(def cljs.user/x 1)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "def-dot",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(def a.b 1)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "def-vector",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(def [x] 1)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "def-amp",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(def & 1)",
+      "mode": "expr",
+      "local_category": "invalid-binding",
+      "diagnostic": "binding must",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "property-missing",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(.-length)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "require",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "property-extra",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(.-length \"x\" missing)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "require",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "method-missing",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(.slice)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "require",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "property-nil",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(.-length nil)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "cannot target literal nil",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "method-nil",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(.slice nil missing)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "cannot target literal nil",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "host-hyphen",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "js/a-b",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "ASCII identifier components",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "host-empty-path",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "js/Math..sqrt",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "ASCII identifier components",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "member-hyphen",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(.-a-b js/x)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "ASCII identifier",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "member-qualified",
+      "feature": "language-boundaries",
+      "disposition": "missing-capability",
+      "source": "(.a/b js/x)",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "ASCII identifier",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "ns-missing",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns)",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "requires a namespace name",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-name",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns :boundary)",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "namespace must use",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-require-empty",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require []))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "cannot be empty",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-require-map",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require {:foo :bar}))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require expects",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-require-lib",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [:foo :as f]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require library",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-as-value",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [boundary.lib :as []]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": ":as alias",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-as-missing",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [boundary.lib :as]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require options",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-as-repeated",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [boundary.lib :as a :as b]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require options",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-unknown-option",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [boundary.lib :plop true]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require options",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-refer",
+      "feature": "namespaces",
+      "disposition": "missing-capability",
+      "source": "(ns boundary (:require [boundary.lib :refer [value]]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require options",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "ns-rename",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [boundary.lib :rename {value v}]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "require options",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-as-conflict",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require [boundary.lib :as x] [other :as x]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "duplicate or conflicting",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-as-duplicate",
+      "feature": "namespaces",
+      "disposition": "missing-capability",
+      "source": "(ns boundary (:require [boundary.lib :as x] [boundary.lib :as x]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "duplicate or conflicting",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "ns-as-js",
+      "feature": "namespaces",
+      "disposition": "missing-capability",
+      "source": "(ns boundary (:require [boundary.lib :as js]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "js is reserved",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "ns-require-repeated",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:require boundary.lib) (:require other))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "only one :require",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-unknown-clause",
+      "feature": "namespaces",
+      "disposition": "negative-test",
+      "source": "(ns boundary (:unless []))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "unsupported namespace clause",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "ns-import",
+      "feature": "namespaces",
+      "disposition": "unrelated-build-loading",
+      "source": "(ns boundary (:import goog.Uri))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "unsupported namespace clause",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "ns-macros",
+      "feature": "namespaces",
+      "disposition": "accepted-boundary",
+      "source": "(ns boundary (:require-macros [cljs.core :as m]))",
+      "mode": "ns",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "ns-refer-clojure",
+      "feature": "namespaces",
+      "disposition": "missing-capability",
+      "source": "(ns boundary (:refer-clojure :exclude [+]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "unsupported namespace clause",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "ns-package",
+      "feature": "namespaces",
+      "disposition": "unrelated-build-loading",
+      "source": "(ns boundary (:require [\"package\" :as p]))",
+      "mode": "ns",
+      "local_category": "namespace",
+      "diagnostic": "JavaScript package imports",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "macro-shadow-exit",
+      "feature": "language-boundaries",
+      "disposition": "accepted-boundary",
+      "source": "(do (let* [when (fn* [x] x)] (when 1)) (when true 1))",
+      "mode": "expr",
+      "local_category": "accepted",
+      "diagnostic": "now supported native macro expansion",
+      "release": "accepted",
+      "checkout": "accepted"
+    },
+    {
+      "id": "special-nested-ns",
+      "feature": "language-boundaries",
+      "disposition": "negative-test",
+      "source": "(fn* [] (ns nested.core))",
+      "mode": "expr",
+      "local_category": "unsupported",
+      "diagnostic": "unsupported construct: ns",
+      "release": "analysis-error",
+      "checkout": "analysis-error"
+    },
+    {
+      "id": "fn-variadic-missing-rest",
+      "feature": "functions-apply",
+      "disposition": "negative-test",
+      "source": "(fn* [&] 1)",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "requires one rest binding",
+      "release": "emit-error",
+      "checkout": "emit-error"
+    },
+    {
+      "id": "fn-malformed-empty-arity",
+      "feature": "functions-apply",
+      "disposition": "missing-capability",
+      "source": "(fn* ([] 1) ())",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "parameter vector",
+      "release": "warning",
+      "checkout": "warning"
+    },
+    {
+      "id": "reader-map-sequential-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "{[1 2] 1 (1 2) 2}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate map key",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-map-unordered-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "{{:a 1 :b 2} 1 {:b 2 :a 1} 2}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate map key",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-map-integer-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "{1 1 0x1 2}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate map key",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-map-float-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "{1.0 1 1e0 2}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate map key",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-map-quote-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "{'x 1 (quote x) 2}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate map key",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set-scalar-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "#{1 0x1}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate set member",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set-float-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "#{1.0 1e0}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate set member",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set-nested-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "#{#{1 2} #{2 1}}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate set member",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set-map-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "#{ {:a 1 :b 2} {:b 2 :a 1}}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate set member",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set-quoted-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "'#{[1 2] (1 2)}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate set member",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    },
+    {
+      "id": "reader-set-symbol-duplicate",
+      "feature": "reader-metadata",
+      "disposition": "negative-test",
+      "source": "'#{x x}",
+      "mode": "expr",
+      "local_category": "invalid-form",
+      "diagnostic": "duplicate set member",
+      "release": "reader-error",
+      "checkout": "reader-error"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-001",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 519,
+      "fixture_id": "cljs-language-reader-regex-01",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-01",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-01",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-01",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-003",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 521,
+      "fixture_id": "cljs-language-reader-regex-03",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-03",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-03",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-03",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-004",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 522,
+      "fixture_id": "cljs-language-reader-regex-04",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-04",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-04",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-04",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-005",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 523,
+      "fixture_id": "cljs-language-reader-regex-05",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-05",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-05",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-05",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-006",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 524,
+      "fixture_id": "cljs-language-reader-regex-06",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-06",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-06",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-06",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-007",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 525,
+      "fixture_id": "cljs-language-reader-regex-07",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-07",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-07",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-07",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-008",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 526,
+      "fixture_id": "cljs-language-reader-regex-08",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-08",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-08",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-08",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-009",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 527,
+      "fixture_id": "cljs-language-reader-regex-09",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-09",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-09",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-09",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-010",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 528,
+      "fixture_id": "cljs-language-reader-regex-10",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-10",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-10",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-10",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-011",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 530,
+      "fixture_id": "cljs-language-reader-regex-11",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-11",
+            "outcome": {
+              "status": "returned",
+              "value": "#\"(?:)\""
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-11",
+            "outcome": {
+              "status": "returned",
+              "value": "#\"(?:)\""
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-11",
+            "outcome": {
+              "status": "returned",
+              "value": "#\"(?:)\""
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    {
+      "id": "primitives_test.cljs::test-regexps::assertion-012",
+      "feature": "core-helpers",
+      "status": "covered",
+      "reason": "generated JavaScript and both pinned references match the assertion witness",
+      "source": "src/test/cljs/cljs/primitives_test.cljs",
+      "test": "test-regexps",
+      "line": 531,
+      "fixture_id": "cljs-language-reader-regex-12",
+      "layers": {
+        "lexer": {
+          "status": "accepted",
+          "observed": null
+        },
+        "parser": {
+          "status": "accepted",
+          "observed": null
+        },
+        "native": {
+          "status": "not-applicable",
+          "detail": "no native expectation; compiler-only host behavior"
+        },
+        "javascript": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-12",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-12",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "cljs-language-reader-regex-12",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    }
+  ],
+  "strict_complete": true,
+  "artifacts": "/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-language-0jvdj4_q",
+  "compiler_binary": {
+    "path": "/Users/admin/src/light-cljs/target/debug/light-cljs",
+    "sha256": "5a59db83f9e309833689f905ed2cba9d74a04d705379bd0e7bb493d730245bab"
+  }
+}

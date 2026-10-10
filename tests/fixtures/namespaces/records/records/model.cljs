@@ -1,0 +1,8 @@
+(ns records.model)
+(defprotocol P (value [this]))
+(defrecord Item [x] P (value [_] x))
+(def saved ->Item)
+(def saved-map map->Item)
+(def original (->Item 1))
+(def old-type Item)
+(defrecord Item [x] P (value [_] (+ x 10)))

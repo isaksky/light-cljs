@@ -1,0 +1,16 @@
+Compiler language assertions — live observations only
+feature	covered	missing	version-difference	unrelated
+core-helpers	11	0	0	0
+TOTAL	11	0	0	0
+lexer: accepted=11
+parser: accepted=11
+native: not-applicable=11
+javascript: passed=11
+release: passed=11
+checkout: passed=11
+Boundary diagnostics (not passing semantic assertions): {"accepted-boundary": 21, "missing-capability": 46, "negative-test": 60, "unrelated-build-loading": 3}
+  fn-variadic: accepted-boundary (-)
+  fn-multiple: missing-capability (multiple function arities)
+  special-recur: missing-capability (unsupported construct: recur)
+Strict completion: complete
+Artifacts: /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-language-0jvdj4_q

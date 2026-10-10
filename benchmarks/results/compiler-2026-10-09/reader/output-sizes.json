@@ -1,0 +1,102 @@
+[
+  {
+    "gzip_bytes": 106,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "integer",
+    "sha256": "d6c3a9f4678ef2e492f64909d26e3ff1599b3e75478652315cdd5a53e22b2af8",
+    "truth_helpers": 1,
+    "utf8_bytes": 104
+  },
+  {
+    "gzip_bytes": 168,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "nested-closure",
+    "sha256": "6940048d9fc200ba0fa6e14dfc44777559795b929519c6cd759499b616b24084",
+    "truth_helpers": 1,
+    "utf8_bytes": 313
+  },
+  {
+    "gzip_bytes": 133,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "js-nested-method",
+    "sha256": "1497d4fb5ea453cc8e8377374a4af1513510b1ef8f022f1bf06707368381ea95",
+    "truth_helpers": 1,
+    "utf8_bytes": 142
+  },
+  {
+    "gzip_bytes": 103,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "empty",
+    "sha256": "62c183b07e0875e10ff5e5bf3b8a3250eea36ea3657b325ab808539574ab6a2e",
+    "truth_helpers": 1,
+    "utf8_bytes": 106
+  },
+  {
+    "gzip_bytes": 7722,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "collections",
+    "sha256": "37f1332619b656073f27eaec29f0679cee614b4f21cc8636a7e916210d9638c0",
+    "truth_helpers": 1,
+    "utf8_bytes": 33683
+  },
+  {
+    "gzip_bytes": 7589,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "expanded-macro",
+    "sha256": "de95f607f12e080e873b8a75f5e9b5107415de82731869eed48bb6fdab3598f3",
+    "truth_helpers": 1,
+    "utf8_bytes": 32974
+  },
+  {
+    "gzip_bytes": 7619,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.single",
+    "sha256": "c00ccbdb6303c558c85121bc3c409f0fb5b3c4933df5acf79655c3497130e68d",
+    "truth_helpers": 1,
+    "utf8_bytes": 33042
+  },
+  {
+    "gzip_bytes": 7619,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.main",
+    "sha256": "c00ccbdb6303c558c85121bc3c409f0fb5b3c4933df5acf79655c3497130e68d",
+    "truth_helpers": 1,
+    "utf8_bytes": 33042
+  },
+  {
+    "gzip_bytes": 7605,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.macro",
+    "sha256": "a4176574ffbcb633679f38c10560df2d0f7b4bf31a30194d46e3167dfec7ccf1",
+    "truth_helpers": 1,
+    "utf8_bytes": 33019
+  },
+  {
+    "gzip_bytes": 7619,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.macro-main",
+    "sha256": "c00ccbdb6303c558c85121bc3c409f0fb5b3c4933df5acf79655c3497130e68d",
+    "truth_helpers": 1,
+    "utf8_bytes": 33042
+  }
+]

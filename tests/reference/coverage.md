@@ -15,6 +15,18 @@ value/effect comparison and two namespace stdout comparisons. Research source
 inspection and release-oracle execution are distinct evidence. The 296-file
 reader corpus measures syntax handling, not executable semantics.
 
+## Executable compiler-language inventory (2026-10-09)
+
+The later [language inventory](compiler-language/README.md) preserves complete
+upstream test and helper bodies, every recognized source assertion and each
+`are` argument row in eleven source files. Its [report and baseline](compiler-language/evidence.md)
+expose missing compiler-language assertions, including valid forms previously
+listed here as subset exclusions. Stable IDs, original expectations, source
+hashes, section dispositions and executable witness mappings are checked.
+The older milestone counts below remain historical, separately scoped evidence;
+they do not establish completion of these new language sections. Neither native
+SCI passes nor syntax-corpus acceptance count as generated-JavaScript coverage.
+
 ## Local identities and origins
 
 [fixture-origins.tsv](fixture-origins.tsv) explicitly assigns an origin to each
@@ -124,7 +136,7 @@ are not local compatibility contracts.
 | Path, test and assertion anchor at the pinned revision | Applicable behavior and current coverage / exclusion |
 | --- | --- |
 | `analyzer_tests.clj`, `analyze-ops`: scalar constants (628–633), do (658–670), let/local/shadow chains (671–687, 1126–1147) | Scalar fixture groups, `empty-do`, `do-result`, `do-order`, `empty-let`, `sequential-let`, `same-scope-shadow`, `shadow-initializer`; `analyzer::closures_resolve_to_distinct_persistent_binding_ids`, `analyzer::initializer_references_the_previous_binding`. Keyword/collection ASTs excluded. |
-| `analyzer_tests.clj`, `analyze-ops`: fn (800–859), if (860–873), invoke (874–884) | `empty-function`, `function-body`, `single-method`, named/self recursion and closure IDs; `missing-else`, selected-branch/effect IDs; `function-callee`, `callee-and-argument-order`. Upstream keyword/core-function invocation examples are operation-class analogues, not directly ported cases. Variadic/multiple methods excluded. |
+| `analyzer_tests.clj`, `analyze-ops`: fn (800–859), if (860–873), invoke (874–884) | `empty-function`, `function-body`, `single-method`, named/self recursion and closure IDs; `missing-else`, selected-branch/effect IDs; `function-callee`, `callee-and-argument-order`. Upstream keyword/core-function invocation examples are operation-class analogues, not directly ported cases. Multiple/variadic methods now execute; see compiler-functions.md for assertion mappings. |
 | `analyzer_tests.clj`, `analyze-ops`: def (770–783) | `def-value`, `global-read`, `global-uninitialized`, `def-uninitialized-value`, `global-function-value`; `analyzer::global_identity_is_stable_and_distinct_from_lexical_and_host_identity`. Covers declaration/initializer/qualified identity; upstream AST assertions alone do not verify returned values or redefinition. |
 | `analyzer_tests.clj`, `spec-validation` (69, 75, 81/87, 93, 153, 159, 171) | The attributed namespace validation adaptation covers malformed require libraries, unknown/repeated options, non-symbol/conflicting aliases, unknown clauses. `:refer`, `:rename`, `:use` execution remains excluded; the boundary audit now checks the relevant rejection classifications and repeated `:require` clause at 177. |
 | `analyzer_tests.clj`, `test-cljs-3320` (1538–1543) | `namespaces::aliases_cannot_duplicate_or_redirect_namespace_qualifiers` rejects `js` alias. Upstream warns; local rejection is a deliberate stricter boundary, not warning-text equivalence. |
@@ -134,7 +146,7 @@ are not local compatibility contracts.
 | `compiler_tests.clj`, `test-amp-as-local-clj-2954` (411–433, primitive let assertion 423–426) | `analyzer::invalid_special_forms_have_source_diagnostics` rejects `&` bindings/parameters. The upstream `loop*` case is unsupported. |
 | `compiler_tests.clj`, `fn-scope-munge` (69–90) | `named-recursion`, `self-captured`, `javascript-reserved-local`, `unicode-local` and the new adapted `nested-named-function`/`nested-named-host-collision` cover semantic name isolation; exact generated-name format excluded. |
 | `compiler_tests.clj`, `test-3368-global-shadowing` (376–383) | Specifically `[window js/window]`: new `same-host-name-initializer` faithfully uses analyzer-known host `console`; the lexical audit records the separate return-context Math limitation. |
-| `compiler_tests.clj`, `test-optimized-invoke-emit` (264–305; JS path 281–282) | `js-path-receiver`, `js-path-order`, `callee-and-argument-order`, `nested-argument-order` cover semantic order/receiver concerns. Static/variadic/protocol dispatch and exact optimized JS remain excluded. |
+| `compiler_tests.clj`, `test-optimized-invoke-emit` (264–305; JS path 281–282) | `js-path-receiver`, `js-path-order`, `callee-and-argument-order`, `nested-argument-order` cover semantic order/receiver concerns. Static/protocol dispatch and exact optimized JS remain separate; compiler-functions.md covers variadic callable entry points and semantic dispatch. |
 | `analyzer_api_tests.clj`, all six tests: `cljs-warning-test`, `with-warning-handlers-test`, `vary-warning-handlers-test`, `get-options-test`, `get-js-index-test`, `throw-test` | Warning handlers, compiler-state/options/index inspection and API lookup failures; no applicable executable primitive assertion. API `throw-test` is not a source-language throw regression. |
 | `analyzer_pass_tests.clj`, `test-walk`, `remove-local`, `test-and-or-*`, `test-core-predicates`, `test-cljs-3309`, `test-lite-mode-pass` | Upstream AST walking/mutation, macro/type/boolean optimizations, exact code and core vector rewriting are excluded. Host words inside an optimizer test do not make the optimizer assertion covered by basic interop. |
 
@@ -173,7 +185,7 @@ this table start at `src/test/`.
 | `cljs/cljs/core_test.cljs`, `test-cljs-2267` and const setup (1438 onward) | Seven `if` assertions include truthy zero/empty string and false nil/false; `truth-zero`, `truth-empty-string`, `truth-nil`, `truth-false` cover those values. Const propagation/keyword result values are excluded, so removing their wrappers would be an adaptation, not constant-folding coverage. |
 | `cljs/cljs/primitives_test.cljs`, `test-dot` (659–678) | `.-length`, shorthand substring calls and nested method/property access overlap with `js-property`, `js-method`, `js-nested-method`, `js-property-once`. Explicit-dot and `memfn` assertions are excluded. Numeric receiver and computed-result property cases are noted below. |
 | `cljs/cljs/primitives_test.cljs`, `test-3352` (956 onward) | Integer `-0` versus floating `-0.0`: `integer-zero`, `negative-zero`. Upstream division/infinity operations are excluded; this does not establish radix/UTF-16 upstream provenance. |
-| `cljs/cljs/invoke_test.cljs`, complete file (50 lines): `hof-fn-expr-should-be-bound`, `hof-arg-should-be-bound`, `hof-fn-expr+args-should-be-bound` (20–31), JS path call (40) | Compiler fixture shapes, with no runtime assertions in those forms. `callee-and-argument-order`, `nested-argument-order`, `js-path-order` supply independent semantic checks. Variadic/multiple arities, complement, delay, keyword calls, records and Closure library alias loading excluded. |
+| `cljs/cljs/invoke_test.cljs`, complete file (50 lines): `hof-fn-expr-should-be-bound`, `hof-arg-should-be-bound`, `hof-fn-expr+args-should-be-bound` (20–31), JS path call (40) | Compiler fixture shapes, with no runtime assertions in those forms. `callee-and-argument-order`, `nested-argument-order`, `js-path-order` supply independent semantic checks. The arity shapes now have independent execution coverage in compiler-functions.md; complement, delay, records and Closure library alias loading remain separate. |
 | `cljs/cljs/specials_test.cljs`, complete file (25 lines), `test-cljs-3125` | All four assertions concern `set!` result values for host/global/record mutation. Mutation and record/runtime wrappers excluded; def redefinition and property reads do not cover writes. |
 | `cljs/static/core_test.cljs`, complete file (17 lines), namespace header/comment and `foo-test` | Specifically exercises namespace component `static`, a JavaScript reserved word, with trivial equality. It is not a static-function-dispatch suite. New `lexical.static`/`lexical.main` fixtures independently execute the reserved-namespace behavior and compare it to both baselines. |
 | `self/self_host/test.cljs`, `test-compile-str` (176 onward) | Empty `(fn [])` maps to `empty-function`; function-valued if maps to `truth-function`; `(.toString "a")` maps to string-method behavior. The ordinary versus `:static-fns true` call assertions distinguish compilation modes. Exact JS, core-runtime calls, self-host API and static dispatch are excluded. |
@@ -373,3 +385,26 @@ with both standard baselines. Exact source anchors, reductions, preserved
 Apache attribution and no-case dispositions are recorded in the linked audit
 and provenance sidecar; no verbatim import or complete upstream-suite coverage
 is claimed.
+
+## JavaScript interop update (2026-10-10)
+
+The [interop audit](compiler-interop.md) supersedes the earlier source-language
+exclusions for explicit dot/new, raw JavaScript templates and property writes.
+The executable language matrix adds **86** original assertion sites with both
+pinned references. Separate host probes execute constructor/method effects,
+computed properties, getters/setters, lexical arguments, metadata and namespace
+referrals. Closure loading and exact upstream optimizer/emission shapes remain
+separate dispositions. No whole-file interop-test percentage is implied.
+
+
+## Compiled lazy sequences and comprehensions
+
+The [sequence audit](compiler-sequences.md) adds **314 source assertion sites**
+with complete setup and original expectations, mapped by stable assertion IDs in
+`compiler-language/witnesses.jsonl`. Its focused strict report passes generated
+JavaScript and both pinned references with zero missing selected assertions.
+`chunked_seq.cljs` is now retained as the eighteenth complete source file in the
+inventory. **56 independent differential probes** cover realization counts,
+exception/reduction boundaries, public arities, native macro output, and nested
+comprehension captures; they are not counted as imported source assertions.
+Transducer-constructor rows retain their explicit separate disposition.

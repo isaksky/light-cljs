@@ -1,0 +1,132 @@
+[
+  {
+    "gzip_bytes": 106,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "integer",
+    "sha256": "d6c3a9f4678ef2e492f64909d26e3ff1599b3e75478652315cdd5a53e22b2af8",
+    "truth_helpers": 1,
+    "utf8_bytes": 104
+  },
+  {
+    "gzip_bytes": 106,
+    "host_helpers": 0,
+    "label": "baseline",
+    "runtime_count": 0,
+    "scenario": "integer",
+    "sha256": "d6c3a9f4678ef2e492f64909d26e3ff1599b3e75478652315cdd5a53e22b2af8",
+    "truth_helpers": 1,
+    "utf8_bytes": 104
+  },
+  {
+    "gzip_bytes": 168,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "nested-closure",
+    "sha256": "6940048d9fc200ba0fa6e14dfc44777559795b929519c6cd759499b616b24084",
+    "truth_helpers": 1,
+    "utf8_bytes": 313
+  },
+  {
+    "gzip_bytes": 168,
+    "host_helpers": 0,
+    "label": "baseline",
+    "runtime_count": 0,
+    "scenario": "nested-closure",
+    "sha256": "6940048d9fc200ba0fa6e14dfc44777559795b929519c6cd759499b616b24084",
+    "truth_helpers": 1,
+    "utf8_bytes": 313
+  },
+  {
+    "gzip_bytes": 133,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "js-nested-method",
+    "sha256": "1497d4fb5ea453cc8e8377374a4af1513510b1ef8f022f1bf06707368381ea95",
+    "truth_helpers": 1,
+    "utf8_bytes": 142
+  },
+  {
+    "gzip_bytes": 133,
+    "host_helpers": 0,
+    "label": "baseline",
+    "runtime_count": 0,
+    "scenario": "js-nested-method",
+    "sha256": "1497d4fb5ea453cc8e8377374a4af1513510b1ef8f022f1bf06707368381ea95",
+    "truth_helpers": 1,
+    "utf8_bytes": 142
+  },
+  {
+    "gzip_bytes": 103,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 0,
+    "scenario": "empty",
+    "sha256": "62c183b07e0875e10ff5e5bf3b8a3250eea36ea3657b325ab808539574ab6a2e",
+    "truth_helpers": 1,
+    "utf8_bytes": 106
+  },
+  {
+    "gzip_bytes": 5642,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "collections",
+    "sha256": "33277bb7a0516094112306e95b2261d7a9ee1fb3a739d1de2b56ac4e75a86936",
+    "truth_helpers": 1,
+    "utf8_bytes": 24944
+  },
+  {
+    "gzip_bytes": 5506,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "expanded-macro",
+    "sha256": "7e5d52c2d5fef041cd2549cbb2222b822fc439958eed60292765571db45e7cf2",
+    "truth_helpers": 1,
+    "utf8_bytes": 24235
+  },
+  {
+    "gzip_bytes": 5535,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.single",
+    "sha256": "0057c60658b5b565d5f2a37c24ca1ac7295aac8e725b0cb5fa8c15aafd19820f",
+    "truth_helpers": 1,
+    "utf8_bytes": 24303
+  },
+  {
+    "gzip_bytes": 5535,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.main",
+    "sha256": "0057c60658b5b565d5f2a37c24ca1ac7295aac8e725b0cb5fa8c15aafd19820f",
+    "truth_helpers": 1,
+    "utf8_bytes": 24303
+  },
+  {
+    "gzip_bytes": 5522,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.macro",
+    "sha256": "97657a6ce625ebc9ec1d355d33ee34ac6a32be8189cb91a795176efce217cd61",
+    "truth_helpers": 1,
+    "utf8_bytes": 24280
+  },
+  {
+    "gzip_bytes": 5535,
+    "host_helpers": 0,
+    "label": "current",
+    "runtime_count": 1,
+    "scenario": "bench.macro-main",
+    "sha256": "0057c60658b5b565d5f2a37c24ca1ac7295aac8e725b0cb5fa8c15aafd19820f",
+    "truth_helpers": 1,
+    "utf8_bytes": 24303
+  }
+]

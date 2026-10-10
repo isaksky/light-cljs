@@ -1,0 +1,1 @@
+samples=9 iterations=32 allocations=false; two warmup batches; GC once per batch plus explicitly named callbacks; full type/content validation before timing

@@ -67,3 +67,31 @@ fn complete_corpus_has_an_executable_disposition() {
     assert!(overrides.is_empty(), "orphaned differences: {overrides:?}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn opaque_protocol_objects_require_scalar_observation_in_native_transport() {
+    let mut c = light_cljs::interpreter::Context::new();
+    c.eval_string("(defprotocol P (p [x]))").unwrap();
+    c.eval_string("(defrecord R [x])").unwrap();
+    for source in [
+        "P",
+        "p",
+        "(reify P (p [_] 7))",
+        "[(reify P)]",
+        "R",
+        "(->R 7)",
+        "[(->R 7)]",
+    ] {
+        let value = c.eval_string(source).unwrap();
+        assert!(
+            native::wire(&mut c, &value)
+                .unwrap_err()
+                .contains("unsupported native SCI transport value")
+        );
+    }
+    let value = c.eval_string("(p (reify P (p [_] 7)))").unwrap();
+    assert_eq!(
+        native::wire(&mut c, &value).unwrap(),
+        protocol::Value::Int(7)
+    );
+}

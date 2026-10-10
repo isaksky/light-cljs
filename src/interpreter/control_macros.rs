@@ -130,7 +130,15 @@ pub(super) fn cond(c: &mut Context, args: &[RootedValue]) -> NativeResult {
 }
 fn no_match(c: &Context, value: RootedValue) -> NativeResult {
     // The primitive's absent default throws a catchable language failure.
-    call(c, "case*", &[value, c.vector(&[])?])
+    if c.macros.compiler_expansion {
+        call(
+            c,
+            "compiler-case*",
+            &[value, c.vector(&[])?, c.vector(&[])?],
+        )
+    } else {
+        call(c, "case*", &[value, c.vector(&[])?])
+    }
 }
 pub(super) fn condp(c: &mut Context, args: &[RootedValue]) -> NativeResult {
     let pred = fresh(c);
@@ -275,6 +283,23 @@ pub(super) fn comment(c: &mut Context, _: &[RootedValue]) -> NativeResult {
     Ok(c.nil())
 }
 pub(super) fn assert(c: &mut Context, args: &[RootedValue]) -> NativeResult {
+    // A compiler host exposes Clojure's compile-time assertion control to
+    // source macros too, including explicit macroexpand under dynamic binding.
+    if c.readers.borrow().compiler
+        && c.find_interned_var(
+            &Name::new(None, "clojure.core"),
+            &Name::new(None, "*assert*"),
+        )
+        .ok()
+        .flatten()
+        .and_then(|var| c.var_get(var.var_id().unwrap()).ok())
+        .is_some_and(|value| matches!(value.inspect(), ValueView::Nil | ValueView::Boolean(false)))
+    {
+        return Ok(c.nil());
+    }
+    if c.macros.compiler_expansion {
+        return call(c, "compiler-assert*", &args[2..]);
+    }
     let failure = call(
         c,
         "throw",
@@ -298,6 +323,8 @@ pub(super) fn case(c: &mut Context, args: &[RootedValue]) -> NativeResult {
     let (pairs, default) = clauses.as_chunks::<2>();
     let mut branches = Vec::new();
     let mut seen = c.map(&[])?;
+    let mut groups = Vec::new();
+    let mut thens = Vec::new();
     for pair in pairs {
         c.accounting.work(1)?;
         let constants = if matches!(pair[0].inspect(), ValueView::List(_) | ValueView::Seq(_)) {
@@ -305,6 +332,13 @@ pub(super) fn case(c: &mut Context, args: &[RootedValue]) -> NativeResult {
         } else {
             vec![pair[0].clone()]
         };
+        // Keep grouped branch identity for the compiler, which validates JVM
+        // reader constants before JavaScript equality/number lowering.
+        if c.macros.compiler_expansion {
+            groups.push(c.vector(&constants)?);
+            thens.push(pair[1].clone());
+            continue;
+        }
         for constant in constants {
             c.accounting.work(1)?;
             c.charge_allocation(2)?;
@@ -315,7 +349,19 @@ pub(super) fn case(c: &mut Context, args: &[RootedValue]) -> NativeResult {
             branches.extend([constant, pair[1].clone()]);
         }
     }
-    let mut forms = vec![args[2].clone(), c.vector(&branches)?];
+    let mut forms = if c.macros.compiler_expansion {
+        vec![args[2].clone(), c.vector(&groups)?, c.vector(&thens)?]
+    } else {
+        vec![args[2].clone(), c.vector(&branches)?]
+    };
     forms.extend_from_slice(default);
-    call(c, "case*", &forms)
+    call(
+        c,
+        if c.macros.compiler_expansion {
+            "compiler-case*"
+        } else {
+            "case*"
+        },
+        &forms,
+    )
 }

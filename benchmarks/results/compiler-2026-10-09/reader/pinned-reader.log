@@ -1,0 +1,29 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+     Running tests/execution.rs (target/debug/deps/execution-2ba88674580f5f0a)
+
+running 1 test
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths [] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-reader-cases-56623-2' 'cases' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reader-cases-input-56623-0/cases.tsv'
+WARNING: x at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-reader-cases-56623-2/src/semantic/case23.cljs
+
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths [] :deps {org.clojure/clojurescript {:local/root "/Users/admin/src/light-cljs/research/clojurescript"}}}' '-M' 'tests/reference/execution.clj' 'checkout' 'a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e' '/Users/admin/src/light-cljs/research/clojurescript' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-reader-cases-56623-4' 'cases' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reader-cases-input-56623-0/cases.tsv'
+WARNING: x at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-reader-cases-56623-4/src/semantic/case23.cljs
+
+REFERENCE IDENTITY checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
+REFERENCE RUNTIME {:clojurescript "0.0.135109660", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
+REFERENCE RUNTIME {:clojurescript "0.0.135109660", :clojure "1.12.4", :java "25.0.2"}
+Release and checkout agree for reader-cases
+Matched 49 reader outcomes, effects and stdout against Release
+Matched 49 reader outcomes, effects and stdout against Checkout { path: "research/clojurescript", revision: "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e" }
+test reader_forms_match_pinned_values_effects_and_stdout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 9.50s
+

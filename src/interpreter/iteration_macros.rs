@@ -217,7 +217,12 @@ pub(super) fn dotimes(c: &mut Context, args: &[RootedValue]) -> NativeResult {
         "loop",
         &[c.vector(&[bindings[0].clone(), c.integer(0)])?, body],
     )?;
-    bind(c, limit, call(c, "long", &bindings[1..])?, body)
+    let bound = if c.macros.compiler_expansion {
+        bindings[1].clone()
+    } else {
+        call(c, "long", &bindings[1..])?
+    };
+    bind(c, limit, bound, body)
 }
 pub(super) fn while_macro(c: &mut Context, args: &[RootedValue]) -> NativeResult {
     let mut body = args[3..].to_vec();

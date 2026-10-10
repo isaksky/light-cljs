@@ -1,0 +1,25 @@
+{
+  "build_environment": {},
+  "cargo": "cargo 1.99.0 (5f94df478 2026-08-27) (Homebrew)\n",
+  "command": [
+    "benchmarks/run_interpreter_types.py",
+    "--output",
+    "/Users/admin/.cache/light-cljs-baselines/light-cljs-65/verified-types",
+    "--baseline",
+    "/Users/admin/.cache/light-cljs-baselines/light-cljs-58/transducers",
+    "--samples",
+    "9",
+    "--iterations",
+    "32"
+  ],
+  "git_head": "fe08ac83dc067ca85344663f2d0f2a96e613827e",
+  "git_status": " M Cargo.toml\n M README.md\n M benches/interpreter.rs\n M benchmarks/README.md\n M benchmarks/interpreter.md\n M docs/compiler.md\n M docs/interpreter.md\n M src/interpreter/binding_macros.rs\n M src/interpreter/collection_core.rs\n M src/interpreter/collections.rs\n M src/interpreter/deferred.rs\n M src/interpreter/embedding.rs\n M src/interpreter/equality.rs\n M src/interpreter/evaluation.rs\n M src/interpreter/lazy_core.rs\n M src/interpreter/macros.rs\n M src/interpreter/mod.rs\n M src/interpreter/namespaces.rs\n M src/interpreter/native.rs\n M src/interpreter/printing.rs\n M src/interpreter/reuse.rs\n M src/interpreter/sequence_core.rs\n M src/interpreter/state.rs\n M src/interpreter/walk.rs\n M tests/fixtures/sci-outcomes.tsv\n M tests/interpreter_bindings.rs\n M tests/interpreter_collection_core.rs\n M tests/interpreter_collections.rs\n M tests/interpreter_conformance.rs\n M tests/interpreter_contextual_reader.rs\n M tests/interpreter_control.rs\n M tests/interpreter_coverage.rs\n M tests/interpreter_data.rs\n M tests/interpreter_deferred.rs\n M tests/interpreter_embedding.rs\n M tests/interpreter_eval.rs\n M tests/interpreter_exceptions.rs\n M tests/interpreter_functions.rs\n M tests/interpreter_io.rs\n M tests/interpreter_iteration.rs\n M tests/interpreter_lazy.rs\n M tests/interpreter_limits.rs\n M tests/interpreter_loading.rs\n M tests/interpreter_macros.rs\n M tests/interpreter_namespaces.rs\n M tests/interpreter_native.rs\n M tests/interpreter_reader.rs\n M tests/interpreter_reclamation.rs\n M tests/interpreter_recur.rs\n M tests/interpreter_reuse.rs\n M tests/interpreter_sequences.rs\n M tests/interpreter_state.rs\n M tests/interpreter_strings.rs\n M tests/interpreter_syntax_quote.rs\n M tests/interpreter_vars.rs\n M tests/reference/fixture-origins.tsv\n M tests/reference/sci/README.md\n M tests/reference/sci/driver.clj\n M tests/reference/sci/native-dispositions.tsv\n M tests/reference/sci/supported-apis.tsv\n M tests/reference/sci/test_regenerate.py\n M tests/reference/sci/unsupported-families.tsv\n M tests/support/sci_native.rs\n?? benches/interpreter_protocols.rs\n?? benches/interpreter_records.rs\n?? benches/interpreter_transducers.rs\n?? benches/interpreter_types.rs\n?? benchmarks/__pycache__/\n?? benchmarks/fixtures/interpreter/transducers/\n?? benchmarks/fixtures/interpreter/types/\n?? benchmarks/results/interpreter-2026-10-08/cat-mapcat/\n?? benchmarks/results/interpreter-2026-10-08/into/\n?? benchmarks/results/interpreter-2026-10-08/map-filter-remove/\n?? benchmarks/results/interpreter-2026-10-08/partition-all/\n?? benchmarks/results/interpreter-2026-10-08/protocol-declarations/\n?? benchmarks/results/interpreter-2026-10-08/record-methods/\n?? benchmarks/results/interpreter-2026-10-08/records/\n?? benchmarks/results/interpreter-2026-10-08/reify/\n?? benchmarks/results/interpreter-2026-10-08/take-drop-take-while/\n?? benchmarks/results/interpreter-2026-10-08/transducers/\n?? benchmarks/results/interpreter-2026-10-08/warmed-collector/\n?? benchmarks/results/interpreter-2026-10-09/\n?? benchmarks/run_interpreter_transducers.py\n?? benchmarks/run_interpreter_types.py\n?? src/interpreter/protocols.rs\n?? src/interpreter/records.rs\n?? tests/interpreter_protocols.rs\n?? tests/interpreter_records.rs\n?? tests/interpreter_transducers.rs\n",
+  "hardware": "hw.model: VirtualMac2,1\nhw.memsize: 34359738368\nhw.ncpu: 24\nmachdep.cpu.brand_string: Apple M3 Ultra (Virtual)\n",
+  "logical_cpus": 24,
+  "machine": "arm64",
+  "method": "sequential single-thread release runs; no affinity; default opt-level=3; two warmups; one GC per batch except explicit method-callback GC; instrumented elapsed_ns=0; CLI includes startup/read/analyze/evaluate/print/exit; OS caches uncontrolled",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.2\n",
+  "utc": "2026-10-09T06:24:14Z"
+}

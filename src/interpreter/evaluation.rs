@@ -18,6 +18,11 @@ pub enum EvalErrorKind {
     Load(LoadError),
     Var(VarError),
     InvalidForm(&'static str),
+    InvalidProtocolImplementation {
+        protocol: Box<Name>,
+        method: Box<Name>,
+        message: &'static str,
+    },
     UnsupportedForm(&'static str),
     WrongOwner,
     PermissionDenied(Name),
@@ -27,6 +32,11 @@ pub enum EvalErrorKind {
     Native {
         name: Box<Name>,
         error: NativeError,
+    },
+    MissingProtocolImplementation {
+        protocol: Box<Name>,
+        method: Box<Name>,
+        receiver: &'static str,
     },
     NotCallable,
     NoMatchingClause,
@@ -54,6 +64,30 @@ impl fmt::Display for EvalErrorKind {
                 }
                 write!(f, "{}: {error}", String::from_utf16_lossy(name.name()))
             }
+            Self::MissingProtocolImplementation {
+                protocol,
+                method,
+                receiver,
+            } => write!(
+                f,
+                "missing implementation of {}/{} method {}/{} for {receiver}",
+                String::from_utf16_lossy(protocol.namespace().unwrap_or_default()),
+                String::from_utf16_lossy(protocol.name()),
+                String::from_utf16_lossy(method.namespace().unwrap_or_default()),
+                String::from_utf16_lossy(method.name())
+            ),
+            Self::InvalidProtocolImplementation {
+                protocol,
+                method,
+                message,
+            } => write!(
+                f,
+                "{message}: {}/{} method {}/{}",
+                String::from_utf16_lossy(protocol.namespace().unwrap_or_default()),
+                String::from_utf16_lossy(protocol.name()),
+                String::from_utf16_lossy(method.namespace().unwrap_or_default()),
+                String::from_utf16_lossy(method.name())
+            ),
             Self::InvalidReferenceState => f.write_str("Invalid reference state"),
             other => write!(f, "{other:?}"),
         }
@@ -127,12 +161,14 @@ impl EvalErrorKind {
             | Self::UnresolvedSymbol(_)
             | Self::Namespace(_)
             | Self::InvalidForm(_)
+            | Self::InvalidProtocolImplementation { .. }
             | Self::UnsupportedForm(_) => ErrorClass::Diagnostic,
             Self::Var(_)
             | Self::Load(_)
             | Self::DuplicateMapKey
             | Self::DuplicateSetMember
             | Self::Collection(_)
+            | Self::MissingProtocolImplementation { .. }
             | Self::NotCallable
             | Self::NoMatchingClause
             | Self::Thrown(_)
@@ -330,6 +366,30 @@ pub(super) struct Closure {
     pub(super) unit: UnitId,
     function: FunctionId,
     pub(super) captures: Box<[Value]>,
+}
+
+// Construction primitives validate even callable literals recovered from a
+// macro expansion. Only fixed method closures matching the descriptor enter
+// implementation tables; an omitted declared overload still fails ordinary fn arity.
+pub(super) fn protocol_implementation_arities(
+    store: &Store,
+    value: Value,
+    arities: &[usize],
+) -> Result<bool, ResourceError> {
+    let Some(HeapValue::Closure(closure)) = store.heap_value(value) else {
+        return Ok(false);
+    };
+    let code = store
+        .units
+        .get(closure.unit.0)
+        .expect("rooted closure code");
+    let methods = &code.functions[closure.function.0].methods;
+    store
+        .accounting
+        .work((methods.len() as u64).saturating_mul(arities.len() as u64 + 1))?;
+    Ok(methods
+        .iter()
+        .all(|m| !m.variadic && arities.contains(&m.fixed)))
 }
 
 // No names or locations are consulted by successful execution. Each expression's
@@ -2023,6 +2083,11 @@ fn invoke(
                     error,
                 }),
             });
+    }
+    if let Some(result) =
+        protocols::invoke_method(context, callee, &scratch.values[args_base..], applied)
+    {
+        return result;
     }
     if let Some(result) =
         sequence_core::invoke_higher_order(context, callee, &scratch.values[args_base..], applied)

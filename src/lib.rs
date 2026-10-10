@@ -12,16 +12,19 @@ use std::{iter::FusedIterator, ops::Range};
 pub mod analyzer;
 mod char_classes;
 pub mod compiler;
+mod compiler_reader;
 pub mod emitter;
 pub mod interpreter;
 mod literals;
 pub mod macro_host;
 pub mod parser;
+mod reader_literals;
 
 pub use analyzer::{
-    AnalysisError, AnalysisErrorKind, Expr, ExprContext, ExprId, ExprKind, GlobalBinding, GlobalId,
-    JsGlobal, JsGlobalId, LocalBinding, LocalId, NamespaceInput, Program, Span, StringId, analyze,
-    analyze_namespaces, analyze_namespaces_with_macros, analyze_with_macros,
+    AnalysisError, AnalysisErrorKind, CoreFnId, Expr, ExprContext, ExprId, ExprKind, GlobalBinding,
+    GlobalId, JsGlobal, JsGlobalId, LocalBinding, LocalId, NamedLiteral, NamedLiteralId,
+    NamespaceInput, Program, Span, StringId, analyze, analyze_namespaces,
+    analyze_namespaces_with_macros, analyze_with_macros,
 };
 pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_with_macros,

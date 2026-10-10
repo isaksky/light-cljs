@@ -140,6 +140,7 @@ fn unsupported_families_fail_explicitly() {
         let actual = match error.kind {
             E::UnresolvedSymbol(_) => "unresolved",
             E::UnsupportedForm(_) => "unsupported",
+            E::InvalidForm(_) => "invalid-form",
             E::Read(_) => "reader",
             E::Native {
                 error: NativeError::Arity { .. },

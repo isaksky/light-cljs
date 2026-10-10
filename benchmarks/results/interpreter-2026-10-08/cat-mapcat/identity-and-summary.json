@@ -1,0 +1,500 @@
+{
+  "head": "fe08ac83dc067ca85344663f2d0f2a96e613827e",
+  "dirty_worktree": true,
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)",
+  "cargo": "cargo 1.99.0 (5f94df478 2026-08-27) (Homebrew)",
+  "samples": 9,
+  "iterations": 32,
+  "timing_notes": "Timing and allocation runs were sequential, after feature verification, Clippy and both benchmark builds. No CPU affinity or frequency control. Complete scenarios flatten 128 pairs and return 16256; early scenarios stop at 64 values and return 992. Lazy mapcat and apply/concat retain reference lookahead. Compare only within this run.",
+  "commands": [
+    "cargo bench --locked --bench interpreter --bench interpreter_gc --no-run --message-format=json",
+    "cargo bench --locked --features count-allocations --bench interpreter --no-run --message-format=json",
+    "<timing interpreter binary> --samples 9 --iterations 32",
+    "<allocation interpreter binary> --samples 9 --iterations 32 --allocations",
+    "<timing interpreter_gc binary>"
+  ],
+  "sources_sha256": {
+    "Cargo.toml": "9d201d32ff00599f38c1c421267713c21af85f99fab7df10016975571e2ec479",
+    "Cargo.lock": "10250e1cf4c59bab4f4f605d1e460eb8a705ac9315c47f36e68d66b8e94644de",
+    "benches/interpreter.rs": "f53644a233a449a22534d3697805c638d6ad1bca54433ef82090f22c57b92d9b",
+    "benches/interpreter_gc.rs": "1e1a2eb5bb6b4e2adddba58c78bbf4a20b5790a83dd823725db0c44ceff32248",
+    "benches/support/interpreter_allocations.rs": "6eeec6e897bd4af3cfa95280f1e136a8a268160d536acf2cefd144098bedbe2c",
+    "src/analyzer.rs": "287e94fabcaf0c293003ed7f85475600c406298ebd12a733aea9d3e92f52902a",
+    "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+    "src/compiler.rs": "e28a73fa1291e75cd6cc8e58a495e0a3f22b349d7c255a0c7bc53f600e808940",
+    "src/emitter.rs": "4398a62b8ff2ef3118c187ea5054660877f6b4893716b22d153fb4ff0b6ee708",
+    "src/interpreter/arena.rs": "177afd4264b7d11962c0b1b8886dd281210b41ee22c128543856080cc8bff935",
+    "src/interpreter/binding_macros.rs": "f09452b8d4da952571fe95218244a07cecf0a42cb0f8de319b91fcda899bb37f",
+    "src/interpreter/collection_core.rs": "ce3b66427c1e177b5da55d324ef7ca32b1238c3baa01e6391074a3474138c4fb",
+    "src/interpreter/collections.rs": "5fe57c2820ab5653b993df6b336aa3cded93dd05bc77d5abc02d0b41b253e7c3",
+    "src/interpreter/control_macros.rs": "7aa6f82686e0c1157dc9b190c4c4fb411c2648bd8556044db8add60a5f250249",
+    "src/interpreter/deferred.rs": "7ada90af4dc8e9757fbe9885a6a2d1634e98fc90bfbbfaabcdbb26d68d16295e",
+    "src/interpreter/diagnostics.rs": "21f5a68d5f80d6084dde51cba5aa101cd1fdf6be2818be4a90a8654ec9ab5ac3",
+    "src/interpreter/embedding.rs": "6d517a32c6b4364974b40510aa5b46a44dc44e9b53c3e1809c78a3ba8ff56ccc",
+    "src/interpreter/equality.rs": "fb9df9d4214feefffefde847d4d3f31aeb169c2eed2c8ee7948260d1637c0157",
+    "src/interpreter/evaluation.rs": "83c7ddfb9d18627a290ae707500fbeb1bcd20ea7f5160fba77179a5ccb21e597",
+    "src/interpreter/exceptions.rs": "85683c89f0a8728b8b8c62413eca7027f2dac86161feb06f9252bc9ac58c803a",
+    "src/interpreter/io.rs": "5b597c3a4a858891f8ba4871d570fea0d12e8dfae1772fe9a033b40c90b0bdd0",
+    "src/interpreter/iteration_macros.rs": "6984cbe29b567f89562d801990f5b547ff0e0e20a7695b8226fc7d2ccb17ccca",
+    "src/interpreter/lazy_core.rs": "9f4d0c5ea1647899c44133aaf90a702fd2d4ce8e524d439445ea5bc22931628a",
+    "src/interpreter/limits.rs": "ad4faa2410f09b4764c79b996a00c60a860eb50c5ce4acc88b304347f14b1a25",
+    "src/interpreter/loading.rs": "dd762608e46139f0a78221478f45702d42a0efa46142634ce10c6d2d4709a434",
+    "src/interpreter/macros.rs": "adbba17035e2d7ff1ba400a3652e212054d39557d8709dd8b4c6876dbd98cb25",
+    "src/interpreter/mod.rs": "a0021a1e8bc0aed4bb267da77d17aa2c1a4efbc52d45d99d237c132b9a4a961a",
+    "src/interpreter/namespaces.rs": "d6f67139efe117095373ee09b6b93d51d7c9c58f217ee3758d219b8ee00f5304",
+    "src/interpreter/native.rs": "fe9e0f9fa75afb4fe09c8bd32a93f5215636858488893cf41bc4f08f7b8191ed",
+    "src/interpreter/numbers.rs": "6e12887c141083bcaeccebf461bf455dd9884dc8b569c78bda1bcffb3ca30108",
+    "src/interpreter/printing.rs": "6a30ab02a4b4a3ae59625204079ac87d73abd12eaab07dad326b69158caf2e8c",
+    "src/interpreter/reader.rs": "53a906943cc9182261e8a529ff625a786af045f9586b6e1d70a527aeea0e215f",
+    "src/interpreter/reuse.rs": "e3dcc089cac570830bead22c512091f2a06ac7fa72b49a500258b3dcf559e896",
+    "src/interpreter/sequence_core.rs": "11ec326ef3dba91fa33aabe0ce1e9cf6d209748be1bd80cfc1d00423c6fcb2bd",
+    "src/interpreter/sets.rs": "193956e8656b8a4609b4db156078c720144128c2076d1741ee80a9e36b3e157e",
+    "src/interpreter/state.rs": "6ec63b0573141c374ac17046ef99ec787080134bf3390d73bfa04915f3d87ce9",
+    "src/interpreter/strings.rs": "cfabe04f9e94dba263f992be8c085358c6652ebd1b1ee08676e1ca4488544ca9",
+    "src/interpreter/tests.rs": "7bdd1b7989bc7ca18526b4deb9012c045974b6f2f75a87e04d84e224b8bf1be5",
+    "src/interpreter/vars.rs": "adeba6f3e50914e53c3c388c2bbc8611c61f4dd9c2882f799dd5cf40059011c5",
+    "src/interpreter/walk.rs": "6539fbc171067a3faa6c6b067a1717b1aaf7edcb07b1bad939a8fabcb97aba65",
+    "src/lib.rs": "fdc49913ce72b4b0ae72e5c2066eb996ecfd4cf470381bd8fe7fb7c859aad33d",
+    "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+    "src/macro_host.rs": "e8ff93e07b5cc71798b92f6816f1caef93c3454852de54dd71d664017bd7cafa",
+    "src/main.rs": "e2e582e0ba37e282ba3b7664dfa6ab64fb678b3dfa528b8a504c55e53da26ad4",
+    "src/native_cli.rs": "978ef8df5cdda7d9a2a1657626ec13b15d4b05baf1ae97c33da741e43556c0ed",
+    "src/parser.rs": "59dbf27f9a6607795ff4946356ebeb056adc4c0977c0d7918d9c60a5700a843e",
+    "benchmarks/fixtures/interpreter/closures_loop.clj": "80d47d44301a90a45847a51f84c1aa3b206c75921dbabd035a9a26beeaa0fe7b",
+    "benchmarks/fixtures/interpreter/collections.clj": "e1ad11d8cf40dac5500fc6ccb3284713e3d14b5593d823857fcb1aac94659f47",
+    "benchmarks/fixtures/interpreter/embedding.clj": "f7026016d51ba5512446e55e248a371f293ab5966773f95e53a79a83c20707ce",
+    "benchmarks/fixtures/interpreter/lazy.clj": "2f06ebba9817d50e366a3d37b1fcf01900bf4468307c765f557f07872e62ce77",
+    "benchmarks/fixtures/interpreter/main.clj": "861922130c2277549dff358d7c664cf8123303c2dcc14b201097b7a1a635cd35",
+    "benchmarks/fixtures/interpreter/report/main.clj": "d6cca2f88820918be127221cd068f9b6a7646322ec40cc550d73436e6e89efb8",
+    "benchmarks/fixtures/interpreter/report/data.cljc": "9c95b3493d83237fecad7cfe1dbd8741943a7159629bc0634853e51dee5a331f",
+    "benchmarks/fixtures/interpreter/report/metrics.cljc": "ffd79a29c5cd5b95c073a98943620129c48871ec5ee4e3d7e3fbd8f5070111f7"
+  },
+  "binaries_sha256": {
+    "timing/interpreter_gc": "cd4d10c012b41266641b83c9085c67c6386cabe644e321d6c28fd05aa856069a",
+    "timing/interpreter": "fd6f8644a22578e6fe4ab27747c2d8c8b8c0b61292ef57ea370bc2239f3756d7",
+    "allocation/interpreter": "46a9e369335c970bafc4bad73e0ed68822ea3a1df25749381f63b572d5e80ea8"
+  },
+  "summary": {
+    "timings.csv": {
+      "cat_lazy_complete": {
+        "microseconds": {
+          "median": 444.44790625,
+          "mad": 4.561218749999966,
+          "min": 435.069,
+          "max": 521.52475
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "cat_lazy_early": {
+        "microseconds": {
+          "median": 152.671875,
+          "mad": 2.4895937500000116,
+          "min": 148.9453125,
+          "max": 175.53515625
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "cat_xf_complete": {
+        "microseconds": {
+          "median": 398.73696875,
+          "mad": 1.8294062500000337,
+          "min": 393.76953125,
+          "max": 414.53384375
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "cat_xf_early": {
+        "microseconds": {
+          "median": 116.959625,
+          "mad": 2.78125,
+          "min": 109.7799375,
+          "max": 120.50128125
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "mapcat_lazy_complete": {
+        "microseconds": {
+          "median": 446.8854375,
+          "mad": 2.8788749999999936,
+          "min": 438.86065625,
+          "max": 496.58725
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "mapcat_lazy_early": {
+        "microseconds": {
+          "median": 150.16796875,
+          "mad": 2.6080624999999884,
+          "min": 141.40625,
+          "max": 159.28125
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "mapcat_xf_complete": {
+        "microseconds": {
+          "median": 307.77215625,
+          "mad": 11.46875,
+          "min": 293.11978125,
+          "max": 324.7669375
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "mapcat_xf_early": {
+        "microseconds": {
+          "median": 96.306,
+          "mad": 1.9036562499999974,
+          "min": 93.39190625,
+          "max": 102.73046875
+        },
+        "allocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "requested_bytes": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      }
+    },
+    "allocations.csv": {
+      "cat_lazy_complete": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 7755.0,
+          "mad": 0.0,
+          "min": 7755.0,
+          "max": 7755.0
+        },
+        "reallocations": {
+          "median": 130.0,
+          "mad": 0.0,
+          "min": 130.0,
+          "max": 130.3125
+        },
+        "requested_bytes": {
+          "median": 490072.0,
+          "mad": 0.0,
+          "min": 490072.0,
+          "max": 1569368.0
+        }
+      },
+      "cat_lazy_early": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 2626.0,
+          "mad": 0.0,
+          "min": 2626.0,
+          "max": 2626.0
+        },
+        "reallocations": {
+          "median": 34.0,
+          "mad": 0.0,
+          "min": 34.0,
+          "max": 34.21875
+        },
+        "requested_bytes": {
+          "median": 164920.0,
+          "mad": 0.0,
+          "min": 164920.0,
+          "max": 427576.0
+        }
+      },
+      "cat_xf_complete": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 6687.0,
+          "mad": 0.0,
+          "min": 6687.0,
+          "max": 6687.0
+        },
+        "reallocations": {
+          "median": 128.0,
+          "mad": 0.0,
+          "min": 128.0,
+          "max": 128.28125
+        },
+        "requested_bytes": {
+          "median": 453624.0,
+          "mad": 0.0,
+          "min": 453624.0,
+          "max": 991224.0
+        }
+      },
+      "cat_xf_early": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 1958.0,
+          "mad": 0.0,
+          "min": 1958.0,
+          "max": 1958.0
+        },
+        "reallocations": {
+          "median": 32.0,
+          "mad": 0.0,
+          "min": 32.0,
+          "max": 32.15625
+        },
+        "requested_bytes": {
+          "median": 132392.0,
+          "mad": 0.0,
+          "min": 132392.0,
+          "max": 255784.0
+        }
+      },
+      "mapcat_lazy_complete": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 7757.0,
+          "mad": 0.0,
+          "min": 7757.0,
+          "max": 7757.0
+        },
+        "reallocations": {
+          "median": 130.0,
+          "mad": 0.0,
+          "min": 130.0,
+          "max": 130.3125
+        },
+        "requested_bytes": {
+          "median": 490152.0,
+          "mad": 0.0,
+          "min": 490152.0,
+          "max": 1569448.0
+        }
+      },
+      "mapcat_lazy_early": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 2628.0,
+          "mad": 0.0,
+          "min": 2628.0,
+          "max": 2628.0
+        },
+        "reallocations": {
+          "median": 34.0,
+          "mad": 0.0,
+          "min": 34.0,
+          "max": 34.25
+        },
+        "requested_bytes": {
+          "median": 165000.0,
+          "mad": 0.0,
+          "min": 165000.0,
+          "max": 431752.0
+        }
+      },
+      "mapcat_xf_complete": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 5156.0,
+          "mad": 0.0,
+          "min": 5156.0,
+          "max": 5156.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.28125
+        },
+        "requested_bytes": {
+          "median": 353988.0,
+          "mad": 0.0,
+          "min": 353988.0,
+          "max": 653508.0
+        }
+      },
+      "mapcat_xf_early": {
+        "microseconds": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "allocations": {
+          "median": 1587.0,
+          "mad": 0.0,
+          "min": 1587.0,
+          "max": 1587.0
+        },
+        "reallocations": {
+          "median": 0.0,
+          "mad": 0.0,
+          "min": 0.0,
+          "max": 0.125
+        },
+        "requested_bytes": {
+          "median": 108160.0,
+          "mad": 0.0,
+          "min": 108160.0,
+          "max": 170112.0
+        }
+      }
+    }
+  }
+}

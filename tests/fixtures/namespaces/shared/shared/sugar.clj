@@ -1,0 +1,5 @@
+(ns shared.sugar)
+(defmacro twice [x] `(cljs.core/+ ~x ~x))
+(defmacro choose [x] x)
+(defmacro metadata-name [] (str (:foo (meta (:name (:ns &env)))) "/" (:doc (meta (:name (:ns &env))))))
+(defmacro metadata-doc [] (:doc (:ns &env)))

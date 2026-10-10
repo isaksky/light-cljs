@@ -1,0 +1,2 @@
+["/Users/admin/.cache/light-cljs-baselines/light-cljs-58/transducers/bin/interpreter_transducers-allocations", "--samples", "9", "--iterations", "32", "--allocations"]
+samples=9 iterations=32 allocations=true diagnostics=false; GC once per batch; full values validated before timing

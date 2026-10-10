@@ -26,6 +26,294 @@ fn warmed() -> Context {
 }
 
 #[test]
+fn retained_native_transforms_and_cyclic_partial_reducers_reclaim_all_captures() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..64 {
+        let source = c.source("native-xf.clj", "(let [cell (volatile! nil) kept [10] xf (comp (map (fn [x] (if @cell (+ (first kept) x) x))) (filter (fn [x] (>= x (first kept)))) (remove (fn [x] (< x (first kept))))) r (xf (completing conj))] (vreset! cell [xf r (partial r [])]) [xf r])");
+        let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+        let pair = c.eval_form(&form).unwrap();
+        drop((source, form));
+        let xf = pair.nth(0).unwrap().unwrap();
+        let rf = pair.nth(1).unwrap().unwrap();
+        drop(pair);
+        c.collect_garbage();
+        assert_eq!(c.memory_stats().executable_units, 1);
+        let result = c
+            .invoke(&rf, &[c.vector(&[]).unwrap(), c.integer(2)])
+            .unwrap();
+        assert_eq!(integer(result.nth(0).unwrap().unwrap()), 12);
+        let into = c.eval_string("into").unwrap();
+        let result2 = c
+            .invoke(&into, &[c.vector(&[]).unwrap(), xf.clone(), result.clone()])
+            .unwrap();
+        assert_eq!(integer(result2.nth(0).unwrap().unwrap()), 22);
+        drop((result, result2, rf, xf, into));
+        let after = live(c.collect_garbage().after);
+        assert_eq!((after.executable_units, after.sources), (0, 0));
+        if let Some(baseline) = baseline {
+            assert_eq!(after, baseline);
+        } else {
+            baseline = Some(after);
+        }
+    }
+}
+
+#[test]
+fn into_repeated_processes_release_cyclic_transforms_and_targets() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..64 {
+        let value = c.eval_string("(let [xf (fn [rf] (let [cell (volatile! nil) step (fn ([a] (if @cell (rf a) a)) ([a x] (rf a x)))] (vreset! cell step) step))] (into (with-meta [] {:kept [1 2]}) xf [1 2 3]))").unwrap();
+        assert_eq!(value.count(), Some(3));
+        drop(value);
+        let after = live(c.collect_garbage().after);
+        assert_eq!((after.executable_units, after.sources), (0, 0));
+        if let Some(baseline) = baseline {
+            assert_eq!(after, baseline);
+        } else {
+            baseline = Some(after);
+        }
+    }
+}
+
+#[test]
+fn retained_transducers_keep_source_code_and_reclaim_cyclic_process_state() {
+    let mut c = warmed();
+    let source = c.source("saved-xf.clj", "(let [kept 10] (fn [rf] (let [n (volatile! 0)] (fn ([] (rf)) ([a] (rf a)) ([a x] (vswap! n inc) (rf a (+ kept @n x)))))))");
+    let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+    let xf = c.eval_form(&form).unwrap();
+    drop((form, source));
+    c.collect_garbage();
+    assert_eq!(c.memory_stats().executable_units, 1);
+    let transduce = c.eval_string("transduce").unwrap();
+    let rf = c.eval_string("(completing +)").unwrap();
+    for _ in 0..3 {
+        let values = c.vector(&[c.integer(1), c.integer(2)]).unwrap();
+        assert_eq!(
+            integer(
+                c.invoke(&transduce, &[xf.clone(), rf.clone(), c.integer(0), values])
+                    .unwrap()
+            ),
+            26
+        );
+        c.collect_garbage();
+    }
+    drop((transduce, rf, xf));
+    let after = c.collect_garbage().after;
+    assert_eq!((after.executable_units, after.sources), (0, 0));
+    let mut baseline = None;
+    for _ in 0..64 {
+        let value = c.eval_string("(let [cell (volatile! nil) rf (completing (fn ([] []) ([a x] (conj a x))) (fn [a] (if @cell a a)))] (vreset! cell rf) (transduce identity rf [] [1 2 3]))").unwrap();
+        assert_eq!(value.count(), Some(3));
+        drop(value);
+        let after = live(c.collect_garbage().after);
+        assert_eq!((after.executable_units, after.sources), (0, 0));
+        if let Some(baseline) = baseline {
+            assert_eq!(after, baseline);
+        } else {
+            baseline = Some(after);
+        }
+    }
+}
+
+#[test]
+fn counted_reducers_reclaim_failed_abandoned_and_cyclic_state() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..32 {
+        for transform in [
+            "(take 2)",
+            "(drop 1)",
+            "(take-while (fn [x] (if @cell (pos? x) false)))",
+            "(take [cell])",
+            "(drop [cell])",
+        ] {
+            let text = format!(
+                "(let [cell (volatile! nil) xf {transform} r (xf (fn ([a] a) ([a x] (if @cell (conj a x) a))))] (vreset! cell [xf r]) [xf r])"
+            );
+            let source = c.source("counted-reducer.clj", text);
+            let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+            let pair = c.eval_form(&form).unwrap();
+            let reducer = pair.nth(1).unwrap().unwrap();
+            drop((source, form, pair));
+            c.collect_garbage();
+            let result = c.invoke(&reducer, &[c.vector(&[]).unwrap(), c.integer(1)]);
+            assert_eq!(result.is_err(), transform.contains("[cell]"));
+            // Drop before exhaustion/completion, including after failed state
+            // arithmetic. No host root may keep the private state cycle alive.
+            drop((result, reducer));
+            let after = live(c.collect_garbage().after);
+            assert_eq!((after.executable_units, after.sources), (0, 0));
+            if let Some(baseline) = baseline {
+                assert_eq!(after, baseline);
+            } else {
+                baseline = Some(after);
+            }
+        }
+    }
+}
+
+#[test]
+fn cat_reclaims_failed_abandoned_reducers_and_cyclic_captures() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..32 {
+        for fail in [false, true] {
+            let text = format!(
+                "(let [cell (volatile! nil) kept [10] xf (comp (mapcat (fn [x] (if @cell [x] []))) cat (take 3)) r (xf (fn ([a] a) ([a x] (if (= x 2) {} (conj a [kept x])))))] (vreset! cell [xf r (lazy-seq [cell])]) r)",
+                if fail {
+                    "(throw (ex-info \"stopped\" {:cell cell}))"
+                } else {
+                    "(conj a [kept x])"
+                }
+            );
+            let source = c.source("cat-reducer.clj", text);
+            let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+            let reducer = c.eval_form(&form).unwrap();
+            drop((source, form));
+            c.collect_garbage();
+            assert_eq!(c.memory_stats().executable_units, 1);
+            let inputs = c.vector(&[c.integer(1), c.integer(2)]).unwrap();
+            let result = c.invoke(&reducer, &[c.vector(&[]).unwrap(), inputs]);
+            assert_eq!(result.is_err(), fail);
+            drop((result, reducer));
+            let after = live(c.collect_garbage().after);
+            assert_eq!((after.executable_units, after.sources), (0, 0));
+            if let Some(baseline) = baseline {
+                assert_eq!(after, baseline);
+            } else {
+                baseline = Some(after);
+            }
+        }
+    }
+}
+
+#[test]
+fn partition_buffers_reclaim_failed_abandoned_and_cyclic_inputs() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..32 {
+        for outcome in ["success", "failure", "abandon"] {
+            let step = if outcome == "failure" {
+                "(throw (ex-info \"partition\" {}))"
+            } else {
+                "(conj a x)"
+            };
+            let source = c.source("partition-buffer.clj", format!(
+                "(let [cell (volatile! nil) r ((partition-all 3) (fn ([a] (if @cell a a)) ([a x] {step})))] (vreset! cell r) (r [] [cell r (fn [] 42)]) r)"
+            ));
+            let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+            let reducer = c.eval_form(&form).unwrap();
+            drop((source, form));
+            c.collect_garbage();
+            assert_eq!(c.memory_stats().executable_units, 1);
+            if outcome != "abandon" {
+                let result = c.invoke(&reducer, &[c.vector(&[]).unwrap()]);
+                if outcome == "success" {
+                    let result = result.unwrap();
+                    let group = result.nth(0).unwrap().unwrap();
+                    let item = group.nth(0).unwrap().unwrap();
+                    assert_eq!(
+                        integer(c.invoke(&item.nth(2).unwrap().unwrap(), &[]).unwrap()),
+                        42
+                    );
+                } else {
+                    assert!(result.is_err());
+                    // A failed flush cleared the buffer before the callback.
+                    assert_eq!(
+                        c.invoke(&reducer, &[c.vector(&[]).unwrap()])
+                            .unwrap()
+                            .count(),
+                        Some(0)
+                    );
+                }
+            }
+            drop(reducer);
+            let after = live(c.collect_garbage().after);
+            assert_eq!((after.executable_units, after.sources), (0, 0));
+            if let Some(baseline) = baseline {
+                assert_eq!(after, baseline);
+            } else {
+                baseline = Some(after);
+            }
+        }
+    }
+}
+
+#[test]
+fn counted_reducer_state_survives_fork_and_reset_without_changing_owner() {
+    let mut c = warmed();
+    let reducer = c.eval_string("((take 2) (completing conj))").unwrap();
+    let first = c
+        .invoke(&reducer, &[c.vector(&[]).unwrap(), c.integer(1)])
+        .unwrap();
+    let mut child = c.fork().unwrap();
+    c.reset();
+    assert!(
+        c.invoke(&reducer, &[])
+            .unwrap_err()
+            .to_string()
+            .contains("WrongOwner")
+    );
+    drop(c);
+    child.collect_garbage();
+    let second = child.invoke(&reducer, &[first, child.integer(2)]).unwrap();
+    let value = second.reduced_value().unwrap();
+    assert_eq!(value.count(), Some(2));
+    assert_eq!(integer(value.nth(1).unwrap().unwrap()), 2);
+    drop((value, second, reducer));
+    let after = child.collect_garbage().after;
+    assert_eq!((after.sources, after.executable_units), (0, 0));
+}
+
+#[test]
+fn ensure_reduced_retains_and_reclaims_captured_code_on_both_paths() {
+    for already_reduced in [false, true] {
+        let mut c = warmed();
+        let ensure = c.eval_string("ensure-reduced").unwrap();
+        let closure = c.eval_string("(let [x [\"kept\"]] (fn [] x))").unwrap();
+        let closure_id = closure.heap_id().unwrap();
+        let argument = if already_reduced {
+            c.reduced(&closure).unwrap()
+        } else {
+            closure.clone()
+        };
+        let marker = c.invoke(&ensure, std::slice::from_ref(&argument)).unwrap();
+        assert_eq!(marker.same_identity(&argument), already_reduced);
+        drop((ensure, argument, closure));
+        c.collect_garbage();
+        assert_eq!(c.memory_stats().executable_units, 1);
+        let mut child = c.fork().unwrap();
+        c.reset();
+        assert_eq!(
+            c.heap_value(closure_id).unwrap_err(),
+            HandleError::WrongOwner
+        );
+        drop(c);
+        child.collect_garbage();
+        let retained = marker.reduced_value().unwrap();
+        assert_eq!(
+            child
+                .invoke(&retained, &[])
+                .unwrap()
+                .nth(0)
+                .unwrap()
+                .unwrap()
+                .inspect(),
+            ValueView::String("kept".encode_utf16().collect())
+        );
+        drop((marker, retained));
+        let after = child.collect_garbage().after;
+        assert_eq!((after.sources, after.executable_units), (0, 0));
+        assert_eq!(
+            child.heap_value(closure_id).unwrap_err(),
+            HandleError::StaleId
+        );
+    }
+}
+
+#[test]
 fn collection_tree_tracing_keeps_wide_vectors_map_keys_collisions_and_sets_live() {
     let mut c = Context::new();
     let values: Vec<_> = (0..1_025)
@@ -270,4 +558,209 @@ fn module_reload_cache_and_retained_handles_survive_reset_and_reclaim_history() 
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn protocol_descriptors_collect_after_unmapping_and_rejected_declarations_do_not_leak() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..48 {
+        c.eval_string("(defprotocol P (f [x]))").unwrap();
+        let p = c.eval_string("P").unwrap();
+        let f = c.eval_string("f").unwrap();
+        assert!(c.eval_string("(defprotocol P (f [x] [x y]))").is_err());
+        assert!(c.eval_string("(defprotocol Bad (g [x & xs]))").is_err());
+        let ns = c.current_namespace().namespace_id().unwrap();
+        c.unmap_var(ns, &Name::new(None, "P")).unwrap();
+        c.unmap_var(ns, &Name::new(None, "f")).unwrap();
+        c.collect_garbage();
+        assert_eq!(
+            p.inspect(),
+            ValueView::Protocol(Name::new(Some("user"), "P"))
+        );
+        assert!(c.invoke(&f, &[c.nil()]).is_err());
+        drop((p, f));
+        let after = live(c.collect_garbage().after);
+        assert_eq!((after.executable_units, after.sources), (0, 0));
+        if let Some(expected) = baseline {
+            assert_eq!(after, expected);
+        } else {
+            baseline = Some(after);
+        }
+    }
+}
+
+#[test]
+fn reify_receiver_capture_cycles_and_returned_closures_collect_without_slot_growth() {
+    let mut c = warmed();
+    c.eval_string("(defprotocol P (p [x]))").unwrap();
+    let method = c.eval_string("p").unwrap();
+    let mut baseline = None;
+    for _ in 0..64 {
+        let source = c.source("reify-capture.clj", "(let [cell (volatile! nil) kept [42] o (reify P (p [this] (fn [] (if (= @cell this) (first kept) 0))))] (vreset! cell o) o)");
+        let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
+        let object = c.eval_form(&form).unwrap();
+        drop((source, form));
+        c.collect_garbage();
+        let closure = c.invoke(&method, std::slice::from_ref(&object)).unwrap();
+        let id = object.heap_id().unwrap();
+        drop(object);
+        c.collect_garbage();
+        assert_eq!(c.heap_value(id).unwrap().inspect(), ValueView::Reify);
+        assert_eq!(integer(c.invoke(&closure, &[]).unwrap()), 42);
+        drop(closure);
+        let after = c.collect_garbage().after;
+        assert!(matches!(c.heap_value(id), Err(HandleError::StaleId)));
+        assert_eq!((after.executable_units, after.sources), (0, 0));
+        if let Some(expected) = baseline {
+            assert_eq!(after, expected);
+        } else {
+            baseline = Some(after);
+        }
+    }
+}
+
+#[test]
+fn record_generations_fields_metadata_and_cycles_reclaim_to_warmed_counts() {
+    let mut c = warmed();
+    let mut baseline = None;
+    for _ in 0..64 {
+        c.eval_string("(defrecord R [cell value])").unwrap();
+        let old_type = c.eval_string("R").unwrap();
+        let type_id = old_type.heap_id().unwrap();
+        let object = c.eval_string("(let [cell (atom nil) kept [1] r (with-meta (->R cell (map (fn [n] (+ n (first kept))) [1 2])) {:kept [7]})] (reset! cell r) r)").unwrap();
+        let object_id = object.heap_id().unwrap();
+        c.eval_string("(defrecord R [x])").unwrap();
+        drop(old_type);
+        c.collect_garbage();
+        assert_eq!(
+            c.heap_value(type_id).unwrap().inspect(),
+            ValueView::RecordType(Name::new(Some("user"), "R"))
+        );
+        assert_eq!(
+            object
+                .metadata()
+                .unwrap()
+                .get(&c.keyword(Name::new(None, "kept")))
+                .unwrap()
+                .unwrap()
+                .count(),
+            Some(1)
+        );
+        let values = object
+            .get(&c.keyword(Name::new(None, "value")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c.sequence_elements(&values)
+                .unwrap()
+                .into_iter()
+                .map(integer)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        drop(values);
+        drop(object);
+        let after = live(c.collect_garbage().after);
+        assert!(matches!(c.heap_value(type_id), Err(HandleError::StaleId)));
+        assert!(matches!(c.heap_value(object_id), Err(HandleError::StaleId)));
+        if let Some(expected) = baseline {
+            assert_eq!(after, expected);
+        } else {
+            baseline = Some(after);
+        }
+    }
+    let constructor = c.eval_string("->R").unwrap();
+    let namespace = c.current_namespace().namespace_id().unwrap();
+    for name in ["R", "->R", "map->R"] {
+        c.unmap_var(namespace, &Name::new(None, name)).unwrap();
+    }
+    c.collect_garbage();
+    let record = c.invoke(&constructor, &[c.integer(42)]).unwrap();
+    assert_eq!(
+        record
+            .get(&c.keyword(Name::new(None, "x")))
+            .unwrap()
+            .unwrap()
+            .inspect(),
+        ValueView::Integer(42)
+    );
+    drop((record, constructor));
+    let after = c.collect_garbage().after;
+    assert_eq!((after.sources, after.executable_units), (0, 0));
+}
+
+#[test]
+fn record_method_generations_release_captures_and_keep_returned_closure_cycles() {
+    let mut c = warmed();
+    c.eval_string("(defprotocol P (p [x]))").unwrap();
+    let method = c.eval_string("p").unwrap();
+    let mut baseline = None;
+    for _ in 0..64 {
+        c.eval_string("(let [kept [40]] (defrecord R [cell x] P (p [this] (fn [] (if (= @cell this) (+ x (first kept) (:m (meta this))) 0)))))").unwrap();
+        let old_type = c.eval_string("R").unwrap().heap_id().unwrap();
+        let object = c
+            .eval_string("(let [a (atom nil) r (with-meta (->R a 1) {:m 1})] (reset! a r) r)")
+            .unwrap();
+        let closure = c.invoke(&method, std::slice::from_ref(&object)).unwrap();
+        let object_id = object.heap_id().unwrap();
+        c.eval_string("(defrecord R [x] P (p [_] x))").unwrap();
+        drop(object);
+        c.collect_garbage();
+        assert!(c.heap_value(old_type).is_ok());
+        assert!(c.heap_value(object_id).is_ok());
+        assert_eq!(integer(c.invoke(&closure, &[]).unwrap()), 42);
+        drop(closure);
+        let after = live(c.collect_garbage().after);
+        assert!(matches!(c.heap_value(old_type), Err(HandleError::StaleId)));
+        assert!(matches!(c.heap_value(object_id), Err(HandleError::StaleId)));
+        if let Some(expected) = baseline {
+            assert_eq!(after, expected);
+        } else {
+            baseline = Some(after);
+        }
+    }
+    let namespace = c.current_namespace().namespace_id().unwrap();
+    for name in ["R", "->R", "map->R"] {
+        c.unmap_var(namespace, &Name::new(None, name)).unwrap();
+    }
+    let after = c.collect_garbage().after;
+    assert_eq!((after.sources, after.executable_units), (0, 0));
+}
+#[test]
+fn replaced_external_methods_and_obsolete_generations_collect_to_warmed_counts() {
+    let mut c = warmed();
+    c.eval_string("(defprotocol P (p [x])) (defrecord R [n]) (extend-type R P (p [r] (:n r)))")
+        .unwrap();
+    let mut baseline = None;
+    for _ in 0..64 {
+        let capture = c
+            .eval_string(
+                "(let [kept [40]] (extend-type R P (p [r] (fn [] (+ (:n r) (first kept))))) kept)",
+            )
+            .unwrap();
+        let capture_id = capture.heap_id().unwrap();
+        let closure = c.eval_string("(p (->R 2))").unwrap();
+        drop(capture);
+        c.eval_string("(extend-type R P (p [r] (:n r)))").unwrap();
+        c.collect_garbage();
+        assert!(c.heap_value(capture_id).is_ok());
+        assert_eq!(integer(c.invoke(&closure, &[]).unwrap()), 42);
+        drop(closure);
+        assert!(c.eval_string("(extend-type R P (p [_] invalid))").is_err());
+        let old_type = c.eval_string("R").unwrap().heap_id().unwrap();
+        c.eval_string("(defrecord R [n]) (extend-type R P (p [r] (:n r)))")
+            .unwrap();
+        let after = c.collect_garbage().after;
+        assert!(matches!(c.heap_value(old_type), Err(HandleError::StaleId)));
+        assert!(matches!(
+            c.heap_value(capture_id),
+            Err(HandleError::StaleId)
+        ));
+        if let Some(expected) = baseline {
+            assert_eq!(after, expected);
+        } else {
+            baseline = Some(after);
+        }
+    }
 }

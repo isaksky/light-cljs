@@ -20,6 +20,7 @@ fn read(c: &Context, text: &str) -> Result<Form, ReadError> {
 fn wire(value: &RootedValue) -> protocol::Value {
     use protocol::Value as V;
     match value.inspect() {
+        ValueView::CompilerLiteral(_) => panic!("compiler-only reader value in native fixture"),
         ValueView::LazySeq | ValueView::Delay => {
             panic!("deferred values must be projected by the evaluated fixture")
         }
@@ -33,6 +34,10 @@ fn wire(value: &RootedValue) -> protocol::Value {
         | ValueView::Input
         | ValueView::Output
         | ValueView::Volatile
+        | ValueView::Protocol(_)
+        | ValueView::Reify
+        | ValueView::Record(_)
+        | ValueView::RecordType(_)
         | ValueView::Reduced => {
             panic!("callables are outside fixture transport")
         }

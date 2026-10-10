@@ -140,3 +140,60 @@ No compiler, reader, language-surface, or CI policy change was needed. The
 existing reader/corpus evidence remains in `milestone-evidence.md`; this work
 reran the affected execution, provenance, and reference paths rather than
 claiming a new whole-upstream-suite result.
+
+
+## Typed collection extension (2026-10-09)
+
+The shared recursive encoder now receives trusted shallow backend adapters.
+Language vectors use `{ "$vector": [...] }`. Keywords use
+`{ "$keyword": { "namespace": ..., "name": ..., "spelling": ... } }`;
+namespace preserves nil, string, and host undefined distinctions. Full spelling
+retains the unequal identity of `(keyword "a/b/c")` and `(keyword "a")`, whose
+reported namespace/name pairs happen to match in the pinned runtime.
+Plain arrays retain the original array encoding, and plain objects retain
+`$object`, including forged tag-shaped objects. Adapter validation and cycles
+through language values remain harness failures outside compiled-case catches.
+
+Both backends compile each case in the same explicit `semantic.caseN` namespace,
+with a virtual `cljs.core` alias, while metadata keeps the original source.
+Standalone `cljs.user` behavior is separately covered by analyzer/API tests.
+Independent expected-byte probes cover typed nesting, repeated values, lone
+surrogates, full keyword spellings, forged tags, invalid adapters and cycles.
+The original 244 cases remain; the appended hand-authored vector, keyword and core-function rows are
+identified in the provenance manifest and exercised by the existing runner.
+See [the bounded runtime audit](compiler-collections-runtime.md) for direct
+runtime checks and explicit host/conversion domain restrictions.
+
+## Structural map outcomes (2026-10-09)
+
+The shared encoder now emits `{"$map":[[encoded-key,encoded-value],...],"count":N}`.
+Each backend supplies only a trusted shallow adapter. It verifies count/cardinality,
+entry shape and duplicate complete encoded keys before sorting complete entries;
+vector/list/seq/trace ordering remains unchanged. Independent probes exercise
+forged host tags, cycles, reordered entries, nil/false/undefined values and
+duplicate nested map keys. The corpus has 410 passing typed outcomes against
+Maven ClojureScript 1.12.134, including the exact immutable-map user acceptance.
+Direct-source compiler optimizer differences are asserted independently and
+documented in compiler-collections-runtime.md; they are not normalized away.
+
+
+## Structural set outcomes (2026-10-09)
+
+The common encoder adds `{"$set":[encoded-member,...],"count":N}` through trusted
+backend adapters. It validates count/cardinality and rejects duplicate complete
+encoded members (including reordered nested sets) and cycles before sorting.
+Independent probes show that set-derived sequence tags and order remain unchanged,
+and host objects cannot impersonate sets. The pinned corpus now has 460 passing
+outcomes, including 50 set additions. Source literal traversal and unchecked direct
+constructor differences have dedicated independent assertions and exact evidence
+in [the runtime audit](compiler-collections-runtime.md#structural-sets-2026-10-09).
+
+## Finite reduction outcomes (2026-10-09)
+
+The pinned corpus now has 517 passing complete outcomes, including 57 new
+finite-reduction, Reduced scalar-observation and Number-addition cases. Both
+backend adapters identify raw Reduced markers as opaque; the shared encoder
+rejects them outside compiled-case catches, including when nested or traced.
+They cannot silently become maps or plain objects. No ordering, marker-layer,
+exception or Number normalization was added. See the
+[reduction audit](compiler-collections-runtime.md#finite-reductions-2026-10-09).

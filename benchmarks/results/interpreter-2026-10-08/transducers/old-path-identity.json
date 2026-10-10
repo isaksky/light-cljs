@@ -1,0 +1,18 @@
+{
+  "allocator_sha256": "6eeec6e897bd4af3cfa95280f1e136a8a268160d536acf2cefd144098bedbe2c",
+  "archive_sha256": "c0b9d6adc696090cb97f64637780bf61f4c97a9ac3e5153a2efc405e9b247051",
+  "baseline": "/Users/admin/.cache/light-cljs-baselines/light-cljs-44/verified-baseline",
+  "current_library_sha256": "095a7cb8be05b700ad62686f4ad5f94e074289fe77871d91cc3b9c9a804c4740",
+  "exact_fixture_manifest": {
+    "benchmarks/fixtures/interpreter/closures_loop.clj": "80d47d44301a90a45847a51f84c1aa3b206c75921dbabd035a9a26beeaa0fe7b",
+    "benchmarks/fixtures/interpreter/collections.clj": "e1ad11d8cf40dac5500fc6ccb3284713e3d14b5593d823857fcb1aac94659f47",
+    "benchmarks/fixtures/interpreter/embedding.clj": "f7026016d51ba5512446e55e248a371f293ab5966773f95e53a79a83c20707ce",
+    "benchmarks/fixtures/interpreter/lazy.clj": "2f06ebba9817d50e366a3d37b1fcf01900bf4468307c765f557f07872e62ce77",
+    "benchmarks/fixtures/interpreter/main.clj": "861922130c2277549dff358d7c664cf8123303c2dcc14b201097b7a1a635cd35",
+    "benchmarks/fixtures/interpreter/report/data.cljc": "9c95b3493d83237fecad7cfe1dbd8741943a7159629bc0634853e51dee5a331f",
+    "benchmarks/fixtures/interpreter/report/main.clj": "d6cca2f88820918be127221cd068f9b6a7646322ec40cc550d73436e6e89efb8",
+    "benchmarks/fixtures/interpreter/report/metrics.cljc": "ffd79a29c5cd5b95c073a98943620129c48871ec5ee4e3d7e3fbd8f5070111f7"
+  },
+  "harness_sha256": "81affefe783dc27a64a32c51934814f15b47665ccbb489c97c8afe87d7f55799",
+  "scope": "Unchanged archived interpreter harness with its exact original fixtures; new transducer fixtures are a separate measurement. No general-driver manifest override."
+}

@@ -26,7 +26,7 @@ fn items(
             context.accounting.work(units.len() as u64)?;
             Ok(units.iter().map(|u| context.character(*u)).collect())
         }
-        ValueView::Map(_) => value
+        ValueView::Map(_) | ValueView::Record(_) => value
             .entries()?
             .into_iter()
             .map(|(k, v)| context.map_entry(&k, &v).map_err(Into::into))
@@ -169,7 +169,7 @@ fn lookup(
             ValueView::Integer(i) => Ok(value.get(&context.integer(i as i32 as i64))?),
             _ => Ok(None),
         },
-        ValueView::Map(_) | ValueView::Set(_) => {
+        ValueView::Map(_) | ValueView::Record(_) | ValueView::Set(_) => {
             context.realize_key(key)?;
             Ok(value.get(key)?)
         }
@@ -211,7 +211,7 @@ pub(super) fn conj(
     if matches!(value.inspect(), ValueView::Set(_)) {
         context.realize_key(member)?;
     }
-    if matches!(value.inspect(), ValueView::Map(_))
+    if matches!(value.inspect(), ValueView::Map(_) | ValueView::Record(_))
         && matches!(member.inspect(), ValueView::Vector(_))
         && let Some(key) = member.nth(0)?
     {
@@ -219,7 +219,7 @@ pub(super) fn conj(
     }
     match value.inspect() {
         ValueView::Nil => Ok(context.list(std::slice::from_ref(member))?),
-        ValueView::Map(_) => match member.inspect() {
+        ValueView::Map(_) | ValueView::Record(_) => match member.inspect() {
             ValueView::Nil => Ok(value.clone()),
             ValueView::Vector(_) => Ok(context.conj(value, member)?),
             _ => {
@@ -308,12 +308,12 @@ pub(super) fn select_keys(
     while let Some(key) = keys.next(context)? {
         if !matches!(
             source.inspect(),
-            ValueView::Nil | ValueView::Map(_) | ValueView::Vector(_)
+            ValueView::Nil | ValueView::Map(_) | ValueView::Record(_) | ValueView::Vector(_)
         ) {
             return Err(type_error(0, "associative value"));
         }
         if let Some(value) = lookup(context, source, &key)? {
-            let key = if matches!(source.inspect(), ValueView::Map(_)) {
+            let key = if matches!(source.inspect(), ValueView::Map(_) | ValueView::Record(_)) {
                 context.retained_key(source, &key)?.unwrap()
             } else {
                 key
@@ -464,6 +464,7 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
                 args[0].inspect(),
                 ValueView::Nil
                     | ValueView::Map(_)
+                    | ValueView::Record(_)
                     | ValueView::Set(_)
                     | ValueView::Vector(_)
                     | ValueView::String(_)
@@ -487,18 +488,22 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
             if nil(&args[0]) {
                 return Ok(context.nil());
             }
-            if !matches!(args[0].inspect(), ValueView::Map(_) | ValueView::Vector(_)) {
+            if !matches!(
+                args[0].inspect(),
+                ValueView::Map(_) | ValueView::Record(_) | ValueView::Vector(_)
+            ) {
                 return Err(type_error(0, "associative value"));
             }
             match lookup(context, &args[0], &args[1])? {
                 None => Ok(context.nil()),
                 Some(value) => {
                     // find retains the original equal key representative.
-                    let key = if matches!(args[0].inspect(), ValueView::Map(_)) {
-                        context.retained_key(&args[0], &args[1])?.unwrap()
-                    } else {
-                        args[1].clone()
-                    };
+                    let key =
+                        if matches!(args[0].inspect(), ValueView::Map(_) | ValueView::Record(_)) {
+                            context.retained_key(&args[0], &args[1])?.unwrap()
+                        } else {
+                            args[1].clone()
+                        };
                     Ok(context.map_entry(&key, &value)?)
                 }
             }
@@ -586,6 +591,7 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
                 | ValueView::Seq(n)
                 | ValueView::Vector(n)
                 | ValueView::Map(n)
+                | ValueView::Record(n)
                 | ValueView::Set(n) => n == 0,
                 _ => return Err(type_error(0, "seqable value")),
             };
@@ -598,6 +604,7 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
                 ValueView::Vector(_) if context.is_map_entry(&args[0]) => return Ok(context.nil()),
                 ValueView::Vector(_) => context.vector(&[])?,
                 ValueView::Map(_) => context.map(&[])?,
+                ValueView::Record(_) => return Err(CollectionError::UnsupportedRecordEmpty.into()),
                 ValueView::Set(_) => context.set(&[])?,
                 _ => return Ok(context.nil()),
             };
@@ -679,6 +686,7 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
                 | ValueView::List(_)
                 | ValueView::Seq(_)
                 | ValueView::Map(_)
+                | ValueView::Record(_)
                 | ValueView::Set(_)
                 | ValueView::Vector(_)
         ))),

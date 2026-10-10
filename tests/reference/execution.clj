@@ -45,7 +45,7 @@
 (def expected-settings
   {:optimizations :none :static-fns false :def-emits-var false})
 
-(defn checked-build [source output main checked-namespaces]
+(defn checked-build [source output main checked-namespaces & [nodejs-rt]]
   (let [empty-env ana/empty-env
         analyze ana/analyze
         observed (atom #{})]
@@ -61,10 +61,13 @@
                                          :def-emits-var (:def-emits-var (first args))}]
                           (assert (= expected-settings effective)
                                   (str "Unexpected reference settings: " effective))
+                          (when (some? nodejs-rt)
+                            (assert (= nodejs-rt (:nodejs-rt (ana/compiler-options)))
+                                    "Unexpected effective :nodejs-rt setting"))
                           (swap! observed conj effective)))
                       (apply analyze args))]
-        (build/build (str source)
-                     {:main main
+        (build/build (if (instance? java.io.File source) (str source) source)
+                     (cond-> {:main main
                       :target :nodejs
                       :optimizations :none
                       :static-fns false
@@ -72,10 +75,13 @@
                       :output-to (str (io/file output "reference.js"))
                       :output-dir (str (io/file output "out"))
                       :asset-path "out"
-                      :parallel-build false})))
+                      :parallel-build false}
+                       (some? nodejs-rt) (assoc :nodejs-rt nodejs-rt)))))
     (assert (= #{expected-settings} @observed)
             "No fixture analysis settings were observed")
-    (println "REFERENCE SETTINGS" (pr-str expected-settings))))
+    (println "REFERENCE SETTINGS" (pr-str expected-settings))
+    (when (some? nodejs-rt)
+      (println "REFERENCE NODEJS_RT" (pr-str nodejs-rt)))))
 
 (defn read-cases [path hex-source?]
   (->> (str/split-lines (slurp path))
@@ -90,10 +96,38 @@
                                                   (re-seq #".." source))) "UTF-8"))
                        source)])))))
 
+;; One shallow backend adapter for case and complete-program observations.
+(def inspect-value-source
+  (str
+    "(set! (.-lightInspectValue js/globalThis)\n"
+    "  (fn [value]\n"
+    "    (cond\n"
+    "      (reduced? value) (js-obj \"kind\" \"opaque\")\n"
+    "      (keyword? value)\n"
+    "      (js-obj \"kind\" \"keyword\" \"namespace\" (namespace value) \"name\" (name value) \"spelling\" (.-fqn value))\n"
+    "      (symbol? value)\n"
+    "      (js-obj \"kind\" \"symbol\" \"namespace\" (namespace value) \"name\" (name value) \"spelling\" (.-str value))\n"
+    "      (set? value)\n"
+    "      (let [items (array)]\n"
+    "        (doseq [member value] (.push items member))\n"
+    "        (js-obj \"kind\" \"set\" \"items\" items \"count\" (count value)))\n"
+    "      (map? value)\n"
+    "      (let [entries (array)]\n"
+    "        (doseq [[k v] value] (.push entries (array k v)))\n"
+    "        (js-obj \"kind\" \"map\" \"entries\" entries \"count\" (count value)))\n"
+    "      (or (vector? value) (seq? value) (list? value))\n"
+    "      (let [items (array)\n"
+    "            kind (cond (vector? value) \"vector\"\n"
+    "                       (or (instance? cljs.core/List value) (instance? cljs.core/EmptyList value)) \"list\"\n"
+    "                       :else \"seq\")]\n"
+    "        (loop [s (seq value)] (when s (.push items (first s)) (recur (next s))))\n"
+    "        (js-obj \"kind\" kind \"items\" items))\n"
+    "      :else nil)))\n"))
+
 (try
-  (let [[kind identity checkout output mode input entry] *command-line-args*]
-    (assert output (str "Usage: execution.clj release 1.12.134 - OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS | analysis TSV]"
-                        " or checkout COMMIT CHECKOUT OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS | analysis TSV]"))
+  (let [[kind identity checkout output mode input entry exported program-nodejs-rt] *command-line-args*]
+    (assert output (str "Usage: execution.clj release 1.12.134 - OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS [EXPORTED_FN] | analysis TSV]"
+                        " or checkout COMMIT CHECKOUT OUTPUT [cases TSV | cases-hex TSV | program SOURCE_ROOT ENTRY_NS [EXPORTED_FN] | analysis TSV]"))
     (checked-reference kind identity checkout)
     (case (or mode "cases")
       "analysis"
@@ -119,7 +153,7 @@
           (let [file (io/file src "semantic" (str (last (str/split (str case-ns) #"\.")) ".cljs"))]
             (io/make-parents file)
             (spit file (str "; Case " id "\n"
-                            "(ns " case-ns ")\n(def run (fn* [observe] " source "))\n"))))
+                            "(ns " case-ns " (:require [cljs.core :as c]))\n(def run (fn* [observe] " source "))\n"))))
         (io/make-parents source-file)
         (spit source-file
               (str "(ns semantic.reference (:require "
@@ -129,19 +163,34 @@
                    "(set! (.-lightCaseMetadata js/globalThis) (array\n"
                    (str/join "\n" (map (fn [[id source]]
                                          (str "(array " (pr-str id) " " (pr-str source) ")")) cases))
-                   "))\n"))
+                   "))\n"
+                   inspect-value-source))
         (checked-build src output 'semantic.reference
                        (conj (set namespaces) 'semantic.reference)))
       "program"
       (do
         (assert (and input entry) "Program mode requires SOURCE_ROOT and ENTRY_NS")
+        (assert (or (nil? program-nodejs-rt) (= "false" program-nodejs-rt))
+                "Only the explicit external-global program setting nodejs-rt=false is supported")
         ;; Verify effective settings in every namespace under the fixture root.
         (let [namespaces (->> (file-seq (io/file input))
-                              (filter #(str/ends-with? (str %) ".cljs"))
+                              (filter #(or (str/ends-with? (str %) ".cljs")
+                                           (str/ends-with? (str %) ".cljc")))
                               (map #(with-open [reader (java.io.PushbackReader. (io/reader %))]
-                                      (second (read reader))))
+                                      (second (read {:read-cond :allow :features #{:cljs}} reader))))
                               set)]
-          (checked-build input output (symbol entry) namespaces)))
+          (if exported
+            (let [src (io/file output "observer-src")
+                  file (io/file src "semantic" "program.cljs")]
+              (assert (re-matches #"[A-Za-z][A-Za-z0-9_-]*" exported)
+                      "Program export must be a simple function name")
+              (io/make-parents file)
+              (spit file (str "(ns semantic.program (:require [" entry "]))\n"
+                              "(set! (.-lightProgramRun js/globalThis) " entry "/" exported ")\n"
+                              (str/replace inspect-value-source "lightInspectValue" "lightProgramInspectValue")))
+              (checked-build (build/inputs input (str src)) output 'semantic.program
+                             (conj namespaces 'semantic.program) (when program-nodejs-rt false)))
+            (checked-build input output (symbol entry) namespaces (when program-nodejs-rt false)))))
       (throw (ex-info "Unknown reference harness mode" {:mode mode})))
     ;; Detect a checkout changed while it was compiling as well.
     (checked-reference kind identity checkout))

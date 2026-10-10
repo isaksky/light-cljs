@@ -1,0 +1,166 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 51.60s
+     Running tests/execution.rs (target/debug/deps/execution-2ba88674580f5f0a)
+
+running 8 tests
+GENERATED v1 seed 0
+GENERATED v1 seed 1
+GENERATED v1 seed 2
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths [] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-analysis-50651-0' 'analysis' 'tests/fixtures/analysis-boundaries.tsv'
+GENERATED v1 seed 3
+GENERATED v1 seed 17
+GENERATED v1 seed 42
+GENERATED v1 seed 99
+GENERATED v1 seed 255
+GENERATED v1 seed 1024
+GENERATED v1 seed 65535
+GENERATED v1 seed 24301
+GENERATED v1 seed 18446744073709551615
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths ["/Users/admin/src/light-cljs/tests/fixtures/namespaces/collections"] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-collection-program-50651-9' 'program' '/Users/admin/src/light-cljs/tests/fixtures/namespaces/collections' 'batch.main' 'run'
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths ["/Users/admin/src/light-cljs/tests/fixtures/namespaces/collections"] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-lexical-namespaces-50651-10' 'program' '/Users/admin/src/light-cljs/tests/fixtures/namespaces' 'lexical.main'
+REFERENCE NODE v24.18.0
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths [] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11'
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths [] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-generated-v1-50651-12' 'cases' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-generated-v1-50651-7/cases.tsv'
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths ["/Users/admin/src/light-cljs/tests/fixtures/namespaces/collections"] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-namespaces-50651-13' 'program' '/Users/admin/src/light-cljs/examples/namespaces' 'demo.main'
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths ["/Users/admin/src/light-cljs/tests/fixtures/namespaces/collections"] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-dependency-order-50651-14' 'program' '/Users/admin/src/light-cljs/tests/fixtures/namespaces' 'order.main'
+REFERENCE NODE v24.18.0
+REFERENCE INVOCATION cd '/Users/admin/src/light-cljs' && 'clojure' '-Srepro' '-Sdeps' '{:paths ["/Users/admin/src/light-cljs/tests/fixtures/namespaces/collections"] :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}' '-M' 'tests/reference/execution.clj' 'release' '1.12.134' '-' '/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-slash-bindings-50651-15' 'program' '/Users/admin/src/light-cljs/tests/fixtures/namespaces' 'boundary.main'
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+light-cljs and Release produced exactly stdout 4\n for demo.main
+test namespace_program_matches_standard_clojurescript_stdout ... ok
+WARNING: Namespace lexical.static contains a reserved JavaScript keyword, the corresponding Google Closure namespace will be munged to lexical.static$ at line 1 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/static.cljs
+WARNING: value at line 2 is being replaced at line 6 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/static.cljs
+WARNING: value at line 3 is being replaced at line 5 /Users/admin/src/light-cljs/tests/fixtures/namespaces/order/main.cljs
+WARNING: / already refers to: cljs.core// being replaced by: boundary.names// at line 2 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/names.cljs
+WARNING: / already refers to: cljs.core// being replaced by: boundary.main// at line 2 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/main.cljs
+WARNING: / at line 2 is being replaced at line 8 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/main.cljs
+WARNING: value at line 2 is being replaced at line 14 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/main.cljs
+
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+light-cljs and Release initialized the shared dependency once, in matching order
+test dependency_initialization_matches_standard_clojurescript ... ok
+WARNING: Namespace lexical.static contains a reserved JavaScript keyword, the corresponding Google Closure namespace will be munged to lexical.static$ at line 1 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/static.cljs
+WARNING: value at line 2 is being replaced at line 6 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/static.cljs
+WARNING: value at line 3 is being replaced at line 5 /Users/admin/src/light-cljs/tests/fixtures/namespaces/order/main.cljs
+WARNING: / already refers to: cljs.core// being replaced by: boundary.names// at line 2 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/names.cljs
+WARNING: / already refers to: cljs.core// being replaced by: boundary.main// at line 2 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/main.cljs
+WARNING: / at line 2 is being replaced at line 8 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/main.cljs
+WARNING: value at line 2 is being replaced at line 14 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/main.cljs
+
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+WARNING: Namespace lexical.static contains a reserved JavaScript keyword, the corresponding Google Closure namespace will be munged to lexical.static$ at line 1 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/static.cljs
+WARNING: value at line 2 is being replaced at line 6 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/static.cljs
+WARNING: value at line 3 is being replaced at line 5 /Users/admin/src/light-cljs/tests/fixtures/namespaces/order/main.cljs
+WARNING: / already refers to: cljs.core// being replaced by: boundary.names// at line 2 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/names.cljs
+WARNING: / already refers to: cljs.core// being replaced by: boundary.main// at line 2 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/main.cljs
+WARNING: / at line 2 is being replaced at line 8 /Users/admin/src/light-cljs/tests/fixtures/namespaces/boundary/main.cljs
+WARNING: value at line 2 is being replaced at line 14 /Users/admin/src/light-cljs/tests/fixtures/namespaces/lexical/main.cljs
+
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+light-cljs and Release matched lexical captures, aliases, namespace identity and redefinition
+test lexical_namespace_bindings_match_standard_clojurescript ... ok
+test slash_bindings_match_standard_clojurescript_across_namespaces ... ok
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+Matched typed collection program result, report, nested generated data, ordered effects and fresh processes against Release
+test collection_namespace_macros_match_standard_clojurescript_typed_outcomes ... ok
+Matched 48 generated programs (12 seeds × 4 variants), outcomes and traces against Release
+test generated::generated_programs_match_standard_clojurescript ... ok
+WARNING: f at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case140.cljs
+WARNING: answer at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case83.cljs
+WARNING: Wrong number of args (4) passed to cljs.core/reduce at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case502.cljs
+WARNING: let already refers to: cljs.core/let being replaced by: semantic.case88/let at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case88.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/count at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case228.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/name at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case228.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/namespace at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case228.cljs
+WARNING: Wrong number of args (0) passed to cljs.core/deref at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case511.cljs
+WARNING: r at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case375.cljs
+WARNING: / already refers to: cljs.core// being replaced by: semantic.case191// at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case191.cljs
+WARNING: Wrong number of args (2) passed to semantic.case419/f at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case419.cljs
+WARNING: answer at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case82.cljs
+WARNING: Wrong number of args (2) passed to f at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case418.cljs
+WARNING: js/Math is shadowed by a local at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case100.cljs
+WARNING: target at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case198.cljs
+WARNING: f at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case143.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/count at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case309.cljs
+WARNING: x at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case124.cljs
+WARNING: f at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case139.cljs
+WARNING: Wrong number of args (0) passed to cljs.core/reduced? at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case392.cljs
+WARNING: Wrong number of args (0) passed to cljs.core/unreduced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case392.cljs
+WARNING: Wrong number of args (0) passed to cljs.core/reduced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case392.cljs
+WARNING: Wrong number of args (1) passed to semantic.case413/f at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case413.cljs
+WARNING: Wrong number of args (0) passed to cljs.core/= at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case230.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/first at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case266.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/rest at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case266.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/next at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case266.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/seq at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case266.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/count at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case349.cljs
+WARNING: Wrong number of args (1) passed to cljs.core/reduce at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case501.cljs
+WARNING: x at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case86.cljs
+WARNING: f at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case77.cljs
+WARNING: Math at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case123.cljs
+WARNING: js/Math is shadowed by a local at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case123.cljs
+WARNING: vector already refers to: cljs.core/vector being replaced by: semantic.case209/vector at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case209.cljs
+WARNING: when already refers to: cljs.core/when being replaced by: semantic.case195/when at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case195.cljs
+WARNING: Wrong number of args (0) passed to cljs.core/reduce at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case500.cljs
+WARNING: vector already refers to: cljs.core/vector being replaced by: semantic.case208/vector at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case208.cljs
+WARNING: get already refers to: cljs.core/get being replaced by: semantic.case208/get at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case208.cljs
+WARNING: a at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case161.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/deref at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case391.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/reduced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case391.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/reduced? at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case391.cljs
+WARNING: Wrong number of args (2) passed to cljs.core/unreduced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case391.cljs
+WARNING: Wrong number of args (1) passed to f at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case412.cljs
+WARNING: f at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case141.cljs
+WARNING: f at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case142.cljs
+WARNING: answer at line 3 is being replaced at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case76.cljs
+WARNING: + already refers to: cljs.core/+ being replaced by: semantic.case373/+ at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case373.cljs
+WARNING: reduce already refers to: cljs.core/reduce being replaced by: semantic.case373/reduce at line 3 /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-reference-cases-50651-11/src/semantic/case373.cljs
+
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+Matched 517 program outcomes, traces, and stdout against Release
+test programs_match_standard_clojurescript_results_and_effects ... ok
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+Matched 130 analyzer boundary classifications against Release
+test analyzer_boundary_classifications_match_reference ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 12.85s
+

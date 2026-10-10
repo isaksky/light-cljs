@@ -79,6 +79,33 @@ class ReferenceContract(unittest.TestCase):
             time.sleep(.5)
             self.assertFalse(marker.exists(), "timed-out reference left a descendant running")
 
+    @unittest.skipUnless(os.environ.get("LIGHT_CLJS_SCI_CHECKOUT"), "explicit pinned SCI transport job")
+    def test_opaque_objects_are_driver_failures_and_methods_are_scalar_observations(self):
+        import subprocess
+        checkout = Path(os.environ["LIGHT_CLJS_SCI_CHECKOUT"]).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "opaque.tsv"
+            for source in ["(defprotocol P (p [x])) (reify P (p [_] 7))",
+                           "(defrecord R [x]) (->R 7)", "(fn [] 7)",
+                           "(defprotocol P) P"]:
+                with self.subTest(source=source):
+                    original = "\t".join(["sci-opaque", "portable", source, "nil", "nil", "nil", "nil"]) + "\n"
+                    fixture.write_text(original)
+                    result = subprocess.run([sys.executable, str(reference.__file__), "--checkout", str(checkout),
+                                             "--fixtures", str(fixture), "--write"], capture_output=True, text=True, timeout=60)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("Reference tool failed", result.stderr)
+                    self.assertEqual(fixture.read_text(), original)
+            fixture.write_text("\n".join("\t".join([case, "portable", source, expected,
+                                                        "(vector)", "(string u)", "(string u)"])
+                                          for case, source, expected in [
+                                              ("sci-observed", "(defprotocol P (p [x])) (p (reify P (p [_] 7)))", "(return (int 7))"),
+                                              ("sci-record-observed", "(defrecord R [x]) [(record? (->R 7)) (:x (into {} (->R 7)))]", "(return (vector (bool true) (int 7)))")
+                                          ]) + "\n")
+            result = subprocess.run([sys.executable, str(reference.__file__), "--checkout", str(checkout),
+                                     "--fixtures", str(fixture)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_fixture_input_and_edn_paths_are_strict(self):
         for invalid in ["", "sci-a\tportable\t1", "# comments only\n"]:
             with self.assertRaises(RuntimeError):

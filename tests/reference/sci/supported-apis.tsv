@@ -56,12 +56,14 @@ clojure.core/byte	function	sci-exact	sci-native-conversions	Reviewed source reac
 clojure.core/case	macro	sci-exact	sci-control-case-quoted-group	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/case*	special-form	via-expansion	sci-control-case-literal	case macro generates case*
 clojure.core/char	function	sci-exact	sci-native-conversions	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/cat	function	sci-exact	sci-xf-cat-nested-marker	Callable flattening transducer preserves nested early reduction, forwards initialization and performs only outer process completion
 clojure.core/char?	function	sci-exact	sci-native-general-predicates	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/coll?	function	sci-exact	sci-data-walk-prewalk-entries	prewalk invokes callback containing coll? on supplied nonempty map tree
 clojure.core/comment	macro	sci-exact	sci-control-comment-after	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/comp	function	sci-exact	sci-seq-comp-many	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/compare-and-set!	function	sci-exact	sci-state-cas-strings	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/complement	function	sci-exact	sci-seq-complement-truth	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/completing	function	sci-exact	sci-transduce-completing-direct	Direct and applied zero/one/two arities delegate initialization, completion and stepping
 clojure.core/concat	function	sci-exact	sci-lazy-concat-zero	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/cond	macro	sci-exact	sci-control-cond-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/cond->	macro	sci-exact	sci-control-cond-thread-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
@@ -97,10 +99,11 @@ clojure.core/doseq	macro	sci-exact	sci-iteration-doseq-zero-empty	Reviewed sourc
 clojure.core/dotimes	macro	sci-exact	sci-iteration-dotimes-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/double	function	sci-exact	sci-native-conversions	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/double?	function	sci-exact	sci-native-numeric-predicates	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/drop	function	sci-exact	sci-lazy-probe-drop-nan	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/drop	function	sci-exact	sci-xf-bounds-reuse-drop	Lazy collection arity and one-argument ordinary callable transducer; forwards init/completion with per-application take/drop state and checked numeric stepping
 clojure.core/drop-while	function	sci-exact	sci-lazy-infinite-dropwhile	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/empty	function	sci-exact	sci-coll-empty-nil	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/empty?	function	sci-exact	sci-coll-empty-p-nil	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/ensure-reduced	function	sci-exact	sci-seq-ensure-reduced	One-argument marker identity preservation and wrapping nil; nested marker and arbitrary-value probes extend coverage
 clojure.core/eval	function	sci-exact	sci-embedding-eval-scalar	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/even?	function	sci-exact	sci-iteration-for-upstream	for reaches inner j values and evaluates even? condition; vec forces results
 clojure.core/every?	function	sci-exact	sci-seq-every-effects	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
@@ -110,7 +113,7 @@ clojure.core/ex-info	function	sci-exact	sci-exception-failed-definition	Reviewed
 clojure.core/ex-message	function	sci-exact	sci-exception-message	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/false?	function	sci-exact	sci-native-general-predicates	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/ffirst	function	sci-exact	sci-lazy-nested-first	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/filter	function	sci-exact	sci-lazy-filter	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/filter	function	sci-exact	sci-xf-basic-pipeline	Lazy collection arity and one-argument callable transducer constructor; reducer forwards init/completion and uses Clojure predicate truthiness
 clojure.core/filterv	function	sci-exact	sci-deferred-lazy-filterv	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/find	function	sci-exact	sci-coll-find-value	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/find-ns	function	sci-exact	sci-namespace-find-nil	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
@@ -145,7 +148,7 @@ clojure.core/int?	function	sci-exact	sci-native-int-predicate	Reviewed source re
 clojure.core/integer?	function	sci-exact	sci-native-numeric-predicates	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/interleave	function	sci-exact	sci-lazy-probe-interleave-zero	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/interpose	function	sci-exact	sci-lazy-probe-interpose-second-demand	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/into	function	sci-exact	sci-seq-into-utf16	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/into	function	sci-exact	sci-into-xf-destinations	Zero through three arities with persistent destinations, metadata and ordinary callable transducers
 clojure.core/iterate	function	sci-exact	sci-lazy-iterate	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/java.lang.AssertionError.	function	sci-exact	sci-coverage-qualified-assertion	Direct whole-corpus API probe; exact result is checked against pinned SCI.
 clojure.core/java.lang.Exception.	function	native-only	tests/interpreter_exceptions.rs::portable_categories_and_aliases_are_not_java_class_access	Native constructor alias evidence
@@ -172,11 +175,11 @@ clojure.core/loop	macro	sci-exact	sci-control-case-tail	Reviewed source reaches 
 clojure.core/loop*	special-form	sci-exact	sci-loop-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/macroexpand	function	sci-exact	sci-macro-identity-stop	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/macroexpand-1	function	sci-exact	sci-binding-macroexpand-fn	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/map	function	sci-exact	sci-lazy-probe-map-invalid-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/map	function	sci-exact	sci-xf-basic-map-direct	Collection-taking lazy paths and one-argument ordinary callable transducer constructors; map reducers also accept multi-input steps
 clojure.core/map-entry?	function	sci-exact	sci-coll-map-entry-p-nil	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/map-indexed	function	sci-exact	sci-lazy-map-indexed	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/map?	function	sci-exact	sci-macro-empty-env	defmacro body invokes map? on env during subsequent m macro expansion
-clojure.core/mapcat	function	sci-exact	sci-lazy-probe-mapcat-invalid-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/mapcat	function	sci-exact	sci-xf-cat-mapcat-effects	One-argument transducer composes map with cat, including multi-input steps; collection arities retain lazy apply/concat lookahead
 clojure.core/mapv	function	sci-exact	sci-seq-string-lone	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/max	function	sci-exact	sci-native-short-types	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/merge	function	sci-exact	sci-coll-merge-value	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
@@ -216,7 +219,7 @@ clojure.core/odd?	function	sci-exact	sci-seq-filterv-effects	filterv invokes cal
 clojure.core/or	macro	sci-exact	sci-control-or-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/partial	function	sci-exact	sci-seq-partial-many	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/partition	function	sci-exact	sci-lazy-partition-negative	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/partition-all	function	sci-exact	sci-lazy-partition-all	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/partition-all	function	sci-exact	sci-xf-partition-groups	One-argument transducer buffers vector groups with independent traced state and completion flushing; collection arities preserve lazy sequence groups and count semantics
 clojure.core/peek	function	sci-exact	sci-coll-peek-value	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/pop	function	sci-exact	sci-coll-pop-nil	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/pos-int?	function	sci-exact	sci-native-numeric-predicates	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
@@ -246,7 +249,7 @@ clojure.core/reduced?	function	sci-exact	sci-seq-reduce-kv-marker	Reviewed sourc
 clojure.core/refer	function	sci-exact	sci-syntax-quote-referred	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/refer-clojure	macro	sci-exact	sci-loading-refer-clojure-quoted	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/rem	function	sci-exact	sci-native-float-remainders	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/remove	function	sci-exact	sci-lazy-remove	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/remove	function	sci-exact	sci-xf-basic-remove	Lazy collection arity and one-argument callable transducer constructor; reducer forwards init/completion and uses Clojure predicate truthiness
 clojure.core/remove-watch	function	sci-exact	sci-state-watch-key-remove-empty	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/repeat	function	sci-exact	sci-lazy-probe-repeat-neg-frac	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/repeatedly	function	sci-exact	sci-lazy-probe-repeatedly-bad-count	repeatedly function is invoked to construct a lazy value; callback/count validation are not demanded
@@ -285,12 +288,13 @@ clojure.core/swap!	function	sci-exact	sci-embedding-eval-state	eval executes quo
 clojure.core/swap-vals!	function	sci-exact	sci-state-swap-vals-retry	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/symbol	function	sci-exact	sci-string-symbol-var	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/symbol?	function	sci-exact	sci-syntax-quote-gensym-repeat	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/take	function	sci-exact	sci-lazy-probe-take-nan	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/take	function	sci-exact	sci-xf-bounds-pipeline	Lazy collection arity and one-argument ordinary callable transducer; forwards init/completion with per-application take/drop state and checked numeric stepping
 clojure.core/take-nth	function	sci-exact	sci-lazy-probe-take-nth-fraction	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
-clojure.core/take-while	function	sci-exact	sci-lazy-infinite-takewhile	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/take-while	function	sci-exact	sci-xf-bounds-while-direct	Lazy collection arity and one-argument ordinary callable transducer; forwards init/completion with per-application take/drop state and checked numeric stepping
 clojure.core/the-ns	function	sci-exact	sci-vars-namespace	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/thread-bound?	function	sci-exact	sci-vars-eval-namespace-slot	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/throw	special-form	sci-exact	sci-exception-throw-value	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/transduce	function	sci-exact	sci-transduce-custom-double	Eager arbitrary callable transducers with original reducer initialization and transformed completion
 clojure.core/true?	function	sci-exact	sci-native-general-predicates	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/try	special-form	sci-exact	sci-exception-body-multiple	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.core/unquote	helper	sci-exact	sci-syntax-quote-unqualified-unquote	Syntax quote resolves unbound core sentinel name; proves canonical symbol resolution only, never invocation
@@ -363,3 +367,10 @@ clojure.walk/prewalk	function	sci-exact	sci-data-walk-prewalk-mapentry	Reviewed 
 clojure.walk/prewalk-replace	function	sci-exact	sci-data-walk-pre-replace-nil	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.walk/stringify-keys	function	sci-exact	sci-data-walk-stringify-adapted	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
 clojure.walk/walk	function	sci-exact	sci-data-walk-walk-vector-meta	Reviewed source reaches API call or macro expansion; no quoted-only or uncalled-body occurrence used
+clojure.core/defprotocol	macro	sci-exact	sci-protocol-declaration	User protocols with fixed positive signatures and opaque descriptors; same-shape identity preservation.
+clojure.core/satisfies?	function	sci-exact	sci-protocol-declaration	Nominal user-protocol membership including marker and partial reify/record implementations.
+clojure.core/reify	macro	sci-exact	sci-reify-capture	Anonymous identity objects implementing user protocols with lexical captures; qualified collision and strict arities have explicit differences.
+clojure.core/defrecord	macro	sci-exact	sci-record-method-acceptance	Immutable records with positional/map constructors and user protocol methods reading receiver fields and lexical captures.
+clojure.core/record?	function	sci-exact	sci-record-predicates	Nominal records distinguished from maps and callable data.
+clojure.core/extend-type	macro	sci-exact	sci-extension-acceptance	Named record generations only; replaces supplied methods including inline implementations and preserves omitted methods.
+clojure.core/extend-protocol	macro	sci-exact	sci-extension-protocol	Multiple named record targets with ordinary captured method functions; no host or built-in selectors.

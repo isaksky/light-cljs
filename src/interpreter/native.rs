@@ -343,7 +343,7 @@ fn general(context: &mut Context, args: &[RootedValue], operation: General) -> N
             ValueView::List(_) | ValueView::Seq(_) | ValueView::LazySeq
         ),
         Vector => matches!(value, ValueView::Vector(_)),
-        Map => matches!(value, ValueView::Map(_)),
+        Map => matches!(value, ValueView::Map(_) | ValueView::Record(_)),
         Set => matches!(value, ValueView::Set(_)),
         Sequential => matches!(
             value,
@@ -356,15 +356,22 @@ fn general(context: &mut Context, args: &[RootedValue], operation: General) -> N
                 | ValueView::LazySeq
                 | ValueView::Vector(_)
                 | ValueView::Map(_)
+                | ValueView::Record(_)
                 | ValueView::Set(_)
         ),
-        Associative => matches!(value, ValueView::Vector(_) | ValueView::Map(_)),
+        Associative => matches!(
+            value,
+            ValueView::Vector(_) | ValueView::Map(_) | ValueView::Record(_)
+        ),
         Counted => {
             let store = context.owner.store.borrow();
             matches!(store.heap_value(args[0].value()), Option::Some(HeapValue::List(v)) if v.is_list())
                 || matches!(
                     value,
-                    ValueView::Vector(_) | ValueView::Map(_) | ValueView::Set(_)
+                    ValueView::Vector(_)
+                        | ValueView::Map(_)
+                        | ValueView::Record(_)
+                        | ValueView::Set(_)
                 )
                 || matches!(store.heap_value(args[0].value()), Option::Some(HeapValue::ArgumentSeq(v)) if v.counted)
         }

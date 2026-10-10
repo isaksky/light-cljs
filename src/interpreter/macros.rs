@@ -19,6 +19,7 @@ pub(super) struct BindingIdentity(pub(super) u64);
 pub(super) struct MacroState {
     enabled: bool,
     pub(super) analysis_expansion: bool,
+    pub(super) compiler_expansion: bool,
     next_binding: u64,
     pub(super) invocations: u64,
     pub(super) form_depth: usize,
@@ -101,7 +102,7 @@ impl Context {
             }
             let data = self.with_meta(&form.data(), &metadata)?;
             self.macros.sources.push(form.clone());
-            let result = self.invoke_macro(&data, env, id, &name, true);
+            let result = self.invoke_macro(&data, env, id, &name, true, true);
             self.macros.sources.pop();
             let (value, index) = result?;
             let started = self.macros.enabled.then(Instant::now);
@@ -222,6 +223,7 @@ impl Context {
         var: VarId,
         name: &Name,
         analysis_expansion: bool,
+        compiler_expansion: bool,
     ) -> Result<(RootedValue, Option<usize>), InvokeError> {
         self.macros.invocations = self
             .macros
@@ -251,7 +253,10 @@ impl Context {
         let started = self.macros.enabled.then(Instant::now);
         self.macros.environments.push(env.clone());
         let previous = std::mem::replace(&mut self.macros.analysis_expansion, analysis_expansion);
+        let previous_compiler =
+            std::mem::replace(&mut self.macros.compiler_expansion, compiler_expansion);
         let result = self.invoke(&root, &arguments);
+        self.macros.compiler_expansion = previous_compiler;
         self.macros.analysis_expansion = previous;
         self.macros.environments.pop();
         let index = if let Some(started) = started {
@@ -344,7 +349,7 @@ impl Context {
                     env.clone()
                 };
                 self.macros.sources.push(form.clone());
-                let result = self.invoke_macro(&data, &env, var, &name, true);
+                let result = self.invoke_macro(&data, &env, var, &name, true, false);
                 self.macros.sources.pop();
                 result
             })()
@@ -468,7 +473,7 @@ impl Context {
                 )));
             }
             count += 1;
-            let (expanded, _) = self.invoke_macro(&form, &env, var, &name, false)?;
+            let (expanded, _) = self.invoke_macro(&form, &env, var, &name, false, false)?;
             if !repeat || expanded.same_identity(&form) {
                 return Ok(expanded);
             }
@@ -576,6 +581,11 @@ fn defmacro(context: &mut Context, args: &[RootedValue]) -> NativeResult {
 pub(super) fn core_macro(name: &Name) -> bool {
     [
         "defmacro",
+        "defprotocol",
+        "defrecord",
+        "extend-type",
+        "extend-protocol",
+        "reify",
         "ns",
         "refer-clojure",
         "let",

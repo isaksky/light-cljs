@@ -45,9 +45,13 @@ pub use vars::{BindingGuard, VarError, var_definitions};
 mod io;
 mod numbers;
 mod printing;
+mod protocols;
+mod records;
 pub use io::{
     HostInput, HostOutput, OutputBuffer, Utf8Input, Utf8Output, edn_definitions, io_definitions,
 };
+pub use protocols::protocol_definitions;
+pub use records::record_definitions;
 mod sets;
 mod walk;
 pub use sets::set_definitions;
@@ -171,6 +175,8 @@ impl Name {
 /// Numeric categories are distinct; doubles retain all their IEEE-754 bits.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ValueView {
+    /// Opaque compiler-reader value, retained through native macro expansion.
+    CompilerLiteral(CompilerLiteralKind),
     Nil,
     Boolean(bool),
     Integer(i64),
@@ -195,6 +201,14 @@ pub enum ValueView {
     /// A declared Var without a root; truthy data, but not callable.
     Unbound(Name),
     Function,
+    /// Opaque user protocol descriptor; its map layout is not a public API.
+    Protocol(Name),
+    /// Anonymous identity-valued user-protocol implementation.
+    Reify,
+    /// Immutable nominal record; use entries/get for its map payload.
+    Record(usize),
+    /// Opaque current generation of a named record type.
+    RecordType(Name),
     /// An early-reduction marker; deref/unreduced expose its retained value.
     Reduced,
     Exception(ExceptionCategory),
@@ -207,6 +221,48 @@ pub enum ValueView {
     Volatile,
     Input,
     Output,
+}
+
+/// Compile-time representations for values owned by the JavaScript runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerLiteralKind {
+    /// Exact reader integer identity until JavaScript Number emission.
+    BigInteger,
+    Regex,
+    Instant,
+    Uuid,
+    JsArray,
+    JsObject,
+    Queue,
+}
+
+impl Context {
+    pub(crate) fn compiler_literal(
+        &self,
+        kind: CompilerLiteralKind,
+        data: &RootedValue,
+    ) -> RootedValue {
+        let id = HeapId(
+            self.owner
+                .store
+                .borrow_mut()
+                .heap
+                .insert(HeapValue::CompilerLiteral(kind, data.value())),
+        );
+        self.owner.value(Value::Heap(id))
+    }
+}
+impl RootedValue {
+    pub(crate) fn compiler_literal_data(&self) -> Option<RootedValue> {
+        let store = self.owner.store.borrow();
+        let Value::Heap(id) = store.unannotated(self.value()) else {
+            return None;
+        };
+        let HeapValue::CompilerLiteral(_, data) = store.heap.get(id.0).ok()? else {
+            return None;
+        };
+        Some(self.owner.value(*data))
+    }
 }
 
 /// Internal runtime values must never contain a public rooted handle or Owner.
@@ -248,9 +304,17 @@ impl Value {
 }
 
 enum HeapValue {
+    CompilerLiteral(CompilerLiteralKind, Value),
     String(Rc<[u16]>),
     Closure(evaluation::Closure),
     HigherOrder(sequence_core::HigherOrder),
+    Protocol(protocols::Protocol),
+    ProtocolMethod(protocols::MethodFunction),
+    Reify(Vec<protocols::Implementation>),
+    Record(records::Record),
+    RecordType(records::TypeDescriptor),
+    #[cfg(test)]
+    ProtocolFixture(Vec<protocols::Implementation>),
     Reduced(Value),
     Atom(state::Atom),
     Volatile(Value),
@@ -344,7 +408,18 @@ impl RootedValue {
             }
             Value::Heap(id) => match store.heap.get(id.0).expect("rooted heap value") {
                 HeapValue::String(v) => ValueView::String(v.clone()),
-                HeapValue::Closure(_) | HeapValue::HigherOrder(_) => ValueView::Function,
+                HeapValue::CompilerLiteral(kind, _) => ValueView::CompilerLiteral(*kind),
+                HeapValue::Closure(_)
+                | HeapValue::HigherOrder(_)
+                | HeapValue::ProtocolMethod(_) => ValueView::Function,
+                HeapValue::Protocol(p) => ValueView::Protocol(p.name.clone()),
+                HeapValue::Reify(_) => ValueView::Reify,
+                HeapValue::Record(r) => ValueView::Record(r.data.len()),
+                HeapValue::RecordType(t) => ValueView::RecordType(t.name.clone()),
+                #[cfg(test)]
+                HeapValue::ProtocolFixture(_) => {
+                    ValueView::Protocol(Name::new(None, "test-receiver"))
+                }
                 HeapValue::Reduced(_) => ValueView::Reduced,
                 HeapValue::Atom(_) => ValueView::Atom,
                 HeapValue::Volatile(_) => ValueView::Volatile,
@@ -391,8 +466,10 @@ impl RootedValue {
         )
     }
 
-    /// A content hash consistent with `value_eq`, independent of metadata and
-    /// owner. This is not the JVM's exact numeric `hash` result. This eager-value
+    /// A content hash consistent with `value_eq`, independent of metadata.
+    /// Nominal/identity values include their owner-scoped identities; ordinary
+    /// collection content hashes are owner-independent. This is not the JVM's
+    /// exact numeric `hash` result. This eager-value
     /// storage helper uses a shared fallback hash if projection fails; language
     /// callers must realize lazy keys first and use `try_value_hash` to preserve failures.
     pub fn value_hash(&self) -> u64 {
@@ -631,6 +708,7 @@ struct Store {
     namespaces: Arena<namespaces::Namespace>,
     vars: Arena<namespaces::Var>,
     trace: Vec<Target>,
+    protocol_revision: u64,
 }
 
 struct Owner {
@@ -666,6 +744,7 @@ impl Owner {
                 namespaces: Arena::new(id),
                 vars: Arena::new(id),
                 trace: Vec::new(),
+                protocol_revision: 0,
             }),
             roots: RefCell::new(Vec::new()),
         }
@@ -779,8 +858,25 @@ impl Owner {
                                 trace.extend(function.captures.iter().copied().map(Target::Value));
                                 trace.extend(function.tail.map(Target::Value));
                             }
-                            HeapValue::Reduced(value) | HeapValue::Volatile(value) => {
-                                trace.push(Target::Value(*value))
+                            HeapValue::CompilerLiteral(_, value)
+                            | HeapValue::Reduced(value)
+                            | HeapValue::Volatile(value) => trace.push(Target::Value(*value)),
+                            HeapValue::Protocol(p) => p.trace(&mut trace),
+                            HeapValue::Record(r) => r.trace(&mut trace),
+                            HeapValue::RecordType(t) => t.trace(&mut trace),
+                            HeapValue::Reify(table) => {
+                                for implementation in table {
+                                    implementation.trace(&mut trace);
+                                }
+                            }
+                            HeapValue::ProtocolMethod(m) => {
+                                trace.push(Target::Value(m.protocol.value()))
+                            }
+                            #[cfg(test)]
+                            HeapValue::ProtocolFixture(implementations) => {
+                                for implementation in implementations {
+                                    implementation.trace(&mut trace);
+                                }
                             }
                             HeapValue::Atom(atom) => atom.trace(&mut trace),
                             HeapValue::Deferred(d) => d.trace(&mut trace),
@@ -831,6 +927,8 @@ impl Owner {
                         trace.push(Target::Value(Value::Symbol(var.name)));
                         trace.push(Target::Value(var.metadata));
                         trace.extend(var.root.map(Target::Value));
+                        trace.extend(var.protocol.map(|p| Target::Value(p.value())));
+                        trace.extend(var.protocol_method.map(|(p, _)| Target::Value(p.value())));
                         trace.extend(var.bindings.iter().map(|(_, v)| Target::Value(*v)));
                     }
                 }

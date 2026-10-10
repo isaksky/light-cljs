@@ -7,13 +7,30 @@ use std::{
     process::ExitCode,
 };
 
+use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_with_warnings};
 use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, compile_namespace, emit_js, parse};
 
 mod native_cli;
 
 const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
-fn run_namespace(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+fn print_warnings(warnings: &[AnalysisWarning]) {
+    for warning in warnings {
+        eprintln!(
+            "WARNING: {} [{}] (source {}, bytes {}..{})",
+            warning.message,
+            warning.kind,
+            warning.source_index,
+            warning.span.start,
+            warning.span.end
+        );
+    }
+}
+
+fn run_namespace(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+    options: AnalysisOptions,
+) -> Result<(), Box<dyn Error>> {
     let mut entry = None;
     let mut roots = Vec::new();
     while let Some(arg) = args.next() {
@@ -36,7 +53,19 @@ fn run_namespace(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(
         }
     }
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
-    let output = compile_namespace(&entry, &roots)?;
+    let output = if options.warning_mode {
+        let mut warnings = Vec::new();
+        let result = light_cljs::compiler::compile_namespace_with_warnings(
+            &entry,
+            &roots,
+            options,
+            &mut warnings,
+        );
+        print_warnings(&warnings);
+        result?
+    } else {
+        compile_namespace(&entry, &roots)?
+    };
     io::stdout().lock().write_all(output.as_bytes())?;
     Ok(())
 }
@@ -44,6 +73,18 @@ fn run_namespace(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mut first = args.next();
+    let mut options = AnalysisOptions::default();
+    loop {
+        match first.as_deref().and_then(|arg| arg.to_str()) {
+            Some("--warnings") => options.warning_mode = true,
+            Some("--checked-arrays-warn") => {
+                options.warning_mode = true;
+                options.checked_arrays = true;
+            }
+            _ => break,
+        }
+        first = args.next();
+    }
     if let Some(mode @ ("--eval" | "--repl")) = first.as_deref().and_then(|arg| arg.to_str()) {
         return native_cli::run(mode == "--repl", args);
     }
@@ -63,11 +104,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         if mode != "compile" {
             return Err("namespace options require --compile".into());
         }
-        return run_namespace(first.into_iter().chain(args));
+        return run_namespace(first.into_iter().chain(args), options);
     }
     let source = match first.as_deref() {
         Some(arg) if arg == "--help" || arg == "-h" => {
-            println!("{USAGE}\n\n{}", native_cli::USAGE);
+            println!(
+                "{USAGE}\nPrepend --warnings for ClojureScript warning-compatible analysis (undeclared Vars and conflicting arities are warnings).\nPrepend --checked-arrays-warn to also validate array operand types.\n\n{}",
+                native_cli::USAGE
+            );
             return Ok(());
         }
         Some(arg) if arg == "--text" => args
@@ -106,7 +150,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             message
         })?;
         if mode != "parse" {
-            let program = analyze(&source, &tree).map_err(|error| {
+            let program = if options.warning_mode {
+                let mut warnings = Vec::new();
+                let result = analyze_with_warnings(&source, &tree, options, &mut warnings);
+                print_warnings(&warnings);
+                result
+            } else {
+                analyze(&source, &tree)
+            }
+            .map_err(|error| {
                 let (line, column) = LineIndex::new(&source)
                     .line_column(error.span.start)
                     .unwrap();

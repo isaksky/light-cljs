@@ -1,0 +1,8 @@
+    Blocking waiting for file lock on build directory
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `bench` profile [optimized] target(s) in 5.35s
+     Running benches/interpreter_gc.rs (target/release/deps/interpreter_gc-c36dfad227de461f)
+samples=7 evaluations/sample=256 fresh_context_ns=238250 fresh_process_ns=1787167 instrumented=false
+collect_every=1 eval_ns/op=104987 gc_ns/collection=43698 gc_ns/op=43698 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 319, names: 322, sources: 1, executable_units: 1, namespaces: 6, vars: 316, roots: 6, slots: 1441 }
+collect_every=16 eval_ns/op=111525 gc_ns/collection=338020 gc_ns/op=21126 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 319, names: 322, sources: 1, executable_units: 1, namespaces: 6, vars: 316, roots: 6, slots: 2776 }
+collect_every=256 eval_ns/op=110395 gc_ns/collection=7061959 gc_ns/op=27585 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 319, names: 322, sources: 1, executable_units: 1, namespaces: 6, vars: 316, roots: 6, slots: 24136 }

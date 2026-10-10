@@ -1,0 +1,12 @@
+{
+  "binary_sha256": "f7e759e38ec5ff59799b19f5aed4ca31996588da4a91e41d18eddaa735d6e5be",
+  "command": [
+    "/Users/admin/.cache/light-cljs-baselines/light-cljs-65/verified-types/bin/interpreter_types",
+    "--samples",
+    "9",
+    "--iterations",
+    "32"
+  ],
+  "purpose": "One additional full timing run to check the unusually wide host-invocation distributions. Both clean runs are retained; no sample filtering.",
+  "source_identity": "manifest.json, unchanged saved executable"
+}

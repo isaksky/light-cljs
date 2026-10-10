@@ -14,6 +14,7 @@ pub enum CollectionError {
     ExpectedMapEntry,
     InvalidIndex,
     EmptyCollection,
+    UnsupportedRecordEmpty,
     UnsupportedMetadata,
     ExpectedMetadataMap,
 }
@@ -34,6 +35,7 @@ impl fmt::Display for CollectionError {
             Self::ExpectedMapEntry => "map conj requires a two-element vector",
             Self::InvalidIndex => "vector index must be an integer from zero through its count",
             Self::EmptyCollection => "cannot pop an empty collection",
+            Self::UnsupportedRecordEmpty => "empty is unsupported for records",
             Self::UnsupportedMetadata => "value does not support metadata",
             Self::ExpectedMetadataMap => "metadata must be a map or nil",
         })
@@ -374,7 +376,7 @@ impl MapData {
         }
         &[]
     }
-    fn get(&self, store: &Store, key: Value) -> Option<(Value, Value)> {
+    pub(super) fn get(&self, store: &Store, key: Value) -> Option<(Value, Value)> {
         self.bucket(equality::hash(store, key))
             .iter()
             .copied()
@@ -425,7 +427,7 @@ impl MapData {
             ),
         }
     }
-    fn assoc(&mut self, store: &Store, key: Value, value: Value) {
+    pub(super) fn assoc(&mut self, store: &Store, key: Value, value: Value) {
         if Self::insert_node(
             &mut self.root,
             0,
@@ -535,6 +537,13 @@ impl Store {
             Some(self.heap.get(id.0).expect("live value"))
         } else {
             None
+        }
+    }
+    pub(super) fn map_data(&self, value: Value) -> Option<&MapData> {
+        match self.heap_value(value)? {
+            HeapValue::Map(data) => Some(data),
+            HeapValue::Record(r) => Some(&r.data),
+            _ => None,
         }
     }
     fn allocate(&mut self, value: HeapValue) -> Value {
@@ -811,6 +820,7 @@ impl RootedValue {
             HeapValue::ArgumentSeq(v) => Some(v.len()),
             HeapValue::Vector(v) => Some(v.len()),
             HeapValue::Map(v) | HeapValue::Set(v) => Some(v.len()),
+            HeapValue::Record(r) => Some(r.data.len()),
             _ => None,
         }
     }
@@ -837,10 +847,10 @@ impl RootedValue {
             .map(|value| self.owner.checked_value(value))
             .collect()
     }
-    /// Map entries are unordered; callers must not infer evaluation order here.
+    /// Map/record entries are unordered; callers must not infer evaluation order here.
     pub fn entries(&self) -> Result<Vec<(RootedValue, RootedValue)>, CollectionError> {
         let store = self.owner.store.borrow();
-        let Some(HeapValue::Map(values)) = store.heap_value(self.value()) else {
+        let Some(values) = store.map_data(self.value()) else {
             return Err(CollectionError::ExpectedMap);
         };
         store
@@ -880,12 +890,14 @@ impl RootedValue {
         let store = self.owner.store.borrow();
         if matches!(
             store.heap_value(self.value()),
-            Some(HeapValue::Map(_) | HeapValue::Set(_))
+            Some(HeapValue::Map(_) | HeapValue::Set(_) | HeapValue::Record(_))
         ) {
             equality::try_hash(&store, key.value())?;
         }
         let found = match store.heap_value(self.value()) {
-            Some(HeapValue::Map(values)) => values.get(&store, key.value()).map(|(_, value)| value),
+            Some(
+                HeapValue::Map(values) | HeapValue::Record(records::Record { data: values, .. }),
+            ) => values.get(&store, key.value()).map(|(_, value)| value),
             Some(HeapValue::Set(values)) => values.get(&store, key.value()).map(|(key, _)| key),
             Some(HeapValue::Vector(values)) => match store.unannotated(key.value()) {
                 Value::Integer(index) => usize::try_from(index)
@@ -1053,6 +1065,8 @@ impl Context {
                         | HeapValue::Vector(_)
                         | HeapValue::Map(_)
                         | HeapValue::Set(_)
+                        | HeapValue::Reify(_)
+                        | HeapValue::Record(_)
                 )
             )
         {
@@ -1064,6 +1078,15 @@ impl Context {
                 Some(metadata.value())
             }
             _ => return Err(CollectionError::ExpectedMetadataMap),
+        };
+        // Reify metadata replacement creates a new identity while retaining raw
+        // method/capture edges, including when the new metadata is nil.
+        let base = if let Some(HeapValue::Reify(table)) = store.heap_value(base) {
+            self.reserve_collection(table.iter().map(|i| i.methods.len() + 1).sum())?;
+            let table = table.clone();
+            store.allocate(HeapValue::Reify(table))
+        } else {
+            base
         };
         let value = store.annotate(base, metadata);
         self.accounting.check().map_err(CollectionError::Resource)?;
@@ -1084,6 +1107,12 @@ impl Context {
                 equality::try_hash(&store, key.value())?;
                 data.assoc(&store, key.value(), value.value());
                 HeapValue::Map(data)
+            }
+            Some(HeapValue::Record(record)) => {
+                let mut record = record.clone();
+                equality::try_hash(&store, key.value())?;
+                record.data.assoc(&store, key.value(), value.value());
+                HeapValue::Record(record)
             }
             Some(HeapValue::Vector(data)) => {
                 let Value::Integer(index) = store.unannotated(key.value()) else {
@@ -1131,7 +1160,7 @@ impl Context {
                 data.assoc(&store, value.value(), Value::Nil);
                 HeapValue::Set(data)
             }
-            Some(HeapValue::Map(data)) => {
+            Some(HeapValue::Map(data) | HeapValue::Record(records::Record { data, .. })) => {
                 let Some(HeapValue::Vector(entry)) = store.heap_value(value.value()) else {
                     return Err(CollectionError::ExpectedMapEntry);
                 };
@@ -1141,7 +1170,13 @@ impl Context {
                 let mut data = data.clone();
                 equality::try_hash(&store, entry.get(0).unwrap())?;
                 data.assoc(&store, entry.get(0).unwrap(), entry.get(1).unwrap());
-                HeapValue::Map(data)
+                match store.heap_value(collection.value()) {
+                    Some(HeapValue::Record(r)) => HeapValue::Record(records::Record {
+                        type_id: r.type_id,
+                        data,
+                    }),
+                    _ => HeapValue::Map(data),
+                }
             }
             _ => return Err(CollectionError::ExpectedCollection),
         };
@@ -1161,7 +1196,11 @@ impl Context {
         self.check_values(&[collection, key])?;
         let mut store = self.owner.store.borrow_mut();
         let data = match (store.heap_value(collection.value()), set) {
-            (Some(HeapValue::Map(data)), false) | (Some(HeapValue::Set(data)), true) => data,
+            (
+                Some(HeapValue::Map(data) | HeapValue::Record(records::Record { data, .. })),
+                false,
+            )
+            | (Some(HeapValue::Set(data)), true) => data,
             _ => {
                 return Err(if set {
                     CollectionError::ExpectedSet
@@ -1177,11 +1216,28 @@ impl Context {
         let mut data = data.clone();
         data.remove(&store, key.value());
         let metadata = store.metadata(collection.value());
-        let value = store.allocate(if set {
+        let updated = if set {
             HeapValue::Set(data)
+        } else if let Some(HeapValue::Record(r)) = store.heap_value(collection.value()) {
+            let keys = &records::descriptor(&store, r.type_id).keys;
+            self.accounting
+                .work(keys.len() as u64)
+                .map_err(CollectionError::Resource)?;
+            if keys
+                .iter()
+                .any(|basis| equality::equal(&store, *basis, &store, key.value()))
+            {
+                HeapValue::Map(data)
+            } else {
+                HeapValue::Record(records::Record {
+                    type_id: r.type_id,
+                    data,
+                })
+            }
         } else {
             HeapValue::Map(data)
-        });
+        };
+        let value = store.allocate(updated);
         let value = store.annotate(value, metadata);
         self.accounting.check().map_err(CollectionError::Resource)?;
         self.owner.checked_value(value)
@@ -1210,7 +1266,7 @@ impl Context {
         key: &RootedValue,
     ) -> Result<Option<RootedValue>, CollectionError> {
         let store = self.owner.store.borrow();
-        let Some(HeapValue::Map(data)) = store.heap_value(map.value()) else {
+        let Some(data) = store.map_data(map.value()) else {
             return Ok(None);
         };
         let found = data.get(&store, key.value()).map(|(key, _)| key);

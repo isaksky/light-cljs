@@ -1,0 +1,1 @@
+(ns boundary.reserved (:require [boundary.lib :as js])) (defn run [observe] (and (= 42 (boundary.lib/add 1)) (= 42 (js/parseInt "42")))) run

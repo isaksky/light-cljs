@@ -30,6 +30,81 @@ const FIXTURES: &[(&str, &str, i64)] = &[
         include_str!("../benchmarks/fixtures/interpreter/lazy.clj"),
         2796160,
     ),
+    (
+        "into_lazy",
+        "(reduce + (into [] (map inc (range 128))))",
+        8256,
+    ),
+    (
+        "into_transducer",
+        "(reduce + (into [] (fn [rf] (fn ([a] (rf a)) ([a x] (rf a (inc x))))) (range 128)))",
+        8256,
+    ),
+    (
+        "bounded_lazy",
+        "(reduce + (into [] (take 64 (map inc (filter odd? (range 256))))))",
+        4160,
+    ),
+    (
+        "bounded_transducer",
+        "(reduce + (into [] (comp (filter odd?) (map inc) (take 64)) (range 256)))",
+        4160,
+    ),
+    (
+        "bounded_eager",
+        "(reduce + (into [] (take 64 (mapv inc (filterv odd? (range 256))))))",
+        4160,
+    ),
+    (
+        "mapcat_lazy_complete",
+        "(reduce + (mapcat (fn [x] [x x]) (range 128)))",
+        16256,
+    ),
+    (
+        "mapcat_xf_complete",
+        "(transduce (mapcat (fn [x] [x x])) (completing +) 0 (range 128))",
+        16256,
+    ),
+    (
+        "cat_lazy_complete",
+        "(reduce + (apply concat (map (fn [x] [x x]) (range 128))))",
+        16256,
+    ),
+    (
+        "cat_xf_complete",
+        "(transduce cat (completing +) 0 (map (fn [x] [x x]) (range 128)))",
+        16256,
+    ),
+    (
+        "mapcat_lazy_early",
+        "(reduce + (take 64 (mapcat (fn [x] [x x]) (range 128))))",
+        992,
+    ),
+    (
+        "mapcat_xf_early",
+        "(transduce (comp (mapcat (fn [x] [x x])) (take 64)) (completing +) 0 (range 128))",
+        992,
+    ),
+    (
+        "cat_lazy_early",
+        "(reduce + (take 64 (apply concat (map (fn [x] [x x]) (range 128)))))",
+        992,
+    ),
+    (
+        "partition_lazy",
+        "(reduce + (map #(reduce + %) (into [] (map vec (partition-all 3 (range 128))))))",
+        8128,
+    ),
+    (
+        "partition_transducer",
+        "(reduce + (map #(reduce + %) (into [] (partition-all 3) (range 128))))",
+        8128,
+    ),
+    (
+        "cat_xf_early",
+        "(transduce (comp cat (take 64)) (completing +) 0 (map (fn [x] [x x]) (range 128)))",
+        992,
+    ),
 ];
 const EMBEDDING: &str = include_str!("../benchmarks/fixtures/interpreter/embedding.clj");
 const MAIN: &str = include_str!("../benchmarks/fixtures/interpreter/main.clj");

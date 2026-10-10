@@ -1,7 +1,12 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 6] = [
+const CASE_FILES: [(&str, &str, usize); 7] = [
+    (
+        "tests/fixtures/compiler-language.tsv",
+        include_str!("fixtures/compiler-language.tsv"),
+        6,
+    ),
     (
         "tests/fixtures/sci-outcomes.tsv",
         include_str!("fixtures/sci-outcomes.tsv"),
@@ -146,6 +151,7 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
             );
             match local_path {
                 "tests/fixtures/sci-outcomes.tsv"
+                | "tests/fixtures/compiler-language.tsv"
                 | "tests/fixtures/execution.tsv"
                 | "tests/fixtures/execution-outcomes.tsv"
                 | "tests/fixtures/execution-literals.tsv"
@@ -157,6 +163,34 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     );
                     covered_cases.insert((local_path, id));
                 }
+                "tests/reference/compiler-language/namespace-cases.jsonl" => assert!(
+                    include_str!("reference/compiler-language/namespace-cases.jsonl")
+                        .contains(&format!("\"id\":\"{id}\"")),
+                    "unknown namespace witness: {id}"
+                ),
+                "tests/reference/compiler-language/diagnostic-cases.jsonl" => assert!(
+                    include_str!("reference/compiler-language/diagnostic-cases.jsonl")
+                        .contains(&format!("\"id\":\"{id}\"")),
+                    "unknown diagnostic witness: {id}"
+                ),
+                "tests/reference/compiler-language/warning-cases.jsonl" => assert!(
+                    include_str!("reference/compiler-language/warning-cases.jsonl")
+                        .contains(&format!("\"id\":\"{id}\"")),
+                    "unknown warning witness: {id}"
+                ),
+                "tests/reference/compiler-language/boundary-support.jsonl" => assert!(
+                    include_str!("reference/compiler-language/boundary-support.jsonl")
+                        .contains(&format!("\"id\":\"{id}\"")),
+                    "unknown supplemental boundary witness: {id}"
+                ),
+                "tests/execution.rs" => assert!(
+                    include_str!("execution.rs").contains(&format!("\nfn {id}()")),
+                    "unknown execution test: {id}"
+                ),
+                "tests/compiler_macros.rs" => assert!(
+                    include_str!("compiler_macros.rs").contains(&format!("#[test]\nfn {id}()")),
+                    "unknown compiler macro test: {id}"
+                ),
                 "tests/namespaces.rs" => assert!(
                     include_str!("namespaces.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown namespace test: {id}"

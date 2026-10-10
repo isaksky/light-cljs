@@ -1,0 +1,8 @@
+(defprotocol P (p [r]))
+(defrecord R [n])
+(extend-type R P (p [r] (:n r)))
+(def pair [->R p])
+(def make (first pair))
+(def method (second pair))
+(def input (mapv make (range 1000)))
+(reduce (fn [sum r] (+ sum (method r))) 0 input)

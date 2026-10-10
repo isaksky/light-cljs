@@ -1,0 +1,11 @@
+macOS-15.7.3-arm64-arm-64bit-Mach-O
+arm64
+rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)
+Base HEAD (worktree contains accumulated uncommitted batch changes): fe08ac83dc067ca85344663f2d0f2a96e613827e
+Commands:
+cargo bench --locked --bench interpreter_protocols
+cargo bench --locked --bench interpreter_protocols --features count-allocations
+cargo bench --locked --bench interpreter_gc --features count-allocations
+Seven samples per scenario/phase after one equal-sized warmup. Parsing/analysis/GC excluded from measured phases.
+Construction: 2000 invocations per sample; return fresh captured closure or reify object. Invocation: 20000 per sample; both return 10.
+Ordinary timing and allocation instrumentation use separate release builds.

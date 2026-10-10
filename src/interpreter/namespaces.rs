@@ -14,6 +14,8 @@ pub(super) struct Var {
     pub(super) namespace: NamespaceId,
     pub(super) name: SymbolId,
     pub(super) root: Option<Value>,
+    pub(super) protocol: Option<protocols::ProtocolId>,
+    pub(super) protocol_method: Option<(protocols::ProtocolId, usize)>,
     pub(super) metadata: Value,
     pub(super) metadata_set: bool,
     pub(super) builtin: bool,
@@ -25,6 +27,9 @@ pub(super) struct Registry {
     pub(super) current: NamespaceId,
     pub(super) current_value: RootedValue,
     pub(super) core: NamespaceId,
+    // Reuse only the immutable lookup key, never a mutable Var/mapping/binding.
+    // Analysis-cache pruning calls current_namespace_id during collection.
+    pub(super) current_var_name: Name,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,12 +98,13 @@ impl Context {
                 current_value,
                 current,
                 core,
+                current_var_name: Name::new(None, "*ns*"),
             })
         })
     }
     pub(super) fn current_namespace_id(&self) -> NamespaceId {
         let registry = self.registry().borrow();
-        if let Some(id) = self.lookup_mapping(registry.core, &Name::new(None, "*ns*")) {
+        if let Some(id) = self.lookup_mapping(registry.core, &registry.current_var_name) {
             let store = self.owner.store.borrow();
             let var = store.vars.get(id.0).expect("namespace Var");
             if let Some(Value::Namespace(ns)) = var.bindings.last().map(|(_, v)| *v).or(var.root) {
@@ -265,6 +271,8 @@ impl Context {
             namespace,
             name: symbol,
             root: None,
+            protocol: None,
+            protocol_method: None,
             metadata: Value::Nil,
             metadata_set: false,
             builtin: false,
@@ -464,6 +472,11 @@ impl Context {
         // Reader qualification also knows the reserved core macro surface; this
         // does not install executable Vars for features outside the current core.
         let text = String::from_utf16_lossy(name.name());
+        if self.readers.borrow().compiler
+            && matches!(text.as_ref(), "defonce" | "declare" | "exists?")
+        {
+            return Name::new(Some("clojure.core"), &text);
+        }
         if [
             "let",
             "fn",
@@ -607,6 +620,8 @@ impl Context {
             .chain(deferred_definitions())
             .chain(lazy_definitions())
             .chain(macro_definitions())
+            .chain(protocol_definitions())
+            .chain(record_definitions())
             .chain(embedding::eval_definitions())
             .find(|d| {
                 name.name()
@@ -886,6 +901,8 @@ impl Context {
                 .chain(deferred_definitions())
                 .chain(lazy_definitions())
                 .chain(macro_definitions())
+                .chain(protocol_definitions())
+                .chain(record_definitions())
                 .chain(embedding::eval_definitions())
             {
                 self.core_var(&Name::new(None, d.metadata.name));

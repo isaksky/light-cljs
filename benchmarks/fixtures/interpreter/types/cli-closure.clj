@@ -1,0 +1,5 @@
+(def pair [(fn [n] (fn [] n)) (fn [f] (f))])
+(def make (first pair))
+(def method (second pair))
+(def input (mapv make (range 1000)))
+(reduce (fn [sum r] (+ sum (method r))) 0 input)

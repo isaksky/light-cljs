@@ -1,0 +1,9 @@
+rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)
+arm64
+macOS 15.7.3 (24G419)
+
+cargo bench --locked --bench interpreter_records
+cargo bench --locked --bench interpreter_records --features count-allocations
+cargo bench --locked --bench interpreter_gc --features count-allocations
+
+Seven CSV samples follow one equal-sized warmup. Retained calls and construction use 2000 operations per sample; full declaration/extension work uses 100. Reading/expansion/analysis and publication are included only in the define phase. All invoke workloads validate 7. Direct, inline and extended functions read equivalent records; reify loads an equivalent captured scalar. Allocation measurements use a separate build; call/construction samples assert stable full warmed memory stats and definition/extension samples assert stable live counts. Raw CSV retains control workloads as well as the added extended-method/record-extension rows.

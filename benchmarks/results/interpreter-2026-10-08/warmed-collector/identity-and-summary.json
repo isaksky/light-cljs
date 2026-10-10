@@ -1,0 +1,232 @@
+{
+  "starting_head": "fe08ac83dc067ca85344663f2d0f2a96e613827e",
+  "working_tree": "Accumulated native-transducer work preserved; before/after differ only by retained immutable namespace lookup key and the new cache-pruning regression test.",
+  "host": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)",
+  "source_hashes_after": {
+    "src/interpreter/namespaces.rs": "d43b09c26fcad70e0410e92db19cc1313bb2857c458090e4c1e4fcd4bf433c89",
+    "src/interpreter/embedding.rs": "c3355b7315a9288ea9ed79375068ecb02c53ba40bfe263d279c878d76646c246",
+    "src/interpreter/reuse.rs": "e3dcc089cac570830bead22c512091f2a06ac7fa72b49a500258b3dcf559e896",
+    "src/interpreter/mod.rs": "a0021a1e8bc0aed4bb267da77d17aa2c1a4efbc52d45d99d237c132b9a4a961a",
+    "benches/interpreter_gc.rs": "1e1a2eb5bb6b4e2adddba58c78bbf4a20b5790a83dd823725db0c44ceff32248",
+    "benches/support/allocations.rs": "a04d29c55f69ac0429de112363b4d514515a7a9b4a23cfcadae6f87138d3503d",
+    "tests/interpreter_reuse.rs": "77af3b2549f42fefbd2b1aa8b025004202f7f336ef48a86e9c5cd581d17292bf"
+  },
+  "measurement": "Existing unmodified interpreter_gc and allocation instrumentation. Seven samples, 256 evaluations/sample, two warmup batches per cadence. Before timing then before allocation failure; after timing then after allocation, sequentially. Separate timing/instrumented builds. No CPU affinity or frequency control. Final after-runs occurred after verification and both builds finished; initial after-runs may overlap verification, are retained with -initial filenames, and are excluded.",
+  "allocation_source": "Context::collect_garbage prunes analysis reuse; its environment lookup calls current_namespace_id, which constructed Name::new(None, \"*ns*\"). Collecting UTF-16 into Rc<[u16]> made two allocation requests totaling 32 bytes for that key per collection. The namespace registry now retains only this immutable Name, cloned across forks; lookup still follows live mapping, root and dynamic bindings.",
+  "verification": {
+    "focused_command": "cargo test --locked --lib --test interpreter_reclamation --test interpreter_deferred --test interpreter_collections --test interpreter_collection_core --test interpreter_state --test interpreter_transducers --test interpreter_reuse --test interpreter_embedding --test interpreter_namespaces --test interpreter_limits --test interpreter_conformance --test interpreter_coverage --test sci_reference --test provenance",
+    "passed": 159,
+    "ignored": 1,
+    "ignored_reason": "opt-in pinned SCI JVM reference test; committed native corpus conformance and provenance passed",
+    "cargo_fmt_check": "passed",
+    "git_diff_check": "passed",
+    "cargo_clippy_locked_all_targets_warnings_denied": "passed"
+  },
+  "before_timing": {
+    "1": {
+      "collect_every": 1,
+      "eval_ns/op": 103889,
+      "gc_ns/collection": 42377,
+      "gc_ns/op": 42377,
+      "eval_allocs/op": 0,
+      "eval_reallocs/op": 0,
+      "eval_bytes/op": 0,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 1432
+      }
+    },
+    "16": {
+      "collect_every": 16,
+      "eval_ns/op": 103009,
+      "gc_ns/collection": 307320,
+      "gc_ns/op": 19207,
+      "eval_allocs/op": 0,
+      "eval_reallocs/op": 0,
+      "eval_bytes/op": 0,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 2767
+      }
+    },
+    "256": {
+      "collect_every": 256,
+      "eval_ns/op": 108008,
+      "gc_ns/collection": 6244458,
+      "gc_ns/op": 24392,
+      "eval_allocs/op": 0,
+      "eval_reallocs/op": 0,
+      "eval_bytes/op": 0,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 24127
+      }
+    }
+  },
+  "after_timing": {
+    "1": {
+      "collect_every": 1,
+      "eval_ns/op": 106093,
+      "gc_ns/collection": 42705,
+      "gc_ns/op": 42705,
+      "eval_allocs/op": 0,
+      "eval_reallocs/op": 0,
+      "eval_bytes/op": 0,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 1432
+      }
+    },
+    "16": {
+      "collect_every": 16,
+      "eval_ns/op": 107340,
+      "gc_ns/collection": 323015,
+      "gc_ns/op": 20188,
+      "eval_allocs/op": 0,
+      "eval_reallocs/op": 0,
+      "eval_bytes/op": 0,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 2767
+      }
+    },
+    "256": {
+      "collect_every": 256,
+      "eval_ns/op": 108865,
+      "gc_ns/collection": 6401500,
+      "gc_ns/op": 25005,
+      "eval_allocs/op": 0,
+      "eval_reallocs/op": 0,
+      "eval_bytes/op": 0,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 24127
+      }
+    }
+  },
+  "after_allocations": {
+    "1": {
+      "collect_every": 1,
+      "eval_ns/op": 106679,
+      "gc_ns/collection": 43634,
+      "gc_ns/op": 43634,
+      "eval_allocs/op": 2060,
+      "eval_reallocs/op": 436,
+      "eval_bytes/op": 124820,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 1432
+      }
+    },
+    "16": {
+      "collect_every": 16,
+      "eval_ns/op": 106964,
+      "gc_ns/collection": 312846,
+      "gc_ns/op": 19552,
+      "eval_allocs/op": 2060,
+      "eval_reallocs/op": 436,
+      "eval_bytes/op": 124828,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 2767
+      }
+    },
+    "256": {
+      "collect_every": 256,
+      "eval_ns/op": 107678,
+      "gc_ns/collection": 6573583,
+      "gc_ns/op": 25678,
+      "eval_allocs/op": 2060,
+      "eval_reallocs/op": 436,
+      "eval_bytes/op": 124843,
+      "gc_allocs/sample": 0,
+      "gc_reallocs/sample": 0,
+      "gc_bytes/sample": 0,
+      "live": {
+        "heap_values": 317,
+        "names": 320,
+        "sources": 1,
+        "executable_units": 1,
+        "namespaces": 6,
+        "vars": 314,
+        "roots": 6,
+        "slots": 24127
+      }
+    }
+  },
+  "after_zero_collector_allocations_reallocations_bytes_all_cadences": true,
+  "live_record_and_slot_counts_identical": true
+}

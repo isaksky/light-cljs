@@ -1,0 +1,55 @@
+{
+  "debug": {
+    "command": "cargo test --locked",
+    "passed": 588,
+    "failed": 0,
+    "ignored": 12,
+    "test_binaries_and_doc_groups": 56
+  },
+  "release": {
+    "command": "cargo test --locked --release",
+    "passed": 588,
+    "failed": 0,
+    "ignored": 12,
+    "test_binaries_and_doc_groups": 56
+  },
+  "pinned_reference": {
+    "command": "LIGHT_CLJS_REFERENCE=release cargo test --locked --test execution -- --ignored --nocapture",
+    "clojurescript": "1.12.134",
+    "settings": {
+      "optimizations": "none",
+      "static-fns": false,
+      "def-emits-var": false
+    },
+    "passed": 8,
+    "outcomes": 517,
+    "generated_programs": 48,
+    "analysis_boundaries": 130,
+    "typed_collection_program": true,
+    "primitive_namespace_initialization_lexical_and_slash_checks": true
+  },
+  "lint": [
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --features count-allocations -- -D warnings",
+    "cargo fmt --check",
+    "git diff --check",
+    "node --check benchmarks/support/compiler_operations.js"
+  ],
+  "benchmark_validation": {
+    "samples_per_pair": 9,
+    "rust_phase_pairs": 48,
+    "timing_rows": 432,
+    "separate_allocation_rows": 432,
+    "baseline_phase_pairs": 12,
+    "baseline_rows": 108,
+    "fresh_process_pairs": 26,
+    "fresh_process_rows": 234,
+    "node_operation_size_pairs": 142,
+    "node_rows": 1278,
+    "invalid_option_cases_rejected": 4,
+    "primitive_output_byte_identity": true,
+    "macro_output_byte_identity": true,
+    "all_full_typed_results_and_snapshots_checked": true
+  },
+  "measurement_sources_still_match_manifest": true
+}

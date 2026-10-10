@@ -1,0 +1,9 @@
+command: ['/Users/admin/src/light-cljs/target/release/deps/interpreter_gc-9d8c1118137f8ff9']
+exit: 101
+samples=7 evaluations/sample=256 fresh_context_ns=227625 fresh_process_ns=1774209 instrumented=true
+
+thread 'main' (67058476) panicked at benches/interpreter_gc.rs:89:5:
+assertion `left == right` failed: warmed collection must reuse scratch instead of allocating per collection node
+  left: (512, 0, 8192)
+ right: (0, 0, 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

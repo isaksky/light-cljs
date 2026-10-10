@@ -1,0 +1,9 @@
+{
+  "fixture": "benchmarks/fixtures/compiler/collections/operations.cljs",
+  "utf8_bytes": 25303,
+  "gzip_bytes": 5798,
+  "sha256": "eb8987f317423320a85b10f4a145a1e04f62af462a21b25c746d7ce83cfecd54",
+  "runtime_count": 1,
+  "truth_helpers": 1,
+  "host_helpers": 1
+}

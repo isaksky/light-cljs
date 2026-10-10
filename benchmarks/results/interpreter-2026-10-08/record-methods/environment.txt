@@ -1,0 +1,11 @@
+rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)
+arm64
+ProductName:		macOS
+ProductVersion:		15.7.3
+BuildVersion:		24G419
+
+cargo bench --locked --bench interpreter_records
+cargo bench --locked --bench interpreter_records --features count-allocations
+cargo bench --locked --bench interpreter_gc --features count-allocations
+
+Timing and allocation measurements are separate builds. Seven samples follow one equal-sized warmup. Calls/construction use 2000 operations per sample; complete record definitions use 100 operations per sample. Retained direct-field and record-method calls use equivalent one-field records; reify retains an equivalent scalar capture.

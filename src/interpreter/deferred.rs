@@ -512,7 +512,15 @@ impl Context {
                     }
                 }
                 Task::Pair(a, b) => {
-                    if a.heap_id().is_some() && a.same_identity(&b) {
+                    // Metadata wrappers do not change collection identity. This
+                    // also keeps a record containing NaN reflexive after with-meta,
+                    // consistently with the eager equality/hash implementation.
+                    let same_heap = {
+                        let store = self.owner.store.borrow();
+                        matches!((store.unannotated(a.value()), store.unannotated(b.value())),
+                            (Value::Heap(x), Value::Heap(y)) if x == y)
+                    };
+                    if same_heap {
                         continue;
                     }
                     match (a.inspect(), b.inspect()) {
@@ -520,7 +528,11 @@ impl Context {
                             collection_core::Cursor::new(self, &a, 0)?,
                             collection_core::Cursor::new(self, &b, 1)?,
                         )),
-                        (ValueView::Map(n), ValueView::Map(m)) => {
+                        (ValueView::Map(n), ValueView::Map(m))
+                        | (ValueView::Record(n), ValueView::Record(m)) => {
+                            if records::type_id(&a) != records::type_id(&b) {
+                                return Ok(false);
+                            }
                             if n != m {
                                 return Ok(false);
                             }
@@ -562,7 +574,7 @@ impl Context {
                 | ValueView::Seq(_)
                 | ValueView::Vector(_)
                 | ValueView::Set(_) => pending.extend(value.elements()?),
-                ValueView::Map(_) => {
+                ValueView::Map(_) | ValueView::Record(_) => {
                     pending.extend(value.entries()?.into_iter().flat_map(|(k, v)| [k, v]))
                 }
                 _ => (),

@@ -1,0 +1,29 @@
+{
+  "allocator_sha256": "6eeec6e897bd4af3cfa95280f1e136a8a268160d536acf2cefd144098bedbe2c",
+  "archive_sha256": "3bcec55d355738f4f83c07b4e06f1b1bf0ce0cd04dab13f8d091adad1ea9ee79",
+  "baseline": "/Users/admin/.cache/light-cljs-baselines/light-cljs-58/transducers",
+  "current_library_sha256": "7b296825c53343b20160bfa765937d1aadedc4021f08d8b92fa2be2a32c8c928",
+  "exact_fixture_manifest": {
+    "benchmarks/fixtures/interpreter/closures_loop.clj": "80d47d44301a90a45847a51f84c1aa3b206c75921dbabd035a9a26beeaa0fe7b",
+    "benchmarks/fixtures/interpreter/collections.clj": "e1ad11d8cf40dac5500fc6ccb3284713e3d14b5593d823857fcb1aac94659f47",
+    "benchmarks/fixtures/interpreter/embedding.clj": "f7026016d51ba5512446e55e248a371f293ab5966773f95e53a79a83c20707ce",
+    "benchmarks/fixtures/interpreter/lazy.clj": "2f06ebba9817d50e366a3d37b1fcf01900bf4468307c765f557f07872e62ce77",
+    "benchmarks/fixtures/interpreter/main.clj": "861922130c2277549dff358d7c664cf8123303c2dcc14b201097b7a1a635cd35",
+    "benchmarks/fixtures/interpreter/report/data.cljc": "9c95b3493d83237fecad7cfe1dbd8741943a7159629bc0634853e51dee5a331f",
+    "benchmarks/fixtures/interpreter/report/main.clj": "d6cca2f88820918be127221cd068f9b6a7646322ec40cc550d73436e6e89efb8",
+    "benchmarks/fixtures/interpreter/report/metrics.cljc": "ffd79a29c5cd5b95c073a98943620129c48871ec5ee4e3d7e3fbd8f5070111f7",
+    "benchmarks/fixtures/interpreter/transducers/cli.clj": "b23cd59b493a084d4c7d8c59c3c2fe3c3011353ea826f1c3f6e8b8ef3195f7ad",
+    "benchmarks/fixtures/interpreter/transducers/custom_volatile.clj": "6d924b9f835e4c410f61d8c63639c953fd4f763f2f89f9522d53718ff9066001",
+    "benchmarks/fixtures/interpreter/transducers/early_take.clj": "c81d71607ea283fc8a7e7179ae084b527d2248fbedcf0a8668f0d6977757f345",
+    "benchmarks/fixtures/interpreter/transducers/failures.clj": "3f28ae8600046b09c54615687fc61e3239d57de691a9b79b693085167e1f66be",
+    "benchmarks/fixtures/interpreter/transducers/identity.clj": "cc14dc7f9259e11f83b43c1f191a92f0e742a61a86bc77d4a41d0a9aa043ca91",
+    "benchmarks/fixtures/interpreter/transducers/mapcat.clj": "9ae5aec9b9c755adfae89a36d55e20e8bee5b2edf2f22a322b86e8d58177a285",
+    "benchmarks/fixtures/interpreter/transducers/nested_cat.clj": "b800da9e999afa17c3dce7fb930ad48e023f890d014cafa63f4f0515687f06df",
+    "benchmarks/fixtures/interpreter/transducers/partition_sum.clj": "fb20ec42f5dbbe5771b17bd27735d63003c34700aeb3012ca62465999d8a8ca4",
+    "benchmarks/fixtures/interpreter/transducers/partition_vector.clj": "73b96e5a353879b4996db668ab584539fbffea1004fca26826cd3073c30b232d",
+    "benchmarks/fixtures/interpreter/transducers/reject_all.clj": "8254a30c6fd94b31b2ed2d34aa278736184f6d5de6c80264608edb1fecba07b2",
+    "benchmarks/fixtures/interpreter/transducers/scalar.clj": "b98ff87ba02aef404b0ba873498c9b792afc8801fed74470b2623d02411da544"
+  },
+  "harness_sha256": "efb43d14d69f21ebee199a1680355109798eeedc26b0351f776affe2ffa0b1b4",
+  "scope": "Unchanged archived interpreter harness with its exact original fixtures; new transducer fixtures are a separate measurement. No general-driver manifest override."
+}

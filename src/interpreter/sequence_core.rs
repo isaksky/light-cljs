@@ -4,10 +4,26 @@ use super::*;
 use collection_core::{Cursor, sequence, truthy};
 
 #[derive(Clone, Copy)]
+pub(super) enum Transform {
+    Map,
+    Filter,
+    Remove,
+    Take,
+    Drop,
+    TakeWhile,
+    PartitionAll,
+}
+
+#[derive(Clone, Copy)]
 pub(super) enum Combinator {
     Comp,
     Partial,
     Complement,
+    Completing,
+    Cat,
+    PreservingReduced,
+    Transform(Transform),
+    Reducing(Transform),
     Constantly,
     Juxt,
     LazyConcat,
@@ -261,7 +277,16 @@ pub(super) fn invoke_higher_order(
             .map_err(InvokeError::Dispatch)?;
         // Clojure's combinators have fixed entry arities before their rest
         // entry. Demand that prefix, but preserve the remainder for callbacks.
-        if let Some(source) = applied {
+        if let Some(source) = applied
+            && !matches!(
+                operation,
+                Combinator::Completing
+                    | Combinator::Cat
+                    | Combinator::PreservingReduced
+                    | Combinator::Transform(_)
+                    | Combinator::Reducing(_)
+            )
+        {
             let prefix = match operation {
                 Combinator::Constantly => 0,
                 Combinator::Complement => 2,
@@ -303,6 +328,50 @@ pub(super) fn invoke_higher_order(
             )
             .map_err(deferred::invoke_error),
             Combinator::Constantly => Ok(captures[0].clone()),
+            Combinator::Transform(transform) | Combinator::Reducing(transform) => {
+                invoke_transform(context, operation, transform, &captures, args, applied)
+            }
+            Combinator::Completing | Combinator::Cat | Combinator::PreservingReduced => {
+                // Like the fixed-arity reference adapter, applied calls count
+                // the whole argument sequence, including on arity failure.
+                // The shared traversal polls and charges each retained root.
+                let mut values = Vec::new();
+                let arguments = if let Some(source) = applied {
+                    force_arguments(context, source, &mut values)?;
+                    &values[..]
+                } else {
+                    args
+                };
+                if arguments.len() > 2 {
+                    return Err(InvokeError::Dispatch(EvalErrorKind::Arity {
+                        fixed: Box::new([0, 1, 2]),
+                        variadic: None,
+                        actual: arguments.len(),
+                    }));
+                }
+                match operation {
+                    Combinator::Cat if arguments.len() == 2 => {
+                        reduce(context, &captures[1], Some(&arguments[0]), &arguments[1], 1)
+                            .map_err(deferred::invoke_error)
+                    }
+                    Combinator::PreservingReduced => {
+                        let result = context.invoke(&captures[0], arguments)?;
+                        // Inner ordinary reduction removes one marker. Add just
+                        // that layer so every enclosing cat still sees the stop.
+                        if result.reduced_value().is_some() {
+                            context.reduced(&result).map_err(deferred::invoke_error)
+                        } else {
+                            Ok(result)
+                        }
+                    }
+                    _ => context.invoke(
+                        &captures[usize::from(
+                            matches!(operation, Combinator::Completing) && arguments.len() == 1,
+                        )],
+                        arguments,
+                    ),
+                }
+            }
             Combinator::Complement => {
                 let value = match applied {
                     Some(source) => context.invoke_sequence(&captures[0], source)?,
@@ -395,6 +464,197 @@ pub(super) fn invoke_higher_order(
     Some(result)
 }
 
+fn invoke_transform(
+    context: &mut Context,
+    operation: Combinator,
+    transform: Transform,
+    captures: &[RootedValue],
+    args: &[RootedValue],
+    applied: Option<&RootedValue>,
+) -> Result<RootedValue, InvokeError> {
+    if matches!(operation, Combinator::Reducing(Transform::Map))
+        && let Some(source) = applied
+    {
+        // The map reducer has a variadic step. Demand the ordinary RestFn
+        // prefix, then preserve its input tail for the mapping function's apply.
+        // A function that ignores its arguments can accept an unbounded tail.
+        applied_prefix(context, source, 2)?;
+        let source = sequence(context, source, 0).map_err(deferred::invoke_error)?;
+        if matches!(source.inspect(), ValueView::Nil) {
+            return context.invoke(&captures[1], &[]);
+        }
+        let accumulator = source.nth(0)?.expect("nonempty applied reducer arguments");
+        let tail = context.sequence_tail(&source)?;
+        let inputs = sequence(context, &tail, 0).map_err(deferred::invoke_error)?;
+        if matches!(inputs.inspect(), ValueView::Nil) {
+            return context.invoke(&captures[1], &[accumulator]);
+        }
+        let mapped = context.invoke_sequence(&captures[0], &inputs)?;
+        return context.invoke(&captures[1], &[accumulator, mapped]);
+    }
+
+    let mut values = Vec::new();
+    let arguments = if let Some(source) = applied {
+        // Constructors and non-map reducers have only fixed arities.
+        force_arguments(context, source, &mut values)?;
+        &values[..]
+    } else {
+        args
+    };
+    if matches!(operation, Combinator::Transform(_)) {
+        if arguments.len() != 1 {
+            return Err(InvokeError::Dispatch(EvalErrorKind::Arity {
+                fixed: Box::new([1]),
+                variadic: None,
+                actual: arguments.len(),
+            }));
+        }
+        if matches!(transform, Transform::PartitionAll) {
+            // The constructor coerces to long; the reference's buffer capacity
+            // narrows to int and rejects negatives only when applied to rf.
+            let n = numbers::call(context, &captures[..1], numbers::Operation::Int)
+                .map_err(deferred::invoke_error)?;
+            if matches!(n.inspect(), ValueView::Integer(n) if n < 0) {
+                return Err(deferred::invoke_error(NativeError::Type {
+                    argument: 0,
+                    expected: "nonnegative partition capacity",
+                }));
+            }
+            // Grow the persistent buffer only with real inputs, never reserve n.
+            let buffer = context
+                .volatile(&context.vector(&[])?)
+                .map_err(deferred::invoke_error)?;
+            return context
+                .higher_order(
+                    Combinator::Reducing(transform),
+                    &[n, arguments[0].clone(), buffer],
+                )
+                .map_err(deferred::invoke_error);
+        }
+        // A reusable transform owns no process state. Each application gets a
+        // traced volatile, and zero-arity reducer initialization never resets it.
+        let capture = if matches!(transform, Transform::Take | Transform::Drop) {
+            context
+                .volatile(&captures[0])
+                .map_err(deferred::invoke_error)?
+        } else {
+            captures[0].clone()
+        };
+        return context
+            .higher_order(
+                Combinator::Reducing(transform),
+                &[capture, arguments[0].clone()],
+            )
+            .map_err(deferred::invoke_error);
+    }
+    if !matches!(transform, Transform::Map) && arguments.len() > 2 {
+        return Err(InvokeError::Dispatch(EvalErrorKind::Arity {
+            fixed: Box::new([0, 1, 2]),
+            variadic: None,
+            actual: arguments.len(),
+        }));
+    }
+    if matches!(transform, Transform::PartitionAll) {
+        return invoke_partition_all(context, captures, arguments);
+    }
+    if arguments.len() <= 1 {
+        return context.invoke(&captures[1], arguments);
+    }
+    match transform {
+        Transform::Map => {
+            let mapped = context.invoke(&captures[0], &arguments[1..])?;
+            context.invoke(&captures[1], &[arguments[0].clone(), mapped])
+        }
+        Transform::Filter | Transform::Remove => {
+            let selected = context.invoke(&captures[0], &arguments[1..])?;
+            if truthy(&selected) == matches!(transform, Transform::Filter) {
+                context.invoke(&captures[1], arguments)
+            } else {
+                Ok(arguments[0].clone())
+            }
+        }
+        Transform::Take | Transform::Drop => {
+            use numbers::Operation::{Dec, Positive};
+            let n = captures[0]
+                .state_value()
+                .expect("private transform counter");
+            // The pinned reducer decrements before testing/forwarding, even
+            // after drop begins forwarding. Keep checked arithmetic and its
+            // failure timing; a saturating counter changes observable behavior.
+            let next = numbers::call(context, std::slice::from_ref(&n), Dec)
+                .map_err(deferred::invoke_error)?;
+            state::vreset(context, &[captures[0].clone(), next.clone()])
+                .map_err(deferred::invoke_error)?;
+            let positive =
+                numbers::call(context, &[n], Positive).map_err(deferred::invoke_error)?;
+            let result = if truthy(&positive) == matches!(transform, Transform::Take) {
+                context.invoke(&captures[1], arguments)?
+            } else {
+                arguments[0].clone()
+            };
+            if matches!(transform, Transform::Take)
+                && !truthy(
+                    &numbers::call(context, &[next], Positive).map_err(deferred::invoke_error)?,
+                )
+                && result.reduced_value().is_none()
+            {
+                context.reduced(&result).map_err(deferred::invoke_error)
+            } else {
+                Ok(result)
+            }
+        }
+        Transform::TakeWhile => {
+            let selected = context.invoke(&captures[0], &arguments[1..])?;
+            if truthy(&selected) {
+                context.invoke(&captures[1], arguments)
+            } else {
+                context
+                    .reduced(&arguments[0])
+                    .map_err(deferred::invoke_error)
+            }
+        }
+        Transform::PartitionAll => unreachable!(),
+    }
+}
+
+fn invoke_partition_all(
+    context: &mut Context,
+    captures: &[RootedValue],
+    arguments: &[RootedValue],
+) -> Result<RootedValue, InvokeError> {
+    if arguments.is_empty() {
+        return context.invoke(&captures[1], arguments);
+    }
+    let mut buffer = captures[2].state_value().expect("private partition buffer");
+    let completing = arguments.len() == 1;
+    if !completing {
+        buffer = context.conj(&buffer, &arguments[1])?;
+        state::vreset(context, &[captures[2].clone(), buffer.clone()])
+            .map_err(deferred::invoke_error)?;
+    }
+    let ValueView::Integer(n) = captures[0].inspect() else {
+        unreachable!()
+    };
+    let count = buffer.count().expect("partition vector");
+    let mut result = arguments[0].clone();
+    if (completing && count > 0) || (!completing && count == n as usize) {
+        // The snapshot roots every input through callback-triggered collection.
+        // Clear before calling so reentry and later explicit completion cannot
+        // replay the group, even when the downstream callback throws.
+        let empty = context.vector(&[])?;
+        state::vreset(context, &[captures[2].clone(), empty]).map_err(deferred::invoke_error)?;
+        result = context.invoke(&captures[1], &[result, buffer])?;
+        if completing {
+            result = result.reduced_value().unwrap_or(result);
+        }
+    }
+    if completing {
+        context.invoke(&captures[1], &[result])
+    } else {
+        Ok(result)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Operation {
     Seq,
@@ -405,8 +665,12 @@ enum Operation {
     Next,
     Cons,
     Reduce,
+    Completing,
+    Cat,
+    Transduce,
     ReduceKv,
     Reduced,
+    EnsureReduced,
     ReducedP,
     Unreduced,
     Into,
@@ -461,28 +725,53 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
             Ok(context.cons_value(&args[0], &tail)?)
         }
         Reduced => context.reduced(&args[0]),
+        EnsureReduced => {
+            if args[0].reduced_value().is_some() {
+                Ok(args[0].clone())
+            } else {
+                context.reduced(&args[0])
+            }
+        }
         ReducedP => Ok(context.boolean(args[0].reduced_value().is_some())),
         Unreduced => Ok(args[0].reduced_value().unwrap_or_else(|| args[0].clone())),
-        Reduce => {
-            let mut cursor = Cursor::new(context, args.last().unwrap(), args.len() - 1)?;
-            let mut accumulator = if args.len() == 3 {
-                args[1].clone()
-            } else if let Some(first) = cursor.next(context)? {
-                first
+        Reduce => reduce(
+            context,
+            &args[0],
+            (args.len() == 3).then(|| &args[1]),
+            args.last().unwrap(),
+            args.len() - 1,
+        ),
+        Completing => {
+            let completion = args.get(1).cloned().unwrap_or_else(|| {
+                context.native_function(
+                    builtin_definitions()
+                        .iter()
+                        .find(|d| d.metadata.name == "identity")
+                        .unwrap(),
+                )
+            });
+            context.higher_order(Combinator::Completing, &[args[0].clone(), completion])
+        }
+        Cat => {
+            let preserving = context.higher_order(Combinator::PreservingReduced, args)?;
+            context.higher_order(Combinator::Cat, &[args[0].clone(), preserving])
+        }
+        Transduce => {
+            // Initialize the original reducer before applying the transducer.
+            // Every local stays rooted across arbitrary reentrant callbacks.
+            let initial = if args.len() == 4 {
+                args[2].clone()
             } else {
-                return Ok(context.invoke(&args[0], &[])?);
+                context.invoke(&args[1], &[])?
             };
-            loop {
-                poll(context)?;
-                let Some(value) = cursor.next(context)? else {
-                    break;
-                };
-                accumulator = context.invoke(&args[0], &[accumulator, value])?;
-                if let Some(value) = accumulator.reduced_value() {
-                    return Ok(value);
-                }
-            }
-            Ok(accumulator)
+            transduce(
+                context,
+                &args[0],
+                &args[1],
+                &initial,
+                args.last().unwrap(),
+                args.len() - 1,
+            )
         }
         ReduceKv => {
             let mut accumulator = args[1].clone();
@@ -505,7 +794,7 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
                     }
                     Ok(accumulator)
                 }
-                ValueView::Map(_) => {
+                ValueView::Map(_) | ValueView::Record(_) => {
                     for (key, value) in args[2].entries()? {
                         poll(context)?;
                         accumulator = context.invoke(&args[0], &[accumulator, key, value])?;
@@ -541,6 +830,16 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
             }
         }
         Into => {
+            if args.len() == 3 {
+                let conj = context.native_function(
+                    collection_core::collection_definitions()
+                        .iter()
+                        .find(|d| d.metadata.name == "conj")
+                        .unwrap(),
+                );
+                let reducer = call(context, &[conj], Completing)?;
+                return transduce(context, &args[1], &reducer, &args[0], &args[2], 2);
+            }
             let mut result = args
                 .first()
                 .cloned()
@@ -640,6 +939,51 @@ fn call(context: &mut Context, args: &[RootedValue], operation: Operation) -> Na
         ),
     }
 }
+
+/// Both public transducing processes share transformation and completion.
+fn transduce(
+    context: &mut Context,
+    transform: &RootedValue,
+    reducer: &RootedValue,
+    initial: &RootedValue,
+    source: &RootedValue,
+    argument: usize,
+) -> NativeResult {
+    let reducer = context.invoke(transform, std::slice::from_ref(reducer))?;
+    let result = reduce(context, &reducer, Some(initial), source, argument)?;
+    // Completion is successful reduction's final call, never cleanup.
+    // Its result (including Reduced) must be returned unchanged.
+    Ok(context.invoke(&reducer, &[result])?)
+}
+
+/// Ordinary reduction never completes, and removes exactly one marker layer
+/// only from a step result. An untouched initializer is returned as supplied.
+pub(super) fn reduce(
+    context: &mut Context,
+    reducer: &RootedValue,
+    initial: Option<&RootedValue>,
+    source: &RootedValue,
+    argument: usize,
+) -> NativeResult {
+    let mut cursor = Cursor::new(context, source, argument)?;
+    let mut accumulator = if let Some(initial) = initial {
+        initial.clone()
+    } else if let Some(first) = cursor.next(context)? {
+        first
+    } else {
+        return Ok(context.invoke(reducer, &[])?);
+    };
+    loop {
+        poll(context)?;
+        let Some(value) = cursor.next(context)? else {
+            return Ok(accumulator);
+        };
+        accumulator = context.invoke(reducer, &[accumulator, value])?;
+        if let Some(value) = accumulator.reduced_value() {
+            return Ok(value);
+        }
+    }
+}
 macro_rules! def {
     ($name:literal, $arity:expr, $op:ident) => {
         NativeDefinition {
@@ -670,11 +1014,15 @@ pub fn sequence_definitions() -> &'static [NativeDefinition] {
         def!("next", Exact(1), Next),
         def!("cons", Exact(2), Cons),
         def!("reduce", Range { min: 2, max: 3 }, Reduce),
+        def!("completing", Range { min: 1, max: 2 }, Completing),
+        def!("cat", Exact(1), Cat),
+        def!("transduce", Range { min: 3, max: 4 }, Transduce),
         def!("reduce-kv", Exact(3), ReduceKv),
         def!("reduced", Exact(1), Reduced),
+        def!("ensure-reduced", Exact(1), EnsureReduced),
         def!("reduced?", Exact(1), ReducedP),
         def!("unreduced", Exact(1), Unreduced),
-        def!("into", Range { min: 0, max: 2 }, Into),
+        def!("into", Range { min: 0, max: 3 }, Into),
         def!("mapv", AtLeast(2), Mapv),
         def!("filterv", Exact(2), Filterv),
         def!("some", Exact(2), SearchSome),

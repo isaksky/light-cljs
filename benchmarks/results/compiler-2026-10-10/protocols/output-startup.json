@@ -1,0 +1,164 @@
+{
+  "node": "v24.18.0",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "binary_sha256": "678e2ec059e69f042cdb91bfd46afd802a5c8ecb3fff79ac5918becee6704366",
+  "runtime_sha256": "c9a6cddbda5b02bb19b28c833bfd50f17c378db86c0f37304b5f0cef8e4cad41",
+  "runtime_bytes": 94682,
+  "runtime_gzip_bytes": 22160,
+  "method": "Nine fresh Node processes per program. Time vm.Script compilation plus runInThisContext in milliseconds; validate the numeric result after timing. Excludes process launch and source reading. OS caches/scheduling uncontrolled; historical baseline is not paired.",
+  "programs": {
+    "primitive": {
+      "source": "42",
+      "expected": 42,
+      "sha256": "cefb7c7e86a17fe9c8fa416ae5202f7f63f914f3ac51a4c0cf4a95b214b5c774",
+      "bytes": 88,
+      "gzip_bytes": 93,
+      "samples_ms": [
+        0.0952920000000006,
+        0.09404200000000174,
+        0.10499999999999687,
+        0.0930839999999975,
+        0.1027079999999998,
+        0.09004100000000648,
+        0.11316599999999966,
+        0.09454200000000412,
+        0.09370799999999946
+      ],
+      "median_ms": 0.09454200000000412
+    },
+    "dot": {
+      "source": "(. \"abcd\" indexOf \"d\")",
+      "expected": 3,
+      "sha256": "7949a9ca8f7350f17e60e0601b7d31db39ad17fba163810dd3516b1d9e33dc78",
+      "bytes": 110,
+      "gzip_bytes": 113,
+      "samples_ms": [
+        0.09566600000000136,
+        0.10329099999999869,
+        0.09645900000000296,
+        0.08720800000000395,
+        0.09850000000000136,
+        0.09008299999999991,
+        0.09608399999999762,
+        0.0972499999999954,
+        0.09141699999999986
+      ],
+      "median_ms": 0.09608399999999762
+    },
+    "constructor": {
+      "source": "(.-x (new (fn [x] (this-as self (set! (.-x self) x))) 3))",
+      "expected": 3,
+      "sha256": "9d849b35f884d8932084f0966dcf7ed54cf2ce6c69d846a93cb43942bbf46075",
+      "bytes": 218,
+      "gzip_bytes": 167,
+      "samples_ms": [
+        0.0921249999999958,
+        0.09633300000000133,
+        0.09658300000000253,
+        0.10891600000000068,
+        0.10833399999999926,
+        0.1042500000000004,
+        0.10125000000000028,
+        0.09291599999999534,
+        0.10020899999999955
+      ],
+      "median_ms": 0.10020899999999955
+    },
+    "template": {
+      "source": "(js* \"(~{} + ~{})\" 1 2)",
+      "expected": 3,
+      "sha256": "4633731b9dbf920854061fdec2102fd5b84c39978ec9107b39fc37d7d23db59e",
+      "bytes": 102,
+      "gzip_bytes": 106,
+      "samples_ms": [
+        0.09554100000000432,
+        0.08987499999999926,
+        0.08699999999999619,
+        0.0870829999999998,
+        0.08733399999999847,
+        0.08970899999999915,
+        0.09283399999999631,
+        0.08583300000000094,
+        0.08341599999999971
+      ],
+      "median_ms": 0.08733399999999847
+    },
+    "collections": {
+      "source": "(count [1 2 3])",
+      "expected": 3,
+      "sha256": "72aaf8a89c02bf46f68f7dce8cad26d0fa3aa73af78ffa4b91ba9e0ff93d1ac0",
+      "bytes": 94839,
+      "gzip_bytes": 22200,
+      "samples_ms": [
+        1.7157920000000004,
+        1.744125000000004,
+        1.8888749999999987,
+        1.8122919999999993,
+        1.8040410000000051,
+        1.7939580000000035,
+        1.7997080000000025,
+        1.7468329999999952,
+        1.7282089999999997
+      ],
+      "median_ms": 1.7939580000000035
+    },
+    "array-helpers": {
+      "source": "(aget (array 1 2 3) 2)",
+      "expected": 3,
+      "sha256": "b1190b03db4798a67800f28fdb739c3d394da2e4c6770d893388e0d951e99e3f",
+      "bytes": 94822,
+      "gzip_bytes": 22197,
+      "samples_ms": [
+        1.7682500000000019,
+        1.6338749999999997,
+        1.6423750000000013,
+        1.616624999999999,
+        1.6868750000000041,
+        1.602375000000002,
+        1.7518749999999983,
+        1.607457999999994,
+        1.6308329999999955
+      ],
+      "median_ms": 1.6338749999999997
+    },
+    "protocol-direct": {
+      "source": "(defprotocol P (f [this x])) (let [v (reify P (f [_ x] (+ x 2))) saved f] (saved v 5))",
+      "expected": 7,
+      "sha256": "907f1f017c9f11e19c0e7698364f100bc8af951d06d7c653cbbee9b40e7c0c22",
+      "bytes": 95193,
+      "gzip_bytes": 22320,
+      "samples_ms": [
+        1.958708999999999,
+        1.9451660000000004,
+        2.0210420000000013,
+        1.985875,
+        1.9955420000000004,
+        1.9521250000000023,
+        1.9570839999999983,
+        1.9583329999999997,
+        1.9162080000000046
+      ],
+      "median_ms": 1.9583329999999997
+    },
+    "protocol-metadata": {
+      "source": "(defprotocol P :extend-via-metadata true (f [this])) (f (with-meta {} {`f (fn [_] 7)}))",
+      "expected": 7,
+      "sha256": "3a4dc10ece2f526938b20194864e15a81429bc41eda5d72c0a7f6c92dd42299d",
+      "bytes": 95104,
+      "gzip_bytes": 22290,
+      "samples_ms": [
+        2.2935409999999976,
+        2.150083000000002,
+        2.1827909999999946,
+        2.195417000000006,
+        2.195707999999996,
+        1.9789579999999987,
+        2.269124999999999,
+        2.0039169999999977,
+        2.2211250000000007
+      ],
+      "median_ms": 2.195417000000006
+    }
+  }
+}

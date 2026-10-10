@@ -236,7 +236,7 @@ fn malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics(
             "(ns demo (:require [lib :as x :as y]))",
             "only one :as alias",
         ),
-        ("(ns demo (:require [lib :refer [f]]))", ":refer"),
+        ("(ns demo (:require [lib :refer :all]))", ":refer"),
         ("(ns demo (:require [lib :rename {f g}]))", ":rename"),
         (
             "(ns demo (:require [\"package\" :as p]))",
@@ -246,7 +246,7 @@ fn malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics(
             "(ns demo (:require \"package\"))",
             "JavaScript package imports are unsupported",
         ),
-        ("(ns demo (:import Thing))", "unsupported namespace clause"),
+        ("(ns demo (:import :Thing))", "import expects"),
         ("(ns demo (:require []))", "cannot be empty"),
     ] {
         sources.write("demo.cljs", source);
@@ -256,13 +256,9 @@ fn malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics(
 }
 
 #[test]
-fn aliases_cannot_duplicate_or_redirect_namespace_qualifiers() {
+fn aliases_cannot_redirect_namespace_qualifiers() {
     let sources = Sources::new();
     for (source, expected) in [
-        (
-            "(ns demo (:require [lib :as x] [lib :as x]))",
-            "duplicate or conflicting",
-        ),
         ("(ns demo (:require [lib :as js]))", "js is reserved"),
         (
             "(ns demo (:require [lib :as demo]))",
@@ -396,4 +392,188 @@ fn slash_is_an_unqualified_name_and_qualified_namespace_member() {
         execute(&compile_namespace("boundary.main", &[root]).unwrap()),
         "7\n7\n8\n8\n9\n"
     );
+}
+
+#[test]
+fn bounded_core_is_virtual_and_does_not_override_user_namespace_members() {
+    let sources = Sources::new();
+    sources.write("cljs/core.cljs", "invalid this file must never be loaded");
+    sources.write(
+        "user/core.cljs",
+        "(ns user.core) (def vector (fn* [x] x)) (def get (fn* [x] x))",
+    );
+    sources.write("app/main.cljs", "(ns app.main (:require [cljs.core :as c] [user.core :as u])) (def saved vector) (def vector (fn* [x] x)) (def get (fn* [x] x)) (js/console.log (vector 7) (get 8) (u/vector 9) (u/get 10) (c/get (saved 20 30) 1) (clojure.core/nth (c/vector 40) 0) (namespace ::c/x) (namespace ::u/y))");
+    let js = sources.compile("app.main").unwrap();
+    assert_eq!(js.matches("  const rt = ").count(), 1);
+    assert_eq!(execute(&js), "7 8 9 10 30 40 cljs.core user.core\n");
+}
+
+#[test]
+fn reserved_core_qualifiers_cannot_be_redirected() {
+    let sources = Sources::new();
+    sources.write("other.cljs", "(ns other) (def get 1)");
+    for alias in ["cljs.core", "clojure.core"] {
+        let source = format!("(ns app.main (:require [other :as {alias}])) 1");
+        sources.write("app/main.cljs", &source);
+        let error = sources.compile("app.main").unwrap_err();
+        assert!(
+            error.message.contains("conflicts with namespace qualifier"),
+            "{error}"
+        );
+        assert_eq!(&source[error.span.unwrap()], alias);
+    }
+}
+
+#[test]
+fn shared_sources_select_cljs_before_dependencies_and_preserve_splicing_and_locations() {
+    let sources = Sources::new();
+    sources.write("app/main.cljs", "(ns app.main (:require [app.shared :as shared :refer [value]])) (js/console.log value shared/value)");
+    sources.write("app/shared.cljc", r#"(ns ^{:author "test"} app.shared "Shared namespace" {:doc "attrs"}
+      (:require #?@(:clj [[java.missing :as j]] :cljs [[app.leaf :as leaf]])))
+      #?(:clj (def value (java.time.Instant/now)) :cljs (def value (+ leaf/value #?(:other 0 :default 2))))
+      #?(:clj (unknown-jvm-only))
+      (def data [0 #?@(:cljs [1 #?(:cljs 2)]) 3])"#);
+    sources.write("app/leaf.cljc", "(ns app.leaf) (def value 5)");
+    assert_eq!(execute(&sources.compile("app.main").unwrap()), "7 7\n");
+    sources.write(
+        "app/shared.cljc",
+        "(ns app.shared)\n#?(:clj jvm-only :cljs missing)",
+    );
+    let error = sources.compile("app.main").unwrap_err();
+    assert!(error.path.unwrap().ends_with("app/shared.cljc"));
+    assert_eq!(error.line_column, Some((2, 24)));
+}
+
+#[test]
+fn cljs_precedes_cljc_across_roots_but_same_extension_duplicates_remain_ambiguous() {
+    let one = Sources::new();
+    let two = Sources::new();
+    one.write("demo.cljc", "(ns demo) (js/console.log 1)");
+    two.write("demo.cljs", "(ns demo) (js/console.log 2)");
+    for roots in [
+        [one.0.clone(), two.0.clone()],
+        [two.0.clone(), one.0.clone()],
+    ] {
+        assert_eq!(execute(&compile_namespace("demo", &roots).unwrap()), "2\n");
+    }
+    two.write("demo.cljc", "(ns demo) 3");
+    assert_eq!(
+        execute(&compile_namespace("demo", &[one.0.clone(), two.0.clone()]).unwrap()),
+        "2\n"
+    );
+    fs::remove_file(two.0.join("demo.cljs")).unwrap();
+    assert!(
+        compile_namespace("demo", &[one.0.clone(), two.0.clone()])
+            .unwrap_err()
+            .message
+            .contains("ambiguous")
+    );
+}
+
+#[test]
+fn runtime_refers_renames_and_core_exclusions_keep_qualified_identity() {
+    let s = Sources::new();
+    s.write(
+        "library.cljs",
+        "(ns library) (def value 8) (def f (fn* [x] (+ value x)))",
+    );
+    s.write("main.cljs", r#"(ns main (:refer-clojure :exclude [+] :rename {count size when always})
+        (:require [library :as lib :refer [value f] :rename {f renamed}]))
+        (def + (fn* [a b] a))
+        (js/console.log (+ 5 2) (cljs.core/+ 5 2) value (renamed 3) (= renamed lib/f) (size [1 2 3]) (always true 42)
+            (let* [value 9] value) library/value)"#);
+    assert_eq!(
+        execute(&s.compile("main").unwrap()),
+        "5 7 8 11 true 3 42 9 8\n"
+    );
+    for expression in ["inc", "when", "+"] {
+        s.write(
+            "main.cljs",
+            &format!("(ns main (:refer-clojure :exclude [{expression}])) {expression}"),
+        );
+        assert!(
+            s.compile("main")
+                .unwrap_err()
+                .message
+                .contains("unresolved symbol")
+        );
+    }
+    s.write(
+        "main.cljs",
+        "(ns main (:require [library :refer [f] :rename {f renamed}])) f",
+    );
+    assert!(
+        s.compile("main")
+            .unwrap_err()
+            .message
+            .contains("unresolved symbol: f")
+    );
+}
+
+#[test]
+fn conditional_selection_validates_splices_and_does_not_read_inactive_discarded_tags() {
+    let s = Sources::new();
+    s.write("main.cljc", "(ns main) #?(:clj (do #_#unknown/tag 2 jvm-only)) (js/console.log #?(:default 3 :cljs 4) #?(:other 0 :cljs 7))");
+    assert_eq!(execute(&s.compile("main").unwrap()), "3 7\n");
+    for expression in ["[1 #?@(:cljs 2)]", "{:a #?(:clj 1)}"] {
+        s.write("main.cljc", &format!("(ns main) {expression}"));
+        assert!(s.compile("main").is_err());
+    }
+}
+
+#[test]
+fn refer_conflicts_and_nonexistent_imports_are_diagnosed_even_when_unused() {
+    let s = Sources::new();
+    s.write("a.cljs", "(ns a) (def value 1)");
+    s.write("b.cljs", "(ns b) (def value 2)");
+    for source in [
+        "(ns main (:require [a :refer [missing]])) 0",
+        "(ns main (:require [a :refer [value]] [b :refer [value]])) 0",
+        "(ns main (:require [a :refer [value] :rename {missing renamed}])) 0",
+    ] {
+        s.write("main.cljs", source);
+        assert!(s.compile("main").is_err(), "{source}");
+    }
+}
+
+#[test]
+fn qualified_definitions_syntax_quotes_and_clojure_namespace_aliases_keep_identity() {
+    let s = Sources::new();
+    s.write("cljs/library.cljs", "(ns cljs.library) (def value 8)");
+    s.write("main.cljs", r#"(ns main (:require [clojure.library :as l :refer [value] :rename {value renamed}]) (:refer-clojure :exclude [count]))
+        (def main/own 42)
+        (js/console.log own main/own renamed l/value clojure.library/value cljs.library/value
+            (= `renamed 'cljs.library/value) (= `count 'main/count) (= `l/value 'cljs.library/value))"#);
+    assert_eq!(
+        execute(&s.compile("main").unwrap()),
+        "42 42 8 8 8 8 true true true\n"
+    );
+}
+
+#[test]
+fn shared_primitive_selection_adds_no_runtime_bytes_and_cli_matches_api() {
+    let s = Sources::new();
+    s.write("main.cljc", "(ns main) #?(:clj missing-jvm-symbol :cljs 3)");
+    let shared = s.compile("main").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--compile", "--entry", "main", "--source-root"])
+        .arg(&s.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        shared.trim()
+    );
+    s.write("main.cljs", "(ns main) 3");
+    assert_eq!(shared, s.compile("main").unwrap());
+    assert!(!shared.contains("const rt ="));
+}
+
+#[test]
+fn recurrence_targets_and_protocol_methods_keep_namespace_identity() {
+    let sources = Sources::new();
+    sources.write("steps/api.cljs", "(ns steps.api) (defprotocol Step (step [self n])) (defn descend [n] (if (pos? n) (recur (dec n)) n))");
+    sources.write("steps/main.cljs", "(ns steps.main (:require [steps.api :as api :refer [step]])) (let [x 17 runner (reify api/Step (step [self n] (if (pos? n) (recur self (dec n)) x)))] (js/console.log (step runner 100000) (api/descend 100000) (loop [n 2] (if (pos? n) (recur (dec n)) n))))");
+    assert_eq!(execute(&sources.compile("steps.main").unwrap()), "17 0 0\n");
 }

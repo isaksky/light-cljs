@@ -159,11 +159,11 @@ fn analysis_cli_shows_ids_and_compile_errors_never_emit_partial_javascript() {
             "1\n  unknown",
             "2:3: unresolved symbol: unknown (bytes 4..11)",
         ),
-        (
-            "1\n  (defmacro m [] 1)",
-            "2:4: unsupported construct: macro execution (defmacro)",
-        ),
         ("(λ\n ]", "2:2: expected ), found ] (bytes 5..6)"),
+        (
+            "1\n  (:x)",
+            "2:3: literal keyword calls require one or two arguments (bytes 4..8)",
+        ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--compile", "--text", source])
@@ -173,4 +173,32 @@ fn analysis_cli_shows_ids_and_compile_errors_never_emit_partial_javascript() {
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
     }
+}
+
+#[test]
+fn vector_keyword_acceptance_compiles_and_executes_from_cli() {
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--compile", "--text", "(let [v [:demo/x 1]] (count v))"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .args(["--print", "eval(require('fs').readFileSync(0,'utf8'))"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&output.stdout)
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    assert_eq!(result.stdout, b"2\n");
 }

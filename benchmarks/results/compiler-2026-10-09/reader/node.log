@@ -1,0 +1,14 @@
+bounded JavaScript runtime assertions passed
+symbol, list, sequence and update assertions passed
+structural map, collision, sharing and mutation assertions passed
+structural set, collision, representative, sharing and mutation assertions passed
+finite reduction assertions passed
+✔ tests/support/js_runtime.test.js (945.851875ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 951.728333

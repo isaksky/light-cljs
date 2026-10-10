@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "/Users/admin/src/light-cljs/benchmarks/run_interpreter.py", line 219, in <module>
+    main()
+    ~~~~^^
+  File "/Users/admin/src/light-cljs/benchmarks/run_interpreter.py", line 146, in main
+    raise RuntimeError("baseline fixtures changed; choose a matching baseline")
+RuntimeError: baseline fixtures changed; choose a matching baseline

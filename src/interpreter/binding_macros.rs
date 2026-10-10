@@ -20,7 +20,19 @@ fn directive(v: &RootedValue, name: &str) -> bool {
 }
 pub(super) fn call(c: &Context, name: &str, args: &[RootedValue]) -> NativeResult {
     let mut forms = vec![if [
-        "let*", "loop*", "fn*", "letfn*", "if", "do", "def", "quote", "throw", "case*", "recur",
+        "let*",
+        "loop*",
+        "fn*",
+        "letfn*",
+        "if",
+        "do",
+        "def",
+        "quote",
+        "throw",
+        "case*",
+        "compiler-case*",
+        "compiler-assert*",
+        "recur",
     ]
     .contains(&name)
     {
@@ -328,6 +340,13 @@ impl<'a> Expander<'a> {
         self.bind(out, &localized, call(self.c, "get", &args)?, depth)
     }
     fn function(&self, declarations: &[RootedValue]) -> NativeResult {
+        self.function_with_fields(declarations, &[])
+    }
+    fn function_with_fields(
+        &self,
+        declarations: &[RootedValue],
+        fields: &[(RootedValue, RootedValue)],
+    ) -> NativeResult {
         let c = self.c;
         let mut start = 0;
         let mut result = Vec::new();
@@ -348,7 +367,10 @@ impl<'a> Expander<'a> {
             declarations
                 .iter()
                 .map(|v| {
-                    if !matches!(v.inspect(), ValueView::List(_) | ValueView::Seq(_)) {
+                    if !matches!(
+                        v.inspect(),
+                        ValueView::List(_) | ValueView::Seq(_) | ValueView::LazySeq
+                    ) {
                         return Err(invalid("function requires method lists"));
                     }
                     Ok(v.elements()?)
@@ -419,12 +441,46 @@ impl<'a> Expander<'a> {
                 args.extend(body);
                 body = vec![call(c, "let*", &args)?];
             }
+            // Fields surround destructuring and the body, but never shadow an
+            // explicit parameter. Destructured locals shadow fields in the inner
+            // let above. The actual receiver is reread on every recur iteration.
+            // fn permits repeated symbols with the last argument winning. Keep
+            // a separate receiver slot when its public name is shadowed.
+            if !fields.is_empty() && parameters[1..].iter().any(|p| p.value_eq(&parameters[0])) {
+                parameters[0] = fresh(c);
+            }
+            let mut field_bindings = Vec::new();
+            for (field, key) in fields {
+                c.accounting.work(parameters.len() as u64 + 1)?;
+                if !parameters.iter().any(|p| p.value_eq(field)) {
+                    field_bindings.extend([
+                        field.clone(),
+                        c.list(&[key.clone(), parameters[0].clone()])?,
+                    ]);
+                }
+            }
+            if !field_bindings.is_empty() {
+                let mut args = vec![c.vector(&field_bindings)?];
+                args.extend(body);
+                body = vec![call(c, "let*", &args)?];
+            }
             let mut method = vec![c.vector(&parameters)?];
             method.extend(body);
             result.push(c.list(&method)?);
         }
         call(c, "fn*", &result)
     }
+}
+
+/// Lower one record overload through the same parameter/destructuring/condition
+/// machinery as fn, adding receiver fields without introducing another fn target.
+pub(super) fn record_method(
+    c: &Context,
+    parts: &[RootedValue],
+    fields: &[(RootedValue, RootedValue)],
+) -> NativeResult {
+    let function = Expander::new(c)?.function_with_fields(parts, fields)?;
+    Ok(function.elements()?[1].clone())
 }
 
 pub(super) fn let_macro(c: &mut Context, args: &[RootedValue]) -> NativeResult {
@@ -482,7 +538,10 @@ pub(super) fn letfn_macro(c: &mut Context, args: &[RootedValue]) -> NativeResult
     let e = Expander::new(c)?;
     let mut bindings = Vec::new();
     for spec in args[2].elements()? {
-        if !matches!(spec.inspect(), ValueView::List(_) | ValueView::Seq(_)) {
+        if !matches!(
+            spec.inspect(),
+            ValueView::List(_) | ValueView::Seq(_) | ValueView::LazySeq
+        ) {
             return Err(invalid("letfn requires function declarations"));
         }
         let forms = spec.elements()?;

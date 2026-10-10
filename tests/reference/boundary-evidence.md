@@ -108,14 +108,14 @@ in the matrix; executable IDs refer to `tests/fixtures/execution.tsv`.
 | Pinned source and stable anchor | Audited rule and local disposition |
 | --- | --- |
 | `analyzer.cljc`, `parse 'if` (1857–1869); `analyzer_tests.clj`, `analyze-ops` if; `analyzer/spec_tests.clj`, `test-if` | `if-empty`, `if-one`, `if-extra` fail before analyzing an unresolved test. Supported 2/3-operand if has existing context/truth/branch runtime coverage; upstream AST layout is not a local contract. |
-| `analyzer.cljc`, `analyze-let` (2568–2571), `analyze-let-bindings*` (2508–2552); `analyzer_tests.clj`, `analyze-ops` let/local (671–687) | `let-missing`, `let-non-vector`, `let-odd`, all `let-binding-*`: require an even vector and simple local symbols. The amp version difference is isolated above. Empty/sequential/repeated-name lets already execute; destructuring macros stay excluded. |
+| `analyzer.cljc`, `analyze-let` (2568–2571), `analyze-let-bindings*` (2508–2552); `analyzer_tests.clj`, `analyze-ops` let/local (671–687) | `let-missing`, `let-non-vector`, `let-odd`, all `let-binding-*`: require an even vector and simple local symbols. The amp version difference is isolated above. Empty/sequential/repeated-name lets already execute; primitive let* destructuring stays excluded; supported core macro expansions are tested separately. |
 | `compiler_tests.clj`, `test-amp-as-local-clj-2954` (411–433) | Adapt only the primitive let* assertion as `let-binding-amp`; macro let and loop* assertions are unsupported boundaries, not claimed as implemented. `binding-ampersand-within-name` ensures the exact `&` rule does not reject `a&b`. |
-| `analyzer.cljc`, `analyze-fn-method-param`, `analyze-fn-method`, `fn-name-var`, `parse 'fn*` (2226–2415); `analyzer_tests.clj`, `analyze-ops` fn (800–859); `analyzer/spec_tests.clj`, `test-fn`, `test-fn-method` | All `fn-*` rows cover missing names/vectors, malformed method shapes, invalid binding kinds, duplicate parameters and variadic/multiple-arity exclusions. Primitive permissiveness and emitter failures are classified explicitly. Supported empty/direct/single-method/named functions retain existing executable coverage. Macro-expanded AST/schema assertions are not imported. |
-| `analyzer_tests.clj`, `test-cljs-2005`, `test-cljs-2863` (425–455); `analyzer.cljc`, invocation arity warning (4046–4057) | Duplicate/incompatible overloads warn upstream. They do not prove malformed fixed-call invocations are compiler errors. Existing `arity-*` runtime fixtures test missing/extra arguments; valid multi-method and variadic declarations remain unsupported here. |
+| `analyzer.cljc`, `analyze-fn-method-param`, `analyze-fn-method`, `fn-name-var`, `parse 'fn*` (2226–2415); `analyzer_tests.clj`, `analyze-ops` fn (800–859); `analyzer/spec_tests.clj`, `test-fn`, `test-fn-method` | All `fn-*` rows cover missing names/vectors, malformed method shapes, invalid binding kinds, accepted repeated parameters and variadic/multiple-arity declarations. Primitive permissiveness and emitter failures are classified explicitly. Supported empty/direct/single-method/named functions retain existing executable coverage; compiler-functions.md adds complete arity execution coverage. Macro-expanded AST/schema assertions are not imported. |
+| `analyzer_tests.clj`, `test-cljs-2005`, `test-cljs-2863` (425–455); `analyzer.cljc`, invocation arity warning (4046–4057) | Duplicate/incompatible overloads warn upstream. They do not prove malformed fixed-call invocations are compiler errors. Existing `arity-*` runtime fixtures test missing/extra arguments; valid multi-method and variadic declarations now execute. New `fn-overload-*` rows explicitly retain upstream warnings or JavaScript syntax errors beside local declaration errors. |
 | `analyzer.cljc`, lexical lookup/resolve-var, let binding initializer order, function environments; `analyzer_tests.clj`, `analyze-ops` variables/local-shadow | `self-init`, `forward-local`, `self-closure`, `forward-global`, `leaked-*`, `unknown-global`, `unknown-alias`, `unqualified-host`, `macro-env` reject missing lexical/global identities. They retain upstream warnings/acceptance separately. Existing global self-reference, declarations, closures and qualified-name positives establish the intended supported boundary. No `&env` is simulated. |
 | `analyzer.cljc`, `specials` (1508–1509), `macroexpand-1*` (4293–4354), `analyze-seq` (4372–4398) | `nil-call` fails before its unresolved argument. `special-*`, `macro-*`, `macro-shadow-exit` and all unselected-branch variants test dispatch before child analysis. `special-dispatch-before-local` and the two shadow runtime cases prove the special/macro distinction; core macro rows now compile through the native macro host; the supported compiler macro contract is recorded in compiler-macros.md. |
 | `analyzer.cljc`, `parse 'case*`, `parse 'throw`, `parse 'try`, `parse 'ns*`, `parse-type`; `analyzer/spec_tests.clj`, `test-case`, `test-js`, `test-new`, `test-loop`, `test-letfn`, `test-defrecord`, `test-deftype`, `test-ns*` | `special-casestar`, `special-throw`, `special-try`, `special-nsstar`, type/record and other special rows use reference-accepted shapes in their legal contexts. Tail recur is inside fn*. Operator `&` itself is in upstream's dispatch set but has no parser method, so that row is an upstream error, not a valid feature claim. Runtime/library/type expansion remains excluded. |
-| `analyzer_tests.clj`, `analyze-ops` constants/collections/quote/js-object; `analyzer/spec_tests.clj`, `test-const`, `test-js-array`, `test-js-object`, `test-map`, `test-set`; `analyzer.cljc`, reader `forms-seq*` (4702–4728) | All `reader-*` rows cover collection/list/keyword/character/regex/quote/syntax-quote/deref/metadata/tag/conditional/namespaced-map/reader-fn exclusions. Numbers/UTF-16 have their separate literal audit. Reader discards remain supported trivia. Reader expansion, runtime collection operations, tag resolution and macro execution are excluded. |
+| `analyzer_tests.clj`, `analyze-ops` constants/collections/quote/js-object; `analyzer/spec_tests.clj`, `test-const`, `test-js-array`, `test-js-object`, `test-map`, `test-set`; `analyzer.cljc`, reader `forms-seq*` (4702–4728) | The `reader-vector`, `reader-keyword`, `reader-list`, `reader-quote` and `special-quote` rows are now accepted and have typed JavaScript execution coverage. The remaining `reader-*` rows cover map/set/character/regex/syntax-quote/deref/metadata/tag/conditional/namespaced-map/reader-fn exclusions. Numbers/UTF-16 have their separate literal audit. Reader discards remain supported trivia. General reader expansion, unsupported collection kinds, and tag resolution remain excluded; explicit native macro expansion is documented separately. |
 | `analyzer.cljc`, `parse 'def` (2041–2077); `analyzer_tests.clj`, `test-cljs-1274` (349–354); `analyzer/spec_tests.clj`, `test-def` | All `def-*` rows separate argument/name errors, docstring and current-ns-qualified exclusions, dotted host assignment and `&` restrictions. Existing initialized/uninitialized/redefined/self-referencing globals and new `/` runtime/namespace positives remain supported. Const/metadata/Var behavior stays excluded. |
 | `analyzer_tests.clj`, `spec-validation` (68–180); `analyzer.cljc`, `parse-require-spec`, `parse 'ns`, one-clause guard (3501–3503) | All `ns-*` rows cover name/libspec/alias/option/clause shapes; repeated require is now rejected. Unknown clauses and invalid aliases are upstream errors; refer/import/package/macro/refer-clojure forms and permissive alias behavior are deliberate boundaries. Existing loader tests cover mismatched/first declarations, roots, cycles, alias collisions and dependency initialization. |
 | `analyzer_tests.clj`, `test-cljs-1346` top-level ns/ns* assertions (548–574); `test-cljs-3320` (1538–1543) | `special-nested-ns` rejects ns inside a function, including unselected wrappers. `special-nsstar` is independently rejected as unsupported. `ns-as-js` preserves the reference warning distinction. No top-level require/REPL loader is implemented. |
@@ -213,3 +213,76 @@ The native compiler macro integration changes the local dispositions of
 `macro-shadow-exit`, and `ns-macros` to accepted. Their pinned upstream outcomes
 remain recorded in the matrix. Runtime `defmacro`, general runtime reader forms,
 and unsupported primitive/generated operations remain diagnostic boundaries.
+
+## Executable map milestone (2026-10-09)
+
+`reader-map` is replaced by `reader-map-duplicate`: maps execute, while `{:a 1
+:a 2}` fails the pinned reader and reports a local invalid-form diagnostic at the
+repeated key. All 124 boundary classifications passed against Maven 1.12.134.
+Independent analyzer cases also reject equal list/vector keys, unordered nested
+map keys, equivalent numeric spellings within one reader category, resolved
+keyword aliases and quote-prefix/list equivalence. Integer versus floating
+reader data remains distinct before checked JavaScript map construction.
+
+
+## Executable set milestone (2026-10-09)
+
+`reader-set` is now an accepted runtime boundary. Six new pinned reader-error rows
+cover numeric spelling duplicates, unordered nested set/map data, quoted cross-kind
+sequences and quoted symbols, with local diagnostics at the repeated member.
+All 130 reference classifications passed. Independently tested repeated executable
+set operands intentionally execute and deduplicate locally even when the upstream
+reader rejects identical source forms. Integer/float reader categories remain
+distinct before Number-based construction. Unsupported quoted characters and other
+reader facilities retain their original span tests as sets become executable.
+
+## Numeric core arities — 2026-10-09
+
+Ten `numeric-*` boundary rows now reject malformed direct numeric/predicate
+macro calls, preserving source spans and matching both pinned references.
+Saved function arities have separate executable outcomes: they retain the
+ordinary JavaScript dispatcher rather than inheriting macro rejection.
+`special-var` is now an accepted boundary because `cljs.core/inc` resolves to an
+actual function. All 140 reference classifications pass; see
+[compiler-numeric.md](compiler-numeric.md) for commands and semantic evidence.
+
+## Recurrence boundary update (2026-10-09)
+
+`special-loopstar`, `special-recur`, `special-try`, `special-throw`, and
+`special-casestar` are accepted compiler boundaries. The added `recur-*` rows
+reject missing/non-tail targets, wrong counts, all four upstream cross-try
+alternatives, and IFn receiver/count mismatches. All 153 boundary classifications
+matched Maven 1.12.134 and checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e;
+the existing `let-binding-amp` version difference remains explicit. See the
+[recurrence audit](compiler-recur.md) for runtime observations and source anchors.
+
+## JavaScript interop boundary update (2026-10-10)
+
+`special-new`, `special-dot`, `special-jsstar`, `host-hyphen` and `member-hyphen`
+are accepted compiler boundaries. Qualified `.a/b` is an unresolved namespace
+reference, distinct from an unqualified host method. Local malformed-template
+checks retain exact original source spans and fail before emission.
+All **181** current boundary classifications match both pinned references;
+`let-binding-amp` retains its documented release/checkout distinction. See the
+[interop audit](compiler-interop.md) for the executable semantic coverage.
+
+The record milestone changes `special-defrecordstar` to accepted: raw record constructors, internal fields, masks and explicit method bodies now compile and execute. Exact malformed-record diagnostics are tested in `compiler_records.rs`.
+
+## Protocol extension boundaries (2026-10-10)
+
+Seven new malformed extension forms cover missing arguments, nonsymbol targets,
+ungrouped IFn signatures and malformed parameters. The local CLI/API tests retain
+exact spans, including unselected branches. All 188 classifications match both
+pinned references; the existing `let-binding-amp` version difference remains
+explicit. See the [extension audit](compiler-extensions.md).
+
+## Integration source-set and import updates — 2026-10-10
+
+`reader-set-duplicate-form` preserves reader rejection for identical executable
+set member forms, observed as `IllegalArgumentException: Duplicate key: (f 1)`
+in both pinned readers. Distinct member forms whose results are equal instead
+reach runtime: the checkout throws Error and release deduplicates. The new local
+boundary checks the second form byte span and validates before macro projection.
+`ns-import` is now accepted by namespace header loading; its reference warning
+classification is unchanged because the synthetic boundary has no loaded Closure
+constructor declaration. These are separate source diagnostics, not runtime passes.

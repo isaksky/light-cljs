@@ -1,6 +1,11 @@
 // Shared outcome protocol for both compilers. Harness/serialization failures
 // escape this runner; only exceptions from the compiled case are outcomes.
 (() => {
+  // Backends supply trusted, shallow readers. Never recognize language values
+  // by a public property or a tag-shaped host object; recursion stays shared.
+  const inspect = globalThis.lightInspectValue || (() => null);
+  if (typeof inspect !== "function") throw new Error("invalid outcome adapter");
+
   function encode(value, ancestors = new Set()) {
     if (value === undefined) return { $value: "undefined" };
     if (typeof value === "number") {
@@ -16,7 +21,51 @@
     }
     ancestors.add(value);
     let result;
-    if (Array.isArray(value)) {
+    const language = inspect(value);
+    if (language !== null) {
+      if (language.kind === "opaque") throw new Error("unsupported opaque outcome value");
+      if ((language.kind === "keyword" || language.kind === "symbol") &&
+          (language.namespace == null || typeof language.namespace === "string") &&
+          typeof language.name === "string" && typeof language.spelling === "string") {
+        // Constructor strings with multiple slashes can share name/namespace
+        // while carrying distinct full spellings and equality identities.
+        result = { ["$" + language.kind]: { namespace: encode(language.namespace, ancestors), name: language.name, spelling: language.spelling } };
+      } else if (["vector", "list", "seq"].includes(language.kind) && Array.isArray(language.items)) {
+        result = { ["$" + language.kind]: Array.from(language.items, item => encode(item, ancestors)) };
+      } else if (language.kind === "set" && Array.isArray(language.items) &&
+                 Number.isInteger(language.count) && language.count === language.items.length) {
+        const seen = new Set();
+        const items = Array.from(language.items, item => {
+          const encoded = encode(item, ancestors), key = JSON.stringify(encoded);
+          if (seen.has(key)) throw new Error("duplicate encoded set member");
+          seen.add(key);
+          return encoded;
+        });
+        items.sort((a, b) => {
+          const x = JSON.stringify(a), y = JSON.stringify(b);
+          return x < y ? -1 : x > y ? 1 : 0;
+        });
+        result = { $set: items, count: language.count };
+      } else if (language.kind === "map" && Array.isArray(language.entries) &&
+                 Number.isInteger(language.count) && language.count === language.entries.length) {
+        const keys = new Set();
+        const entries = Array.from(language.entries, entry => {
+          if (!Array.isArray(entry) || entry.length !== 2) throw new Error("invalid map entry");
+          const pair = Array.from(entry, item => encode(item, ancestors));
+          const key = JSON.stringify(pair[0]);
+          if (keys.has(key)) throw new Error("duplicate encoded map key");
+          keys.add(key);
+          return pair;
+        });
+        entries.sort((a, b) => {
+          const x = JSON.stringify(a), y = JSON.stringify(b);
+          return x < y ? -1 : x > y ? 1 : 0;
+        });
+        result = { $map: entries, count: language.count };
+      } else {
+        throw new Error("invalid outcome adapter result");
+      }
+    } else if (Array.isArray(value)) {
       result = Array.from(value, item => encode(item, ancestors));
     } else if (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) {
       // Tag plain objects so a host object cannot impersonate a special value.
@@ -44,9 +93,9 @@
   const metadata = globalThis.lightCaseMetadata;
   if (!Array.isArray(programs) || programs.length === 0 ||
       !Array.isArray(metadata) || programs.length !== metadata.length ||
-      metadata.some(row => !Array.isArray(row) || row.length !== 2 || row.some(value => typeof value !== "string")) ||
+      Array.from(metadata).some(row => !Array.isArray(row) || row.length !== 2 || Array.from(row).some(value => typeof value !== "string")) ||
       new Set(metadata.map(([id]) => id)).size !== programs.length ||
-      programs.some(program => typeof program !== "function")) {
+      Array.from(programs).some(program => typeof program !== "function")) {
     throw new Error("compiler produced missing, invalid, or duplicate executable cases");
   }
 

@@ -190,6 +190,7 @@ impl Printer {
                 | ValueView::LazySeq
                 | ValueView::Set(_)
                 | ValueView::Map(_)
+                | ValueView::Record(_)
         );
         if self.recursion >= c.accounting.depths().1 {
             return Err(c
@@ -293,9 +294,36 @@ impl Printer {
                     self.name(c, &n.qualified_name())?;
                     self.text.ascii(c, ">")
                 }
+                ValueView::Protocol(name) => {
+                    self.text.ascii(c, "#<Protocol ")?;
+                    self.name(c, &name)?;
+                    self.text.ascii(c, ">")
+                }
+                ValueView::Reify => self.text.ascii(c, "#<Reify>"),
+                ValueView::RecordType(name) => {
+                    self.text.ascii(c, "#<RecordType ")?;
+                    self.name(c, &name)?;
+                    self.text.ascii(c, ">")
+                }
+                ValueView::Record(_) => {
+                    let name = {
+                        let store = c.owner.store.borrow();
+                        records::descriptor(&store, records::type_id(value).unwrap())
+                            .name
+                            .clone()
+                    };
+                    self.text.ascii(c, "#")?;
+                    if let Some(ns) = name.namespace() {
+                        self.text.append(c, ns)?;
+                        self.text.ascii(c, ".")?;
+                    }
+                    self.text.append(c, name.name())?;
+                    self.hashed(c, value, depth, true)
+                }
                 ValueView::Function => self.text.ascii(c, "#<Function>"),
                 ValueView::Input => self.text.ascii(c, "#<Input>"),
                 ValueView::Output => self.text.ascii(c, "#<Output>"),
+                ValueView::CompilerLiteral(_) => self.text.ascii(c, "#<compiler-reader-value>"),
                 ValueView::Delay => self.text.ascii(
                     c,
                     &format!("#<Delay {:?}>", value.deferred_status().unwrap()),
@@ -380,6 +408,7 @@ impl Printer {
             let store = c.owner.store.borrow();
             let values = match store.heap_value(value.value()).unwrap() {
                 HeapValue::Map(m) | HeapValue::Set(m) => m,
+                HeapValue::Record(r) => &r.data,
                 _ => unreachable!(),
             };
             let count = self

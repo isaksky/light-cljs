@@ -1,0 +1,15 @@
+starting HEAD: fe08ac83dc067ca85344663f2d0f2a96e613827e
+source: temporary git archive HEAD extraction
+cwd: /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-gc-baseline-gde1eqee
+command: ['cargo', 'bench', '--locked', '--bench', 'interpreter_gc', '--features', 'count-allocations']
+exit: 101
+samples=7 evaluations/sample=256 fresh_context_ns=218375 fresh_process_ns=1524834 instrumented=true
+    Finished `bench` profile [optimized] target(s) in 0.00s
+     Running benches/interpreter_gc.rs (target/release/deps/interpreter_gc-9d8c1118137f8ff9)
+
+thread 'main' (67060544) panicked at benches/interpreter_gc.rs:89:5:
+assertion `left == right` failed: warmed collection must reuse scratch instead of allocating per collection node
+  left: (512, 0, 8192)
+ right: (0, 0, 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: bench failed, to rerun pass `--bench interpreter_gc`

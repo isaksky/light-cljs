@@ -1,0 +1,45 @@
+{
+  "cargo-full": {
+    "command": "cargo test -j 4 --quiet",
+    "status": "passed",
+    "log": "cargo-full.log",
+    "passed": 594,
+    "ignored": 13
+  },
+  "cargo-focused": {
+    "command": "cargo test -j 4 --test compiler_reader --test analyzer --test compiler_macros --test execution --test provenance --test boundaries --test namespaces --quiet",
+    "status": "passed",
+    "log": "cargo-focused.log",
+    "passed": 112,
+    "ignored": 9
+  },
+  "clippy": {
+    "command": "cargo clippy -j 4 --lib -- -D warnings",
+    "status": "passed",
+    "log": "clippy.log"
+  },
+  "node": {
+    "command": "node --test tests/support/js_runtime.test.js",
+    "status": "passed",
+    "log": "node.log"
+  },
+  "pinned-reader": {
+    "command": "LIGHT_CLJS_REFERENCE=both LIGHT_CLJS_REFERENCE_CHECKOUT=research/clojurescript LIGHT_CLJS_REFERENCE_REVISION=a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e cargo test --test execution reader_forms_match_pinned_values_effects_and_stdout -- --ignored --nocapture",
+    "status": "passed",
+    "log": "pinned-reader.log",
+    "passed": 1,
+    "ignored": 0
+  },
+  "pinned-boundary": {
+    "command": "LIGHT_CLJS_REFERENCE=both LIGHT_CLJS_REFERENCE_CHECKOUT=research/clojurescript LIGHT_CLJS_REFERENCE_REVISION=a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e cargo test --test execution analyzer_boundary_classifications_match_reference -- --ignored --nocapture",
+    "status": "passed",
+    "log": "pinned-boundary.log",
+    "passed": 1,
+    "ignored": 0
+  },
+  "language-regex": {
+    "command": "python3 -B tests/reference/compiler-language/report.py --run --no-build --reference both --strict --id primitives_test.cljs::test-regexps::assertion-001 --id primitives_test.cljs::test-regexps::assertion-003 --id primitives_test.cljs::test-regexps::assertion-004 --id primitives_test.cljs::test-regexps::assertion-005 --id primitives_test.cljs::test-regexps::assertion-006 --id primitives_test.cljs::test-regexps::assertion-007 --id primitives_test.cljs::test-regexps::assertion-008 --id primitives_test.cljs::test-regexps::assertion-009 --id primitives_test.cljs::test-regexps::assertion-010 --id primitives_test.cljs::test-regexps::assertion-011 --id primitives_test.cljs::test-regexps::assertion-012 --output /tmp/light-cljs-reader-regex-final.json",
+    "status": "passed",
+    "log": "language-regex.log"
+  }
+}

@@ -1,0 +1,6 @@
+(ns definitions.values)
+(def ^:dynamic *value* 1)
+(defn read-value [] *value*)
+(def ^{:public-note :value} ordinary false)
+(defn read-ordinary [] ordinary)
+(defn function [] 4)

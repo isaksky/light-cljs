@@ -1,0 +1,12 @@
+["cargo", "build", "--locked", "--release", "--bin", "light-cljs", "--message-format=json"]
+    Finished `release` profile [optimized] target(s) in 0.01s
+["cargo", "bench", "--locked", "--no-run", "--bench", "compiler", "--message-format=json"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "bench", "--locked", "--no-run", "--bench", "compiler", "--message-format=json", "--features", "count-allocations"]
+    Finished `bench` profile [optimized] target(s) in 0.00s
+["cargo", "build", "--locked", "--release", "--bin", "light-cljs", "--message-format=json"]
+   Compiling light-cljs v0.1.0 (/private/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-compiler-baseline-nfbfkvjq)
+    Finished `release` profile [optimized] target(s) in 4.52s
+["cargo", "bench", "--locked", "--no-run", "--bench", "compiler", "--message-format=json"]
+   Compiling light-cljs v0.1.0 (/private/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-compiler-baseline-nfbfkvjq)
+    Finished `bench` profile [optimized] target(s) in 0.44s

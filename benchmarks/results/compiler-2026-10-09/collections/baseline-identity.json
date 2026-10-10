@@ -1,0 +1,17 @@
+{
+  "commit": "fe08ac83dc067ca85344663f2d0f2a96e613827e",
+  "git_archive_sha256": "1195459cf63c93422d6278846b1e97e8f216448beba4f37f89c15d85b8db0598",
+  "harness_sources": {
+    "benches/compiler.rs": "97a34570ce6dbd5c93f9e9907b98394b8e2e4b9d9e10e67433c0cab9c86cdb5c",
+    "benches/support/allocations.rs": "a04d29c55f69ac0429de112363b4d514515a7a9b4a23cfcadae6f87138d3503d",
+    "benchmarks/fixtures/compiler/collections/bench/data.cljs": "68295e07c792e94f82032db4c5d6d3490a5e0fb5e15d5c38692e450307aa4030",
+    "benchmarks/fixtures/compiler/collections/bench/macro.cljs": "017995ea626f3997497919c05ab3eaf004bf9ed6886d7ed3c26df2c23087eadc",
+    "benchmarks/fixtures/compiler/collections/bench/macro_data.cljs": "e6c5023892c742638c529302ccd9f49fc1be167e6d14c7659f7a64ebeb206195",
+    "benchmarks/fixtures/compiler/collections/bench/macro_main.cljs": "7378b342dd37741247c42e868c07b5f33e2cbec8050178ba5d1c5a78bf926955",
+    "benchmarks/fixtures/compiler/collections/bench/macros.clj": "9036e4b0502d99cb06c58b6ed6783437545a14cfe1fa56de035e262114dca6df",
+    "benchmarks/fixtures/compiler/collections/bench/main.cljs": "cdceea21e0fc4e1e4b353c140c1f2f7bbb4081e2c6b00acdaa691155e70d9770",
+    "benchmarks/fixtures/compiler/collections/bench/single.cljs": "faeee840192cbb300950eae51942265ed656d001e2b513b4f608a4d5d2dcbd1f",
+    "benchmarks/fixtures/compiler/collections/operations.cljs": "bf711723ec47d6259644126c30d5698b853c71398656dce064ace34b209dde30",
+    "benchmarks/fixtures/compiler/collections/value.cljs": "06ee6a4bda0fe6699c58b3289c1d6a1054135fc125211de7a4c458410b51f33d"
+  }
+}

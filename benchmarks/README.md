@@ -1,7 +1,22 @@
 # Expanded lexer measurements
 
+[Compiler collection measurements](compiler.md) separate parse/analyze/emit/total
+compilation, output bytes, fresh CLI/Node costs, and validated resident immutable
+operations. The standard-library `run_compiler.py` driver retains nine-sample
+distributions, allocation counts and an unchanged primitive baseline.
+The later [language integration measurement](compiler.md#language-integration-october-10-2026)
+records expanded runtime size and validated parse/initialize/execute timings.
+
 Native runtime measurements, source-attributed diagnostics and the reproducible
 saved-binary comparison driver are documented in [interpreter.md](interpreter.md).
+They measure the current native implementation and remain historical baselines
+for the adopted [rquickjs evaluator migration](../docs/evaluator-migration.md).
+They are not rquickjs measurements or an engine-selection prerequisite. Migration
+implementation will retain useful startup, lifetime and regression checks while
+retiring obsolete native-only harnesses.
+The [transducer pipeline measurements](interpreter.md#equivalent-native-transducer-pipelines)
+include a dedicated harness, paired full-value validation and a reproducible
+`run_interpreter_transducers.py` report runner.
 
 Measured October 7, 2026. These numbers measure raw tokenization, including
 comment tokens and reader prefixes. They exclude literal decoding/validation,
@@ -113,3 +128,31 @@ recognizes only parentheses, ASCII whitespace, commas, and atoms. Its throughput
 and `u32` comparison must not be attributed to the expanded lexer. The public
 scanner continues to use `usize` spans; compact storage has not been benchmarked
 again for the expanded syntax.
+
+Captured reify construction and invocation have a separate validated comparison:
+`cargo bench --locked --bench interpreter_protocols` emits seven CSV samples per
+phase for a captured closure and an equivalent captured protocol method. Use
+`--features count-allocations` for a separate allocation run (elapsed time is zero
+in that instrumentation mode). Parsing/analysis and GC are outside both phases;
+construction returns a fresh callable/object, and invocation must return 10.
+
+The [immutable record data measurements](interpreter.md#immutable-record-data-2026-10-08)
+compare nominal record construction, lookup, assoc, sequence/reduce and key use
+with validated ordinary-map operations, including allocation and warmed GC checks.
+
+The same record benchmark now separately measures retained protocol calls against
+a direct function reading the same record field and a captured reify method,
+per-instance construction, and full record definitions. See the
+[record method measurements](interpreter.md#record-methods-2026-10-08).
+
+Named-record extensions add `extended-method` call/construction and
+`record-extension` publication scenarios to `interpreter_records`; the same
+workloads validate equivalent results against direct, inline and reify calls.
+See the [extension measurements](interpreter.md#record-extensions-2026-10-09).
+
+The complete [protocol and immutable record cost report](interpreter.md#protocol-and-immutable-record-cost-report)
+adds nine-sample, same-binary dispatch/construction/map-operation pairs, isolated
+macro/analysis/definition costs, retained/released generations, replacement
+captures, callback GC, and equivalent fresh native CLI programs. Run
+`run_interpreter_types.py` to retain raw timing/allocation/GC data, source and
+fixture hashes, binaries and unchanged-fixture baseline comparisons.

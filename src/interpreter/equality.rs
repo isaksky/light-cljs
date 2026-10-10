@@ -32,6 +32,7 @@ struct ContentHasher<'a> {
 enum Kind {
     Sequential,
     Map,
+    Record(records::TypeId),
     Set,
 }
 enum HashTask {
@@ -61,8 +62,12 @@ impl<'a> ContentHasher<'a> {
                         Kind::Sequential => children
                             .iter()
                             .fold(mix(9), |acc, value| combine(acc, *value)),
-                        Kind::Map => combine(
-                            10,
+                        Kind::Map | Kind::Record(_) => combine(
+                            if let Kind::Record(type_id) = kind {
+                                identity_hash(18, type_id)
+                            } else {
+                                10
+                            },
                             children.as_chunks::<2>().0.iter().fold(0u64, |acc, pair| {
                                 acc.wrapping_add(combine(pair[0], pair[1]))
                             }),
@@ -133,7 +138,8 @@ impl<'a> ContentHasher<'a> {
                                     | HeapValue::ArgumentSeq(_) => {
                                         (Kind::Sequential, self.store.sequential(Value::Heap(id))?)
                                     }
-                                    HeapValue::Map(data) => {
+                                    HeapValue::Map(data)
+                                    | HeapValue::Record(records::Record { data, .. }) => {
                                         self.store
                                             .accounting
                                             .charge(
@@ -142,7 +148,10 @@ impl<'a> ContentHasher<'a> {
                                             )
                                             .map_err(CollectionError::Resource)?;
                                         (
-                                            Kind::Map,
+                                            match self.store.heap.get(id.0).unwrap() {
+                                                HeapValue::Record(r) => Kind::Record(r.type_id),
+                                                _ => Kind::Map,
+                                            },
                                             data.entries().flat_map(|(k, v)| [k, v]).collect(),
                                         )
                                     }
@@ -156,9 +165,25 @@ impl<'a> ContentHasher<'a> {
                                     HeapValue::Annotated { .. } => {
                                         unreachable!("annotation removed")
                                     }
-                                    HeapValue::Deferred(_)
+                                    HeapValue::CompilerLiteral(kind, value)
+                                        if matches!(
+                                            kind,
+                                            super::CompilerLiteralKind::BigInteger
+                                                | super::CompilerLiteralKind::Uuid
+                                                | super::CompilerLiteralKind::Instant
+                                        ) =>
+                                    {
+                                        tasks.push(HashTask::Visit(*value));
+                                        continue;
+                                    }
+                                    HeapValue::CompilerLiteral(_, _)
+                                    | HeapValue::Deferred(_)
                                     | HeapValue::Closure(_)
                                     | HeapValue::HigherOrder(_)
+                                    | HeapValue::Reify(_)
+                                    | HeapValue::Protocol(_)
+                                    | HeapValue::RecordType(_)
+                                    | HeapValue::ProtocolMethod(_)
                                     | HeapValue::Reduced(_)
                                     | HeapValue::Atom(_)
                                     | HeapValue::Input(_)
@@ -173,7 +198,7 @@ impl<'a> ContentHasher<'a> {
                                         continue;
                                     }
                                     #[cfg(test)]
-                                    HeapValue::Edges(_) => {
+                                    HeapValue::ProtocolFixture(_) | HeapValue::Edges(_) => {
                                         use std::hash::{Hash, Hasher};
                                         let mut hasher =
                                             std::collections::hash_map::DefaultHasher::new();
@@ -327,6 +352,20 @@ pub(super) fn try_equal(
                         let x = left_store.heap.get(a.0).unwrap();
                         let y = right_store.heap.get(b.0).unwrap();
                         match (x, y) {
+                            (
+                                HeapValue::CompilerLiteral(ka, a),
+                                HeapValue::CompilerLiteral(kb, b),
+                            ) if ka == kb
+                                && matches!(
+                                    ka,
+                                    super::CompilerLiteralKind::BigInteger
+                                        | super::CompilerLiteralKind::Uuid
+                                        | super::CompilerLiteralKind::Instant
+                                ) =>
+                            {
+                                tasks.push(EqualTask::Compare(*a, *b));
+                                continue;
+                            }
                             (HeapValue::String(x), HeapValue::String(y)) => {
                                 left_store
                                     .accounting
@@ -353,13 +392,27 @@ pub(super) fn try_equal(
                                 continue;
                             }
                             (HeapValue::Map(x), HeapValue::Map(y))
+                            | (
+                                HeapValue::Record(records::Record { data: x, .. }),
+                                HeapValue::Record(records::Record { data: y, .. }),
+                            )
                             | (HeapValue::Set(x), HeapValue::Set(y)) => {
+                                if let (HeapValue::Record(a), HeapValue::Record(b)) = (
+                                    left_store.heap.get(a.0).unwrap(),
+                                    right_store.heap.get(b.0).unwrap(),
+                                ) && a.type_id != b.type_id
+                                {
+                                    results.push(false);
+                                    continue;
+                                }
                                 if x.len() != y.len() {
                                     results.push(false);
                                     continue;
                                 }
-                                let is_map =
-                                    matches!(left_store.heap.get(a.0).unwrap(), HeapValue::Map(_));
+                                let is_map = matches!(
+                                    left_store.heap.get(a.0).unwrap(),
+                                    HeapValue::Map(_) | HeapValue::Record(_)
+                                );
                                 tasks.push(EqualTask::Remember(a, b));
                                 left_store
                                     .accounting

@@ -1,0 +1,8 @@
+command: ['cargo', 'bench', '--locked', '--bench', 'interpreter_gc']
+exit: 0
+    Finished `bench` profile [optimized] target(s) in 0.00s
+     Running benches/interpreter_gc.rs (target/release/deps/interpreter_gc-c36dfad227de461f)
+samples=7 evaluations/sample=256 fresh_context_ns=233708 fresh_process_ns=1502000 instrumented=false
+collect_every=1 eval_ns/op=103889 gc_ns/collection=42377 gc_ns/op=42377 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 317, names: 320, sources: 1, executable_units: 1, namespaces: 6, vars: 314, roots: 6, slots: 1432 }
+collect_every=16 eval_ns/op=103009 gc_ns/collection=307320 gc_ns/op=19207 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 317, names: 320, sources: 1, executable_units: 1, namespaces: 6, vars: 314, roots: 6, slots: 2767 }
+collect_every=256 eval_ns/op=108008 gc_ns/collection=6244458 gc_ns/op=24392 eval_allocs/op=0 eval_reallocs/op=0 eval_bytes/op=0 gc_allocs/sample=0 gc_reallocs/sample=0 gc_bytes/sample=0 live=MemoryStats { heap_values: 317, names: 320, sources: 1, executable_units: 1, namespaces: 6, vars: 314, roots: 6, slots: 24127 }

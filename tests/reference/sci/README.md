@@ -1,9 +1,9 @@
 # Pinned JVM SCI reference corpus
 
 The [interpreter profile](../../../docs/interpreter.md) records current status,
-portable semantics, deliberate differences and exclusions. The 2087 committed
+portable semantics, deliberate differences and exclusions. The 2411 committed
 rows in `tests/fixtures/sci-outcomes.tsv` are **pinned reference expectations**. Ordinary Rust tests execute every row
-with exact native results, effects, stdout and stderr, while checking 17 explicit
+with exact native results, effects, stdout and stderr, while checking 23 explicit
 differences separately. They also validate lossless encoding, provenance and pin
 without Java, network, or `research/`.
 
@@ -405,12 +405,15 @@ JVM array-map timing and the eager-storage/fallible equality APIs.
 
 ## Finite traversal and eager higher-order coverage
 
-`tests/interpreter_sequences.rs` executes all 108 `sci-seq-*` rows, comparing
+`tests/interpreter_sequences.rs` executes all 122 `sci-seq-*` rows, comparing
 exact typed outcomes and completed effects. Traversal covers all finite seqable
 kinds, nil and UTF-16 surrogate units. Reduction covers zero-argument empty
 calls, singleton/initializer preservation, one-layer reduced termination,
-vector indexes, map entries and fallback error ordering. Higher-order cases
-cover short-circuit truthiness, shortest-input mapv, applied variadic tails,
+vector indexes, map entries and fallback error ordering. `ensure-reduced` preserves
+existing marker identity and wraps other values once. Additional probes pin
+ordinary reduce's absence of one-argument completion calls, nested markers, and
+separate source-node versus reducer-callback effects on controlled lazy inputs.
+Higher-order cases cover short-circuit truthiness, shortest-input mapv, applied variadic tails,
 combinator entry arities, effects and callback failures.
 
 Three rows adapt `test/sci/core_test.cljc::core-test` map (95–96), `fn-test`
@@ -423,7 +426,10 @@ against the clean SCI pin and recorded Clojure 1.12.4 runtime on 2026-10-08.
 Native-only tests cover 100,000-element reduction/mapv/next traversal, bounded
 stack/live frame storage, GC during callbacks, retained sequence slices and
 applied rest values, traced combinator cycles, owner boundaries and iteration
-cancellation/finally behavior. No lazy core name is supplied as an eager substitute.
+cancellation/finally behavior. The ensure-reduced tests additionally retain closures
+and their captures across collection and owner reset, reject foreign plain and
+already-wrapped values, and check allocation accounting on both branches.
+No lazy core name is supplied as an eager substitute.
 
 
 ## Native resource-control coverage
@@ -805,8 +811,8 @@ checked against the clean pinned SCI tree and Clojure 1.12.4 on 2026-10-08.
 
 ## Integrated native conformance
 
-`interpreter_conformance` executes **all 2,087 rows** in fresh contexts, including
-2,028 accumulated feature cases, six complete example programs, 48 deterministic
+`interpreter_conformance` executes **all 2,475 rows** in fresh contexts, including
+2,416 accumulated feature cases, six complete example programs, 48 deterministic
 generated variants and five inventory/transport probes. It checks exact tagged values
 (including UTF-16, double bits, numeric and collection kinds), ordered `observe`
 effects, both output channels and error phases/categories. Observe retains rooted
@@ -814,17 +820,18 @@ values until serialization, matching the SCI driver; lazy serialization effects
 remain in capture scope. Unexpected native errors or unsupported transport values
 fail instead of becoming stringified successes.
 
-The 17 rows in [native-dispositions.tsv](native-dispositions.tsv) use the existing
+The 38 rows in [native-dispositions.tsv](native-dispositions.tsv) use the existing
 seven-column corpus encoding plus a reason. Each executes and asserts its exact
 native outcome and all effect/output channels. They cover bounded numeric
 extensions, the excluded `hash`/`sort-by`/`zipmap` APIs, non-tail recur validation,
-core runtime reader diagnostics, and preserved parser-before-tag boundaries.
+core runtime reader diagnostics, preserved parser-before-tag boundaries, and
+explicit protocol/reify/record/extension restrictions and differences.
 The test rejects stale source/profile text, orphan entries, duplicate IDs, and a
 difference that now agrees with SCI. Other resource/numeric/host differences stay
 in the named focused native suites; no entire family is skipped on mismatch.
 
 [supported-apis.tsv](supported-apis.tsv) is the reviewed language inventory:
-**364 names**, consisting of 333 registered definitions, 14 dynamic Vars, 14
+**375 names**, consisting of 344 registered definitions, 14 dynamic Vars, 14
 primitive forms, analyzer-handled `declare`/`defonce`, and the `unquote` sentinel.
 `interpreter_coverage` compares the inventory with actual namespace registries
 (including private Rust registration functions), validates every evidence target,
@@ -836,8 +843,9 @@ arity/type/interaction coverage. The feature suites supply that additional depth
 `catch`/`finally` are clauses of `try`, not callable Vars.
 
 [unsupported-families.tsv](unsupported-families.tsv) supplies executable rejection
-probes for JVM/JS interop, threading/STM, protocols/types, sorted/transient
-collections, transducers, regex, ambient effects, numeric extensions, reader eval,
+probes for JVM/JS interop, threading/STM, nil/built-in protocol selectors and general types, sorted/transient
+collections, remaining transducer constructors, transducing sequence/eduction,
+regex, ambient effects, numeric extensions, reader eval,
 built-in host tags, sorting, JVM hash and zipmap. JIT/async and cross-process caches
 are absent implementation capabilities, not pretend registered APIs.
 
@@ -926,3 +934,272 @@ against both ClojureScript 1.12.134 and checkout
 `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. The opt-in lexer/parser corpus checks
 scanned and parsed all 296 checkout sources (2,834,491 bytes). This records local
 verification; no hosted CI run or whole-upstream SCI conformance is claimed.
+
+## Custom eager transducers
+
+The 40 `sci-transduce-*` cases cover `completing` and three/four-argument
+`transduce` with ordinary user adapters. They verify original-reducer
+initialization before transform application, completion after normal or early
+termination, nil/empty inputs, preserved nested and completion markers, callable
+Vars/data, independent per-application volatile state, exact unchunked source
+demand, arity errors and exception identity/effects at every process stage.
+All 2,141 cases were regenerated against pinned SCI and Clojure 1.12.4.
+`interpreter_transducers` uses the shared exact transport; the full corpus
+runner discovers the new suite automatically. Native embedding/limits/GC
+tests additionally cover host reentry and ownership failures, retained callback
+permissions, sticky cancellation and cyclic-state reclamation. Built-in transform
+constructor arities beyond `map`/`filter`/`remove`/`take`/`drop`/`take-while`/`mapcat` and `cat`, transducing `sequence` and
+`eduction` remain excluded.
+
+
+The 32 `sci-into-xf-*` cases extend `into` to three arguments with custom callable
+transducers and persistent vector/list/nil/set/map targets. They cover metadata,
+source/target immutability after successful or failed steps, duplicate keys,
+invalid map entries, exact UTF-16 sources, independent volatile state, completion
+outputs for empty and nonempty inputs, bounded unchunked infinite inputs, and
+ordinary arity/throw behavior. All 2,173 cases were regenerated against the clean
+SCI pin and Clojure 1.12.4. Native tests additionally cover collection during
+transform/source/step/completion, reset and foreign-owner failures, cancellation
+with bounded finally cleanup, direct/evaluated resource limits, retained callback
+permissions and repeated cyclic-state reclamation.
+
+
+The 47 `sci-xf-basic-*` cases cover composable `map`, `filter` and `remove`
+constructor arities. They pin reducer initialization/completion, direct and
+applied multi-input map steps, bounded demand of an unbounded applied argument
+tail, exact predicate truthiness/effects, callable data/Vars, preserved Reduced
+identity and nesting, custom volatile-backed adapters in both composition orders,
+interleaved process state, early termination and callback failures. Nil callback
+probes catch the exception explicitly because the JVM's host NullPointerException
+is outside the transport's error taxonomy; the strict harness is unchanged.
+Native tests cover callback collection/reentry, owner reset/rejection, permissions,
+sticky cancellation at each callback, fuel/allocation limits on no-output filters,
+call depth and reclamation of retained and cyclic partially applied reducers.
+All 2,220 oracle cases matched pinned SCI; the explicit native job passed 333
+native/protocol/provenance tests. Formatting and strict all-target Clippy passed.
+
+The 61 `sci-xf-bounds-*` cases cover `take`, `drop` and `take-while`
+constructor arities, including direct/applied reducers, independent reusable and
+interleaved counters, initialization without reset, custom stateful composition,
+and finite consumption of an unbounded explicit lazy-seq/cons source. Source
+observations distinguish the rejected take-while item and take-zero's first
+source node from downstream reducer calls. Fractional integer/ratio/double
+counts, NaN/infinities, checked integer underflow even after drop forwards,
+callback reentry, lazy validation, predicate truthiness, Reduced identity/layers,
+arity and exception timing are pinned. Native tests additionally exercise GC
+between interleaved steps, callback GC/reset/foreign owners, fork/reset ownership,
+cyclic abandoned/failed reducers, retained permissions, long constant-depth
+reductions, bounded scratch roots and fuel/allocation/depth/cancellation while
+unbounded processes have produced no output. All 2,281 cases were regenerated
+against the clean SCI pin and Clojure 1.12.4.
+The subsequent explicit oracle/native job matched all 2,281 cases and passed
+340 native/protocol/provenance tests. Formatting, strict all-target Clippy and
+nine-sample timing/allocation benchmark runs passed.
+
+The 47 `sci-xf-cat-*` cases cover `cat` and one-argument `mapcat`, including
+direct/applied reducer arities, map's variadic input forwarding, one-level
+flattening of current seqables and exact UTF-16, and independent interleaved
+processes. Controlled lazy sources prove that early reduction does not request
+the next inner item or outer source node, including two nested cats and unbounded
+inner input. Custom reducers pin original Reduced identity and nested contents,
+exactly one outer completion for nonempty/empty subcollections, no completion
+on exceptions, and preserved callback exception identity/effects. All prior
+collection-taking mapcat fixtures retain their exact values and lookahead.
+Native tests additionally cover collector/reentry/reset/foreign-owner failures
+at each nesting boundary, permissions, sticky cancellation and bounded finally,
+fuel/allocation on infinite inner and empty outer streams, nesting depth,
+bounded scratch roots and abandoned/failed cyclic callback reclamation.
+All 2,328 cases were regenerated against the clean SCI pin and Clojure 1.12.4.
+The subsequent explicit oracle/native job matched all 2,328 cases and passed
+346 native/protocol/provenance tests. Formatting and strict all-target Clippy
+also passed.
+Separate nine-sample timing/allocation runs validated complete and early nested
+consumption, and the GC benchmark passed its live-storage checks; raw evidence
+and workload-specific findings are in `benchmarks/interpreter.md`.
+
+The 58 `sci-xf-partition-*` cases cover the one-argument `partition-all`
+transducer: vector result groups, empty/exact/partial input, ordinary reduce
+versus explicit completion, interleaved independent processes, reuse and repeated
+completion, upstream/downstream early reduction, custom adapters, and cat
+compositions. Reentrant and throwing callbacks pin clearing before emission;
+completion flushing unwraps one Reduced layer and delegates completion once.
+Numeric probes distinguish construction from reducer application, including
+fractional/ratio/NaN/zero counts, nil caught narrowly at construction,
+non-numbers, negative counts, signed capacity overflow and the rounded long
+boundary. Prior lazy collection arities retain distinct fractional-count rules
+and sequence group kinds. Controlled sources pin demand separately from reducer
+callbacks; direct/applied arities and exact exception identity/effects are covered.
+Native tests additionally cover every buffered value across callback GC,
+reentry, reset/foreign owners, retained callback permissions, source lifetime,
+cyclic failed/abandoned buffers and bounded roots, plus accounted growth,
+large-count tiny-budget operation, cancellation/output/depth failures during
+emission and completion, and bounded language finally. No native buffer reserves
+the requested count eagerly; JVM ArrayList capacity allocation/OOM is not a
+native behavior promise.
+
+All 2,386 SCI cases matched the pinned reference; the subsequent native job
+passed 355 native/protocol/provenance tests. Formatting, strict all-target Clippy,
+the CLI example and nine-sample normalized lazy/transducer timing/allocation
+comparisons passed. Ordinary GC checks passed; the instrumented GC assertion
+reproduces a preexisting starting-commit failure tracked by `light-cljs-74`.
+See `benchmarks/interpreter.md` and its retained current/baseline logs.
+
+## Native protocol declarations
+
+Twelve `sci-protocol-*` scalar probes cover `defprotocol`, ordinary method
+functions, `satisfies?`, metadata, marker declarations, namespace aliases,
+same-shape identity, Var rebinding and explicit missing implementations. The
+reference remains SCI `5fe89056384418be50d232b4278344cb3a1a526b` on Clojure 1.12.4.
+The adapted metadata/return cases cite `protocols_test.cljc` in the provenance
+manifest; the other cases are independent probes. No descriptor, method function
+or receiver is serialized as a claimed portable object.
+
+Four native dispositions record deliberate restrictions: changing method shape,
+zero-receiver signatures, variadic signatures and `:extend-via-metadata` fail as
+native invalid forms. SCI accepts these sources. Positive receiver implementations
+arrived in the later batches below. Host/core protocol customization remains
+excluded; private Rust fixtures verify the original dispatch foundation. The
+unsupported-family inventory preserves nil/built-in selector and host boundaries. Exhaustive older fixture adapters reject the new opaque
+`ValueView::Protocol` category.
+
+Verification matched all 2,398 pinned SCI rows. The full native integration job
+passed 366 tests (one opt-in oracle test ignored); the final focused checks also
+passed the added seventh public protocol test, private dispatch/GC tests,
+conformance, coverage and provenance. The selected release suite passed 54 tests.
+Formatting and strict all-target Clippy passed with default and all features.
+The release dispatch/registration comparison and both ordinary/instrumented GC
+benchmarks passed; see the [measured costs](../../../benchmarks/interpreter.md#protocol-declaration-and-dispatch-foundation-2026-10-08).
+
+## Native captured reify objects
+
+The `sci-reify-*` fixtures observe methods, booleans, metadata and scalar key/set
+relationships. They cover lexical captures, saved/apply method functions, fixed
+overloads, marker and partial protocols, identity, replacement metadata, same-shape
+redefinition, recur and finally. Two explicit native dispositions preserve both
+observed SCI results and intended native behavior: qualified method collisions
+return `[:b :b]` in SCI and `[:a :b]` natively; SCI accepts an undeclared
+implementation arity while native expansion rejects it.
+
+`driver.clj` rejects nominal records and custom reify objects before generic map
+serialization; functions and protocol descriptors also fail transport. No opaque
+instance is a golden result. The opt-in launcher test checks these failures leave
+the input unchanged, and verifies method/scalar observation succeeds. Run it with
+`LIGHT_CLJS_SCI_CHECKOUT="$PWD/research/sci" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/reference/sci -p test_regenerate.py`.
+The native transport independently rejects objects/functions/descriptors.
+
+Native integration tests cover retained object/method handles, fork/reset owner
+boundaries, source/form drops, receiver-returning closures, collection during
+callbacks, reentrant Var replacement, cyclic captures, warmed slot stability,
+permissions, arity errors, fuel/allocation/depth exhaustion and sticky cancellation.
+Host interfaces/core protocol customization and JS
+code generation remain excluded. See the [runtime contract](../../../docs/interpreter.md#user-protocol-declarations).
+
+Verification for this addition matched all 2,411 pinned SCI rows, including 13
+new reify probes, and passed 380 native integration tests plus four private
+protocol tests. The 62 focused release tests, seven launcher tests (including the
+opt-in opaque-object cases), strict default/all-feature Clippy and formatting
+checks passed. Ordinary/instrumented reify benchmarks validated equal invocation
+results and stable heap/slot counts; the instrumented GC benchmark retained zero
+warmed collector allocations at each cadence. Costs and raw results are in the
+[benchmark report](../../../benchmarks/interpreter.md#captured-reify-construction-and-invocation-2026-10-08).
+
+
+## Native immutable record data
+
+Twenty-five `sci-record-*` fixtures project nominal records through `into {}`,
+scalar fields/predicates, metadata, equality and map/set key observations. They
+cover constructors/basis fields, persistent updates, zero-field records, sequences,
+reductions, walks, namespace aliases, redefinition, bounded printing and lazy-key
+effects. Their independent sources and verified outcomes have explicit provenance.
+No opaque record is flattened by transport: the existing SCI guard rejects records
+before `map?`, the launcher also verifies projected records, and native transport
+rejects records and type descriptors explicitly through its unsupported-value path.
+
+Five executable dispositions preserve the selected native contract: saved native
+map constructors follow the current generation (SCI retains the old one), including
+basis changes; empty-vector map input is rejected (SCI accepts it); print depth/meta
+controls follow the existing native collection rules (SCI prints the type prefix at
+level zero and omits record metadata); and public `hash` remains outside the native
+API inventory. Native hash equality is checked with host `value_hash` and source
+map/set key behavior. Constructor metadata observations project the map argument
+list's size to avoid pinning SCI's internal generated symbol spelling.
+
+This data addition preceded record protocol clauses and named-record extension,
+described below. The runtime contract documents saved constructors and the nominal
+generation boundary.
+
+Verification: all 2,436 pinned SCI outcomes matched, and all 397 native integration
+tests passed. The 99 focused release tests, 16 interpreter unit tests, and seven
+launcher tests passed (the normal opt-in tests remain ignored). The strengthened
+record capture/GC test also passed in release after its final update. Formatting,
+strict default/all-feature Clippy, map/record timing and allocation benchmarks,
+the general interpreter benchmark and instrumented collector checks passed.
+See the [record measurements](../../../benchmarks/interpreter.md#immutable-record-data-2026-10-08).
+
+## Native record protocol methods
+
+Nineteen independent `sci-record-method-*` fixtures observe receiver fields,
+definition-time lexical captures, overloads, destructuring, parameter shadowing,
+updated receivers on recur, metadata and returned closures. They include the
+Box/Size/reify acceptance program, saved functions/Vars/apply/map, qualified name
+collisions, partial/marker membership, old type generations, protocol redeclaration,
+method Var rebinding, and exceptions/finally effects. Transport only sees scalars
+and projected collections; records and descriptors remain forbidden objects.
+
+Five explicit dispositions preserve native function/validation rules. SCI permits
+undeclared method arities and later duplicate overloads; native rejects both before
+publishing a type. Unknown methods receive a native qualified implementation error
+instead of SCI's unresolved-symbol error. Native pre/postconditions use the ordinary
+fn expansion with fields in scope; SCI rejects the recorded postcondition probe.
+Repeated parameter names retain native fn's last-binding-wins rule, while an
+independent receiver slot protects field reads; SCI keeps the receiver binding in
+the recorded repeated-receiver case. These differences are executed assertions,
+never counted as exact SCI matches by the API inventory.
+
+Native tests also retain old/new record generations across source/context drops,
+shared-owner forks and reentrant callback collection/redefinition. Returned closures,
+metadata and cyclic atom fields keep exactly the required captures; repeated type
+redefinitions settle at stable warmed live heap/code/source counts. Permission
+revocation, retained analyzed forms, call depth, fuel, allocation, output and sticky
+cancellation/finally use the normal invocation boundary. Type descriptors own method
+closures once; instance construction does not copy methods or captures.
+
+Verification matched all 2,455 pinned SCI cases and passed all 408 native
+integration tests. The 123 focused release tests and 16 interpreter unit tests
+passed (one normal opt-in unit benchmark remained ignored). The CLI acceptance
+returned `[3 [4 5] 7]`. Formatting, strict default/all-feature Clippy, validated
+record call/construction/definition benchmarks and the instrumented collector
+checks passed. See the [method costs](../../../benchmarks/interpreter.md#record-methods-2026-10-08).
+
+## Native named-record extension
+
+Twenty independent `sci-extension-*` probes cover `extend-type` and
+`extend-protocol` on named record generations. They observe existing instances,
+saved method functions, grouped overloads, inline-method replacement, preservation
+of omitted methods/other protocols, partial and marker membership, captured
+lexicals without implicit field bindings, redefinition, namespace collisions,
+recur, returned closures and exception/finally effects. Fixtures serialize only
+scalar/projected results.
+
+Five executable native dispositions preserve the deliberate boundaries: alias
+record selectors resolve natively but fail analysis in pinned SCI; undeclared
+arities and duplicate implementations fail before publication; unknown methods
+use the qualified native implementation diagnostic; and nil selectors remain
+explicitly unsupported even though SCI handles the source. Alias resolution is
+native evidence, never labeled an exact SCI pass. The inventory now exposes both
+macros and rejects nil/built-in selectors and host proxies separately.
+
+Native checks cover full-target validation/publication under every small
+allocation budget, declaration/table fuel, retained Forms and owner-shared fork
+revision invalidation, isolated contexts, current permission checks, reentrant
+replacement/GC, in-flight closures and reclamation of replaced captures/old
+record generations. All normal callback exception, cancellation, output,
+allocation, fuel and call-depth paths retain existing invocation/finally behavior.
+
+Verification matched all 2,475 pinned SCI cases and passed all 419 native
+integration tests. The 141 focused release tests and 16 interpreter unit tests
+passed (normal opt-in tests remain ignored). The strengthened long-declaration
+checks exercise both external macros in source and retained-analysis paths.
+Formatting, strict default/all-feature Clippy and validated timing/allocation/GC
+benchmarks passed. CLI acceptance returns `8`. See the
+[extension costs](../../../benchmarks/interpreter.md#record-extensions-2026-10-09).

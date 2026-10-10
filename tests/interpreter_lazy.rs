@@ -10,6 +10,7 @@ mod protocol;
 fn wire(value: &RootedValue) -> protocol::Value {
     use protocol::Value as V;
     match value.inspect() {
+        ValueView::CompilerLiteral(_) => panic!("compiler-only reader value in native fixture"),
         ValueView::LazySeq | ValueView::Delay => {
             panic!("deferred values must be projected by the evaluated fixture")
         }
@@ -23,6 +24,10 @@ fn wire(value: &RootedValue) -> protocol::Value {
         | ValueView::Input
         | ValueView::Output
         | ValueView::Volatile
+        | ValueView::Protocol(_)
+        | ValueView::Reify
+        | ValueView::Record(_)
+        | ValueView::RecordType(_)
         | ValueView::Reduced => {
             panic!("callables are outside fixture transport")
         }
@@ -156,6 +161,13 @@ fn lazy_core_programs_match_pinned_values_errors_and_effects() {
     }
     assert_eq!(count, 268);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn partition_all_collection_arities_keep_lazy_groups_and_fractional_counts() {
+    let mut c = Context::new();
+    assert_eq!(c.eval_string("(let [groups (partition-all 2.5 [1 2 3 4 5]) stepped (partition-all 2 1 [1 2 3])] [(mapv vec groups) (mapv vector? groups) (mapv vec stepped)])").map(|v| wire(&v).wire()).unwrap(),
+        "(vector (vector (vector (int 1) (int 2) (int 3)) (vector (int 4) (int 5))) (vector (bool false) (bool false)) (vector (vector (int 1) (int 2)) (vector (int 2) (int 3)) (vector (int 3))))");
 }
 
 #[test]

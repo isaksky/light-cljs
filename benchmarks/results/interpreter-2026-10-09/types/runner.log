@@ -1,0 +1,22 @@
+Building light-cljs timing
+Building interpreter_types timing
+Building interpreter timing
+Building interpreter_gc timing
+Building interpreter_reuse timing
+Building interpreter_types allocations
+Building interpreter allocations
+Building interpreter_gc allocations
+Building interpreter_reuse allocations
+Measuring timings
+Measuring allocations
+Measuring existing-timings
+Measuring existing-allocations
+Measuring interpreter_reuse
+Measuring interpreter_reuse-allocations
+Measuring old-path-baseline-timings-1
+Measuring old-path-current-timings-1
+Measuring old-path-current-timings-2
+Measuring old-path-baseline-timings-2
+Measuring old-path-baseline-allocations
+Measuring old-path-current-allocations
+Saved verified measurements: /Users/admin/.cache/light-cljs-baselines/light-cljs-65/verified-types

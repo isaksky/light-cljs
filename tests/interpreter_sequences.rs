@@ -11,6 +11,7 @@ mod protocol;
 fn wire(value: &RootedValue) -> protocol::Value {
     use protocol::Value as V;
     match value.inspect() {
+        ValueView::CompilerLiteral(_) => panic!("compiler-only reader value in native fixture"),
         ValueView::LazySeq | ValueView::Delay => {
             panic!("deferred values must be projected by the evaluated fixture")
         }
@@ -24,6 +25,10 @@ fn wire(value: &RootedValue) -> protocol::Value {
         | ValueView::Input
         | ValueView::Output
         | ValueView::Volatile
+        | ValueView::Protocol(_)
+        | ValueView::Reify
+        | ValueView::Record(_)
+        | ValueView::RecordType(_)
         | ValueView::Reduced => {
             panic!("callables are outside fixture transport")
         }
@@ -137,7 +142,7 @@ fn sequence_programs_match_all_pinned_values_errors_and_effects() {
         );
         count += 1;
     }
-    assert_eq!(count, 108);
+    assert_eq!(count, 122);
 }
 
 #[test]
@@ -168,7 +173,7 @@ fn sequence_registry_checks_arity_owner_and_lazy_names() {
             ValueView::Boolean(true)
         );
     }
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 29);
     for name in [
         "map", "filter", "range", "iterate", "repeat", "take", "drop",
     ] {
@@ -179,6 +184,28 @@ fn sequence_registry_checks_arity_owner_and_lazy_names() {
             ),
             "{name}"
         );
+    }
+}
+
+#[test]
+fn ensure_reduced_rejects_foreign_values_on_both_paths() {
+    let mut c = Context::new();
+    let ensure = c.eval_string("ensure-reduced").unwrap();
+    let definition = sequence_definitions()
+        .iter()
+        .find(|d| d.metadata.name == "ensure-reduced")
+        .unwrap();
+    let foreign = Context::new();
+    for value in [foreign.nil(), foreign.reduced(&foreign.integer(1)).unwrap()] {
+        assert_eq!(
+            c.invoke_native(definition, std::slice::from_ref(&value))
+                .unwrap_err(),
+            NativeError::WrongOwner
+        );
+        assert!(matches!(
+            c.invoke(&ensure, &[value]),
+            Err(InvokeError::Dispatch(E::WrongOwner))
+        ));
     }
 }
 
@@ -341,6 +368,7 @@ fn iteration_polling_is_terminal_and_allows_finally_cleanup() {
     for expression in [
         "(into [] [1 2 3 4])",
         "(reduce + [1 2 3 4])",
+        "(transduce identity (completing +) 0 [1 2 3 4])",
         "(reduce-kv + 0 [1 2 3 4])",
         "(mapv identity [1 2 3 4])",
         "(filterv identity [1 2 3 4])",

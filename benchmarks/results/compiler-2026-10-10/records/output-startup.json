@@ -1,0 +1,164 @@
+{
+  "node": "v24.18.0",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "binary_sha256": "782f30ab11262f8615b20670f70db3f9bf9148ec73dfd44c19ba60bbdbaea925",
+  "runtime_sha256": "4c204e3721ed51b84237c181ee828fe80593ec5f64f90433b5f1110e80b6c85a",
+  "runtime_bytes": 110876,
+  "runtime_gzip_bytes": 25934,
+  "method": "Nine fresh Node processes per program. Time vm.Script compilation plus runInThisContext in milliseconds; validate the numeric result after timing. Excludes process launch and source reading. OS caches/scheduling uncontrolled; historical baseline is not paired.",
+  "programs": {
+    "primitive": {
+      "source": "42",
+      "expected": 42,
+      "sha256": "cefb7c7e86a17fe9c8fa416ae5202f7f63f914f3ac51a4c0cf4a95b214b5c774",
+      "bytes": 88,
+      "gzip_bytes": 93,
+      "samples_ms": [
+        0.08783299999999983,
+        0.09029100000000057,
+        0.17116599999999949,
+        0.10762499999999875,
+        0.08737500000000153,
+        0.08604199999999906,
+        0.09354099999999832,
+        0.10054200000000435,
+        0.08241699999999952
+      ],
+      "median_ms": 0.09029100000000057
+    },
+    "dot": {
+      "source": "(. \"abcd\" indexOf \"d\")",
+      "expected": 3,
+      "sha256": "7949a9ca8f7350f17e60e0601b7d31db39ad17fba163810dd3516b1d9e33dc78",
+      "bytes": 110,
+      "gzip_bytes": 113,
+      "samples_ms": [
+        0.09704099999999727,
+        0.1059999999999981,
+        0.10316699999999912,
+        0.1089590000000058,
+        0.08704099999999926,
+        0.0870829999999998,
+        0.09233400000000103,
+        0.09829200000000071,
+        0.08950000000000102
+      ],
+      "median_ms": 0.09704099999999727
+    },
+    "constructor": {
+      "source": "(.-x (new (fn [x] (this-as self (set! (.-x self) x))) 3))",
+      "expected": 3,
+      "sha256": "9d849b35f884d8932084f0966dcf7ed54cf2ce6c69d846a93cb43942bbf46075",
+      "bytes": 218,
+      "gzip_bytes": 167,
+      "samples_ms": [
+        0.09162500000000051,
+        0.08999999999999986,
+        0.10745899999999864,
+        0.1039999999999992,
+        0.08900000000000219,
+        0.09012500000000045,
+        0.08954099999999698,
+        0.09375,
+        0.09358399999999989
+      ],
+      "median_ms": 0.09162500000000051
+    },
+    "template": {
+      "source": "(js* \"(~{} + ~{})\" 1 2)",
+      "expected": 3,
+      "sha256": "4633731b9dbf920854061fdec2102fd5b84c39978ec9107b39fc37d7d23db59e",
+      "bytes": 102,
+      "gzip_bytes": 106,
+      "samples_ms": [
+        0.1045829999999981,
+        0.09841700000000131,
+        0.10283400000000142,
+        0.0829170000000019,
+        0.0808339999999994,
+        0.0813340000000018,
+        0.08170900000000003,
+        0.08374999999999844,
+        0.08258400000000066
+      ],
+      "median_ms": 0.0829170000000019
+    },
+    "collections": {
+      "source": "(count [1 2 3])",
+      "expected": 3,
+      "sha256": "fd3e67babe2038702109af48b690dfaa0fc9101a699511ed837571e445face7c",
+      "bytes": 111033,
+      "gzip_bytes": 25974,
+      "samples_ms": [
+        1.978749999999998,
+        1.9845000000000041,
+        2.076999999999998,
+        1.9685830000000024,
+        1.919625,
+        2.020624999999999,
+        1.9875000000000007,
+        2.044166999999998,
+        2.4119170000000025
+      ],
+      "median_ms": 1.9875000000000007
+    },
+    "array-helpers": {
+      "source": "(aget (array 1 2 3) 2)",
+      "expected": 3,
+      "sha256": "af4ba789f7258d0c440d085633b7e288fd154b9027e224cf4955df065a65e173",
+      "bytes": 111016,
+      "gzip_bytes": 25970,
+      "samples_ms": [
+        1.9729579999999984,
+        1.8437920000000005,
+        2.1962080000000057,
+        1.8837079999999986,
+        1.8961669999999984,
+        1.9364999999999988,
+        1.873041999999998,
+        1.8419999999999987,
+        1.8472079999999984
+      ],
+      "median_ms": 1.8837079999999986
+    },
+    "record-updates": {
+      "source": "(defrecord R [a b]) (let [r (assoc (->R 1 2) :c 4)] (reduce-kv (fn [acc _ value] (+ acc value)) 0 r))",
+      "expected": 7,
+      "sha256": "a8680651b11d696d230260014cc1ef0dcd084bc36328e545e45f86feb3cd83bc",
+      "bytes": 111562,
+      "gzip_bytes": 26160,
+      "samples_ms": [
+        2.970917,
+        2.8760840000000023,
+        2.9679999999999964,
+        3.304833000000002,
+        2.909334000000001,
+        2.982999999999997,
+        2.872333000000001,
+        3.0685420000000008,
+        3.0819170000000042
+      ],
+      "median_ms": 2.970917
+    },
+    "record-methods": {
+      "source": "(defprotocol P (value [this])) (defrecord R [x] P (value [_] x)) (value (with-meta (map->R {:x 7 :extra 2}) {:m 1}))",
+      "expected": 7,
+      "sha256": "a13f7c561bf08a5e948982c5f577364ee27a2a25c4c50881b80fadf4d544b6cf",
+      "bytes": 111846,
+      "gzip_bytes": 26232,
+      "samples_ms": [
+        3.158042000000002,
+        3.435750000000006,
+        3.6145840000000007,
+        3.109332999999996,
+        3.0993749999999984,
+        3.1415830000000007,
+        3.2767500000000034,
+        3.0484579999999966,
+        3.044750000000004
+      ],
+      "median_ms": 3.1415830000000007
+    }
+  }
+}

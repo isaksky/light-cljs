@@ -24,6 +24,7 @@ pub(super) struct Environment {
     namespaces: u64,
     vars: u64,
     configuration: u64,
+    protocols: u64,
 }
 struct Entry {
     identity: (UnitId, FormId),
@@ -79,6 +80,7 @@ impl Context {
             namespaces: store.namespaces.revision(),
             vars: store.vars.revision(),
             configuration: self.reuse_revision.get(),
+            protocols: store.protocol_revision,
         }
     }
     pub(super) fn prune_analysis_reuse(&mut self) {

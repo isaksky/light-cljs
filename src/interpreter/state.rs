@@ -312,7 +312,7 @@ fn watch(c: &mut Context, args: &[RootedValue], remove: bool) -> NativeResult {
     c.update_atom(&args[0], |a| a.watches = watches.value())?;
     Ok(args[0].clone())
 }
-fn vreset(c: &mut Context, args: &[RootedValue]) -> NativeResult {
+pub(super) fn vreset(c: &mut Context, args: &[RootedValue]) -> NativeResult {
     c.state_owner(&args[0])?;
     if !matches!(args[0].inspect(), ValueView::Volatile) {
         return Err(state_type(0, "volatile"));
