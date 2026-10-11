@@ -130,36 +130,29 @@ def generate(catalogs=False):
                               'rationale': RATIONALE} for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope')
         case['complete_body_phase_mappings'] = [mapping for mapping in phases if mapping['reference_fixture_id'] == identity]
         cases.append(case)
-    pending = {PREFIX + 'top-level'}
-    fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Only executed supported contexts; unresolved complete sources remain in proposals.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows if row[0] not in pending)
+    fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Complete original namespace contexts executed in both phases.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows)
     completion.persist(ROOT / FIXTURE, fixture)
     for row in phases:
         row['support_source_sha256'][FIXTURE] = inv.digest(fixture.encode())
-    for case in cases:
-        if case['id'] in pending:
-            case['unwitnessed_reason'] = ('Complete original top-level let/defn setup passes ordinary execution but fails local macro declaration demand.' if case['id'].endswith('top-level') else 'Complete original namespace/function baz shadowing source currently fails local execution.') + ' Both-pin source comparison and focused ownership required. No pass or boundary exclusion is claimed.'
-            case['proposed_complete_body_phase_mappings'] = case.pop('complete_body_phase_mappings')
-    proposal = {'full-cases.jsonl': [case for case in cases if case['id'] not in pending],
-                'full-witnesses.jsonl': [row for row in witnesses if row['fixture_id'] not in pending],
-                'complete-body-phase-mappings': [row for row in phases if row['reference_fixture_id'] not in pending],
-                'unwitnessed-source-cases': [case for case in cases if case['id'] in pending]}
+    proposal = {'full-cases.jsonl': cases,
+                'full-witnesses.jsonl': witnesses,
+                'complete-body-phase-mappings': phases,
+                'unwitnessed-source-cases': []}
     completion.persist(ROOT / 'tests/reference/compiler-residual-source-context-proposals.json', json.dumps(proposal, indent=2) + '\n')
     if catalogs:
         for name, field in [('full-cases.jsonl', 'id'), ('full-witnesses.jsonl', 'fixture_id')]:
             residual.update_owned(name, lambda row: row.get(field, '').startswith(PREFIX), proposal[name])
-    print(f'{len(proposal["full-cases.jsonl"])} supported contexts, {len(proposal["complete-body-phase-mappings"])} complete bodies, {len(proposal["full-witnesses.jsonl"])} original sites proposed; {len(pending)} complete sources remain unwitnessed', flush=True)
+    print(f'{len(cases)} supported contexts, {len(phases)} complete bodies, {len(witnesses)} original sites proposed; 0 complete sources remain unwitnessed', flush=True)
     return cases
 
 
 def audit_local(cases, output):
-    # Observation-only exact source probes. Failing executions are not test
-    # passes and are never included among the registered witness proposals.
+    # Observation-only exact source probes for every selected context, including
+    # restored supported sources. Failing executions are never test passes.
     output.mkdir(parents=True, exist_ok=True)
     binary = ROOT / 'target/debug/light-cljs'
     evidence = {'binary_sha256': inv.digest(binary.read_bytes()), 'observations': []}
     for case in cases:
-        if 'unwitnessed_reason' not in case:
-            continue
         for macro_phase in (False, True):
             directory = output / (case['id'] + ('-macro' if macro_phase else '-application'))
             source_root = directory / 'source'
@@ -241,14 +234,14 @@ def retain_boundary_review():
 if __name__ == '__main__':
     retain_boundary_review()
     cases = generate('--catalogs' in sys.argv)
+    if '--case' in sys.argv:
+        selected_id = PREFIX + sys.argv[sys.argv.index('--case') + 1]
+        cases = [case for case in cases if case['id'] == selected_id]
+        assert len(cases) == 1
     if '--audit-local' in sys.argv:
         output = Path(sys.argv[sys.argv.index('--output') + 1]) if '--output' in sys.argv else Path('/tmp/light-cljs-125-shadow-source-local')
         audit_local(cases, output)
     if '--run' in sys.argv:
-        if '--case' in sys.argv:
-            selected_id = PREFIX + sys.argv[sys.argv.index('--case') + 1]
-            cases = [case for case in cases if case['id'] == selected_id]
-            assert len(cases) == 1
         output = Path(sys.argv[sys.argv.index('--output') + 1]) if '--output' in sys.argv else Path('/tmp/light-cljs-125-residual-source-context-reference')
         evidence = {'cases': cases, 'references': {}}
         for kind in ('release', 'checkout'):

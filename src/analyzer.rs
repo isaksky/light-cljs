@@ -3591,7 +3591,11 @@ impl Analyzer<'_> {
         let result = self.form_inner(id, context);
         self.top_level = previous_top_level;
         self.analysis_depth -= 1;
-        result
+        if previous_top_level && !allows_declarations && self.macro_host.defers_source_units() {
+            result.and_then(|expr| self.catalog_definition_group(id, expr))
+        } else {
+            result
+        }
     }
 
     // Value-use context and legal recurrence are independent: a discarded loop
@@ -5997,6 +6001,38 @@ impl Analyzer<'_> {
         }
     }
 
+    // A value-position owner (let/if/try/etc.) installs nested definitions only
+    // when demanded. Keep its already analyzed IR: replaying the source would
+    // expand macros twice and lose the original expansion frontier.
+    fn catalog_definition_group(&mut self, id: NodeId, expr: ExprId) -> Result<ExprId, AnalysisError> {
+        let Some(session) = self.macro_host.session_handle() else { return Ok(expr); };
+        let mut products = Vec::new();
+        let mut pending = vec![expr];
+        while let Some(value) = pending.pop() {
+            match &self.program.exprs[value.0].kind {
+                // Function/method bodies install definitions on invocation, not
+                // when the enclosing function or object is constructed.
+                ExprKind::Fn { .. } | ExprKind::Reify { .. } | ExprKind::DefType { .. } | ExprKind::ExtendType { .. } => continue,
+                ExprKind::Def { global, init: Some(_), .. } => {
+                    if !products.contains(global) { products.push(*global); }
+                }
+                _ => (),
+            }
+            pending.extend(crate::program_fragment::children(&self.program, value));
+        }
+        if products.is_empty() { return Ok(expr); }
+        let form = self.compiler_read_form(id)
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+        let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+        session.register_bundle(
+            &self.program, &products, &[], false, form, self.definition_snapshot(),
+            self.macro_host.macro_analysis_frame(),
+            format!("{}:{}:{}", loc.source, loc.line, loc.column),
+            Some(crate::program_fragment::expression_snapshot(&self.program, Some(expr))),
+        ).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        Ok(expr)
+    }
+
     /// Only supported source-level top-level declarations are replayable bundles.
     /// Nested declarations, reify and specify! keep ordinary expression semantics.
     fn catalog_bundle(&mut self, id: NodeId, expr: ExprId) -> Result<ExprId, AnalysisError> {
@@ -6119,6 +6155,7 @@ impl Analyzer<'_> {
                 self.definition_snapshot(),
                 self.macro_host.macro_analysis_frame(),
                 format!("{}:{}:{}", loc.source, loc.line, loc.column),
+                None,
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         self.program.exprs[expr.0].kind = ExprKind::Nil;

@@ -577,3 +577,112 @@ Final Python discovery runs **117 tests: 111 pass, six errors** from the
 intentionally stale library compiler-source receipts above, zero assertion
 failures. The refreshed inventory check and source-context catalog check pass.
 The final discovery log is `/tmp/light-cljs-154-ledger-tests-current.log`.
+
+### Top-level lexical declaration source restoration — 2026-10-11
+
+`light-cljs-155` restores the complete original `cljs.top-level` context to
+its executing TSV and source-context catalogs. The two original top-level
+`let` forms remain unchanged: `bar` closes over `foo = 1`, and `baz` closes
+over a separate `foo = 2`. Both original assertions and their source-span
+provenance are retained. The adapter now registers eight supported contexts,
+twelve complete bodies, and twenty-five original assertion sites. No pending
+source-context exclusion remains; the comprehensive language gate under
+`light-cljs-125` is separate and remains unfinished.
+
+The complete original ordinary contract passes both freshly checked pinned
+references: release **1.12.134** and checkout
+**a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, with
+`:optimizations :none`, `:static-fns false`, and `:def-emits-var false`.
+Both return `true`, with empty trace and stdout. The source programs themselves
+are unchanged; regeneration updates registration and test/fixture fingerprints.
+
+```sh
+python3 -B tests/reference/compiler-residual-source-context.py --write --catalogs
+python3 -B tests/reference/compiler-residual-source-context.py --catalogs
+python3 -B tests/reference/compiler-residual-source-context.py --run --case top-level --output /tmp/light-cljs-155-top-level-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --audit-local --case top-level --output /tmp/light-cljs-155-top-level-local-current
+cargo test --locked --test compiler_residual_source_context
+```
+
+The ordinary both-pin receipt is
+`/tmp/light-cljs-155-top-level-reference-current/evidence.json`, SHA-256
+`42bda852e44d0f4e9427625167a6d9f3ac6035fd839eb4e9666cd6cdf28b39cd`.
+The local audit now observes supported contexts as well as unresolved ones,
+and `--case` selects the same exact source for local and reference execution.
+This prevents a restored source from disappearing silently from the local
+observation run. Catalog validation passes after regeneration.
+
+The restored complete context also passes the local observation audit in
+ordinary and macro phases: both compilations succeed, Node prints `true`, and
+QuickJS returns the printed string `"true"`. Its receipt is
+`/tmp/light-cljs-155-top-level-local-current/evidence.json`, SHA-256
+`661b346dc749150a052ab5ef6cfae7741013ebcc37751a9dd3c967d0b1543f0f`.
+The full `compiler_residual_source_context` Rust test passes all eight contexts
+in ordinary and actual macro execution, using both fresh and reused MacroHosts
+and both Node and QuickJS application engines. The log is
+`/tmp/light-cljs-155-source-context-rust.log`.
+
+The implementation catalogs the complete analyzed owning expression for nested
+`def`/`defn` products, executes that owner lazily once, and shares its lexical
+captures. It retains analyzed IR so macro calls are not expanded again. Earlier
+products and previous source generations remain readable during installation;
+missing conditional products fall back to earlier definitions, and `defonce`
+checks actual conditional installation without forcing unrelated plain roots.
+Dynamic bindings and executed `set!` preserve their usual phase-local behavior.
+Unfinished forward reads still diagnose a genuine initialization cycle.
+
+Final local audit after the generation/binding corrections:
+`/tmp/light-cljs-155-top-level-local-final/evidence.json`, SHA-256
+`bfcc4f19e248fe41b0b2513d51f5871c7d7e4c6f60c7c16490d7d227bd321e19`.
+The focused final Rust run passes 154 tests (112 macro, 10 namespace completion,
+one eight-context source test, 21 session, and 10 evaluator), with one explicitly
+ignored evaluator reference test. The existing compiler-bootstrap cancellation
+regression now additionally cancels inside an owning group's initializer,
+verifies terminal cancellation despite a language catch, and reuses the host
+successfully. That focused unit test passes. Logs:
+`/tmp/light-cljs-155-final-regressions.log` and
+`/tmp/light-cljs-155-final-demand.log`. The direct canonical runtime Node test
+also passes (`/tmp/light-cljs-155-runtime-tests.log`).
+
+A separate timer-driven stress probe observed one native QuickJS crash during
+bootstrap form import, before owner execution. Ten consecutive default-stack
+reruns and two further individual default-stack reruns succeeded; this is not
+proof of a repaired race. `light-cljs-156` retains the exact observed native
+stack, reproduction lead and required repair/validation as a distinct engine
+issue. The deterministic initializer cancellation test above does not mask or
+claim to resolve that asynchronous import failure.
+
+Normal checked performance completes successfully:
+
+```sh
+python3 benchmarks/run_compiler.py --output /tmp/light-cljs-155-compiler-performance --samples 9 --iterations 1
+cargo bench --locked --bench evaluator -- --iterations 20
+cargo bench --locked --bench compiler -- --application-only --samples 9 --iterations 1 --dump /tmp/light-cljs-155-application-performance
+```
+
+The normal report retains 180 fresh-process, 423 resident, and 423 allocation
+rows with checked results, exact source archive, binaries and emitted programs.
+Manifest SHA-256:
+`2547acbc8e82184a5d29d64cd84a3467470c2e576fd92b46f84eba45b5c48a87`.
+The evaluator run validates all three scenarios at 20 iterations; the additional
+application run validates 270 samples. Their logs are
+`/tmp/light-cljs-155-performance.tsv` and
+`/tmp/light-cljs-155-application-performance.log`. No before/after speed claim is
+made. The static inventory's analyzer fingerprint is regenerated and checked;
+this does not grant execution coverage. The full zero-missing final gate remains
+owned by `light-cljs-125`.
+
+The final execution/namespace run adds 83 passing tests (53 execution, 28
+namespace, and two namespace-shadowing), with 43 explicitly ignored external
+reference cases. Combined with the focused run and cancellation unit test,
+**238 Rust tests pass**, with **44 explicitly ignored cases**. See
+`/tmp/light-cljs-155-final-execution.log` for the final run.
+
+After refreshing the static analyzer fingerprint, Python discovery runs 117
+tests: **111 pass, six errors, zero assertion failures**. All six errors reject
+stale library source/driver/inspection receipts, the previously retained
+`light-cljs-125` refresh obligation; validators are unchanged. The initial run
+before fingerprint regeneration also reported local-surface drift and is not
+credited as the final result. Final log:
+`/tmp/light-cljs-155-ledger-tests-final.log`. Source-context catalog validation,
+static inventory `--check`, and `git diff --check` pass.

@@ -2939,3 +2939,162 @@ fn imported_macro_values_and_private_macros_remain_phase_errors() {
     s.write("app.cljs", "(ns app (:require [tools :as t :refer [public]])) [(public) (t/public)]");
     assert_eq!(execute(&format!("console.log(String({}));", s.compile_host("app", &mut h).unwrap())), "[42 42]\n");
 }
+
+mod top_level_definition_groups {
+    use super::*;
+
+    fn checked(source: &str, host: &mut MacroHost) {
+        let js = compile_with_macros(source, host).unwrap();
+        assert_eq!(result(&js), "true\n");
+        let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        let value = evaluator.evaluate_js(&format!("Number({js})")).unwrap();
+        assert_eq!(evaluator.number(value).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn complete_owners_preserve_captures_order_once_and_phase_roots() {
+        let mut host = MacroHost::new();
+        for _ in 0..2 {
+            checked(r#"
+              (def trace (atom []))
+              (let [x (do (swap! trace conj :capture) 1)]
+                (def a x)
+                (let [y (+ a 1)] (defn bar [] x) (defn baz [] y))
+                (swap! trace conj :installed))
+              (defmacro observe []
+                (assert (= [1 2 1] [(bar) (baz) a]))
+                (assert (= [:capture :installed] @trace))
+                (assert (= 1 (bar))) true)
+              (and (observe) (observe) (= [1 2 1 [:capture :installed]] [(bar) (baz) a @trace]))
+            "#, &mut host);
+        }
+    }
+
+    #[test]
+    fn selected_groups_and_conditional_products_keep_lazy_availability() {
+        let mut host = MacroHost::new();
+        assert!(compile_with_macros(r#"
+          (let [connection (js/connect)] (def unavailable connection))
+          (defmacro skip [] (if false unavailable 42)) (skip)
+        "#, &mut host).is_ok());
+        let error = compile_with_macros(r#"
+          (let [connection (js/connect)] (def unavailable connection))
+          (defmacro select [] unavailable) (select)
+        "#, &mut host).unwrap_err().to_string();
+        assert!(error.contains("connect") && error.contains("2:11"), "{error}");
+        checked(r#"
+          (def preserved 7)
+          (if false (def preserved 99) (def present 42))
+          (defmacro m [] (assert (= 7 preserved)) (assert (= 42 present)) true)
+          (and (m) (= [7 42] [preserved present]))
+        "#, &mut host);
+        let error = compile_with_macros("(if false (def absent 1) nil) (defmacro m [] absent) (m)", &mut host).unwrap_err().to_string();
+        assert!(error.contains("unavailable definition: cljs.user/absent") && error.contains("1:1"), "{error}");
+        assert!(compile_with_macros(r#"
+          (def pending (js/connect))
+          (let [] (defonce pending 99) (def selected 42))
+          (defmacro m [] selected) (m)
+        "#, &mut host).is_ok());
+        checked(r#"
+          (def pending 7)
+          (let [] (defonce pending 99) (def selected (+ pending 1)))
+          (defmacro m [] (assert (= [7 8] [pending selected])) true)
+          (and (m) (= [7 8] [pending selected]))
+        "#, &mut host);
+    }
+
+    #[test]
+    fn own_initializers_observe_prior_generations_and_defonce_checks_conditional_installation() {
+        checked(r#"
+          (def x 1)
+          (let [y x] (def x (+ y 1)))
+          (if (= x 2) (def x 3) nil)
+          (if false (def absent 1) nil)
+          (let [] (defonce absent 2) (def y absent))
+          (if false (def other 1) nil)
+          (defonce other 8)
+          (defmacro m [] (assert (= [3 2 2 8] [x absent y other])) true)
+          (and (m) (= [3 2 2 8] [x absent y other]))
+        "#, &mut MacroHost::new());
+    }
+
+    #[test]
+    fn executed_bindings_restore_overlays_without_installing_temporary_roots() {
+        checked(r#"
+          (def ^:dynamic x 1)
+          (binding [x 5] (def x 2) (def y x))
+          (let [] (binding [x 5] (def x 3)) (def z x))
+          (let [] (def mutable 1) (set! mutable 2) (def after-set mutable))
+          (defmacro m [] (assert (= [1 2 1 2 2] [x y z mutable after-set])) true)
+          (and (m) (= [1 2 1 2 2] [x y z mutable after-set]))
+        "#, &mut MacroHost::new());
+    }
+
+    #[test]
+    fn generations_and_macro_expansion_are_source_ordered_without_replay() {
+        checked(r#"
+          (def expansions (atom 0))
+          (defmacro value [] (swap! expansions inc))
+          (let [x (value)] (defn f [] x))
+          (defmacro before [] (assert (= 1 @expansions)) (f))
+          (def first-value (before))
+          (defmacro freeze [] first-value) (freeze)
+          (let [x (value)] (defn f [] x) (defn g [] (f)))
+          (defmacro after [] (assert (= 2 @expansions)) (assert (= 2 (g))) (f))
+          (= [1 2 2 0] [first-value (after) (g) @expansions])
+        "#, &mut MacroHost::new());
+    }
+
+    #[test]
+    fn earlier_products_and_recursive_functions_do_not_hide_real_cycles() {
+        checked(r#"
+          (declare even-step odd-step)
+          (let [zero 0]
+            (defn even-step [n] (if (= zero n) true (odd-step (dec n))))
+            (defn odd-step [n] (if (= zero n) false (even-step (dec n))))
+            (def ready (even-step 12)))
+          (defmacro m [] ready)
+          (and (m) ready (odd-step 11))
+        "#, &mut MacroHost::new());
+        for source in [
+            "(declare a b) (let [] (def a b) (def b a)) (defmacro m [] a) (m)",
+            "(declare a b) (let [] (def a b)) (let [] (def b a)) (defmacro m [] a) (m)",
+        ] {
+            let error = compile_with_macros(source, &mut MacroHost::new()).unwrap_err().to_string();
+            assert!(error.contains("bundle initialization cycle") && error.contains("1:"), "{error}");
+        }
+    }
+
+    #[test]
+    fn throwing_owner_is_sticky_and_fresh_or_reused_hosts_recover() {
+        let mut host = MacroHost::new();
+        for _ in 0..2 {
+            assert!(compile_with_macros(r#"
+              (def effects (atom 0))
+              (let [] (def a (swap! effects inc)) (throw (js/Error. "owner failed")) (def b 2))
+              (defmacro m []
+                (let [one (try a (catch :default e e)) two (try b (catch :default e e))]
+                  (assert (identical? one two)) (assert (= 1 @effects))) true)
+              (m)
+              (let [] (def a 42) (def b a))
+              (defmacro repaired [] (assert (= [42 42 1] [a b @effects])) true) (repaired)
+            "#, &mut host).is_ok());
+            let error = compile_with_macros("(let [] (def a (throw (js/Error. \"located\")))) (defmacro m [] a) (m)", &mut host).unwrap_err().to_string();
+            assert!(error.contains("located") && error.contains("1:1"), "{error}");
+            checked("(let [x 42] (defn a [] x)) (defmacro m [] (= 42 (a))) (m)", &mut host);
+        }
+    }
+
+    #[test]
+    fn terminal_limit_in_owner_cannot_be_caught_and_host_recovers() {
+        let mut host = MacroHost::new();
+        host.evaluator_options.timeout = std::time::Duration::from_millis(300);
+        let error = compile_with_macros(r#"
+          (let [] (def never (loop [] (recur))))
+          (defmacro m [] (try never (catch :default e 42))) (m)
+        "#, &mut host).unwrap_err().to_string();
+        assert!(error.contains("deadline") || error.contains("budget"), "{error}");
+        host.evaluator_options = Default::default();
+        checked("(let [x 42] (defn a [] x)) (defmacro m [] (= 42 (a))) (m)", &mut host);
+    }
+}

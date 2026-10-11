@@ -25,7 +25,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
         .collect();
     assert_eq!(
         rows.len(),
-        7,
+        8,
         "empty or partial supported namespace selection"
     );
     let mut reused_host = MacroHost::new();

@@ -151,6 +151,7 @@ impl CompilationSession {
         snapshot: DefinitionSnapshot,
         host: MacroHost,
         location: String,
+        analyzed: Option<Program>,
     ) -> Result<usize, String> {
         fn quoted(s: &str) -> String {
             let mut out = String::from("\"");
@@ -184,11 +185,18 @@ impl CompilationSession {
         let unit = self
             .register(name, Some(form), snapshot, host, false, location.clone())?
             .unwrap();
+        let group = analyzed.is_some();
+        if let Some(program) = analyzed {
+            let unit = self.catalog.borrow().units[unit].clone();
+            let mut unit = unit.borrow_mut();
+            unit.state = AnalysisState::Analyzed(Rc::new(program), Vec::new());
+            unit.analyses = 1;
+        }
         let code = format!(
             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
         );
         let source = format!(
-            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {once})",
+            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {once}, {group})",
             quoted(&location)
         );
         let bootstrap = {

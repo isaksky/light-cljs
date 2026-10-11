@@ -450,33 +450,35 @@ mod tests {
     #[test]
     fn cancelled_demand_discards_roots_before_reusing_host() {
         let mut host = MacroHost::new();
-        crate::compile_with_macros(
+        for source in [
             "(def hits (atom 0)) (defn h [] (swap! hits inc) (js/cancelDemand 0)) (defmacro m [] (h))",
-            &mut host,
-        )
-        .unwrap();
-        let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
-        let control = evaluator.control();
-        evaluator
-            .install_unit_service("cancelDemand", move |_, _| {
-                control.cancel();
-                Ok("(rt) => 42".into())
-            })
+            "(def hits (atom 0)) (let [] (def value (do (swap! hits inc) (js/cancelDemand 0)))) (defmacro m [] (try value (catch :default e 42)))",
+        ] {
+            crate::compile_with_macros(source, &mut host)
             .unwrap();
-        let function = host.javascript_macros["cljs.user/m"].function;
-        let error = evaluator.call(function, &[]).unwrap_err();
-        assert!(error.0.contains("cancelled"), "{error}");
-        assert!(evaluator.evaluate_js("1").is_err());
-        let js = crate::compile_with_macros(
-            "(def hits (atom 0)) (defmacro m [] (assert (= 0 @hits)) 42) (m)",
-            &mut host,
-        )
-        .unwrap();
-        assert!(js.contains("return 42"));
-        assert!(!Rc::ptr_eq(
-            &evaluator,
-            &host.bootstrap.as_ref().unwrap().evaluator
-        ));
+            let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
+            let control = evaluator.control();
+            evaluator
+                .install_unit_service("cancelDemand", move |_, _| {
+                    control.cancel();
+                    Ok("(rt) => 42".into())
+                })
+                .unwrap();
+            let function = host.javascript_macros["cljs.user/m"].function;
+            let error = evaluator.call(function, &[]).unwrap_err();
+            assert!(error.0.contains("cancelled"), "{error}");
+            assert!(evaluator.evaluate_js("1").is_err());
+            let js = crate::compile_with_macros(
+                "(def hits (atom 0)) (defmacro m [] (assert (= 0 @hits)) 42) (m)",
+                &mut host,
+            )
+            .unwrap();
+            assert!(js.contains("return 42"));
+            assert!(!Rc::ptr_eq(
+                &evaluator,
+                &host.bootstrap.as_ref().unwrap().evaluator
+            ));
+        }
     }
 
     #[test]

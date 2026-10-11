@@ -120,6 +120,11 @@ pub(crate) fn append(target: &mut Program, fragment: &Program) -> ExprId {
 /// retaining unrelated executable expression graphs. Non-expression IDs remain
 /// stable, including the protocol and record/type resolution tables.
 pub(crate) fn resolution_snapshot(program: &Program) -> Program {
+    expression_snapshot(program, None)
+}
+
+/// Retain a complete analyzed owning form, without expanding its macros again.
+pub(crate) fn expression_snapshot(program: &Program, root: Option<ExprId>) -> Program {
     use std::cell::RefCell;
 
     let pending = RefCell::new(
@@ -129,6 +134,7 @@ pub(crate) fn resolution_snapshot(program: &Program) -> Program {
             .filter_map(|global| global.metadata)
             .collect::<Vec<_>>(),
     );
+    pending.borrow_mut().extend(root);
     let mut retained = vec![false; program.exprs.len()];
     let visitor = identity_remap(program, |id| {
         pending.borrow_mut().push(id);
@@ -179,6 +185,10 @@ pub(crate) fn resolution_snapshot(program: &Program) -> Program {
         .filter(|id| retained[id.0])
         .map(|id| indices[id.0])
         .collect();
+    if let Some(root) = root {
+        snapshot.root = indices[root.0];
+        return snapshot;
+    }
     snapshot.root = ExprId(snapshot.exprs.len());
     snapshot.exprs.push(Expr {
         kind: ExprKind::Nil,

@@ -5,9 +5,30 @@
   let frontier = Infinity;
   function force(name) {
     if (overlays.has(name)) return overlays.get(name);
-    const slot = slots.get(name);
+    const owner = installing.at(-1);
+    if (owner?.group && owner.names.includes(name)) return forceSlot(name, {unit: -1, bundle: owner});
+    return forceSlot(name, slots.get(name));
+  }
+  function forceSlot(name, slot) {
     if (!slot || slot.unit === null) throw new Error((slot?.location ? slot.location + ': ' : '') + 'unavailable definition: ' + name);
-    if (slot.bundle) { forceBundle(slot.bundle); return slot.bundle.products.get(name); }
+    if (slot.bundle) {
+      const bundle = slot.bundle;
+      // Earlier products in the same executing group are already installed.
+      // A forward read still forces the owner and reports a genuine cycle.
+      if (bundle.group && bundle.state === 'initializing') {
+        if (bundle.products.has(name)) return bundle.products.get(name);
+        const previous = bundle.previous.get(name);
+        if (previous && previous.unit !== null) return forceSlot(name, previous);
+      }
+      forceBundle(bundle);
+      if (bundle.products.has(name)) return bundle.products.get(name);
+      if (bundle.group) return forceSlot(name, bundle.previous.get(name) ?? {unit: null, location: bundle.location});
+      return undefined;
+    }
+    if (slot.oncePrevious) {
+      if (definitionAvailable(name, slot.oncePrevious)) return forceSlot(name, slot.oncePrevious);
+      slot.oncePrevious = null;
+    }
     if (slot.state === 'ready') return slot.value;
     if (slot.state === 'failed') throw slot.error;
     if (slot.state === 'initializing') {
@@ -25,6 +46,15 @@
       if (error instanceof Error) error.message = slot.location + ': ' + name + ': ' + error.message;
       slot.state = 'failed'; slot.error = error; throw error;
     } finally { path.pop(); }
+  }
+  // A conditional owner can finish without installing its advertised product.
+  // Plain pending roots still count as definitions without forcing their value.
+  function definitionAvailable(name, slot) {
+    if (!slot || slot.unit === null) return false;
+    if (!slot.bundle?.group) return true;
+    const bundle = slot.bundle;
+    forceBundle(bundle);
+    return bundle.products.has(name) || definitionAvailable(name, bundle.previous.get(name));
   }
   function forceBundle(bundle) {
     if (bundle.state === 'ready') return;
@@ -55,8 +85,8 @@
       return true;
     }
   });
-  globalThis.__lightRegisterBundle = (names, code, indices, location, once = false) => {
-    const bundle = {order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
+  globalThis.__lightRegisterBundle = (names, code, indices, location, once = false, group = false) => {
+    const bundle = {group, previous: new Map(names.map(name => [name, slots.get(name)])), order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
     bundles.push(bundle);
     // Even a skipped defonce occupies its source frontier position. Rust's
     // catalog counts every declaration, including repeated product names.
@@ -106,15 +136,20 @@
     get(_, name) { return force(name); },
     set(_, name, value) {
       if (overlays.has(name)) overlays.set(name, value);
-      else { force(name); slots.set(name, {unit: -1, state: 'ready', value}); }
+      else {
+        force(name);
+        const owner = installing.at(-1);
+        if (owner?.group && owner.names.includes(name)) owner.products.set(name, value);
+        else slots.set(name, {unit: -1, state: 'ready', value});
+      }
       return true;
     }
   });
   globalThis.__lightHasCompilerRoot = name => overlays.has(name) || slots.has(name);
   globalThis.__lightRegisterUnit = (name, unit, once, location) => {
     const old = slots.get(name);
-    if (unit === null && old || once && old && old.unit !== null) return;
-    slots.set(name, {unit, location, state: 'pending'});
+    if (unit === null && old || once && old && old.unit !== null && !old.bundle?.group) return;
+    slots.set(name, {unit, location, state: 'pending', oncePrevious: once ? old : null});
   };
   // Scope snapshots contain only overlays. Saving a pending/failed root must
   // neither demand nor replace it. Evaluate every initializer before installing.
@@ -129,13 +164,21 @@
     const bundle = installing.at(-1);
     if (bundle?.names.includes(name)) {
       if (once && bundle.products.has(name)) return null;
+      if (once && bundle.group) {
+        const previous = bundle.previous.get(name);
+        if (definitionAvailable(name, previous)) {
+          return null;
+        }
+      }
+      if (once && overlays.has(name) && overlays.get(name) !== undefined) return null;
       if (initialize === null) return undefined;
       const value = initialize();
-      bundle.products.set(name, value);
+      if (overlays.has(name)) overlays.set(name, value);
+      else bundle.products.set(name, value);
       return value;
     }
     const old = slots.get(name);
-    if (once && old && old.unit !== null) return null;
+    if (once && definitionAvailable(name, old)) return null;
     if (once && overlays.has(name) && overlays.get(name) !== undefined) return null;
     if (initialize === null) {
       if (!old) slots.set(name, {unit: null, state: 'pending'});
