@@ -277,6 +277,11 @@ impl SourceReader {
 }
 
 impl Context {
+    pub(crate) fn has_custom_data_readers(&self) -> bool {
+        let readers = self.readers.borrow();
+        !readers.tags.is_empty() || readers.default.is_some()
+    }
+
     /// Replace the reader feature set (keyword names). The default is `:clj`;
     /// an empty set selects only `:default`. Existing readers see updates.
     pub fn set_reader_features(&mut self, features: impl IntoIterator<Item = Name>) {

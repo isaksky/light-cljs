@@ -2242,7 +2242,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
             let runtime = if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
                 CoreFnId::resolve(original).is_some()
-                    || crate::macro_host::is_definition_macro(namespace, original)
+                    || crate::compiler_names::is_definition_macro(namespace, original)
             } else {
                 analyzer
                     .globals
@@ -2994,7 +2994,7 @@ impl Analyzer<'_> {
                         .iter()
                         .find(|(local, ns, name)| {
                             local == &operator_name
-                                && crate::macro_host::is_definition_macro(ns, name)
+                                && crate::compiler_names::is_definition_macro(ns, name)
                         })
                         .map(|(_, _, name)| name.clone())
                 });
@@ -4040,12 +4040,15 @@ impl Analyzer<'_> {
 
     fn data_source(&mut self, text: &str) -> Result<ExprId, AnalysisError> {
         let source = Source::new("compiler-definition-metadata", text);
-        let form = crate::native_form_adapter::read_form(self.macro_host.context_mut(), &source)
-            .map_err(|e| AnalysisError {
-                span: e.span.bytes(),
-                kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
-            })?
-            .expect("metadata form");
+        let form = crate::compiler_reader::read_form(
+            &source,
+            &crate::compiler_reader::NamespaceView::new(self.namespace, &source),
+        )
+        .map_err(|e| AnalysisError {
+            span: e.span.bytes(),
+            kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
+        })?
+        .expect("metadata form");
         let node = self.import_form(&form)?;
         self.datum(node, ExprContext::Value)
     }
@@ -5154,8 +5157,7 @@ impl Analyzer<'_> {
             self.expand_reader(args[0])?
         };
         let data = self.generated[node.0].as_ref().unwrap().data();
-        let text = crate::native_form_adapter::print_datum(self.macro_host.context_mut(), &data)
-            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        let text = crate::compiler_data::diagnostic_text(&data);
         let form = self.own_string(text.to_vec());
         let test = self.non_tail_form(node, ExprContext::Value)?;
         let message = args
@@ -5173,7 +5175,7 @@ impl Analyzer<'_> {
         ))
     }
 
-    /// Feed method parameters through the same native fn expander as ordinary
+    /// Feed method parameters through the same pure fn transform as ordinary
     /// functions, then analyze with the original protocol/IFn recurrence ABI.
     fn source_method(
         &mut self,
@@ -5191,13 +5193,35 @@ impl Analyzer<'_> {
             .metadata_entry(original, "cljs.analyzer/type")
             .is_some();
         let original = self.generated[original.0].as_ref().unwrap().clone();
-        // Native fn/destructuring compatibility is isolated until light-cljs-115.
-        let form = crate::native_form_adapter::method_form(
-            self.macro_host.context_mut(),
+        let builder = crate::compiler_data::DataBuilder;
+        let mut values = original
+            .children()
+            .iter()
+            .map(Form::data)
+            .collect::<Vec<_>>();
+        if values
+            .first()
+            .is_some_and(|d| matches!(d.inspect(), DatumView::Symbol(_)))
+        {
+            values.remove(0);
+        }
+        if self.type_fields.is_some() && values.len() > 1 {
+            values[1] = builder
+                .list(&[
+                    builder.symbol(crate::compiler_data::Name::new(None, "do")),
+                    values[1].clone(),
+                ])
+                .unwrap();
+        }
+        values.insert(
+            0,
+            builder.symbol(crate::compiler_data::Name::new(Some("cljs.core"), "fn")),
+        );
+        let form = Form::from_expansion(
+            builder.list(&values).unwrap(),
             &original,
-            self.type_fields.is_some(),
-        )
-        .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+            crate::compiler_data::Name::new(Some("cljs.core"), "fn"),
+        );
         let call = self.import_form(&form)?;
         let NodeKind::Collection { children, .. } = self.syntax.nodes[call.0].kind.clone() else {
             unreachable!()
@@ -6146,26 +6170,66 @@ impl Analyzer<'_> {
                 .find(|(local, namespace, _)| local == &name && namespace == "cljs.core")
                 .map(|(_, _, member)| format!("cljs.core/{member}"))
         };
+        let shadow_core = self
+            .globals
+            .get(&(self.namespace.into(), name.clone()))
+            .is_some_and(|g| self.program.globals[g.0].declared)
+            || self.resolution.excludes.contains(&name)
+            || self
+                .resolution
+                .refers
+                .iter()
+                .any(|(local, _, _)| local == &name);
+        let target = core_alias.as_deref().unwrap_or(&name);
+        let core_name = self
+            .macro_host
+            .macro_name(self.namespace, target, shadow_core)
+            .filter(|(ns, _)| matches!(ns.as_str(), "cljs.core" | "clojure.core"))
+            .map(|(_, name)| name);
+        if let Some(core_name) = core_name.filter(|name| {
+            matches!(
+                name.as_str(),
+                "let"
+                    | "fn"
+                    | "loop"
+                    | "letfn"
+                    | "defn"
+                    | "defn-"
+                    | "ns-publics"
+                    | "ns-interns"
+                    | "ns-imports"
+            )
+        }) {
+            if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
+                return Err(error(
+                    "compiler macro expansion depth limit exceeded".into(),
+                ));
+            }
+            self.check_compiler_sets(call)?;
+            let form = self
+                .compiler_read_form(call)
+                .map_err(|e| error(e.to_string()))?;
+            if let Some(expanded) = self
+                .macro_host
+                .expand_compiler_seed(
+                    &form,
+                    &crate::compiler_data::Name::new(Some("cljs.core"), &core_name),
+                )
+                .map_err(error)?
+            {
+                return self.import_form(&expanded).map(Some);
+            }
+        }
         let Some(var) = self
             .macro_host
-            .resolve(
-                self.namespace,
-                core_alias.as_deref().unwrap_or(&name),
-                self.globals
-                    .get(&(self.namespace.into(), name.clone()))
-                    .is_some_and(|g| self.program.globals[g.0].declared)
-                    || self.resolution.excludes.contains(&name)
-                    || self
-                        .resolution
-                        .refers
-                        .iter()
-                        .any(|(local, _, _)| local == &name),
-            )
+            .resolve(self.namespace, target, shadow_core)
             .map_err(error)?
         else {
-            if name == "defmacro" || name == "cljs.core/defmacro" || name == "clojure.core/defmacro"
-            {
-                return Err(self.error(operator, AnalysisErrorKind::Unsupported("macro execution (defmacro); define compiler macros in an explicit .clj/.cljc macro namespace".into())));
+            if matches!(
+                name.as_str(),
+                "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
+            ) {
+                return Err(self.error(operator,AnalysisErrorKind::Unsupported("macro execution (defmacro); define compiler macros in an explicit .clj/.cljc macro namespace".into())));
             }
             return Ok(None);
         };
@@ -6179,9 +6243,6 @@ impl Analyzer<'_> {
             .macro_host
             .bind_namespace(self.namespace)
             .map_err(error)?;
-        let reader_aliases =
-            self.macro_host
-                .reader_aliases(self.namespace, self.aliases, self.requires);
         let locals = self
             .env
             .scopes
@@ -6206,25 +6267,9 @@ impl Analyzer<'_> {
                 (line, column),
             )
             .map_err(error)?;
-        let reader_globals = self.reader_bindings();
-        let form = if let Some(form) = self.generated.get(call.0).and_then(Option::as_ref) {
-            form.clone()
-        } else {
-            let c = self.macro_host.context_mut();
-            let source = self
-                .macro_source
-                .get_or_insert_with(|| Source::new(self.namespace, self.source));
-            let form = crate::native_form_adapter::lower_form(
-                c,
-                source,
-                &self.syntax,
-                call,
-                &reader_aliases,
-                &self.discards,
-                &reader_globals,
-            );
-            form.map_err(|e| error(e.to_string()))?
-        };
+        let form = self
+            .compiler_read_form(call)
+            .map_err(|e| error(e.to_string()))?;
         let expanded = self
             .macro_host
             .expand(&form, &var, &environment)
@@ -6326,30 +6371,97 @@ impl Analyzer<'_> {
         bindings
     }
 
-    fn expand_reader(&mut self, id: NodeId) -> Result<NodeId, AnalysisError> {
-        self.check_compiler_sets(id)?;
-        let _caller = self
-            .macro_host
-            .bind_namespace(self.namespace)
-            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+    fn compiler_read_form(&mut self, id: NodeId) -> Result<Form, crate::compiler_data::ReadError> {
+        if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref) {
+            return Ok(form.clone());
+        }
         let aliases = self
             .macro_host
             .reader_aliases(self.namespace, self.aliases, self.requires);
-        let reader_globals = self.reader_bindings();
-        let c = self.macro_host.context_mut();
+        let globals = self.reader_bindings();
         let source = self
             .macro_source
             .get_or_insert_with(|| Source::new(self.namespace, self.source));
-        let form = crate::native_form_adapter::lower_form(
-            c,
-            source,
-            &self.syntax,
-            id,
-            &aliases,
-            &self.discards,
-            &reader_globals,
-        )
-        .map_err(|e| AnalysisError {
+        let mut view = crate::compiler_reader::NamespaceView::new(self.namespace, source);
+        view.aliases = aliases
+            .iter()
+            .map(|(a, n)| {
+                (
+                    crate::compiler_data::Name::new(None, a),
+                    crate::compiler_data::Name::new(None, n),
+                )
+            })
+            .collect();
+        view.refers = globals
+            .iter()
+            .map(|(a, n, v)| {
+                (
+                    crate::compiler_data::Name::new(None, a),
+                    crate::compiler_data::Name::new(Some(n), v),
+                )
+            })
+            .collect();
+        view.excludes = self
+            .resolution
+            .excludes
+            .iter()
+            .map(|n| crate::compiler_data::Name::new(None, n))
+            .collect();
+        let binding_kinds = self
+            .program
+            .exprs
+            .iter()
+            .filter_map(|expr| match &expr.kind {
+                ExprKind::DefProtocol { global, .. } => {
+                    Some((global.0, crate::compiler_reader::BindingKind::Protocol))
+                }
+                ExprKind::DefType { global, record, .. } => Some((
+                    global.0,
+                    if *record {
+                        crate::compiler_reader::BindingKind::Record
+                    } else {
+                        crate::compiler_reader::BindingKind::Type
+                    },
+                )),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        for (index, global) in self
+            .program
+            .globals
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.declared)
+        {
+            let qualified = crate::compiler_data::Name::new(Some(&global.namespace), &global.name);
+            let binding = crate::compiler_reader::ResolvedBinding {
+                id: crate::compiler_reader::BindingId(index),
+                kind: binding_kinds
+                    .get(&index)
+                    .copied()
+                    .unwrap_or(crate::compiler_reader::BindingKind::Value),
+                name: qualified.clone(),
+            };
+            view.bindings.insert(qualified.clone(), binding.clone());
+            if global.namespace == self.namespace {
+                view.bindings.insert(
+                    crate::compiler_data::Name::new(None, &global.name),
+                    binding.clone(),
+                );
+            }
+            for (local, target) in &view.refers {
+                if target == &qualified {
+                    view.bindings.insert(local.clone(), binding.clone());
+                }
+            }
+            view.declaration_frontier = view.declaration_frontier.max(index + 1);
+        }
+        self.macro_host
+            .lower_form_in_view(source, &self.syntax, id, &view, &self.discards)
+    }
+    fn expand_reader(&mut self, id: NodeId) -> Result<NodeId, AnalysisError> {
+        self.check_compiler_sets(id)?;
+        let form = self.compiler_read_form(id).map_err(|e| AnalysisError {
             span: e.span.bytes(),
             kind: AnalysisErrorKind::MacroExpansion(format!("reader: {e}")),
         })?;

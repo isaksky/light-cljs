@@ -260,3 +260,13 @@ fn nested_namespace_operations_report_context_and_require_can_be_shadowed() {
     }
     assert!(messages("(let [require (fn [x] x)] (require 1))").is_empty());
 }
+
+#[test]
+fn pure_function_expansion_locates_forward_reference_at_original_symbol() {
+    let source = "(def f (fn [] future)) (def future 1) (f)";
+    let error = analyze(source, &parse(source).unwrap()).unwrap_err();
+    assert_eq!(&source[error.span], "future");
+    let reports = warnings(source, false);
+    let forward = reports.iter().find(|w| w.kind == "undeclared-var").unwrap();
+    assert_eq!(&source[forward.span.clone()], "future");
+}

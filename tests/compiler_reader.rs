@@ -155,6 +155,10 @@ fn configured_readers_run_once_and_keep_effect_order_including_discards() {
         "5\n"
     );
     assert_eq!(*SEEN.lock().unwrap(), [1, 2, 3, 4, 5]);
+    assert_eq!(
+        run(&compile_with_macros("(= ::x :cljs.user/x)", &mut host).unwrap()),
+        "true\n"
+    );
     for source in ["@missing", "#'missing", "#js {:x missing}"] {
         let light_cljs::CompileError::Analysis(error) = compile(source).unwrap_err() else {
             panic!()

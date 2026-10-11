@@ -42,7 +42,7 @@ impl Name {
 }
 
 /// Compile-time representations for values owned by the JavaScript runtime.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CompilerLiteralKind {
     /// Exact reader integer identity until JavaScript Number emission.
     BigInteger,
@@ -212,7 +212,7 @@ impl fmt::Debug for Datum {
     }
 }
 /// Shallow inspection of compiler data, independently of native ValueView.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DatumView {
     Nil,
     Boolean(bool),
@@ -447,4 +447,440 @@ impl DiagnosticLocation {
             text: span.text().into(),
         }
     }
+}
+
+/// Pure form construction used by the reader and compiler bootstrap transforms.
+/// These operations do not execute language code or allocate evaluator roots.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DataBuilder;
+impl DataBuilder {
+    pub(crate) fn nil(&self) -> Datum {
+        Datum::new(DatumKind::Nil)
+    }
+    pub(crate) fn boolean(&self, v: bool) -> Datum {
+        Datum::new(DatumKind::Boolean(v))
+    }
+    pub(crate) fn integer(&self, v: i64) -> Datum {
+        Datum::new(DatumKind::Integer(v))
+    }
+    pub(crate) fn double(&self, v: f64) -> Datum {
+        Datum::new(DatumKind::Double(v))
+    }
+    pub(crate) fn character(&self, v: u16) -> Datum {
+        Datum::new(DatumKind::Character(v))
+    }
+    pub(crate) fn string(&self, v: impl AsRef<[u16]>) -> Datum {
+        Datum::new(DatumKind::String(Rc::from(v.as_ref())))
+    }
+    pub(crate) fn symbol(&self, v: Name) -> Datum {
+        Datum::new(DatumKind::Symbol(v))
+    }
+    pub(crate) fn keyword(&self, v: Name) -> Datum {
+        Datum::new(DatumKind::Keyword(v))
+    }
+    pub(crate) fn compiler_literal(&self, kind: CompilerLiteralKind, payload: &Datum) -> Datum {
+        Datum::new(DatumKind::CompilerLiteral {
+            kind,
+            payload: payload.clone(),
+        })
+    }
+    fn collection(&self, kind: CollectionKind, values: &[Datum]) -> Result<Datum, String> {
+        Ok(Datum::new(DatumKind::Collection {
+            kind,
+            children: values.into(),
+        }))
+    }
+    pub(crate) fn list(&self, v: &[Datum]) -> Result<Datum, String> {
+        self.collection(CollectionKind::List, v)
+    }
+    pub(crate) fn vector(&self, v: &[Datum]) -> Result<Datum, String> {
+        self.collection(CollectionKind::Vector, v)
+    }
+    pub(crate) fn set(&self, v: &[Datum]) -> Result<Datum, String> {
+        self.collection(CollectionKind::Set, v)
+    }
+    pub(crate) fn map(&self, v: &[(Datum, Datum)]) -> Result<Datum, String> {
+        self.collection(
+            CollectionKind::Map,
+            &v.iter()
+                .flat_map(|(k, v)| [k.clone(), v.clone()])
+                .collect::<Vec<_>>(),
+        )
+    }
+    pub(crate) fn with_meta(&self, v: &Datum, m: &Datum) -> Result<Datum, String> {
+        if !matches!(
+            v.kind(),
+            DatumKind::Symbol(_) | DatumKind::Collection { .. }
+        ) {
+            return Err("invalid metadata target".into());
+        }
+        Ok(v.with_metadata(m.clone()))
+    }
+    pub(crate) fn assoc(&self, v: &Datum, k: &Datum, value: &Datum) -> Result<Datum, String> {
+        let mut entries = v.entries()?;
+        if let Some((_, v)) = entries.iter_mut().find(|(key, _)| key.value_eq(k)) {
+            *v = value.clone()
+        } else {
+            entries.push((k.clone(), value.clone()))
+        }
+        let result = self.map(&entries)?;
+        Ok(match v.metadata() {
+            Some(meta) => result.with_metadata(meta),
+            None => result,
+        })
+    }
+}
+impl Datum {
+    pub(crate) fn elements(&self) -> Result<Vec<Datum>, String> {
+        match self.kind() {
+            DatumKind::Collection {
+                kind: CollectionKind::List | CollectionKind::Vector | CollectionKind::Set,
+                children,
+            } => Ok(children.to_vec()),
+            _ => Err("expected collection".into()),
+        }
+    }
+    pub(crate) fn entries(&self) -> Result<Vec<(Datum, Datum)>, String> {
+        match self.kind() {
+            DatumKind::Collection {
+                kind: CollectionKind::Map,
+                children,
+            } => Ok(children
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[k, v]| (k.clone(), v.clone()))
+                .collect()),
+            _ => Err("expected map".into()),
+        }
+    }
+    pub(crate) fn get(&self, key: &Datum) -> Result<Option<Datum>, String> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .find(|(k, _)| k.value_eq(key))
+            .map(|(_, v)| v))
+    }
+    pub(crate) fn value_eq(&self, other: &Self) -> bool {
+        use DatumKind as D;
+        match (self.kind(), other.kind()) {
+            (D::Nil, D::Nil) => true,
+            (D::Boolean(a), D::Boolean(b)) => a == b,
+            (D::Integer(a), D::Integer(b)) => a == b,
+            (D::Double(a), D::Double(b)) => a == b,
+            (D::Integer(a), D::Double(b)) | (D::Double(b), D::Integer(a)) => *a as f64 == *b,
+            (
+                D::Ratio {
+                    numerator: a,
+                    denominator: b,
+                },
+                D::Ratio {
+                    numerator: c,
+                    denominator: d,
+                },
+            ) => i128::from(*a) * i128::from(*d) == i128::from(*c) * i128::from(*b),
+            (D::Character(a), D::Character(b)) => a == b,
+            (D::String(a), D::String(b)) => a == b,
+            (D::Symbol(a), D::Symbol(b)) | (D::Keyword(a), D::Keyword(b)) => a == b,
+            (
+                D::CompilerLiteral {
+                    kind: a,
+                    payload: b,
+                },
+                D::CompilerLiteral {
+                    kind: c,
+                    payload: d,
+                },
+            ) => a == c && b.value_eq(d),
+            (
+                D::Collection {
+                    kind: a,
+                    children: b,
+                },
+                D::Collection {
+                    kind: c,
+                    children: d,
+                },
+            ) => {
+                if b.len() != d.len() {
+                    return false;
+                }
+                match (a, c) {
+                    (CollectionKind::Map, CollectionKind::Map) => {
+                        b.as_chunks::<2>().0.iter().all(|[k, v]| {
+                            d.as_chunks::<2>()
+                                .0
+                                .iter()
+                                .any(|[x, y]| k.value_eq(x) && v.value_eq(y))
+                        })
+                    }
+                    (CollectionKind::Set, CollectionKind::Set) => {
+                        b.iter().all(|v| d.iter().any(|x| v.value_eq(x)))
+                    }
+                    (
+                        CollectionKind::List | CollectionKind::Vector,
+                        CollectionKind::List | CollectionKind::Vector,
+                    ) => b.iter().zip(d.iter()).all(|(a, b)| a.value_eq(b)),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+    pub(crate) fn value_hash(&self) -> u64 {
+        use DatumKind as D;
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match self.kind() {
+            D::Nil => 0u8.hash(&mut h),
+            D::Boolean(v) => {
+                1u8.hash(&mut h);
+                v.hash(&mut h)
+            }
+            D::Integer(v) => {
+                2u8.hash(&mut h);
+                (*v as f64).to_bits().hash(&mut h)
+            }
+            D::Double(v) => {
+                2u8.hash(&mut h);
+                (if *v == 0.0 { 0.0 } else { *v }).to_bits().hash(&mut h)
+            }
+            D::Ratio {
+                numerator,
+                denominator,
+            } => {
+                2u8.hash(&mut h);
+                (*numerator as f64 / *denominator as f64)
+                    .to_bits()
+                    .hash(&mut h)
+            }
+            D::Character(v) => {
+                3u8.hash(&mut h);
+                v.hash(&mut h)
+            }
+            D::String(v) => {
+                4u8.hash(&mut h);
+                v.hash(&mut h)
+            }
+            D::Symbol(v) => {
+                5u8.hash(&mut h);
+                v.hash(&mut h)
+            }
+            D::Keyword(v) => {
+                6u8.hash(&mut h);
+                v.hash(&mut h)
+            }
+            D::CompilerLiteral { kind, payload } => {
+                7u8.hash(&mut h);
+                kind.hash(&mut h);
+                payload.value_hash().hash(&mut h)
+            }
+            D::Collection { kind, children } => match kind {
+                CollectionKind::Map => {
+                    8u8.hash(&mut h);
+                    children
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .fold(0, |acc, [k, v]| {
+                            acc ^ (k.value_hash().wrapping_mul(31) ^ v.value_hash())
+                        })
+                        .hash(&mut h)
+                }
+                CollectionKind::Set => {
+                    9u8.hash(&mut h);
+                    children
+                        .iter()
+                        .fold(0, |acc, c| acc ^ c.value_hash())
+                        .hash(&mut h)
+                }
+                _ => {
+                    10u8.hash(&mut h);
+                    for child in children {
+                        child.value_hash().hash(&mut h)
+                    }
+                }
+            },
+        }
+        h.finish()
+    }
+}
+
+impl Form {
+    /// A pure generated form keeps every reused input datum's exact provenance.
+    pub(crate) fn from_expansion(data: Datum, original: &Form, name: Name) -> Self {
+        fn collect(f: &Form, originals: &mut std::collections::HashMap<usize, Form>) {
+            originals.insert(f.data().identity(), f.clone());
+            for child in f.children() {
+                collect(&child, originals)
+            }
+            if let Some(meta) = f.metadata() {
+                collect(&meta, originals)
+            }
+        }
+        fn add(
+            data: Datum,
+            original: &Form,
+            originals: &std::collections::HashMap<usize, Form>,
+            name: &Name,
+            nodes: &mut Vec<FormNode>,
+            values: &mut Vec<Datum>,
+            spans: &mut Vec<SourceSpan>,
+        ) -> FormId {
+            let reused = originals.get(&data.identity());
+            let span = reused.unwrap_or(original).span();
+            let origin = reused
+                .map(|f| f.node().origin.clone())
+                .unwrap_or_else(|| Origin::MacroExpansion(Rc::new(name.clone())));
+            let kind = match data.kind() {
+                DatumKind::Collection { kind, children } => FormKind::Collection {
+                    kind: *kind,
+                    children: children
+                        .iter()
+                        .map(|d| add(d.clone(), original, originals, name, nodes, values, spans))
+                        .collect(),
+                },
+                _ => FormKind::Scalar,
+            };
+            let metadata = data
+                .metadata()
+                .map(|d| add(d, original, originals, name, nodes, values, spans));
+            let compiler_payload = data
+                .compiler_literal_data()
+                .map(|d| add(d, original, originals, name, nodes, values, spans));
+            let id = FormId(nodes.len());
+            nodes.push(FormNode {
+                kind,
+                metadata,
+                compiler_payload,
+                origin,
+            });
+            values.push(data);
+            spans.push(span);
+            id
+        }
+        let mut originals = std::collections::HashMap::new();
+        collect(original, &mut originals);
+        let (mut nodes, mut values, mut spans) = (vec![], vec![], vec![]);
+        let id = add(
+            data,
+            original,
+            &originals,
+            &name,
+            &mut nodes,
+            &mut values,
+            &mut spans,
+        );
+        Self::from_parts(nodes, values, spans, id)
+    }
+}
+
+/// Readable assertion text from finite compiler data, preserving UTF-16 names.
+/// This is diagnostic formatting, never a representation used to transport forms.
+pub(crate) fn diagnostic_text(data: &Datum) -> Vec<u16> {
+    fn text(out: &mut Vec<u16>, s: &str) {
+        out.extend(s.encode_utf16());
+    }
+    fn write(out: &mut Vec<u16>, d: &Datum) {
+        use DatumKind as D;
+        match d.kind() {
+            D::Nil => text(out, "nil"),
+            D::Boolean(v) => text(out, if *v { "true" } else { "false" }),
+            D::Integer(v) => text(out, &v.to_string()),
+            D::Double(v) => text(
+                out,
+                &if v.is_nan() {
+                    "##NaN".into()
+                } else if *v == f64::INFINITY {
+                    "##Inf".into()
+                } else if *v == f64::NEG_INFINITY {
+                    "##-Inf".into()
+                } else if v.fract() == 0.0 {
+                    format!("{v:.1}")
+                } else {
+                    v.to_string()
+                },
+            ),
+            D::Ratio {
+                numerator,
+                denominator,
+            } => text(out, &format!("{numerator}/{denominator}")),
+            D::Character(v) => {
+                text(out, "\\");
+                match *v {
+                    10 => text(out, "newline"),
+                    13 => text(out, "return"),
+                    9 => text(out, "tab"),
+                    32 => text(out, "space"),
+                    v => out.push(v),
+                }
+            }
+            D::String(v) => {
+                text(out, "\"");
+                for &c in v.iter() {
+                    match c {
+                        34 => text(out, "\\\""),
+                        92 => text(out, "\\\\"),
+                        10 => text(out, "\\n"),
+                        13 => text(out, "\\r"),
+                        9 => text(out, "\\t"),
+                        8 => text(out, "\\b"),
+                        12 => text(out, "\\f"),
+                        c => out.push(c),
+                    }
+                }
+                text(out, "\"");
+            }
+            D::Symbol(n) | D::Keyword(n) => {
+                if matches!(d.kind(), D::Keyword(_)) {
+                    text(out, ":")
+                }
+                if let Some(ns) = n.namespace() {
+                    out.extend(ns);
+                    text(out, "/")
+                }
+                out.extend(n.name());
+            }
+            D::Collection { kind, children } => {
+                let (open, close) = match kind {
+                    CollectionKind::Map => ("{", "}"),
+                    CollectionKind::Vector => ("[", "]"),
+                    CollectionKind::Set => ("#{", "}"),
+                    _ => ("(", ")"),
+                };
+                text(out, open);
+                for (i, child) in children.iter().enumerate() {
+                    if i > 0 {
+                        text(out, " ")
+                    }
+                    write(out, child)
+                }
+                text(out, close)
+            }
+            D::CompilerLiteral { kind, payload } => {
+                match kind {
+                    CompilerLiteralKind::Regex => text(out, "#"),
+                    CompilerLiteralKind::Uuid => text(out, "#uuid "),
+                    CompilerLiteralKind::Instant => text(out, "#inst "),
+                    CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject => {
+                        text(out, "#js ")
+                    }
+                    CompilerLiteralKind::Queue => text(out, "#queue "),
+                    CompilerLiteralKind::BigInteger => {
+                        if let D::String(v) = payload.kind() {
+                            out.extend(v.iter().copied())
+                        } else {
+                            write(out, payload)
+                        }
+                        text(out, "N");
+                        return;
+                    }
+                }
+                write(out, payload);
+            }
+        }
+    }
+    let mut out = vec![];
+    write(&mut out, data);
+    out
 }

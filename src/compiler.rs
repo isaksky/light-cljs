@@ -11,8 +11,8 @@ use crate::analyzer::{
     AnalysisOptions, AnalysisWarning, NamespaceInput, analyze_namespaces_prepared_with_warnings,
     analyze_with_macros,
 };
-use crate::interpreter::{LoadError, LoadRequest, Reload, SourceInput, SourceProvider};
 use crate::macro_host::{MacroHost, MacroImport};
+use crate::source_provider::{LoadError, LoadRequest, Reload, SourceInput, SourceProvider};
 use crate::{
     AnalysisError, CollectionKind, LineIndex, NodeId, NodeKind, ParseError, PrefixKind, SyntaxTree,
     analyze, emit_js, parse,
@@ -725,10 +725,10 @@ fn locate_source(
     }
     Ok(None)
 }
-struct CompilerSourceProvider {
+struct LegacyMacroSourceProvider {
     roots: Vec<PathBuf>,
 }
-impl SourceProvider for CompilerSourceProvider {
+impl SourceProvider for LegacyMacroSourceProvider {
     fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
         let name = String::from_utf16(request.namespace.name())
             .map_err(|e| LoadError::Provider(e.to_string()))?;
@@ -1030,7 +1030,7 @@ pub fn compile_namespace_with_macro_warnings(
     }) {
         macros
             .context_mut()
-            .set_source_provider(CompilerSourceProvider {
+            .set_source_provider(LegacyMacroSourceProvider {
                 roots: loader.roots.clone(),
             });
     }
@@ -1106,7 +1106,7 @@ pub fn compile_namespace_with_macro_warnings(
                         .find_macro(&import.namespace, original)
                         .map_err(|m| error(spec.span.clone(), m))?
                         .is_none()
-                        && !crate::macro_host::is_definition_macro(&import.namespace, original)
+                        && !crate::compiler_names::is_definition_macro(&import.namespace, original)
                     {
                         return Err(error(
                             spec.span.clone(),
@@ -1190,13 +1190,21 @@ pub fn compile_namespace_with_macro_warnings(
                 )
             }) {
                 let aliases = macros.reader_aliases(&file.name, &file.aliases, &file.requires);
-                let _namespace = macros
-                    .bind_namespace(&file.name)
-                    .map_err(|m| error(header_span.clone(), m))?;
-                let c = macros.context_mut();
-                let source = c.source(file.path.to_string_lossy(), &file.source);
+                let source =
+                    crate::compiler_data::Source::new(file.path.to_string_lossy(), &file.source);
+                let c = crate::compiler_data::DataBuilder;
+                let mut view = crate::compiler_reader::NamespaceView::new(&file.name, &source);
+                view.aliases = aliases
+                    .iter()
+                    .map(|(a, n)| {
+                        (
+                            crate::compiler_data::Name::new(None, a),
+                            crate::compiler_data::Name::new(None, n),
+                        )
+                    })
+                    .collect();
                 let lower = |node| {
-                    c.lower_compiler_form(&source, &file.syntax, node, &aliases, &[], &[])
+                    crate::compiler_reader::lower_form(&source, &file.syntax, node, &view, &[])
                         .map_err(|e| error(file.syntax.nodes[node.0].span.clone(), e.to_string()))
                 };
                 let name = lower(declared)?;

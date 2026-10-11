@@ -12,8 +12,11 @@ use std::{iter::FusedIterator, ops::Range};
 pub mod analyzer;
 mod char_classes;
 pub mod compiler;
+mod compiler_binding_macros;
 pub mod compiler_data;
-mod compiler_reader;
+mod compiler_destructuring;
+pub mod compiler_names;
+pub mod compiler_reader;
 pub mod emitter;
 pub mod interpreter;
 mod literals;
@@ -21,6 +24,7 @@ pub mod macro_host;
 mod native_form_adapter;
 pub mod parser;
 mod reader_literals;
+pub mod source_provider;
 
 pub use analyzer::{
     AnalysisError, AnalysisErrorKind, CoreFnId, Expr, ExprContext, ExprId, ExprKind, GlobalBinding,

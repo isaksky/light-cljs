@@ -159,3 +159,42 @@ and `git diff --check` also passed.
 The required four compiler suites are included in that run. The full suite,
 optional JVM/upstream comparisons and benchmarks were not rerun for this ownership
 change; earlier verification above remains historical evidence.
+
+## Compiler support extraction — 2026-10-10
+
+`compiler_reader` now performs contextual reading directly over compiler-owned
+`Datum`/`Form` arenas. Its immutable `NamespaceView` retains the definition-site
+aliases, refers, excludes, source identity, binding IDs/kinds and declaration
+frontier. Static macro/name classification is in `compiler_names`; core metadata
+queries read the pinned table directly. Namespace metadata and reflection do not
+initialize a Context. Syntax quote produces the same canonical construction calls
+used in emitted programs. No new upstream behavior claim or numeric evaluator is
+introduced by this extraction.
+
+The ordinary seed binding/function transforms were extracted from
+`interpreter/binding_macros.rs`; extended map destructuring was extracted from
+`macro_host::compiler_destructuring`. Both now consume ordered owned data without
+native evaluation. Reused operands keep their original child spans and metadata;
+new nodes retain macro origins. Method declaration construction and assertion
+formatting are also pure. Existing core/declaration semantics and the reference
+pins documented above remain the semantic evidence.
+
+`source_provider` owns the source request/input/error contracts independently of
+native eager loading. Explicitly registered native custom reader callbacks retain
+a scoped adapter that binds the captured compiler namespace. Remaining native
+macro execution and legacy companion-file loading are explicit migration seams;
+they are replaced by their later migration members. Group 212 revision 3 contains
+the exact bootstrap registration/resource inventory and dispositions, including
+all inline macro sources and `compiler_sequence_macros.clj`.
+
+Verification commands and observed outcomes:
+
+- `cargo test --locked --test compiler_reader --test compiler_destructuring_completion --test compiler_namespace_completion --test compiler_macros --test provenance --test compiler_warnings --test compiler_boundary_completion --test interpreter_loading --quiet`: 104 tests passed. The reader/warning suites were rerun after the native callback namespace guard and original-symbol diagnostic checks; all 17 passed. Macro/namespace suites were rerun after pure core import/alias resolution; all 54 passed.
+- `cargo test --test compiler_protocols --test compiler_types --test compiler_records --test compiler_reify --test compiler_extensions --quiet`: all 26 tests passed, exercising the extracted method construction and binding transforms.
+- `cargo test --locked --lib compiler_ --quiet`: all 4 selected ownership/origin/no-Context tests passed. `cargo test --locked --lib namespace_snapshot_tests --quiet`: the immutable snapshot/UTF-16 test passed.
+- `cargo test --locked --test analyzer --quiet`: all 35 tests passed. `cargo check --locked --all-features --quiet` and `git diff --check` passed.
+- Built starting HEAD in an independent temporary archive and executed both CLI outputs under Node. Seven exact generated-program observations matched: numeric/character literals, syntax quote/splicing, namespaced maps, ordinary destructuring/anonymous functions, function preconditions, ordered map effects, and protocol/type methods. Five reader/unresolved-name diagnostics matched byte-for-byte. A default undeclared reference inside `fn` remains rejected, now precisely at the original `future` symbol (bytes 14..20, formerly the entire fn call at 7..21). Warning-mode compilation retains the undeclared-var category, executes to `1`, and likewise identifies the original symbol. The warning suite locks in this precision improvement.
+
+No full language/native suite, new JVM differential regeneration or evaluator
+migration gate was run for this extraction. Their earlier provenance and remaining
+migration obligations are not relabeled as completion here.

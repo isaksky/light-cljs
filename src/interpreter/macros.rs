@@ -124,6 +124,39 @@ impl Context {
         result.map_err(|error| self.expansion_error(form, name, error))
     }
 
+    // Temporary diagnostics adapter for pure compiler transforms. Never execute
+    // a native macro or create a Context merely to populate these statistics.
+    pub(crate) fn compiler_diagnostics_enabled(&self) -> bool {
+        self.macros.enabled
+    }
+    pub(crate) fn record_compiler_expansion(
+        &mut self,
+        name: Name,
+        generated_forms: usize,
+        elapsed: Duration,
+    ) {
+        if !self.macros.enabled {
+            return;
+        }
+        if let Some(stat) = self
+            .macros
+            .stats
+            .iter_mut()
+            .find(|s| s.name == name && s.definition.is_none())
+        {
+            stat.expansions += 1;
+            stat.generated_forms += generated_forms as u64;
+            stat.elapsed += elapsed;
+        } else {
+            self.macros.stats.push(MacroExpansionStats {
+                name,
+                definition: None,
+                expansions: 1,
+                generated_forms: generated_forms as u64,
+                elapsed,
+            });
+        }
+    }
     /// Enable optional attribution. Existing counters survive disabling; reset
     /// drops them. No clock reads or report allocation occur while disabled.
     pub fn set_macro_diagnostics(&mut self, enabled: bool) {

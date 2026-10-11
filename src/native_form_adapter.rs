@@ -295,6 +295,7 @@ fn read_error(error: native::ReadError, source: &owned::Source) -> owned::ReadEr
 }
 pub(crate) fn lower_form(
     context: &native::Context,
+    namespace: &owned::Name,
     source: &owned::Source,
     syntax: &crate::SyntaxTree,
     root: crate::NodeId,
@@ -302,6 +303,26 @@ pub(crate) fn lower_form(
     discards: &[crate::NodeId],
     globals: &[(String, String, String)],
 ) -> Result<owned::Form, owned::ReadError> {
+    let binding = (|| -> Result<_, String> {
+        let ns = context
+            .compiler_namespace(namespace.clone())
+            .map_err(|e| e.to_string())?;
+        let var = context
+            .find_interned_var(
+                &owned::Name::new(None, "clojure.core"),
+                &owned::Name::new(None, "*ns*"),
+            )
+            .map_err(|e| e.to_string())?
+            .expect("core namespace Var");
+        context
+            .bind_vars(&[(var.var_id().unwrap(), ns)])
+            .map_err(|e| e.to_string())
+    })();
+    let _namespace = binding.map_err(|message| owned::ReadError {
+        message,
+        span: source.span(syntax.nodes[root.0].span.clone()).unwrap(),
+        related: None,
+    })?;
     let native_source = self::source(context, source);
     let form = context
         .lower_compiler_form(&native_source, syntax, root, aliases, discards, globals)
@@ -313,46 +334,4 @@ pub(crate) fn lower_form(
             related: None,
         },
     )
-}
-pub(crate) fn print_datum(
-    context: &mut native::Context,
-    data: &owned::Datum,
-) -> Result<std::rc::Rc<[u16]>, String> {
-    let data = native_datum(context, data)?;
-    let value = context
-        .print_value(&data, native::PrintOptions::default())
-        .map_err(|e| e.to_string())?;
-    let native::ValueView::String(text) = value.inspect() else {
-        unreachable!("printed string")
-    };
-    Ok(text)
-}
-pub(crate) fn method_form(
-    context: &native::Context,
-    original: &owned::Form,
-    method_body: bool,
-) -> Result<owned::Form, String> {
-    let (original, sources) = native_form_with_sources(context, original)?;
-    let children = original.children();
-    let mut values = children
-        .iter()
-        .skip(usize::from(children.first().is_some_and(|f| {
-            matches!(f.data().inspect(), native::ValueView::Symbol(_))
-        })))
-        .map(native::Form::data)
-        .collect::<Vec<_>>();
-    if method_body && values.len() > 1 {
-        values[1] = context
-            .list(&[
-                context.symbol(owned::Name::new(None, "do")),
-                values[1].clone(),
-            ])
-            .map_err(|e| e.to_string())?;
-    }
-    values.insert(0, context.symbol(owned::Name::new(Some("cljs.core"), "fn")));
-    let data = context.list(&values).map_err(|e| e.to_string())?;
-    let form = context
-        .macro_form(&data, &original, owned::Name::new(Some("cljs.core"), "fn"))
-        .map_err(|e| e.to_string())?;
-    own_form_with_sources(&form, sources)
 }

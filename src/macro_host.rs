@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::ExprContext;
 use crate::compiler_data::{Form, Name};
+use crate::compiler_names::{core_macro, is_definition_macro};
 use crate::interpreter::{
     BindingGuard, Context, Form as NativeForm, NativeDefinition, Reload, ResourceLimits,
     RootedValue, ValueView,
@@ -42,11 +43,10 @@ pub struct MacroHost {
     imports: HashMap<String, Vec<MacroImport>>,
     native_namespaces: HashSet<String>,
     renames: HashMap<String, Vec<(String, String, String)>>,
-    namespace_symbols: HashMap<String, RootedValue>,
-    namespace_docs: HashMap<String, RootedValue>,
+    namespace_symbols: HashMap<String, crate::compiler_data::Datum>,
+    namespace_docs: HashMap<String, crate::compiler_data::Datum>,
     runtime_vars: HashMap<String, HashMap<String, bool>>,
     namespace_imports: HashMap<String, Vec<(String, String)>>,
-    reflection_macros_loaded: bool,
     pub limits: MacroLimits,
     assertions_disabled: bool,
     interop_macros_loaded: bool,
@@ -86,13 +86,66 @@ impl MacroHost {
             context
         })
     }
-    /// Read immutable compiler-owned data. The temporary reader adapter is
-    /// deleted by light-cljs-115; returned forms/errors retain no native roots.
+    /// Read immutable compiler-owned data without initializing an evaluator.
+    /// Explicit native data-reader callbacks use the temporary adapter.
     pub fn read_compiler_form(
         &mut self,
         source: &crate::compiler_data::Source,
     ) -> Result<Option<Form>, crate::compiler_data::ReadError> {
-        crate::native_form_adapter::read_form(self.context_mut(), source)
+        if let Some(context) = &self.context {
+            if context.has_custom_data_readers() {
+                return crate::native_form_adapter::read_form(context, source);
+            }
+        }
+        crate::compiler_reader::read_form(
+            source,
+            &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+        )
+    }
+    pub(crate) fn lower_form_in_view(
+        &self,
+        source: &crate::compiler_data::Source,
+        tree: &crate::SyntaxTree,
+        root: crate::NodeId,
+        view: &crate::compiler_reader::NamespaceView,
+        discards: &[crate::NodeId],
+    ) -> Result<Form, crate::compiler_data::ReadError> {
+        if let Some(context) = &self.context {
+            if context.has_custom_data_readers() {
+                let aliases = view
+                    .aliases
+                    .iter()
+                    .map(|(a, n)| {
+                        (
+                            String::from_utf16_lossy(a.name()),
+                            String::from_utf16_lossy(n.name()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let globals = view
+                    .refers
+                    .iter()
+                    .map(|(a, n)| {
+                        (
+                            String::from_utf16_lossy(a.name()),
+                            String::from_utf16_lossy(n.namespace().unwrap()),
+                            String::from_utf16_lossy(n.name()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                return crate::native_form_adapter::lower_form(
+                    context,
+                    &view.namespace,
+                    source,
+                    tree,
+                    root,
+                    &aliases,
+                    discards,
+                    &globals,
+                );
+            }
+        }
+        crate::compiler_reader::lower_form(source, tree, root, view, discards)
     }
     pub fn register_macro(&mut self, definition: &'static NativeDefinition) -> RootedValue {
         self.native_namespaces
@@ -163,6 +216,11 @@ impl MacroHost {
         }
         for import in &imports {
             for name in &import.refers {
+                if matches!(import.namespace.as_str(), "cljs.core" | "clojure.core")
+                    && core_macro(name)
+                {
+                    continue;
+                }
                 if self.find_macro(&import.namespace, name)?.is_none() {
                     return Err(format!(
                         "macro import {}/{name} does not name a public macro",
@@ -180,8 +238,8 @@ impl MacroHost {
     pub(crate) fn set_namespace_symbol(
         &mut self,
         namespace: &str,
-        symbol: RootedValue,
-        doc: Option<RootedValue>,
+        symbol: crate::compiler_data::Datum,
+        doc: Option<crate::compiler_data::Datum>,
     ) {
         self.namespace_symbols.insert(namespace.to_owned(), symbol);
         if let Some(doc) = doc {
@@ -281,26 +339,6 @@ impl MacroHost {
                     (list 'set! (list '. name '-cljs$lang$macro) true) result)))
             "#).map_err(|e| e.to_string())?;
             self.runtime_defmacro_loaded = true;
-        }
-        if namespace == "clojure.core"
-            && matches!(name, "ns-publics" | "ns-interns" | "ns-imports")
-            && !self.reflection_macros_loaded
-        {
-            let c = self.context_mut();
-            let ns = c
-                .find_namespace(&Name::new(None, "clojure.core"))
-                .expect("core namespace");
-            let ns_var = c
-                .find_interned_var(&Name::new(None, "clojure.core"), &Name::new(None, "*ns*"))
-                .map_err(|e| e.to_string())?
-                .expect("core ns Var");
-            let _guard = c
-                .bind_vars(&[(ns_var.var_id().unwrap(), ns)])
-                .map_err(|e| e.to_string())?;
-            // Host-only marker Vars. Expansion below reads this compilation's
-            // actually registered definitions/imports and emits real Var forms.
-            c.eval_string("(defmacro compiler-ns-publics [quoted-ns] nil) (defmacro compiler-ns-interns [quoted-ns] nil) (defmacro compiler-ns-imports [quoted-ns] nil)").map_err(|e| e.to_string())?;
-            self.reflection_macros_loaded = true;
         }
         if namespace == "clojure.core"
             && matches!(
@@ -414,14 +452,6 @@ impl MacroHost {
         }
         let name = if namespace == "clojure.core" && name == "defmacro" {
             "compiler-runtime-defmacro"
-        } else if namespace == "clojure.core"
-            && matches!(name, "ns-publics" | "ns-interns" | "ns-imports")
-        {
-            match name {
-                "ns-publics" => "compiler-ns-publics",
-                "ns-interns" => "compiler-ns-interns",
-                _ => "compiler-ns-imports",
-            }
         } else if namespace == "clojure.core" && matches!(name, "for" | "doseq") {
             if name == "for" {
                 "sequence-for"
@@ -447,14 +477,14 @@ impl MacroHost {
         };
         Ok((truth("macro") && !truth("private")).then_some(var))
     }
-    pub(crate) fn resolve(
-        &mut self,
+    pub(crate) fn macro_name(
+        &self,
         caller: &str,
         operator: &str,
         shadow_core: bool,
-    ) -> Result<Option<RootedValue>, String> {
+    ) -> Option<(String, String)> {
         let imports = self.imports.get(caller).map(Vec::as_slice).unwrap_or(&[]);
-        let target = if let Some((qualifier, name)) = operator.split_once('/') {
+        if let Some((qualifier, name)) = operator.split_once('/') {
             if qualifier == "cljs.core" || qualifier == "clojure.core" {
                 core_macro(name).then(|| ("clojure.core".to_owned(), name.to_owned()))
             } else {
@@ -480,11 +510,89 @@ impl MacroHost {
                     (!shadow_core && core_macro(operator))
                         .then(|| ("clojure.core".to_owned(), operator.to_owned()))
                 })
-        };
-        match target {
+        }
+    }
+    pub(crate) fn resolve(
+        &mut self,
+        caller: &str,
+        operator: &str,
+        shadow_core: bool,
+    ) -> Result<Option<RootedValue>, String> {
+        match self.macro_name(caller, operator, shadow_core) {
             Some((namespace, name)) => self.find_macro(&namespace, &name),
             None => Ok(None),
         }
+    }
+    pub(crate) fn expand_compiler_seed(
+        &mut self,
+        form: &Form,
+        name: &Name,
+    ) -> Result<Option<Form>, String> {
+        let started = self
+            .context
+            .as_ref()
+            .is_some_and(Context::compiler_diagnostics_enabled)
+            .then(std::time::Instant::now);
+        let builder = crate::compiler_data::DataBuilder;
+        let extended = crate::compiler_destructuring::expand(&builder, form, &name)?;
+        let parts = form.data().elements()?;
+        let operation = String::from_utf16_lossy(name.name());
+        let minimum = match operation.as_ref() {
+            "let" | "loop" | "letfn" | "fn" => 1,
+            "defn" | "defn-" => 2,
+            _ => 0,
+        };
+        if parts.len() < minimum + 1 {
+            return Err(format!("{operation} requires arguments"));
+        }
+        let mut args = vec![builder.nil(), builder.nil()];
+        args.extend_from_slice(&parts[1..]);
+        let expanded = if let Some(expanded) = extended {
+            Some(expanded)
+        } else {
+            use crate::compiler_binding_macros as seed;
+            let data = match String::from_utf16_lossy(name.name()).as_str() {
+                "let" => Some(seed::let_macro(&mut { builder }, &args)),
+                "loop" => Some(seed::loop_macro(&mut { builder }, &args)),
+                "fn" => Some(seed::fn_macro(&mut { builder }, &args)),
+                "letfn" => Some(seed::letfn_macro(&mut { builder }, &args)),
+                "defn" => Some(seed::defn_macro(&mut { builder }, &args)),
+                "defn-" => Some(seed::private_defn(&mut { builder }, &args)),
+                "assert" => {
+                    if !(2..=3).contains(&parts.len()) {
+                        return Err("assert requires a condition and optional message".into());
+                    }
+                    Some(seed::call(&builder, "compiler-assert*", &parts[1..]))
+                }
+                _ => None,
+            };
+            data.transpose()?
+                .map(|data| Form::from_expansion(data, form, name.clone()))
+        };
+        let expanded = match expanded {
+            Some(form) => Some(form),
+            None => self.expand_namespace_reflection(form, name)?,
+        };
+        if let Some(expanded) = &expanded {
+            if self.expansions >= self.limits.expansions {
+                return Err("compiler macro expansion limit exceeded".into());
+            }
+            self.expansions += 1;
+            self.generated_nodes = self.generated_nodes.saturating_add(expanded.nodes().len());
+            if self.generated_nodes > self.limits.generated_nodes {
+                return Err("compiler macro generated-node limit exceeded".into());
+            }
+        }
+        if let (Some(started), Some(expanded), Some(context)) =
+            (started, &expanded, &mut self.context)
+        {
+            context.record_compiler_expansion(
+                Name::from_utf16(Some(Name::new(None, "clojure.core").name()), name.name()),
+                expanded.nodes().len(),
+                started.elapsed(),
+            );
+        }
+        Ok(expanded)
     }
     pub(crate) fn expand(
         &mut self,
@@ -492,6 +600,14 @@ impl MacroHost {
         var: &RootedValue,
         env: &RootedValue,
     ) -> Result<Form, String> {
+        if let ValueView::Var(name) = var.inspect() {
+            if name.namespace() == Some(Name::new(None, "clojure.core").name()) {
+                let name = Name::from_utf16(Some(Name::new(None, "cljs.core").name()), name.name());
+                if let Some(expanded) = self.expand_compiler_seed(form, &name)? {
+                    return Ok(expanded);
+                }
+            }
+        }
         let (native, sources) =
             crate::native_form_adapter::native_form_with_sources(self.context_mut(), form)?;
         let expanded = self.expand_native(&native, var, env)?;
@@ -509,18 +625,10 @@ impl MacroHost {
             return Err("compiler macro expansion limit exceeded".into());
         }
         self.expansions += 1;
-        let reflection = self.expand_namespace_reflection(form, var)?;
-        let expanded = match reflection.or(compiler_destructuring::expand(
-            self.context_mut(),
-            form,
-            var,
-        )?) {
-            Some(expanded) => expanded,
-            None => self
-                .context_mut()
-                .expand_macro_call(form, var, env)
-                .map_err(|e| e.to_string())?,
-        };
+        let expanded = self
+            .context_mut()
+            .expand_macro_call(form, var, env)
+            .map_err(|e| e.to_string())?;
         self.generated_nodes = self.generated_nodes.saturating_add(expanded.nodes().len());
         if self.generated_nodes > self.limits.generated_nodes {
             return Err("compiler macro generated-node limit exceeded".into());
@@ -528,20 +636,12 @@ impl MacroHost {
         Ok(expanded)
     }
     fn expand_namespace_reflection(
-        &mut self,
-        form: &NativeForm,
-        var: &RootedValue,
-    ) -> Result<Option<NativeForm>, String> {
-        let ValueView::Var(name) = var.inspect() else {
-            return Ok(None);
-        };
-        if name.namespace() != Some(Name::new(None, "clojure.core").name()) {
-            return Ok(None);
-        }
+        &self,
+        form: &Form,
+        name: &Name,
+    ) -> Result<Option<Form>, String> {
         let operation = String::from_utf16_lossy(name.name());
-        let Some(operation) = operation.strip_prefix("compiler-") else {
-            return Ok(None);
-        };
+        let operation = operation.strip_prefix("compiler-").unwrap_or(&operation);
         if !matches!(operation, "ns-publics" | "ns-interns" | "ns-imports") {
             return Ok(None);
         }
@@ -553,12 +653,15 @@ impl MacroHost {
                 vec![]
             };
             if quoted.len() != 2
-                || !matches!(quoted[0].inspect(), ValueView::Symbol(n) if n == Name::new(None,"quote"))
-                || !matches!(quoted[1].inspect(), ValueView::Symbol(_))
+                || !matches!(quoted[0].inspect(), crate::compiler_data::DatumView::Symbol(n) if n == Name::new(None,"quote"))
+                || !matches!(
+                    quoted[1].inspect(),
+                    crate::compiler_data::DatumView::Symbol(_)
+                )
             {
                 return Err(format!("Argument to {operation} must be a quoted symbol").into());
             }
-            let ValueView::Symbol(namespace) = quoted[1].inspect() else {
+            let crate::compiler_data::DatumView::Symbol(namespace) = quoted[1].inspect() else {
                 unreachable!()
             };
             let namespace = String::from_utf16(namespace.name())?;
@@ -577,7 +680,7 @@ impl MacroHost {
                     .collect()
             };
             declarations.sort();
-            let c = self.context_mut();
+            let c = crate::compiler_data::DataBuilder;
             let symbol = |s: &str| c.symbol(Name::new(None, s));
             let mut entries = Vec::new();
             for (local, qualified) in declarations {
@@ -590,7 +693,7 @@ impl MacroHost {
                 };
                 entries.push((key, value));
             }
-            Ok(c.macro_form(&c.map(&entries)?, form, name)?)
+            Ok(Form::from_expansion(c.map(&entries)?, form, name.clone()))
         };
         run().map(Some).map_err(|e| e.to_string())
     }
@@ -661,6 +764,14 @@ impl MacroHost {
             .cloned()
             .unwrap_or_default();
         let c = self.context_mut();
+        let namespace_symbol = namespace_symbol
+            .as_ref()
+            .map(|d| crate::native_form_adapter::native_datum(c, d))
+            .transpose()?;
+        let namespace_doc = namespace_doc
+            .as_ref()
+            .map(|d| crate::native_form_adapter::native_datum(c, d))
+            .transpose()?;
         let key = |s| c.keyword(Name::new(None, s));
         let sym = |s: &str| c.symbol(Name::new(None, s));
         let build = || -> Result<RootedValue, crate::interpreter::CollectionError> {
@@ -738,875 +849,6 @@ impl MacroHost {
     }
 }
 
-// Portable native expanders whose primitive output can be checked by the JS
-// analyzer. Binding destructuring, pre/post assertions and recurrence lower to
-// emitted JavaScript primitives; other macros keep explicit capability checks.
-fn core_macro(name: &str) -> bool {
-    matches!(
-        name,
-        "let"
-            | "doto"
-            | "js-obj"
-            | "memfn"
-            | "amap"
-            | "areduce"
-            | ".."
-            | "fn"
-            | "defn"
-            | "defn-"
-            | "defmacro"
-            | "if-not"
-            | "when"
-            | "when-not"
-            | "cond"
-            | "assert"
-            | "condp"
-            | "while"
-            | "dotimes"
-            | "for"
-            | "lazy-cat"
-            | "selector"
-            | "ns-publics"
-            | "ns-interns"
-            | "ns-imports"
-            | "doseq"
-            | "when-first"
-            | "and"
-            | "or"
-            | "->"
-            | "->>"
-            | "as->"
-            | "some->"
-            | "some->>"
-            | "cond->"
-            | "cond->>"
-            | "if-let"
-            | "when-let"
-            | "if-some"
-            | "when-some"
-            | "loop"
-            | "case"
-            | "letfn"
-            | "vswap!"
-    )
-}
-
-// These forms are lowered directly by the runtime analyzer; the native host's
-// similarly named forms have interpreter-specific semantics.
-pub(crate) fn is_definition_macro(namespace: &str, name: &str) -> bool {
-    matches!(namespace, "cljs.core" | "clojure.core")
-        && matches!(
-            name,
-            "delay"
-                | "lazy-seq"
-                | "defonce"
-                | "declare"
-                | "binding"
-                | "with-redefs"
-                | "resolve"
-                | "exists?"
-                | "with-out-str"
-                | "this-as"
-                | "js-arguments"
-                | "copy-arguments"
-        )
-}
-
-// Checkout ClojureScript extends map patterns beyond the native interpreter's
-// ordinary binding macros. Keep this lowering in the compiler host: expanded
-// forms use existing primitives and never install new interpreter semantics.
-mod compiler_destructuring {
-    use super::*;
-    use crate::interpreter::{FormKind, HeapId};
-    use crate::parser::CollectionKind;
-    use std::cell::RefCell;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-    type Entries = Vec<(RootedValue, RootedValue)>;
-
-    fn named(v: &RootedValue, name: &str) -> bool {
-        matches!(v.inspect(), ValueView::Symbol(n) if n == Name::new(None, name))
-    }
-    fn ident(v: &RootedValue) -> bool {
-        matches!(v.inspect(), ValueView::Symbol(_) | ValueView::Keyword(_))
-    }
-    fn truth(v: &RootedValue) -> bool {
-        !matches!(v.inspect(), ValueView::Nil | ValueView::Boolean(false))
-    }
-    fn extended(pattern: &RootedValue) -> Result<bool> {
-        match pattern.inspect() {
-            ValueView::Map(_) => {
-                for (binding, value) in pattern.entries()? {
-                    if let ValueView::Keyword(n) = binding.inspect() {
-                        let name = String::from_utf16_lossy(n.name());
-                        if matches!(
-                            name.as_str(),
-                            "keys!"
-                                | "syms!"
-                                | "strs!"
-                                | "select"
-                                | "defaults"
-                                | "all"
-                                | "excess"
-                                | "missing"
-                        ) {
-                            return Ok(true);
-                        }
-                        if matches!(name.as_str(), "keys" | "syms" | "strs")
-                            && value.elements()?.iter().any(|v| named(v, "&"))
-                        {
-                            return Ok(true);
-                        }
-                    } else if extended(&binding)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            ValueView::Vector(_) => {
-                for value in pattern.elements()? {
-                    if extended(&value)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    pub(super) fn expand(
-        c: &Context,
-        form: &NativeForm,
-        var: &RootedValue,
-    ) -> std::result::Result<Option<NativeForm>, String> {
-        (|| -> Result<Option<NativeForm>> {
-            let ValueView::Var(name) = var.inspect() else {
-                return Ok(None);
-            };
-            if name.namespace() != Some(Name::new(None, "clojure.core").name()) {
-                return Ok(None);
-            }
-            let name = String::from_utf16_lossy(name.name());
-            if !matches!(name.as_str(), "let" | "fn" | "loop" | "letfn") {
-                return Ok(None);
-            }
-            let parts = form.data().elements()?;
-            let args = &parts[1..];
-            let mut expander = Expander {
-                c,
-                maps: HashMap::new(),
-                derived_entries: RefCell::new(HashMap::new()),
-            };
-            let output = if name == "letfn" {
-                let Some(specs) = args
-                    .first()
-                    .filter(|v| matches!(v.inspect(), ValueView::Vector(_)))
-                else {
-                    return Ok(None);
-                };
-                let mut bindings = vec![];
-                let mut found = false;
-                for spec in specs.elements()? {
-                    if !matches!(spec.inspect(), ValueView::List(_)) {
-                        return Ok(None);
-                    }
-                    let parts = spec.elements()?;
-                    let Some(function_name) = parts
-                        .first()
-                        .filter(|v| matches!(v.inspect(), ValueView::Symbol(_)))
-                    else {
-                        return Ok(None);
-                    };
-                    let declarations = &parts[1..];
-                    let Some(first) = declarations.first() else {
-                        return Ok(None);
-                    };
-                    let methods = if matches!(first.inspect(), ValueView::Vector(_)) {
-                        vec![declarations.to_vec()]
-                    } else {
-                        if declarations
-                            .iter()
-                            .any(|value| !matches!(value.inspect(), ValueView::List(_)))
-                        {
-                            return Ok(None);
-                        }
-                        declarations
-                            .iter()
-                            .map(RootedValue::elements)
-                            .collect::<std::result::Result<Vec<_>, _>>()?
-                    };
-                    for method in methods {
-                        if let Some(params) = method.first() {
-                            found |= extended(params)?;
-                        }
-                    }
-                    let mut function_args = vec![function_name.clone()];
-                    function_args.extend_from_slice(declarations);
-                    bindings.extend([function_name.clone(), expander.call("fn", &function_args)?]);
-                }
-                if !found {
-                    return Ok(None);
-                }
-                expander.body("letfn*", bindings, &args[1..])?
-            } else if name == "fn" {
-                let start = usize::from(
-                    args.first()
-                        .is_some_and(|v| matches!(v.inspect(), ValueView::Symbol(_))),
-                );
-                let declarations = &args[start..];
-                let Some(first) = declarations.first() else {
-                    return Ok(None);
-                };
-                let methods = if matches!(first.inspect(), ValueView::Vector(_)) {
-                    vec![declarations.to_vec()]
-                } else {
-                    if declarations
-                        .iter()
-                        .any(|value| !matches!(value.inspect(), ValueView::List(_)))
-                    {
-                        return Ok(None);
-                    }
-                    declarations
-                        .iter()
-                        .map(RootedValue::elements)
-                        .collect::<std::result::Result<Vec<_>, _>>()?
-                };
-                let mut found = false;
-                for method in &methods {
-                    if let Some(params) = method.first() {
-                        found |= extended(params)?;
-                    }
-                }
-                if !found {
-                    return Ok(None);
-                }
-                expander.remember(form);
-                expander.function(&args[..start], methods)?
-            } else {
-                let Some(bindings) = args.first() else {
-                    return Ok(None);
-                };
-                if !matches!(bindings.inspect(), ValueView::Vector(_)) {
-                    return Ok(None);
-                }
-                let pairs = bindings.elements()?;
-                let mut found = false;
-                for pattern in pairs.iter().step_by(2) {
-                    found |= extended(pattern)?;
-                }
-                if !found {
-                    return Ok(None);
-                }
-                if !pairs.len().is_multiple_of(2) {
-                    return Err("binding vector requires binding/initializer pairs".into());
-                }
-                expander.remember(form);
-                if name == "let" {
-                    let mut bindings = vec![];
-                    for pair in pairs.as_chunks::<2>().0 {
-                        expander.bind(&mut bindings, &pair[0], pair[1].clone(), 0)?;
-                    }
-                    expander.body("let*", bindings, &args[1..])?
-                } else {
-                    let mut outer = vec![];
-                    let mut targets = vec![];
-                    let mut inner = vec![];
-                    for pair in pairs.as_chunks::<2>().0 {
-                        if matches!(pair[0].inspect(), ValueView::Keyword(_)) {
-                            return Err("unsupported binding key".into());
-                        }
-                        let simple = matches!(pair[0].inspect(), ValueView::Symbol(_));
-                        let temp = if simple {
-                            pair[0].clone()
-                        } else {
-                            expander.fresh()
-                        };
-                        outer.extend([temp.clone(), pair[1].clone()]);
-                        if !simple {
-                            expander.bind(&mut outer, &pair[0], temp.clone(), 0)?;
-                        }
-                        targets.extend([temp.clone(), temp.clone()]);
-                        expander.bind(&mut inner, &pair[0], temp, 0)?;
-                    }
-                    let body = expander.body("let*", inner, &args[1..])?;
-                    let body = expander.body("loop*", targets, &[body])?;
-                    expander.body("let*", outer, &[body])?
-                }
-            };
-            Ok(Some(c.macro_form(
-                &output,
-                form,
-                match var.inspect() {
-                    ValueView::Var(name) => name,
-                    _ => unreachable!(),
-                },
-            )?))
-        })()
-        .map_err(|e| e.to_string())
-    }
-
-    struct Expander<'a> {
-        c: &'a Context,
-        maps: HashMap<HeapId, NativeForm>,
-        derived_entries: RefCell<HashMap<HeapId, Entries>>,
-    }
-    impl Expander<'_> {
-        fn remember(&mut self, form: &NativeForm) {
-            let mut pending = vec![form.id()];
-            while let Some(id) = pending.pop() {
-                let child = form.at(id).unwrap();
-                if let FormKind::Collection { kind, children } = &child.node().kind {
-                    pending.extend(children.iter().copied());
-                    if *kind == CollectionKind::Map {
-                        self.maps
-                            .insert(child.data().heap_id().unwrap(), child.clone());
-                    }
-                }
-            }
-        }
-
-        fn sym(&self, name: &str) -> RootedValue {
-            self.c.symbol(Name::new(None, name))
-        }
-        fn kw(&self, name: &str) -> RootedValue {
-            self.c.keyword(Name::new(None, name))
-        }
-        fn fresh(&self) -> RootedValue {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            self.sym(&format!(
-                "compiler_destructure__{}__auto__",
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ))
-        }
-        fn call(&self, name: &str, args: &[RootedValue]) -> Result<RootedValue> {
-            let op = if matches!(
-                name,
-                "let*" | "letfn*" | "loop*" | "fn*" | "if" | "do" | "quote" | "throw" | "new"
-            ) {
-                self.sym(name)
-            } else {
-                self.c.symbol(Name::new(Some("cljs.core"), name))
-            };
-            let mut forms = vec![op];
-            forms.extend_from_slice(args);
-            Ok(self.c.list(&forms)?)
-        }
-        fn body(
-            &self,
-            op: &str,
-            bindings: Vec<RootedValue>,
-            body: &[RootedValue],
-        ) -> Result<RootedValue> {
-            let mut args = vec![self.c.vector(&bindings)?];
-            args.extend_from_slice(body);
-            self.call(op, &args)
-        }
-        fn entries(&self, value: &RootedValue) -> Result<Entries> {
-            if let Some(entries) = value
-                .heap_id()
-                .and_then(|id| self.derived_entries.borrow().get(&id).cloned())
-            {
-                return Ok(entries);
-            }
-            if let Some(form) = value.heap_id().and_then(|id| self.maps.get(&id)) {
-                let FormKind::Collection { children, .. } = &form.node().kind else {
-                    unreachable!()
-                };
-                Ok(children
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|p| (form.at(p[0]).unwrap().data(), form.at(p[1]).unwrap().data()))
-                    .collect())
-            } else {
-                Ok(value.entries()?)
-            }
-        }
-        fn assoc_pattern(
-            &self,
-            pattern: &RootedValue,
-            key: RootedValue,
-            value: RootedValue,
-        ) -> Result<RootedValue> {
-            let mut entries = self.entries(pattern)?;
-            if let Some((_, old_value)) = entries
-                .iter_mut()
-                .find(|(old_key, _)| old_key.value_eq(&key))
-            {
-                *old_value = value.clone();
-            } else {
-                entries.push((key.clone(), value.clone()));
-            }
-            let pattern = self.c.assoc(pattern, &key, &value)?;
-            self.derived_entries
-                .borrow_mut()
-                .insert(pattern.heap_id().unwrap(), entries);
-            Ok(pattern)
-        }
-        fn local(&self, binding: &RootedValue) -> Result<RootedValue> {
-            let name = match binding.inspect() {
-                ValueView::Keyword(n) | ValueView::Symbol(n) => n,
-                _ => return Err("binding must be named".into()),
-            };
-            let local = self.c.symbol(Name::from_utf16(None, name.name()));
-            Ok(if let Some(meta) = binding.metadata() {
-                self.c.with_meta(&local, &meta)?
-            } else {
-                local
-            })
-        }
-        fn function(
-            &self,
-            name: &[RootedValue],
-            methods: Vec<Vec<RootedValue>>,
-        ) -> Result<RootedValue> {
-            let mut output = name.to_vec();
-            for method in methods {
-                let Some(params) = method
-                    .first()
-                    .filter(|v| matches!(v.inspect(), ValueView::Vector(_)))
-                else {
-                    return Err("function parameters must be a vector".into());
-                };
-                let mut body = method[1..].to_vec();
-                let conditions = if body.len() > 1 && matches!(body[0].inspect(), ValueView::Map(_))
-                {
-                    Some(body.remove(0))
-                } else {
-                    params.metadata()
-                };
-                if let Some(conditions) = conditions {
-                    if let Some(post) = conditions.get(&self.kw("post"))?.filter(truth) {
-                        let mut tail = vec![];
-                        for condition in post.elements()? {
-                            tail.push(self.call("assert", &[condition])?);
-                        }
-                        tail.push(self.sym("%"));
-                        body = vec![self.body(
-                            "let*",
-                            vec![self.sym("%"), self.call("do", &body)?],
-                            &tail,
-                        )?];
-                    }
-                    if let Some(pre) = conditions.get(&self.kw("pre"))?.filter(truth) {
-                        let mut before = vec![];
-                        for condition in pre.elements()? {
-                            before.push(self.call("assert", &[condition])?);
-                        }
-                        before.extend(body);
-                        body = before;
-                    }
-                }
-                let mut parameters = vec![];
-                let mut bindings = vec![];
-                let parts = params.elements()?;
-                let mut rest = false;
-                for (index, param) in parts.iter().enumerate() {
-                    if named(param, "&") {
-                        if rest || index + 2 != parts.len() {
-                            return Err("& requires one final function parameter".into());
-                        }
-                        rest = true;
-                        parameters.push(param.clone());
-                    } else if matches!(param.inspect(), ValueView::Symbol(_)) {
-                        parameters.push(param.clone());
-                    } else {
-                        if matches!(param.inspect(), ValueView::Keyword(_)) {
-                            return Err("unsupported function binding key".into());
-                        }
-                        let temp = self.fresh();
-                        parameters.push(temp.clone());
-                        self.bind(&mut bindings, param, temp, 0)?;
-                    }
-                }
-                let mut method = vec![self.c.vector(&parameters)?];
-                method.push(self.body("let*", bindings, &body)?);
-                output.push(self.c.list(&method)?);
-            }
-            self.call("fn*", &output)
-        }
-        fn bind(
-            &self,
-            out: &mut Vec<RootedValue>,
-            pattern: &RootedValue,
-            value: RootedValue,
-            depth: usize,
-        ) -> Result<()> {
-            if depth > 128 {
-                return Err("compiler destructuring nesting limit exceeded".into());
-            }
-            match pattern.inspect() {
-                ValueView::Symbol(_) | ValueView::Keyword(_) => {
-                    out.extend([self.local(pattern)?, value])
-                }
-                ValueView::Vector(_) => {
-                    let whole = self.fresh();
-                    out.extend([whole.clone(), value]);
-                    let parts = pattern.elements()?;
-                    let has_rest = parts.iter().any(|v| named(v, "&"));
-                    let seq = self.fresh();
-                    if has_rest {
-                        out.extend([seq.clone(), self.call("seq", std::slice::from_ref(&whole))?]);
-                    }
-                    let mut index = 0;
-                    let mut rest = false;
-                    while index < parts.len() {
-                        let part = &parts[index];
-                        if named(part, "&") {
-                            if rest || index + 1 == parts.len() {
-                                return Err("& requires one rest binding".into());
-                            }
-                            self.bind(out, &parts[index + 1], seq.clone(), depth + 1)?;
-                            rest = true;
-                            index += 2;
-                        } else if part.value_eq(&self.kw("as")) {
-                            if index + 2 != parts.len() {
-                                return Err(":as requires one final binding".into());
-                            }
-                            self.bind(out, &parts[index + 1], whole.clone(), depth + 1)?;
-                            break;
-                        } else {
-                            if rest {
-                                return Err("only :as may follow a rest binding".into());
-                            }
-                            let item = if has_rest {
-                                let first = self.fresh();
-                                out.extend([
-                                    first.clone(),
-                                    self.call("first", std::slice::from_ref(&seq))?,
-                                    seq.clone(),
-                                    self.call("next", std::slice::from_ref(&seq))?,
-                                ]);
-                                first
-                            } else {
-                                self.call(
-                                    "nth",
-                                    &[whole.clone(), self.c.integer(index as i64), self.c.nil()],
-                                )?
-                            };
-                            self.bind(out, part, item, depth + 1)?;
-                            index += 1;
-                        }
-                    }
-                }
-                ValueView::Map(_) => self.map(out, pattern, value, depth + 1)?,
-                _ => return Err("unsupported binding form".into()),
-            }
-            Ok(())
-        }
-        // Building the map before filtering preserves evaluation of selector
-        // key expressions even when a nested selection has a nil result.
-        fn some_vals(&self, entries: &Entries) -> Result<RootedValue> {
-            self.call("some-vals", &[self.c.map(entries)?])
-        }
-        fn map(
-            &self,
-            out: &mut Vec<RootedValue>,
-            pattern: &RootedValue,
-            value: RootedValue,
-            depth: usize,
-        ) -> Result<()> {
-            let c = self.c;
-            let directive = |name: &str| -> Result<Option<RootedValue>> {
-                Ok(pattern.get(&self.kw(name))?.filter(truth))
-            };
-            let defaults = directive("or")?;
-            let defaults_as = directive("defaults")?;
-            if defaults_as.is_some() && defaults.is_none() {
-                return Err("Can't specify :defaults without :or".into());
-            }
-            let mut default_vars = vec![];
-            if let Some(defaults) = &defaults {
-                if !matches!(defaults.inspect(), ValueView::Map(_)) {
-                    return Err(":or defaults must be a map".into());
-                }
-                for (key, expression) in self.entries(defaults)? {
-                    let temp = self.fresh();
-                    out.extend([temp.clone(), expression]);
-                    default_vars.push((key, temp));
-                }
-            }
-            let whole = self.fresh();
-            out.extend([
-                whole.clone(),
-                value,
-                whole.clone(),
-                self.call(
-                    "if",
-                    &[
-                        self.call("seq?", std::slice::from_ref(&whole))?,
-                        self.call("seq-to-map-for-destructuring", std::slice::from_ref(&whole))?,
-                        whole.clone(),
-                    ],
-                )?,
-            ]);
-            if let Some(alias) = directive("as")? {
-                out.extend([alias, whole.clone()]);
-            }
-            let select = directive("select")?;
-            let all = directive("all")?;
-            let excess = directive("excess")?;
-            let missing = directive("missing")?;
-            let not_found = missing.as_ref().map(|_| self.fresh());
-            if let Some(missing) = &missing {
-                out.extend([
-                    missing.clone(),
-                    c.nil(),
-                    not_found.as_ref().unwrap().clone(),
-                    self.call("new", &[c.symbol(Name::new(Some("js"), "Object"))])?,
-                ]);
-            }
-            let mut selected: Vec<RootedValue> = vec![];
-            let mut binding_keys: Entries = vec![];
-            let mut subs: [Entries; 4] = std::array::from_fn(|_| vec![]);
-            let mut pending = vec![];
-            for (binding, key) in self.entries(pattern)? {
-                if let ValueView::Keyword(dir) = binding.inspect() {
-                    let which = String::from_utf16_lossy(dir.name());
-                    if dir.namespace().is_none()
-                        && matches!(
-                            which.as_str(),
-                            "as" | "or" | "defaults" | "select" | "all" | "excess" | "missing"
-                        )
-                    {
-                        continue;
-                    }
-                    let required = which.ends_with('!');
-                    let which = which.trim_end_matches('!');
-                    if !matches!(which, "keys" | "syms" | "strs") {
-                        return Err("unsupported map destructuring directive".into());
-                    }
-                    if !matches!(key.inspect(), ValueView::Vector(_)) {
-                        return Err("map directive requires a vector".into());
-                    }
-                    let mut before_amp = true;
-                    for binding in key.elements()? {
-                        if named(&binding, "&") {
-                            if !before_amp {
-                                return Err("& can only appear once in map directive".into());
-                            }
-                            before_amp = false;
-                            continue;
-                        }
-                        let key = if before_amp {
-                            let name = match binding.inspect() {
-                                ValueView::Symbol(n) | ValueView::Keyword(n) => n,
-                                _ => return Err("map directive requires named bindings".into()),
-                            };
-                            let key_name =
-                                Name::from_utf16(dir.namespace().or(name.namespace()), name.name());
-                            match which {
-                                "keys" => c.keyword(key_name),
-                                "syms" => self.call("quote", &[c.symbol(key_name)])?,
-                                _ => {
-                                    let mut text = String::new();
-                                    if matches!(binding.inspect(), ValueView::Keyword(_)) {
-                                        text.push(':');
-                                    }
-                                    if let Some(ns) = name.namespace() {
-                                        text.push_str(&String::from_utf16_lossy(ns));
-                                        text.push('/');
-                                    }
-                                    text.push_str(&String::from_utf16_lossy(name.name()));
-                                    c.string(text.encode_utf16().collect::<Vec<_>>())
-                                }
-                            }
-                        } else {
-                            if matches!(binding.inspect(), ValueView::Symbol(_)) {
-                                return Err(
-                                    "binding symbols can only appear before &, use keys after"
-                                        .into(),
-                                );
-                            }
-                            binding.clone()
-                        };
-                        if !selected.iter().any(|v| v.value_eq(&key)) {
-                            selected.push(key.clone());
-                        }
-                        if before_amp {
-                            binding_keys.push((self.local(&binding)?, key.clone()));
-                            pending.push((binding, key, required));
-                        } else if required {
-                            pending.push((self.fresh(), key, true));
-                        }
-                    }
-                } else {
-                    if !selected.iter().any(|v| v.value_eq(&key)) {
-                        selected.push(key.clone());
-                    }
-                    let mut binding = binding;
-                    if matches!(binding.inspect(), ValueView::Map(_)) {
-                        for (index, (name, enabled)) in [
-                            ("select", &select),
-                            ("all", &all),
-                            ("excess", &excess),
-                            ("missing", &missing),
-                        ]
-                        .iter()
-                        .enumerate()
-                        {
-                            if enabled.is_some() {
-                                let sub = binding
-                                    .get(&self.kw(name))?
-                                    .filter(truth)
-                                    .unwrap_or_else(|| self.fresh());
-                                binding =
-                                    self.assoc_pattern(&binding, self.kw(name), sub.clone())?;
-                                subs[index].push((key.clone(), sub));
-                            }
-                        }
-                    } else if matches!(binding.inspect(), ValueView::Symbol(_)) {
-                        binding_keys.push((binding.clone(), key.clone()));
-                    }
-                    pending.push((binding, key, false));
-                }
-            }
-            for (binding, key, required) in pending {
-                let local = if ident(&binding) {
-                    self.local(&binding)?
-                } else {
-                    binding.clone()
-                };
-                let local_default = default_vars.iter().find(|(k, _)| k.value_eq(&local));
-                let key_default = default_vars.iter().find(|(k, _)| k.value_eq(&key));
-                if local_default.is_some() && key_default.is_some() {
-                    return Err("Multiple :or defaults for same key".into());
-                }
-                let default = local_default.or(key_default).map(|(_, v)| v.clone());
-                if required && default.is_some() {
-                    return Err("Can't supply default value for required key".into());
-                }
-                let mut get_args = vec![whole.clone(), key.clone()];
-                if let Some(default) = default {
-                    get_args.push(default);
-                }
-                let get = self.call("get", &get_args)?;
-                let value = if required {
-                    if let Some(missing) = &missing {
-                        let sentinel = not_found.as_ref().unwrap().clone();
-                        let found = self.fresh();
-                        let absent = self.fresh();
-                        out.extend([
-                            found.clone(),
-                            self.call("get", &[whole.clone(), key.clone(), sentinel.clone()])?,
-                            absent.clone(),
-                            self.call("identical?", &[found.clone(), sentinel])?,
-                            missing.clone(),
-                            self.call(
-                                "if",
-                                &[
-                                    absent.clone(),
-                                    self.call("assoc", &[missing.clone(), key.clone(), c.nil()])?,
-                                    missing.clone(),
-                                ],
-                            )?,
-                        ]);
-                        self.call("if", &[absent, c.nil(), found])?
-                    } else {
-                        self.call("req!", &[whole.clone(), key.clone()])?
-                    }
-                } else {
-                    get
-                };
-                self.bind(out, &local, value, depth)?;
-            }
-            let new_defaults =
-                defaults.is_some() && (defaults_as.is_some() || select.is_some() || all.is_some());
-            let mut default_map = vec![];
-            for (key, value) in &default_vars {
-                let key = if matches!(key.inspect(), ValueView::Symbol(_)) {
-                    match binding_keys.iter().find(|(b, _)| b.value_eq(key)) {
-                        Some((_, key)) => key.clone(),
-                        None if new_defaults => {
-                            return Err("symbol in :or does not refer to a binding".into());
-                        }
-                        None => c.nil(),
-                    }
-                } else {
-                    key.clone()
-                };
-                if new_defaults && !selected.iter().any(|v| v.value_eq(&key)) {
-                    return Err("keys appear only in :or".into());
-                }
-                default_map.push((key, value.clone()));
-            }
-            let dm = if default_map.is_empty() {
-                c.nil()
-            } else {
-                c.map(&default_map)?
-            };
-            let selected = c.vector(&selected)?;
-            if let Some(select) = select {
-                let merged = self.fresh();
-                out.extend([
-                    select,
-                    self.body(
-                        "let*",
-                        vec![
-                            merged.clone(),
-                            self.call(
-                                "merge",
-                                &[dm.clone(), whole.clone(), self.some_vals(&subs[0])?],
-                            )?,
-                        ],
-                        &[self.call(
-                            "if",
-                            &[
-                                merged.clone(),
-                                self.call("select-keys", &[merged, selected.clone()])?,
-                                c.nil(),
-                            ],
-                        )?],
-                    )?,
-                ]);
-            }
-            if let Some(all) = all {
-                out.extend([
-                    all,
-                    self.call(
-                        "merge",
-                        &[dm.clone(), whole.clone(), self.some_vals(&subs[1])?],
-                    )?,
-                ]);
-            }
-            if let Some(excess) = excess {
-                out.extend([
-                    excess,
-                    self.call(
-                        "merge",
-                        &[
-                            self.call(
-                                "not-empty",
-                                &[self.call(
-                                    "apply",
-                                    &[
-                                        c.symbol(Name::new(Some("cljs.core"), "dissoc")),
-                                        whole,
-                                        selected,
-                                    ],
-                                )?],
-                            )?,
-                            self.some_vals(&subs[2])?,
-                        ],
-                    )?,
-                ]);
-            }
-            if let Some(missing) = missing {
-                out.extend([
-                    missing.clone(),
-                    self.call("merge", &[missing, self.some_vals(&subs[3])?])?,
-                ]);
-            }
-            if let Some(defaults_as) = defaults_as {
-                out.extend([defaults_as, dm]);
-            }
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod compiler_owned_origin_tests {
     use super::*;
@@ -1651,5 +893,44 @@ mod compiler_owned_origin_tests {
         assert!(children[2].metadata().is_some());
         drop(source);
         assert_eq!(second.span().source().name(), "nested.cljs");
+    }
+}
+
+#[cfg(test)]
+mod compiler_pure_tests {
+    use super::*;
+    #[test]
+    fn reader_seed_declarations_and_metadata_never_initialize_native_context() {
+        let mut host = MacroHost::new();
+        for text in [
+            "(let [{:keys [x] :or {x 4}} {}] (assert (= x 4)) x)",
+            "(defn f [x] {:pre [(number? x)]} (+ x 1)) (f 2)",
+            "(loop [x 2] (if (= x 0) x (recur (dec x))))",
+            "(letfn [(f [x] (if (= x 0) x (f (dec x))))] (f 2))",
+            "(defprotocol P (value [this])) (deftype T [] P (value [this] 3)) (value (T.))",
+            "(defrecord R [x]) (:x (->R 3))",
+            "(meta #'+)",
+            "(def x 1) (ns-publics 'cljs.user)",
+            "`[+ unknown ~(+ 1 2) ~@[3]]",
+        ] {
+            crate::compile_with_macros(text, &mut host).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert!(host.context.is_none(), "{text} initialized native context");
+        }
+        host.set_imports(
+            "cljs.user",
+            vec![MacroImport {
+                namespace: "cljs.core".into(),
+                alias: Some("c".into()),
+                refers: vec!["let".into(), "ns-publics".into()],
+            }],
+        )
+        .unwrap();
+        crate::compile_with_macros("(c/let [x 3] x)", &mut host).unwrap();
+        assert!(host.context.is_none());
+        let source = crate::compiler_data::Source::new("reader.cljs", "^:kept #:x{:z [1] :a 2}");
+        let form = host.read_compiler_form(&source).unwrap().unwrap();
+        assert!(host.context.is_none());
+        assert_eq!(form.children()[0].span().text(), ":z");
+        assert!(form.metadata().is_some());
     }
 }

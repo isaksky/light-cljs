@@ -42,14 +42,29 @@ from semantic map storage. Form spans retain lexical spelling; datum scalars kee
 reader number categories and all floating bits, while JS emission converts numbers
 to Number. Metadata and opaque reader literal payloads are owned datum/form edges.
 
-`native_form_adapter` is the temporary reader/macro bridge. It converts structured
-data directly, preserves source identity and nested expansion origins, and copies
-already realized finite sequence form children rather than retaining native lazy
-values. It also isolates native assertion printing and method destructuring.
-Native public source/form APIs remain usable during this stage. `light-cljs-105`
-extracts remaining reader/resolution services; `light-cljs-108` replaces native
-macro execution; `light-cljs-115` deletes this adapter and the native compatibility
-storage. Syntax quote and namespace views still use those staged services.
+`compiler_reader` constructs semantic forms directly from syntax and immutable
+`NamespaceView` snapshots. A view retains source identity, aliases, refers,
+excludes, resolved binding IDs/kinds and the visible declaration frontier.
+Syntax quote, unquote/splicing, anonymous functions and namespaced maps produce
+ordinary canonical runtime construction calls without entering an evaluator.
+`core_metadata` queries the pinned core table directly. Namespace metadata and
+reflection snapshots also use owned compiler data.
+
+The pure compiler seed in `compiler_binding_macros` and
+`compiler_destructuring` expands binding/function declarations and their extended
+map patterns. Protocol/type/record analysis remains compiler-owned; method forms
+use the same seed. Diagnostic assertion formatting uses compiler data directly.
+Reading, seed expansion and namespace/core metadata inspection need neither a
+native Context nor a JavaScript runtime. `source_provider` owns the load request,
+input and error contracts separately from eager native loading.
+
+`native_form_adapter` remains an explicit temporary macro execution bridge.
+It converts structured data directly and retains source identity/nested expansion
+origins. Explicit native custom reader callbacks also use this adapter during
+migration. `LegacyMacroSourceProvider` keeps the current companion-file behavior
+until source-phase migration. Native public source/form APIs remain available;
+`light-cljs-108` replaces remaining native macro execution and `light-cljs-115`
+deletes the adapter and native compatibility storage.
 The migration then adds an evaluator boundary for compiled macro/helper units.
 Compile-time emission uses the same semantic IR and canonical runtime operations;
 it may add deferred-root access and bypass optional application optimization.
