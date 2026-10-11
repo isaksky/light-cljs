@@ -116,7 +116,7 @@ ns-as-js	ns	(ns boundary (:require [boundary.lib :as 	js	]))	namespace	js is res
 ns-require-repeated	ns	(ns boundary (:require boundary.lib) 	(:require other)	)	namespace	only one :require	analysis-error	analysis-error
 ns-unknown-clause	ns	(ns boundary 	(:unless [])	)	namespace	unsupported namespace clause	analysis-error	analysis-error
 ns-import	ns	(ns boundary 	(:import goog.Uri)	)	accepted	namespace host constructor imports supported	warning	warning
-ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	accepted	now supported native macro expansion	warning	warning
+ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	namespace	:require-macros is retired	warning	warning
 ns-refer-clojure	ns	(ns boundary 	(:refer-clojure :exclude [+])	)	accepted	namespace import resolution supported	warning	warning
 ns-package	ns	(ns boundary (:require [	"package"	 :as p]))	namespace	JavaScript package imports	warning	warning
 macro-shadow-exit	expr	(do (let* [when (fn* [x] x)] (when 1)) (	when	 true 1))	accepted	now supported native macro expansion	accepted	accepted

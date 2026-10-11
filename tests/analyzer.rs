@@ -589,7 +589,7 @@ fn core_functions_resolve_after_locals_and_globals_and_by_explicit_qualifier() {
     assert_eq!(resolved, [CoreFnId::Vector, CoreFnId::Get, CoreFnId::Nth]);
     let ExprKind::Do(body) = &program.exprs[program.root.0].kind else { panic!("program body") };
     assert!(matches!(program.exprs[body.last().unwrap().0].kind, ExprKind::Global(_)));
-    for name in ["cljs.core/transduce", "other/vector"] {
+    for name in ["cljs.core/not-a-core-function", "other/vector"] {
         assert!(matches!(
             analyze(name, &parse(name).unwrap()).unwrap_err().kind,
             Error::UnresolvedSymbol(_)
@@ -866,8 +866,9 @@ fn reduction_core_values_have_resolved_ids_without_native_macro_initialization()
             CoreFnId::ReduceKv
         ]
     );
-    for name in ["transduce", "completing", "ensure-reduced"] {
-        assert!(analyze(name, &parse(name).unwrap()).is_err(), "{name}");
+    for (name, expected) in [("transduce", CoreFnId::Transduce), ("completing", CoreFnId::Completing), ("ensure-reduced", CoreFnId::EnsureReduced)] {
+        let program = analyze(name, &parse(name).unwrap()).unwrap();
+        assert!(program.exprs.iter().any(|expr| expr.kind == ExprKind::CoreFn(expected)), "{name}");
     }
 }
 

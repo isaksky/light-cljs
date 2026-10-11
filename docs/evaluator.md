@@ -1,5 +1,9 @@
 # Synchronous evaluator
 
+For supported scripting and embedding use [EvalSession](evaluation.md). The
+low-level `Evaluator` remains the compiler execution boundary; it does not itself
+provide interactive compiler symbol state.
+
 `evaluator::Evaluator` executes compiler-produced JavaScript with exactly
 `rquickjs = "=0.14.0"`, default features disabled and only `std` enabled.
 Cargo.lock pins the engine and build dependencies. Building requires the normal
@@ -16,8 +20,8 @@ installs `macroexpand`/`macroexpand1` hooks; missing services fail on use.
 
 `MacroHost::evaluator_options` contains reusable configuration;
 `MacroHost::new_evaluator()` creates a fresh heap. The transitional native macro
-adapter still exists until light-cljs-115; source macros and public native CLI/
-embedding consumers switch in their assigned migration steps. Creating this
+adapter still exists until light-cljs-115; native CLI migration is owned by
+light-cljs-113. Public `EvalSession` embedding uses compiler-emitted JavaScript. Creating this
 session does not execute source macro bodies through the old adapter, and engine
 failure never falls back to native evaluation. `Evaluator::active(ctx)` borrows the
 already-entered context for nested compilation, without reacquiring its runtime

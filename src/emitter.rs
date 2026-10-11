@@ -19,7 +19,7 @@ pub(crate) fn emit_application(
     globals: &[bool],
     calls: &std::collections::HashMap<ExprId, usize>,
 ) -> String {
-    emit_js_mode(program, None, false, Some((globals, calls)))
+    emit_js_mode(program, None, false, false, Some((globals, calls)))
 }
 
 /// Emit a function accepting the session canonical runtime as its sole argument.
@@ -41,18 +41,20 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
         if !raw.contains(&candidate) { break candidate; }
         index += 1;
     };
-    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter), demand_roots, None))
+    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter), demand_roots, false, None))
 }
 
 fn emit_js_mode(
     program: &Program,
     shared: Option<&str>,
     demand_roots: bool,
+    application_roots: bool,
     application: Option<(&[bool], &std::collections::HashMap<ExprId, usize>)>,
 ) -> String {
     let mut emitter = Emitter {
         program,
         demand_roots,
+        application_roots,
         needs_host: false,
         specialized_calls: application.map(|(_, calls)| calls),
         output: String::new(),
@@ -71,6 +73,7 @@ fn emit_js_mode(
         .push_str("(() => {\n  const truth = (value) => value != null && value !== false;\n");
     let prelude_end = emitter.output.len();
     for global in 0..program.globals.len() {
+        if application_roots { break; }
         if application.is_some_and(|(globals, _)| !globals[global]) {
             continue;
         }
@@ -85,7 +88,7 @@ fn emit_js_mode(
         }
         emitter.output.insert_str(prelude_end, host);
     }
-    if demand_roots || program.exprs.iter().enumerate().any(|(id, expr)| {
+    if demand_roots || application_roots || program.exprs.iter().enumerate().any(|(id, expr)| {
         emitter.used.contains(&ExprId(id)) && (
         matches!(
             expr.kind,
@@ -137,6 +140,7 @@ fn emit_js_mode(
 struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
+    application_roots: bool,
     needs_host: bool,
     specialized_calls: Option<&'a std::collections::HashMap<ExprId, usize>>,
     output: String,
@@ -201,6 +205,11 @@ impl Emitter<'_> {
             for member in &path[1..] {
                 self.member(member);
             }
+        } else if self.application_roots {
+            self.output.push_str("globalThis.__lightApplicationRoots[");
+            let global = &self.program.globals[id.0];
+            self.string_units(&format!("{}/{}", global.namespace, global.name).encode_utf16().collect::<Vec<_>>());
+            self.output.push(']');
         } else if self.demand_roots {
             self.output.push_str("globalThis[\"__lightCompilerRoots\"][");
             let global = &self.program.globals[id.0];
@@ -1778,4 +1787,10 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
         result.push_str(&source[start..at]);
     }
     result
+}
+
+/// Interactive application roots live in the application heap, never the macro heap.
+pub(crate) fn emit_interactive_unit(program: &Program) -> String {
+    let body = emit_js_mode(program, Some("__lightInteractiveRuntime"), false, true, None);
+    format!("(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return {body}; }}")
 }

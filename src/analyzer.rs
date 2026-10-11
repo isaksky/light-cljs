@@ -54,6 +54,9 @@ pub enum CoreFnId {
     ReadLine,
 
     Gensym,
+    CommandLineArgs,
+    PrintErrFn,
+    Eval,
     Macroexpand,
     Macroexpand1,
     Keyword,
@@ -572,7 +575,7 @@ pub enum CoreFnId {
 }
 
 impl CoreFnId {
-    fn resolve(name: &str) -> Option<Self> {
+    pub(crate) fn resolve(name: &str) -> Option<Self> {
         Some(match name {
             "compiler-edn-read-string" => Self::EdnReadString,
             "compiler-edn-read" => Self::EdnRead,
@@ -1112,6 +1115,9 @@ impl CoreFnId {
             "instance?" => Self::IsInstance,
             "Throwable->map" => Self::ThrowableToMap,
             "gensym" => Self::Gensym,
+            "*command-line-args*" => Self::CommandLineArgs,
+            "*print-err-fn*" => Self::PrintErrFn,
+            "eval" => Self::Eval,
             "macroexpand" => Self::Macroexpand,
             "macroexpand-1" => Self::Macroexpand1,
             "array-map" => Self::ArrayMap,
@@ -1124,7 +1130,7 @@ impl CoreFnId {
     fn accepts_direct_arity(self, arity: usize) -> bool {
         match self {
             Self::Gensym => arity <= 1,
-            Self::Macroexpand | Self::Macroexpand1 => arity == 1,
+            Self::Eval | Self::Macroexpand | Self::Macroexpand1 => arity == 1,
             Self::AGet => arity >= 2,
             Self::ASet => arity >= 3,
             Self::UncheckedGet | Self::JsDelete | Self::JsIn => arity == 2,
@@ -1211,6 +1217,9 @@ impl CoreFnId {
             Self::ReadLine => "readLine",
 
             Self::Gensym => "gensym",
+            Self::CommandLineArgs => "commandLineArgs",
+            Self::PrintErrFn => "printErrFn",
+            Self::Eval => "eval",
             Self::Macroexpand => "macroexpand",
             Self::Macroexpand1 => "macroexpand1",
             Self::Keyword => "keyword",
@@ -2317,7 +2326,22 @@ fn analyze_input(
     snapshot: Option<&crate::compilation_session::DefinitionSnapshot>,
     engine: Option<&dyn crate::evaluator::MacroEvaluator>,
 ) -> Result<Program, AnalysisError> {
-    if definition_view.is_none() {
+    analyze_input_state(source, syntax, macro_host, options, warnings, owned_form, definition_view, snapshot, engine, None)
+}
+
+fn analyze_input_state(
+    source: &str,
+    syntax: &SyntaxTree,
+    macro_host: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    owned_form: Option<&Form>,
+    definition_view: Option<(&str, &[(String, String)], &[String], NamespaceResolution)>,
+    snapshot: Option<&crate::compilation_session::DefinitionSnapshot>,
+    engine: Option<&dyn crate::evaluator::MacroEvaluator>,
+    previous: Option<&Program>,
+) -> Result<Program, AnalysisError> {
+    if definition_view.is_none() && previous.is_none() {
         macro_host.begin_compilation();
     }
     let (syntax, discards) = if owned_form.is_some() {
@@ -2363,6 +2387,10 @@ fn analyze_input(
         definition_name: None,
         top_level: snapshot.is_none(),
     };
+    if let Some(previous) = previous {
+        analyzer.program = previous.clone();
+        analyzer.globals = previous.globals.iter().enumerate().map(|(i,g)| ((g.namespace.clone(),g.name.clone()),GlobalId(i))).collect();
+    }
     if let Some(snapshot) = snapshot {
         analyzer.program = snapshot.resolution_program.clone();
         analyzer.globals = analyzer.program.globals.iter().enumerate().map(|(i,g)| ((g.namespace.clone(),g.name.clone()),GlobalId(i))).collect();
@@ -6700,6 +6728,7 @@ impl Analyzer<'_> {
                 .iter()
                 .any(|(local, _, _)| local == &name);
         let target = core_alias.as_deref().unwrap_or(&name);
+        self.macro_host.check_macro_policy(self.namespace, target, shadow_core).map_err(error)?;
         if self.macro_host.has_javascript_macro(self.namespace, target) {
             if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
                 return Err(error(
@@ -8245,4 +8274,16 @@ pub(crate) fn munge_js_member(name: &str) -> String {
         });
     }
     result
+}
+
+/// Advance explicit interactive symbol state without restarting compilation roots.
+pub(crate) fn analyze_interactive_form(
+    form: &Form, host: &mut MacroHost, previous: Option<&Program>,
+    namespace: &str, aliases: &[(String, String)], requires: &[String],
+    resolution: NamespaceResolution, options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<Program, AnalysisError> {
+    analyze_input_state(form.span().source().text(), &SyntaxTree { nodes: vec![], roots: vec![] },
+        host, options, warnings, Some(form), Some((namespace, aliases, requires, resolution)),
+        None, None, previous)
 }

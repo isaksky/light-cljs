@@ -25,8 +25,10 @@ compiler-emitted JavaScript in QuickJS. Ordinary helper initializers can be
 compiled on macro demand, including nested helper/macro compilation; definition
 snapshots and shared semantic IR prevent repeated source expansion. See the
 [reentrant evaluator contract](docs/evaluator.md#deferred-compiler-units). Required namespaces
-share this compiler path for macros and ordinary helpers. Native scripts, the REPL
-and interpreter embedding APIs still use native evaluation. The existing commands
+share this compiler path for macros and ordinary helpers. Native scripts and the REPL
+still use native evaluation pending their CLI migration. The supported embedding
+API is now `EvalSession`, which compiles forms incrementally and executes canonical
+JavaScript in an explicitly owned QuickJS heap. See [session embedding](docs/evaluation.md). The existing commands
 and API examples below describe that current checkout. See the
 [evaluator migration design](docs/evaluator-migration.md) for the accepted phase
 semantics, interpreter extraction, consumer migration and completion criteria.
@@ -596,9 +598,9 @@ experiments are preserved separately under `cargo bench --bench subset` and
 must not be described as throughput for this expanded scanner or a complete
 ClojureScript reader/compiler.
 
-For the full native host API, run `cargo run --example embedding` or read the
+For the supported compiler-backed embedding API, run `cargo run --example embedding` or read the
 [embedding example](examples/embedding.rs) and the documented
-[options, permission and fork contracts](docs/interpreter.md#embedding-configuration-permissions-and-forks).
+[session options, capability policy and migration map](docs/evaluation.md).
 
 Compiled `reify` uses a stable anonymous type per source site and fresh captured
 fields per evaluation. Protocol/IFn/Object methods support destructuring,

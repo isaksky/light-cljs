@@ -1,79 +1,43 @@
-//! Run with `cargo run --example embedding`; no JVM/JS runtime is involved.
-use light_cljs::interpreter::*;
-
-static GREET: NativeDefinition = NativeDefinition {
-    metadata: NativeMetadata {
-        namespace: "app",
-        name: "greet",
-        arity: Arity::Exact(1),
-        effects: NativeEffects::Pure,
-        errors: &[NativeErrorClass::Type],
-    },
-    callback: |context, args| {
-        let ValueView::String(name) = args[0].inspect() else {
-            return Err(NativeError::Type {
-                argument: 0,
-                expected: "string",
-            });
-        };
-        let mut text: Vec<u16> = "Hello, ".encode_utf16().collect();
-        text.extend_from_slice(&name);
-        Ok(context.string(text))
-    },
-};
-
-// Native macros receive &form, &env, and the unevaluated arguments as data.
-static TWICE: NativeDefinition = NativeDefinition {
-    metadata: NativeMetadata {
-        namespace: "app",
-        name: "twice",
-        arity: Arity::Exact(3),
-        effects: NativeEffects::Context,
-        errors: &[NativeErrorClass::Collection],
-    },
-    callback: |context, args| {
-        Ok(context.list(&[
-            context.symbol(Name::new(None, "do")),
-            args[2].clone(),
-            args[2].clone(),
-        ])?)
-    },
-};
+//! Run with `cargo run --example embedding`; uses the embedded QuickJS engine.
+use light_cljs::compiler_data::{Datum, DatumKind};
+use light_cljs::source_provider::SourceInput;
+use light_cljs::{EvalOptions, EvalSession, HostArity, HostFunction};
+use std::rc::Rc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut context = Context::init(ContextOptions {
-        natives: vec![&GREET],
-        macros: vec![&TWICE],
+    let mut session = EvalSession::new(EvalOptions {
+        functions: vec![HostFunction {
+            name: "app/greet".into(),
+            arity: HostArity::Exact(1),
+            callback: Rc::new(|call, args| {
+                let name = call.string(args[0])?;
+                call.value(&Datum::new(DatumKind::String(
+                    format!("Hello, {name}").encode_utf16().collect(),
+                )))
+            }),
+        }],
         ..Default::default()
     })?;
-    let user = context.string("Rust".encode_utf16().collect::<Vec<_>>());
-    context.merge_opts(ContextOptions {
-        bindings: vec![(Name::new(None, "user-name"), user)],
-        ..Default::default()
-    })?;
-    let result = context.eval_string_plus(
-        "(def calls (atom 0)) (fn [name] (app/twice (swap! calls inc)) (app/greet name))",
-    )?;
-    let name = context.eval_string("user-name")?;
-    let greeting = context.invoke(&result.value, &[name])?;
-    let ValueView::String(text) = greeting.inspect() else {
-        unreachable!()
-    };
-    println!("{}", String::from_utf16(&text)?);
-    if let Err(error) = context.eval_string_plus("(app/greet 42)") {
-        println!(
-            "Caught {:?} error in {:?}",
-            error.diagnostic.phase,
-            error.namespace.inspect()
-        );
+    let function = session.eval_string(
+        "(def calls (atom 0)) (defmacro twice [x] (list 'do x x)) (fn [name] (twice (swap! calls inc)) (app/greet name))",
+    )?.value;
+    let name = session.value(&Datum::new(DatumKind::String(
+        "Rust".encode_utf16().collect(),
+    )))?;
+    let greeting = session.invoke(function, &[name])?;
+    println!("{}", session.string(greeting)?);
+    if let Err(error) = session.eval_string("(app/greet 42)") {
+        println!("Caught {error}");
     }
-    let count = context.eval_string("@calls")?;
-    println!("Still usable; calls = {:?}", count.inspect());
-    let source = context.source("form.clj", "(+ @calls 1)");
-    let form = context.reader(&source)?.read_form()?.expect("one form");
-    println!(
-        "Evaluated form = {:?}",
-        context.eval_form_plus(&form)?.value.inspect()
-    );
+    let count = session.eval_string("@calls")?.value;
+    println!("Still usable; calls = {}", session.number(count)?);
+    let form = session
+        .read_forms(&SourceInput::new("form.cljs", "(+ @calls 1)"))?
+        .remove(0);
+    let result = session.eval_form(&form)?.value;
+    println!("Evaluated form = {}", session.number(result)?);
+    for id in [function, name, greeting, count, result] {
+        session.release(id)?;
+    }
     Ok(())
 }

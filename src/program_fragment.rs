@@ -185,6 +185,61 @@ pub(crate) fn resolution_snapshot(program: &Program) -> Program {
     snapshot
 }
 
+/// Compact a persisted interactive catalog between executed forms. Only global
+/// binding IDs survive into the next form; emitted closures already own code.
+pub(crate) fn interactive_resolution_snapshot(program: &Program) -> Program {
+    let mut snapshot = resolution_snapshot(program);
+    compact_snapshot_literals(&mut snapshot);
+    // Declaration metadata normally contains only data. Executable metadata
+    // retains its local arenas; ordinary snapshots must not accumulate every
+    // prior function's locals and recur tables on each fragment append.
+    if snapshot.exprs.iter().all(|expr| matches!(expr.kind,
+        ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Number(_) | ExprKind::String(_)
+        | ExprKind::ReaderLiteral { .. } | ExprKind::WithMeta { .. }
+        | ExprKind::Keyword(_) | ExprKind::Symbol(_) | ExprKind::List(_)
+        | ExprKind::Vector(_) | ExprKind::Map(_) | ExprKind::Set(_)
+        | ExprKind::CoreFn(_) | ExprKind::Global(_) | ExprKind::JsGlobal(_)
+        | ExprKind::Var { .. })) {
+        snapshot.locals.clear();
+        snapshot.recur_targets.clear();
+        snapshot.field_bindings.clear();
+        snapshot.type_methods.clear();
+    }
+    snapshot
+}
+
+fn compact_snapshot_literals(program: &mut Program) {
+    use std::collections::HashMap;
+    let old_strings = std::mem::take(&mut program.strings);
+    let old_named = std::mem::take(&mut program.named_literals);
+    let mut string_ids = HashMap::new();
+    let mut named_ids = HashMap::new();
+    let mut string = |id: &mut StringId| {
+        *id = *string_ids.entry(id.0).or_insert_with(|| {
+            let next = StringId(program.strings.len());
+            program.strings.push(old_strings[id.0].clone());
+            next
+        });
+    };
+    let mut named = |id: &mut NamedLiteralId, string: &mut dyn FnMut(&mut StringId)| {
+        *id = *named_ids.entry(id.0).or_insert_with(|| {
+            let mut literal = old_named[id.0].clone();
+            if let Some(ns) = &mut literal.namespace { string(ns); }
+            string(&mut literal.name);
+            let next = NamedLiteralId(program.named_literals.len());
+            program.named_literals.push(literal);
+            next
+        });
+    };
+    for expr in &mut program.exprs {
+        match &mut expr.kind {
+            ExprKind::String(id) | ExprKind::Assert { form: id, .. } => string(id),
+            ExprKind::Keyword(id) | ExprKind::Symbol(id) | ExprKind::Var { symbol: id, .. } => named(id, &mut string),
+            _ => {},
+        }
+    }
+}
+
 /// Visit semantic child IDs using the same exhaustive mapping as fragment linking.
 pub(crate) fn children(program: &Program, id: ExprId) -> Vec<ExprId> {
     let children = std::cell::RefCell::new(Vec::new());

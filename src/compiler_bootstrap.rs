@@ -132,14 +132,14 @@ fn install(unit: &str, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), 
     e.release(values).map_err(|e| e.to_string())?;
     Ok(())
 }
-fn build(options: crate::evaluator::EvaluatorOptions, cache: bool) -> Result<Bootstrap, String> {
+fn build(options: crate::evaluator::EvaluatorOptions, cache: bool, interactive: bool, control: Option<crate::evaluator::ExecutionControl>) -> Result<Bootstrap, String> {
     let cached = if cache {
         UNITS.with(|u| u.borrow().clone())
     } else {
         None
     };
     let mut bootstrap = Bootstrap {
-        evaluator: Rc::new(Evaluator::new(options).map_err(|e| e.to_string())?),
+        evaluator: Rc::new((if let Some(control) = control { Evaluator::interactive_with_control(options, control) } else if interactive { Evaluator::interactive(options) } else { Evaluator::new(options) }).map_err(|e| e.to_string())?),
         functions: HashMap::new(),
     };
     let mut host = MacroHost::new();
@@ -184,7 +184,7 @@ impl MacroHost {
                 .session_handle()
                 .and_then(|session| session.bootstrap());
             if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
+                self.bootstrap = Some(build(self.evaluator_options.clone(), true, self.interactive, self.interactive_control.clone())?);
             }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
@@ -353,7 +353,7 @@ impl MacroHost {
                 .session_handle()
                 .and_then(|session| session.bootstrap());
             if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
+                self.bootstrap = Some(build(self.evaluator_options.clone(), true, self.interactive, self.interactive_control.clone())?);
             }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
@@ -379,7 +379,7 @@ impl MacroHost {
         );
         Ok(())
     }
-    fn source_macro_key(&self, namespace: &str, name: &str) -> Option<String> {
+    pub(crate) fn source_macro_key(&self, namespace: &str, name: &str) -> Option<String> {
         if let Some((qualifier, member)) = name.split_once('/') {
             let target = self.source_namespace(namespace, qualifier)?;
             return Some(format!("{target}/{member}"));

@@ -59,6 +59,9 @@ pub struct MacroHost {
     /// Configuration only: JS roots belong to each fresh compilation session.
     pub evaluator_options: crate::evaluator::EvaluatorOptions,
     assertions_disabled: bool,
+    pub(crate) interactive: bool,
+    pub(crate) interactive_control: Option<crate::evaluator::ExecutionControl>,
+    pub(crate) name_policy: Option<crate::eval_compiler::NamePolicy>,
     pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros: HashMap<String, crate::compiler_bootstrap::CompiledMacro>,
@@ -73,6 +76,8 @@ pub struct MacroHost {
 #[derive(Default)]
 struct CompilerDataReaders {
     units: HashMap<Name, String>,
+    default_unit: Option<String>,
+    default_function: Option<crate::evaluator::ValueId>,
     evaluator: Option<std::rc::Rc<crate::evaluator::Evaluator>>,
     functions: HashMap<Name, crate::evaluator::ValueId>,
 }
@@ -83,7 +88,13 @@ impl MacroHost {
     pub fn new_evaluator(
         &self,
     ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
-        crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+        if let Some(control) = &self.interactive_control {
+            crate::evaluator::Evaluator::interactive_with_control(self.evaluator_options.clone(), control.clone())
+        } else if self.interactive {
+            crate::evaluator::Evaluator::interactive(self.evaluator_options.clone())
+        } else {
+            crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+        }
     }
 
     /// Execute a compiler-emitted macro function with hidden &form/&env arguments.
@@ -261,31 +272,46 @@ impl MacroHost {
         }
         Ok(())
     }
+    /// Fallback for unknown tags, called with the tag symbol and immutable value.
+    /// Named readers take precedence; built-in literal tags retain their reader.
+    pub fn register_compiler_default_data_reader(&mut self, function_source: &str) -> Result<(), String> {
+        let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
+        let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
+        let mut readers = self.compiler_data_readers.borrow_mut();
+        readers.default_unit = Some(crate::emitter::emit_js_unit(&program));
+        if let Some(id) = readers.default_function.take() {
+            if let Some(evaluator) = &readers.evaluator { let _ = evaluator.release(id); }
+        }
+        Ok(())
+    }
     fn call_compiler_data_reader(
         &self,
         tag: &Name,
         value: &crate::compiler_data::Datum,
     ) -> Result<Option<crate::compiler_data::Datum>, String> {
         let run = || -> Result<Option<crate::compiler_data::Datum>, String> {
-            let (evaluator, function) = {
+            let (evaluator, function, fallback) = {
                 let mut readers = self.compiler_data_readers.borrow_mut();
-                let Some(unit) = readers.units.get(tag).cloned() else {
-                    return Ok(None);
-                };
+                let fallback = !readers.units.contains_key(tag);
+                let unit = if fallback {
+                    if tag.namespace().is_none() && matches!(String::from_utf16_lossy(tag.name()).as_ref(), "inst" | "uuid" | "js" | "queue") { return Ok(None); }
+                    readers.default_unit.clone()
+                } else { readers.units.get(tag).cloned() };
+                let Some(unit) = unit else { return Ok(None); };
                 if readers.evaluator.is_none() {
                     readers.evaluator = Some(std::rc::Rc::new(
                         self.new_evaluator().map_err(|e| e.to_string())?,
                     ));
                 }
                 let evaluator = readers.evaluator.as_ref().unwrap().clone();
-                let function = if let Some(function) = readers.functions.get(tag) {
-                    *function
-                } else {
+                let cached = if fallback { readers.default_function } else { readers.functions.get(tag).copied() };
+                let function = if let Some(function) = cached { function } else {
                     let function = evaluator.evaluate_unit(&unit).map_err(|e| e.to_string())?;
-                    readers.functions.insert(tag.clone(), function);
+                    if fallback { readers.default_function = Some(function); }
+                    else { readers.functions.insert(tag.clone(), function); }
                     function
                 };
-                (evaluator, function)
+                (evaluator, function, fallback)
             };
             let limits = crate::form_bridge::ConversionLimits {
                 nodes: self.limits.generated_nodes,
@@ -294,8 +320,16 @@ impl MacroHost {
             let argument = evaluator
                 .import_data(value, limits)
                 .map_err(|e| e.to_string())?;
-            let result = evaluator.call(function, &[argument]);
+            let tag_argument = if fallback {
+                match evaluator.import_data(&crate::compiler_data::DataBuilder.symbol(tag.clone()), limits) {
+                    Ok(value) => Some(value),
+                    Err(error) => { let _ = evaluator.release(argument); return Err(error.to_string()); }
+                }
+            } else { None };
+            let result = if let Some(tag_argument) = tag_argument { evaluator.call(function, &[tag_argument, argument]) }
+                else { evaluator.call(function, &[argument]) };
             let _ = evaluator.release(argument);
+            if let Some(tag_argument) = tag_argument { let _ = evaluator.release(tag_argument); }
             let result = result.map_err(|e| e.to_string())?;
             let data = evaluator
                 .export_data(result, limits)
@@ -308,6 +342,7 @@ impl MacroHost {
             let mut readers = self.compiler_data_readers.borrow_mut();
             readers.evaluator = None;
             readers.functions.clear();
+            readers.default_function = None;
         }
         result
     }
@@ -420,6 +455,20 @@ impl MacroHost {
     }
     /// Configure imports without loading or evaluating code. Filesystem compilation
     /// registers source dependencies first; embedders may pre-register native macros.
+    pub(crate) fn set_interactive_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
+        let current = self.imports.entry(caller.to_owned()).or_default();
+        for import in imports {
+            if let Some(alias) = &import.alias {
+                if current.iter().any(|old| old.alias.as_ref() == Some(alias) && old.namespace != import.namespace) {
+                    return Err(format!("conflicting namespace alias: {alias}"));
+                }
+            }
+            if let Some(old) = current.iter_mut().find(|old| old.namespace == import.namespace && old.alias == import.alias) {
+                for name in import.refers { if !old.refers.contains(&name) { old.refers.push(name); } }
+            } else { current.push(import); }
+        }
+        Ok(())
+    }
     pub fn set_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
         let mut aliases = HashMap::new();
         let mut refers = HashSet::new();
@@ -496,6 +545,9 @@ impl MacroHost {
             limits: self.limits,
             evaluator_options: self.evaluator_options.clone(),
             assertions_disabled: self.assertions_disabled,
+            interactive: self.interactive,
+            interactive_control: self.interactive_control.clone(),
+            name_policy: self.name_policy.clone(),
             bootstrap: self.bootstrap.clone(),
             bootstrap_seed: true,
             javascript_macros: self.javascript_macros.clone(),
@@ -523,6 +575,7 @@ impl MacroHost {
             let mut readers = self.compiler_data_readers.borrow_mut();
             readers.evaluator = None;
             readers.functions.clear();
+            readers.default_function = None;
             drop(readers);
             self.bootstrap = None;
             self.javascript_macros.clear();
@@ -1196,5 +1249,48 @@ mod compiler_pure_tests {
         assert!(host.context.is_none());
         assert_eq!(form.children()[0].span().text(), ":z");
         assert!(form.metadata().is_some());
+    }
+}
+
+impl MacroHost {
+    pub(crate) fn check_macro_policy(&self, namespace: &str, target: &str, shadow_core: bool) -> Result<(), String> {
+        let Some(policy) = &self.name_policy else { return Ok(()) };
+        let name = self.source_macro_key(namespace, target)
+            .or_else(|| self.macro_name(namespace, target, shadow_core).map(|(ns,name)| format!("{ns}/{name}")));
+        if let Some(name) = name {
+            let (ns,member) = name.split_once('/').unwrap();
+            if !policy.permits(&Name::new(Some(ns),member), false) { return Err(format!("name policy denies {name}")); }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod compiler_default_reader_tests {
+    use super::*;
+    use crate::compiler_data::{DatumKind, Source};
+
+    #[test]
+    fn default_reader_is_compiled_typed_and_preserves_reader_precedence() {
+        fn number(form: &Form) -> f64 {
+            match form.data().kind() { DatumKind::Integer(n) => *n as f64, DatumKind::Double(n) => *n, _ => panic!("expected number") }
+        }
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        host.register_compiler_default_data_reader("(fn [tag value] [(str tag) value])").unwrap();
+        host.register_compiler_data_reader(Name::new(None, "named"), "(fn [value] (+ value 1))").unwrap();
+        let read = |host: &mut MacroHost, text: &str| host.read_compiler_form(&Source::new("reader.cljs",text)).unwrap().unwrap();
+        let form = read(&mut host, "#demo/missing 7");
+        let children = form.children();
+        assert!(matches!(children[0].data().kind(), DatumKind::String(text) if String::from_utf16_lossy(text) == "demo/missing"));
+        assert_eq!(number(&children[1]),7.0);
+        assert_eq!(number(&read(&mut host,"#named 7")),8.0);
+        assert!(matches!(read(&mut host,"#inst \"2020-01-01\"").data().kind(), DatumKind::CompilerLiteral { .. }));
+        assert!(host.context.is_none());
+        host.begin_compilation();
+        assert!(host.compiler_data_readers.borrow().default_function.is_none());
+        assert_eq!(read(&mut host,"#unknown 9").children().len(),2);
+        host.register_compiler_default_data_reader("(fn [tag value] 42)").unwrap();
+        assert_eq!(number(&read(&mut host,"#unknown 9")),42.0);
     }
 }

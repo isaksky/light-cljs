@@ -1,3 +1,7 @@
+//! Temporary legacy native adapter, scheduled for removal in light-cljs-115.
+//! New embedding consumers use `crate::EvalSession`; see docs/evaluation.md for
+//! the precise migration map and retired native ownership/numeric contracts.
+//!
 //! Owned values and source/code lifetimes for the native interpreter.
 //!
 //! This module reads and evaluates a resolved primitive Clojure core. Public
