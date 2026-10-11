@@ -2,9 +2,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::ExprContext;
+use crate::compiler_data::{Form, Name};
 use crate::interpreter::{
-    BindingGuard, Context, Form, Name, NativeDefinition, Reload, ResourceLimits, RootedValue,
-    ValueView,
+    BindingGuard, Context, Form as NativeForm, NativeDefinition, Reload, ResourceLimits,
+    RootedValue, ValueView,
 };
 
 /// An explicit compile-time namespace import. Runtime aliases are separate.
@@ -84,6 +85,14 @@ impl MacroHost {
             });
             context
         })
+    }
+    /// Read immutable compiler-owned data. The temporary reader adapter is
+    /// deleted by light-cljs-115; returned forms/errors retain no native roots.
+    pub fn read_compiler_form(
+        &mut self,
+        source: &crate::compiler_data::Source,
+    ) -> Result<Option<Form>, crate::compiler_data::ReadError> {
+        crate::native_form_adapter::read_form(self.context_mut(), source)
     }
     pub fn register_macro(&mut self, definition: &'static NativeDefinition) -> RootedValue {
         self.native_namespaces
@@ -483,6 +492,19 @@ impl MacroHost {
         var: &RootedValue,
         env: &RootedValue,
     ) -> Result<Form, String> {
+        let (native, sources) =
+            crate::native_form_adapter::native_form_with_sources(self.context_mut(), form)?;
+        let expanded = self.expand_native(&native, var, env)?;
+        crate::native_form_adapter::own_form_with_sources(&expanded, sources)
+    }
+    // Temporary native execution seam; deleted with native_form_adapter by
+    // light-cljs-115 after macro bootstrap/source execution migration.
+    fn expand_native(
+        &mut self,
+        form: &NativeForm,
+        var: &RootedValue,
+        env: &RootedValue,
+    ) -> Result<NativeForm, String> {
         if self.expansions >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
@@ -507,9 +529,9 @@ impl MacroHost {
     }
     fn expand_namespace_reflection(
         &mut self,
-        form: &Form,
+        form: &NativeForm,
         var: &RootedValue,
-    ) -> Result<Option<Form>, String> {
+    ) -> Result<Option<NativeForm>, String> {
         let ValueView::Var(name) = var.inspect() else {
             return Ok(None);
         };
@@ -856,10 +878,10 @@ mod compiler_destructuring {
 
     pub(super) fn expand(
         c: &Context,
-        form: &Form,
+        form: &NativeForm,
         var: &RootedValue,
-    ) -> std::result::Result<Option<Form>, String> {
-        (|| -> Result<Option<Form>> {
+    ) -> std::result::Result<Option<NativeForm>, String> {
+        (|| -> Result<Option<NativeForm>> {
             let ValueView::Var(name) = var.inspect() else {
                 return Ok(None);
             };
@@ -1027,11 +1049,11 @@ mod compiler_destructuring {
 
     struct Expander<'a> {
         c: &'a Context,
-        maps: HashMap<HeapId, Form>,
+        maps: HashMap<HeapId, NativeForm>,
         derived_entries: RefCell<HashMap<HeapId, Entries>>,
     }
     impl Expander<'_> {
-        fn remember(&mut self, form: &Form) {
+        fn remember(&mut self, form: &NativeForm) {
             let mut pending = vec![form.id()];
             while let Some(id) = pending.pop() {
                 let child = form.at(id).unwrap();
@@ -1582,5 +1604,52 @@ mod compiler_destructuring {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod compiler_owned_origin_tests {
+    use super::*;
+    use crate::compiler_data::{DiagnosticLocation, Origin, Source};
+    #[test]
+    fn nested_expansion_preserves_origins_sources_and_metadata_after_host_drop() {
+        let mut host = MacroHost::new();
+        host.context_mut().eval_string("(ns macros) (defmacro outer [x] (list 'macros/inner x)) (defmacro inner [x] (list 'vector &form x))").unwrap();
+        let source = Source::new("nested.cljs", "\n(macros/outer ^:kept [1])");
+        let call = host.read_compiler_form(&source).unwrap().unwrap();
+        let outer = host
+            .context_mut()
+            .resolve_var(&Name::new(Some("macros"), "outer"))
+            .unwrap()
+            .unwrap();
+        let inner = host
+            .context_mut()
+            .resolve_var(&Name::new(Some("macros"), "inner"))
+            .unwrap()
+            .unwrap();
+        let env = host.context_mut().nil();
+        let first = host.expand(&call, &outer, &env).unwrap();
+        let second = host.expand(&first, &inner, &env).unwrap();
+        drop(env);
+        drop(outer);
+        drop(inner);
+        drop(call);
+        drop(first);
+        drop(host);
+        let children = second.children();
+        assert_eq!(
+            second.node().origin,
+            Origin::MacroExpansion(std::rc::Rc::new(Name::new(Some("macros"), "inner")))
+        );
+        assert_eq!(
+            children[1].node().origin,
+            Origin::MacroExpansion(std::rc::Rc::new(Name::new(Some("macros"), "outer")))
+        );
+        assert_eq!(second.span().source().id(), source.id());
+        let location = DiagnosticLocation::from_span(&second.span());
+        assert_eq!((location.line, location.column), (2, 1));
+        assert!(children[2].metadata().is_some());
+        drop(source);
+        assert_eq!(second.span().source().name(), "nested.cljs");
     }
 }

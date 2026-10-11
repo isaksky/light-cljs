@@ -13,45 +13,7 @@ use std::{
     rc::Rc,
 };
 
-/// An index local to one immutable semantic arena, not a syntax NodeId.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct FormId(pub usize);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FormKind {
-    Scalar,
-    /// Map children alternate key/value in source order. They are never recovered
-    /// from runtime map iteration, which has no evaluation-order contract.
-    Collection {
-        kind: CollectionKind,
-        children: Box<[FormId]>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Origin {
-    Source,
-    SuppliedData,
-    MacroExpansion(Rc<Name>),
-    Quote,
-    SyntaxQuote,
-    Unquote,
-    UnquoteSplicing,
-    Deref,
-    VarQuote,
-    Metadata,
-    AnonymousFunction,
-    AnonymousArgument,
-    DataReader(Rc<Name>),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FormNode {
-    pub kind: FormKind,
-    pub metadata: Option<FormId>,
-    pub(crate) compiler_payload: Option<FormId>,
-    pub origin: Origin,
-}
+pub use crate::compiler_data::{FormId, FormKind, FormNode, Origin};
 
 pub(super) struct Forms {
     nodes: Box<[FormNode]>,
@@ -357,6 +319,25 @@ impl Context {
             evaluation_trace: Vec::new(),
         }
     }
+    // Temporary native storage adapter; deleted by light-cljs-115.
+    pub(crate) fn native_form_adapter(
+        &self,
+        nodes: Vec<FormNode>,
+        values: &[RootedValue],
+        spans: &[SourceSpan],
+        id: FormId,
+    ) -> Form {
+        let storage = self
+            .executable_unit(values, spans)
+            .expect("native adapter owner");
+        Form {
+            forms: Rc::new(Forms {
+                nodes: nodes.into(),
+                storage,
+            }),
+            id,
+        }
+    }
     /// Supply owned data as a form, for embedding and later macro expansion.
     /// No printing, parsing or source arena is involved. Collection order is
     /// the supplied value's order (map/set traversal is unspecified).
@@ -371,7 +352,7 @@ impl Context {
         &self,
         value: &RootedValue,
         origin: &SourceSpan,
-        expansion: Option<(&Form, Name)>,
+        expansion: Option<(&Form, Name, Option<&RootedValue>)>,
     ) -> Result<Form, ReadError> {
         let _scope = self.accounting.enter();
         let mut lower = Lowerer::new(self, origin.source(), &[], &[], ReaderLimits::default());
@@ -380,7 +361,7 @@ impl Context {
         {
             return Err(lower.error(LowerErrorKind::WrongOwner, origin.bytes()));
         }
-        if let Some((call, name)) = expansion {
+        if let Some((call, name, alias)) = expansion {
             lower.data_origin = Origin::MacroExpansion(Rc::new(name));
             let mut pending = vec![call.id()];
             while let Some(id) = pending.pop() {
@@ -396,6 +377,11 @@ impl Context {
                 if let Some(id) = original.data().heap_id() {
                     lower.supplied.insert(id, original);
                 }
+            }
+            // &form receives a metadata-annotated copy. Preserve the original
+            // form/provenance for that alias as well as the native root itself.
+            if let Some(id) = alias.and_then(RootedValue::heap_id) {
+                lower.supplied.insert(id, call.clone());
             }
         }
         let mut result = lower
@@ -427,7 +413,17 @@ impl Context {
         call: &Form,
         name: Name,
     ) -> Result<Form, ReadError> {
-        self.data_form_with_origin(value, &call.span(), Some((call, name)))
+        self.data_form_with_origin(value, &call.span(), Some((call, name, None)))
+    }
+    // Temporary compiler macro alias adapter; deleted by light-cljs-115.
+    pub(crate) fn macro_form_with_alias(
+        &self,
+        value: &RootedValue,
+        call: &Form,
+        name: Name,
+        alias: &RootedValue,
+    ) -> Result<Form, ReadError> {
+        self.data_form_with_origin(value, &call.span(), Some((call, name, Some(alias))))
     }
     pub fn source_reader(&self, source: Source) -> Result<SourceReader, HandleError> {
         if !Rc::ptr_eq(&self.owner, &source.owner) {
@@ -2552,5 +2548,32 @@ fn integer(text: &str) -> Option<i128> {
         magnitude.checked_neg()
     } else {
         Some(magnitude)
+    }
+}
+
+#[cfg(test)]
+mod compiler_ownership_tests {
+    use super::*;
+    #[test]
+    fn compiler_snapshot_releases_the_native_owner_entirely() {
+        let context = Context::new();
+        let weak_owner = Rc::downgrade(&context.owner);
+        let source = context.source("snapshot.clj", "^:kept {:z [1 2] :a 3}");
+        let native = context
+            .reader(&source)
+            .unwrap()
+            .read_form()
+            .unwrap()
+            .unwrap();
+        let form = crate::native_form_adapter::own_form(&native).unwrap();
+        drop(native);
+        drop(source);
+        drop(context);
+        assert!(
+            weak_owner.upgrade().is_none(),
+            "compiler snapshot retained a native owner"
+        );
+        assert_eq!(form.children()[0].span().text(), ":z");
+        assert!(form.metadata().is_some());
     }
 }

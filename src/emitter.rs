@@ -1255,7 +1255,7 @@ impl Emitter<'_> {
             }
             ExprKind::String(id) => self.string(*id),
             ExprKind::ReaderLiteral { kind, items } => {
-                use crate::interpreter::CompilerLiteralKind as K;
+                use crate::compiler_data::CompilerLiteralKind as K;
                 self.output.push_str(match kind {
                     K::BigInteger => unreachable!("integers lower to Number"),
                     K::Regex => "rt.core.rePattern(",

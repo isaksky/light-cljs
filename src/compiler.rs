@@ -1205,7 +1205,7 @@ pub fn compile_namespace_with_macro_warnings(
                         .map_err(|e| error(header_span.clone(), e.to_string()))?,
                 );
                 let mut docstring = metadata
-                    .get(&c.keyword(crate::interpreter::Name::new(None, "doc")))
+                    .get(&c.keyword(crate::compiler_data::Name::new(None, "doc")))
                     .map_err(|e| error(header_span.clone(), e.to_string()))?;
                 let mut offset = 2;
                 if let Some(&doc) = children.get(offset)

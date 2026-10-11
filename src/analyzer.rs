@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, collections::HashMap, fmt, ops::Range};
 
-use crate::interpreter::{CompilerLiteralKind, Form, FormKind, Source, ValueView};
+use crate::compiler_data::{CompilerLiteralKind, DatumView, Form, FormKind, Source};
 use crate::macro_host::MacroHost;
 
 use crate::{CollectionKind, NodeId, NodeKind, NumberKind, PrefixKind, SyntaxTree};
@@ -2823,7 +2823,7 @@ impl Analyzer<'_> {
             return self.form(expanded, context);
         }
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref).cloned()
-            && let ValueView::CompilerLiteral(kind) = form.data().inspect()
+            && let DatumView::CompilerLiteral(kind) = form.data().inspect()
         {
             return self.reader_literal(&form, kind, context, false);
         }
@@ -3582,7 +3582,7 @@ impl Analyzer<'_> {
         // entire invocation, so they must never be decoded from that source.
         let (namespace, name) = if let Some(form) =
             self.generated.get(id.0).and_then(Option::as_ref)
-            && let ValueView::Keyword(name) = form.data().inspect()
+            && let DatumView::Keyword(name) = form.data().inspect()
         {
             (name.namespace().map(<[u16]>::to_vec), name.name().to_vec())
         } else {
@@ -3638,7 +3638,7 @@ impl Analyzer<'_> {
 
     fn validate_symbol(&self, id: NodeId) -> Result<(), AnalysisError> {
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref)
-            && let ValueView::Symbol(name) = form.data().inspect()
+            && let DatumView::Symbol(name) = form.data().inspect()
             && (String::from_utf16(name.name()).is_err()
                 || name
                     .namespace()
@@ -3657,7 +3657,7 @@ impl Analyzer<'_> {
     fn symbol_literal(&mut self, id: NodeId) -> ExprKind {
         let (namespace, name) = if let Some(form) =
             self.generated.get(id.0).and_then(Option::as_ref)
-            && let ValueView::Symbol(name) = form.data().inspect()
+            && let DatumView::Symbol(name) = form.data().inspect()
         {
             (name.namespace().map(<[u16]>::to_vec), name.name().to_vec())
         } else {
@@ -3773,17 +3773,17 @@ impl Analyzer<'_> {
     fn reader_datum_inner(&mut self, id: NodeId) -> Result<Option<ReaderDatum>, AnalysisError> {
         let node = self.syntax.nodes[id.0].clone();
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref)
-            && let ValueView::CompilerLiteral(kind) = form.data().inspect()
+            && let DatumView::CompilerLiteral(kind) = form.data().inspect()
         {
             let payload = form.data().compiler_literal_data().unwrap();
             return Ok(match (kind, payload.inspect()) {
-                (CompilerLiteralKind::BigInteger, ValueView::String(text)) => {
+                (CompilerLiteralKind::BigInteger, DatumView::String(text)) => {
                     Some(ReaderDatum::Number(false, String::from_utf16_lossy(&text)))
                 }
-                (CompilerLiteralKind::Uuid, ValueView::String(text)) => Some(
+                (CompilerLiteralKind::Uuid, DatumView::String(text)) => Some(
                     ReaderDatum::ReaderLiteral(0, String::from_utf16_lossy(&text)),
                 ),
-                (CompilerLiteralKind::Instant, ValueView::Double(millis)) => {
+                (CompilerLiteralKind::Instant, DatumView::Double(millis)) => {
                     Some(ReaderDatum::ReaderLiteral(1, millis.to_string()))
                 }
                 _ => None,
@@ -3807,7 +3807,7 @@ impl Analyzer<'_> {
                     if kind == NumberKind::Integer {
                         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref) {
                             match form.data().inspect() {
-                                ValueView::Integer(n) => n.to_string(),
+                                DatumView::Integer(n) => n.to_string(),
                                 _ => value.to_string(),
                             }
                         } else {
@@ -3924,7 +3924,7 @@ impl Analyzer<'_> {
             return self.datum(expanded, context);
         }
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref).cloned()
-            && let ValueView::CompilerLiteral(kind) = form.data().inspect()
+            && let DatumView::CompilerLiteral(kind) = form.data().inspect()
         {
             return self.reader_literal(&form, kind, context, true);
         }
@@ -4021,7 +4021,7 @@ impl Analyzer<'_> {
             .0
             .iter()
             .find_map(|pair| {
-                matches!(pair[0].data().inspect(), ValueView::Keyword(name)
+                matches!(pair[0].data().inspect(), DatumView::Keyword(name)
                 if name.namespace().map(|ns| format!("{}/", String::from_utf16_lossy(ns))).unwrap_or_default() + &String::from_utf16_lossy(name.name()) == key)
                 .then(|| pair[1].clone())
             })
@@ -4030,8 +4030,8 @@ impl Analyzer<'_> {
     fn metadata_is(&self, node: NodeId, key: &str, expected: &str) -> bool {
         self.metadata_entry(node, key)
             .is_some_and(|v| match v.data().inspect() {
-                ValueView::Boolean(value) => expected == if value { "true" } else { "false" },
-                ValueView::Symbol(name) => {
+                DatumView::Boolean(value) => expected == if value { "true" } else { "false" },
+                DatumView::Symbol(name) => {
                     name.namespace().is_none() && String::from_utf16_lossy(name.name()) == expected
                 }
                 _ => false,
@@ -4039,13 +4039,12 @@ impl Analyzer<'_> {
     }
 
     fn data_source(&mut self, text: &str) -> Result<ExprId, AnalysisError> {
-        let c = self.macro_host.context_mut();
-        let source = c.source("compiler-definition-metadata", text);
-        let form = c
-            .reader(&source)
-            .expect("own source")
-            .read_form()
-            .expect("checked metadata")
+        let source = Source::new("compiler-definition-metadata", text);
+        let form = crate::native_form_adapter::read_form(self.macro_host.context_mut(), &source)
+            .map_err(|e| AnalysisError {
+                span: e.span.bytes(),
+                kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
+            })?
             .expect("metadata form");
         let node = self.import_form(&form)?;
         self.datum(node, ExprContext::Value)
@@ -4133,7 +4132,7 @@ impl Analyzer<'_> {
         {
             for pair in metadata.children().as_chunks::<2>().0 {
                 let key = match pair[0].data().inspect() {
-                    ValueView::Keyword(name) if name.namespace().is_none() => {
+                    DatumView::Keyword(name) if name.namespace().is_none() => {
                         String::from_utf16_lossy(name.name())
                     }
                     _ => String::new(),
@@ -4144,7 +4143,7 @@ impl Analyzer<'_> {
                 let key_node = self.import_form(&pair[0])?;
                 entries.push(self.datum(key_node, ExprContext::Value)?);
                 let value = if key == "arglists" && pair[1].children().len() == 2 && pair[1].children().first().is_some_and(|f|
-                    matches!(f.data().inspect(), ValueView::Symbol(name) if name.namespace().is_none() && String::from_utf16_lossy(name.name()) == "quote")) {
+                    matches!(f.data().inspect(), DatumView::Symbol(name) if name.namespace().is_none() && String::from_utf16_lossy(name.name()) == "quote")) {
                     pair[1].children()[1].clone()
                 } else { pair[1].clone() };
                 let value = self.import_form(&value)?;
@@ -4991,7 +4990,7 @@ impl Analyzer<'_> {
                 AnalysisErrorKind::InvalidForm("extension target must be a type symbol or nil"),
             ));
         }
-        let instance = self.metadata_entry(target, "extend").is_some_and(|v| matches!(v.data().inspect(), ValueView::Keyword(name) if name.name() == "instance".encode_utf16().collect::<Vec<_>>()));
+        let instance = self.metadata_entry(target, "extend").is_some_and(|v| matches!(v.data().inspect(), DatumView::Keyword(name) if name.name() == "instance".encode_utf16().collect::<Vec<_>>()));
         let name = self.spelling(target).to_owned();
         let native = !instance
             && matches!(
@@ -5155,14 +5154,8 @@ impl Analyzer<'_> {
             self.expand_reader(args[0])?
         };
         let data = self.generated[node.0].as_ref().unwrap().data();
-        let printed = self
-            .macro_host
-            .context_mut()
-            .print_value(&data, crate::interpreter::PrintOptions::default())
-            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
-        let ValueView::String(text) = printed.inspect() else {
-            unreachable!()
-        };
+        let text = crate::native_form_adapter::print_datum(self.macro_host.context_mut(), &data)
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         let form = self.own_string(text.to_vec());
         let test = self.non_tail_form(node, ExprContext::Value)?;
         let message = args
@@ -5185,7 +5178,7 @@ impl Analyzer<'_> {
     fn source_method(
         &mut self,
         id: NodeId,
-        method: &[NodeId],
+        _method: &[NodeId],
         kind: MethodKind,
         fields: &[(String, bool)],
     ) -> Result<FnMethod, AnalysisError> {
@@ -5198,46 +5191,13 @@ impl Analyzer<'_> {
             .metadata_entry(original, "cljs.analyzer/type")
             .is_some();
         let original = self.generated[original.0].as_ref().unwrap().clone();
-        let mut values = original
-            .children()
-            .iter()
-            .skip(usize::from(original.children().first().is_some_and(|f| {
-                matches!(f.data().inspect(), ValueView::Symbol(_))
-            })))
-            .map(Form::data)
-            .collect::<Vec<_>>();
-        debug_assert_eq!(values.len(), method.len());
-        let method_body = self.type_fields.is_some();
-        let c = self.macro_host.context_mut();
-        // A type's initial body map is an ordinary expression, not fn pre/post
-        // syntax. Keep destructuring expansion while preventing that rewrite.
-        if method_body && values.len() > 1 {
-            let do_symbol = c.symbol(crate::interpreter::Name::new(None, "do"));
-            values[1] = c
-                .list(&[do_symbol, values[1].clone()])
-                .map_err(|e| AnalysisError {
-                    span: self.syntax.nodes[id.0].span.clone(),
-                    kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
-                })?;
-        }
-        values.insert(
-            0,
-            c.symbol(crate::interpreter::Name::new(Some("cljs.core"), "fn")),
-        );
-        let data = c.list(&values).map_err(|e| AnalysisError {
-            span: self.syntax.nodes[id.0].span.clone(),
-            kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
-        })?;
-        let form = c
-            .macro_form(
-                &data,
-                &original,
-                crate::interpreter::Name::new(Some("cljs.core"), "fn"),
-            )
-            .map_err(|e| AnalysisError {
-                span: self.syntax.nodes[id.0].span.clone(),
-                kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
-            })?;
+        // Native fn/destructuring compatibility is isolated until light-cljs-115.
+        let form = crate::native_form_adapter::method_form(
+            self.macro_host.context_mut(),
+            &original,
+            self.type_fields.is_some(),
+        )
+        .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         let call = self.import_form(&form)?;
         let NodeKind::Collection { children, .. } = self.syntax.nodes[call.0].kind.clone() else {
             unreachable!()
@@ -5746,7 +5706,7 @@ impl Analyzer<'_> {
                         self.metadata_entry(field, key).is_some_and(|value| {
                             !matches!(
                                 value.data().inspect(),
-                                ValueView::Nil | ValueView::Boolean(false)
+                                DatumView::Nil | DatumView::Boolean(false)
                             )
                         })
                     });
@@ -6253,8 +6213,9 @@ impl Analyzer<'_> {
             let c = self.macro_host.context_mut();
             let source = self
                 .macro_source
-                .get_or_insert_with(|| c.source(self.namespace, self.source));
-            let form = c.lower_compiler_form(
+                .get_or_insert_with(|| Source::new(self.namespace, self.source));
+            let form = crate::native_form_adapter::lower_form(
+                c,
                 source,
                 &self.syntax,
                 call,
@@ -6378,20 +6339,20 @@ impl Analyzer<'_> {
         let c = self.macro_host.context_mut();
         let source = self
             .macro_source
-            .get_or_insert_with(|| c.source(self.namespace, self.source));
-        let form = c
-            .lower_compiler_form(
-                source,
-                &self.syntax,
-                id,
-                &aliases,
-                &self.discards,
-                &reader_globals,
-            )
-            .map_err(|e| AnalysisError {
-                span: e.span.bytes(),
-                kind: AnalysisErrorKind::MacroExpansion(format!("reader: {e}")),
-            })?;
+            .get_or_insert_with(|| Source::new(self.namespace, self.source));
+        let form = crate::native_form_adapter::lower_form(
+            c,
+            source,
+            &self.syntax,
+            id,
+            &aliases,
+            &self.discards,
+            &reader_globals,
+        )
+        .map_err(|e| AnalysisError {
+            span: e.span.bytes(),
+            kind: AnalysisErrorKind::MacroExpansion(format!("reader: {e}")),
+        })?;
         while self.discards.get(self.next_discard).is_some_and(|discard| {
             self.syntax.nodes[discard.0].span.start < self.syntax.nodes[id.0].span.end
         }) {
@@ -6431,7 +6392,7 @@ impl Analyzer<'_> {
                         else {
                             return true;
                         };
-                        let ValueView::Keyword(name) = form.data().inspect() else {
+                        let DatumView::Keyword(name) = form.data().inspect() else {
                             return true;
                         };
                         let local = String::from_utf16_lossy(name.name());
@@ -6489,7 +6450,7 @@ impl Analyzer<'_> {
             .compiler_literal_data()
             .expect("compiler literal payload");
         if kind == CompilerLiteralKind::BigInteger {
-            let ValueView::String(text) = data.inspect() else {
+            let DatumView::String(text) = data.inspect() else {
                 unreachable!("integer payload")
             };
             let value = String::from_utf16_lossy(&text)
@@ -6501,13 +6462,7 @@ impl Analyzer<'_> {
         {
             payload
         } else {
-            self.macro_host
-                .context_mut()
-                .form_from_data(&data, &form.span())
-                .map_err(|e| AnalysisError {
-                    kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
-                    span: form.span().bytes(),
-                })?
+            Form::from_data(data, form.span(), form.node().origin.clone())
         };
         let payload = self.import_form(&payload)?;
         let mut items = Vec::new();
@@ -6524,8 +6479,8 @@ impl Analyzer<'_> {
             for (index, child) in children.into_iter().enumerate() {
                 if kind == CompilerLiteralKind::JsObject && index % 2 == 0 {
                     let string = match self.generated[child.0].as_ref().unwrap().data().inspect() {
-                        ValueView::Keyword(name) => name.name().to_vec(),
-                        ValueView::String(text) => text.to_vec(),
+                        DatumView::Keyword(name) => name.name().to_vec(),
+                        DatumView::String(text) => text.to_vec(),
                         _ => unreachable!("validated JS key"),
                     };
                     let string = self.own_string(string);
@@ -6574,20 +6529,20 @@ impl Analyzer<'_> {
                 }
             }
             FormKind::Scalar => match form.data().inspect() {
-                ValueView::Nil => NodeKind::Nil,
-                ValueView::Boolean(value) => NodeKind::Boolean(value),
-                ValueView::Integer(value) => {
+                DatumView::Nil => NodeKind::Nil,
+                DatumView::Boolean(value) => NodeKind::Boolean(value),
+                DatumView::Integer(value) => {
                     numeric = Some(Some(value as f64));
                     NodeKind::Number(NumberKind::Integer)
                 }
-                ValueView::Double(value) => {
+                DatumView::Double(value) => {
                     numeric = Some(Some(value));
                     NodeKind::Number(NumberKind::Float)
                 }
-                ValueView::Keyword(_) => NodeKind::Keyword {
+                DatumView::Keyword(_) => NodeKind::Keyword {
                     auto_resolve: false,
                 },
-                ValueView::Ratio {
+                DatumView::Ratio {
                     numerator,
                     denominator,
                 } => {
@@ -6599,14 +6554,14 @@ impl Analyzer<'_> {
                     numeric = Some(Some(numerator as f64));
                     NodeKind::Number(NumberKind::Integer)
                 }
-                ValueView::CompilerLiteral(_) => NodeKind::Regex,
-                ValueView::Character(value) => {
+                DatumView::CompilerLiteral(_) => NodeKind::Regex,
+                DatumView::Character(value) => {
                     NodeKind::String(crate::StringValue::Decoded(vec![value]))
                 }
-                ValueView::String(value) => {
+                DatumView::String(value) => {
                     NodeKind::String(crate::StringValue::Decoded(value.to_vec()))
                 }
-                ValueView::Symbol(name) => {
+                DatumView::Symbol(name) => {
                     // Invalid Unicode is legal quoted name data. Delay the
                     // executable-name check until analysis knows its context.
                     spelling = Some(
@@ -6912,7 +6867,7 @@ impl Analyzer<'_> {
                         let default_catch = if let Some(form) =
                             self.generated.get(items[1].0).and_then(Option::as_ref)
                         {
-                            matches!(form.data().inspect(), ValueView::Keyword(name)
+                            matches!(form.data().inspect(), DatumView::Keyword(name)
                                 if name.namespace().is_none() && name.name().iter().copied().eq("default".encode_utf16()))
                         } else {
                             self.spelling(items[1]) == ":default"

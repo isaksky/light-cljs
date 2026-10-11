@@ -273,7 +273,7 @@ helper a runtime root, but eliminating it must not erase application effects.
 
 | Current responsibility | Endpoint |
 | --- | --- |
-| Forms, names, ordered children, metadata, source spans/origins, syntax quote and namespace views under interpreter modules | Extract as compiler-owned Rust support; remove dependence on native rooted values and executable-unit storage. |
+| Forms, names, ordered children, metadata, source spans/origins, syntax quote and namespace views | Immutable forms/data/provenance are extracted in `compiler_data`; analyzer/IR use them without native roots. `native_form_adapter` temporarily supplies semantic reading, macro conversion, method destructuring and printing. Reader/resolution extraction continues in `light-cljs-105`; `light-cljs-115` deletes the adapter and native compatibility storage. |
 | Macro algorithms, ordinary helpers, core/runtime collections, Vars/state and dispatch | Compiler-emitted JS using the canonical runtime and phase-local roots. |
 | Native evaluation stack, exact numeric tower, native heap/GC/reuse and eager namespace evaluation | Remove after replacements and extraction pass. Do not preserve a fallback. |
 | Public eval/source/form/invoke/macroexpand and embedding options/callbacks/readers/IO | Engine-neutral compiler-plus-QuickJS APIs, with explicit ownership and capabilities. |

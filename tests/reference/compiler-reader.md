@@ -127,3 +127,35 @@ forms also reject before evaluation locally, including native macro inputs,
 matching both pinned readers. Dynamic equality of distinct source forms remains
 a separate runtime check and explicit release/checkout difference. See
 [the integration evidence](compiler-language-completion.md).
+
+## Compiler-owned datum extraction — 2026-10-10
+
+The new ownership checks are hand-authored local contracts, independent of
+upstream implementations: `compiler_forms_can_be_constructed_without_any_evaluator`
+and `compiler_forms_and_ir_survive_host_teardown_without_native_roots` in
+`tests/compiler_reader.rs`, plus the native-owner weak-reference and nested-origin
+unit tests in `interpreter/reader.rs` and `macro_host.rs`. They verify no native
+root/storage remains reachable from compiler forms, exact UTF-16 and floating
+bits, metadata/tagged payloads, source identity, and owned diagnostics after host
+teardown. The IR ownership case executes emitted JavaScript after teardown;
+existing reader/macro suites continue asserting ordered effects and runtime values.
+The metadata-annotated `&form` alias now retains its original nested expansion
+origin rather than acquiring the next expansion's origin.
+
+The focused extraction run passed **155 tests** with **one existing ignored manual
+protocol timing test**, using:
+
+```sh
+cargo test --locked --lib \
+  --test compiler_reader --test provenance --test compiler_macros --test analyzer \
+  --test interpreter_reader --test interpreter_macros --test interpreter_reuse \
+  --test compiler_destructuring_completion --test compiler_reify
+```
+
+`cargo clippy --locked --lib -- -D warnings`,
+`cargo check --locked --all-targets --all-features`, `cargo fmt --all --check`
+and `git diff --check` also passed.
+
+The required four compiler suites are included in that run. The full suite,
+optional JVM/upstream comparisons and benchmarks were not rerun for this ownership
+change; earlier verification above remains historical evidence.

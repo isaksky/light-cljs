@@ -139,37 +139,7 @@ impl fmt::Display for HandleError {
 }
 impl std::error::Error for HandleError {}
 
-/// A name's exact UTF-16 components, without reader resolution or validation.
-/// Names constructed by a host need not be valid source token spellings.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Name {
-    namespace: Option<Rc<[u16]>>,
-    name: Rc<[u16]>,
-}
-
-impl Name {
-    pub fn new(namespace: Option<&str>, name: &str) -> Self {
-        Self {
-            namespace: namespace.map(|s| s.encode_utf16().collect()),
-            name: name.encode_utf16().collect(),
-        }
-    }
-
-    pub fn from_utf16(namespace: Option<&[u16]>, name: &[u16]) -> Self {
-        Self {
-            namespace: namespace.map(Rc::from),
-            name: Rc::from(name),
-        }
-    }
-
-    pub fn namespace(&self) -> Option<&[u16]> {
-        self.namespace.as_deref()
-    }
-
-    pub fn name(&self) -> &[u16] {
-        &self.name
-    }
-}
+pub use crate::compiler_data::{CompilerLiteralKind, Name};
 
 /// Owned inspection data. Cloning this snapshot cannot retain runtime edges.
 /// Numeric categories are distinct; doubles retain all their IEEE-754 bits.
@@ -221,19 +191,6 @@ pub enum ValueView {
     Volatile,
     Input,
     Output,
-}
-
-/// Compile-time representations for values owned by the JavaScript runtime.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompilerLiteralKind {
-    /// Exact reader integer identity until JavaScript Number emission.
-    BigInteger,
-    Regex,
-    Instant,
-    Uuid,
-    JsArray,
-    JsObject,
-    Queue,
 }
 
 impl Context {
@@ -1105,7 +1062,7 @@ impl Context {
         self.source_at_line(name.into(), text.into(), 0)
     }
 
-    fn source_at_line(&self, name: String, text: String, line_offset: usize) -> Source {
+    pub(crate) fn source_at_line(&self, name: String, text: String, line_offset: usize) -> Source {
         let file = Rc::new(SourceFile {
             name,
             text,

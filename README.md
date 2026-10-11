@@ -28,6 +28,12 @@ language completion are separate milestones.
 
 ## Current native interpreter
 
+Compiler forms, exact UTF-16 names, metadata, opaque reader literal payloads and
+source provenance live in `compiler_data`, with no native heap or executable-unit
+roots. Forms and semantic IR survive macro-host teardown; a temporary named
+native reader/macro adapter remains until evaluator migration removes it. See the
+[compiler ownership contract](docs/compiler.md#pipeline-and-ownership).
+
 The native SCI-style interpreter has owned scalar and immutable collection
 values, metadata, structural equality/hashing, source storage, semantic reading,
 owned forms, primitive evaluation, user/native macro expansion, and explicit garbage collection in

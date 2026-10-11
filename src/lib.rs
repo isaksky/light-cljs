@@ -12,11 +12,13 @@ use std::{iter::FusedIterator, ops::Range};
 pub mod analyzer;
 mod char_classes;
 pub mod compiler;
+pub mod compiler_data;
 mod compiler_reader;
 pub mod emitter;
 pub mod interpreter;
 mod literals;
 pub mod macro_host;
+mod native_form_adapter;
 pub mod parser;
 mod reader_literals;
 

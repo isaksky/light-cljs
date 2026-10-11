@@ -2,16 +2,7 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-/// Exact source form identity, independent of recyclable arena IDs. Text is
-/// included so changed definitions at the same filename/offset do not merge.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiagnosticLocation {
-    pub source: String,
-    pub bytes: Range<usize>,
-    pub line: usize,
-    pub column: usize,
-    pub text: String,
-}
+pub use crate::compiler_data::DiagnosticLocation;
 
 impl DiagnosticLocation {
     pub(super) fn new(store: &Store, location: &Location) -> Self {

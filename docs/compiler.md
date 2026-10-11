@@ -29,9 +29,28 @@ linear representation; Node process timings are not browser startup estimates.
 
 ## Pipeline and ownership
 
-The migration preserves the compiler's Rust ownership of these stages. It extracts
-forms, source provenance, syntax quote and namespace views from interpreter
-infrastructure, then adds an evaluator boundary for compiled macro/helper units.
+Compiler forms and source provenance now live in `compiler_data`: exact UTF-16
+`Name`, `Source`/`SourceSpan`, origins, immutable `Form`/`FormId` nodes and an owned
+finite `Datum` tree. `Form::data()` returns a compiler datum and retains no native
+`Context`, `RootedValue`, executable unit or collector owner. Source text and
+located reader errors remain usable after the macro host and input buffers drop.
+`Form::from_data` constructs supplied data without an evaluator; the staged
+`MacroHost::read_compiler_form` API returns the same owned representation.
+
+Map form children alternate keys and values in source evaluation order, separately
+from semantic map storage. Form spans retain lexical spelling; datum scalars keep
+reader number categories and all floating bits, while JS emission converts numbers
+to Number. Metadata and opaque reader literal payloads are owned datum/form edges.
+
+`native_form_adapter` is the temporary reader/macro bridge. It converts structured
+data directly, preserves source identity and nested expansion origins, and copies
+already realized finite sequence form children rather than retaining native lazy
+values. It also isolates native assertion printing and method destructuring.
+Native public source/form APIs remain usable during this stage. `light-cljs-105`
+extracts remaining reader/resolution services; `light-cljs-108` replaces native
+macro execution; `light-cljs-115` deletes this adapter and the native compatibility
+storage. Syntax quote and namespace views still use those staged services.
+The migration then adds an evaluator boundary for compiled macro/helper units.
 Compile-time emission uses the same semantic IR and canonical runtime operations;
 it may add deferred-root access and bypass optional application optimization.
 See [session ownership and reentrancy](evaluator-migration.md#sessions-ownership-and-reentrancy).

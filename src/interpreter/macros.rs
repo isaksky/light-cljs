@@ -108,7 +108,7 @@ impl Context {
             let started = self.macros.enabled.then(Instant::now);
             self.realize_key(&value).map_err(deferred::invoke_error)?;
             let expanded = self
-                .macro_form(&value, form, name.clone())
+                .macro_form_with_alias(&value, form, name.clone(), &data)
                 .map_err(|e| InvokeError::Execution(Box::new(e.into())))?;
             if let Some(index) = index {
                 self.macros.stats[index].generated_forms += expanded.nodes().len() as u64;

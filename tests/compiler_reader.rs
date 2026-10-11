@@ -197,3 +197,96 @@ fn host_types_and_lazy_regex_tails_have_direct_runtime_observations() {
     );
     check(r#"(= (first (with-meta () {})) nil)"#, "true");
 }
+
+#[test]
+fn compiler_forms_and_ir_survive_host_teardown_without_native_roots() {
+    use light_cljs::compiler_data::{DatumView, FormKind, Source};
+    let input = String::from(r#"^:kept {:z [#js [1] "\ud800"] :a #uuid "1-1-1-1-1"}"#);
+    let source = Source::new("owned.cljs", input.clone());
+    let mut host = MacroHost::new();
+    host.context_mut().collect_garbage();
+    let before = host.context_mut().memory_stats();
+    let form = host.read_compiler_form(&source).unwrap().unwrap();
+    assert_eq!(form.span().source().id(), source.id());
+    // Keeping the compiler arena cannot root native reader units or sources.
+    host.context_mut().collect_garbage();
+    let after = host.context_mut().memory_stats();
+    assert_eq!(after.executable_units, before.executable_units);
+    assert_eq!(after.sources, before.sources);
+    let program_source = format!("(count {input})");
+    let program = light_cljs::analyze_with_macros(
+        &program_source,
+        &light_cljs::parse(&program_source).unwrap(),
+        &mut host,
+    )
+    .unwrap();
+    let error_source = Source::new("bad.cljs", "\n#uuid \"bad\"");
+    let error = host.read_compiler_form(&error_source).unwrap_err();
+    drop(host);
+    drop(source);
+    drop(error_source);
+    drop(input);
+    drop(program_source);
+    assert!(matches!(
+        form.node().kind,
+        FormKind::Collection {
+            kind: light_cljs::CollectionKind::Map,
+            ..
+        }
+    ));
+    let children = form.children();
+    assert_eq!(
+        children
+            .iter()
+            .map(|c| c.span().text().to_owned())
+            .collect::<Vec<_>>(),
+        [":z", r#"[#js [1] "\ud800"]"#, ":a", r#"#uuid "1-1-1-1-1""#]
+    );
+    let DatumView::String(text) = children[1].children()[1].data().inspect() else {
+        panic!()
+    };
+    assert_eq!(&*text, &[0xd800]);
+    assert!(form.metadata().is_some());
+    assert!(error.to_string().starts_with("bad.cljs:2:"));
+    let js = light_cljs::emit_js(&program);
+    assert_eq!(run(&js), "2\n");
+}
+
+#[test]
+fn compiler_forms_can_be_constructed_without_any_evaluator() {
+    use light_cljs::compiler_data::{Datum, DatumKind, DatumView, Form, Name, Origin, Source};
+    let source = Source::new("supplied", "");
+    let meta = Datum::new(DatumKind::Collection {
+        kind: light_cljs::CollectionKind::Map,
+        children: vec![
+            Datum::new(DatumKind::Keyword(Name::new(None, "flag"))),
+            Datum::new(DatumKind::Boolean(true)),
+        ]
+        .into(),
+    });
+    let data = Datum::new(DatumKind::Collection {
+        kind: light_cljs::CollectionKind::Vector,
+        children: vec![
+            Datum::new(DatumKind::Symbol(Name::from_utf16(
+                Some(&[0xdc00]),
+                &[0xd800],
+            ))),
+            Datum::new(DatumKind::Double(-0.0)),
+        ]
+        .into(),
+    })
+    .with_metadata(meta);
+    let form = Form::from_data(data, source.span(0..0).unwrap(), Origin::SuppliedData);
+    drop(source);
+    assert_eq!(form.node().origin, Origin::SuppliedData);
+    assert!(form.metadata().is_some());
+    let DatumView::Symbol(name) = form.children()[0].data().inspect() else {
+        panic!()
+    };
+    assert_eq!(name.namespace(), Some([0xdc00].as_slice()));
+    assert_eq!(name.name(), &[0xd800]);
+    let DatumView::Double(number) = form.children()[1].data().inspect() else {
+        panic!()
+    };
+    assert_eq!(number.to_bits(), (-0.0_f64).to_bits());
+}
