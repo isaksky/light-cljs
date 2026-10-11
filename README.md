@@ -654,3 +654,8 @@ applications and macros: `parse-long`, `parse-double`, `parse-uuid`,
 make ordinary arrays without numeric coercion. See the
 [utility execution audit](tests/reference/compiler-utilities-completion-evidence.md)
 for exact upstream source, Number/UTF-16 behavior and remaining harness obligations.
+
+Definition Var `:file`, `:line`, and `:column` metadata comes from the actual
+compiler source or synthetic input identity and overrides user provenance keys.
+See [source metadata verification](tests/reference/compiler-source-metadata.md)
+for file, text, REPL, namespace, macro, and both pinned reference evidence.

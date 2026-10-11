@@ -11,14 +11,14 @@ are compared separately, including completed effects before failure.
 
 | Disposition | Rows | Evidence |
 | --- | ---: | --- |
-| portable | 1,184 | Original source agrees with the documented CLJS comparison projection |
+| portable | 1,185 | Original source agrees with the documented CLJS comparison projection |
 | adapted | 304 | Recorded source explicitly imports SCI-preinstalled libraries and/or replaces JVM catch selectors with `:default`; projected observation agrees |
-| gap | 902 | Current evaluator observation is recorded, but does **not** satisfy the SCI comparison |
+| gap | 901 | Current evaluator observation is recorded, but does **not** satisfy the SCI comparison |
 | retired | 85 | Exact JVM numeric, configured `:bb` reader or native `.clj` loading contract is outside the settled compiler-backed target |
 
-Only **1,488** matching observations contribute to conformance coverage. The 902
+Only **1,489** matching observations contribute to conformance coverage. The 901
 gaps include 305 cases that emit an owned diagnostic but lack a matching SCI
-phase/category transport contract. The other 597 entries require language or
+phase/category transport contract. The other 596 entries require language or
 dialect review; their recorded baselines are **not accepted language semantics**.
 An accounting test passing means those unresolved cases remain visible and their
 current observations remain reproducible. It cannot establish that migration is
@@ -226,3 +226,10 @@ The former partial effect-cancellation special case was removed. Direct Node
 and compiler witnesses check finite demand, capture reuse, invocation order and
 fresh macro/runtime heaps. Final whole-repository and fenced gate results are
 recorded in [migration verification](../evaluator-migration/verification.md).
+
+`light-cljs-140` restores authoritative definition `:file`, while retaining the
+original SCI reserved-metadata source and observation separately. Its unchanged
+source now has a portable evaluator disposition; the metadata-effects row remains
+explicitly owned by `light-cljs-125`. Both pinned CLJS references reject the fake
+filename at their actual fixture site (3:25), independently of the historical
+local site (1:1). See [source metadata evidence](../compiler-source-metadata.md).

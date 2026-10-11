@@ -2675,6 +2675,37 @@ pub fn analyze_with_warnings(
     analyze_with_macro_warnings(source, syntax, &mut MacroHost::new(), options, warnings)
 }
 
+/// Analyze a named source buffer, retaining its identity in definition metadata.
+pub fn analyze_named_with_warnings(
+    name: &str,
+    source: &str,
+    syntax: &SyntaxTree,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<Program, AnalysisError> {
+    let mut host = MacroHost::new();
+    host.begin_compilation();
+    analyze_input(
+        source,
+        syntax,
+        &mut host,
+        options,
+        warnings,
+        None,
+        Some((
+            "cljs.user",
+            &[],
+            &[],
+            NamespaceResolution {
+                source_name: Some(name.to_owned()),
+                ..Default::default()
+            },
+        )),
+        None,
+        None,
+    )
+}
+
 pub fn analyze_with_macro_warnings(
     source: &str,
     syntax: &SyntaxTree,
@@ -5097,13 +5128,7 @@ impl Analyzer<'_> {
             entries.push(self.data_source(":doc")?);
             entries.push(self.datum(args[1], ExprContext::Value)?);
         }
-        let (line, column) = crate::LineIndex::new(self.source)
-            .line_column(self.syntax.nodes[id.0].span.start)
-            .unwrap();
-        for (key, value) in [(":line", line.to_string()), (":column", column.to_string())] {
-            entries.push(self.data_source(key)?);
-            entries.push(self.data_source(&value)?);
-        }
+        self.definition_provenance(id, &mut entries)?;
         let metadata = self.push(
             ExprKind::Map(entries),
             self.syntax.nodes[id.0].span.clone(),
@@ -5193,6 +5218,47 @@ impl Analyzer<'_> {
             self.syntax.nodes[id.0].span.clone(),
             context,
         ))
+    }
+
+    fn definition_provenance(
+        &mut self,
+        id: NodeId,
+        entries: &mut Vec<ExprId>,
+    ) -> Result<(), AnalysisError> {
+        // Compiler provenance is reserved even when the symbol supplies :file.
+        // Owned forms also retain REPL line offsets and macro call-site spans;
+        // indexing the current text alone would lose those locations.
+        let (file, line, column) =
+            if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref) {
+                let span = form.span();
+                let (line, column) = span.source().line_column(span.bytes().start).unwrap();
+                (span.source().name().to_owned(), line, column)
+            } else {
+                let (line, column) = crate::LineIndex::new(self.source)
+                    .line_column(self.syntax.nodes[id.0].span.start)
+                    .unwrap();
+                (
+                    self.resolution
+                        .source_name
+                        .as_deref()
+                        .unwrap_or(self.namespace)
+                        .to_owned(),
+                    line,
+                    column,
+                )
+            };
+        entries.push(self.data_source(":file")?);
+        let file = self.own_string(file.encode_utf16().collect());
+        entries.push(self.push(
+            ExprKind::String(file),
+            self.syntax.nodes[id.0].span.clone(),
+            ExprContext::Value,
+        ));
+        for (key, value) in [(":line", line.to_string()), (":column", column.to_string())] {
+            entries.push(self.data_source(key)?);
+            entries.push(self.data_source(&value)?);
+        }
+        Ok(())
     }
 
     fn declare_form(
@@ -6877,6 +6943,11 @@ impl Analyzer<'_> {
                     .collect::<Vec<_>>()
                     .join(" ")
             ))?;
+            let mut provenance = Vec::new();
+            self.definition_provenance(id, &mut provenance)?;
+            if let ExprKind::Map(entries) = &mut self.program.exprs[metadata.0].kind {
+                entries.extend(provenance);
+            }
             self.program.globals[factory.0].metadata = Some(metadata);
         }
         let previous_env = std::mem::take(&mut self.env);

@@ -465,3 +465,48 @@ fn imported_macro_helpers_run_script_initializers_once() {
         "[42 42 1]\n",
     );
 }
+
+#[test]
+fn definition_metadata_uses_text_file_and_incremental_repl_locations() {
+    let probe = "(def ^{:file \"fake\" :line 0 :column 0} x 1) [(:file (meta #'x)) (:line (meta #'x)) (:column (meta #'x))]";
+    ok(
+        run(&["--eval", "--text", probe], ""),
+        "[\"<text>.cljc\" 1 1]\n",
+    );
+    let directory = Directory::new();
+    let path = directory.write("source.cljs", &format!("\n  {probe}"));
+    ok(
+        run(&["--eval", path.to_str().unwrap()], ""),
+        &format!("[{:?} 2 3]\n", path.to_str().unwrap()),
+    );
+    for args in [
+        vec!["--compile", "--text", probe],
+        vec!["--compile", path.to_str().unwrap()],
+    ] {
+        let output = run(&args, "");
+        assert!(output.status.success());
+        let js = String::from_utf8(output.stdout).unwrap();
+        let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        let expected = if args[1] == "--text" {
+            "[\"<text>.cljc\" 1 1]".to_owned()
+        } else {
+            format!("[{:?} 2 3]", path.to_str().unwrap())
+        };
+        let result = evaluator
+            .evaluate_js(&format!("({js}).toString()"))
+            .unwrap();
+        assert_eq!(evaluator.string(result).unwrap(), expected);
+    }
+    let out = run(
+        &["--repl"],
+        "\n(def ^{:file \"fake\"} x 1)\n\n[(:file (meta #'x)) (:line (meta #'x)) (:column (meta #'x))]\n(def ^{:file \"fake\"} y 2)\n[(:file (meta #'y)) (:line (meta #'y)) (:column (meta #'y))]\n",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("[\"<stdin>.cljc\" 2 1]"), "{text}");
+    assert!(text.contains("[\"<stdin>.cljc\" 5 1]"), "{text}");
+}

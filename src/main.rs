@@ -7,8 +7,8 @@ use std::{
     process::ExitCode,
 };
 
-use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_with_warnings};
-use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, compile_namespace, emit_js, parse};
+use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_warnings};
+use light_cljs::{LineIndex, TokenKind, Tokenizer, compile_namespace, emit_js, parse};
 
 mod eval_cli;
 
@@ -112,6 +112,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         return run_namespace(first.into_iter().chain(args), options);
     }
+    let source_name = match first.as_deref() {
+        Some(arg) if arg == "--text" => "<text>.cljc".to_owned(),
+        Some(arg) if arg != "-" => arg.to_string_lossy().into_owned(),
+        _ => "<stdin>.cljc".to_owned(),
+    };
     let source = match first.as_deref() {
         Some(arg) if arg == "--help" || arg == "-h" => {
             println!(
@@ -156,15 +161,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             message
         })?;
         if mode != "parse" {
-            let program = if options.warning_mode {
-                let mut warnings = Vec::new();
-                let result = analyze_with_warnings(&source, &tree, options, &mut warnings);
-                print_warnings(&warnings);
-                result
-            } else {
-                analyze(&source, &tree)
-            }
-            .map_err(|error| {
+            let mut warnings = Vec::new();
+            let program =
+                analyze_named_with_warnings(&source_name, &source, &tree, options, &mut warnings);
+            print_warnings(&warnings);
+            let program = program.map_err(|error| {
                 let (line, column) = LineIndex::new(&source)
                     .line_column(error.span.start)
                     .unwrap();

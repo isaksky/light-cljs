@@ -39,7 +39,9 @@ internal AST and warning assertions are not counted as semantic passes.
 
 Ordinary globals remain separate JavaScript storage slots. `def` retains its
 initializer result, accepts a docstring and definition metadata, and registers
-its name before analyzing initialization. `declare` permits forward calls and
+its name before analyzing initialization. Reserved definition source filename/line/column metadata is authoritative even
+when user metadata supplies those keys; see [source metadata evidence](compiler-source-metadata.md).
+`declare` permits forward calls and
 preserves existing definitions. Nonempty tail declarations yield undefined;
 empty declarations yield nil. Required value positions for uninitialized
 definitions/declarations remain rejected because the pins emit invalid JavaScript

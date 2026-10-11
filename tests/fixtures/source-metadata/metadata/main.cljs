@@ -1,0 +1,8 @@
+(ns metadata.main (:require [metadata.values :as v]))
+  (v/make-def)
+(and (boolean (re-find #"metadata/values.cljs$" (:file (meta #'v/value))))
+ (= [2 1 true true] [(:line (meta #'v/value)) (:column (meta #'v/value)) (:private (meta #'v/value)) (:dynamic (meta #'v/value))])
+ (boolean (re-find #"metadata/values.cljs$" (:file (meta #'v/once-value))))
+ (= [4 1 true] [(:line (meta #'v/pending)) (:column (meta #'v/pending)) (:declared (meta #'v/pending))])
+ (boolean (re-find #"metadata/main.cljs$" (:file (meta #'made))))
+ (= [2 3] [(:line (meta #'made)) (:column (meta #'made))]))

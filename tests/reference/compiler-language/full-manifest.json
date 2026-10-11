@@ -1399,7 +1399,7 @@
   ],
   "scope": "intended-language",
   "generator_sha256": "e644453d3f345a835cdfa16cbe484feeca24ef324a62dc9cef4771d4a66ab511",
-  "obligations_sha256": "9fb0b545e8750b4c2515f88b45536a0bf827d0e8f78809ce15bc45f8294bd658",
+  "obligations_sha256": "e67d64836a3728be85ba23436e1b81d0c76f788bcad07ad265ae09c7a0abbde9",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,7 +1440,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "647fdf3356818a957ebd7b3e92800c6d690260f013ee93f500f2061a174cdbca"
+      "sha256": "ac9d12048cc5d2efa815cdbe53efbf9fee12ee8026e3fc5ed1ed1c55bb13e5a3"
     },
     {
       "path": "src/core_var_metadata.tsv",
@@ -1452,7 +1452,7 @@
     },
     {
       "path": "tests/reference/sci/evaluator-dispositions.tsv",
-      "sha256": "dc273b97fd04ba8fd6a7e1eb6f9956dba403fa497aef05687db549b54c3b8d72"
+      "sha256": "d6426d621f289fb624d654fb1bd80b3c1784669ce6711ea6d3c410c2cf4dd178"
     },
     {
       "path": "tests/reference/sci/historical/supported-apis.tsv",

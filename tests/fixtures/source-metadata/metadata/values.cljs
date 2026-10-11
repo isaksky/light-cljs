@@ -1,0 +1,5 @@
+(ns metadata.values)
+(def ^{:file "fake" :private true :dynamic true} value 1)
+(defonce ^{:file "fake"} once-value 2)
+(declare ^{:file "fake"} pending)
+(defmacro make-def [] (list 'def (with-meta 'made {:file "fake"}) 3))

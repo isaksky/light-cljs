@@ -1,0 +1,4 @@
+phase	iterations	nanoseconds
+fresh-session	20	338640042
+reused-session	20	2283375
+bounded-loop-reset-recovery	20	1385637791
