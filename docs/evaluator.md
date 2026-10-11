@@ -166,8 +166,19 @@ survives host reuse, so source, options, imports and selected conditional edits
 cannot reuse stale IR. The separately cached bootstrap source is immutable and
 built from this binary's embedded sources. Legacy explicit native macro imports
 keep their existing eager adapter until light-cljs-115; they are not a fallback
-for failed JavaScript compilation. General demand/overlay behavior and declaration
-bundles remain separate migration work.
+for failed JavaScript compilation. The session's JS registry now retains compiled
+code and pending/initializing/ready/failed roots. Only missing code crosses the
+Rust service boundary; cached reads and ordinary initializer cycles stay in JS.
+Var construction and `resolve` inspect identity without demanding roots. Dynamic
+and redefinition overlays take precedence; saving/restoring them leaves pending
+and failed roots intact. Failure is sticky within a source generation, and
+ordinary redefinition replaces that generation. Compile-time `defonce` preserves
+any encountered generation, including a pending promise that returns undefined;
+application lowering retains its ordinary undefined check. Declaration bundles
+remain separate migration work.
+
+The [helper demand validation](../tests/reference/compiler-helper-demand.md)
+records value paths, source effects, scope restoration and cancellation recovery.
 
 Execution evidence and the focused commands are recorded in
 [deferred unit validation](../tests/reference/compiler-deferred-units.md).

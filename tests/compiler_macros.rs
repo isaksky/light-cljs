@@ -2203,3 +2203,231 @@ mod reentrant_deferred_units {
         }
     }
 }
+
+mod ordinary_helper_demand {
+    use super::*;
+
+    fn clean_host() -> MacroHost {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        host
+    }
+    fn checked(source: &str) -> String {
+        result(&compile_with_macros(source, &mut clean_host()).unwrap())
+    }
+
+    #[test]
+    fn connection_is_application_only_and_initializer_order_is_preserved() {
+        let js = compile_with_macros(r#"
+          (def factor (+ 1 1))
+          (defn twice [x] (* factor x))
+          (def connection (js/connect))
+          (defmacro doubled [x] (twice x))
+          (pr-str [(doubled 21) (twice 21)])"#, &mut clean_host()).unwrap();
+        assert_eq!(execute(&format!("let count = 0; globalThis.connect = () => ++count; console.log({js}); console.log(count);")), "[42 42]\n1\n");
+        let generated = compile_with_macros(r#"
+          (defmacro install [] '(do (def factor 2) (defn twice [x] (* factor x)) (def connection (js/connect))))
+          (install)
+          (defmacro doubled [x] (twice x))
+          (pr-str [(doubled 21) (twice 21)])"#, &mut clean_host()).unwrap();
+        assert_eq!(execute(&format!("let count = 0; globalThis.connect = () => ++count; console.log({generated}); console.log(count);")), "[42 42]\n1\n");
+        assert_eq!(checked(r#"
+          (def trace (atom []))
+          (def factor (do (swap! trace conj :factor) 2))
+          (defn twice [x] (* factor x))
+          (def connection (do (swap! trace conj :connection) 1))
+          (defmacro doubled [x] (twice x))
+          (= [42 42 [:factor :connection]] [(doubled 21) (twice 21) @trace])"#), "true\n");
+    }
+
+    #[test]
+    fn roots_are_fresh_on_reuse_and_standalone_mutation_is_never_replayed() {
+        let mut host = clean_host();
+        for _ in 0..2 {
+            assert_eq!(result(&compile_with_macros(r#"
+              (def hits (atom 0))
+              (defn next-id [] (swap! hits inc))
+              (defmacro id [] (next-id))
+              (pr-str [(id) (id) @hits])"#, &mut host).unwrap()), "[1 2 0]\n");
+            assert_eq!(result(&compile_with_macros(r#"
+              (def hits (atom 0))
+              (swap! hits inc)
+              (def value 0)
+              (set! value 1)
+              (defmacro observed [] (+ @hits value))
+              (= [0 1 1] [(observed) @hits value])"#, &mut host).unwrap()), "true\n");
+        }
+    }
+
+    #[test]
+    fn higher_order_collections_closures_apply_composition_and_branches_demand_values() {
+        assert_eq!(checked(r#"
+          (def factor 2)
+          (def unused 0)
+          (defn adder [x] (fn [y] (+ x y factor)))
+          (def funcs [(adder 3)])
+          (def mapping {:f (adder 4)})
+          (defmacro run []
+            (assert (= 10 (apply (first funcs) [5])))
+            (assert (= 12 ((get mapping :f) 6)))
+            (assert (= 22 ((comp (adder 3) (adder 4)) 11)))
+            (assert (= 21 (reduce + (map (adder 3) [1 2 3]))))
+            (if false unused (js/Math.imul 6 7)))
+          (= 42 (run))"#), "true\n");
+        let source = "(def unused (js/connect)) (defmacro m [] (if false unused (js/Math.imul 6 7))) (m)";
+        assert!(compile_with_macros(source, &mut clean_host()).is_ok());
+        let error = compile_with_macros(&source.replace("if false", "if true"), &mut clean_host()).unwrap_err().to_string();
+        assert!(error.contains("connect") && error.contains("1:6"), "{error}");
+    }
+
+    #[test]
+    fn var_identity_quote_metadata_and_resolve_are_lazy_until_consumed() {
+        // No console is installed in QuickJS. Var construction, equality,
+        // metadata and resolve must not demand this pending host initializer.
+        assert!(compile_with_macros(r#"
+          (def ^{:doc "pending"} unused (js/connect))
+          (declare missing)
+          (defmacro m []
+            (assert (var? (resolve 'missing)))
+            (assert (= #'unused (resolve 'unused)))
+            (assert (= "pending" (:doc (meta #'unused))))
+            (assert (= 'unused 'unused))
+            42)
+          (m)"#, &mut clean_host()).unwrap().contains("42"));
+        assert_eq!(checked(r#"
+          (def hits (atom 0))
+          (def value (do (swap! hits inc) 40))
+          (defn f [x] (+ value x))
+          (defmacro m []
+            (assert (= 0 @hits))
+            (assert (= 40 @#'value))
+            (assert (= 1 @hits))
+            (assert (= 42 (#'f 2)))
+            (assert (= 43 ((resolve 'f) 3)))
+            (assert (= 40 @(resolve 'value)))
+            42)
+          (= [42 1] [(m) @hits])"#), "true\n");
+    }
+
+    #[test]
+    fn mutual_recursion_and_located_unavailable_and_initialization_cycles() {
+        assert_eq!(checked(r#"
+          (declare even-step odd-step)
+          (defn even-step [n] (if (zero? n) true (odd-step (dec n))))
+          (defn odd-step [n] (if (zero? n) false (even-step (dec n))))
+          (defmacro m [] (even-step 20))
+          (m)"#), "true\n");
+        let error = compile_with_macros("(declare future) (defmacro m [] future) (m) (def future 42)", &mut clean_host()).unwrap_err().to_string();
+        assert!(error.contains("unavailable definition: cljs.user/future") && error.contains("1:10"), "{error}");
+        let error = compile_with_macros("(declare a b) (def a b) (def b a) (defmacro m [] a) (m)", &mut clean_host()).unwrap_err().to_string();
+        assert!(error.contains("root initialization cycle: cljs.user/a -> cljs.user/b -> cljs.user/a"), "{error}");
+    }
+
+    #[test]
+    fn failed_generation_retains_effects_error_and_defonce_until_redefined() {
+        let source = r#"
+          (def effects (atom 0))
+          (def broken (do (swap! effects inc) (throw (js/Error. "sticky"))))
+          (defmacro probe []
+            (let [a (try broken (catch :default e e))
+                  b (try broken (catch :default e e))]
+              (assert (identical? a b))
+              (assert (= 1 @effects)) 1))
+          (probe)
+          (defonce broken 7)
+          (probe)
+          (def broken 42)
+          (defmacro repair [] (assert (= 42 broken)) (assert (= 1 @effects)) 42)
+          (repair)"#;
+        // The emitted application's earlier throwing initializer is intentional;
+        // assertions execute in the compiler and prove the failure state policy.
+        assert!(compile_with_macros(source, &mut clean_host()).is_ok());
+    }
+
+    #[test]
+    fn defonce_preserves_pending_nil_false_undefined_and_allows_declared_slots() {
+        assert_eq!(checked(r#"
+          (def effects (atom 0))
+          (def pending (do (swap! effects inc) 42))
+          (defonce pending 99)
+          (def n nil) (defonce n 99)
+          (def f false) (defonce f 99)
+          (def u js/undefined) (defonce u 99)
+          (declare declared) (defonce declared 7)
+          (defmacro m []
+            (assert (= 0 @effects))
+            (assert (= 42 pending))
+            (assert (= 1 @effects))
+            (assert (nil? n)) (assert (false? f))
+            (assert (identical? js/undefined u))
+            (assert (not (exists? u)))
+            (assert (var? (resolve 'u)))
+            (assert (= 7 declared)) 42)
+          (= [42 42 nil false 99 7 1] [(m) pending n f u declared @effects])"#), "true\n");
+    }
+
+    #[test]
+    fn saved_function_code_captures_and_active_global_generations() {
+        assert_eq!(checked(r#"
+          (def factor 2)
+          (defn f [x] (+ factor x))
+          (def saved f)
+          (defmacro before [] (saved 3))
+          (before)
+          (def first-result 5)
+          (def factor 10)
+          (defn f [x] (* factor x))
+          (defmacro after [] (assert (= 13 (saved 3))) (assert (= 30 (f 3))) 13)
+          (= [5 13 13 30] [first-result (after) (saved 3) (f 3)])"#), "true\n");
+    }
+
+    #[test]
+    fn scopes_preserve_pending_failed_roots_parallel_initializers_and_overlay_set() {
+        assert!(compile_with_macros(r#"
+          (def effects (atom 0))
+          (def ^:dynamic x (do (swap! effects inc) 1))
+          (def y 2)
+          (def unavailable (js/connect))
+          (def broken (do (swap! effects inc) (throw (js/Error. "sticky"))))
+          (def bad-entry (do (swap! effects inc) (throw (js/Error. "entry"))))
+          (defmacro m []
+            (assert (= 9 (with-redefs [unavailable 9] unavailable)))
+            (assert (= 0 @effects))
+            (assert (= 4 (binding [x 3] (set! x 4) x)))
+            (assert (= 0 @effects))
+            (try (binding [x 5] (binding [x 6] (throw (js/Error. "pending")))) (catch :default e nil))
+            (assert (= 0 @effects))
+            (assert (= [2 1] (with-redefs [x y y x] [x y])))
+            (assert (= 1 @effects))
+            (try (binding [x 5] (binding [x 6] (throw (js/Error. "body")))) (catch :default e nil))
+            (assert (= 1 x))
+            (try broken (catch :default e nil))
+            (assert (= 2 @effects))
+            (assert (= 8 (with-redefs [broken 8] broken)))
+            (try (with-redefs [broken 8] (with-redefs [broken 9] (throw (js/Error. "nested")))) (catch :default e nil))
+            (try broken (catch :default e nil))
+            (assert (= 2 @effects))
+            (try (with-redefs [x 10 y broken] 0) (catch :default e nil))
+            (assert (= [1 2] [x y]))
+            (try (with-redefs [x 10 y bad-entry] 0) (catch :default e nil))
+            (assert (= [1 2] [x y]))
+            (assert (= 3 @effects))
+            (try bad-entry (catch :default e nil))
+            (assert (= 3 @effects))
+            (set! y 12)
+            (assert (= 12 y))
+            42)
+          (m)"#, &mut clean_host()).is_ok());
+    }
+
+    #[test]
+    fn executed_nested_definitions_change_only_compilation_roots() {
+        assert_eq!(checked(r#"
+          (def x 1)
+          (defn update [] (def x 7) x)
+          (defn object [] (def x (js* "{answer: 42}")) (.-answer x))
+          (defn scoped [] (binding [x 3] (def x 4) x))
+          (defmacro m [] (assert (= 4 (scoped))) (assert (= 1 x)) (assert (= 42 (object))) (assert (= 7 (update))) (assert (= 7 x)) 7)
+          (= [7 1 4 1 7 7] [(m) x (scoped) x (update) x])"#), "true\n");
+    }
+}

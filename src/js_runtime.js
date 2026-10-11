@@ -1912,25 +1912,28 @@
     Object.defineProperty(value, "__hash", {get() { return uuidHashes.get(this) ?? null; }});
     return value;
   }
-  function makeVar(get, symbol, metadata = null) {
+  function makeVar(get, symbol, metadata = null, deferred = false) {
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return get.call(null).call(null, ...args); };
     methods[21] = function (_self, ...args) { return apply(get.call(null), ...args); };
     const value = makeIFn(methods);
     Object.setPrototypeOf(value, varPrototype);
-    vars.set(value, Object.freeze({get, symbol}));
+    vars.set(value, Object.freeze({get, symbol, deferred, definitionMetadata: metadata}));
     metadataValues.set(value, metadata);
     return value;
   }
-  function definitionVar(get, symbol, metadata = null) {
-    const root = get.call(null);
+  function definitionVar(get, symbol, metadata = null, deferred = false) {
+    const root = deferred ? null : get.call(null);
     const base = mapFromArray([keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)),
       keyword(null, "doc"), null, keyword(null, "file"), null, keyword(null, "line"), null, keyword(null, "column"), null, keyword(null, "arglists"), listFromArray([])]);
-    return makeVar(get, symbol, assoc(into(base, metadata), keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)), keyword(null, "test"), truth(root) ? root.cljs$lang$test : null));
+    return makeVar(get, symbol, assoc(into(base, metadata), keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)), keyword(null, "test"), truth(root) ? root.cljs$lang$test : null), deferred);
   }
   function Var(get, symbol, metadata) { const value = makeVar(get, symbol, metadata); metadataValues.set(value, metadata); return value; }
   function test(value) {
-    const fn = vars.has(value) ? get(meta(value), keyword(null, "test")) : value == null ? null : value.cljs$lang$test;
+    const entry = vars.get(value), metadata = entry ? meta(value) : null;
+    const fn = entry ? (entry.deferred && metadata === entry.definitionMetadata
+      ? entry.get.call(null)?.cljs$lang$test : get(metadata, keyword(null, "test")))
+      : value == null ? null : value.cljs$lang$test;
     if (truth(fn)) { fn.call(null); return keyword(null, "ok"); }
     return keyword(null, "no-test");
   }

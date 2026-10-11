@@ -45,7 +45,7 @@ enum AnalysisState {
 #[derive(Default)]
 struct Catalog {
     units: Vec<Rc<RefCell<Unit>>>,
-    active: HashMap<String, Option<usize>>,
+    active: HashMap<String, (Option<usize>, String)>,
     bindings: HashMap<String, (VarId, usize)>,
     stack: Vec<usize>,
     bootstrap: Option<Bootstrap>,
@@ -75,33 +75,9 @@ impl CompilationSession {
             })
             .map_err(|e| e.to_string())?;
         // Registry and root states stay in JS, so ready reads never cross Rust.
-        let value = evaluator.evaluate_js(r#"(() => {
-          const slots = new Map(), path = [];
-          globalThis.__lightCompilerRoots = new Proxy(Object.create(null), {
-            get(_, name) {
-              const slot = slots.get(name);
-              if (!slot || slot.unit === null) throw new Error('unavailable definition: ' + name);
-              if (slot.state === 'ready') return slot.value;
-              if (slot.state === 'failed') throw slot.error;
-              if (slot.state === 'initializing') { globalThis.__lightCompileUnit(slot.unit); throw new Error('root initialization cycle: ' + [...path,name].join(' -> ')); }
-              slot.state = 'initializing'; path.push(name);
-              try {
-                const source = globalThis.__lightCompileUnit(slot.unit);
-                slot.value = (0,eval)(source)(__lightRuntimeForCompiler);
-                slot.state = 'ready'; return slot.value;
-              } catch(error) { slot.state = 'failed'; slot.error = error; throw error; }
-              finally { path.pop(); }
-            },
-            set(_, name, value) { const old = slots.get(name); slots.set(name, {unit:old?.unit ?? -1,state:'ready',value}); return true; }
-          });
-          globalThis.__lightRegisterUnit = (name, unit, once) => {
-            const old = slots.get(name);
-            if (unit === null && old) return;
-            if (once && old && old.unit !== null) return;
-            slots.set(name, {unit,state:'pending'});
-          };
-          return null;
-        })()"#).map_err(|e|e.to_string())?;
+        let value = evaluator
+            .evaluate_js(include_str!("compiler_roots.js"))
+            .map_err(|e| e.to_string())?;
         evaluator.release(value).map_err(|e| e.to_string())?;
         // Capture the canonical runtime without a second runtime or native adapter.
         let value = evaluator
@@ -113,8 +89,8 @@ impl CompilationSession {
             catalog.bootstrap = Some(bootstrap.clone());
             catalog.active.clone()
         };
-        for (name, unit) in active {
-            Self::install(evaluator.as_ref(), &name, unit, false)?;
+        for (name, (unit, location)) in active {
+            Self::install(evaluator.as_ref(), &name, unit, false, &location)?;
         }
         Ok(())
     }
@@ -123,6 +99,7 @@ impl CompilationSession {
         name: &str,
         unit: Option<usize>,
         once: bool,
+        location: &str,
     ) -> Result<(), String> {
         // Qualified CLJS names cannot contain these escaped JS string delimiters.
         let name = name
@@ -130,9 +107,14 @@ impl CompilationSession {
             .replace('"', "\\\"")
             .replace('\n', "\\n")
             .replace('\r', "\\r");
+        let location = location
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r");
         let value = engine
             .evaluate_unit(&format!(
-                "rt => globalThis.__lightRegisterUnit(\"{name}\",{}, {once})",
+                "rt => globalThis.__lightRegisterUnit(\"{name}\",{}, {once}, \"{location}\")",
                 unit.map_or("null".into(), |n| n.to_string())
             ))
             .map_err(|e| e.to_string())?;
@@ -145,6 +127,7 @@ impl CompilationSession {
         snapshot: DefinitionSnapshot,
         host: MacroHost,
         once: bool,
+        location: String,
     ) -> Result<Option<usize>, String> {
         let (id, bootstrap) = {
             let mut c = self.catalog.borrow_mut();
@@ -170,14 +153,14 @@ impl CompilationSession {
                 id
             });
             if !(id.is_none() && c.active.contains_key(&name)
-                || once && c.active.get(&name).is_some_and(Option::is_some))
+                || once && c.active.get(&name).is_some_and(|(unit, _)| unit.is_some()))
             {
-                c.active.insert(name.clone(), id);
+                c.active.insert(name.clone(), (id, location.clone()));
             }
             (id, c.bootstrap.clone())
         };
         if let Some(bootstrap) = bootstrap {
-            Self::install(bootstrap.evaluator.as_ref(), &name, id, once)?;
+            Self::install(bootstrap.evaluator.as_ref(), &name, id, once, &location)?;
         }
         Ok(id)
     }

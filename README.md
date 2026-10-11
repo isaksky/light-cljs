@@ -156,14 +156,18 @@ Core macros bootstrap from first-party `.cljs` sources through this compiler and
 execute in a fresh QuickJS heap. `defmacro` is a compiler declaration with hidden
 `&form`/`&env` arguments; it produces nil and no application function. Standalone
 macro bodies can use canonical core functions and ECMAScript intrinsics. Ordinary
-helper demand and shared namespace loading are subsequent migration stages;
-legacy explicit `.clj`/`.cljc` macro imports remain an isolated adapter until then.
+helpers initialize on actual value demand, including closures, higher-order calls
+and Var consumption. Var identity/metadata and untaken branches preserve pending
+roots. Compile-time scopes restore pending, ready and failed roots without forcing
+them; clean host reuse creates fresh mutable state. Shared namespace loading
+remains a subsequent migration stage; legacy explicit `.clj`/`.cljc` macro imports
+remain an isolated adapter until then.
 Declarations follow source order at top level, inside top-level `do`, and in
 macro-generated declarations. Same-name macro redefinitions preserve earlier
 expanded code; macro/value kind conflicts and runtime use of a declared macro
 are located phase errors. Local functions shadow unqualified macro calls.
 See the [compiler macro contract](docs/compiler.md)
-for the remaining separate helper/import migration stages.
+for helper demand semantics and the remaining import migration stage.
 
 ```rust
 use light_cljs::{analyze, emit_js, parse};

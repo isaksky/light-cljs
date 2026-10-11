@@ -972,10 +972,35 @@ and `:light-cljs/generation`; it provides no callable macro or runtime Var.
 A clean compile refreshes source macro state even when its `MacroHost` is reused;
 assertion settings, evaluator options and expansion limits persist.
 
-Ordinary helper demand and shared-source namespace imports remain subsequent
-migration work. An ordinary binding shadowing a core name cannot silently call
-the core implementation from a macro body. The legacy import adapter below is
-retained until those changes.
+Ordinary top-level `def`, `defn`, `defonce`, `declare` and macro-generated
+equivalents register compile-time roots without executing their initializers.
+Value reads, calls, closures, collection-held functions, `apply`, Var dereference
+and invocation share a JS demand getter. Quote, Var identity/metadata, `resolve`
+without consumption and untaken branches do not initialize roots. Functions are
+ready before their bodies execute, so self/mutual recursion through preceding
+ordinary declarations works. A declaration without an encountered initializer
+reports a located unavailable-definition error when consumed.
+
+Root initialization is pending → initializing → ready or failed. Initializer
+cycles report the root path. Failure and effects remain cached within that
+generation; an ordinary redefinition or fresh session permits retry. Saved
+function values retain code/captures and read active ordinary global generations.
+`defonce` preserves pending/ready/failed roots, including nil, false and a pending
+initializer that eventually yields undefined. Declaration-only roots admit their
+first `defonce`; application `defonce` retains its undefined-root check.
+
+`binding` and `with-redefs` evaluate all initializers in the outer environment,
+install overlays and restore them in reverse order on success or exception.
+Saving/restoring a compile-time root preserves its exact pending/ready/failed
+state without forcing it. `set!` writes an overlay or demands and changes the
+ordinary root. Executed nested definitions affect only that phase. Standalone
+source expressions run only in the application, and application initialization
+retains source order in its own heap. See the [executing demand evidence](../tests/reference/compiler-helper-demand.md).
+
+Shared-source namespace imports and protocol/type/record/extension declaration
+bundles remain subsequent migration work. An ordinary binding shadowing a core
+name cannot silently call the core implementation from a macro body. The legacy
+import adapter below is retained until namespace migration.
 
 ### Legacy native macro import API
 

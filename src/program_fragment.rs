@@ -299,7 +299,7 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
                 self.expr(key);
             }
             QualifiedMethod { class, .. } => self.expr(class),
-            CopyArguments(id) | WithOutStr(id) | Exists(id) | BooleanHint(id) | Throw(id) => {
+            CopyArguments(id) | WithOutStr(id) | Exists(id) | BindingExists(id) | BooleanHint(id) | Throw(id) => {
                 self.expr(id)
             }
             DefProtocol {

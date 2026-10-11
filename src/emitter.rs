@@ -193,6 +193,17 @@ impl Emitter<'_> {
         }
     }
 
+    fn compiler_binding(&self, id: ExprId) -> bool {
+        self.demand_roots && matches!(self.program.exprs[id.0].kind,
+            ExprKind::Global(g) if !self.program.globals[g.0].name.contains('.'))
+    }
+
+    fn binding_name(&mut self, id: ExprId) {
+        let ExprKind::Global(g) = self.program.exprs[id.0].kind else { unreachable!() };
+        let global = &self.program.globals[g.0];
+        self.string_units(&format!("{}/{}", global.namespace, global.name).encode_utf16().collect::<Vec<_>>());
+    }
+
     fn assignable(&mut self, id: ExprId) {
         if let ExprKind::JsGlobal(global) = self.program.exprs[id.0].kind {
             self.output.push_str("globalThis");
@@ -286,13 +297,17 @@ impl Emitter<'_> {
                 self.indentation();
                 self.output.push_str("{\n");
                 self.indent += 1;
-                // Save every root before evaluating any initializer. All new
-                // values see the outer roots; restoration is in reverse order.
+                // Compiler scope saves overlays without demanding the root.
+                // Every initializer still sees the outer environment.
                 for (i, (target, _)) in bindings.iter().enumerate() {
                     self.indentation();
                     write!(self.output, "const saved{i} = ").unwrap();
-                    self.value(*target);
-                    self.output.push_str(";\n");
+                    if self.compiler_binding(*target) {
+                        self.output.push_str("globalThis.__lightSaveCompilerBinding(");
+                        self.binding_name(*target);
+                        self.output.push(')');
+                    } else { self.value(*target); }
+                    writeln!(self.output, "; let installed{i} = false;").unwrap();
                 }
                 for (i, (_, init)) in bindings.iter().enumerate() {
                     self.indentation();
@@ -300,14 +315,22 @@ impl Emitter<'_> {
                     self.value(*init);
                     self.output.push_str(";\n");
                 }
-                for (i, (target, _)) in bindings.iter().enumerate() {
-                    self.indentation();
-                    self.assignable(*target);
-                    writeln!(self.output, " = temporary{i};").unwrap();
-                }
                 self.indentation();
                 self.output.push_str("try {\n");
                 self.indent += 1;
+                for (i, (target, _)) in bindings.iter().enumerate() {
+                    self.indentation();
+                    if self.compiler_binding(*target) {
+                        self.output.push_str("globalThis.__lightBindCompilerRoot(");
+                        self.binding_name(*target);
+                        writeln!(self.output, ", temporary{i});").unwrap();
+                    } else {
+                        self.assignable(*target);
+                        writeln!(self.output, " = temporary{i};").unwrap();
+                    }
+                    self.indentation();
+                    writeln!(self.output, "installed{i} = true;").unwrap();
+                }
                 self.emit(*body, context);
                 self.indent -= 1;
                 self.indentation();
@@ -315,8 +338,15 @@ impl Emitter<'_> {
                 self.indent += 1;
                 for (i, (target, _)) in bindings.iter().enumerate().rev() {
                     self.indentation();
-                    self.assignable(*target);
-                    writeln!(self.output, " = saved{i};").unwrap();
+                    write!(self.output, "if (installed{i}) ").unwrap();
+                    if self.compiler_binding(*target) {
+                        self.output.push_str("globalThis.__lightRestoreCompilerBinding(");
+                        self.binding_name(*target);
+                        writeln!(self.output, ", saved{i});").unwrap();
+                    } else {
+                        self.assignable(*target);
+                        writeln!(self.output, " = saved{i};").unwrap();
+                    }
                 }
                 self.indent -= 1;
                 self.indentation();
@@ -1342,6 +1372,10 @@ impl Emitter<'_> {
                     self.output.push_str(", ");
                     self.value(*metadata);
                 }
+                if self.demand_roots && *definition {
+                    if metadata.is_none() { self.output.push_str(", null"); }
+                    self.output.push_str(", true");
+                }
                 self.output.push(')');
             }
             ExprKind::Keyword(literal) | ExprKind::Symbol(literal) => {
@@ -1413,12 +1447,18 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::BooleanHint(value) => self.value(*value),
-            ExprKind::Exists(value) => {
+            ExprKind::Exists(value) | ExprKind::BindingExists(value) => {
                 let value = if let ExprKind::BooleanHint(value) = self.program.exprs[value.0].kind {
                     value
                 } else {
                     *value
                 };
+                if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) && self.compiler_binding(value) {
+                    self.output.push_str("globalThis.__lightHasCompilerRoot(");
+                    self.binding_name(value);
+                    self.output.push(')');
+                    return;
+                }
                 self.output.push('(');
                 if let ExprKind::JsGlobal(global) = self.program.exprs[value.0].kind {
                     let path = &self.program.js_globals[global.0].path;
@@ -1452,6 +1492,28 @@ impl Emitter<'_> {
                 test,
                 once,
             } => {
+                if self.demand_roots && !self.program.globals[global.0].name.contains('.') {
+                    self.output.push_str("globalThis.__lightDefineCompilerRoot(");
+                    let binding = &self.program.globals[global.0];
+                    self.string_units(&format!("{}/{}", binding.namespace, binding.name).encode_utf16().collect::<Vec<_>>());
+                    self.output.push_str(", ");
+                    if let Some(init) = init {
+                        self.output.push_str("() => ");
+                        if let Some(test) = test {
+                            self.output.push_str("{ const value = ");
+                            self.value(*init);
+                            self.output.push_str("; value.cljs$lang$test = ");
+                            self.value(*test);
+                            self.output.push_str("; return value; }");
+                        } else {
+                            self.output.push('(');
+                            self.value(*init);
+                            self.output.push(')');
+                        }
+                    } else { self.output.push_str("null"); }
+                    write!(self.output, ", {once})").unwrap();
+                    return;
+                }
                 self.output.push('(');
                 if *once {
                     self.output.push_str("typeof ");

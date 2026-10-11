@@ -1806,6 +1806,8 @@ pub enum ExprKind {
     },
     WithOutStr(ExprId),
     Exists(ExprId),
+    /// Resolve checks binding identity in the compiler, value availability in applications.
+    BindingExists(ExprId),
     BooleanHint(ExprId),
     Property {
         receiver: ExprId,
@@ -4446,6 +4448,11 @@ impl Analyzer<'_> {
             let unit = session.register(
                 format!("{}/{}", self.namespace, self.program.globals[global.0].name),
                 form, self.definition_snapshot(), self.macro_host.macro_analysis_frame(), once,
+                {
+                    let form = self.compiler_read_form(args[0]).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+                    let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+                    format!("{}:{}:{}", loc.source, loc.line, loc.column)
+                },
             ).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
             Ok(unit.map(|unit| {
                 let placeholder = self.push(ExprKind::Nil, self.syntax.nodes[initializer.unwrap().0].span.clone(), ExprContext::Value);
@@ -4717,7 +4724,7 @@ impl Analyzer<'_> {
             unreachable!()
         };
         let test = self.push(
-            ExprKind::Exists(root),
+            ExprKind::BindingExists(root),
             self.syntax.nodes[id.0].span.clone(),
             ExprContext::Value,
         );
