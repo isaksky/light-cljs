@@ -568,6 +568,7 @@ pub enum CoreFnId {
     EductionType,
     Apply,
     ArraySeq,
+    PrimSeq,
 
     ApplyTo,
     Constantly,
@@ -1212,6 +1213,7 @@ impl CoreFnId {
             "Eduction" => Self::EductionType,
             "apply" => Self::Apply,
             "array-seq" => Self::ArraySeq,
+            "prim-seq" => Self::PrimSeq,
 
             "apply-to" => Self::ApplyTo,
             "constantly" => Self::Constantly,
@@ -1429,13 +1431,14 @@ impl CoreFnId {
         })
     }
 
-    // Core numeric macros reject malformed direct calls before JS execution.
-    // Saved function values still use the ordinary permissive runtime ABI.
+    // Selected core operations reject malformed direct calls before execution.
+    // Saved function values use each operation's ordinary runtime ABI.
     fn accepts_direct_arity(self, arity: usize) -> bool {
         match self {
             Self::SystemTime | Self::AllNs | Self::Flush | Self::EnableConsolePrint => arity == 0,
             Self::FindNs | Self::NsName | Self::TheNs | Self::AddTap | Self::RemoveTap | Self::TapGreater | Self::LoadFile | Self::SetPrintFn | Self::SetPrintErrFn | Self::StringPrint => arity == 1,
             Self::CreateNs => matches!(arity, 1 | 2),
+            Self::PrimSeq => matches!(arity, 1 | 2),
             Self::NamespaceClass | Self::CompilerMacroVar => arity == 2,
             Self::Gensym => arity <= 1,
             Self::Eval | Self::Macroexpand | Self::Macroexpand1 => arity == 1,
@@ -2037,6 +2040,7 @@ impl CoreFnId {
             Self::EductionType => "Eduction",
             Self::Apply => "apply",
             Self::ArraySeq => "arraySeq",
+            Self::PrimSeq => "primSeq",
 
             Self::ApplyTo => "applyTo",
             Self::Constantly => "constantly",
@@ -4164,7 +4168,12 @@ impl Analyzer<'_> {
             return Err(self.error(
                 id,
                 AnalysisErrorKind::MacroExpansion(format!(
-                    "invalid arity for core numeric/predicate macro: {} arguments",
+                    "invalid arity for {}: {} arguments",
+                    if core == CoreFnId::PrimSeq {
+                        "prim-seq"
+                    } else {
+                        "core numeric/predicate macro"
+                    },
                     args.len()
                 )),
             ));

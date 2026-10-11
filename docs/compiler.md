@@ -2031,3 +2031,16 @@ in applications and intermediate macro computations. Their exhausted behavior
 matches the pinned classes: SeqIter next throws, while RangedIterator next is
 unchecked. Iterator objects are unsupported macro expansion results. See the
 [helper contracts and checked references](../tests/reference/compiler-iterator-helpers.md).
+
+### Primitive Array-like sequences
+
+`prim-seq` accepts one primitive JavaScript Array-like value and an optional
+start offset. Direct, qualified, saved and applied calls use the same canonical
+IndexedSeq in applications and macro computations. Empty and exhausted inputs
+return nil; strings traverse UTF-16 code units, and sequences retain their
+backing input and public IndexedSeq metadata, indexing, reduction and iterator
+behavior. Negative, fractional and nil offsets follow the pinned JavaScript
+comparison and indexing rules. Fractional indexed reduction terminates when its
+offset reaches or passes the backing length. Invalid arities and unsupported
+macro result values retain separate diagnostics. See the
+[literal contracts and pinned evidence](../tests/reference/compiler-prim-seq.md).

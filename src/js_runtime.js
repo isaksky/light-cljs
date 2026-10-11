@@ -671,7 +671,7 @@
         current = cell ? seq(cell.tail) : next(current);
         slice = views.get(current);
         offset = slice?.offset;
-      } else if (++offset === slice.storage.length) {
+      } else if (++offset >= slice.storage.length) {
         current = seq(slice.tail);
         slice = views.get(current); offset = slice?.offset;
       }
@@ -4096,6 +4096,11 @@
     views.set(value, {storage: arr, offset: i, indexed: true, kind: "indexed", tail: null});
     return value;
   }
+  function primSeq(prim, start) {
+    if (arguments.length === 1) start = 0;
+    else if (arguments.length !== 2) return invalidArity(arguments.length);
+    return start < prim.length ? IndexedSeqValue(prim, start, null) : null;
+  }
   function RangeValue(metadata, start, end, step, chunk, chunkNext, cachedHash) {
     const value = rangeNode(start, end, step, false);
     const state = {chunk, tail: chunkNext};
@@ -4990,6 +4995,7 @@
     rePattern, reSeq, reFind: (re, text) => reMatch(re, text, false), reMatches: (re, text) => reMatch(re, text, true),
     isRegex: value => value instanceof RegExp, vec, concat, sequence, eduction, apply, applyTo, into,
     cons: (head, tail) => cons(head, tail), listStar, iterate, take, range, toArray, mapSeq,
+    primSeq,
     arraySeq: function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(array, start, true) : null; },
     array: (...args) => args,
     aget, aset, alength: array => array.length, aclone, makeArray, intoArray, toArray2d, intArray, longArray, doubleArray, objectArray,

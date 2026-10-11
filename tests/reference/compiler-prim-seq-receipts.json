@@ -1,0 +1,1294 @@
+{
+  "owner": "light-cljs-157",
+  "scope": "focused public prim-seq arities 1 and 2; no broad gate promotion",
+  "original_probe_file": "tests/reference/compiler-core-unresolved-probes.json",
+  "original_probe_file_sha256": "355ab486524eedf9c5fd49867d9bf297c67d020e0f6b1ed5c1cd01f0dce17584",
+  "original_literal_source_sha256": "b4572b11a5394cbfdea1b927456c21f0ffe8730beefabcab5032ca2023842781",
+  "original_literal_expected_edn": "[[4 5] [5] nil nil [\"a\" \"b\"] [\"b\"]]",
+  "original_full_independent_workflows": [
+    {
+      "id": "cljs-core-gate-literal-sequence-consumer-arities",
+      "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])))",
+      "expected": {
+        "id": "cljs-core-gate-literal-sequence-consumer-arities",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": "true\n"
+    },
+    {
+      "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+      "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(clojure.core/next nil) (clojure.core/vec (clojure.core/next xs)) (clojure.core/second xs) (clojure.core/ffirst nested) (clojure.core/vec (clojure.core/nfirst nested)) (clojure.core/fnext xs) (clojure.core/vec (clojure.core/nnext xs)) (clojure.core/last xs) (clojure.core/vec (clojure.core/nthrest xs 2)) (clojure.core/vec (clojure.core/nthnext xs 2)) (clojure.core/vec (clojure.core/butlast xs)) (clojure.core/vec (clojure.core/reverse xs)) (clojure.core/vec (clojure.core/rseq xs)) (clojure.core/peek xs) (clojure.core/pop xs) (clojure.core/empty xs) (clojure.core/empty? []) (clojure.core/coll? xs) (clojure.core/set? #{1}) (clojure.core/associative? xs) (clojure.core/sequential? xs) (clojure.core/sorted? (clojure.core/sorted-map)) (clojure.core/map? {}) (clojure.core/record? {}) (clojure.core/vector? xs) (clojure.core/seq? (clojure.core/seq xs)) (clojure.core/list? (clojure.core/list 1)) (clojure.core/reversible? xs) (clojure.core/counted? xs) (clojure.core/indexed? xs) (clojure.core/reduced? (clojure.core/reduced 3)) (clojure.core/unreduced (clojure.core/ensure-reduced 3)) (clojure.core/vec (clojure.core/prim-seq #js [4 5])) (clojure.core/vec (clojure.core/prim-seq #js [4 5] 1)) (clojure.core/vec (clojure.core/array-seq #js [4 5])) (clojure.core/vec (clojure.core/array-seq #js [4 5] 1))])))",
+      "expected": {
+        "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": "true\n"
+    }
+  ],
+  "cases": [
+    {
+      "id": "prim-seq-original-literal",
+      "source": "[(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (prim-seq #js []) (prim-seq #js [4 5] 2) (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))]",
+      "expected": {
+        "id": "prim-seq-original-literal",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  4,
+                  5
+                ]
+              },
+              {
+                "$vector": [
+                  5
+                ]
+              },
+              null,
+              null,
+              {
+                "$vector": [
+                  "a",
+                  "b"
+                ]
+              },
+              {
+                "$vector": [
+                  "b"
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "public-prim-seq-fixed-arities",
+      "source": "(= '[[4 5] [5] nil nil [\"a\" \"b\"] [\"b\"]] [(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (prim-seq #js []) (prim-seq #js [4 5] 2) (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))])",
+      "expected": {
+        "id": "public-prim-seq-fixed-arities",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": "true\n"
+    },
+    {
+      "id": "cljs-core-gate-literal-sequence-consumer-arities",
+      "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])))",
+      "expected": {
+        "id": "cljs-core-gate-literal-sequence-consumer-arities",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": "true\n"
+    },
+    {
+      "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+      "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(clojure.core/next nil) (clojure.core/vec (clojure.core/next xs)) (clojure.core/second xs) (clojure.core/ffirst nested) (clojure.core/vec (clojure.core/nfirst nested)) (clojure.core/fnext xs) (clojure.core/vec (clojure.core/nnext xs)) (clojure.core/last xs) (clojure.core/vec (clojure.core/nthrest xs 2)) (clojure.core/vec (clojure.core/nthnext xs 2)) (clojure.core/vec (clojure.core/butlast xs)) (clojure.core/vec (clojure.core/reverse xs)) (clojure.core/vec (clojure.core/rseq xs)) (clojure.core/peek xs) (clojure.core/pop xs) (clojure.core/empty xs) (clojure.core/empty? []) (clojure.core/coll? xs) (clojure.core/set? #{1}) (clojure.core/associative? xs) (clojure.core/sequential? xs) (clojure.core/sorted? (clojure.core/sorted-map)) (clojure.core/map? {}) (clojure.core/record? {}) (clojure.core/vector? xs) (clojure.core/seq? (clojure.core/seq xs)) (clojure.core/list? (clojure.core/list 1)) (clojure.core/reversible? xs) (clojure.core/counted? xs) (clojure.core/indexed? xs) (clojure.core/reduced? (clojure.core/reduced 3)) (clojure.core/unreduced (clojure.core/ensure-reduced 3)) (clojure.core/vec (clojure.core/prim-seq #js [4 5])) (clojure.core/vec (clojure.core/prim-seq #js [4 5] 1)) (clojure.core/vec (clojure.core/array-seq #js [4 5])) (clojure.core/vec (clojure.core/array-seq #js [4 5] 1))])))",
+      "expected": {
+        "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": "true\n"
+    },
+    {
+      "id": "prim-seq-invocation-arities",
+      "source": "           (let [a #js [4 5] f prim-seq q cljs.core/prim-seq c clojure.core/prim-seq]             (= '[[4 5] [5] [4 5] [5] [4 5] [5] [4 5] [5] [4 5] [5]                  [4 5] [5] [4 5] [5] [4 5] [5]]                [(vec (prim-seq a)) (vec (prim-seq a 1))                 (vec (cljs.core/prim-seq a)) (vec (cljs.core/prim-seq a 1))                 (vec (clojure.core/prim-seq a)) (vec (clojure.core/prim-seq a 1))                 (vec (f a)) (vec (f a 1)) (vec (q a)) (vec (q a 1))                 (vec (c a)) (vec (c a 1))                 (vec (apply prim-seq [a])) (vec (apply prim-seq [a 1]))                 (vec (apply f [a])) (vec (apply f [a 1]))]))",
+      "expected": {
+        "id": "prim-seq-invocation-arities",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "prim-seq-arraylike-and-utf16",
+      "source": "           (let [o (js-obj \"0\" 4 \"1\" 5 \"2\" 6 \"length\" 3)                 text (str (js/String.fromCharCode 55357 56832) \"x\")                 units (fn [s] (vec (map (fn [x] (.charCodeAt x 0)) s)))]             (and (= '[4 5 6] (vec (prim-seq o)))                  (= '[5 6] (vec (prim-seq o 1)))                  (= '[4 nil 6] (vec (prim-seq #js [4 nil 6])))                  (= '[55357 56832 120] (units (prim-seq text)))                  (= '[56832 120] (units (prim-seq text 1)))                  (= 3 (count (prim-seq text)))                  (= \"b\" (first (prim-seq \"ab\" 1)))                  (nil? (prim-seq (js-obj \"0\" 4)))                  (nil? (prim-seq (js-obj \"length\" 0)))                  (nil? (prim-seq \"\"))))",
+      "expected": {
+        "id": "prim-seq-arraylike-and-utf16",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "prim-seq-boundaries-and-uncoerced-offsets",
+      "source": "           (let [a #js [4 5] n (prim-seq a -1) f (prim-seq a 0.5)                 z (prim-seq a nil) q (prim-seq a 1)]             (and (nil? (prim-seq a 2)) (nil? (prim-seq a 3))                  (nil? (prim-seq #js [])) (nil? (prim-seq #js [] 0))                  (instance? cljs.core/IndexedSeq n)                  (= 3 (count n)) (nil? (first n))                  (= 4 (nth n 1)) (= :missing (nth n 0 :missing))                  (= \"Index out of bounds\" (try (nth n 0) (catch js/Error e (.-message e))))                  (= '[4 5] (vec (rest n)))                  (= 1.5 (count f)) (nil? (first f)) (nil? (nth f 0))                  (= 0.5 (count (rest f))) (nil? (first (rest f)))                  (nil? (next (rest f))) (empty? (rest (rest f)))                  (= 2 (count z)) (nil? (first z)) (= 4 (nth z 0))                  (= 5 (first (rest z)))                  (= 4 (nth q -1)) (= :missing (nth q -2 :missing))))",
+      "expected": {
+        "id": "prim-seq-boundaries-and-uncoerced-offsets",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "prim-seq-fractional-properties",
+      "source": "           (let [o (js-obj \"-1\" 3 \"0\" 4 \"1\" 5 \"0.5\" 7 \"1.5\" 8 \"length\" 2)                 n (prim-seq o -1) f (prim-seq o 0.5)]             (and (= 3 (first n)) (= 4 (first (rest n)))                  (= :missing (nth n 0 :missing))                  (= 7 (first f)) (= 8 (first (rest f)))                  (= 7 (nth f 0)) (= 8 (nth f 1))                  (= :missing (nth f 2 :missing))                  (= 1.5 (count f)) (nil? (next (rest f)))))",
+      "expected": {
+        "id": "prim-seq-fractional-properties",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "prim-seq-indexedseq-protocols",
+      "source": "           (let [s (prim-seq #js [4 5 6] 1) m (with-meta s {:tag true})                 tail (next m) last-seq (prim-seq #js [9])                 effects (atom [])                 sum (reduce (fn [acc x] (swap! effects conj x) (+ acc x)) 0 s)                 early (reduce (fn [acc x] (swap! effects conj x) (reduced (+ acc x))) 0 s)]             (and (instance? cljs.core/IndexedSeq s)                  (seq? s) (sequential? s) (counted? s) (indexed? s) (reversible? s)                  (identical? s (seq s)) (nil? (meta s))                  (= {:tag true} (meta m)) (= '[5 6] (vec m))                  (nil? (meta tail)) (nil? (meta (rest m)))                  (nil? (next tail)) (list? (rest tail)) (empty? (rest tail))                  (nil? (next last-seq)) (list? (rest last-seq))                  (= 5 (first s)) (= 6 (nth s 1)) (= :missing (nth s 2 :missing))                  (= \"Index out of bounds\" (try (nth s 2) (catch js/Error e (.-message e))))                  (= '(5 6) s) (= s '(5 6)) (= (hash '(5 6)) (hash s))                  (= '(3 5 6) (conj s 3)) (empty? (empty m)) (nil? (meta (empty m)))                  (= '[6 5] (vec (rseq s))) (= 11 (reduce + s))                  (= 11 sum) (= 5 early) (= '[5 6 5] @effects)))",
+      "expected": {
+        "id": "prim-seq-indexedseq-protocols",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "prim-seq-evaluation-once-and-live-array",
+      "source": "           (let [effects (atom []) a #js [4 5]                 p (fn [] (swap! effects conj :primitive) a)                 i (fn [] (swap! effects conj :offset) 1)                 f prim-seq                 s (prim-seq (p) (i))                 t (f (p))                 u (apply f [(p) (i)])                 v (prim-seq (p) (do (swap! effects conj :end) 2))]             (aset a 1 9)             (and (= '[:primitive :offset :primitive :primitive :offset :primitive :end] @effects)                  (= 9 (first s)) (= '[4 9] (vec t)) (= 9 (first u)) (nil? v)                  (= 2 (count t))                  (do (.push a 10) (= '[9 10] (vec s)))                  (= 2 (count s))))",
+      "expected": {
+        "id": "prim-seq-evaluation-once-and-live-array",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "prim-seq-var-metadata",
+      "source": "           (let [v #'prim-seq m (meta v)]             (and (identical? prim-seq @v)                  (= 'prim-seq (:name m)) (= 'cljs.core (:ns m))                  (= \"Create seq from a primitive JavaScript Array-like.\" (:doc m))                  (= '([prim] [prim i]) (:arglists m))                  (= \"cljs/core.cljs\" (:file m)) (= PRIM_SEQ_LINE (:line m))))",
+      "expected": {
+        "id": "prim-seq-var-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    }
+  ],
+  "complete_upstream_declarations": {
+    "release": [
+      {
+        "name": "IndexedSeqIterator",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(deftype IndexedSeqIterator [arr ^:mutable i]\n  Object\n  (hasNext [_]\n    (< i (alength arr)))\n  (next [_]\n    (let [ret (aget arr i)]\n      (set! i (inc i))\n      ret)))",
+        "sha256": "b1552e35064f6a9a3b05998abe4180dab3afe2cc108c76f515088b977e516fba",
+        "start_line": 1644
+      },
+      {
+        "name": "IndexedSeq",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(deftype IndexedSeq [arr i meta]\n  Object\n  (toString [coll]\n   (pr-str* coll))\n  (equiv [this other]\n    (-equiv this other))\n  (indexOf [coll x]\n    (-indexOf coll x 0))\n  (indexOf [coll x start]\n    (-indexOf coll x start))\n  (lastIndexOf [coll x]\n    (-lastIndexOf coll x (count coll)))\n  (lastIndexOf [coll x start]\n    (-lastIndexOf coll x start))\n\n  ICloneable\n  (-clone [_] (IndexedSeq. arr i meta))\n\n  ISeqable\n  (-seq [this]\n    (when (< i (alength arr))\n      this))\n\n  IMeta\n  (-meta [coll] meta)\n  IWithMeta\n  (-with-meta [coll new-meta]\n    (if (identical? new-meta meta)\n      coll\n      (IndexedSeq. arr i new-meta)))\n\n  ASeq\n  ISeq\n  (-first [_] (aget arr i))\n  (-rest [_] (if (< (inc i) (alength arr))\n               (IndexedSeq. arr (inc i) nil)\n               ()))\n\n  INext\n  (-next [_] (if (< (inc i) (alength arr))\n               (IndexedSeq. arr (inc i) nil)\n               nil))\n\n  IDrop\n  (-drop [coll n]\n    (if (pos? n)\n      (if (< (+ i n) (alength arr))\n        (IndexedSeq. arr (+ i n) nil)\n        nil)\n      coll))\n\n  ICounted\n  (-count [_]\n    (unchecked-max 0 (- (alength arr) i)))\n\n  IIndexed\n  (-nth [coll n]\n    (let [i (+ n i)]\n      (if (and (<= 0 i) (< i (alength arr)))\n        (aget arr i)\n        (throw (js/Error. \"Index out of bounds\")))))\n  (-nth [coll n not-found]\n    (let [i (+ n i)]\n      (if (and (<= 0 i) (< i (alength arr)))\n        (aget arr i)\n        not-found)))\n\n  ISequential\n  IEquiv\n  (-equiv [coll other] (equiv-sequential coll other))\n\n  IIterable\n  (-iterator [coll]\n    (IndexedSeqIterator. arr i))\n\n  ICollection\n  (-conj [coll o] (cons o coll))\n\n  IEmptyableCollection\n  (-empty [coll] (.-EMPTY List))\n\n  IReduce\n  (-reduce [coll f]\n    (array-reduce arr f (aget arr i) (inc i)))\n  (-reduce [coll f start]\n    (array-reduce arr f start i))\n\n  IHash\n  (-hash [coll] (hash-ordered-coll coll))\n\n  IReversible\n  (-rseq [coll]\n    (let [c (-count coll)]\n      (if (pos? c)\n        (RSeq. coll (dec c) nil)))))",
+        "sha256": "2d277f7e4f22b83c7aafc2112780d4e5ea2db2bb1240630aef7748392276c63f",
+        "start_line": 1653
+      },
+      {
+        "name": "IndexedSeq",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(es6-iterable IndexedSeq)",
+        "sha256": "06dcf5e5e4f8514b020195e5014fa98596ddc4493366505a641658fb98acb2c8",
+        "start_line": 1749
+      },
+      {
+        "name": "prim-seq",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(defn prim-seq\n  \"Create seq from a primitive JavaScript Array-like.\"\n  ([prim]\n     (prim-seq prim 0))\n  ([prim i]\n     (when (< i (alength prim))\n       (IndexedSeq. prim i nil))))",
+        "sha256": "004e70e09f368c0022d8d272bab4b9d5abdf43ad78ffaffa8bf18967f5bcd5cc",
+        "start_line": 1751
+      }
+    ],
+    "checkout": [
+      {
+        "name": "IndexedSeqIterator",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(deftype IndexedSeqIterator [arr ^:mutable i]\n  Object\n  (hasNext [_]\n    (< i (alength arr)))\n  (next [_]\n    (let [ret (aget arr i)]\n      (set! i (inc i))\n      ret)))",
+        "sha256": "b1552e35064f6a9a3b05998abe4180dab3afe2cc108c76f515088b977e516fba",
+        "start_line": 1645
+      },
+      {
+        "name": "IndexedSeq",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(deftype IndexedSeq [arr i meta]\n  Object\n  (toString [coll]\n   (pr-str* coll))\n  (equiv [this other]\n    (-equiv this other))\n  (indexOf [coll x]\n    (-indexOf coll x 0))\n  (indexOf [coll x start]\n    (-indexOf coll x start))\n  (lastIndexOf [coll x]\n    (-lastIndexOf coll x (count coll)))\n  (lastIndexOf [coll x start]\n    (-lastIndexOf coll x start))\n\n  ICloneable\n  (-clone [_] (IndexedSeq. arr i meta))\n\n  ISeqable\n  (-seq [this]\n    (when (< i (alength arr))\n      this))\n\n  IMeta\n  (-meta [coll] meta)\n  IWithMeta\n  (-with-meta [coll new-meta]\n    (if (identical? new-meta meta)\n      coll\n      (IndexedSeq. arr i new-meta)))\n\n  ASeq\n  ISeq\n  (-first [_] (aget arr i))\n  (-rest [_] (if (< (inc i) (alength arr))\n               (IndexedSeq. arr (inc i) nil)\n               ()))\n\n  INext\n  (-next [_] (if (< (inc i) (alength arr))\n               (IndexedSeq. arr (inc i) nil)\n               nil))\n\n  IDrop\n  (-drop [coll n]\n    (if (pos? n)\n      (if (< (+ i n) (alength arr))\n        (IndexedSeq. arr (+ i n) nil)\n        nil)\n      coll))\n\n  ICounted\n  (-count [_]\n    (unchecked-max 0 (- (alength arr) i)))\n\n  IIndexed\n  (-nth [coll n]\n    (let [i (+ n i)]\n      (if (and (<= 0 i) (< i (alength arr)))\n        (aget arr i)\n        (throw (js/Error. \"Index out of bounds\")))))\n  (-nth [coll n not-found]\n    (let [i (+ n i)]\n      (if (and (<= 0 i) (< i (alength arr)))\n        (aget arr i)\n        not-found)))\n\n  ISequential\n  IEquiv\n  (-equiv [coll other] (equiv-sequential coll other))\n\n  IIterable\n  (-iterator [coll]\n    (IndexedSeqIterator. arr i))\n\n  ICollection\n  (-conj [coll o] (cons o coll))\n\n  IEmptyableCollection\n  (-empty [coll] (.-EMPTY List))\n\n  IReduce\n  (-reduce [coll f]\n    (array-reduce arr f (aget arr i) (inc i)))\n  (-reduce [coll f start]\n    (array-reduce arr f start i))\n\n  IHash\n  (-hash [coll] (hash-ordered-coll coll))\n\n  IReversible\n  (-rseq [coll]\n    (let [c (-count coll)]\n      (if (pos? c)\n        (RSeq. coll (dec c) nil)))))",
+        "sha256": "2d277f7e4f22b83c7aafc2112780d4e5ea2db2bb1240630aef7748392276c63f",
+        "start_line": 1654
+      },
+      {
+        "name": "IndexedSeq",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(es6-iterable IndexedSeq)",
+        "sha256": "06dcf5e5e4f8514b020195e5014fa98596ddc4493366505a641658fb98acb2c8",
+        "start_line": 1750
+      },
+      {
+        "name": "prim-seq",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(defn prim-seq\n  \"Create seq from a primitive JavaScript Array-like.\"\n  ([prim]\n     (prim-seq prim 0))\n  ([prim i]\n     (when (< i (alength prim))\n       (IndexedSeq. prim i nil))))",
+        "sha256": "004e70e09f368c0022d8d272bab4b9d5abdf43ad78ffaffa8bf18967f5bcd5cc",
+        "start_line": 1752
+      }
+    ]
+  },
+  "references": {
+    "release": {
+      "prim-seq-original-literal": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-original-literal",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$vector": [
+                    4,
+                    5
+                  ]
+                },
+                {
+                  "$vector": [
+                    5
+                  ]
+                },
+                null,
+                null,
+                {
+                  "$vector": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "$vector": [
+                    "b"
+                  ]
+                }
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-prim-seq-fixed-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "public-prim-seq-fixed-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "cljs-core-gate-literal-sequence-consumer-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "cljs-core-gate-literal-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "cljs-core-gate-literal-qualified-sequence-consumer-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-invocation-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-invocation-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-arraylike-and-utf16": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-arraylike-and-utf16",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-boundaries-and-uncoerced-offsets": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-boundaries-and-uncoerced-offsets",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-fractional-properties": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-fractional-properties",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-indexedseq-protocols": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-indexedseq-protocols",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-evaluation-once-and-live-array": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-evaluation-once-and-live-array",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-var-metadata": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-var-metadata",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-local-literal-contract": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-local-literal-contract",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    },
+    "checkout": {
+      "prim-seq-original-literal": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-original-literal",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$vector": [
+                    4,
+                    5
+                  ]
+                },
+                {
+                  "$vector": [
+                    5
+                  ]
+                },
+                null,
+                null,
+                {
+                  "$vector": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "$vector": [
+                    "b"
+                  ]
+                }
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-prim-seq-fixed-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "public-prim-seq-fixed-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "cljs-core-gate-literal-sequence-consumer-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "cljs-core-gate-literal-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "cljs-core-gate-literal-qualified-sequence-consumer-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-invocation-arities": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-invocation-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-arraylike-and-utf16": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-arraylike-and-utf16",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-boundaries-and-uncoerced-offsets": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-boundaries-and-uncoerced-offsets",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-fractional-properties": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-fractional-properties",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-indexedseq-protocols": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-indexedseq-protocols",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-evaluation-once-and-live-array": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-evaluation-once-and-live-array",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-var-metadata": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-var-metadata",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "prim-seq-local-literal-contract": {
+        "status": "passed",
+        "observed": {
+          "id": "prim-seq-local-literal-contract",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    }
+  },
+  "local_witnesses": {
+    "tests/compiler_prim_seq.rs": "f4de32a04a3b950b8fd31c8b6e2fc6927b88747e07da604ca18003aad91b83f5",
+    "tests/fixtures/compiler-prim-seq.cljs": "743431e3dd8dc3ae6ee161c6b630ee1d7d2e9b7d3bf6cfc28dbd6ba5481fb83a"
+  },
+  "original_workflows_local_execution": {
+    "binary_sha256": "c52c0dcd9e21619f3710f88b45f1f7ec1b702e15debe8ae6e464a3a0fdccfd4f",
+    "results": [
+      {
+        "id": "cljs-core-gate-literal-sequence-consumer-arities",
+        "phase": "application",
+        "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])))",
+        "source_sha256": "a6a74406602c05871a45f3545ba864913a040af9954fa271e6fff6453146238c",
+        "exit": 0,
+        "stdout": "true\n",
+        "stderr": ""
+      },
+      {
+        "id": "cljs-core-gate-literal-sequence-consumer-arities",
+        "phase": "macro",
+        "source": "(defmacro original-witness [] (= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])))) (original-witness)",
+        "source_sha256": "a7fec14d49686a738f11483c991d82f96491c34bd06411ebd254031f2d5fc295",
+        "exit": 0,
+        "stdout": "true\n",
+        "stderr": ""
+      },
+      {
+        "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "phase": "application",
+        "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(clojure.core/next nil) (clojure.core/vec (clojure.core/next xs)) (clojure.core/second xs) (clojure.core/ffirst nested) (clojure.core/vec (clojure.core/nfirst nested)) (clojure.core/fnext xs) (clojure.core/vec (clojure.core/nnext xs)) (clojure.core/last xs) (clojure.core/vec (clojure.core/nthrest xs 2)) (clojure.core/vec (clojure.core/nthnext xs 2)) (clojure.core/vec (clojure.core/butlast xs)) (clojure.core/vec (clojure.core/reverse xs)) (clojure.core/vec (clojure.core/rseq xs)) (clojure.core/peek xs) (clojure.core/pop xs) (clojure.core/empty xs) (clojure.core/empty? []) (clojure.core/coll? xs) (clojure.core/set? #{1}) (clojure.core/associative? xs) (clojure.core/sequential? xs) (clojure.core/sorted? (clojure.core/sorted-map)) (clojure.core/map? {}) (clojure.core/record? {}) (clojure.core/vector? xs) (clojure.core/seq? (clojure.core/seq xs)) (clojure.core/list? (clojure.core/list 1)) (clojure.core/reversible? xs) (clojure.core/counted? xs) (clojure.core/indexed? xs) (clojure.core/reduced? (clojure.core/reduced 3)) (clojure.core/unreduced (clojure.core/ensure-reduced 3)) (clojure.core/vec (clojure.core/prim-seq #js [4 5])) (clojure.core/vec (clojure.core/prim-seq #js [4 5] 1)) (clojure.core/vec (clojure.core/array-seq #js [4 5])) (clojure.core/vec (clojure.core/array-seq #js [4 5] 1))])))",
+        "source_sha256": "905211edec0645e1d0b12b812b40b16ce318621ef9d280e3c2d9983daee85d1f",
+        "exit": 0,
+        "stdout": "true\n",
+        "stderr": ""
+      },
+      {
+        "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "phase": "macro",
+        "source": "(defmacro original-witness [] (= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(clojure.core/next nil) (clojure.core/vec (clojure.core/next xs)) (clojure.core/second xs) (clojure.core/ffirst nested) (clojure.core/vec (clojure.core/nfirst nested)) (clojure.core/fnext xs) (clojure.core/vec (clojure.core/nnext xs)) (clojure.core/last xs) (clojure.core/vec (clojure.core/nthrest xs 2)) (clojure.core/vec (clojure.core/nthnext xs 2)) (clojure.core/vec (clojure.core/butlast xs)) (clojure.core/vec (clojure.core/reverse xs)) (clojure.core/vec (clojure.core/rseq xs)) (clojure.core/peek xs) (clojure.core/pop xs) (clojure.core/empty xs) (clojure.core/empty? []) (clojure.core/coll? xs) (clojure.core/set? #{1}) (clojure.core/associative? xs) (clojure.core/sequential? xs) (clojure.core/sorted? (clojure.core/sorted-map)) (clojure.core/map? {}) (clojure.core/record? {}) (clojure.core/vector? xs) (clojure.core/seq? (clojure.core/seq xs)) (clojure.core/list? (clojure.core/list 1)) (clojure.core/reversible? xs) (clojure.core/counted? xs) (clojure.core/indexed? xs) (clojure.core/reduced? (clojure.core/reduced 3)) (clojure.core/unreduced (clojure.core/ensure-reduced 3)) (clojure.core/vec (clojure.core/prim-seq #js [4 5])) (clojure.core/vec (clojure.core/prim-seq #js [4 5] 1)) (clojure.core/vec (clojure.core/array-seq #js [4 5])) (clojure.core/vec (clojure.core/array-seq #js [4 5] 1))])))) (original-witness)",
+        "source_sha256": "f1e5c68b9db6c2254213b03feab52b087b7f8a7784807e84a65cc0d6b4ed4125",
+        "exit": 0,
+        "stdout": "true\n",
+        "stderr": ""
+      }
+    ]
+  },
+  "local_metadata_provenance": {
+    "source": "src/core_var_metadata.tsv",
+    "row": "prim-seq\t{:file \"cljs/core.cljs\", :line 1752, :column 1, :end-line 1752, :end-column 15, :doc \"Create seq from a primitive JavaScript Array-like.\", :top-fn {:variadic? false, :fixed-arity 2, :max-fixed-arity 2, :method-params [[prim] [prim i]], :arglists ([prim] [prim i]), :arglists-meta (nil nil)}, :arglists ([prim] [prim i])}",
+    "row_sha256": "d8da108ae6f6bb26bd73ef158faf301fad4774a3ff9338718bd38d65ef706d31"
+  },
+  "focused_arity_receipts": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::prim-seq::arity-1",
+      "body_sha256": "004e70e09f368c0022d8d272bab4b9d5abdf43ad78ffaffa8bf18967f5bcd5cc",
+      "signature": {
+        "kind": "fixed",
+        "minimum": 1,
+        "parameters": [
+          "prim"
+        ]
+      },
+      "signature_sha256": "639f90efc50bf9bb28109aa4646d93586b06548f6afdf0ba2d14a5bfdbaa84ec",
+      "reference_case_ids": [
+        "prim-seq-original-literal",
+        "public-prim-seq-fixed-arities",
+        "cljs-core-gate-literal-sequence-consumer-arities",
+        "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "prim-seq-invocation-arities",
+        "prim-seq-arraylike-and-utf16",
+        "prim-seq-boundaries-and-uncoerced-offsets",
+        "prim-seq-fractional-properties",
+        "prim-seq-indexedseq-protocols",
+        "prim-seq-evaluation-once-and-live-array",
+        "prim-seq-var-metadata"
+      ]
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::prim-seq::arity-2",
+      "body_sha256": "004e70e09f368c0022d8d272bab4b9d5abdf43ad78ffaffa8bf18967f5bcd5cc",
+      "signature": {
+        "kind": "fixed",
+        "minimum": 2,
+        "parameters": [
+          "prim",
+          "i"
+        ]
+      },
+      "signature_sha256": "b14e03868c9ca9ad2423d90deecad58b80ca2a6a6a0a2899ac7fab49aff90118",
+      "reference_case_ids": [
+        "prim-seq-original-literal",
+        "public-prim-seq-fixed-arities",
+        "cljs-core-gate-literal-sequence-consumer-arities",
+        "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "prim-seq-invocation-arities",
+        "prim-seq-arraylike-and-utf16",
+        "prim-seq-boundaries-and-uncoerced-offsets",
+        "prim-seq-fractional-properties",
+        "prim-seq-indexedseq-protocols",
+        "prim-seq-evaluation-once-and-live-array",
+        "prim-seq-var-metadata"
+      ]
+    }
+  ],
+  "local_contract": {
+    "release": {
+      "source": "tests/fixtures/compiler-prim-seq.cljs",
+      "source_sha256": "743431e3dd8dc3ae6ee161c6b630ee1d7d2e9b7d3bf6cfc28dbd6ba5481fb83a",
+      "adaptation": "Release metadata :line is 1751; checkout/local metadata :line is 1752. Only that explicit source-location assertion is adapted.",
+      "reference_source_sha256": "e4d7f52f2c4abd05793d14d60ac81c44ab32e247b3ed189502cc42844149ecb9"
+    },
+    "checkout": {
+      "source": "tests/fixtures/compiler-prim-seq.cljs",
+      "source_sha256": "743431e3dd8dc3ae6ee161c6b630ee1d7d2e9b7d3bf6cfc28dbd6ba5481fb83a",
+      "adaptation": "Release metadata :line is 1751; checkout/local metadata :line is 1752. Only that explicit source-location assertion is adapted.",
+      "reference_source_sha256": "2bc0c9a9f760f14ae0df86b2f1970c808be4fa24feeca5e08b9f1d3f834e2e0d"
+    }
+  },
+  "executed_cases": {
+    "release": [
+      {
+        "id": "prim-seq-original-literal",
+        "source": "[(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (prim-seq #js []) (prim-seq #js [4 5] 2) (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))]",
+        "expected": {
+          "id": "prim-seq-original-literal",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$vector": [
+                    4,
+                    5
+                  ]
+                },
+                {
+                  "$vector": [
+                    5
+                  ]
+                },
+                null,
+                null,
+                {
+                  "$vector": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "$vector": [
+                    "b"
+                  ]
+                }
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "public-prim-seq-fixed-arities",
+        "source": "(= '[[4 5] [5] nil nil [\"a\" \"b\"] [\"b\"]] [(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (prim-seq #js []) (prim-seq #js [4 5] 2) (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))])",
+        "expected": {
+          "id": "public-prim-seq-fixed-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": "true\n"
+      },
+      {
+        "id": "cljs-core-gate-literal-sequence-consumer-arities",
+        "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])))",
+        "expected": {
+          "id": "cljs-core-gate-literal-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": "true\n"
+      },
+      {
+        "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(clojure.core/next nil) (clojure.core/vec (clojure.core/next xs)) (clojure.core/second xs) (clojure.core/ffirst nested) (clojure.core/vec (clojure.core/nfirst nested)) (clojure.core/fnext xs) (clojure.core/vec (clojure.core/nnext xs)) (clojure.core/last xs) (clojure.core/vec (clojure.core/nthrest xs 2)) (clojure.core/vec (clojure.core/nthnext xs 2)) (clojure.core/vec (clojure.core/butlast xs)) (clojure.core/vec (clojure.core/reverse xs)) (clojure.core/vec (clojure.core/rseq xs)) (clojure.core/peek xs) (clojure.core/pop xs) (clojure.core/empty xs) (clojure.core/empty? []) (clojure.core/coll? xs) (clojure.core/set? #{1}) (clojure.core/associative? xs) (clojure.core/sequential? xs) (clojure.core/sorted? (clojure.core/sorted-map)) (clojure.core/map? {}) (clojure.core/record? {}) (clojure.core/vector? xs) (clojure.core/seq? (clojure.core/seq xs)) (clojure.core/list? (clojure.core/list 1)) (clojure.core/reversible? xs) (clojure.core/counted? xs) (clojure.core/indexed? xs) (clojure.core/reduced? (clojure.core/reduced 3)) (clojure.core/unreduced (clojure.core/ensure-reduced 3)) (clojure.core/vec (clojure.core/prim-seq #js [4 5])) (clojure.core/vec (clojure.core/prim-seq #js [4 5] 1)) (clojure.core/vec (clojure.core/array-seq #js [4 5])) (clojure.core/vec (clojure.core/array-seq #js [4 5] 1))])))",
+        "expected": {
+          "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": "true\n"
+      },
+      {
+        "id": "prim-seq-invocation-arities",
+        "source": "           (let [a #js [4 5] f prim-seq q cljs.core/prim-seq c clojure.core/prim-seq]             (= '[[4 5] [5] [4 5] [5] [4 5] [5] [4 5] [5] [4 5] [5]                  [4 5] [5] [4 5] [5] [4 5] [5]]                [(vec (prim-seq a)) (vec (prim-seq a 1))                 (vec (cljs.core/prim-seq a)) (vec (cljs.core/prim-seq a 1))                 (vec (clojure.core/prim-seq a)) (vec (clojure.core/prim-seq a 1))                 (vec (f a)) (vec (f a 1)) (vec (q a)) (vec (q a 1))                 (vec (c a)) (vec (c a 1))                 (vec (apply prim-seq [a])) (vec (apply prim-seq [a 1]))                 (vec (apply f [a])) (vec (apply f [a 1]))]))",
+        "expected": {
+          "id": "prim-seq-invocation-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-arraylike-and-utf16",
+        "source": "           (let [o (js-obj \"0\" 4 \"1\" 5 \"2\" 6 \"length\" 3)                 text (str (js/String.fromCharCode 55357 56832) \"x\")                 units (fn [s] (vec (map (fn [x] (.charCodeAt x 0)) s)))]             (and (= '[4 5 6] (vec (prim-seq o)))                  (= '[5 6] (vec (prim-seq o 1)))                  (= '[4 nil 6] (vec (prim-seq #js [4 nil 6])))                  (= '[55357 56832 120] (units (prim-seq text)))                  (= '[56832 120] (units (prim-seq text 1)))                  (= 3 (count (prim-seq text)))                  (= \"b\" (first (prim-seq \"ab\" 1)))                  (nil? (prim-seq (js-obj \"0\" 4)))                  (nil? (prim-seq (js-obj \"length\" 0)))                  (nil? (prim-seq \"\"))))",
+        "expected": {
+          "id": "prim-seq-arraylike-and-utf16",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-boundaries-and-uncoerced-offsets",
+        "source": "           (let [a #js [4 5] n (prim-seq a -1) f (prim-seq a 0.5)                 z (prim-seq a nil) q (prim-seq a 1)]             (and (nil? (prim-seq a 2)) (nil? (prim-seq a 3))                  (nil? (prim-seq #js [])) (nil? (prim-seq #js [] 0))                  (instance? cljs.core/IndexedSeq n)                  (= 3 (count n)) (nil? (first n))                  (= 4 (nth n 1)) (= :missing (nth n 0 :missing))                  (= \"Index out of bounds\" (try (nth n 0) (catch js/Error e (.-message e))))                  (= '[4 5] (vec (rest n)))                  (= 1.5 (count f)) (nil? (first f)) (nil? (nth f 0))                  (= 0.5 (count (rest f))) (nil? (first (rest f)))                  (nil? (next (rest f))) (empty? (rest (rest f)))                  (= 2 (count z)) (nil? (first z)) (= 4 (nth z 0))                  (= 5 (first (rest z)))                  (= 4 (nth q -1)) (= :missing (nth q -2 :missing))))",
+        "expected": {
+          "id": "prim-seq-boundaries-and-uncoerced-offsets",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-fractional-properties",
+        "source": "           (let [o (js-obj \"-1\" 3 \"0\" 4 \"1\" 5 \"0.5\" 7 \"1.5\" 8 \"length\" 2)                 n (prim-seq o -1) f (prim-seq o 0.5)]             (and (= 3 (first n)) (= 4 (first (rest n)))                  (= :missing (nth n 0 :missing))                  (= 7 (first f)) (= 8 (first (rest f)))                  (= 7 (nth f 0)) (= 8 (nth f 1))                  (= :missing (nth f 2 :missing))                  (= 1.5 (count f)) (nil? (next (rest f)))))",
+        "expected": {
+          "id": "prim-seq-fractional-properties",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-indexedseq-protocols",
+        "source": "           (let [s (prim-seq #js [4 5 6] 1) m (with-meta s {:tag true})                 tail (next m) last-seq (prim-seq #js [9])                 effects (atom [])                 sum (reduce (fn [acc x] (swap! effects conj x) (+ acc x)) 0 s)                 early (reduce (fn [acc x] (swap! effects conj x) (reduced (+ acc x))) 0 s)]             (and (instance? cljs.core/IndexedSeq s)                  (seq? s) (sequential? s) (counted? s) (indexed? s) (reversible? s)                  (identical? s (seq s)) (nil? (meta s))                  (= {:tag true} (meta m)) (= '[5 6] (vec m))                  (nil? (meta tail)) (nil? (meta (rest m)))                  (nil? (next tail)) (list? (rest tail)) (empty? (rest tail))                  (nil? (next last-seq)) (list? (rest last-seq))                  (= 5 (first s)) (= 6 (nth s 1)) (= :missing (nth s 2 :missing))                  (= \"Index out of bounds\" (try (nth s 2) (catch js/Error e (.-message e))))                  (= '(5 6) s) (= s '(5 6)) (= (hash '(5 6)) (hash s))                  (= '(3 5 6) (conj s 3)) (empty? (empty m)) (nil? (meta (empty m)))                  (= '[6 5] (vec (rseq s))) (= 11 (reduce + s))                  (= 11 sum) (= 5 early) (= '[5 6 5] @effects)))",
+        "expected": {
+          "id": "prim-seq-indexedseq-protocols",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-evaluation-once-and-live-array",
+        "source": "           (let [effects (atom []) a #js [4 5]                 p (fn [] (swap! effects conj :primitive) a)                 i (fn [] (swap! effects conj :offset) 1)                 f prim-seq                 s (prim-seq (p) (i))                 t (f (p))                 u (apply f [(p) (i)])                 v (prim-seq (p) (do (swap! effects conj :end) 2))]             (aset a 1 9)             (and (= '[:primitive :offset :primitive :primitive :offset :primitive :end] @effects)                  (= 9 (first s)) (= '[4 9] (vec t)) (= 9 (first u)) (nil? v)                  (= 2 (count t))                  (do (.push a 10) (= '[9 10] (vec s)))                  (= 2 (count s))))",
+        "expected": {
+          "id": "prim-seq-evaluation-once-and-live-array",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-var-metadata",
+        "source": "           (let [v #'prim-seq m (meta v)]             (and (identical? prim-seq @v)                  (= 'prim-seq (:name m)) (= 'cljs.core (:ns m))                  (= \"Create seq from a primitive JavaScript Array-like.\" (:doc m))                  (= '([prim] [prim i]) (:arglists m))                  (= \"cljs/core.cljs\" (:file m)) (= 1751 (:line m))))",
+        "expected": {
+          "id": "prim-seq-var-metadata",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-local-literal-contract",
+        "source": "(do (defn prim-seq-contract []   (let [a #js [4 5 6] f prim-seq q cljs.core/prim-seq         like (js-obj \"0\" 7 \"1\" 8 \"length\" 2)         s (prim-seq a 1) m (with-meta s {:tag :slice})]     (assert (= [[4 5] [5] nil nil [\"a\" \"b\"] [\"b\"]]                [(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1))                 (prim-seq #js []) (prim-seq #js [4 5] 2)                 (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))]))     (assert (= [[4 5 6] [5 6] [4 5 6] [5 6] [4 5 6] [5 6]]                [(vec (f a)) (vec (f a 1)) (vec (q a)) (vec (q a 1))                 (vec (apply prim-seq [a])) (vec (apply cljs.core/prim-seq [a 1]))]))     (assert (= [[7 8] [8] nil nil nil nil]                [(vec (prim-seq like)) (vec (prim-seq like 1))                 (prim-seq like 2) (prim-seq like 3)                 (prim-seq \"\") (prim-seq (js-obj \"0\" 9))]))     (assert (= [3 55357 56832 120 [56832 120]]                [(count (prim-seq \"\ud83d\ude00x\"))                 (js* \"~{}.charCodeAt(0)\" (first (prim-seq \"\ud83d\ude00x\")))                 (js* \"~{}.charCodeAt(0)\" (second (prim-seq \"\ud83d\ude00x\")))                 (js* \"~{}.charCodeAt(0)\" (last (prim-seq \"\ud83d\ude00x\")))                 (vec (map #(js* \"~{}.charCodeAt(0)\" %) (prim-seq \"\ud83d\ude00x\" 1)))]))     (assert (instance? IndexedSeq s))     (assert (identical? a (.-arr s))) (assert (= 1 (.-i s)))     (assert (nil? (meta s))) (assert (= {:tag :slice} (meta m)))     (assert (identical? m (with-meta m (meta m))))     (assert (= [true true true true true true true]                [(seq? s) (sequential? s) (counted? s) (indexed? s)                 (satisfies? IReduce s) (satisfies? IIterable s) (reversible? s)]))     (assert (= [2 5 6 :missing [6] [] nil [6 5] 11 21]                [(count s) (first s) (nth s 1) (nth s 2 :missing)                 (vec (rest s)) (vec (rest (rest s))) (next (next s))                 (vec (rseq s)) (reduce + s) (reduce + 10 s)]))     (assert (= (hash s) (hash '(5 6)))) (assert (= s '(5 6)))     (let [i (iter s)] (assert (= [5 6 false] [(.next i) (.next i) (.hasNext i)])))     (aset a 1 50)     (assert (= [50 50 [50 6]] [(first s) (first m) (vec (array-seq a 1))]))     (let [negative (prim-seq #js [4 5 6] -1)           fractional (prim-seq (js-obj \"0.5\" 7 \"1.5\" 8 \"length\" 2) 0.5)           nil-start (prim-seq #js [4 5] nil)]       (assert (= [4 nil 4 :missing [nil 4 5 6]]                  [(count negative) (first negative) (nth negative 1)                   (nth negative 0 :missing) (vec negative)]))       (assert (= [1.5 7 7 8 [7 8] 15]                  [(count fractional) (first fractional) (nth fractional 0)                   (first (rest fractional)) (vec fractional) (reduce + fractional)]))       (assert (= [2 nil 4 5] [(count nil-start) (first nil-start)                              (nth nil-start 0) (first (next nil-start))])))     (let [events (atom [])           source (fn [] (swap! events conj :input) #js [9 10])           start (fn [] (swap! events conj :start) 1)]       (assert (= [10] (vec (prim-seq (source) (start)))))       (assert (= [:input :start] @events)))     (let [metadata (meta (var prim-seq))]       (assert (= 'prim-seq (:name metadata)))       (assert (= \"cljs/core.cljs\" (:file metadata)))       (assert (= 1751 (:line metadata)))       (assert (= \"Create seq from a primitive JavaScript Array-like.\" (:doc metadata)))       (assert (= '([prim] [prim i]) (:arglists metadata))))     true)) (prim-seq-contract))",
+        "expected": {
+          "id": "prim-seq-local-literal-contract",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      }
+    ],
+    "checkout": [
+      {
+        "id": "prim-seq-original-literal",
+        "source": "[(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (prim-seq #js []) (prim-seq #js [4 5] 2) (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))]",
+        "expected": {
+          "id": "prim-seq-original-literal",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$vector": [
+                    4,
+                    5
+                  ]
+                },
+                {
+                  "$vector": [
+                    5
+                  ]
+                },
+                null,
+                null,
+                {
+                  "$vector": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "$vector": [
+                    "b"
+                  ]
+                }
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "public-prim-seq-fixed-arities",
+        "source": "(= '[[4 5] [5] nil nil [\"a\" \"b\"] [\"b\"]] [(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (prim-seq #js []) (prim-seq #js [4 5] 2) (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))])",
+        "expected": {
+          "id": "public-prim-seq-fixed-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": "true\n"
+      },
+      {
+        "id": "cljs-core-gate-literal-sequence-consumer-arities",
+        "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])))",
+        "expected": {
+          "id": "cljs-core-gate-literal-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": "true\n"
+      },
+      {
+        "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+        "source": "(= '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]] (do (let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(clojure.core/next nil) (clojure.core/vec (clojure.core/next xs)) (clojure.core/second xs) (clojure.core/ffirst nested) (clojure.core/vec (clojure.core/nfirst nested)) (clojure.core/fnext xs) (clojure.core/vec (clojure.core/nnext xs)) (clojure.core/last xs) (clojure.core/vec (clojure.core/nthrest xs 2)) (clojure.core/vec (clojure.core/nthnext xs 2)) (clojure.core/vec (clojure.core/butlast xs)) (clojure.core/vec (clojure.core/reverse xs)) (clojure.core/vec (clojure.core/rseq xs)) (clojure.core/peek xs) (clojure.core/pop xs) (clojure.core/empty xs) (clojure.core/empty? []) (clojure.core/coll? xs) (clojure.core/set? #{1}) (clojure.core/associative? xs) (clojure.core/sequential? xs) (clojure.core/sorted? (clojure.core/sorted-map)) (clojure.core/map? {}) (clojure.core/record? {}) (clojure.core/vector? xs) (clojure.core/seq? (clojure.core/seq xs)) (clojure.core/list? (clojure.core/list 1)) (clojure.core/reversible? xs) (clojure.core/counted? xs) (clojure.core/indexed? xs) (clojure.core/reduced? (clojure.core/reduced 3)) (clojure.core/unreduced (clojure.core/ensure-reduced 3)) (clojure.core/vec (clojure.core/prim-seq #js [4 5])) (clojure.core/vec (clojure.core/prim-seq #js [4 5] 1)) (clojure.core/vec (clojure.core/array-seq #js [4 5])) (clojure.core/vec (clojure.core/array-seq #js [4 5] 1))])))",
+        "expected": {
+          "id": "cljs-core-gate-literal-qualified-sequence-consumer-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": "true\n"
+      },
+      {
+        "id": "prim-seq-invocation-arities",
+        "source": "           (let [a #js [4 5] f prim-seq q cljs.core/prim-seq c clojure.core/prim-seq]             (= '[[4 5] [5] [4 5] [5] [4 5] [5] [4 5] [5] [4 5] [5]                  [4 5] [5] [4 5] [5] [4 5] [5]]                [(vec (prim-seq a)) (vec (prim-seq a 1))                 (vec (cljs.core/prim-seq a)) (vec (cljs.core/prim-seq a 1))                 (vec (clojure.core/prim-seq a)) (vec (clojure.core/prim-seq a 1))                 (vec (f a)) (vec (f a 1)) (vec (q a)) (vec (q a 1))                 (vec (c a)) (vec (c a 1))                 (vec (apply prim-seq [a])) (vec (apply prim-seq [a 1]))                 (vec (apply f [a])) (vec (apply f [a 1]))]))",
+        "expected": {
+          "id": "prim-seq-invocation-arities",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-arraylike-and-utf16",
+        "source": "           (let [o (js-obj \"0\" 4 \"1\" 5 \"2\" 6 \"length\" 3)                 text (str (js/String.fromCharCode 55357 56832) \"x\")                 units (fn [s] (vec (map (fn [x] (.charCodeAt x 0)) s)))]             (and (= '[4 5 6] (vec (prim-seq o)))                  (= '[5 6] (vec (prim-seq o 1)))                  (= '[4 nil 6] (vec (prim-seq #js [4 nil 6])))                  (= '[55357 56832 120] (units (prim-seq text)))                  (= '[56832 120] (units (prim-seq text 1)))                  (= 3 (count (prim-seq text)))                  (= \"b\" (first (prim-seq \"ab\" 1)))                  (nil? (prim-seq (js-obj \"0\" 4)))                  (nil? (prim-seq (js-obj \"length\" 0)))                  (nil? (prim-seq \"\"))))",
+        "expected": {
+          "id": "prim-seq-arraylike-and-utf16",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-boundaries-and-uncoerced-offsets",
+        "source": "           (let [a #js [4 5] n (prim-seq a -1) f (prim-seq a 0.5)                 z (prim-seq a nil) q (prim-seq a 1)]             (and (nil? (prim-seq a 2)) (nil? (prim-seq a 3))                  (nil? (prim-seq #js [])) (nil? (prim-seq #js [] 0))                  (instance? cljs.core/IndexedSeq n)                  (= 3 (count n)) (nil? (first n))                  (= 4 (nth n 1)) (= :missing (nth n 0 :missing))                  (= \"Index out of bounds\" (try (nth n 0) (catch js/Error e (.-message e))))                  (= '[4 5] (vec (rest n)))                  (= 1.5 (count f)) (nil? (first f)) (nil? (nth f 0))                  (= 0.5 (count (rest f))) (nil? (first (rest f)))                  (nil? (next (rest f))) (empty? (rest (rest f)))                  (= 2 (count z)) (nil? (first z)) (= 4 (nth z 0))                  (= 5 (first (rest z)))                  (= 4 (nth q -1)) (= :missing (nth q -2 :missing))))",
+        "expected": {
+          "id": "prim-seq-boundaries-and-uncoerced-offsets",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-fractional-properties",
+        "source": "           (let [o (js-obj \"-1\" 3 \"0\" 4 \"1\" 5 \"0.5\" 7 \"1.5\" 8 \"length\" 2)                 n (prim-seq o -1) f (prim-seq o 0.5)]             (and (= 3 (first n)) (= 4 (first (rest n)))                  (= :missing (nth n 0 :missing))                  (= 7 (first f)) (= 8 (first (rest f)))                  (= 7 (nth f 0)) (= 8 (nth f 1))                  (= :missing (nth f 2 :missing))                  (= 1.5 (count f)) (nil? (next (rest f)))))",
+        "expected": {
+          "id": "prim-seq-fractional-properties",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-indexedseq-protocols",
+        "source": "           (let [s (prim-seq #js [4 5 6] 1) m (with-meta s {:tag true})                 tail (next m) last-seq (prim-seq #js [9])                 effects (atom [])                 sum (reduce (fn [acc x] (swap! effects conj x) (+ acc x)) 0 s)                 early (reduce (fn [acc x] (swap! effects conj x) (reduced (+ acc x))) 0 s)]             (and (instance? cljs.core/IndexedSeq s)                  (seq? s) (sequential? s) (counted? s) (indexed? s) (reversible? s)                  (identical? s (seq s)) (nil? (meta s))                  (= {:tag true} (meta m)) (= '[5 6] (vec m))                  (nil? (meta tail)) (nil? (meta (rest m)))                  (nil? (next tail)) (list? (rest tail)) (empty? (rest tail))                  (nil? (next last-seq)) (list? (rest last-seq))                  (= 5 (first s)) (= 6 (nth s 1)) (= :missing (nth s 2 :missing))                  (= \"Index out of bounds\" (try (nth s 2) (catch js/Error e (.-message e))))                  (= '(5 6) s) (= s '(5 6)) (= (hash '(5 6)) (hash s))                  (= '(3 5 6) (conj s 3)) (empty? (empty m)) (nil? (meta (empty m)))                  (= '[6 5] (vec (rseq s))) (= 11 (reduce + s))                  (= 11 sum) (= 5 early) (= '[5 6 5] @effects)))",
+        "expected": {
+          "id": "prim-seq-indexedseq-protocols",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-evaluation-once-and-live-array",
+        "source": "           (let [effects (atom []) a #js [4 5]                 p (fn [] (swap! effects conj :primitive) a)                 i (fn [] (swap! effects conj :offset) 1)                 f prim-seq                 s (prim-seq (p) (i))                 t (f (p))                 u (apply f [(p) (i)])                 v (prim-seq (p) (do (swap! effects conj :end) 2))]             (aset a 1 9)             (and (= '[:primitive :offset :primitive :primitive :offset :primitive :end] @effects)                  (= 9 (first s)) (= '[4 9] (vec t)) (= 9 (first u)) (nil? v)                  (= 2 (count t))                  (do (.push a 10) (= '[9 10] (vec s)))                  (= 2 (count s))))",
+        "expected": {
+          "id": "prim-seq-evaluation-once-and-live-array",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-var-metadata",
+        "source": "           (let [v #'prim-seq m (meta v)]             (and (identical? prim-seq @v)                  (= 'prim-seq (:name m)) (= 'cljs.core (:ns m))                  (= \"Create seq from a primitive JavaScript Array-like.\" (:doc m))                  (= '([prim] [prim i]) (:arglists m))                  (= \"cljs/core.cljs\" (:file m)) (= 1752 (:line m))))",
+        "expected": {
+          "id": "prim-seq-var-metadata",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      {
+        "id": "prim-seq-local-literal-contract",
+        "source": "(do (defn prim-seq-contract []   (let [a #js [4 5 6] f prim-seq q cljs.core/prim-seq         like (js-obj \"0\" 7 \"1\" 8 \"length\" 2)         s (prim-seq a 1) m (with-meta s {:tag :slice})]     (assert (= [[4 5] [5] nil nil [\"a\" \"b\"] [\"b\"]]                [(vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1))                 (prim-seq #js []) (prim-seq #js [4 5] 2)                 (vec (prim-seq \"ab\")) (vec (prim-seq \"ab\" 1))]))     (assert (= [[4 5 6] [5 6] [4 5 6] [5 6] [4 5 6] [5 6]]                [(vec (f a)) (vec (f a 1)) (vec (q a)) (vec (q a 1))                 (vec (apply prim-seq [a])) (vec (apply cljs.core/prim-seq [a 1]))]))     (assert (= [[7 8] [8] nil nil nil nil]                [(vec (prim-seq like)) (vec (prim-seq like 1))                 (prim-seq like 2) (prim-seq like 3)                 (prim-seq \"\") (prim-seq (js-obj \"0\" 9))]))     (assert (= [3 55357 56832 120 [56832 120]]                [(count (prim-seq \"\ud83d\ude00x\"))                 (js* \"~{}.charCodeAt(0)\" (first (prim-seq \"\ud83d\ude00x\")))                 (js* \"~{}.charCodeAt(0)\" (second (prim-seq \"\ud83d\ude00x\")))                 (js* \"~{}.charCodeAt(0)\" (last (prim-seq \"\ud83d\ude00x\")))                 (vec (map #(js* \"~{}.charCodeAt(0)\" %) (prim-seq \"\ud83d\ude00x\" 1)))]))     (assert (instance? IndexedSeq s))     (assert (identical? a (.-arr s))) (assert (= 1 (.-i s)))     (assert (nil? (meta s))) (assert (= {:tag :slice} (meta m)))     (assert (identical? m (with-meta m (meta m))))     (assert (= [true true true true true true true]                [(seq? s) (sequential? s) (counted? s) (indexed? s)                 (satisfies? IReduce s) (satisfies? IIterable s) (reversible? s)]))     (assert (= [2 5 6 :missing [6] [] nil [6 5] 11 21]                [(count s) (first s) (nth s 1) (nth s 2 :missing)                 (vec (rest s)) (vec (rest (rest s))) (next (next s))                 (vec (rseq s)) (reduce + s) (reduce + 10 s)]))     (assert (= (hash s) (hash '(5 6)))) (assert (= s '(5 6)))     (let [i (iter s)] (assert (= [5 6 false] [(.next i) (.next i) (.hasNext i)])))     (aset a 1 50)     (assert (= [50 50 [50 6]] [(first s) (first m) (vec (array-seq a 1))]))     (let [negative (prim-seq #js [4 5 6] -1)           fractional (prim-seq (js-obj \"0.5\" 7 \"1.5\" 8 \"length\" 2) 0.5)           nil-start (prim-seq #js [4 5] nil)]       (assert (= [4 nil 4 :missing [nil 4 5 6]]                  [(count negative) (first negative) (nth negative 1)                   (nth negative 0 :missing) (vec negative)]))       (assert (= [1.5 7 7 8 [7 8] 15]                  [(count fractional) (first fractional) (nth fractional 0)                   (first (rest fractional)) (vec fractional) (reduce + fractional)]))       (assert (= [2 nil 4 5] [(count nil-start) (first nil-start)                              (nth nil-start 0) (first (next nil-start))])))     (let [events (atom [])           source (fn [] (swap! events conj :input) #js [9 10])           start (fn [] (swap! events conj :start) 1)]       (assert (= [10] (vec (prim-seq (source) (start)))))       (assert (= [:input :start] @events)))     (let [metadata (meta (var prim-seq))]       (assert (= 'prim-seq (:name metadata)))       (assert (= \"cljs/core.cljs\" (:file metadata)))       (assert (= 1752 (:line metadata)))       (assert (= \"Create seq from a primitive JavaScript Array-like.\" (:doc metadata)))       (assert (= '([prim] [prim i]) (:arglists metadata))))     true)) (prim-seq-contract))",
+        "expected": {
+          "id": "prim-seq-local-literal-contract",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      }
+    ]
+  },
+  "fixture_sha256": {
+    "release": {
+      "src/semantic/case0.cljs": "612320b96e1c95f34ce867b995b499e187c82a6aea97bea6980b9dbbc6beb99e",
+      "src/semantic/case1.cljs": "2f39c9e6908969e1e004719f4aed774765ce360cae9fa2defc4fc500dcca2c70",
+      "src/semantic/case10.cljs": "2a351798b809db894377a1073544ef26ded3ab439889588003602e5b50ba1958",
+      "src/semantic/case11.cljs": "2f533ff88e21018d01df30d579754c717c376f2041e5f2ca99c517d74b62d510",
+      "src/semantic/case2.cljs": "5682a73c0a3f26047f569f1a184596036b3e4ec6834fcd4ed5a14103fa7e8899",
+      "src/semantic/case3.cljs": "bbddbb2e63a42f245c9bf85efec6452597ef30af9f2d7dedda07f5ea6c46c484",
+      "src/semantic/case4.cljs": "19761b8d6c53b7fa09d2d682aef319b760df2a282ae92eda3674784f1bb30550",
+      "src/semantic/case5.cljs": "2eb0a814a0b11e02554b6ddc89796669c6526488f99404172f58e9df168c1f6c",
+      "src/semantic/case6.cljs": "a6c9bef8639a6fb01097d898cbc3ad6e3b5e3705f044804e208b5babfff9e97c",
+      "src/semantic/case7.cljs": "c87661acef36e98dbe8830ebdf4583a32bde7fd59434e195712dc81aa7433336",
+      "src/semantic/case8.cljs": "569dca16875b1457fd8dfe78dae13d6d85ab909df1309ca7d665c67a09ffa495",
+      "src/semantic/case9.cljs": "d7f86038bd6f516f9df1109577c69e8afa2f3d26e433690f4fbba56062aba20a",
+      "src/semantic/reference.cljs": "db98b5536714b1190784b0ef345df91be3d925e8bbaa8f0c8800b93a584f9727"
+    },
+    "checkout": {
+      "src/semantic/case0.cljs": "612320b96e1c95f34ce867b995b499e187c82a6aea97bea6980b9dbbc6beb99e",
+      "src/semantic/case1.cljs": "2f39c9e6908969e1e004719f4aed774765ce360cae9fa2defc4fc500dcca2c70",
+      "src/semantic/case10.cljs": "23ef54c4086d2515d0efa387dd8ad86765e8c930d8103dacb8ea8ef10d7ad164",
+      "src/semantic/case11.cljs": "84087ec5b1b099db6a768d22be471bdb78f8fa66f3b99b71e65dee9e21e336bd",
+      "src/semantic/case2.cljs": "5682a73c0a3f26047f569f1a184596036b3e4ec6834fcd4ed5a14103fa7e8899",
+      "src/semantic/case3.cljs": "bbddbb2e63a42f245c9bf85efec6452597ef30af9f2d7dedda07f5ea6c46c484",
+      "src/semantic/case4.cljs": "19761b8d6c53b7fa09d2d682aef319b760df2a282ae92eda3674784f1bb30550",
+      "src/semantic/case5.cljs": "2eb0a814a0b11e02554b6ddc89796669c6526488f99404172f58e9df168c1f6c",
+      "src/semantic/case6.cljs": "a6c9bef8639a6fb01097d898cbc3ad6e3b5e3705f044804e208b5babfff9e97c",
+      "src/semantic/case7.cljs": "c87661acef36e98dbe8830ebdf4583a32bde7fd59434e195712dc81aa7433336",
+      "src/semantic/case8.cljs": "569dca16875b1457fd8dfe78dae13d6d85ab909df1309ca7d665c67a09ffa495",
+      "src/semantic/case9.cljs": "d7f86038bd6f516f9df1109577c69e8afa2f3d26e433690f4fbba56062aba20a",
+      "src/semantic/reference.cljs": "d0c94cf18e8733fc28b7afdc00ea31e00dd6ba535aa8e1a850592396335bdcef"
+    }
+  }
+}
