@@ -2,7 +2,7 @@
   "schema_version": 1,
   "upstream": "https://github.com/clojure/clojurescript",
   "revision": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
-  "extractor_sha256": "305804e3bb2cfa8b5972c08e553a30d6b8f51b9d3fbebb13727e8654e280122a",
+  "extractor_sha256": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
   "inventory_sha256": "e3fc9397648cb9ecd1d60eb01ce9d8c144d22b0f7b7de14004389400d1d53258",
   "bodies_sha256": "1f22e904625c3b8c0b7fbb51954ce8c96991aaffe8c95c943c4163c8e6794372",
   "counting_unit": "Source assertion sites; each are argument row is a separate assertion. Dynamic loop/helper invocations are retained in complete bodies, not multiplied or claimed executed.",

@@ -5,7 +5,7 @@ boundary rows whose upstream acceptance had been reported as a missing local
 capability. It is independent of the imported test inventory: none of these
 checks adds an upstream assertion, witness, or semantic pass.
 
-`report.py --run --strict` runs this catalog in addition to the selected source
+`report.py --scope historical-selected --run --strict` runs this catalog in addition to the selected source
 witnesses. `source_strict_complete` and `boundary_strict_complete` are separate;
 `strict_complete` requires both. Without live local and both pinned reference
 observations, supplemental entries remain unverified. The catalog fixes all 27
@@ -25,10 +25,14 @@ uses default compilation. Genuine warning cases use `--warnings`; namespace
 and `.cljc` cases use the public source-root loader with explicitly retained
 source files and dependency declarations.
 
-There are 10 runtime probes shared by local and reference execution, one local
-source-macro runtime probe, and three retained reference-only macro runtime
-probes. They check stdout, effects and values using the existing outcome adapter
-and both checked reference launchers:
+There are nine runtime probes shared by local and reference execution, two local
+source-macro runtime probes, and four retained reference-only macro runtime
+probes. The duplicate-alias probe retains ordinary local imports from `.cljs`
+macros and its original upstream `.clj`/`:require-macros` setup separately.
+Public malformed `fn`/`let` probes retain their exact canonical macro diagnostic,
+with the previous native error text preserved as historical provenance. The
+probes check stdout, effects and values using the existing outcome adapter and
+both checked reference launchers:
 
 - Unqualified host calls retain their receiver; dotted lexical function values
   retain the upstream null-receiver calling convention. `console.log` returns

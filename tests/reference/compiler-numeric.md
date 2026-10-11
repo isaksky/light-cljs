@@ -141,7 +141,7 @@ witnesses = {json.loads(line)['assertion_id']
              for line in (root / 'witnesses.jsonl').read_text().splitlines()}
 ids = [row['id'] for line in (root / 'inventory.jsonl').read_text().splitlines()
        if (row := json.loads(line))['test'] in selected and row['id'] in witnesses]
-subprocess.run(['python3', '-B', str(root / 'report.py'), '--run', '--strict',
+subprocess.run(['python3', '-B', str(root / 'report.py'), '--scope', 'historical-selected', '--run', '--strict',
                 '--reference', 'both',
                 *[arg for identity in ids for arg in ('--id', identity)]], check=True)
 PY

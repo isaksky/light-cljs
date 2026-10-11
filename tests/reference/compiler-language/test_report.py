@@ -587,6 +587,24 @@ class SupplementalBoundaryTests(unittest.TestCase):
             mutate(next(case for case in changed if case["id"] == "macro-defmacro"))
             with self.assertRaises(ValueError):self.contract_with(changed)
 
+    def test_duplicate_macro_aliases_preserve_both_complete_phase_contracts(self):
+        case = self.by_id["ns-as-duplicate"]
+        self.assertEqual(case["kind"], "intentional-difference")
+        local = case["local_runtime"][0]
+        reference = case["reference_runtime"][0]
+        self.assertEqual(reference["source_sha256"], "7b4fbf2c2540ccb097b6501e4ea6bc1fd49c0e6b5414558fa68040ae48cbe387")
+        self.assertIn(":require-macros", reference["source"])
+        self.assertNotIn(":require-macros", local["source"])
+        self.assertEqual(local["source"].count("(:require "), 1)
+        self.assertEqual(local["source"].count("[boundary.macros :as m :refer [twice]]"), 2)
+        self.assertIn("boundary/macros.cljs", local["files_sha256"])
+        self.assertEqual(local["expected"]["outcome"], reference["expected"]["outcome"])
+        for key in ("local_runtime", "reference_runtime"):
+            changed = copy.deepcopy(self.cases)
+            next(value for value in changed if value["id"] == case["id"]).pop(key)
+            with self.assertRaises(ValueError):
+                self.contract_with(changed)
+
     def test_macro_phase_runner_executes_only_the_declared_phase_and_detects_either_failure(self):
         case = self.by_id["macro-defmacro"]
         with tempfile.TemporaryDirectory() as directory:

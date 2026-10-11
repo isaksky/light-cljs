@@ -104,7 +104,7 @@ import json, subprocess
 fixtures = {'cljs-metadata-reify', 'cljs-destructure-test-cljs-1600',
             'cljs-protocol-test-cljs-1451', 'cljs-state-test-cljs-3406',
             'cljs-reify-test-cljs-1420', 'cljs-reify-cljs-2085-test'}
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for row in map(json.loads, open('tests/reference/compiler-language/witnesses.jsonl')):
     if row['fixture_id'] in fixtures:

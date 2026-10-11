@@ -20,21 +20,21 @@ research checkout are needed for both references.
 python3 -B tests/reference/compiler-language/extract_inventory.py --check
 
 # Report all assertions, with no cached or fabricated passes.
-python3 -B tests/reference/compiler-language/report.py --show-missing
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --show-missing
 
 # Default reference selection is both; rejection stays visible as missing.
-python3 -B tests/reference/compiler-language/report.py --run --feature functions-apply
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --feature functions-apply
 
 # Inspect a single assertion, retaining its complete upstream body in the inventory.
-python3 -B tests/reference/compiler-language/report.py --run --strict \
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --strict \
   --id 'core_test.cljs::test-401-411::assertion-001'
 
 # Whole-inventory completion gate. Intentionally exits 1 at this baseline.
-python3 -B tests/reference/compiler-language/report.py --run --strict \
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --strict \
   --output /tmp/compiler-language.json
 
 # Fast local feedback cannot establish reference conformance.
-python3 -B tests/reference/compiler-language/report.py --run --reference none \
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --reference none \
   --feature functions-apply
 
 # Fast accounting, existing runtime regressions and provenance.
@@ -153,7 +153,7 @@ covered and 1,766 missing. These baseline counts do not replace the live report.
 Reproduction of that baseline used:
 
 ```sh
-python3 -B tests/reference/compiler-language/report.py --run --no-build \
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --no-build \
   --reference both --output /tmp/light-cljs-language-baseline.json
 ```
 
@@ -387,7 +387,7 @@ python3 - <<'PY'
 import json, subprocess
 from pathlib import Path
 rows = map(json.loads, Path('tests/reference/compiler-language/witnesses.jsonl').read_text().splitlines())
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for row in rows:
     if row['fixture_id'].startswith('cljs-destructure-'):
@@ -498,7 +498,7 @@ python3 - <<'PY'
 import json, subprocess
 from pathlib import Path
 rows = map(json.loads, Path('tests/reference/compiler-language/witnesses.jsonl').read_text().splitlines())
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for row in rows:
     if row['fixture_id'].startswith('cljs-exceptions-'):

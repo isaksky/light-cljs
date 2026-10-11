@@ -539,18 +539,22 @@ combined source program, deterministic interactions and completion checks. Pytho
 python3 -B tests/reference/compiler-language/report.py --show-missing
 # Focus implementation on one section; rejected features remain missing.
 python3 -B tests/reference/compiler-language/report.py --run --feature functions-apply
-# Completion gate: selected assertions and supplemental public boundaries.
+# Full intended-language gate: missing source/API/arity/phase evidence fails.
 python3 -B tests/reference/compiler-language/report.py --run --strict
 ```
 
 Execution defaults to both Maven 1.12.134 and the pinned research checkout.
 `--reference none` supports a quick local run; it cannot establish conformance.
-These counts describe the inventoried feature sections, not the whole intended
-language or upstream suite. The selected inventory still excludes standard
-features including transients, transducers, sorted collections and multimethods;
-those are assigned language obligations with separate implementation evidence in the
-[migration and coverage roadmap](docs/evaluator-migration.md#language-coverage-and-completion-boundaries),
-not permanent exclusions or passing assertions.
+The default [full language ledger](tests/reference/compiler-language/full-scope.md)
+retains every runtime test/support file from the pinned checkout, independent
+public core/library names and arities, syntax, and SCI/API provenance. It exposes
+parse, analysis/lowering, removed native execution, canonical JavaScript,
+QuickJS macro eligibility, and meaningful execution evidence separately.
+Missing transients, transducers, sorted collections, multimethods, and other
+unexecuted obligations have responsible Pellet links. `--strict` currently fails
+for the full scope; parser acceptance and passing historical subsets cannot
+establish completion. `--scope historical-selected` reproduces the earlier
+18-file batch and its scoped execution gate.
 
 The benchmark prepares eight fixtures before timing and accepts additional UTF-8
 files. It consumes full tokens through `black_box`, emits raw CSV on stdout, and

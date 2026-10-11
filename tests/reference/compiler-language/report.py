@@ -44,7 +44,7 @@ def unique(rows, key, label):
     return result
 
 
-def fixtures():
+def fixtures(scope="historical-selected"):
     result = []
     path = ROOT / "tests/fixtures/compiler-language.tsv"
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -63,6 +63,8 @@ def fixtures():
         result.append(case)
     result.extend(jsonl(HERE / "diagnostic-cases.jsonl"))
     result.extend(jsonl(HERE / "warning-cases.jsonl"))
+    if scope == "intended-language":
+        result.extend(jsonl(HERE / "full-cases.jsonl"))
     return unique(result, "id", "fixture")
 
 
@@ -247,18 +249,22 @@ def reference_warnings(cases, kind, checkout, directory, timeout):
     return results
 
 
-def load_contract():
-    manifest = json.loads((HERE / "manifest.json").read_text(encoding="utf-8"))
+def load_contract(scope="historical-selected"):
+    prefix = "full-" if scope == "intended-language" else ""
+    manifest = json.loads((HERE / (prefix + "manifest.json")).read_text(encoding="utf-8"))
     if manifest["revision"] != REVISION:
         raise ValueError("inventory has a different source revision")
-    for filename, field in (("inventory.jsonl", "inventory_sha256"), ("bodies.jsonl", "bodies_sha256"),
+    for filename, field in ((prefix + "inventory.jsonl", "inventory_sha256"), (prefix + "bodies.jsonl", "bodies_sha256"),
                             ("extract_inventory.py", "extractor_sha256")):
         if hashlib.sha256((HERE / filename).read_bytes()).hexdigest() != manifest[field]:
             raise ValueError(f"inventory drift: {filename}; regenerate and review source dispositions")
-    inventory = unique(jsonl(HERE / "inventory.jsonl"), "id", "assertion")
-    bodies = unique(jsonl(HERE / "bodies.jsonl"), "id", "body")
-    cases = fixtures()
-    witnesses = unique(jsonl(HERE / "witnesses.jsonl"), "assertion_id", "witness")
+    inventory = unique(jsonl(HERE / (prefix + "inventory.jsonl")), "id", "assertion")
+    bodies = unique(jsonl(HERE / (prefix + "bodies.jsonl")), "id", "body")
+    cases = fixtures(scope)
+    witness_rows = jsonl(HERE / "witnesses.jsonl")
+    if scope == "intended-language":
+        witness_rows.extend(jsonl(HERE / "full-witnesses.jsonl"))
+    witnesses = unique(witness_rows, "assertion_id", "witness")
     if not inventory or not bodies or not cases:
         raise ValueError("empty inventory, body catalog, or fixture set")
     if len(inventory) != manifest["counts"]["assertions"] or len(bodies) != manifest["counts"]["bodies"]:
@@ -884,12 +890,17 @@ def boundary_support_contract():
             raise ValueError(f"invalid supplemental disposition: {identity}")
         local_probes = case.get("local_probes", [])
         if kind == "intentional-difference":
-            if (identity != "macro-defmacro" or case.get("runtime")
-                    or [probe["id"] for probe in local_probes] != ["boundary-defmacro-phase-value", "boundary-defmacro-phase-apply", "boundary-defmacro-phase-var"]
-                    or [proof["id"] for proof in case.get("local_runtime", [])] != ["boundary-defmacro-compile-time-expansion"]
-                    or [proof["id"] for proof in case.get("reference_runtime", [])] != [
-                        "boundary-defmacro-metadata-hidden-args", "boundary-defmacro-methods-apply-receiver",
-                        "boundary-defmacro-dispatch-abi"]):
+            phase_contracts = {
+                "macro-defmacro": (["boundary-defmacro-phase-value", "boundary-defmacro-phase-apply", "boundary-defmacro-phase-var"],
+                                   ["boundary-defmacro-compile-time-expansion"],
+                                   ["boundary-defmacro-metadata-hidden-args", "boundary-defmacro-methods-apply-receiver", "boundary-defmacro-dispatch-abi"]),
+                "ns-as-duplicate": ([], ["boundary-duplicate-alias-local-macro-runtime"], ["boundary-duplicate-alias-runtime"]),
+            }
+            contract = phase_contracts.get(identity)
+            if (contract is None or case.get("runtime")
+                    or [probe["id"] for probe in local_probes] != contract[0]
+                    or [proof["id"] for proof in case.get("local_runtime", [])] != contract[1]
+                    or [proof["id"] for proof in case.get("reference_runtime", [])] != contract[2]):
                 raise ValueError(f"macro phase difference needs separate local and retained reference proofs: {identity}")
         elif any(case.get(key) for key in ("local_probes", "local_runtime", "reference_runtime")):
             raise ValueError(f"separate phase proofs require an intentional difference: {identity}")
@@ -1071,7 +1082,12 @@ def assemble(inventory, witnesses, evidence, *, features=(), identities=(), boun
 
 
 def text_report(report, show_missing):
-    print("Compiler language assertions — live observations only")
+    print("Compiler language assertions — live observations only (" + report["scope"] + ")")
+    if "columns" in report:
+        print("Evidence columns: " + ", ".join(report["columns"]))
+        for column in report["columns"]:
+            counts = Counter(row["columns"][column]["status"] for row in report["assertions"])
+            print(column + ": " + ", ".join(f"{status}={count}" for status, count in sorted(counts.items())))
     print("feature\tcovered\tverified-rejection\tverified-warning\tmissing\tversion-difference\tunrelated")
     for feature, counts in report["features"].items():
         print(feature + "\t" + "\t".join(str(counts.get(key, 0)) for key in
@@ -1088,13 +1104,14 @@ def text_report(report, show_missing):
     if show_missing:
         for row in report["assertions"]:
             if row["status"] == "missing":
-                print(f"MISSING {row['id']} [{row['feature']}]: {row['reason']}")
+                print(f"MISSING {row['id']} [{row['feature']}] owner={row.get('owner', 'historical-selected')}: {row['reason']}")
     print("Supplemental boundary verification: " + json.dumps(dict(Counter(row["status"] for row in report["boundary_support"])), sort_keys=True))
     print("Strict completion: " + ("complete" if report["strict_complete"] else "INCOMPLETE"))
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=("intended-language", "historical-selected"), default="intended-language", help="full independent ledger (default) or preserved 18-file batch")
     parser.add_argument("--run", action="store_true", help="execute witnesses; absent witnesses remain missing")
     parser.add_argument("--strict", action="store_true", help="require every selected source assertion and every supplemental boundary check")
     parser.add_argument("--feature", action="append", default=[], help="exact feature section; repeatable")
@@ -1115,15 +1132,22 @@ def main(argv=None):
     if args.binary and not args.no_build:
         parser.error("--binary requires --no-build; otherwise use the executable reported by Cargo")
     try:
-        inventory, witnesses, cases = load_contract()
-        all_features = {row["feature"] for row in inventory.values()}
-        if set(args.feature) - all_features or set(args.id) - set(inventory):
+        historical_inventory, historical_witnesses, historical_cases = load_contract()
+        inventory, witnesses, cases = load_contract(args.scope) if args.scope == "intended-language" else (historical_inventory, historical_witnesses, historical_cases)
+        from full_ledger import expand_report, load as load_full
+        full_rows, obligations, _ = load_full() if args.scope == "intended-language" else ([], [], {})
+        all_features = {row["feature"] for row in [*inventory.values(), *full_rows]} | {row["family"] for row in [*full_rows, *obligations]}
+        if set(args.feature) - all_features or set(args.id) - (set(inventory) | {row["id"] for row in full_rows}):
             raise ValueError("unknown feature or assertion ID")
-        selected = assemble(inventory, witnesses, {}, features=args.feature, identities=args.id)
+        historical_filters = {"features": args.feature, "identities": args.id} if args.scope == "historical-selected" else {}
+        selected = assemble(historical_inventory, historical_witnesses, {}, **historical_filters)
+        if args.scope == "intended-language":
+            selected = expand_report(selected, witnesses, {}, features=args.feature, identities=args.id)
         selected_ids = {row["fixture_id"] for row in selected["assertions"] if row["fixture_id"]}
         selected_cases = [case for identity, case in cases.items() if identity in selected_ids]
         evidence = {}
         boundary_evidence = {}
+        phase_evidence = {}
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1162,7 +1186,13 @@ def main(argv=None):
                     evidence[identity][kind] = observed
             boundary_evidence = run_boundary_support(boundary_support_contract(), binary, args.checkout.resolve(),
                                                      artifacts / "boundary-support", args.timeout, args.reference_timeout, args.reference)
-        report = assemble(inventory, witnesses, evidence, features=args.feature, identities=args.id, boundary_evidence=boundary_evidence)
+        if args.run and args.scope == "intended-language":
+            from full_ledger import run_phase_witnesses
+            phase_evidence = run_phase_witnesses(obligations, artifacts / "macro-phase", args.timeout)
+        report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
+        report["scope"] = "historical-selected"
+        if args.scope == "intended-language":
+            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence)
         if artifacts:
             report["artifacts"] = str(artifacts)
             report["compiler_binary"] = binary_identity
@@ -1185,6 +1215,7 @@ def main(argv=None):
         failed = any(layer.get("status") in failure_statuses for result_layers in evidence.values()
                      for layer in result_layers.values())
         failed |= any(layer.get("status") != "verified-boundary" for layers in boundary_evidence.values() for layer in layers.values())
+        failed |= any(value.get("status") != "passed" for value in phase_evidence.values())
         return 1 if failed or (args.strict and not report["strict_complete"]) else 0
     except (ValueError, KeyError, OSError) as error:
         print(f"coverage contract error: {error}", file=sys.stderr)

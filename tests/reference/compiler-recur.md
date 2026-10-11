@@ -119,7 +119,7 @@ import subprocess
 ids = [f'core_test.cljs::threading-loop-recur::assertion-{i:03}' for i in range(1, 6)]
 ids += ['primitives_test.cljs::test-arithmetic::assertion-135',
         'core_test.cljs::test-812::assertion-001']
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for identity in ids:
     command += ['--id', identity]

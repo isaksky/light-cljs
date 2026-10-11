@@ -705,9 +705,10 @@ def encode_jsonl(rows) -> bytes:
     return ("".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows)).encode("utf-8")
 
 
-def inventory(check_checkout: bool = True):
+def inventory(check_checkout: bool = True, *, files=None, full_scope=False):
+    paths = FILES if files is None else files
     assertions, bodies, files = [], [], []
-    for path in FILES:
+    for path in paths:
         # Read pinned git objects, then reject dirty/different working source.
         # A checkout can be on another HEAD only if the pinned object is present
         # and every inventoried file is still byte-identical to that revision.
@@ -728,7 +729,8 @@ def inventory(check_checkout: bool = True):
             seen_names[name] += 1
             # Repeated defmethod/def names are distinct complete source forms.
             unique_name = name if seen_names[name] == 1 else f"{name}~{seen_names[name]}"
-            body_id = f"{basename}::{unique_name}"
+            identity_source = basename if path in FILES else path
+            body_id = f"{identity_source}::{unique_name}"
             body_assertions = []
             ordinal = 0
             for node, inactive, context in assertion_nodes(form):
@@ -736,6 +738,9 @@ def inventory(check_checkout: bool = True):
                     scope_node = record.pop("_scope_node", node)
                     feature, features = feature_for(source, name, scope_node)
                     disposition, category, reason = classify(source, name, scope_node, inactive, context)
+                    if full_scope:
+                        from full_ledger import disposition_for
+                        disposition, category, reason = disposition_for(path, category, reason, inactive)
                     ordinal += 1
                     row = {"id": f"{body_id}::assertion-{ordinal:03}",
                            "source": path, "test": name, "ordinal": ordinal,
@@ -795,6 +800,9 @@ def main():
     args = parser.parse_args()
     try:
         generated, manifest = inventory()
+        from full_ledger import generate
+        full_generated, full_manifest = generate()
+        generated.update(full_generated)
         if args.check:
             changed = [name for name, data in generated.items() if not (HERE / name).exists() or (HERE / name).read_bytes() != data]
             if changed:
@@ -802,7 +810,7 @@ def main():
         else:
             for name, data in generated.items():
                 (HERE / name).write_bytes(data)
-        print(json.dumps({"result": "verified" if args.check else "generated", **manifest["counts"]}, sort_keys=True))
+        print(json.dumps({"result": "verified" if args.check else "generated", **manifest["counts"], "full_scope": full_manifest["counts"]}, sort_keys=True))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"inventory error: {error}", file=sys.stderr)
         return 1

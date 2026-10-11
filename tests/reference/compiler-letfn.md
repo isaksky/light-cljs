@@ -104,7 +104,7 @@ python3 - <<'PY'
 import subprocess
 ids = [f'letfn_test.cljs::test-letfn::assertion-{i:03}' for i in range(1, 9)]
 ids += ['core_test.cljs::test-letfn-shadowing::assertion-001']
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for identity in ids:
     command += ['--id', identity]

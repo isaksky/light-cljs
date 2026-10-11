@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import full_ledger
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -237,7 +238,7 @@ class InventoryTests(unittest.TestCase):
                 for name, data in original.items():
                     (root / name).write_bytes(data)
                 (root / filename).write_bytes(omitted[filename])
-                with patch.object(inv, "HERE", root), patch.object(inv, "inventory", return_value=(original, {})), \
+                with patch.object(inv, "HERE", root), patch.object(inv, "inventory", return_value=(original, {})), patch.object(full_ledger, "generate", return_value=({}, {})), \
                      patch.object(sys, "argv", ["extract_inventory.py", "--check"]), contextlib.redirect_stderr(io.StringIO()) as err:
                     self.assertEqual(inv.main(), 1)
                     self.assertIn(filename, err.getvalue())

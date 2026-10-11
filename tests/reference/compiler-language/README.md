@@ -7,14 +7,13 @@ their original expectations. It does not report them executed. See
 [evidence.md](evidence.md) for executable witnesses, reports, and strict versus
 focused commands.
 
-This is the **historical selected feature inventory**, not the complete intended
-language surface. The adopted
-[evaluator and language roadmap](../../../docs/evaluator-migration.md#language-coverage-and-completion-boundaries)
-requires transients, transducers, sorted collections and multimethods to remain
-visible as intended-language gaps despite their current excluded categories here.
-`light-cljs-116` expands the ledger and `light-cljs-125` owns the broader completion
-gate. These documentation changes do not alter the extractor, stored dispositions
-or existing evidence; a strict pass still applies only to the current scope.
+The files named `inventory.jsonl`, `bodies.jsonl`, and `manifest.json` retain
+this **historical selected feature inventory**. The default report now uses the
+independent [full intended-language ledger](full-scope.md), including public
+names/arities and every runtime test/support file. Select
+`report.py --scope historical-selected` to reproduce this batch. Its passing
+subsets do not establish full language completion; standard transients,
+transducers, sorted collections and multimethods stay intended in the full ledger.
 
 ```sh
 python3 tests/reference/compiler-language/extract_inventory.py
@@ -26,7 +25,8 @@ Extraction and checking require the pinned Git object and byte-identical source
 files under `research/clojurescript`. The extractor uses Python's standard
 library and Git; the unit checks use synthetic source and require no checkout,
 Clojure, Java, Node, or network. `--check` writes nothing and compares regenerated
-inventory, bodies, and manifest byte for byte. Removing a row, omitting a test
+historical and full inventories, bodies, public obligations, auxiliary sources,
+and manifests byte for byte. Removing a row, omitting a test
 body, changing an expectation, changing a scope rule, or altering pinned source
 fails that check until the change is explicitly regenerated and reviewed.
 

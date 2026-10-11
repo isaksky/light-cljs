@@ -122,7 +122,7 @@ cargo test --locked --quiet --test execution \
 
 python3 -B - <<'PY'
 import json, subprocess
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for row in map(json.loads, open('tests/reference/compiler-language/witnesses.jsonl')):
     if row['fixture_id'].startswith('cljs-helpers-'):

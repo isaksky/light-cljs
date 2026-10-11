@@ -117,7 +117,7 @@ witnesses = [json.loads(line) for line in
              open('tests/reference/compiler-language/witnesses.jsonl')]
 ids = [w['assertion_id'] for w in witnesses if w['fixture_id'].startswith(
     ('cljs-functions-', 'cljs-language-multi-variadic', 'cljs-language-apply-'))]
-subprocess.run(['python3', '-B', 'tests/reference/compiler-language/report.py',
+subprocess.run(['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
                 '--run', '--strict', '--reference', 'both',
                 '--output', '/tmp/compiler-functions.json'] +
                [arg for identity in ids for arg in ('--id', identity)], check=True)

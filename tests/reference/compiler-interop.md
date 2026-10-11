@@ -80,7 +80,7 @@ For the matrix, select the witness-mapped IDs whose fixture ID starts
 `cljs-interop-` and pass each as `--id` to:
 
 ```sh
-python3 -B tests/reference/compiler-language/report.py --run --reference both --strict
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --reference both --strict
 ```
 
 This selection reports **86 covered, zero missing and zero version differences**.

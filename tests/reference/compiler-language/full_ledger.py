@@ -1,0 +1,511 @@
+"""Independent intended-language obligations, with no static semantic pass claims.
+
+The pinned tree determines the source universe. Complete bodies are retained even
+for boundaries; public declarations are inventoried before consulting local
+CoreFnId spellings, metadata or witnesses. See full-scope.md for the contract.
+"""
+from collections import Counter
+import json
+from pathlib import Path
+import re
+import subprocess
+
+import extract_inventory as inv
+
+HERE, ROOT = inv.HERE, inv.ROOT
+COLUMNS = ("parse", "analysis_lowering", "native", "canonical_js", "quickjs_macro", "execution_evidence")
+CORE = ("src/main/cljs/cljs/core.cljs", "src/main/clojure/cljs/core.cljc",
+        "src/main/cljs/clojure/string.cljs", "src/main/cljs/clojure/set.cljs",
+        "src/main/cljs/clojure/walk.cljs", "src/main/cljs/cljs/reader.cljs")
+ANALYZER = "src/main/clojure/cljs/analyzer.cljc"
+# These exclusions have a scope basis independent of local implementation.
+FILE_BOUNDARIES = {
+    "async_await_test.cljs": ("ecosystem", "Async/await library parity is outside the adopted synchronous dialect milestone."),
+    "proxy_test.cljs": ("ecosystem", "Proxy library parity is outside the adopted synchronous dialect milestone."),
+    "npm_deps_test.cljs": ("ecosystem", "npm acquisition/bundling is an explicitly excluded build integration."),
+    "lite_collections_test.cljs": ("lite-profile", "Optional upstream lite collection representations are outside the default profile."),
+    "pprint_test.cljs": ("ecosystem", "Standalone cljs.pprint namespace parity is outside the promised standard libraries."),
+    "reducers_test.cljs": ("ecosystem", "Standalone reducers namespace parity is outside the promised standard libraries."),
+    "spec_test.cljs": ("ecosystem", "Standalone cljs.spec namespace parity is outside the promised standard libraries."),
+    "spec_test.cljc": ("ecosystem", "Standalone cljs.spec namespace parity is outside the promised standard libraries."),
+    "test_test.cljs": ("ecosystem", "Standalone cljs.test harness parity is not a language obligation."),
+    "test_test.cljc": ("ecosystem", "Standalone cljs.test harness parity is not a language obligation."),
+    "datafy_test.cljs": ("ecosystem", "Standalone clojure.datafy parity is outside the promised standard libraries."),
+    "math_test.cljs": ("ecosystem", "Standalone clojure.math parity is outside the promised standard libraries."),
+    "data_test.cljs": ("ecosystem", "Standalone clojure.data parity is outside the promised string/set/walk/EDN libraries."),
+}
+PROMOTED = {"transient-collections", "transducers", "multimethods-hierarchies", "sorted-collections", "tap-delivery", "library"}
+OWNERS = {
+    "transient-collections": "light-cljs-117", "transducers": "light-cljs-118",
+    "multimethods-hierarchies": "light-cljs-47", "sorted-collections": "light-cljs-119",
+    "tap-delivery": "light-cljs-124", "library": "light-cljs-123",
+}
+NAME_FAMILIES = (
+    ("transient-collections", "light-cljs-117", set("transient persistent! conj! assoc! dissoc! pop! disj! IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet".split())),
+    ("sorted-collections", "light-cljs-119", set("sorted-map sorted-map-by sorted-set sorted-set-by subseq rsubseq ISorted -sorted-seq -sorted-seq-from -entry-key -comparator comparator".split())),
+    ("multimethods-hierarchies", "light-cljs-47", set("defmulti defmethod IMultiFn MultiFn remove-all-methods remove-method prefer-method methods get-method prefers dispatch-fn default-dispatch-val make-hierarchy isa? parents ancestors descendants derive underive bases supers".split())),
+    ("sequence-transform", "light-cljs-59", {"sequence"}),
+    ("eduction", "light-cljs-60", {"eduction", "Eduction"}),
+    ("transducers", "light-cljs-118", set("completing transduce ensure-reduced halt-when dedupe random-sample map mapcat map-indexed filter remove keep keep-indexed take drop take-while drop-while take-nth partition-all partition-by replace interpose cat".split())),
+    ("hash-equality", "light-cljs-120", set("hash hash-ordered-coll hash-unordered-coll INamed -name -namespace IHash -hash IEquiv -equiv IMeta IWithMeta meta with-meta -meta -with-meta".split())),
+    ("lazy-sequences", "light-cljs-121", set("tree-seq flatten chunk chunk-first chunk-rest chunk-next chunk-cons chunked-seq? iterator-seq es6-iterator seq iter IChunk IChunkedSeq IChunkedNext ISeq ISeqable".split())),
+    ("regex", "light-cljs-49", set("re-find re-matches re-seq re-pattern regexp?".split())),
+    ("utilities", "light-cljs-122", set("subs rand rand-int rand-nth parse-long parse-double parse-uuid parse-boolean clone js-symbol? special-symbol? to-array-2d boolean-array byte-array char-array short-array int-array long-array float-array double-array object-array".split())),
+    ("printing-reflection", "light-cljs-124", set("pr pr-str prn prn-str print println print-str println-str printf flush system-time Namespace find-ns create-ns ns-name ns-publics ns-interns ns-imports add-tap remove-tap tap>".split())),
+    ("reader", "light-cljs-9", set("read read-string tagged-literal tagged-literal?".split())),
+)
+# Unmarked upstream implementation classes/helpers need explicit dispositions;
+# public constructor/protocol names stay intended unless listed here.
+LITE_NAMES = set("VectorLite VectorLiteIterator ObjMap ObjMapIterator HashMapLite SetLite obj-map hash-map-lite set-lite".split())
+INTERNAL_NAMES = set("""BitmapIndexedNode ArrayNode HashCollisionNode Box NodeSeq ArrayNodeSeq
+VectorNode TransientHashMap TransientArrayMap TransientVector TransientHashSet
+BlackNode RedNode tree-map-add tree-map-append tree-map-remove tree-map-replace
+balance-left balance-right balance-left-del balance-right-del inode-kv-reduce
+create-node create-inode-seq create-array-node-seq edit-and-set ensure-editable
+clone-and-set remove-pair bitmap-indexed-node-index bitpos mask caching-hash
+NodeIterator ArrayNodeIterator HashMapIter HashSetIter ArrayList NeverEquiv
+fast-path-protocols fast-path-protocol-partitions-count import-macros""".split())
+MACRO_DIFFERENCES = set("require-macros use-macros import-macros".split())
+
+
+def pinned(path):
+    data = subprocess.check_output(["git", "-C", str(inv.UPSTREAM), "show", f"{inv.REVISION}:{path}"])
+    if (inv.UPSTREAM / path).read_bytes() != data:
+        raise ValueError(f"Upstream working source differs from pin: {path}")
+    return data
+
+
+def source_paths():
+    paths = subprocess.check_output(["git", "-C", str(inv.UPSTREAM), "ls-tree", "-r", "--name-only", inv.REVISION], text=True).splitlines()
+    # Include every runtime test/support file, even integrations and unasserted
+    # helpers. Whitelist removal cannot hide a new pure core test file.
+    return tuple(sorted(set(inv.FILES) | {p for p in paths if p.startswith("src/test/cljs/") and p.endswith((".cljs", ".cljc", ".clj"))}))
+
+
+def disposition_for(path, category, reason, inactive):
+    if inactive:
+        return "unrelated", "inactive-upstream", reason
+    boundary = FILE_BOUNDARIES.get(Path(path).name)
+    if path.startswith("src/test/cljs/") and path.endswith(".clj"):
+        boundary = ("reference-harness", "JVM companion/helper source is retained as reference setup; local compiler-emitted JS macro/phase contracts have separate obligations.")
+    if "/spec/" in path:
+        boundary = ("ecosystem", "Standalone cljs.spec/test library parity is outside the adopted milestone.")
+    if boundary:
+        return "unrelated", *boundary
+    if category in PROMOTED:
+        return "in-scope", category, "Intended public language/library behavior; historical batch exclusion is not a dialect boundary."
+    if category in {"upstream-internals", "lite-profile"}:
+        return "unrelated", category, reason
+    return "in-scope", "source-language", "Complete source-language obligation; no execution inferred from inventory."
+
+
+def ownership(name="", category="", path="", words=()):
+    if category in OWNERS:
+        return category, OWNERS[category]
+    if path.startswith(("src/main/cljs/clojure/", "src/main/cljs/cljs/reader")):
+        return "library", "light-cljs-123"
+    if name.startswith("-persistent") or name in {"-conj!", "-assoc!", "-dissoc!", "-pop!", "-disjoin!", "-as-transient", "-assoc-n!"}:
+        return "transient-collections", "light-cljs-117"
+    if name.startswith(("PersistentTree", "TreeMap")):
+        return "sorted-collections", "light-cljs-119"
+    if name:
+        for family, owner, names in NAME_FAMILIES:
+            if name in names:
+                return family, owner
+    for family, owner, names in NAME_FAMILIES:
+        if set(words) & names:
+            return family, owner
+    basename = Path(path).name
+    if basename in {"hashing_test.cljs", "hash_map_test.cljs", "hash_set_test.cljs", "set_equiv_test.cljs"}:
+        return "hash-equality", "light-cljs-120"
+    if basename in {"iterator_test.cljs", "seqs_test.cljs", "chunked_seq.cljs"}:
+        return "lazy-sequences", "light-cljs-121"
+    if basename in {"printing_test.cljs", "var_test.cljs", "ns_test.cljs", "repl_test.cljs", "eval_test.cljs"}:
+        return "printing-reflection", "light-cljs-124"
+    if basename in {"reader_test.cljs", "syntax_quote_test.cljs", "tagged_literals_test.cljs"}:
+        return "reader", "light-cljs-9"
+    if basename in {"parse_test.cljs", "array_access_test.cljs", "array_access_test.cljc", "other_functions_test.cljs"}:
+        return "utilities", "light-cljs-122"
+    if basename in {"string_test.cljs", "set_test.cljs", "walk_test.cljs"}:
+        return "library", "light-cljs-123"
+    return "public-residual", "light-cljs-125"
+
+
+def arity(vector):
+    args = [inv.effective(n).token if inv.effective(n).kind == "atom" else "<destructured>" for n in vector.children]
+    return {"kind": "variadic" if "&" in args else "fixed", "minimum": args.index("&") if "&" in args else len(args),
+            "parameters": args}
+
+
+def signature_nodes(form):
+    # Only direct argument vectors/methods, never vectors nested in function body.
+    tail = form.children[2:]
+    function_declaration = inv.short_head(form) not in {"def", "defonce"}
+    for n in tail:
+        n = inv.effective(n)
+        if n.kind == "vector" and function_declaration:
+            yield n
+            return
+        if n.kind == "list" and n.children and inv.effective(n.children[0]).kind == "vector":
+            yield inv.effective(n.children[0])
+        elif inv.short_head(n) in {"fn", "fn*"}:
+            yield from signature_nodes(inv.Node("list", n.start, n.end, [n.children[0], inv.Node("atom", 0, 0, [], "anonymous"), *n.children[1:]]))
+
+
+def declarations(node):
+    if node.kind == "discard":
+        return
+    n = inv.effective(node)
+    h = inv.short_head(n)
+    if h in {"def", "defonce", "defn", "defn-", "defmacro", "defprotocol", "deftype", "defrecord", "defcurried", "definline", "import-macros"}:
+        yield n
+        return
+    # Descend only structural top-level wrappers. No quoted generated expansions
+    # or definitions inside function bodies become public declarations.
+    if n.kind in {"conditional", "conditional-splice"}:
+        branch_list = n.children[0]
+        for child in branch_list.children[1::2]:
+            yield from declarations(child)
+    elif n.kind == "vector":
+        for child in n.children:
+            yield from declarations(child)
+    elif h == "do":
+        for child in n.children[1:]:
+            yield from declarations(child)
+
+
+def public_api():
+    rows, source_rows = [], []
+    for path in CORE:
+        source = inv.Source(path, pinned(path))
+        source_rows.append({"path": path, "sha256": inv.digest(source.data), "license_notice": source.text[:source.forms[0].start].rstrip()})
+        occurrence = Counter()
+        for top in source.forms:
+            for form in declarations(top):
+                if len(form.children) < 2:
+                    raise ValueError(f"unnamed declaration: {path}")
+                h, name = inv.short_head(form), inv.effective(form.children[1]).token
+                if h == "import-macros":
+                    entries = [(inv.effective(n).token, "imported-macro", []) for vector in form.children[2:] if vector.kind == "vector" for n in vector.children]
+                else:
+                    entries = [(name, h, list(signature_nodes(form)))]
+                if h == "defprotocol":
+                    entries += [(inv.effective(n.children[0]).token, "protocol-method", [v for v in n.children[1:] if v.kind == "vector"])
+                                for n in form.children[2:] if n.kind == "list" and n.children]
+                if h in {"deftype", "defrecord"}:
+                    fields = next((n for n in form.children[2:] if n.kind == "vector"), None)
+                    if fields:
+                        entries.append(("->" + name, "generated-positional-constructor", [fields]))
+                        if h == "defrecord":
+                            entries.append(("map->" + name, "generated-map-constructor", []))
+                private = h == "defn-" or bool(re.search(r"\^:private|:private\s+true|:internal\s+true", source.text[form.start:form.children[2].start] if len(form.children) > 2 else ""))
+                for api_name, kind, vectors in entries:
+                    occurrence[api_name] += 1
+                    suffix = f"~{occurrence[api_name]}" if occurrence[api_name] > 1 else ""
+                    family, owner = ownership(api_name, path=path)
+                    internal = private or api_name.removeprefix("->") in INTERNAL_NAMES
+                    lite = api_name.removeprefix("->") in LITE_NAMES
+                    reference_import = kind == "imported-macro"
+                    disposition = "internal" if internal else "dialect" if lite or reference_import else "intended"
+                    reason = ("Pinned declaration is explicitly private/internal." if private else
+                              "Upstream storage/helper implementation shape is excluded; public collection/protocol behavior remains required." if internal else
+                              "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.")
+                    if lite:
+                        reason = "Optional upstream lite representation is a separate profile; ordinary persistent collection and transient behavior stays intended."
+                    if reference_import:
+                        reason = "Upstream JVM macro import plumbing is intentionally replaced by compiler-emitted JS macro phases; public macro declarations in the CLJS branch remain independent obligations."
+                    signatures = [arity(v) for v in vectors]
+                    if kind == "generated-map-constructor":
+                        signatures = [{"kind": "fixed", "minimum": 1, "parameters": ["map"]}]
+                    if not signatures:
+                        signatures = [{"kind": "unresolved" if kind in {"imported-macro", "defcurried", "definline"} else "value", "minimum": None, "parameters": []}]
+                    for index, signature in enumerate(signatures, 1):
+                        rows.append({"id": f"api::{path}::{api_name}{suffix}::arity-{index}", "obligation_kind": "public-api",
+                                     "name": api_name, "declaration": kind, "signature": signature, "source": path,
+                                     "body_id": f"{path}::{name}{suffix}", "body_sha256": source.record(form)["sha256"],
+                                     "source_span": source.record(form), "container_span": source.record(top),
+                                     "disposition": disposition, "reason": reason, "family": family, "owner": owner,
+                                     "dialect_contract": "Local compiler-emitted JS macro/import/phase contract; unchanged .clj companion behavior is not required." if api_name in MACRO_DIFFERENCES or kind in {"defmacro", "imported-macro"} else None})
+    # Syntax dispatch comes from the upstream analyzer, independently of CoreFnId.
+    source = inv.Source(ANALYZER, pinned(ANALYZER))
+    source_rows.append({"path": ANALYZER, "sha256": inv.digest(source.data), "license_notice": source.text[:source.forms[0].start].rstrip()})
+    special = next(f for f in source.forms if inv.short_head(f) == "def" and inv.effective(f.children[1]).token == "specials")
+    values = next(n for n in inv.nodes(special) if n.kind == "set")
+    for n in values.children[0].children:
+        name = n.token
+        rows.append({"id": "syntax::" + name, "obligation_kind": "syntax", "name": name, "signature": {"kind": "syntax", "minimum": None},
+                     "source": ANALYZER, "body_id": "analyzer::specials", "body_sha256": source.record(special)["sha256"], "source_span": source.record(special),
+                     "disposition": "intended", "reason": "Pinned public syntax dispatch; contextual analysis and execution require separate evidence.",
+                     "family": "reader" if name == "&" else "public-residual", "owner": "light-cljs-9" if name == "&" else "light-cljs-125"})
+    return rows, source_rows
+
+
+def local_inventory():
+    rows, files = [], []
+    sci_dispositions = {fields[0]: fields for line in (ROOT / "tests/reference/sci/evaluator-dispositions.tsv").read_text().splitlines()
+                        if line and not line.startswith("#") for fields in [line.split("\t")]}
+    paths = ("src/analyzer.rs", "src/core_var_metadata.tsv", "tests/reference/sci/runtime.tsv", "tests/reference/sci/evaluator-dispositions.tsv", "tests/reference/sci/historical/supported-apis.tsv")
+    for path in paths:
+        data = (ROOT / path).read_bytes()
+        files.append({"path": path, "sha256": inv.digest(data)})
+        if not path.endswith(".tsv"):
+            continue
+        for number, line in enumerate(data.decode().splitlines(), 1):
+            if not line or line.startswith(("#", ";")):
+                continue
+            name = line.split("\t")[0]
+            family, owner = ownership(name.rsplit("/", 1)[-1])
+            fields = line.split("\t")
+            migration = sci_dispositions.get(name)
+            retired = "sci/" in path and migration is not None and migration[7] == "retired"
+            native_boundary = name.startswith("light-cljs.types/") or name.startswith("clojure.core/java.lang.") or name == "clojure.core/Throwable." or ("supported-apis" in path and fields[2] == "native-only" and name in {"clojure.core/bigint", "clojure.core/biginteger", "clojure.core/bigdec", "clojure.core/ratio?", "clojure.core/rational?"})
+            rows.append({"id": f"local::{path}::{name}", "obligation_kind": "local-api" if "supported-apis" in path or "metadata" in path else "sci-case",
+                         "name": name, "source": path, "line": number, "body_id": f"{path}::{name}", "body_sha256": inv.digest(line.encode()),
+                         "source_span": {"text": line, "sha256": inv.digest(line.encode())}, "disposition": "internal" if name == "clojure.core/lazy-seq*" else "dialect" if retired or native_boundary else "intended",
+                         "reason": "Retired native macroexpansion helper; public lazy-seq remains an independent source/arity/phase obligation." if name == "clojure.core/lazy-seq*" else migration[-1] if retired else "Native-only owner/type or exact numeric extension is intentionally retired by the adopted JavaScript dialect." if native_boundary else "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+                         "family": family, "owner": owner})
+    return rows, files
+
+
+def local_registration():
+    path = "src/analyzer.rs"
+    text = (ROOT / path).read_text()
+    start = text.index("pub(crate) fn resolve(name: &str)")
+    end = text.index("\n    }", start)
+    return {match.group(1): {"source": path, "line": text[:match.start()].count("\n") + 1,
+                            "arm_sha256": inv.digest(match.group(0).encode()), "status": "static-registration-only"}
+            for match in re.compile(r'"([^"\n]+)"\s*=>').finditer(text, start, end)}
+
+
+def generate():
+    paths = source_paths()
+    generated, manifest = inv.inventory(files=paths, full_scope=True)
+    assertions = [json.loads(line) for line in generated["inventory.jsonl"].splitlines()]
+    for row in assertions:
+        words = inv.symbols(inv.Reader(row["assertion"]["text"]).all()[0])
+        family, owner = ownership(category=row["category"], path=row["source"], words=words)
+        row.update(obligation_kind="source-assertion", family=family, owner=owner,
+                   historical_scope=row["source"] in inv.FILES,
+                   dialect_contract="Local macro/import/phase contracts differ intentionally; unchanged .clj companions do not establish the local contract." if Path(row["source"]).name in {"macro_test.cljs", "import_test.cljs", "clojure_alias_test.cljs"} else None)
+    api, api_sources = public_api()
+    registration = local_registration()
+    for row in api:
+        row["local_registration"] = registration.get(row["name"], {"status": "unmapped"})
+    local, local_sources = local_inventory()
+    obligations = api + local
+    bodies = [json.loads(line) for line in generated["bodies.jsonl"].splitlines()]
+    for body in bodies:
+        if body["kind"] != "test" or body["assertions"]:
+            continue
+        family, owner = ownership(path=body["source"])
+        boundary, category, reason = disposition_for(body["source"], "source-language", "Not an active upstream test: reader-discarded.", "reader-discarded" if body["source_span"]["text"].startswith("#_") else None)
+        obligations.append({"id": "body::" + body["id"], "obligation_kind": "assertion-free-test-body", "name": body["name"],
+                            "source": body["source"], "body_id": body["id"], "body_sha256": body["source_span"]["sha256"],
+                            "source_span": body["source_span"], "disposition": "intended" if boundary == "in-scope" else "host",
+                            "reason": "Complete assertion-free test body requires meaningful execution; it contributes no invented assertion/pass." if boundary == "in-scope" else reason,
+                            "family": family, "owner": owner})
+    for entry in manifest["files"]:
+        if entry["assertions"] or not Path(entry["path"]).stem.endswith("_test"):
+            continue
+        source = inv.Source(entry["path"], pinned(entry["path"]))
+        family, owner = ownership(path=source.path)
+        boundary, category, reason = disposition_for(source.path, "source-language", "", None)
+        obligations.append({"id": "program::" + source.path, "obligation_kind": "source-program", "name": Path(source.path).stem,
+                            "source": source.path, "body_id": "program::" + source.path, "body_sha256": inv.digest(source.data),
+                            "source_span": source.span(0, len(source.text)), "disposition": "intended" if boundary == "in-scope" else "host",
+                            "reason": "Complete assertion-free test module requires compiler/execution evidence; its calls/effects cannot disappear from accounting." if boundary == "in-scope" else reason,
+                            "family": family, "owner": owner})
+    if len({r["id"] for r in obligations}) != len(obligations):
+        raise ValueError("Duplicate independent obligation ID")
+    support = []
+    tree = subprocess.check_output(["git", "-C", str(inv.UPSTREAM), "ls-tree", "-r", "--name-only", inv.REVISION], text=True).splitlines()
+    for path in tree:
+        if path.startswith("src/test/cljs/") and path not in paths:
+            data = pinned(path)
+            support.append({"source": path, "sha256": inv.digest(data), "bytes": len(data), "text": data.decode(),
+                            "disposition": "reference-setup", "reason": "Complete auxiliary test fixture retained for source setup/host/effect provenance; not an executed language assertion."})
+    assertion_bytes, obligation_bytes = inv.encode_jsonl(assertions), inv.encode_jsonl(obligations)
+    support_bytes = inv.encode_jsonl(support)
+    manifest.update(schema_version=2, scope="intended-language", generator_sha256=inv.digest(Path(__file__).read_bytes()),
+                    inventory_sha256=inv.digest(assertion_bytes), obligations_sha256=inv.digest(obligation_bytes),
+                    api_sources=api_sources, local_sources=local_sources, support_sources=len(support), support_sha256=inv.digest(support_bytes), columns=list(COLUMNS),
+                    status_policy="Inventory grants no pass. All intended source/name/arity obligations start missing. Native is removed; macro eligibility requires phase-specific execution evidence.")
+    manifest["counts"].update(by_status=dict(Counter(r["status"] for r in assertions)),
+                              by_category=dict(Counter(r["category"] for r in assertions)), obligations=len(obligations),
+                              public_api_arities=sum(r["obligation_kind"] == "public-api" and r["disposition"] == "intended" for r in obligations),
+                              intended_assertions=sum(r["disposition"] == "in-scope" for r in assertions))
+    manifest["features"] = [] # family/owner totals are authoritative for this scope
+    manifest["families"] = dict(Counter(r["family"] for r in [*assertions, *obligations]))
+    return {"support-sources.jsonl": support_bytes, "full-inventory.jsonl": assertion_bytes, "full-bodies.jsonl": generated["bodies.jsonl"],
+            "obligations.jsonl": obligation_bytes, "full-manifest.json": (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()}, manifest
+
+
+def load():
+    manifest = json.loads((HERE / "full-manifest.json").read_text())
+    for filename, key in (("full-inventory.jsonl", "inventory_sha256"), ("full-bodies.jsonl", "bodies_sha256"), ("obligations.jsonl", "obligations_sha256"), ("support-sources.jsonl", "support_sha256")):
+        if inv.digest((HERE / filename).read_bytes()) != manifest[key]:
+            raise ValueError(f"Full ledger hash drift: {filename}; regenerate and review")
+    if manifest["revision"] != inv.REVISION or manifest["scope"] != "intended-language":
+        raise ValueError("Full ledger source revision/scope mismatch")
+    for filename, key in (("full_ledger.py", "generator_sha256"), ("extract_inventory.py", "extractor_sha256")):
+        if inv.digest((HERE / filename).read_bytes()) != manifest[key]:
+            raise ValueError(f"Full ledger generator drift: {filename}")
+    for entry in manifest["local_sources"]:
+        if inv.digest((ROOT / entry["path"]).read_bytes()) != entry["sha256"]:
+            raise ValueError(f"Local surface drift: {entry['path']}; regenerate and review")
+    read = lambda name: [json.loads(line) for line in (HERE / name).read_text().splitlines()]
+    return read("full-inventory.jsonl"), read("obligations.jsonl"), manifest
+
+
+def columns(layers=None, status="missing"):
+    layers = layers or {}
+    result = {name: {"status": "not-run"} for name in COLUMNS}
+    result["native"] = {"status": "removed", "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."}
+    for column, layer in (("parse", "parser"), ("analysis_lowering", "diagnostic"), ("canonical_js", "javascript")):
+        if layer in layers:
+            result[column] = layers[layer]
+    if layers.get("javascript", {}).get("status") == "passed":
+        result["analysis_lowering"] = {"status": "accepted-via-compilation", "reason": "Emission/execution occurred; this does not prove all analyses/arities."}
+    result["execution_evidence"] = {"status": "verified" if status == "covered" else "not-run" if not layers else status,
+                                    "references": {key: layers.get(key, {"status": "not-run"}) for key in ("release", "checkout")}}
+    return result
+
+
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None):
+    import report as runner
+    assertions, obligations, manifest = load()
+    obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
+    phases = load_phase_witnesses(obligations)
+    phase_evidence = phase_evidence or {}
+    selected = bool(features or identities)
+    rows = []
+    for row in assertions:
+        witness = witnesses.get(row["id"])
+        if (features and not ({row["feature"], row["family"]} & set(features))) or (identities and row["id"] not in identities):
+            continue
+        status, reason = runner.classify(row, witness, evidence)
+        layers = evidence.get(witness["fixture_id"], {}) if witness else {}
+        rows.append({"id": row["id"], "obligation_kind": row["obligation_kind"], "feature": row["feature"],
+                     "source": row["source"], "test": row["test"], "line": row["assertion"]["start_line"],
+                     "family": row["family"], "owner": row["owner"], "status": status, "reason": reason,
+                     "dialect_contract": row.get("dialect_contract"),
+                     "fixture_id": witness["fixture_id"] if witness else None, "layers": layers, "columns": columns(layers, status),
+                     "body_id": row["body_id"], "body_sha256": row["body_sha256"], "assertion_sha256": row["assertion"]["sha256"]})
+    # Independent API/arity obligations are always required by the full gate,
+    # even when a source subset is selected for execution.
+    for row in obligations:
+        status = "unrelated" if row["disposition"] in {"internal", "dialect", "host"} else "missing"
+        mapping = obligation_witnesses.get(row["id"])
+        layers = {}
+        if status == "missing" and mapping:
+            source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
+                               for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
+            status = "covered" if source_statuses and all(value == "covered" for value in source_statuses) else "missing"
+            if row["obligation_kind"] == "public-api" and (row["id"] not in phases or phase_evidence.get(row["id"], {}).get("status") != "passed"
+                    or phase_evidence.get(row["id"], {}).get("test_source_sha256") != phases[row["id"]]["test_source_sha256"]):
+                status = "missing"
+            observed = [evidence.get(witnesses[identity]["fixture_id"], {}) for identity in mapping["assertion_ids"]]
+            layers = {layer: {"status": "passed" if all(value.get(layer, {}).get("status") == "passed" for value in observed) else "not-run"}
+                      for layer in runner.SEMANTIC_LAYERS}
+        observed_columns = columns(layers, status)
+        observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
+        rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
+                     "status": status, "fixture_id": None, "layers": layers, "columns": observed_columns,
+                     "completion_reason": "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
+    counts = Counter(row["status"] for row in rows)
+    sections = {}
+    for row in rows:
+        sections.setdefault(row["feature"], Counter())[row["status"]] += 1
+    missing = counts["missing"]
+    return {**historical, "schema_version": 2, "scope": "intended-language", "columns": list(COLUMNS),
+            "historical_scope": {"name": "historical-selected", "counts": historical["counts"], "strict_complete": historical["strict_complete"]},
+            "selection": {"features": list(features), "ids": list(identities), "full_scope_selected": not selected},
+            "counts": {key: counts[key] for key in historical["counts"]}, "features": {key: dict(value) for key, value in sorted(sections.items())},
+            "assertions": rows, "source_strict_complete": not selected and missing == 0,
+            "strict_complete": not selected and missing == 0 and historical["boundary_strict_complete"],
+            "inventory_counts": manifest["counts"], "evidence_policy": "Parser corpus acceptance, local metadata/name registration and historical/native evidence never establish public API/arity or macro completion."}
+
+
+def load_obligation_witnesses(obligations, assertions, witnesses):
+    """Require source/arity identity and complete, execution-backed test bodies.
+
+    The arity-faithfulness rationale remains reviewable, just as it does for
+    assertion adapters. A registration/metadata row cannot be the witness.
+    """
+    targets = {row["id"]: row for row in obligations}
+    sources = {row["id"]: row for row in assertions}
+    body_ids = {}
+    for row in assertions:
+        if row["disposition"] == "in-scope":
+            body_ids.setdefault(row["body_id"], []).append(row["id"])
+    result = {}
+    for line in (HERE / "obligation-witnesses.jsonl").read_text().splitlines():
+        item = json.loads(line)
+        target = targets.get(item.get("obligation_id"))
+        if not target or target["disposition"] != "intended" or not item.get("rationale", "").strip():
+            raise ValueError("Invalid public obligation witness target/rationale")
+        if target["id"] in result or item.get("body_sha256") != target["body_sha256"]:
+            raise ValueError("Duplicate/stale public obligation witness")
+        signature = target.get("signature")
+        if signature and (signature["kind"] == "unresolved" or item.get("signature_sha256") != inv.digest(json.dumps(signature, sort_keys=True).encode())):
+            raise ValueError("Public witness needs the exact resolved source arity")
+        ids = item.get("assertion_ids", [])
+        if not ids or len(ids) != len(set(ids)) or any(identity not in sources or identity not in witnesses for identity in ids):
+            raise ValueError("Public witness needs complete source assertion execution mappings")
+        for identity in ids:
+            source = sources[identity]
+            if any(value not in ids for value in body_ids[source["body_id"]]):
+                raise ValueError("Public witness cannot omit setup/body assertion paths")
+        result[target["id"]] = item
+    return result
+
+
+def load_phase_witnesses(obligations):
+    """Phase eligibility requires a pinned, named local execution test.
+
+    Macro/import contracts differ intentionally from upstream. Retain the whole
+    local test source (including all helper/setup/effect paths), target body and
+    arity hashes, and a reviewed rationale connecting its operation to the test.
+    No test-name discovery or registration is itself a passing observation.
+    """
+    targets = {row["id"]: row for row in obligations}
+    result = {}
+    for line in (HERE / "phase-witnesses.jsonl").read_text().splitlines():
+        item = json.loads(line)
+        target = targets.get(item.get("obligation_id"))
+        path = Path(item.get("test_file", ""))
+        name = item.get("test_name", "")
+        if (not target or target["disposition"] != "intended" or target["id"] in result
+                or item.get("body_sha256") != target["body_sha256"] or not item.get("rationale", "").strip()
+                or path.is_absolute() or ".." in path.parts or len(path.parts) != 2
+                or path.parts[0] != "tests" or path.suffix != ".rs" or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name)):
+            raise ValueError("Invalid macro phase witness target/source/rationale")
+        signature = target.get("signature")
+        if signature and (signature["kind"] == "unresolved" or item.get("signature_sha256") != inv.digest(json.dumps(signature, sort_keys=True).encode())):
+            raise ValueError("Macro phase witness needs exact resolved source arity")
+        data = (ROOT / path).read_bytes()
+        if item.get("test_source_sha256") != inv.digest(data) or not re.search(r"#\[test\]\s*(?:pub\s+)?fn\s+" + re.escape(name) + r"\s*\(", data.decode()):
+            raise ValueError("Macro phase witness detached from complete local test source")
+        result[target["id"]] = item
+    return result
+
+
+def run_phase_witnesses(obligations, artifacts, timeout):
+    import report as runner
+    mappings = load_phase_witnesses(obligations)
+    results, cache = {}, {}
+    for identity, item in mappings.items():
+        key = (item["test_file"], item["test_name"])
+        if key not in cache:
+            target = Path(item["test_file"]).stem
+            observed = runner.invoke(["cargo", "test", "--locked", "--test", target, "--", "--exact", item["test_name"], "--nocapture"],
+                                     artifacts / target / item["test_name"], timeout=timeout)
+            if observed["status"] == "completed":
+                text = observed["stdout"]
+                passed = ("running 1 test\n" in text and "test " + item["test_name"] + " ... ok" in text
+                          and "test result: ok. 1 passed; 0 failed; 0 ignored;" in text)
+                observed = runner.result("passed" if passed else "invalid-output", "Exact single macro phase execution test; zero-test/skipped runs fail.",
+                                         test_file=item["test_file"], test_name=item["test_name"], test_source_sha256=item["test_source_sha256"])
+            cache[key] = observed
+        results[identity] = cache[key]
+    return results

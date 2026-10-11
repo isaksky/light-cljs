@@ -13,7 +13,7 @@ remain compared with the preserved reference programs.
 This integration retains the pinned source inventory and requires executable
 observations for each selected assertion. It does not claim to build Penpot or
 execute the entire upstream suite. The authoritative current counts and outcomes
-come from `compiler-language/report.py --run --strict`, including both references.
+come from `compiler-language/report.py --scope historical-selected --run --strict`, including both references.
 
 ## Integrated source program
 
@@ -152,7 +152,7 @@ LIGHT_CLJS_REFERENCE_CHECKOUT="$PWD/research/clojurescript" \
 LIGHT_CLJS_REFERENCE_REVISION=a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e \
 LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS=180 \
 cargo test --locked --test execution -- --ignored --nocapture --test-threads=1
-python3 -B tests/reference/compiler-language/report.py --run --strict \
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --strict \
   --reference both --checkout research/clojurescript \
   --output /tmp/compiler-language-completion.json
 python3 benchmarks/measure_compiler_language.py \

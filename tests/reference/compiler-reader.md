@@ -85,7 +85,7 @@ matched **130 boundary classifications** per reference and retained the existing
 selection `primitives_test.cljs::test-regexps::assertion-{001,003,004,005,006,007,008,009,010,011,012}`
 passes all **11** witnesses in generated JavaScript and each reference. Pass each
 expanded ID as a separate `--id` to
-`python3 -B tests/reference/compiler-language/report.py --run --reference both --strict`.
+`python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --reference both --strict`.
 `extract_inventory.py --check` verifies the unchanged pinned inventory.
 
 The attempted entire execution-corpus dual-reference run exposed the existing

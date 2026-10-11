@@ -3,7 +3,7 @@ use std::process::Command;
 
 #[test]
 fn compiler_language_accounting_never_turns_missing_work_into_passes() {
-    for test in ["test_inventory.py", "test_report.py"] {
+    for test in ["test_inventory.py", "test_report.py", "test_full_ledger.py"] {
         let output = Command::new(std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into()))
             .args(["-B", &format!("tests/reference/compiler-language/{test}")])
             .current_dir(env!("CARGO_MANIFEST_DIR"))

@@ -103,7 +103,7 @@ cargo test --quiet --test execution analyzer_boundary_classifications_match_refe
 
 python3 -B - <<'PY'
 import json, subprocess
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for row in map(json.loads, open('tests/reference/compiler-language/witnesses.jsonl')):
     if (row['assertion_id'].startswith('extend_to_native_test.cljs::')

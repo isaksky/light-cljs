@@ -104,7 +104,7 @@ ids = [r['id'] for r in rows if r['disposition'] == 'in-scope' and (
     (r['source'].endswith('/primitives_test.cljs') and
      r['test'] in {'test-apply', 'test-partial-and-comp'}) or
     (r['source'].endswith('/core_test.cljs') and r['test'] in core))]
-subprocess.run(['python3', '-B', 'tests/reference/compiler-language/report.py',
+subprocess.run(['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
                 '--run', '--strict', '--reference', 'both',
                 '--output', '/tmp/compiler-apply.json'] +
                [arg for identity in ids for arg in ('--id', identity)], check=True)

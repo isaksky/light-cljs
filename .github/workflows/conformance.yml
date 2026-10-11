@@ -65,6 +65,19 @@ jobs:
           git -C research/clojurescript checkout --detach FETCH_HEAD
       - name: Verify the complete assertion inventory
         run: python3 -B tests/reference/compiler-language/extract_inventory.py --check
+      - name: Check full language ledger accounting
+        run: python3 -B tests/reference/compiler-language/test_full_ledger.py
+      - name: Publish full intended-language completion gaps
+        shell: bash
+        run: |
+          if python3 -B tests/reference/compiler-language/report.py --strict \
+              --output /tmp/light-cljs-language-full-scope.json; then
+            echo "Full intended-language scope is complete."
+          else
+            status=$?
+            if [ "$status" -ne 1 ]; then exit "$status"; fi
+            echo "Full intended-language scope remains incomplete; see missing obligations and Pellet owners in the report."
+          fi
       - name: Required result and effect comparisons
         env:
           LIGHT_CLJS_REFERENCE: both
@@ -74,9 +87,9 @@ jobs:
         run: cargo test --locked --test execution -- --ignored --nocapture --test-threads=1
       - name: Require focused evaluator migration comparisons
         run: python3 -B tests/reference/evaluator-migration/gate.py --reference --checkout research/clojurescript --artifacts /tmp/light-cljs-evaluator-reference
-      - name: Require every in-scope language assertion
+      - name: Require historical selected language assertions
         run: |
-          python3 -B tests/reference/compiler-language/report.py --run --strict \
+          python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --strict \
             --reference both --checkout research/clojurescript \
             --artifacts /tmp/light-cljs-language-conformance \
             --output /tmp/light-cljs-language-conformance.json
@@ -87,6 +100,7 @@ jobs:
           name: compiler-language-diagnostics
           path: |
             /tmp/light-cljs-language-conformance*
+            /tmp/light-cljs-language-full-scope.json
             /tmp/light-cljs-reference-*
             /tmp/light-cljs-evaluator-reference
           if-no-files-found: error

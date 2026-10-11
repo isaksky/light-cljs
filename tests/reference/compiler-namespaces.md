@@ -85,7 +85,7 @@ cargo test --locked --test execution \
   shared_namespaces_and_macro_inference_match_standard_clojurescript \
   -- --ignored --nocapture
 
-python3 -B tests/reference/compiler-language/report.py --run --strict \
+python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --strict \
   --id 'core_test.cljs::test-cljs-1274::assertion-001' \
   --id 'core_test.cljs::test-cljs-1274::assertion-002' --reference both
 ```

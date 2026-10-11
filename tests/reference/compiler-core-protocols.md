@@ -117,7 +117,7 @@ import json, subprocess
 selected = {'cljs-state-test-cljs-3406',
             'cljs-destructure-test-protocol-method-destructuring',
             'cljs-deftype-test-cljs-2128', 'cljs-deftype-test-cljs-2083'}
-command = ['python3', '-B', 'tests/reference/compiler-language/report.py',
+command = ['python3', '-B', 'tests/reference/compiler-language/report.py', '--scope', 'historical-selected',
            '--run', '--strict', '--reference', 'both']
 for row in map(json.loads, open('tests/reference/compiler-language/witnesses.jsonl')):
     if (row['fixture_id'].startswith('cljs-core-protocol-')
