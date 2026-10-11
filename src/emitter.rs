@@ -10,6 +10,23 @@ use crate::analyzer::{
 /// Emit one JavaScript expression whose value is the last source form (or nil).
 /// The result is self-contained, including its ClojureScript truth predicate.
 pub fn emit_js(program: &Program) -> String {
+    emit_js_mode(program, None)
+}
+
+/// Emit a function accepting the session canonical runtime as its sole argument.
+/// This avoids embedding or recreating runtime brands for every evaluated unit.
+pub fn emit_js_unit(program: &Program) -> String {
+    let raw = program.strings.iter().map(|s| String::from_utf16_lossy(s)).collect::<String>();
+    let mut index = 0;
+    let parameter = loop {
+        let candidate = format!("__lightSessionRuntime{index}");
+        if !raw.contains(&candidate) { break candidate; }
+        index += 1;
+    };
+    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter)))
+}
+
+fn emit_js_mode(program: &Program, shared: Option<&str>) -> String {
     let mut emitter = Emitter {
         program,
         output: String::new(),
@@ -68,10 +85,14 @@ pub fn emit_js(program: &Program) -> String {
         ) || matches!(&expr.kind, ExprKind::Fn { methods, .. } if methods.iter().any(|m| m.rest.is_some()))
         )
     }) {
-        let runtime = format!("  const rt = {};\n", include_str!("js_runtime.js").trim());
+        let runtime = if let Some(parameter) = shared { format!("  const rt = {parameter};\n") } else {
+            format!("  const rt = {};\n", include_str!("js_runtime.js").trim())
+        };
         for range in &mut emitter.raw_segments { if range.start >= prelude_end { range.start += runtime.len(); range.end += runtime.len(); } }
-        let start = prelude_end + runtime.find("(() =>").unwrap();
-        emitter.raw_segments.push(start..prelude_end + runtime.len() - 2);
+        if shared.is_none() {
+            let start = prelude_end + runtime.find("(() =>").unwrap();
+            emitter.raw_segments.push(start..prelude_end + runtime.len() - 2);
+        }
         emitter.output.insert_str(prelude_end, &runtime);
     }
 

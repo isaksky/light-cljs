@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 
 [features]
 # Benchmark-only allocation instrumentation, absent from normal timing runs.

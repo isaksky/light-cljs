@@ -11,6 +11,46 @@ const throwsError = thunk => assert.throws(thunk, error => error.constructor ===
 const v = runtime.vector(10, 20, 30);
 const kw = runtime.keyword("demo", "x");
 
+// Macro evaluators share these symbols and collections with the canonical core.
+{
+  const first = c.gensym(), second = c.gensym('tmp__');
+  assert.equal(c.isSymbol(first), true);
+  assert.equal(c.namespace(first), null);
+  assert.equal(c.name(first), 'G__1');
+  assert.equal(c.name(second), 'tmp__2');
+  assert.equal(c.equal(first, second), false);
+  assert.equal(c.get(c.hashMap(first, 42), c.symbol('G__1')), 42);
+  assert.equal(c.name(c.apply(c.gensym, c.list('arg__'))), 'arg__3');
+  assert.throws(() => c.gensym('x', 'y'), /Invalid arity: 2/);
+  const fresh = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  assert.equal(fresh.core.name(fresh.core.gensym()), 'G__1');
+
+  const form = c.withMeta(c.list(c.symbol('sample/m'), c.vector(1)), c.hashMap('source', true));
+  const expanded = c.list(c.symbol('do'), c.first(c.rest(form)));
+  const expand = c.macroexpand, expand1 = c.macroexpand1;
+  assert.throws(() => expand(form), /macroexpand service is not installed/);
+  assert.throws(() => expand1(form), /macroexpand-1 service is not installed/);
+  runtime.setMacroexpandServices({
+    macroexpand: function (value) { assert.equal(this, null); assert.equal(value, form); return expanded; },
+    macroexpand1: function (value) { assert.equal(this, null); return value; }
+  });
+  assert.equal(expand(form), expanded);
+  assert.equal(c.apply(expand1, c.list(form)), form);
+  assert.equal(c.meta(expand1(form)), c.meta(form));
+  assert.throws(() => fresh.core.macroexpand(form), /service is not installed/);
+  assert.throws(() => expand(), /Invalid arity: 0/);
+  assert.throws(() => expand1(form, form), /Invalid arity: 2/);
+  assert.throws(() => runtime.setMacroexpandServices({macroexpand: 1}), TypeError);
+  assert.equal(expand(form), expanded);
+  const failure = {};
+  runtime.setMacroexpandServices({macroexpand: () => { throw failure; }});
+  assert.throws(() => expand(form), error => error === failure);
+  assert.throws(() => expand1(form), /service is not installed/);
+  runtime.setMacroexpandServices(null);
+  assert.throws(() => expand(form), /service is not installed/);
+}
+console.log('gensym and configurable macro expansion service assertions passed');
+
 assert.deepEqual(runtime.inspect(kw), {kind: "keyword", namespace: "demo", name: "x", spelling: "demo/x"});
 assert.deepEqual(runtime.inspect(v), {kind: "vector", items: [10, 20, 30]});
 assert.equal(c.name(kw), "x");

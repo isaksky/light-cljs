@@ -18,6 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.18.0'
+      - run: cargo check --locked --all-features
       - run: cargo test --locked
 
   conformance:

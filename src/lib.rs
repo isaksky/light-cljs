@@ -18,6 +18,7 @@ mod compiler_destructuring;
 pub mod compiler_names;
 pub mod compiler_reader;
 pub mod emitter;
+pub mod evaluator;
 pub mod interpreter;
 mod literals;
 pub mod macro_host;

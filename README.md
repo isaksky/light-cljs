@@ -5,7 +5,8 @@ lexer, handwritten syntax parser, semantic analyzer, and JavaScript emitter.
 The parser pulls tokens into a node arena; analysis resolves local references
 to binding IDs in a separate expression arena. Generated JavaScript includes
 immutable vectors, lists, maps, sets, named values and a first-party core runtime
-when needed. The current library has no dependencies or unsafe code.
+when needed. Synchronous evaluation uses pinned `rquickjs` 0.14.0; its small
+allocator boundary delegates pointer ownership to the upstream Rust allocator.
 Tokens never allocate text; syntax leaves keep byte spans wherever possible.
 
 ## Adopted evaluator architecture
@@ -17,7 +18,9 @@ execution will share canonical runtime operations and JavaScript Number semantic
 with separate mutable state and demand-initialized compile-time helper roots.
 Macros will live in `.cljs`/`.cljc` and use ordinary `:require`.
 
-**This migration is planned, not implemented yet.** Compiler macros currently run
+The [synchronous evaluator](docs/evaluator.md) now executes compiler units with
+one canonical runtime per session, bounded host controls and owned value IDs.
+**Consumer migration is still in progress.** Compiler macros currently run
 in the native Rust interpreter through `.clj`/`.cljc` macro imports, and scripts,
 the REPL and embedding APIs still use native evaluation. The existing commands
 and API examples below describe that current checkout. See the

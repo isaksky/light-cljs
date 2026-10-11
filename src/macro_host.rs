@@ -48,6 +48,8 @@ pub struct MacroHost {
     runtime_vars: HashMap<String, HashMap<String, bool>>,
     namespace_imports: HashMap<String, Vec<(String, String)>>,
     pub limits: MacroLimits,
+    /// Configuration only: JS roots belong to each fresh compilation session.
+    pub evaluator_options: crate::evaluator::EvaluatorOptions,
     assertions_disabled: bool,
     interop_macros_loaded: bool,
     sequence_macros_loaded: bool,
@@ -57,6 +59,12 @@ pub struct MacroHost {
 }
 
 impl MacroHost {
+    /// Allocate a fresh synchronous heap for a clean compilation.
+    /// The legacy native macro adapter is removed by light-cljs-115.
+    pub fn new_evaluator(&self) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
+        crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

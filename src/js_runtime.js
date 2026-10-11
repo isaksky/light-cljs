@@ -113,6 +113,35 @@
     }
   }
 
+  let gensymCounter = 0;
+  function gensym(prefix) {
+    if (arguments.length > 1) return invalidArity(arguments.length);
+    return symbolCore(str(arguments.length === 0 ? "G__" : prefix, ++gensymCounter));
+  }
+
+  // Evaluators install their expansion services without replacing core or
+  // coupling this runtime to a particular compiler or JavaScript engine.
+  let macroexpandServices = {};
+  function setMacroexpandServices(services) {
+    const next = services == null ? {} : services;
+    if (typeof next !== "object") throw new TypeError("Expected macroexpand services object");
+    const {macroexpand, macroexpand1} = next;
+    for (const service of [macroexpand, macroexpand1]) {
+      if (service != null && typeof service !== "function") throw new TypeError("Expected macroexpand service function");
+    }
+    macroexpandServices = {macroexpand, macroexpand1};
+  }
+  function expansionService(name, displayName) {
+    return function (form) {
+      if (arguments.length !== 1) return invalidArity(arguments.length);
+      const service = macroexpandServices[name];
+      if (service == null) throw new Error(displayName + " service is not installed");
+      return service.call(null, form);
+    };
+  }
+  const macroexpand = expansionService("macroexpand", "macroexpand");
+  const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
+
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
@@ -3040,6 +3069,7 @@
     chunkedFirstProtocol: coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst),
     chunkedRestProtocol: coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest),
     invokeProtocol: coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args)),...numeric, ...predicates, keyword: keywordCore, symbol: symbolCore, vector, list,
+    gensym, macroexpand, macroexpand1,
     hashMap, arrayMap, sortedMap, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
     reduce, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
     Atom, atomFactory, Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol, resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch, notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
@@ -3080,5 +3110,5 @@
     uncheckedGet: (object, key) => object[key], uncheckedSet: jsSet,
     checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,
     constantly, complement, comp, partial, juxt, fnil});
-  return Object.freeze({keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, core, inspect, hash});
+  return Object.freeze({keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, core, inspect, hash});
 })()
