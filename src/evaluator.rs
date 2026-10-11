@@ -1109,6 +1109,39 @@ mod active_tests {
             assert!(evaluator.active(ctx).is_err());
         });
     }
+
+    #[test]
+    fn backtracking_deadline_is_terminal_and_fresh_operations_recover() {
+        let host = crate::MacroHost::new();
+        let evaluator = host.new_evaluator().unwrap();
+        let short = EvaluatorOptions {
+            timeout: Duration::from_millis(40),
+            ..Default::default()
+        };
+        // Keep runtime startup outside the intentionally short regex window.
+        evaluator.begin_operation(&short).unwrap();
+        let work = "(()=>{try { /^(a+)+$/.test('a'.repeat(28)+'!'); } catch(e) {} return 42;})()";
+        let error = evaluator.evaluate_js(work).unwrap_err();
+        assert!(error.0.contains("deadline exceeded"), "{error}");
+        assert!(
+            evaluator.evaluate_js("42").unwrap_err().0.contains("deadline exceeded")
+        );
+        assert!(
+            evaluator.begin_operation(&EvaluatorOptions::default())
+                .unwrap_err().0.contains("deadline exceeded")
+        );
+
+        // Recovery has its own normal operation timeout, preserving the short
+        // bound above without imposing it on a fresh heap's initialization.
+        let fresh = host.new_evaluator().unwrap();
+        fresh.begin_operation(&host.evaluator_options).unwrap();
+        assert_eq!(
+            fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(), 42.0
+        );
+        assert!(
+            evaluator.evaluate_js("42").unwrap_err().0.contains("deadline exceeded")
+        );
+    }
 }
 
 /// Arity checked before entering an embedding callback.

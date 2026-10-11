@@ -55,8 +55,64 @@ oversized source and printed regex-sequence output, retain a session after an
 ordinary invalid pattern, and reset its global RegExp root/lastIndex state.
 A 29-unit pathological backtracking input tests actual native RegExp VM work,
 using a 100-poll budget, 40 ms deadline, and cancellation from another thread.
-Caught regex failure cannot restore a terminal session; the same configured host
-creates a successful fresh evaluator.
+Caught regex failure cannot restore a terminal session. Each budget/deadline
+check asserts its specific cause, retained after a fresh evaluator succeeds;
+cancellation also remains terminal on the subsequent trivial operation. The
+integration test retains budget/cancellation and same-host recovery. The 40 ms
+deadline case runs in `evaluator::active_tests` so the existing private `begin_operation`
+can arm that window after runtime initialization. Its fresh evaluator uses the
+normal ten-second timeout, separating clean-state recovery from the intentionally
+short regex deadline. An attempted new operation also cannot reset the terminal
+deadline state.
+
+### Short-deadline recovery fixture
+
+The broad printing/reflection run in
+`/tmp/light-cljs-124-all-binaries-final.log` failed the fresh `42` assertion with
+`JavaScript session deadline exceeded`; its isolated retry passed in
+`/tmp/light-cljs-124-regex-deadline-retry.log`. Source inspection shows
+`MacroHost::new_evaluator` creates an independent `ControlState` for this
+noninteractive host. A direct `Evaluator` starts its session deadline before
+engine/runtime initialization; it does not reset the deadline for each method.
+The recovery assertion was therefore asking initialization, scheduling, evaluation
+and value retrieval to finish within a new 40 ms window. This is fixture timing,
+not inherited terminal state.
+
+A controlled probe retained at `/tmp/light-cljs-133-deadline-probe.rs` failed
+during fresh 40 ms initialization under build load
+(`/tmp/light-cljs-133-deadline-probe.log`). Its isolated rerun
+(`/tmp/light-cljs-133-deadline-probe-retry.log`) confirmed that a fresh 40 ms
+evaluator returns `42` before an 80 ms idle interval, then expires independently.
+A fresh default-timeout evaluator on the same host returns `42` after that
+interval while the original evaluator remains terminal. A first fixture edit
+separating fresh recovery still failed 18/20 repeated runs during Cargo build
+load, this time at the original 40 ms evaluator's initialization
+(`/tmp/light-cljs-133-regex-load.log`). That evidence motivated arming the deadline
+after initialization in the unit test. The regression keeps the actual 100-poll
+and 40 ms catastrophic RegExp checks. No execution limit is changed:
+`EvalSession` still resets its deadline/polls at each public operation and shares
+them with nested work, as documented in `docs/evaluation.md`.
+
+The revised fixture passed all 58 tests in the library, regex, evaluator,
+EvalSession and evaluator-migration suites (two existing opt-in tests remain
+ignored), recorded in `/tmp/light-cljs-133-final-focused.log`. Both the named
+integration regression and private deadline test passed 20 repetitions each,
+with four concurrent workers while an eight-job fresh Cargo test build ran;
+`/tmp/light-cljs-133-final-regex-load.log` and
+`/tmp/light-cljs-133-final-build-load.log` retain those results. The evaluator
+benchmark also passed (`/tmp/light-cljs-133-evaluator-bench.log`). The regex test
+file's full-source witness hashes were refreshed without changing the witnessed
+macro/application API body; the compiler-language accounting suite passed in
+`/tmp/light-cljs-133-ledger.log`.
+
+The broad `cargo test --locked --quiet --no-fail-fast` run completed 67 suites
+with 582 passed, two failed and 62 existing ignored tests. Its temporary
+compiler-language source-pin failure was repaired and passed on retry above.
+The remaining conformance failure contains exactly two stale `&env` projections
+that omit the documented `:light-cljs/unchecked-arrays` key added by
+light-cljs-132; focused live light-cljs-136 owns that reconciliation. This run
+is not a full-suite pass. `/tmp/light-cljs-133-all-binaries.log` retains the
+complete diagnostics.
 
 rquickjs-sys 0.14.0's bundled `libregexp.c` calls `lre_check_timeout` from its
 matching/backtracking VM, wired in `quickjs.c` to the runtime interrupt handler.

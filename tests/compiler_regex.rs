@@ -155,32 +155,35 @@ fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {
 fn built_in_backtracking_observes_budget_deadline_and_cancellation() {
     // The bounded input causes pathological backtracking inside native RegExp,
     // not an infinite JS loop. QuickJS 0.14 polls its regexp VM itself.
+    // The 40 ms deadline case lives in evaluator's unit tests so it can arm the
+    // existing operation control after runtime initialization, before matching.
     let work = "(()=>{try { /^(a+)+$/.test('a'.repeat(28)+'!'); } catch(e) {} return 42;})()";
-    for options in [
-        EvaluatorOptions {
-            poll_budget: 100,
-            ..Default::default()
-        },
-        EvaluatorOptions {
-            timeout: Duration::from_millis(40),
-            ..Default::default()
-        },
-    ] {
-        let mut host = MacroHost::new();
-        host.evaluator_options = options;
-        let e = host.new_evaluator().unwrap();
-        let error = e.evaluate_js(work).unwrap_err().0;
-        assert!(
-            error.contains("budget") || error.contains("deadline"),
-            "{error}"
-        );
-        assert!(e.evaluate_js("42").is_err());
-        let fresh = host.new_evaluator().unwrap();
-        assert_eq!(
-            fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(),
-            42.0
-        );
-    }
+    let mut host = MacroHost::new();
+    host.evaluator_options.poll_budget = 100;
+    let e = host.new_evaluator().unwrap();
+    assert!(
+        e.evaluate_js(work)
+            .unwrap_err()
+            .0
+            .contains("poll budget exhausted")
+    );
+    assert!(
+        e.evaluate_js("42")
+            .unwrap_err()
+            .0
+            .contains("poll budget exhausted")
+    );
+    let fresh = host.new_evaluator().unwrap();
+    assert_eq!(
+        fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(),
+        42.0
+    );
+    assert!(
+        e.evaluate_js("42")
+            .unwrap_err()
+            .0
+            .contains("poll budget exhausted")
+    );
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
     let control = e.control();
     let canceller = std::thread::spawn(move || {
@@ -189,6 +192,7 @@ fn built_in_backtracking_observes_budget_deadline_and_cancellation() {
     });
     assert!(e.evaluate_js(work).unwrap_err().0.contains("cancelled"));
     canceller.join().unwrap();
+    assert!(e.evaluate_js("42").unwrap_err().0.contains("cancelled"));
 }
 #[test]
 #[ignore = "requires Java, Clojure CLI and both pinned CLJS references"]
