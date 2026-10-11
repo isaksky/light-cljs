@@ -776,10 +776,6 @@ impl Emitter<'_> {
         self.output.push_str("}\n");
     }
 
-    fn method(&mut self, name: Option<LocalId>, method: &FnMethod) {
-        self.method_with_ifn_captures(name, method, false);
-    }
-
     fn method_with_ifn_captures(
         &mut self,
         name: Option<LocalId>,
@@ -885,10 +881,20 @@ impl Emitter<'_> {
     }
 
     fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
+        self.function_with_ifn_captures(name, methods, macro_function, false);
+    }
+
+    fn function_with_ifn_captures(
+        &mut self,
+        name: Option<LocalId>,
+        methods: &[FnMethod],
+        macro_function: bool,
+        ifn_call: bool,
+    ) {
         if methods.len() == 1 && methods[0].rest.is_none() {
             // A single fixed method deliberately retains ordinary JS missing/
             // extra argument behavior, with no dispatcher or runtime prelude.
-            self.method(name, &methods[0]);
+            self.method_with_ifn_captures(name, &methods[0], ifn_call);
             return;
         }
         self.output.push_str("(() => {\n");
@@ -896,7 +902,7 @@ impl Emitter<'_> {
         for (index, method) in methods.iter().enumerate() {
             self.indentation();
             write!(self.output, "const m{index} = ").unwrap();
-            self.method(None, method);
+            self.method_with_ifn_captures(None, method, ifn_call);
             self.output.push_str(";\n");
         }
         let function = name.map_or_else(|| "f".into(), |name| format!("l{}", name.0));
@@ -1032,18 +1038,23 @@ impl Emitter<'_> {
             )
             .unwrap();
             if ifn {
-                self.method_with_ifn_captures(None, method, true);
+                // Callable adapters supply the receiver as the first argument;
+                // their rest binding still needs the ordinary fn dispatcher.
+                self.function_with_ifn_captures(None, std::slice::from_ref(method), false, true);
             } else {
                 self.function(None, std::slice::from_ref(method), false);
             }
             if ifn {
                 self.output.push_str(", ");
-                self.method(None, method);
+                self.function(None, std::slice::from_ref(method), false);
             }
-            if method.rest.is_some()
-                && matches!(dispatch, MethodDispatch::Builtin(name) if name.starts_with("Object/"))
-            {
-                write!(self.output, ", null, {}", method.params.len()).unwrap();
+            if method.rest.is_some() {
+                if ifn {
+                    write!(self.output, ", {}", method.params.len()).unwrap();
+                } else if matches!(dispatch, MethodDispatch::Builtin(name) if name.starts_with("Object/"))
+                {
+                    write!(self.output, ", null, {}", method.params.len()).unwrap();
+                }
             }
             self.output.push(']');
         }

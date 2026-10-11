@@ -1,6 +1,20 @@
 {
   "full-cases.jsonl": [
     {
+      "id": "cljs-residual-completion-test-cljs-2133",
+      "source": "(do (deftype Partial [f args]   IFn   (-invoke [_ & a]     (apply (apply partial f args) a))) (do (do (let [p (Partial. + [1])]       (p 2)))))",
+      "expected": {
+        "id": "cljs-residual-completion-test-cljs-2133",
+        "outcome": {
+          "status": "returned",
+          "value": 3
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null
+    },
+    {
       "id": "cljs-residual-completion-var-desugar-test",
       "source": "(do (do (do (= cljs.core.PersistentQueue.EMPTY        ((fn [] cljs.core.PersistentQueue.EMPTY))) (= 1        (let [a #js {:b 1}]          ((fn [] a.b)))))))",
       "expected": {
@@ -74,6 +88,19 @@
   "full-witnesses.jsonl": [],
   "obligation-witnesses.jsonl": [
     {
+      "obligation_id": "body::core_test.cljs::test-cljs-2133",
+      "body_sha256": "de0422b2ae6a31a59a864126b0dd2915a98981f12a356325a3f7612348cbf2b9",
+      "reference_fixture_id": "cljs-residual-completion-test-cljs-2133",
+      "reference_source_sha256": "8c95f33171bb8525c6d059fc5d668c302abad04fa4a8a544b296ac5d91592754",
+      "reference_contract_sha256": "f25a9f197eab4069196ca84c9646308f4dd0e90c89e346271f5da835748bb8b5",
+      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_completion.rs",
+        "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+      }
+    },
+    {
       "obligation_id": "body::core_test.cljs::var-desugar-test",
       "body_sha256": "4b3e8fc2fa7f62b6263f2ab2271eb7e17db2d572581d11b11b1300813a05560f",
       "reference_fixture_id": "cljs-residual-completion-var-desugar-test",
@@ -83,7 +110,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       }
     },
     {
@@ -96,7 +123,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       }
     },
     {
@@ -109,7 +136,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       }
     },
     {
@@ -122,12 +149,32 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       }
     }
   ],
   "phase-witnesses.jsonl": [
     {
+      "obligation_id": "body::core_test.cljs::test-cljs-2133",
+      "body_sha256": "de0422b2ae6a31a59a864126b0dd2915a98981f12a356325a3f7612348cbf2b9",
+      "reference_fixture_id": "cljs-residual-completion-test-cljs-2133",
+      "reference_source_sha256": "8c95f33171bb8525c6d059fc5d668c302abad04fa4a8a544b296ac5d91592754",
+      "reference_contract_sha256": "f25a9f197eab4069196ca84c9646308f4dd0e90c89e346271f5da835748bb8b5",
+      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_completion.rs",
+        "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+      },
+      "test_file": "tests/compiler_residual_completion.rs",
+      "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
+      }
+    },
+    {
       "obligation_id": "body::core_test.cljs::var-desugar-test",
       "body_sha256": "4b3e8fc2fa7f62b6263f2ab2271eb7e17db2d572581d11b11b1300813a05560f",
       "reference_fixture_id": "cljs-residual-completion-var-desugar-test",
@@ -137,13 +184,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a",
+      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "2a58032ed8a5b43c66be2efe6b38b4c43d20f652e234b7c7c40b66ccf7bc92b7",
+        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
         "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
       }
     },
@@ -157,13 +204,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a",
+      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "2a58032ed8a5b43c66be2efe6b38b4c43d20f652e234b7c7c40b66ccf7bc92b7",
+        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
         "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
       }
     },
@@ -177,13 +224,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a",
+      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "2a58032ed8a5b43c66be2efe6b38b4c43d20f652e234b7c7c40b66ccf7bc92b7",
+        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
         "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
       }
     },
@@ -197,13 +244,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a"
+        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "74512a24f44d72cc8c2e4bf38b7ed475f8c52cd7b12bb7ba40265b88efc97c9a",
+      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "2a58032ed8a5b43c66be2efe6b38b4c43d20f652e234b7c7c40b66ccf7bc92b7",
+        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
         "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
       }
     }

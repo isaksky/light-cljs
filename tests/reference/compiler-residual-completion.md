@@ -49,9 +49,9 @@ those shared catalog rows, preserving unrelated generators' rows and order.
 
 `compiler-residual-completion-omissions.json` retains complete source probes,
 every original assertion and relevant setup form, original source hashes,
-literal pinned expectations, and suggested scope. It does not register a
-witness or passing source result. Fresh receipts verified exact source
-identity against this generated file:
+literal pinned expectations, and suggested scope. The original failure receipts remain intact; the repaired Partial probe is now
+registered only after fresh successful application, macro, and both-pin execution.
+Fresh original failure receipts verified exact source identity against this generated file:
 
 - Both-pin receipts:
   `/tmp/light-cljs-125-residual-completion-omissions-reference/evidence.json`.
@@ -60,11 +60,13 @@ identity against this generated file:
 - Receiver diagnostics:
   `/tmp/light-cljs-125-object-equiv-local-receivers.json`.
 
-The two confirmed semantic omissions have live focused owners before light-cljs-125: light-cljs-149 (variadic IFn rest binding) and light-cljs-150 (persistent collection Object .equiv). They are:
+These two semantic omissions received focused owners before light-cljs-125.
+The variadic IFn omission is repaired below; light-cljs-150 still owns
+persistent collection Object `.equiv`. Original reproductions were:
 
 1. `core_test.cljs::test-cljs-2133` with complete original `Partial` setup
-   returns **3** in both references. All four current local engine/phase paths
-   fail with **`2 is not ISeqable`**. The focused scope is variadic `IFn`
+   returns **3** in both references. All four local engine/phase paths at `ce1487c`
+   failed with **`2 is not ISeqable`**. The focused scope is variadic `IFn`
    `-invoke` rest binding and invocation. Probe SHA-256:
    `8c95f33171bb8525c6d059fc5d668c302abad04fa4a8a544b296ac5d91592754`.
 2. `interop_test.cljs::test-obj-equiv` retains all seven original assertions
@@ -75,6 +77,62 @@ The two confirmed semantic omissions have live focused owners before light-cljs-
    scope is those public Object interop methods, preserving complete body and
    ordinary/macro execution. Probe SHA-256:
    `18ab06bef880d002aaa5584b75724664bc0cd0aacd0bf61894e6bcc3aee08d40`.
+
+## Variadic IFn repair and complete-body integration
+
+On 2026-10-11 from starting HEAD `ce1487c`, light-cljs-149 repaired variadic
+`deftype`/`reify` callable methods. Both the `.call` and direct `-invoke` entries
+now bind their source rest parameter to an indexed sequence or nil; fixed IFn
+slots retain their previous receiver/recur behavior. A separate variadic call
+entry handles unmatched arities in overload sets. Both pinned compilers lose
+instance fields on this overloaded direct variadic path, while the matching
+`apply` slot preserves them; the literal tests retain this observed distinction.
+
+Saved variadic call/invoke functions expose their bounded sequence `apply`
+entries. Seven supplemental contracts cover zero/one/multiple rest values,
+fixed prefixes and overloads, actual borrowed receivers, saved callable values,
+metadata copies, ordered effects, infinite inputs through saved sequence entries,
+and passing a lazy value without premature realization. Callable-object `apply`
+itself still uses the canonical eager argument-array path; no infinite eager
+application is advertised as terminating. Ordinary variadic `fn` application
+remains lazy. Macro supplemental tests compute `pr-str` before returning the
+result, retaining the observation of undefined missing slots without trying to
+export undefined as a supported macro form.
+
+The unchanged complete `Partial` setup and `test-cljs-2133` body now return **3**
+in Node/QuickJS applications and when computed by QuickJS macros, with probe
+SHA-256 `8c95f33171bb8525c6d059fc5d668c302abad04fa4a8a544b296ac5d91592754`.
+The generator adds this fifth residual fixture and only its assertion-free
+body/phase/reference mapping; it creates no source-assertion witness or pass.
+
+Reproduce both-pin evidence (eight contracts, all passed per pin):
+
+```
+python3 -B tests/reference/compiler-ifn-rest.py --output /tmp/light-cljs-149-reference-current
+cargo test --test compiler_ifn_rest --test compiler_residual_completion
+python3 -B tests/reference/compiler-residual-completion.py --catalogs
+```
+
+Checked evidence is retained at
+`/tmp/light-cljs-149-reference-current/evidence.json`, with full source hashes,
+local fixture/test hashes, identity and settings receipts for release **1.12.134**
+and clean checkout **a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**,
+`:optimizations :none`, `:static-fns false`, `:def-emits-var false`.
+Focused tests also prove located invalid-form diagnostics, recovery after failed
+runtime calls, and successful fresh/reused macro hosts after a macro throws.
+Current regression verification passed `execution`, `analyzer`, `compiler_types`,
+`compiler_reify`, `compiler_protocols`, `compiler_extensions`, `compiler_records`,
+`compiler_macros`, `compiler_core_helpers`, and `compiler_deferred`. The execution
+suite's 43 explicitly ignored reference tests were not counted as passes.
+Both standalone JavaScript runtime/helper suites passed. The resident compiler
+benchmark completed 423 checked samples (`--samples 9 --iterations 1`), retained
+at `/tmp/light-cljs-149-compiler-bench.csv`; this is a performance smoke run,
+not a quantified before/after speed claim. Catalog/source/support validation,
+residual generators, inventory `--check`, focused Rust formatting and
+`git diff --check` passed.
+
+Other residual missing obligations and the unfinished light-cljs-125 full gate
+remain open; this single repaired body does not establish full completion.
 
 ## Retained gaps and boundaries
 

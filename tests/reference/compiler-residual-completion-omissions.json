@@ -15,8 +15,8 @@
     ],
     "assertion_ids": [],
     "expected_returned_value": 3,
-    "status": "unwitnessed-semantic-omission",
-    "focused_owner_scope": "Variadic IFn implementations must receive a rest sequence at their -invoke rest parameter; current complete body throws 2 is not ISeqable."
+    "status": "witnessed-semantic-omission",
+    "focused_owner_scope": "Repaired by light-cljs-149: complete original Partial/test-cljs-2133 now returns 3 in Node/QuickJS application and QuickJS macro computations against both pinned references; original probe and provenance preserved."
   },
   {
     "body_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv",

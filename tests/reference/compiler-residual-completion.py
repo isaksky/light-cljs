@@ -25,6 +25,7 @@ TEST_NAME = 'remaining_complete_residual_bodies_execute_in_both_phases'
 SOURCE_ROOT = 'tests/fixtures/compiler-residual-completion'
 REFERENCE_ROOT = SOURCE_ROOT + '-reference'
 SELECTED = {
+    'core_test.cljs::test-cljs-2133': ['core_test.cljs::Partial'],
     'core_test.cljs::var-desugar-test': [],
     'core_test.cljs::test-cljs-3313': ['core_test.cljs::ExtMetaProtocol', 'core_test.cljs::top-level-272'],
     'core_test.cljs::test-new-method': [],
@@ -61,7 +62,7 @@ def omission_probes(bodies):
     result = []
     selection = [
         ('core_test.cljs::test-cljs-2133', ['core_test.cljs::Partial'], 3,
-         'Variadic IFn implementations must receive a rest sequence at their -invoke rest parameter; current complete body throws 2 is not ISeqable.'),
+         'Repaired by light-cljs-149: complete original Partial/test-cljs-2133 now returns 3 in Node/QuickJS application and QuickJS macro computations against both pinned references; original probe and provenance preserved.'),
         ('src/test/cljs/cljs/interop_test.cljs::test-obj-equiv', [], True,
          'Normal non-lite map, vector and set values need their upstream Object .equiv method. Keep all seven original assertions; keywords, symbols, lists and lazy sequences already pass isolated current engine probes.'),
         ('src/test/cljs/cljs/predicates_test.cljs::test-int-preds', ['src/test/cljs/cljs/predicates_test.cljs::int-val-table'], True,
@@ -88,7 +89,7 @@ def omission_probes(bodies):
         result.append({'body_id': identity, 'source': source,
             'source_sha256': inv.digest(source.encode()), 'complete_original_provenance': origins,
             'assertion_ids': bodies[identity]['assertions'], 'expected_returned_value': expected,
-            'status': 'unwitnessed-host-input-boundary' if identity.endswith('::test-int-preds') else 'unwitnessed-semantic-omission',
+            'status': 'witnessed-semantic-omission' if identity.endswith('::test-cljs-2133') else 'unwitnessed-host-input-boundary' if identity.endswith('::test-int-preds') else 'unwitnessed-semantic-omission',
             'focused_owner_scope': scope})
     persist(ROOT / 'tests/reference/compiler-residual-completion-omissions.json', json.dumps(result, indent=2) + '\n')
 
@@ -109,9 +110,10 @@ def generate():
             forms.insert(0, '(def Object js/Object)')
         source = ('(do ' + ' '.join(forms) + ')').replace('\n', ' ').replace('\t', ' ')
         case_id = PREFIX + identity.split('::')[-1]
-        rows.append([case_id, source, 'true', json.dumps(provenance, separators=(',', ':'))])
+        expected = 3 if identity.endswith('::test-cljs-2133') else True
+        rows.append([case_id, source, '3' if expected == 3 else 'true', json.dumps(provenance, separators=(',', ':'))])
         cases.append({'id': case_id, 'source': source,
-            'expected': {'id': case_id, 'outcome': {'status': 'returned', 'value': True}, 'trace': [], 'stdout': ''},
+            'expected': {'id': case_id, 'outcome': {'status': 'returned', 'value': expected}, 'trace': [], 'stdout': ''},
             'native_stdout': None})
         mappings.append({'obligation_id': 'body::' + identity,
             'body_sha256': bodies[identity]['source_span']['sha256'], 'reference_fixture_id': case_id,

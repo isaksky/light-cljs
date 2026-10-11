@@ -360,9 +360,19 @@ before this gate: light-cljs-149 (variadic callable-type `IFn` rest binding) and
 light-cljs-150 (persistent map/vector/set Object `.equiv`). Their complete original
 probes and SHA256 bindings are reproducible in
 `compiler-residual-completion-omissions.json`. Both pins independently return the
-original expected result, while current local application and macro paths fail.
+original expected result, while local application and macro paths at `ce1487c` fail.
 The full interop body retains all seven assertions and `LITE_MODE false`; the
 Partial body retains its original variadic implementation and actual result `3`.
+
+A focused light-cljs-149 continuation subsequently repaired variadic IFn rest
+binding. The unchanged original Partial body now returns `3` in both application
+engines and QuickJS macro computations, matching fresh observations from both
+pins. Only its exact assertion-free body, phase and reference mappings were
+integrated. Seven supplemental callable contracts also match both references,
+including borrowed receivers, overload behavior, ordered effects and saved
+sequence entries on infinite inputs. See the dated continuation in
+[residual completion evidence](../compiler-residual-completion.md).
+light-cljs-150 and the full light-cljs-125 gate remain unfinished.
 
 The full fourteen-row/eight-predicate integer table, private tapset-dependent
 setup, complete 100,000-trial generative sources, inference checks and invocation

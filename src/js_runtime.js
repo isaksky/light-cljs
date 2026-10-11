@@ -31,7 +31,7 @@
   const queues = new WeakMap();
   const lazyValues = new WeakMap(), delays = new WeakMap();
   const eductions = new WeakMap();
-  const ifnValues = new WeakMap();
+  const ifnValues = new WeakMap(), ifnVariadics = new WeakMap();
   const metaFunctions = new WeakMap();
   const typeNames = new WeakMap();
   const typeFields = new WeakMap(), recordTypes = new WeakMap(), reifyValues = new WeakSet();
@@ -3318,13 +3318,21 @@
   }
   // This is the callable object ABI used by IFn and metadata wrappers.
   // The last method receives twenty values followed by a sequence tail.
+  function ifnInvokeEntry(method) {
+    const entry = function (...args) { return method.call(this, this, ...args); };
+    const delegate = method.cljs$core$IFn$_invoke$arity$variadic;
+    if (delegate) {
+      entry.cljs$core$IFn$_invoke$arity$variadic = function (...args) { return delegate.call(this, this, ...args); };
+      entry.cljs$lang$maxFixedArity = method.cljs$lang$maxFixedArity - 1;
+      entry.cljs$lang$applyTo = args => fnApplyTo(entry.cljs$core$IFn$_invoke$arity$variadic, entry.cljs$lang$maxFixedArity, args);
+    }
+    return entry;
+  }
   function makeIFn(methods, invokeMethods = methods) {
     const value = Object.create(ifnPrototype);
     ifnValues.set(value, methods);
     for (const [arity, method] of Object.entries(invokeMethods)) {
-      value["cljs$core$IFn$_invoke$arity$" + arity] = function (...args) {
-        return method.call(this, this, ...args);
-      };
+      value["cljs$core$IFn$_invoke$arity$" + arity] = ifnInvokeEntry(method);
     }
     reifyValues.add(value);
     return value;
@@ -3462,7 +3470,7 @@
     const implementations = new Map(Array.from(oldImplementations ?? [], ([key, entries]) => [key, new Map(entries)])), calls = {}, invokes = {}, objectVariadics = new Map();
     if (transaction) transaction.push({
       undo: () => { if (oldImplementations) protocolImplementations.set(value, oldImplementations); else protocolImplementations.delete(value); if (oldCalls) ifnValues.set(value, oldCalls); else ifnValues.delete(value); },
-      redo: () => { protocolImplementations.set(value, implementations); if (Object.keys(calls).length) ifnValues.set(value, calls); },
+      redo: () => { protocolImplementations.set(value, implementations); if (Object.keys(calls).length || ifnVariadics.has(calls)) ifnValues.set(value, calls); },
       snapshot: () => { const methods = protocolImplementations.get(value), functions = ifnValues.get(value); return () => { if (methods) protocolImplementations.set(value, methods); else protocolImplementations.delete(value); if (functions) ifnValues.set(value, functions); else ifnValues.delete(value); }; }
     });
     for (const [dispatch, arity, method, invoke = method, variadic] of methods) {
@@ -3471,7 +3479,11 @@
       if (variadic != null && key.startsWith("Object/")) objectVariadics.set(key, [variadic, method]);
       else implementations.get(key).set(arity, method);
       if (!key.startsWith("Object/") && key !== "IFn/-invoke") patchDeclaration(value, protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
-      if (key === "IFn/-invoke") { calls[arity - 1] = method; invokes[arity - 1] = invoke; }
+      if (key === "IFn/-invoke") {
+        if (variadic != null) ifnVariadics.set(calls, method);
+        else calls[arity - 1] = method;
+        invokes[arity - 1] = invoke;
+      }
     }
     for (const [key, entries] of implementations) if (key.startsWith("Object/")) {
       patchDeclaration(value, mungeMember(key.slice(7)), {value: function (...args) {
@@ -3484,11 +3496,20 @@
         return method.call(receiver, receiver, ...args);
       }, writable: true, configurable: true});
     }
-    if (Object.keys(calls).length) {
+    if (Object.keys(calls).length || ifnVariadics.has(calls)) {
       ifnValues.set(value, calls);
-      patchDeclaration(value, "call", {value: ifnPrototype.call, writable: true, configurable: true});
+      let call = ifnPrototype.call;
+      const variadic = ifnVariadics.get(calls);
+      if (variadic) {
+        call = Object.keys(calls).length ? function (_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); } : variadic;
+        call.cljs$lang$maxFixedArity = variadic.cljs$lang$maxFixedArity;
+        call.cljs$lang$applyTo = variadic.cljs$lang$applyTo;
+        call.cljs$core$IFn$_invoke$arity$variadic = variadic.cljs$core$IFn$_invoke$arity$variadic;
+        for (const [arity, method] of Object.entries(calls)) call["cljs$core$IFn$_invoke$arity$" + (+arity + 1)] = method;
+      }
+      patchDeclaration(value, "call", {value: call, writable: true, configurable: true});
       patchDeclaration(value, "apply", {value: ifnPrototype.apply, writable: true, configurable: true});
-      for (const [arity, method] of Object.entries(invokes)) patchDeclaration(value, "cljs$core$IFn$_invoke$arity$" + arity, {value: function (...args) { return method.call(this, this, ...args); }, writable: true, configurable: true, enumerable: true});
+      for (const [arity, method] of Object.entries(invokes)) patchDeclaration(value, "cljs$core$IFn$_invoke$arity$" + arity, {value: ifnInvokeEntry(method), writable: true, configurable: true, enumerable: true});
     }
     protocolImplementations.set(value, implementations);
     return value;
@@ -3628,9 +3649,14 @@
   const ifnPrototype = Object.freeze({
     call(_self, ...args) {
       const methods = ifnMethods(this), keys = Object.keys(methods);
-      const method = keys.length === 1 ? methods[keys[0]] : methods[args.length];
+      const variadic = ifnVariadics.get(methods);
+      const method = variadic ? methods[args.length] ?? variadic : keys.length === 1 ? methods[keys[0]] : methods[args.length];
       if (!method) return invalidArity(args.length);
-      return method.call(this, this, ...args);
+      // The pinned overloaded dispatcher calls its variadic delegate as a
+      // function property, just like overloaded Object methods. Single-method
+      // variadics and fixed entries keep the actual instance receiver.
+      const receiver = variadic && keys.length && !methods[args.length] ? variadic : this;
+      return method.call(receiver, receiver, ...args);
     },
     apply(_self, args) { return ifnApply(this, args); }
   });
