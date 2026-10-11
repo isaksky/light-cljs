@@ -41,6 +41,7 @@ OWNERS = {
     "tap-delivery": "light-cljs-124", "library": "light-cljs-123",
 }
 NAME_FAMILIES = (
+    ("public-protocols", "light-cljs-138", set("Inst inst-ms* inst-ms inst? IUUID uuid? IDerefWithTimeout -deref-with-timeout ASeq".split())),
     ("transient-collections", "light-cljs-117", set("transient persistent! conj! assoc! dissoc! pop! disj! IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet".split())),
     ("sorted-collections", "light-cljs-119", set("sorted-map sorted-map-by sorted-set sorted-set-by subseq rsubseq ISorted -sorted-seq -sorted-seq-from -entry-key -comparator comparator".split())),
     ("multimethods-hierarchies", "light-cljs-47", set("defmulti defmethod IMultiFn MultiFn remove-all-methods remove-method prefer-method methods get-method prefers dispatch-fn default-dispatch-val make-hierarchy isa? parents ancestors descendants derive underive bases supers".split())),

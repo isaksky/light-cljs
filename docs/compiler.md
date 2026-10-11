@@ -723,6 +723,19 @@ exactly, including nested markers. Markers compare by identity, keep their brand
 and payload slot private, and are observed through these operations; raw markers
 in returned values or traces are harness errors, never implicit maps.
 
+`Inst`, `IDerefWithTimeout`, `IUUID`, and `ASeq` are public protocol identities.
+`inst-ms*` dispatches the fixed one-argument `Inst` method, including native Date,
+user types, reify, and native/default extensions; `inst-ms` calls that method and
+`inst?` uses `satisfies? Inst`. `-deref-with-timeout` dispatches its three-argument
+protocol method directly. `deref` retains its one-argument contract.
+`IUUID` and `ASeq` are markers. `uuid?` checks direct `IUUID` implementation,
+so a native marker extension can satisfy `IUUID` while `uuid?` remains false.
+`ASeq` marks IndexedSeq, nonempty List, Cons, ChunkedCons, and the runtime's
+NodeSeq representation; it does not mark every sequence. Protocol identity,
+saved/apply dispatch and failures are shared by applications and eligible macro
+computations. Protocol instances and protocol functions remain unsupported
+macro expansion results. See [source and execution evidence](../tests/reference/compiler-public-protocols.md).
+
 `+` is an ordinary first-class function: zero arguments yield 0, one returns the
 argument unchanged, and two or more use left-to-right JavaScript addition.
 Loop and method recurrence has a resolved target independent of value use. Each

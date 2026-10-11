@@ -377,8 +377,13 @@ sources use the same supported language features. See the
 and the
 [executable core contract](docs/compiler.md) for exact limits and testing.
 The [full language gate receipt](tests/reference/compiler-language/final-gate.md)
-records remaining public protocol, constructor and Var source-metadata gaps;
+records remaining public constructor and Var source-metadata gaps;
 whole-language completion remains incomplete.
+
+Public `Inst`, `IDerefWithTimeout`, `IUUID`, and `ASeq` protocols support
+user types, reify, extensions, and saved methods in applications and macro
+computations. `inst?` and `inst-ms` honor `Inst`; `uuid?` honors direct `IUUID`
+membership. See the [protocol evidence](tests/reference/compiler-public-protocols.md).
 
 Compiled atoms and volatiles support dereference, all swap/reset arities,
 old/new returns, validators, synchronous watches, and mutable metadata. Custom

@@ -1867,13 +1867,14 @@
   const IEncodeJS = function () {}, IEncodeClojure = function () {};
   const IRecord = function () {}, ICloneable = function () {}, IPrintWithWriter = function () {}, IWriter = function () {};
   const INamed = function () {};
+  const Inst = function () {}, IUUID = function () {}, ASeq = function () {}, IDerefWithTimeout = function () {};
   const IMeta = function () {}, IWithMeta = function () {}, IHash = function () {}, IEquiv = function () {};
   const IPending = function () {}, IDeref = function () {}, IAtom = function () {}, IReset = function () {}, ISwap = function () {}, IVolatile = function () {}, IWatchable = function () {};
   const Fn = function () {}, IList = function () {}, IFn = function () {}, ISeqable = function () {}, ISeq = function () {}, INext = function () {}, ICounted = function () {}, IIndexed = function () {}, ILookup = function () {}, ISequential = function () {}, IAssociative = function () {};
   const IReduce = function () {}, IKVReduce = function () {}, IVector = function () {}, IMap = function () {}, ICollection = function () {}, IEmptyableCollection = function () {}, ISet = function () {}, IStack = function () {}, IReversible = function () {}, IComparable = function () {}, IIterable = function () {};
   const IMultiFn = function () {};
   const IEditableCollection = function () {}, ITransientCollection = function () {}, ITransientAssociative = function () {}, ITransientMap = function () {}, ITransientVector = function () {}, ITransientSet = function () {};
-  const coreProtocolNames = new Map([[INamed, "INamed"], [IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
+  const coreProtocolNames = new Map([[Inst, "Inst"], [IUUID, "IUUID"], [ASeq, "ASeq"], [IDerefWithTimeout, "IDerefWithTimeout"], [INamed, "INamed"], [IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
   const coreProtocolsByName = new Map([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
   IMeta.function = true; Fn.function = true; ICounted.null = true; IHash._ = true; IEquiv._ = true;
   // Metadata belongs to values, never structural equality or hash payloads.
@@ -2195,6 +2196,9 @@
     return builtinCoreImplementation(protocol, value);
   }
   function builtinCoreImplementation(protocol, value) {
+    if (protocol === Inst) return value instanceof Date;
+    if (protocol === IUUID) return uuids.has(value);
+    if (protocol === ASeq) return cells.get(value)?.kind === "cons" || (cells.get(value)?.kind === "list" && cells.get(value).count > 0) || cells.get(value)?.kind === "chunked-cons" || ["indexed", "hash-map"].includes(views.get(value)?.kind);
     if (cells.get(value)?.kind === "chunked-cons" && [IReduce, IIterable, IStack].includes(protocol)) return false;
     if (protocol === INamed) return keywords.has(value) || symbols.has(value) || multiFns.has(value);
     if (protocol === IMultiFn) return multiFns.has(value);
@@ -4459,7 +4463,8 @@
     reduce, completing, transduce, ensureReduced, haltWhen, dedupe, randomSample, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
     Atom, atomFactory, Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol, resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch, notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
     IPending, realized, force, isDelay: value => delays.has(value), nthrest, nthnext,
-    IDeref, IAtom, IReset, ISwap, IVolatile, IWatchable,
+    IDeref, IDerefWithTimeout, Inst, IUUID, ASeq, IAtom, IReset, ISwap, IVolatile, IWatchable,
+    derefWithTimeoutProtocol: coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null),
     IReduce, IKVReduce, IVector, IMap, ICollection, IEmptyableCollection, ISet, IStack, IReversible, IComparable, IIterable, reduceKv, subvec, equivMap, SeqIter, RangedIterator,
     reduceProtocol: coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); }),
     kvReduceProtocol: coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value)),
@@ -4473,7 +4478,7 @@
     compare: compareKeys, INamed, nameProtocol: coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); }), namespaceProtocol: coreMethod("INamed/-namespace", [1], namespace), IHash, IEquiv, hashProtocol: coreMethod("IHash/-hash", [1], hash), equivProtocol: coreMethod("IEquiv/-equiv", [2], equalPair), type: value => value == null ? null : value.constructor,
     Fn, IList, IFn, ISeqable, ISeq, INext, ICounted, IIndexed, ILookup, ISequential, IAssociative, seqProtocol, firstProtocol, restProtocol, nextProtocol, countProtocol, nthProtocol, lookupProtocol, containsProtocol,
     protocolSentinel, IMeta, IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, clone, prWriter, write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol, empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, str, uuid,
-    identical: (a, b) => a === b, isUuid: value => uuids.has(value), isInst: value => value instanceof Date,
+    identical: (a, b) => a === b, isUuid: value => implementsProtocol(IUUID, value), isInst: value => satisfies(Inst, value),
     printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct, isDistinct, sort, sortBy,
     someFn, everyPred, memoize, rand, randInt, randNth, parseLong, parseDouble, parseUuid, parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
     replOne: null, replTwo: null, replThree: null, replError: null, sourceFile: null,
@@ -4486,7 +4491,8 @@
     encodeJsProtocol: coreMethod("IEncodeJS/-clj->js", [1], value => value),
     encodeKeyProtocol: coreMethod("IEncodeJS/-key->js", [1], value => value),
     encodeClojureProtocol: coreMethod("IEncodeClojure/-js->clj", [2], value => value),
-    Var, test, hash, instMs: value => value.getTime(), isVar: value => vars.has(value),
+    Var, test, hash, instMs: value => core.instMsProtocol(value),
+    instMsProtocol: coreMethod("Inst/inst-ms*", [1], value => value.getTime()), isVar: value => vars.has(value),
     ExceptionInfo, exInfo, exData, exMessage, exCause, throwableToMap,
     isInstance: (type, value) => value instanceof type,
     rePattern, reSeq, reFind: (re, text) => reMatch(re, text, false), reMatches: (re, text) => reMatch(re, text, true),

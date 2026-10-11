@@ -514,6 +514,12 @@ pub enum CoreFnId {
     VolatileType,
     VolatileFactory,
     IDeref,
+    IDerefWithTimeout,
+    DerefWithTimeoutProtocol,
+    Inst,
+    InstMsProtocol,
+    IUUID,
+    ASeq,
     IAtom,
     IReset,
     ISwap,
@@ -1149,6 +1155,12 @@ impl CoreFnId {
             "Volatile" => Self::VolatileType,
             "->Volatile" => Self::VolatileFactory,
             "IDeref" => Self::IDeref,
+            "IDerefWithTimeout" => Self::IDerefWithTimeout,
+            "-deref-with-timeout" => Self::DerefWithTimeoutProtocol,
+            "Inst" => Self::Inst,
+            "inst-ms*" => Self::InstMsProtocol,
+            "IUUID" => Self::IUUID,
+            "ASeq" => Self::ASeq,
             "IAtom" => Self::IAtom,
             "IReset" => Self::IReset,
             "ISwap" => Self::ISwap,
@@ -1927,6 +1939,12 @@ impl CoreFnId {
             Self::VolatileType => "Volatile",
             Self::VolatileFactory => "volatileFactory",
             Self::IDeref => "IDeref",
+            Self::IDerefWithTimeout => "IDerefWithTimeout",
+            Self::DerefWithTimeoutProtocol => "derefWithTimeoutProtocol",
+            Self::Inst => "Inst",
+            Self::InstMsProtocol => "instMsProtocol",
+            Self::IUUID => "IUUID",
+            Self::ASeq => "ASeq",
             Self::IAtom => "IAtom",
             Self::IReset => "IReset",
             Self::ISwap => "ISwap",
@@ -6434,6 +6452,10 @@ impl Analyzer<'_> {
                         | "IList"
                         | "IPending"
                         | "IDeref"
+                        | "IDerefWithTimeout"
+                        | "Inst"
+                        | "IUUID"
+                        | "ASeq"
                         | "IAtom"
                         | "IReset"
                         | "ISwap"
@@ -6644,6 +6666,7 @@ impl Analyzer<'_> {
                         | ("INamed", "-name" | "-namespace")
                         | ("IPending", "-realized?")
                         | ("IDeref", "-deref")
+                        | ("Inst", "inst-ms*")
                         | ("IMeta", "-meta")
                         | ("IWriter", "-flush")
                         | ("ISeqable", "-seq")
@@ -6657,7 +6680,8 @@ impl Analyzer<'_> {
                         | ("IVolatile", "-vreset!")
                         | ("IWatchable", "-remove-watch")
                         | ("IWithMeta", "-with-meta") => vec![2],
-                        ("IWatchable", "-add-watch" | "-notify-watches")
+                        ("IDerefWithTimeout", "-deref-with-timeout")
+                        | ("IWatchable", "-add-watch" | "-notify-watches")
                         | ("IPrintWithWriter", "-pr-writer") => vec![3],
                         ("ISwap", "-swap!") => vec![2, 3, 4, 5],
                         ("IIndexed", "-nth") | ("ILookup", "-lookup") => vec![2, 3],

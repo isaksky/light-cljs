@@ -1,0 +1,321 @@
+{
+  "pellet": "light-cljs-138",
+  "references": {
+    "release": {
+      "public-protocol-body-core-test-test-uuid": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-body-core-test-test-uuid",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-body-src-test-cljs-cljs-predicates-test-test-preds": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-body-src-test-cljs-cljs-predicates-test-test-preds",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-probes": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-probes",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-types-saved": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-types-saved",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-negative": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-negative",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-native-default": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-native-default",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-marker-membership": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-marker-membership",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-date": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-date",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    },
+    "checkout": {
+      "public-protocol-body-core-test-test-uuid": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-body-core-test-test-uuid",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-body-src-test-cljs-cljs-predicates-test-test-preds": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-body-src-test-cljs-cljs-predicates-test-test-preds",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-probes": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-probes",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-types-saved": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-types-saved",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-negative": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-negative",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-native-default": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-native-default",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-marker-membership": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-marker-membership",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "public-protocol-date": {
+        "status": "passed",
+        "observed": {
+          "id": "public-protocol-date",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    }
+  },
+  "runtime_sha256": "d1fbc27220b4516f372664d5a54f33dfc5b4c7b5c76dd334fa2a4c7e732a19b0",
+  "source_sha256": {
+    "tests/compiler_public_protocols.rs": "1c3c7715b14422257da283297e4fa310bed047f089bd314a58c9d221279130fa",
+    "tests/fixtures/compiler-public-protocols.tsv": "e36375b299ee4835f4ce4a7cfb93fbe2e8f253626b50fafb414ef1a840657934",
+    "tests/fixtures/compiler-public-protocol-bodies.tsv": "75f1dbee774089db68f035289bd2c565a316e205e6f607908c3381d516321452"
+  },
+  "commands": [
+    "python3 -B tests/reference/compiler-public-protocols.py --reference both --artifacts /tmp/light-cljs-138-pinned-final",
+    "cargo test --locked --quiet --test compiler_public_protocols --test compiler_protocols --test compiler_types --test compiler_extensions --test compiler_reify --test compiler_core_var_metadata --test compiler_language",
+    "cargo test --locked --quiet --test provenance",
+    "node tests/support/js_runtime.test.js",
+    "python3 -B benchmarks/measure_compiler_language.py --output benchmarks/results/compiler-2026-10-11/public-protocols",
+    "cargo bench --locked --bench evaluator -- --iterations 20"
+  ],
+  "scope": "Focused source/protocol evidence only. Full language completion remains incomplete in light-cljs-125.",
+  "exact_phase_execution": {
+    "status": "passed",
+    "test_file": "tests/compiler_public_protocols.rs",
+    "test_name": "public_protocol_api_arities_and_macro_phase_execute",
+    "tests": 1,
+    "passed": 1,
+    "ignored": 0,
+    "test_source_sha256": "1c3c7715b14422257da283297e4fa310bed047f089bd314a58c9d221279130fa"
+  }
+}

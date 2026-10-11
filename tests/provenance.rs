@@ -1,7 +1,17 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 8] = [
+const CASE_FILES: [(&str, &str, usize); 10] = [
+    (
+        "tests/fixtures/compiler-public-protocols.tsv",
+        include_str!("fixtures/compiler-public-protocols.tsv"),
+        3,
+    ),
+    (
+        "tests/fixtures/compiler-public-protocol-bodies.tsv",
+        include_str!("fixtures/compiler-public-protocol-bodies.tsv"),
+        4,
+    ),
     (
         "tests/fixtures/compiler-transients.tsv",
         include_str!("fixtures/compiler-transients.tsv"),
@@ -155,7 +165,9 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "duplicate provenance for {local_path}::{id}"
             );
             match local_path {
-                "tests/fixtures/sci-outcomes.tsv"
+                "tests/fixtures/compiler-public-protocols.tsv"
+                | "tests/fixtures/compiler-public-protocol-bodies.tsv"
+                | "tests/fixtures/sci-outcomes.tsv"
                 | "tests/fixtures/compiler-language.tsv"
                 | "tests/fixtures/compiler-transients.tsv"
                 | "tests/fixtures/execution.tsv"
@@ -200,6 +212,10 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "tests/compiler_reader.rs" => assert!(
                     contains_rust_test(include_str!("compiler_reader.rs"), id),
                     "unknown compiler reader test: {id}"
+                ),
+                "tests/compiler_public_protocols.rs" => assert!(
+                    contains_rust_test(include_str!("compiler_public_protocols.rs"), id),
+                    "unknown public protocol test: {id}"
                 ),
                 "tests/compiler_core_var_metadata.rs" => assert!(
                     contains_rust_test(include_str!("compiler_core_var_metadata.rs"), id),
