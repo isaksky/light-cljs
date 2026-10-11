@@ -7579,6 +7579,18 @@ impl Analyzer<'_> {
                 .map_err(error)?;
             return self.import_form(&result).map(Some);
         }
+        // Canonical quoted source calls expand during analysis in either phase.
+        // Nonquoted calls retain the explicit hosted dynamic form service.
+        let source_expander = match target.split_once('/') {
+            Some(("cljs.core" | "clojure.core", member)) => Some(member),
+            None if !shadow_core => Some(target),
+            _ => None,
+        };
+        if let Some(operation @ ("macroexpand" | "macroexpand-1")) = source_expander {
+            if let Some(expanded) = self.expand_quoted_source(call, operation)? {
+                return Ok(Some(expanded));
+            }
+        }
         let core_name = self
             .macro_host
             .macro_name(self.namespace, target, shadow_core)
@@ -7663,6 +7675,117 @@ impl Analyzer<'_> {
             return self.import_form(&expanded).map(Some);
         }
         Ok(None)
+    }
+
+    fn expand_quoted_source(
+        &mut self,
+        call: NodeId,
+        operation: &str,
+    ) -> Result<Option<NodeId>, AnalysisError> {
+        use crate::compiler_data::{DataBuilder, DatumKind, ExpansionOrigin, Form, Name};
+        let original = self.compiler_read_form(call).map_err(|e| AnalysisError {
+            span: e.span.bytes(),
+            kind: AnalysisErrorKind::MacroExpansion(e.to_string()),
+        })?;
+        let parts = original.children();
+        let Some(argument) = parts.get(1) else {
+            return Ok(None);
+        };
+        let quoted = argument.children();
+        if !matches!(
+            argument.data().kind(),
+            DatumKind::Collection {
+                kind: CollectionKind::List,
+                ..
+            }
+        ) || !quoted.first().is_some_and(|head| {
+            matches!(head.data().kind(),
+                DatumKind::Symbol(name) if *name == Name::new(None, "quote"))
+        }) {
+            return Ok(None);
+        }
+        let error = |message: String| AnalysisError {
+            span: original.span().bytes(),
+            kind: AnalysisErrorKind::MacroExpansion(format!(
+                "while expanding {operation}: {message}"
+            )),
+        };
+        if parts.len() != 2 || quoted.len() != 2 {
+            return Err(error("requires one quoted form".into()));
+        }
+        let mut form = quoted[1].clone();
+        // The canonical macros return non-list data as executable source.
+        if !matches!(
+            form.data().kind(),
+            DatumKind::Collection {
+                kind: CollectionKind::List,
+                ..
+            }
+        ) {
+            return self.import_form(&form).map(Some);
+        }
+        for depth in 0..=self.macro_host.limits.expansion_depth.min(64) {
+            if !matches!(
+                form.data().kind(),
+                DatumKind::Collection {
+                    kind: CollectionKind::List,
+                    ..
+                }
+            ) {
+                break;
+            }
+            let imported = self.import_form(&form)?;
+            let NodeKind::Collection { children, .. } = self.syntax.nodes[imported.0].kind.clone()
+            else {
+                unreachable!()
+            };
+            let Some(&operator) = children.first() else {
+                break;
+            };
+            if depth == self.macro_host.limits.expansion_depth.min(64) {
+                return Err(error(
+                    "compiler macro expansion depth limit exceeded".into(),
+                ));
+            }
+            let Some(expanded) = self.expand_macro(imported, operator, ExprContext::Value)? else {
+                break;
+            };
+            form = self
+                .compiler_read_form(expanded)
+                .map_err(|e| error(e.to_string()))?;
+            if operation == "macroexpand-1" {
+                break;
+            }
+        }
+        let builder = DataBuilder;
+        let data = builder
+            .list(&[builder.symbol(Name::new(None, "quote")), form.data()])
+            .map_err(error)?;
+        // Preserve each returned subtree's source/argument identity and prior
+        // expansions, but attribute this new quotation to the source call.
+        fn collect(form: &Form, originals: &mut HashMap<usize, Form>) {
+            originals.insert(form.data().identity(), form.clone());
+            for child in form.children().into_iter().chain(form.metadata()) {
+                collect(&child, originals);
+            }
+            if let Some(payload) = form.node().compiler_payload.and_then(|id| form.at(id)) {
+                collect(&payload, originals);
+            }
+        }
+        let mut originals = HashMap::new();
+        collect(&form, &mut originals);
+        let result = Form::from_bridge_expansion(
+            data,
+            &form,
+            ExpansionOrigin {
+                macro_name: Name::new(Some("cljs.core"), operation),
+                call: original.span(),
+                definition: None,
+                helpers: vec![],
+            },
+            &originals,
+        );
+        self.import_form(&result).map(Some)
     }
 
     fn array_environment(

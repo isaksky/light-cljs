@@ -150,7 +150,10 @@ successful observation capture, zero-test Cargo runs and reference availability
 are never sufficient. Source rows with canonical differences or required hosted
 services remain nonpassing until explicit source-specific reconciliation. The
 ignored `compiler_sci_service_probes` audit captures application/macro failures
-for diagnosis and supplies no coverage pass.
+for diagnosis and supplies no coverage pass. The separate normal quoted-expansion
+test binds the four original binding macroexpand-1 sources and its public quoted
+arity to actual application/macro execution; the focused receipt and separate
+both-pin literal oracle are in [quoted macroexpand-1 evidence](quoted-macroexpand-evidence.md).
 
 Reproduce adapters without executing them:
 

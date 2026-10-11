@@ -1440,7 +1440,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "f99aedd64cf10b71e6f3fe7ac40acfbb210f60d94ae5f5a10b5843ce66d0e5bf"
+      "sha256": "38e9da3785e12899f54040c1da488ab761bc3bd8f278621a430277fc628ca365"
     },
     {
       "path": "src/core_var_metadata.tsv",

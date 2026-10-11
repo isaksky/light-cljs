@@ -16,7 +16,14 @@ uses this form. Each session loads the exact `src/js_runtime.js` factory once.
 Collections, functions and dispatch tables therefore share brands across units,
 while separate sessions have separate state. No alternate macro core exists.
 Canonical `gensym` has a session-local counter. `setMacroexpandServices` explicitly
-installs `macroexpand`/`macroexpand1` hooks; missing services fail on use.
+installs dynamic `macroexpand`/`macroexpand1` hooks; missing services fail on use.
+Canonical literal quoted source calls, such as `(macroexpand-1 '(let [x 1] x))`,
+expand during analysis in both application and ordinary `.cljs` macro phases,
+without runtime hooks. They expand only the outer form (once or repeatedly),
+retain unknown/nonmacro lists, and follow the canonical non-list source behavior.
+Malformed quoted calls produce located compiler errors. Lexical/source shadowing
+is respected. Dynamic computed forms remain an explicit hosted service; these
+source macros do not provide bare-runtime `eval` or loading capabilities.
 
 `MacroHost::evaluator_options` contains reusable configuration;
 `MacroHost::new_evaluator()` creates a fresh heap. CLI scripts, the REPL and public

@@ -50,13 +50,13 @@ This change adds executing adapters and reviewable evidence:
   now stays inside the observation harness's stdout capture, with stream recovery
   tested even on encoder failure.
 
-The catalogs now contain 667 ordinary operation mappings and 702 phase mappings
+At this gate invocation, the catalogs contained 667 ordinary operation mappings and 702 phase mappings
 bound to 30 exact named Rust tests. Catalog presence supplies no pass. A local
 application/macro test without a canonical reference fixture now remains missing
 unless it has an explicit adopted dialect contract. Both pins are required for
 compatibility-intended local operations; registration cannot invent observations.
 
-## Executed unfiltered gate
+## Executed unfiltered gate (historical receipt)
 
 ```sh
 python3 -B tests/reference/compiler-language/report.py --run --strict \
@@ -182,8 +182,21 @@ Additional logs are `/tmp/light-cljs-125-regressions-current.log`,
 
 Full acceptance is not met. The remaining original source/public/local/SCI/body/
 module and phase evidence, required ignored/upstream checks and zero-missing full
-gate remain unfinished. Safe active order is light-cljs-145, light-cljs-146, then
-resume light-cljs-125 for the remaining full evidence reconciliation. These two
-implementation fixes alone do not satisfy the missing mappings or phase gate.
+gate remain unfinished. The focused light-cljs-145 reconciliation below supplies
+its four original source/phase rows and one public arity; the next implementation
+owner is light-cljs-146, followed by light-cljs-125 for the remaining full evidence
+reconciliation. Focused implementation fixes do not satisfy the full gate.
 The completion Pellet stays open with this resumable receipt; no standard-language
 criterion or original expectation has been relaxed.
+
+## Focused quoted macro expansion reconciliation — light-cljs-145
+
+The four macroexpand-1 failures recorded above now pass unchanged source
+execution in bare Node and QuickJS and both pinned references. A normal demanded
+macro test supplies their four exact phase mappings and the public `[quoted]`
+arity; its separate literal oracle also passes both pins. The focused ledger
+receipt has five covered rows with passed macro phase columns. See
+[quoted source and phase evidence](quoted-macroexpand-evidence.md) for complete
+source/test hashes, observations and commands. The earlier unfiltered gate
+counts and SCI classifications remain the original historical receipt; this
+focused run does not establish a new full strict result.
