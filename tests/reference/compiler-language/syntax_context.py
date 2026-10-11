@@ -23,10 +23,13 @@ TESTS = {
  'raw-type-constructor':'syntax_raw_type_constructor_executes_in_both_phases',
  'raw-record-constructor':'syntax_raw_record_constructor_executes_in_both_phases',
  'namespace-header-context':'syntax_namespace_context_executes_with_actual_macro_environment',
+ 'namespace-nsstar-alias':'syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts',
 }
 # Frozen against independent complete draft observations and both checked pins.
 VERIFIED = [('control-rest-recursion', '997c8a7efa865b3043beaa71947eb81a81c9293d78bd86bbca6155466d49af86', '39278d46804fca2a6fe36fa26518800745db8e60a4a16bceae2f66281f5448d3'), ('exception-interop-template', 'e754658dcd21fcbfccfa0d56ea1cf84ee6b089af0801e6e8bb3ffb723a44ea50', '87d54c507160d746bd68f549aafd33abccb1527fdd60ae2a55bb97e41edb0c12'), ('quote-case-star', 'f3a288a61b8676d0e9b1a1649ee81ab8dcde22f9f396b9f1107e3942a9c99d3f', 'e0dacc314c4d83c6bcb075abb361d81db32f7f3dd382877fa2c182471678920f'), ('definition-var-state', '746b4b04eaa8fb9bad7a0102625789d2716dc18882e8c6b17648ee2800cf75e0', '4b1fccc2a930dcd8684bf27e7baa97c3f10624c6430391a46d218f3af29b94ad'), ('raw-type-constructor', 'eb86c15afca737729b2398d32a44ff41f307ca5a54d7324376295d3ea5c61970', '16f58b61c90f64c2b163b00182634fc95550247f06acdb3aaa679f4391daa0a5'), ('raw-record-constructor', '5b56418c63d21cc46ca351aa19fb2527b2cf5e92dac828391d26f246820e07b6', '365c4ec9be39188ac774622f54fe4a4a32b1d80f182c0ec45e99cedfc2e902e2'), ('namespace-header-context', 'c2204dec28a9f0c550ba7ced96bb46f85bf71058c40ecb0c49a2b4166b29a02e', 'b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b')]
+VERIFIED.append(('namespace-nsstar-alias', 'ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957', 'b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b'))
 REVIEWED_NAMES = {'control-rest-recursion': ['if', 'fn*', 'do', 'let*', 'loop*', 'letfn*', 'recur', '&'], 'exception-interop-template': ['new', 'set!', '.', 'js*', 'try', 'throw'], 'quote-case-star': ['quote', 'case*'], 'definition-var-state': ['def', 'var'], 'raw-type-constructor': ['deftype*'], 'raw-record-constructor': ['defrecord*'], 'namespace-header-context': ['ns']}
+REVIEWED_NAMES['namespace-nsstar-alias'] = ['ns*']
 SPECIALS_HASH = '66086cdf742d79f61db62e93a5b235e321a8e8058fdad7f0ad5bd01d16d4343d'
 def digest(value):
  return hashlib.sha256(value if isinstance(value,bytes) else value.encode()).hexdigest()
@@ -71,7 +74,7 @@ def cases():
  result=[]
  for row in rows():
   identity=PREFIX+row['id']
-  source=row['source'] if row['id']=='namespace-header-context' else "(= '"+row['expected_edn']+' (do '+row['source']+'))'
+  source=row['source'] if row['id'] in {'namespace-header-context','namespace-nsstar-alias'} else "(= '"+row['expected_edn']+' (do '+row['source']+'))'
   case={'id':identity,'source':source,'expected':{'id':identity,'outcome':{'status':'returned','value':True},'trace':[],'stdout':''},'native_stdout':'true\n'}
   if row['id']=='namespace-header-context':
    for key in ['source_root','reference_source_root','entry','export','reference_adaptation']:case[key]=row[key]
@@ -86,6 +89,11 @@ def cases():
    for folder in [local,reference]:
     for suffix in ['cljs','clj']:
      if (folder/f'syntax/observer.{suffix}').read_text()!=companion:raise ValueError('namespace macro companion drift')
+  if row['id']=='namespace-nsstar-alias':
+   for key in ['source_root','entry','export']:case[key]=row[key]
+   if (ROOT/row['source_root']/'syntax/nsstar.cljs').read_text()!=source:raise ValueError('raw ns* complete source drift')
+   prefix,body=source.split('(defn run [observe] ',1);body=body.removesuffix(')\n(pr-str (run nil))\n')
+   if row['macro_source']!=prefix+'(defmacro syntax-gate [] '+body+')\n(pr-str (syntax-gate))\n':raise ValueError('raw ns* actual macro body drift')
   result.append(case)
  return result
 
@@ -93,6 +101,7 @@ def exports():
  workflows=rows();oracles=cases();targets={r['id']:r for r in map(json.loads,(HERE/'obligations.jsonl').read_text().splitlines())}
  ordinary=[];phases=[];reviewed=[]
  support={FIXTURE:digest((ROOT/FIXTURE).read_bytes()),'tests/reference/compiler-language/syntax_context.py':digest(Path(__file__).read_bytes())}
+ support.update({str(p.relative_to(ROOT)):digest(p.read_bytes()) for p in (ROOT/'tests/fixtures/compiler-nsstar').rglob('*') if p.is_file()})
  for root in ['local','reference']:
   folder=ROOT/'tests/fixtures/compiler-syntax-context'/root
   support.update({str(p.relative_to(ROOT)):digest(p.read_bytes()) for p in folder.rglob('*') if p.is_file()})
@@ -107,11 +116,11 @@ def exports():
    ordinary.append({**common,'assertion_ids':[],'local_execution':execution,'reference_fixture_id':oracle['id'],'reference_source_sha256':digest(oracle['source']),'reference_contract_sha256':digest(json.dumps(oracle['expected'],sort_keys=True))})
    phases.append({**common,**execution,'support_source_sha256':support})
    reviewed.append({'obligation_id':target['id'],'whole_workflow':row['id'],'source_sha256':digest(row['source']),'literal_expected_sha256':digest(row['expected_edn'])})
- if len(ordinary)!=21 or len({r['obligation_id'] for r in ordinary})!=21:raise ValueError('ordered complete syntax cohort drift')
+ if len(ordinary)!=22 or len({r['obligation_id'] for r in ordinary})!=22:raise ValueError('ordered complete syntax cohort drift')
  return {'obligation-witnesses.jsonl':ordinary,'phase-witnesses.jsonl':phases,'full-cases.jsonl':oracles,'syntax-context-receipts.jsonl':reviewed}
 
 def main():
  parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--export-owned',type=Path,required=True);args=parser.parse_args();args.export_owned.mkdir(parents=True,exist_ok=True)
  for filename,records in exports().items():(args.export_owned/filename).write_text(''.join(json.dumps(r,separators=(',',':'))+'\n' for r in records))
- print('7 full workflows;21 contextual syntax candidates;ns* remains a separately verified gap')
+ print('8 full workflows;22 contextual syntax candidates;raw ns* exact alias workflow included')
 if __name__=='__main__':main()

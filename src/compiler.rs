@@ -280,6 +280,43 @@ impl NamespaceSource {
             }
             return Ok(());
         }
+        if operator == "ns*" {
+            if parts.len() != 2 {
+                return Err(self.error(node, "ns* requires one namespace directive"));
+            }
+            let directive = self
+                .collection(parts[1], CollectionKind::List)
+                .ok_or_else(|| self.error(parts[1], "ns* requires a literal namespace directive"))?
+                .to_vec();
+            let kind = directive.first().map(|&head| self.text(head)).unwrap_or("");
+            if !matches!(
+                kind,
+                ":require"
+                    | ":use"
+                    | ":import"
+                    | ":refer-clojure"
+                    | ":refer-global"
+                    | ":require-global"
+                    | ":require-macros"
+                    | ":use-macros"
+            ) {
+                return Err(self.error(parts[1], "unsupported ns* namespace directive"));
+            }
+            let kind = kind.to_owned();
+            let mut arguments = Vec::new();
+            for &arg in &directive[1..] {
+                if matches!(self.syntax.nodes[arg.0].kind, NodeKind::Keyword { .. })
+                    && matches!(kind.as_str(), ":refer-clojure" | ":refer-global")
+                {
+                    arguments.push(arg);
+                } else {
+                    arguments.push(self.quoted_argument(arg, kind.trim_start_matches(':'))?);
+                }
+            }
+            clauses.push((parts[1], kind, arguments));
+            self.syntax.nodes[node.0].kind = NodeKind::Nil;
+            return Ok(());
+        }
         if !matches!(
             operator.as_str(),
             "require"

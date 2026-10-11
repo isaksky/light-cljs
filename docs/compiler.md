@@ -1028,6 +1028,15 @@ is synthesized. JavaScript package acquisition remains outside this loader.
 Validation occurs before
 dependency analysis, with diagnostics in the originating file.
 
+Raw `(ns* (:require '[library :as alias]))` directives use the same quoted
+libspec validation and explicit source loading, including `:refer`/`:rename`
+and reader-only `:as-alias`. A raw directive contains one literal clause;
+ordinary `ns` clauses use unquoted libspecs. It adds imports to the declared
+source namespace and has a nil application result, also inside a top-level
+`do`. Nested namespace declarations and legacy JVM macro imports retain their
+located errors. Fresh and reused MacroHosts compile these imports from ordinary
+`.cljs`/`.cljc` sources.
+
 The [namespace evidence](../tests/reference/compiler-namespaces.md) records
 upstream anchors, differential checks, diagnostics and output cost.
 

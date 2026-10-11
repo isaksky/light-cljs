@@ -1,0 +1,246 @@
+{
+  "owner": "light-cljs-162",
+  "case": {
+    "id": "syntax-context-namespace-nsstar-alias",
+    "source": "(ns syntax.nsstar (:require [clojure.string]))\n(ns* (:require '[clojure.string :as text]))\n(defn run [observe] (= [\"A\" \"1-2\"] [(text/upper-case \"a\") (text/join \"-\" [1 2])]))\n(pr-str (run nil))\n",
+    "expected": {
+      "id": "syntax-context-namespace-nsstar-alias",
+      "outcome": {
+        "status": "returned",
+        "value": true
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "native_stdout": "true\n",
+    "source_root": "tests/fixtures/compiler-nsstar",
+    "entry": "syntax.nsstar",
+    "export": "run"
+  },
+  "source_sha256": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+  "references": {
+    "release": {
+      "syntax-context-namespace-nsstar-alias": {
+        "status": "passed",
+        "observed": {
+          "id": "syntax-context-namespace-nsstar-alias",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    },
+    "checkout": {
+      "syntax-context-namespace-nsstar-alias": {
+        "status": "passed",
+        "observed": {
+          "id": "syntax-context-namespace-nsstar-alias",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    }
+  },
+  "local_actual_phase": {
+    "status": "passed",
+    "test_file": "tests/compiler_syntax_context.rs",
+    "test_name": "syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts",
+    "test_source_sha256": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99",
+    "engines": [
+      "Node",
+      "QuickJS"
+    ],
+    "variants": [
+      "application-fresh",
+      "application-reused",
+      "macro-fresh",
+      "macro-reused"
+    ],
+    "rounds": 2,
+    "complete_program_result": "true",
+    "raw_log": "/tmp/light-cljs-162-phase-exact.stdout"
+  },
+  "generic_report_failure": {
+    "status": "failed",
+    "owner": "light-cljs-163",
+    "artifacts": "/tmp/light-cljs-162-local-layers",
+    "reason": "Generic namespace fixture adapter calls the complete scalar program result as a function; native/evaluation layer also lacks source roots. Actual named application/macro test supplies the local obligation proof. No complete strict gate pass."
+  },
+  "bounded_syntax_projection": {
+    "id": "syntax::ns*",
+    "obligation_kind": "syntax",
+    "name": "ns*",
+    "signature": {
+      "kind": "syntax",
+      "minimum": null
+    },
+    "source": "src/main/clojure/cljs/analyzer.cljc",
+    "body_id": "analyzer::specials",
+    "body_sha256": "66086cdf742d79f61db62e93a5b235e321a8e8058fdad7f0ad5bd01d16d4343d",
+    "source_span": {
+      "start_line": 1508,
+      "end_line": 1509,
+      "start_byte": 54832,
+      "end_byte": 54975,
+      "sha256": "66086cdf742d79f61db62e93a5b235e321a8e8058fdad7f0ad5bd01d16d4343d",
+      "text": "(def specials '#{if def fn* do let* loop* letfn* throw try recur new set!\n                 ns deftype* defrecord* . js* & quote case* var ns*})"
+    },
+    "disposition": "intended",
+    "reason": "Pinned public syntax dispatch; contextual analysis and execution require separate evidence.",
+    "family": "public-residual",
+    "owner": "light-cljs-125",
+    "local_registration": {
+      "status": "unmapped"
+    },
+    "feature": "public-residual",
+    "test": "ns*",
+    "line": 1508,
+    "status": "covered",
+    "fixture_id": "syntax-context-namespace-nsstar-alias",
+    "layers": {
+      "javascript": {
+        "status": "passed",
+        "engines": [
+          "Node",
+          "QuickJS"
+        ]
+      },
+      "release": {
+        "status": "passed",
+        "observed": {
+          "id": "syntax-context-namespace-nsstar-alias",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "checkout": {
+        "status": "passed",
+        "observed": {
+          "id": "syntax-context-namespace-nsstar-alias",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    },
+    "columns": {
+      "parse": {
+        "status": "not-run"
+      },
+      "analysis_lowering": {
+        "status": "accepted-via-compilation",
+        "reason": "Emission/execution occurred; this does not prove all analyses/arities."
+      },
+      "native": {
+        "status": "removed",
+        "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+      },
+      "canonical_js": {
+        "status": "passed",
+        "engines": [
+          "Node",
+          "QuickJS"
+        ]
+      },
+      "quickjs_macro": {
+        "status": "passed",
+        "test_file": "tests/compiler_syntax_context.rs",
+        "test_name": "syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts",
+        "test_source_sha256": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99",
+        "engines": [
+          "Node",
+          "QuickJS"
+        ],
+        "variants": [
+          "application-fresh",
+          "application-reused",
+          "macro-fresh",
+          "macro-reused"
+        ],
+        "rounds": 2,
+        "complete_program_result": "true",
+        "raw_log": "/tmp/light-cljs-162-phase-exact.stdout"
+      },
+      "execution_evidence": {
+        "status": "verified",
+        "references": {
+          "release": {
+            "status": "passed",
+            "observed": {
+              "id": "syntax-context-namespace-nsstar-alias",
+              "outcome": {
+                "status": "returned",
+                "value": true
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            }
+          },
+          "checkout": {
+            "status": "passed",
+            "observed": {
+              "id": "syntax-context-namespace-nsstar-alias",
+              "outcome": {
+                "status": "returned",
+                "value": true
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            }
+          }
+        }
+      }
+    },
+    "completion_reason": "Pinned public syntax dispatch; contextual analysis and execution require separate evidence."
+  }
+}

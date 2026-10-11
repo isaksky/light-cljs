@@ -8,12 +8,12 @@ import syntax_context as context
 
 class SyntaxContextTests(unittest.TestCase):
  def test_complete_frozen_sources_and_independent_literals(self):
-  self.assertEqual(len(context.rows()),7)
+  self.assertEqual(len(context.rows()),8)
   result=context.exports()
   ids=[r['obligation_id'] for r in result['obligation-witnesses.jsonl']]
-  self.assertEqual(set(ids),{'syntax::'+n for n in ['if','def','fn*','do','let*','loop*','letfn*','throw','try','recur','new','set!','ns','deftype*','defrecord*','.','js*','&','quote','case*','var']})
-  self.assertEqual(len(ids),21)
-  self.assertNotIn('syntax::ns*',ids)
+  self.assertEqual(set(ids),{'syntax::'+n for n in ['if','def','fn*','do','let*','loop*','letfn*','throw','try','recur','new','set!','ns','deftype*','defrecord*','.','js*','&','quote','case*','var','ns*']})
+  self.assertEqual(len(ids),22)
+  self.assertIn('syntax::ns*',ids)
  def test_quoted_or_discarded_heads_cannot_supply_execution(self):
   self.assertEqual(context.active_syntax("'(if true (throw 1)) #_(new js/Error) \"(ns* x)\""),{'quote'})
   self.assertEqual(context.active_syntax('(quote (recur 1))'),{'quote'})
@@ -34,7 +34,7 @@ class SyntaxContextTests(unittest.TestCase):
     return text if path==context.ROOT/context.FIXTURE else real(path,*args,**kwargs)
    with patch.object(Path,'read_text',read),self.assertRaises(ValueError):context.rows()
  def test_reference_adapter_preserves_all_runtime_body_and_macro_companion(self):
-  case=context.cases()[-1]
+  case=context.cases()[-2]
   self.assertEqual(len(case['reference_files_sha256']),3)
   real=Path.read_text;target=context.ROOT/case['reference_source_root']/'syntax/header.cljs'
   def read(path,*args,**kwargs):
