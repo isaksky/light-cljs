@@ -1,7 +1,17 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 12] = [
+const CASE_FILES: [(&str, &str, usize); 14] = [
+    (
+        "tests/fixtures/compiler-core-factories.tsv",
+        include_str!("fixtures/compiler-core-factories.tsv"),
+        3,
+    ),
+    (
+        "tests/fixtures/compiler-core-factory-bodies.tsv",
+        include_str!("fixtures/compiler-core-factory-bodies.tsv"),
+        4,
+    ),
     (
         "tests/fixtures/compiler-public-constructors.tsv",
         include_str!("fixtures/compiler-public-constructors.tsv"),
@@ -175,7 +185,9 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "duplicate provenance for {local_path}::{id}"
             );
             match local_path {
-                "tests/fixtures/compiler-public-constructors.tsv"
+                "tests/fixtures/compiler-core-factories.tsv"
+                | "tests/fixtures/compiler-core-factory-bodies.tsv"
+                | "tests/fixtures/compiler-public-constructors.tsv"
                 | "tests/fixtures/compiler-public-constructor-bodies.tsv"
                 | "tests/fixtures/compiler-public-protocols.tsv"
                 | "tests/fixtures/compiler-public-protocol-bodies.tsv"

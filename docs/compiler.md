@@ -1997,3 +1997,16 @@ O(n). This is a semantic implementation, not a red/black-tree storage claim.
 `PersistentTreeMap`, `PersistentTreeSet`, and `PersistentTreeMapSeq` retain public
 type identities and constructor arities; opaque upstream node storage remains
 outside the compiler API. See the [full-body provenance and verification](../tests/reference/compiler-sorted-collections.md).
+
+
+### Positional factories for implemented core types
+
+The public generated factories for IndexedSeq, UUID, Range, IntegerRange,
+PersistentTreeMap, PersistentTreeSet, PersistentTreeMapSeq, Eduction, MultiFn,
+SeqIter, RangedIterator, Namespace and TaggedLiteral construct their canonical
+runtime types. Saved factories and apply use the same path. Supplied public
+metadata, hashes, counts, chunk caches, iterator state and backing fields are
+retained. These values can be intermediate macro computations; arbitrary types,
+functions and iterator objects still receive unsupported expansion-result
+diagnostics when returned as macro expansions. See the
+[factory signatures and reference evidence](../tests/reference/compiler-core-factories.md).
