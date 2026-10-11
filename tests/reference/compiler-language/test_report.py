@@ -581,6 +581,7 @@ class SupplementalBoundaryTests(unittest.TestCase):
             lambda case: case["local_probes"].pop(),
             lambda case: case["local_probes"][0].update(source_sha256="stale"),
             lambda case: case["local_probes"][0].update(local={"category": "accepted", "warning_trace": []}),
+            lambda case: case["local_probes"][2].update(local={"category": "analysis-error", "detail": "stale Var identity rejection"}),
             lambda case: case.update(kind="public-runtime", runtime=case["reference_runtime"]),
         ):
             changed = copy.deepcopy(self.cases)
@@ -612,7 +613,8 @@ class SupplementalBoundaryTests(unittest.TestCase):
             for failure in (None, "local-runtime", "local-phase", "release", "checkout"):
                 def local(probe, *_args):
                     if probe is case:return report.result("verified-warning")
-                    return report.result("mismatch" if failure == "local-phase" else "verified-rejection")
+                    expected = "verified-rejection" if probe["local"]["category"] == "analysis-error" else "verified-warning"
+                    return report.result("mismatch" if failure == "local-phase" else expected)
                 def local_runtime(proof, *_args, **_kwargs):
                     self.assertEqual(proof["id"], "boundary-defmacro-compile-time-expansion")
                     return {"javascript": report.result("mismatch" if failure == "local-runtime" else "passed")}

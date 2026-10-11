@@ -199,6 +199,7 @@ impl InteractiveCompiler {
                 }
                 view.declaration_frontier = index + 1;
             }
+            self.host.register_macro_view(&mut view);
             return self
                 .host
                 .lower_form_in_view(&source, &syntax, root, &view, &discards)

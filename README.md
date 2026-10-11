@@ -191,7 +191,12 @@ node -e 'const run=eval(require("fs").readFileSync("/tmp/light-cljs-collections.
 `run` returns `[[1 2] [1 2 3] :pair true]`; its first observation is the
 `report` result `[6 batch/data true "batch.data"]`. Values retain their language
 types. The host callback also receives generated nested data and ordered effects.
-Core printing and explicit JavaScript conversion helpers are available. The expression
+Core printing and explicit JavaScript conversion helpers are available.
+Printing supports length, level, metadata, readability, configurable output/error
+sinks and nested capture. Core/source Var reflection and session Namespace
+identities use the compiler's declaration view. Explicit clock, random, tap
+scheduling and file-loading hooks are described in the
+[embedding API](docs/evaluation.md). The expression
 contains one private collection runtime and needs no native interpreter, JVM,
 module import or installed `cljs.core` at execution time. See the
 [complete program contract](docs/compiler.md#complete-collection-program).

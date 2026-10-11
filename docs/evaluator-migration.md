@@ -62,8 +62,9 @@ in the implementation work, not in another feasibility phase.
 ## Macro and phase contract
 
 - `defmacro` creates a compile-time binding in `.cljs` or `.cljc`. It produces
-  no application function or macro Var; its declaration result is nil.
-  Runtime value, `apply` and Var uses of a macro receive located phase errors.
+  no application function or initializer; its declaration result is nil.
+  Reflected Var identity and metadata are available. Runtime value, `apply`,
+  dereferencing/invoking the macro root and assignment receive phase errors.
 - Ordinary `:require` imports macros and runtime functions from the same
   namespace. Macros can call ordinary unmarked helpers also used by applications.
   Compiler source lookup prefers `.cljs` to `.cljc` and never loads `.clj`

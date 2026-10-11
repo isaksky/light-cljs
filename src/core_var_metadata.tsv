@@ -277,3 +277,22 @@ volatile?	{:file "cljs/core.cljs", :line 4794, :column 1, :end-line 4794, :end-c
 vreset!	{:file "cljs/core.cljs", :line 4798, :column 1, :end-line 4798, :end-column 14, :doc "Sets the value of volatile to newval without regard for the\n   current value. Returns newval.", :arglists ([vol newval])}
 with-meta	{:file "cljs/core.cljs", :line 2176, :column 1, :end-line 2176, :end-column 16, :doc "Returns an object of the same type and value as obj, with\n  map m as its metadata.", :arglists ([o meta])}
 zero?	{:file "cljs/core.cljs", :line 3092, :column 1, :end-line 3092, :end-column 21, :tag boolean, :doc "Returns true if num is zero, else false", :arglists ([x])}
+*flush-on-newline*	{:file "cljs/core.cljs" :line 108 :column 1 :doc "When set to true, output will be flushed whenever a newline is printed.\n\n  Defaults to true." :arglists () :dynamic true}
+*print-dup*	{:file "cljs/core.cljs" :line 138 :column 1 :doc "When set to logical true, objects will be printed in a way that preserves\n  their type when read in later.\n\n  Defaults to false." :arglists () :dynamic true}
+*print-err-fn*	{:file "cljs/core.cljs" :line 94 :column 1 :doc "Each runtime environment provides a different way to print error output.\n  Whatever function *print-err-fn* is bound to will be passed any\n  Strings which should be printed." :arglists () :dynamic true}
+*print-fn-bodies*	{:file "cljs/core.cljs" :line 179 :column 1 :doc "*print-fns-bodies* controls whether functions print their source or\n    only their names." :arglists () :dynamic true}
+*print-length*	{:file "cljs/core.cljs" :line 154 :column 1 :doc "*print-length* controls how many items of each collection the\n  printer will print. If it is bound to logical false, there is no\n  limit. Otherwise, it must be bound to an integer indicating the maximum\n  number of items of each collection to print. If a collection contains\n  more items, the printer will print items up to the limit followed by\n  '...' to represent the remaining items. The root binding is nil\n  indicating no limit." :arglists () :dynamic true}
+*print-level*	{:file "cljs/core.cljs" :line 166 :column 1 :doc "*print-level* controls how many levels deep the printer will\n  print nested objects. If it is bound to logical false, there is no\n  limit. Otherwise, it must be bound to an integer indicating the maximum\n  level to print. Each argument to print is at level 0; if an argument is a\n  collection, its items are at level 1; and so on. If an object is a\n  collection and is at a level greater than or equal to the value bound to\n  *print-level*, the printer prints '#' to represent it. The root binding\n  is nil indicating no limit." :arglists () :dynamic true}
+*print-meta*	{:file "cljs/core.cljs" :line 130 :column 1 :doc "If set to logical true, when printing an object, its metadata will also\n  be printed in a form that can be read back by the reader.\n\n  Defaults to false." :arglists () :dynamic true}
+Namespace	{:file "cljs/core.cljs" :line 12132 :column 1 :doc nil :arglists ([obj name])}
+add-tap	{:file "cljs/core.cljs" :line 12068 :column 1 :doc "Adds f, a fn of one argument, to the tap set. This function will be called with\n  anything sent via tap>. Remember f in order to remove-tap" :arglists ([f])}
+create-ns	{:file "cljs/core.cljs" :line 12200 :column 1 :doc "Create a new namespace named by the symbol. Bootstrap only." :arglists ([sym] [sym ns-obj])}
+find-ns	{:file "cljs/core.cljs" :line 12207 :column 1 :doc "Returns the namespace named by the symbol or nil if it doesn't exist.\n  Bootstrap only." :arglists ([ns])}
+flush	{:file "cljs/core.cljs" :line 10442 :column 1 :doc nil :arglists ([])}
+ns-name	{:file "cljs/core.cljs" :line 12241 :column 1 :doc "Returns the name of the namespace, a Namespace object.\n  Bootstrap only." :arglists ([ns-obj])}
+remove-tap	{:file "cljs/core.cljs" :line 12076 :column 1 :doc "Remove f from the tap set." :arglists ([f])}
+set-print-err-fn!	{:file "cljs/core.cljs" :line 104 :column 1 :doc "Set *print-err-fn* to f." :arglists ([f])}
+set-print-fn!	{:file "cljs/core.cljs" :line 100 :column 1 :doc "Set *print-fn* to f." :arglists ([f])}
+string-print	{:file "cljs/core.cljs" :line 10436 :column 1 :doc nil :arglists ([x])}
+system-time	{:file "cljs/core.cljs" :line 434 :column 1 :doc "Returns highest resolution time offered by host in milliseconds." :arglists ([])}
+tap>	{:file "cljs/core.cljs" :line 12083 :column 1 :doc "Sends x to any taps. Returns the result of *exec-tap-fn*, a Boolean value." :arglists ([x])}

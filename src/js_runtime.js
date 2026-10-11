@@ -2598,6 +2598,94 @@
     Object.defineProperty(value, "__hash", {get() { return uuidHashes.get(this) ?? null; }});
     return value;
   }
+  // Explicit embedding hooks. Scheduling is optional; the default dispatches
+  // synchronously, with a finite drain budget even when taps enqueue more taps.
+  const tapListeners = new Set(), tapQueue = [];
+  let tapDraining = false, tapDelivered = 0, tapPending = 0;
+  let tapLimit = 1024;
+  function defaultTapSchedule(task) { task.call(null); return true; }
+  function configureHostHooks(options = {}) {
+    for (const key of ["clock", "random", "tapSchedule"]) {
+      if (Object.hasOwn(options, key) && options[key] !== null && typeof options[key] !== "function") throw new TypeError(key + " hook must be a function or null");
+    }
+    if (Object.hasOwn(options, "maxPendingTaps") && (!Number.isSafeInteger(options.maxPendingTaps) || options.maxPendingTaps < 1)) throw new TypeError("maxPendingTaps must be a positive integer");
+    if (Object.hasOwn(options, "clock")) core.hostClock = options.clock ?? defaultHostClock;
+    if (Object.hasOwn(options, "random")) core.hostRandom = options.random ?? defaultHostRandom;
+    if (Object.hasOwn(options, "tapSchedule")) core.execTapFn = options.tapSchedule ?? defaultTapSchedule;
+    if (Object.hasOwn(options, "maxPendingTaps")) tapLimit = options.maxPendingTaps;
+    return null;
+  }
+  function defaultHostClock() {
+    return typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
+  }
+  function defaultHostRandom() { return Math.random(); }
+  function systemTime() {
+    if (arguments.length) return invalidArity(arguments.length);
+    const value = core.hostClock.call(null);
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("clock hook must return a finite number");
+    return value;
+  }
+  function hostRandom() {
+    const value = core.hostRandom.call(null);
+    if (typeof value !== "number" || !(value >= 0 && value < 1)) throw new TypeError("random hook must return a number in [0, 1)");
+    return value;
+  }
+  function hostRand(n) {
+    if (arguments.length > 1) return invalidArity(arguments.length);
+    return arguments.length ? hostRandom() * n : hostRandom();
+  }
+  function hostRandInt(n) { if (arguments.length !== 1) return invalidArity(arguments.length); return Math.floor(hostRandom() * n); }
+  function hostRandNth(coll) { if (arguments.length !== 1) return invalidArity(arguments.length); return nth(coll, hostRandInt(count(coll))); }
+  function hostShuffle(coll) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    const items = toArray(coll);
+    for (let i = items.length - 1; i > 0; i--) { const j = hostRandInt(i + 1); [items[i], items[j]] = [items[j], items[i]]; }
+    return vectorFromArray(items);
+  }
+  function hostRandomUuid() {
+    if (arguments.length) return invalidArity(arguments.length);
+    return uuid("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, digit => { const value = hostRandInt(16); return (digit === "x" ? value : (value & 3) | 8).toString(16); }));
+  }
+  function addTap(listener) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    if (listener == null || typeof listener.call !== "function") throw new TypeError("add-tap requires a callable value");
+    tapListeners.add(listener); return null;
+  }
+  function removeTap(listener) { if (arguments.length !== 1) return invalidArity(arguments.length); tapListeners.delete(listener); return null; }
+  function deliverTap(listeners, value) {
+    for (const listener of listeners) { try { listener.call(null, value); } catch (_) { /* One listener cannot suppress the others. */ } }
+  }
+  function tapGreater(value) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    if (tapPending + tapQueue.length + (tapDraining ? tapDelivered : 0) >= tapLimit) return false;
+    const schedule = core.execTapFn;
+    if (schedule !== defaultTapSchedule) {
+      tapPending++;
+      let active = true;
+      const task = () => {
+        if (!active) return null;
+        active = false; tapPending--;
+        // The same drain guard bounds a scheduler which chooses to run inline.
+        tapQueue.push(value); drainTaps(); return null;
+      };
+      try {
+        const admitted = truth(schedule.call(null, task));
+        if (!admitted && active) { active = false; tapPending--; }
+        return admitted;
+      } catch (_) { if (active) { active = false; tapPending--; } return false; }
+    }
+    tapQueue.push(value); drainTaps(); return true;
+  }
+  function drainTaps() {
+    if (tapDraining) return;
+    tapDraining = true; tapDelivered = 0;
+    try {
+      while (tapQueue.length && tapDelivered < tapLimit) {
+        const value = tapQueue.shift(); tapDelivered++;
+        deliverTap([...tapListeners], value);
+      }
+    } finally { tapQueue.length = 0; tapDraining = false; tapDelivered = 0; }
+  }
   function makeVar(get, symbol, metadata = null, deferred = false) {
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return get.call(null).call(null, ...args); };
@@ -2634,6 +2722,56 @@
     toString() { return "#'" + vars.get(this).symbol; }
   });
   Var.prototype = varPrototype;
+  // Namespace identities are session-owned, with source registration from emitted units.
+  const namespaces = new Map();
+  function Namespace(obj, name) {
+    if (!(this instanceof Namespace)) return new Namespace(obj, name);
+    this.obj = obj; this.name = name;
+    installMethods(this, [["IEquiv/-equiv", 2, (_self, other) => other instanceof Namespace && equalPair(name, other.name)],
+      ["IHash/-hash", 1, () => hash(name)]]);
+  }
+  Namespace.prototype.getName = function () { return this.name; };
+  Namespace.prototype.toString = function () { return String(this.name); };
+  Namespace.prototype.findInternedVar = function (local) {
+    if (this.obj == null) return null;
+    const key = mungeStr(str(local));
+    if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
+    return definitionVar(() => this.obj[key], symbol(str(this.name), str(local)), null, true);
+  };
+  function createNs(name, obj = null) {
+    if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
+    if (!symbols.has(name)) throw new TypeError("create-ns requires a symbol");
+    const key = str(name);
+    if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));
+    else if (obj != null) namespaces.get(key).obj = obj;
+    return namespaces.get(key);
+  }
+  function findNs(name) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    if (name == null) return null;
+    if (name instanceof Namespace) return name;
+    if (!symbols.has(name)) throw new TypeError("find-ns requires a symbol or Namespace");
+    return namespaces.get(str(name)) ?? null;
+  }
+  function nsName(value) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    // Definition metadata historically stores the source symbol; it is an identity view.
+    if (symbols.has(value)) return value;
+    if (!(value instanceof Namespace)) throw new TypeError("ns-name requires a Namespace");
+    return value.name;
+  }
+  function theNs(name) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    const value = findNs(name);
+    if (!value) throw new Error("No namespace: " + str(name));
+    return value;
+  }
+  function allNs() { if (arguments.length) return invalidArity(arguments.length); return listFromArray([...namespaces.values()]); }
+  function compilerMacroVar(sym, metadata) {
+    if (arguments.length !== 2) return invalidArity(arguments.length);
+    const base = mapFromArray([keyword(null, "ns"), symbolCore(namespace(sym)), keyword(null, "name"), symbolCore(name(sym)), keyword(null, "macro"), true]);
+    return makeVar(() => { throw new Error("compile-time macro cannot be consumed as a runtime value: " + str(sym)); }, sym, into(base, metadata), true);
+  }
   function rePattern(pattern) {
     if (pattern instanceof RegExp) return pattern;
     if (typeof pattern !== "string") throw new TypeError("regex pattern requires a string");
@@ -3085,9 +3223,8 @@
       ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }],
       ["IIterable/-iterator", 1, function () { return new SeqIter(this); }],
       ["IPrintWithWriter/-pr-writer", 3, function (_self, writer, options) {
-        const readable = truth(options == null ? core.printReadably : get(options, keyword(null, "readably")));
-        return write(writer, "#" + (typeNames.get(Type) ?? "").replaceAll("/", ".") + "{" +
-          recordEntries(this, Type).map(e => print(nth(e, 0), readable) + " " + print(nth(e, 1), readable)).join(", ") + "}");
+        return prSequentialWriter(writer, (entry, target, opts) => prSequentialWriter(target, printWriter, "", " ", "", opts, entry),
+          "#" + (typeNames.get(Type) ?? "").replaceAll("/", ".") + "{", ", ", "}", options, recordEntries(this, Type));
       }],
       ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
         return reduce((result, entry) => fn.call(null, result, nth(entry, 0), nth(entry, 1)), init, this);
@@ -3753,11 +3890,27 @@
     return mapFromArray(pairs);
   }
   function printCore(...values) { return printItems(values); }
+  function setPrintFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return core.printFn = fn; }
+  function setPrintErrFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return core.printErrFn = fn; }
+  function enableConsolePrint() {
+    if (arguments.length !== 0) return invalidArity(arguments.length);
+    core.printNewline = false;
+    setPrintFn((...args) => globalThis.console.log(...args));
+    setPrintErrFn((...args) => globalThis.console.error(...args));
+    return null;
+  }
   function stringPrint(text) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
     if (core.printFn == null) throw new Error("No *print-fn* fn set for evaluation environment");
     core.printFn.call(null, text); return null;
   }
-  function newline(_opts) { return stringPrint("\n"); }
+  function printOption(options, name, root) { return options == null ? core[root] : get(options, keyword(null, name)); }
+  function flush() { if (arguments.length !== 0) return invalidArity(arguments.length); return null; }
+  function newline(options = null) {
+    if (arguments.length > 1) return invalidArity(arguments.length);
+    stringPrint("\n");
+    return truth(printOption(options, "flush-on-newline", "flushOnNewline")) ? core.flush.call(null) : null;
+  }
   function pr(...values) { return stringPrint(prStr(...values)); }
   function println(...values) { printItems(values); return truth(core.printNewline) ? newline() : null; }
   function prn(...values) { pr(...values); return truth(core.printNewline) ? newline() : null; }
@@ -3771,82 +3924,129 @@
       ["IHash/-hash", 1, () => 31 * hash(tag) + hash(form)],
       ["ILookup/-lookup", 2, (_self, key) => equalPair(key, keyword(null, "tag")) ? tag : equalPair(key, keyword(null, "form")) ? form : null],
       ["ILookup/-lookup", 3, (_self, key, notFound) => equalPair(key, keyword(null, "tag")) ? tag : equalPair(key, keyword(null, "form")) ? form : notFound],
-      ["IPrintWithWriter/-pr-writer", 3, (_self, writer, options) => { write(writer, "#" + str(tag) + " "); return prWriter(form, writer, options); }]]);
+      ["IPrintWithWriter/-pr-writer", 3, (_self, writer, options) => { write(writer, "#" + str(tag) + " "); return printWriter(form, writer, options); }]]);
   }
   TaggedLiteral.prototype.toString = function () { return prStr(this); };
   function taggedLiteral(tag, form) { if (!symbols.has(tag)) throw new Error("Assert failed: (symbol? tag)"); return new TaggedLiteral(tag, form); }
   function printItems(values) {
     const saved = core.printReadably;
     core.printReadably = false;
+    try { return stringPrint(prStr(...values)); }
+    finally { core.printReadably = saved; }
+  }
+  function stringWriter() {
+    const buffer = {text: ""};
+    const writer = installMethods({}, [["IWriter", 0, null],
+      ["IWriter/-write", 2, (_self, text) => { buffer.text += text; return null; }], ["IWriter/-flush", 1, () => null]]);
+    return {buffer, writer};
+  }
+  function printMetaQ(options, value) {
+    if (arguments.length !== 2) return invalidArity(arguments.length);
+    return truth(printOption(options, "meta", "printMeta")) && implementsProtocol(IMeta, value) && meta(value) != null;
+  }
+  function prSequentialWriter(writer, printOne, begin, separator, end, options, coll) {
+    if (arguments.length !== 7) return invalidArity(arguments.length);
+    const saved = core.printLevel;
+    core.printLevel = saved == null ? null : saved - 1;
     try {
-      if (core.printFn == null) throw new Error("No *print-fn* fn set for evaluation environment");
-      core.printFn.call(null, values.map(value => print(value, false)).join(" "));
-      return null;
-    } finally { core.printReadably = saved; }
+      if (core.printLevel != null && core.printLevel < 0) return write(writer, "#");
+      write(writer, begin);
+      let current = seq(coll), remaining = printOption(options, "print-length", "printLength"), printed = false;
+      while (current != null && (remaining == null || remaining !== 0)) {
+        if (printed) write(writer, separator);
+        printOne.call(null, first(current), writer, options); printed = true;
+        current = next(current); if (remaining != null) remaining--;
+      }
+      if (current != null) {
+        if (printed) write(writer, separator);
+        const marker = get(options, keyword(null, "more-marker")); write(writer, truth(marker) ? marker : "...");
+      }
+      return write(writer, end);
+    } finally { core.printLevel = saved; }
   }
-  function print(value, readable) {
-    const collection = sequential(value) || eductions.has(value) || queues.has(value) || maps.has(value) || sets.has(value) || Array.isArray(value);
-    if (collection && core.printLevel != null) {
-      const saved = core.printLevel;
-      if (saved <= 0) return "#";
-      core.printLevel = saved - 1;
-      try { return printValue(value, readable); } finally { core.printLevel = saved; }
-    }
-    return printValue(value, readable);
+  function printMapEntries(entries, writer, options, prefix = "") {
+    const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
+    const ns = truth(core.printNamespaceMaps) && names.length && names[0]?.namespace;
+    const lifted = !prefix && ns && names.every(name => name?.namespace === ns);
+    return prSequentialWriter(writer, (entry, target, opts) => {
+      const key = lifted ? keywords.has(entry.key) ? keyword(null, name(entry.key)) : symbol(null, name(entry.key)) : entry.key;
+      printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
+    }, prefix + (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
-  function printValue(value, readable) {
-    const writerMethod = value == null ? null : publicMethod(value, "IPrintWithWriter/-pr-writer", 3);
-    if (writerMethod) {
-      let result = "";
-      const writer = installMethods({}, [["IWriter", 0, null], ["IWriter/-write", 2, (_self, text) => { result += text; return null; }], ["IWriter/-flush", 1, () => null]]);
-      writerMethod.call(value, value, writer, null);
-      return result;
+  function printWriter(value, writer, options) {
+    const alt = get(options, keyword(null, "alt-impl"));
+    if (truth(alt)) return alt.call(null, value, writer, assoc(options, keyword(null, "fallback-impl"), printWriterImpl));
+    return printWriterImpl(value, writer, options);
+  }
+  function printWriterImpl(value, writer, options, skipMetadata = false) {
+    if (value == null) return write(writer, "nil");
+    if (!skipMetadata && printMetaQ(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
+    const writerMethod = publicMethod(value, "IPrintWithWriter/-pr-writer", 3);
+    if (writerMethod) return writerMethod.call(value, value, writer, options);
+    const readable = truth(printOption(options, "readably", "printReadably"));
+    if (typeof value === "string") {
+      // CLJS escapes its seven named characters and preserves other UTF-16 units.
+      const escapes = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t'};
+      return write(writer, readable ? '"' + value.replace(/[\\"\b\f\n\r\t]/g, ch => escapes[ch]) + '"' : value);
     }
-    if (value == null) return "nil";
-    if (typeof value === "string") return readable ? JSON.stringify(value) : value;
-    if (typeof value === "number") return Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value);
-    if (typeof value === "boolean") return String(value);
-    if (typeof value === "function" && value.cljs$lang$type && typeNames.has(value)) return typeNames.get(value);
-    if (value instanceof ExceptionInfo) return value.toString();
+    if (typeof value === "number") return write(writer, Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value));
+    if (typeof value === "boolean") return write(writer, String(value));
+    if (typeof value === "function") return write(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(core.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
+    if (value instanceof ExceptionInfo) return write(writer, value.toString());
     if (transients.has(value)) {
       const state = transients.get(value);
-      return "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]";
+      return write(writer, "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]");
     }
-    if (atoms.has(value) || volatiles.has(value)) return "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val " + print(value.state, readable) + "}]";
+    if (atoms.has(value) || volatiles.has(value)) {
+      write(writer, "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val "); printWriter(value.state, writer, options); return write(writer, "}]");
+    }
     if (delays.has(value)) {
       const state = delays.get(value);
-      return "#object[cljs.core.Delay {:status " + (state.thunk == null ? ":ready" : ":pending") + ", :val " + print(state.value, readable) + "}]";
+      write(writer, "#object[cljs.core.Delay {:status " + (state.thunk == null ? ":ready" : ":pending") + ", :val "); printWriter(state.value, writer, options); return write(writer, "}]");
     }
-    if (value instanceof Error) return "#object[" + (value.constructor?.name || "Object") + " " + String(value) + "]";
-    if (keywords.has(value) || symbols.has(value) || vars.has(value)) return String(value);
-    if (uuids.has(value)) return '#uuid "' + uuids.get(value) + '"';
-    if (value instanceof Date) return '#inst "' + value.toISOString().replace(/Z$/, "-00:00") + '"';
-    if (value instanceof RegExp) return '#"' + value.source + '"';
+    if (value instanceof Error) return write(writer, "#object[" + (value.constructor?.name || "Object") + " " + String(value) + "]");
+    if (keywords.has(value) || symbols.has(value) || vars.has(value)) return write(writer, String(value));
+    if (uuids.has(value)) return write(writer, '#uuid "' + uuids.get(value) + '"');
+    if (value instanceof Date) return write(writer, '#inst "' + value.toISOString().replace(/Z$/, "-00:00") + '"');
+    if (value instanceof RegExp) return write(writer, '#"' + value.source + '"');
     if (sequential(value) || queues.has(value)) {
       const [start, end] = queues.has(value) ? ["#queue [", "]"] : vectors.has(value) ? ["[", "]"] : ["(", ")"];
-      const parts = []; let s = seq(value), remaining = core.printLength;
-      while (s !== null && (remaining == null || remaining > 0)) { parts.push(print(first(s), readable)); s = next(s); if (remaining != null) remaining--; }
-      if (s !== null) parts.push("...");
-      return start + parts.join(" ") + end;
+      return prSequentialWriter(writer, printWriter, start, " ", end, options, value);
     }
     const entries = maps.get(value);
-    if (entries) {
-      const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
-      const ns = truth(core.printNamespaceMaps) && names.length && names[0]?.namespace;
-      const lifted = ns && names.every(name => name?.namespace === ns);
-      return (lifted ? "#:" + ns : "") + "{" + entries.map((entry, index) => {
-        const key = lifted ? keywords.has(entry.key) ? keyword(null, names[index].name) : symbol(null, names[index].name) : entry.key;
-        return print(key, readable) + " " + print(entry.value, readable);
-      }).join(", ") + "}";
-    }
+    if (entries) return printMapEntries(entries, writer, options);
     const members = sets.get(value);
-    if (members) return "#{" + members.map(e => print(e.key, readable)).join(" ") + "}";
-    if (Array.isArray(value)) return "#js [" + value.map(v => print(v, readable)).join(" ") + "]";
-    if (typeof value === "object" && Object.getPrototypeOf(value) === null) return "#object[Object]";
-    if (typeof value === "object") return "#js {" + Object.keys(value).map(k => (/^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? ":" + k : JSON.stringify(k)) + " " + print(value[k], readable)).join(", ") + "}";
-    return String(value);
+    if (members) return prSequentialWriter(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, members);
+    if (Array.isArray(value)) return prSequentialWriter(writer, printWriter, "#js [", " ", "]", options, value);
+    if (typeof value === "object" && Object.getPrototypeOf(value) === null) return write(writer, "#object[Object]");
+    if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(k => ({key: /^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? keyword(null, k) : k, value: value[k]})), writer, options, "#js ");
+    if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
+    return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
-  function prStr(...values) { return values.map(value => print(value, truth(core.printReadably))).join(" "); }
+  function prSeqWriter(values, writer, options) {
+    if (arguments.length !== 3) return invalidArity(arguments.length);
+    printWriter(first(values), writer, options);
+    for (let s = next(values); s != null; s = next(s)) { write(writer, " "); printWriter(first(s), writer, options); }
+    return null;
+  }
+  function prStrWithOpts(values, options) {
+    if (arguments.length !== 2) return invalidArity(arguments.length);
+    if (seq(values) == null) return "";
+    const {buffer, writer} = stringWriter(); prSeqWriter(values, writer, options); flushWriter(writer); return buffer.text;
+  }
+  function prnStrWithOpts(values, options) { if (arguments.length !== 2) return invalidArity(arguments.length); return prStrWithOpts(values, options) + "\n"; }
+  function print(value, readable) {
+    const saved = core.printReadably; core.printReadably = readable;
+    try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
+    finally { core.printReadably = saved; }
+  }
+  function prStr(...values) { return prStrWithOpts(values, null); }
+  // The Rust display API returns UTF-8. Keep canonical JS printing lossless,
+  // but represent isolated surrogate units as escapes at this text boundary.
+  function printForHost(value) {
+    return prStr(value).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
+      units => units.length === 2 ? units : "\\u" + units.charCodeAt(0).toString(16).padStart(4, "0"));
+  }
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? print(value, true) : String(value)).join(""); }
 
   function variadicCore(fn, fixed, delegate) {
@@ -4040,7 +4240,7 @@
   }
   const write = coreMethod("IWriter/-write", [2], () => null);
   const flushWriter = coreMethod("IWriter/-flush", [1], () => null);
-  const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => write(writer, print(value, truth(options == null ? core.printReadably : get(options, keyword(null, "readably"))))));
+  const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true));
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
     const result = Object.create(Object.getPrototypeOf(value));
@@ -4078,15 +4278,7 @@
       return transduce(xform, completing(rf), init, coll);
     }],
     ["IPrintWithWriter/-pr-writer", 3, (value, writer, options) => {
-      const readable = truth(options == null ? core.printReadably : get(options, keyword(null, "readably")));
-      write(writer, "(");
-      let current = seq(value), remaining = core.printLength, separator = "";
-      while (current != null && (remaining == null || remaining > 0)) {
-        write(writer, separator + print(first(current), readable)); separator = " ";
-        current = next(current); if (remaining != null) remaining--;
-      }
-      if (current != null) write(writer, separator + "...");
-      write(writer, ")"); return null;
+      return prSequentialWriter(writer, printWriter, "(", " ", ")", options, value);
     }]
   ]);
   Object.defineProperties(builtinTypes.Eduction.prototype, Object.getOwnPropertyDescriptors({
@@ -4229,6 +4421,8 @@
     someFn, everyPred, memoize, rand, randInt, randNth, parseLong, parseDouble, parseUuid, parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
     replOne: null, replTwo: null, replThree: null, replError: null, sourceFile: null,
     commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
+    printMeta: false, printDup: false, flushOnNewline: true, printFnBodies: false,
+    setPrintFn, setPrintErrFn, stringPrint, flush, enableConsolePrint, prStrWithOpts, prnStrWithOpts, prSequentialWriter, prSeqWriter, printMetaQ, printForHost,
     println, prn, pr, newline, prnStr, printStr, printlnStr, taggedLiteral, isTaggedLiteral: value => value instanceof TaggedLiteral,
     splitVAt, partitionV, partitionVAll, shuffle, jsIterable, iteration, cljToJs, jsToClj, keyToJs, IEncodeJS, IEncodeClojure,
     munge, mungeStr, demunge, treeSeq, flatten, iter: sequenceIterator, es6Iterator, es6IteratorSeq: iteratorSeq,
@@ -4796,6 +4990,16 @@
 
 
 
+  Object.assign(core, {
+    configureHostHooks, hostClock: defaultHostClock, hostRandom: defaultHostRandom,
+    systemTime, addTap, removeTap, tapGreater, execTapFn: defaultTapSchedule,
+    rand: hostRand, randInt: hostRandInt, randNth: hostRandNth,
+    shuffle: hostShuffle, randomUuid: hostRandomUuid,
+    loadFile: function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); }
+  });
+  Object.assign(core, {Namespace, createNs, findNs, nsName, theNs, allNs, compilerMacroVar,
+    currentNs: createNs(symbol(null, "cljs.user")), assertions: true});
+  createNs(symbol(null, "cljs.core"));
   Object.seal(core);
   return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

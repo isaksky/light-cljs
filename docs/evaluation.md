@@ -65,6 +65,25 @@ compilation service and canonical runtime reader. `default_data_reader` receives
 the tag and value for unknown tags; named and built-in readers take precedence. Source macros use `defmacro`;
 native callback macros are replaced by compiler source macros.
 
+`load_file(path)` and language `load-file` use `EvalOptions.file_provider`, which
+receives an opaque path and requesting namespace and returns `SourceInput`.
+They reuse this session's compiler, heap and dependency cache. Loaded definitions
+and effects before failure persist; diagnostics retain the returned file name,
+and caught language exceptions retain their original identity and data. `.clj`
+requests and returned sources are rejected. No filesystem access is implied.
+
+`EvalOptions.clock` and `random` provide fallible Number callbacks for
+`system-time` and random operations. Defaults use the host's ECMAScript clock
+and `Math.random`; a clock returns finite milliseconds and random returns
+`[0,1)`. `add-tap`, `remove-tap` and `tap>` use bounded synchronous delivery by
+default, with a maximum of 1024 accepted events per drain. Emitted programs can
+inject `rt.core.configureHostHooks({clock, random, tapSchedule, maxPendingTaps})`;
+the scheduler owns admission and delivery timing. Dynamic `*exec-tap-fn*` can
+also supply scheduling. Console printing requires a supplied host console;
+process arguments remain explicit `EvalOptions.arguments`. See the
+[host hook contract](../tests/reference/compiler-host-hooks.md) for callback,
+delivery, recovery and macro-heap isolation details.
+
 `NamePolicy` checks resolved compiler names, including core references, aliases,
 Vars, quoted `resolve`, macros and explicitly exposed host bindings. Deny wins;
 allow restricts exposed capabilities/core names while permitting ordinary user
@@ -88,6 +107,20 @@ the native interpreter's fuel/allocation unit meanings. Rust compiler allocation
 is not measured by the JS heap limit. Input providers return a nonempty chunk,
 EOF or an owned error; canonical reader cursors handle parsing and line state.
 No input/output capability is connected implicitly.
+
+Printing uses the configured output callback; `*print-err-fn*` uses the separate
+error callback. `set-print-fn!` and `set-print-err-fn!` replace these roots, and
+language bindings restore them after exceptions. `with-out-str` captures nested
+output with newlines enabled and restores the enclosing sink on success or
+failure. `PrintOptions` configures readability, newlines, length, level,
+namespace maps, metadata, duplicate printing and newline flushing. Collection
+length and level apply to maps, sets, records, sequences and JavaScript
+collections. `pr-str-with-opts` and writer helpers preserve explicit options
+through nested values and custom printers, including alternate printers and
+their fallback. Strings retain their UTF-16 code units inside JavaScript;
+configured Rust output callbacks receive UTF-8 text. The Rust `print` display
+API escapes isolated surrogate units while preserving valid pairs. `flush` is the upstream
+no-op stub; `newline` invokes it when newline flushing is enabled.
 
 ## Native API migration map
 

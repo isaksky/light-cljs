@@ -63,9 +63,15 @@ has CLJS parity. The [compiler-language report](../compiler-language/README.md#e
 also distinguishes its historical `native` column from current `evaluation`;
 lexer/parser acceptance cannot satisfy semantic reference layers.
 
+The ignored `audit_historical_corpus_with_compiler_evaluator` test can restrict a
+reviewed audit using `LIGHT_CLJS_SCI_AUDIT_IDS`, a comma-separated list of exact
+fixture IDs. It only writes observations in the OS temporary directory; review
+those observations and the preserved source contract before editing dispositions.
+
 Intentional changes include JavaScript Number (rounded wide integers, fractions
 and infinity), `.cljs`/`.cljc` sources with `:cljs` selection, source-only macros
-without runtime callable/Var values, ECMAScript during expansion, fresh mutable
+with reflected Var identity/metadata but no runtime callable macro roots,
+ECMAScript during expansion, fresh mutable
 roots on clean compilation and compiler-owned binding kinds. Native shared-owner
 forks, heap/collector counters, class descriptors, JVM types and resource-unit
 contracts are retired as documented in the [evaluation API](../../../docs/evaluation.md).

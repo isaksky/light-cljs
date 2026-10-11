@@ -163,6 +163,11 @@ impl Evaluator {
             const __lightEvaluator = (() => {{
               const rt = {RUNTIME_SOURCE};
               const values = new Map(); let next = 1; let lastError = null;
+              let hostDiagnostic = null;
+              const exceptionMessage = error => {{
+                if (hostDiagnostic !== null && Object.is(error, hostDiagnostic.value)) {{ const message = hostDiagnostic.message; hostDiagnostic = null; return message; }}
+                return rt.compilerExceptionMessage(error);
+              }};
               const bridge = rt.compilerForms;
               if (bridge.version !== {FORM_BRIDGE_VERSION}) throw new Error("Compiler form bridge version mismatch");
               const clearValues = Map.prototype.clear.bind(values);
@@ -186,16 +191,21 @@ impl Evaluator {
                 bridgeVersion: bridge.version,
                 checkBridge: bridge.check,
                 errorData: () => {{ const error = lastError; return save(rt.core.exData(error)); }},
+                errorValue: () => lastError,
+                rethrowError: (error, message) => {{
+                  hostDiagnostic = {{value: error, message}};
+                  throw error;
+                }},
                 evaluate: source => {{
                   lastError = null;
-                  try {{ return save((0, eval)(source)(rt)); }}
-                  catch (error) {{ lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }}
+                  try {{ const result = save((0, eval)(source)(rt)); hostDiagnostic = null; return result; }}
+                  catch (error) {{ lastError = error; const message = exceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }}
                 }},
                 call: (id, ids) => {{
-                  try {{ return save(Reflect.apply(get(id), null, ids.map(get))); }}
+                  try {{ const result = save(Reflect.apply(get(id), null, ids.map(get))); hostDiagnostic = null; return result; }}
                   catch (error) {{
                     lastError = error;
-                    const message = rt.compilerExceptionMessage(error);
+                    const message = exceptionMessage(error);
                     if (message !== undefined) throw new Error(message);
                     throw error;
                   }}
@@ -209,7 +219,7 @@ impl Evaluator {
                 inputRecover: () => rt.core.compilerInputRecover(),
                 inputDiscard: () => rt.core.compilerInputDiscard(),
                 inputCompact: () => rt.core.compilerInputCompact(),
-                print: id => {{ try {{ return rt.core.prStr(get(id)); }} catch (error) {{ lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }} }},
+                print: id => {{ try {{ return rt.core.printForHost(get(id)); }} catch (error) {{ lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }} }},
                 validate: id => {{ get(id); }},
                 release: id => {{ get(id); values.delete(id); }},
                 clear: clearValues
@@ -542,6 +552,7 @@ impl Evaluator {
                 let call = HostCall {
                     active: ActiveEvaluator { ctx: ctx.clone(), control: &control, generation, bridge: &bridge, preserve_language_errors: true },
                     owned: RefCell::new(Vec::new()),
+                    unit_exception: RefCell::new(None),
                 };
                 let args = ids.into_iter().map(|index| ValueId { session: generation, index }).collect::<Vec<_>>();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&call, &args)));
@@ -554,6 +565,10 @@ impl Evaluator {
                     Ok(index) => Ok(std::iter::once(index).chain(owned.into_iter().map(|id| id.index)).collect::<Vec<_>>()),
                     Err(error) => {
                         for id in owned { let _ = call.active.release(id); }
+                        if let Some(exception) = call.unit_exception.into_inner() {
+                            let rethrow: Function = ctx.eval("__lightEvaluator.rethrowError")?;
+                            return rethrow.call((exception, format!("{name}: {error}")));
+                        }
                         Err(rquickjs::Exception::throw_message(&ctx, &format!("{name}: {error}")))
                     }
                 }
@@ -1108,6 +1123,7 @@ impl HostArity {
 pub struct HostCall<'a, 'js> {
     active: ActiveEvaluator<'a, 'js>,
     owned: RefCell<Vec<ValueId>>,
+    unit_exception: RefCell<Option<rquickjs::Value<'js>>>,
 }
 impl HostCall<'_, '_> {
     fn own(&self, value: Result<ValueId, EvalError>) -> Result<ValueId, EvalError> {
@@ -1120,5 +1136,22 @@ impl HostCall<'_, '_> {
     pub fn value(&self, data: &Datum) -> Result<ValueId, EvalError> { self.own(self.active.import_data(data, ConversionLimits::default())) }
     pub fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalError> { self.own(self.active.call(function, args)) }
     pub fn control(&self) -> ExecutionControl { self.active.control() }
-    pub(crate) fn unit(&self, source: &str) -> Result<ValueId, EvalError> { self.own(self.active.evaluate_unit(source)) }
+    pub(crate) fn release_scoped(&self, value: ValueId) -> Result<(), EvalError> {
+        let mut owned = self.owned.borrow_mut();
+        let index = owned.iter().position(|id| *id == value)
+            .ok_or_else(|| EvalError("value is not owned by this callback".into()))?;
+        self.active.release(value)?;
+        owned.swap_remove(index);
+        Ok(())
+    }
+    pub(crate) fn unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        self.unit_exception.borrow_mut().take();
+        let result = self.active.evaluate_unit(source);
+        if result.is_err()
+            && let Ok(read) = self.active.ctx.eval::<Function, _>("__lightEvaluator.errorValue")
+            && let Ok(exception) = read.call(()) {
+            *self.unit_exception.borrow_mut() = Some(exception);
+        }
+        self.own(result)
+    }
 }

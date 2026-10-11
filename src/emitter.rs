@@ -119,10 +119,18 @@ fn emit_js_mode(
         let runtime = if let Some(parameter) = shared { format!("  const rt = {parameter};\n") } else {
             format!("  const rt = {};\n", include_str!("js_runtime.js").trim())
         };
+        let source_length = runtime.len();
+        let mut runtime = runtime;
+        for namespace in &program.namespaces {
+            let previous = std::mem::take(&mut emitter.output);
+            emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
+            let literal = std::mem::replace(&mut emitter.output, previous);
+            writeln!(runtime, "  rt.core.createNs(rt.symbol(null, {literal}));").unwrap();
+        }
         for range in &mut emitter.raw_segments { if range.start >= prelude_end { range.start += runtime.len(); range.end += runtime.len(); } }
         if shared.is_none() {
             let start = prelude_end + runtime.find("(() =>").unwrap();
-            emitter.raw_segments.push(start..prelude_end + runtime.len() - 2);
+            emitter.raw_segments.push(start..prelude_end + source_length - 2);
         }
         emitter.output.insert_str(prelude_end, &runtime);
     }

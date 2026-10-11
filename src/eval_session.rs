@@ -29,6 +29,9 @@ pub struct PrintOptions {
     pub length: Option<usize>,
     pub level: Option<usize>,
     pub namespace_maps: bool,
+    pub meta: bool,
+    pub dup: bool,
+    pub flush_on_newline: bool,
 }
 impl Default for PrintOptions {
     fn default() -> Self {
@@ -38,11 +41,24 @@ impl Default for PrintOptions {
             length: None,
             level: None,
             namespace_maps: false,
+            meta: false,
+            dup: false,
+            flush_on_newline: true,
         }
     }
 }
 
 pub type Input = Rc<dyn Fn(ExecutionControl) -> Result<Option<String>, EvalError>>;
+
+/// Explicit clock/random capabilities. Neither callback receives engine values.
+pub type NumberSource = Rc<dyn Fn() -> Result<f64, EvalError>>;
+/// File loading is distinct from namespace resolution; paths are opaque to the session.
+#[derive(Clone, Debug)]
+pub struct FileLoadRequest {
+    pub path: String,
+    pub requesting_namespace: String,
+}
+pub type FileProvider = Rc<dyn Fn(&FileLoadRequest) -> Result<Option<SourceInput>, EvalError>>;
 
 /// Immutable configuration reused by `fresh_session`; mutable values are never
 /// cloned into another heap. Limits use JS bytes/stack/time/polls, not native fuel.
@@ -61,6 +77,9 @@ pub struct EvalOptions {
     pub print: PrintOptions,
     pub bindings: Vec<(String, Datum)>,
     pub source_provider: Option<Rc<dyn SourceProvider>>,
+    pub file_provider: Option<FileProvider>,
+    pub clock: Option<NumberSource>,
+    pub random: Option<NumberSource>,
     pub output: Option<Output>,
     pub error_output: Option<Output>,
     pub input: Option<Input>,
@@ -83,6 +102,9 @@ impl Default for EvalOptions {
             print: PrintOptions::default(),
             bindings: vec![],
             source_provider: None,
+            file_provider: None,
+            clock: None,
+            random: None,
             output: None,
             error_output: None,
             input: None,
@@ -139,20 +161,42 @@ impl Drop for OperationGuard {
         self.0.set(self.0.get() - 1);
     }
 }
+struct FileLoadGuard(Rc<RefCell<Vec<String>>>);
+impl FileLoadGuard {
+    fn begin(stack: &Rc<RefCell<Vec<String>>>, path: &str) -> Result<Self, EvalError> {
+        if stack.borrow().iter().any(|entry| entry == path) {
+            return Err(EvalError(format!(
+                "file load cycle: {} -> {path}",
+                stack.borrow().join(" -> ")
+            )));
+        }
+        stack.borrow_mut().push(path.into());
+        Ok(Self(stack.clone()))
+    }
+}
+impl Drop for FileLoadGuard {
+    fn drop(&mut self) {
+        self.0.borrow_mut().pop();
+    }
+}
 
 pub struct EvalSession {
     engine: Evaluator,
+    namespace_update: ValueId,
     compiler: Rc<RefCell<InteractiveCompiler>>,
     options: EvalOptions,
     output_bytes: Rc<RefCell<usize>>,
-    loaded: HashSet<String>,
-    loading: Vec<String>,
+    loaded: Rc<RefCell<HashSet<String>>>,
+    loading: Rc<RefCell<Vec<String>>>,
+    file_loading: Rc<RefCell<Vec<String>>>,
     identity: u64,
     operation_depth: Rc<Cell<usize>>,
 }
 impl EvalSession {
     pub fn new(options: EvalOptions) -> Result<Self, EvalDiagnostic> {
         let engine = Evaluator::interactive(options.engine.clone())?;
+        let namespace_update = engine
+            .evaluate_js("name => { rt.core.currentNs = rt.core.createNs(name); return null; }")?;
         let mut host = crate::MacroHost::new();
         host.limits = options.compiler.clone();
         host.evaluator_options = options.engine.clone();
@@ -174,11 +218,13 @@ impl EvalSession {
         }
         let mut session = Self {
             engine,
+            namespace_update,
             compiler: Rc::new(RefCell::new(compiler)),
             options,
             output_bytes: Rc::new(RefCell::new(0)),
-            loaded: HashSet::new(),
-            loading: vec![],
+            loaded: Rc::new(RefCell::new(HashSet::new())),
+            loading: Rc::new(RefCell::new(vec![])),
+            file_loading: Rc::new(RefCell::new(vec![])),
             operation_depth: Rc::new(Cell::new(0)),
             identity: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         };
@@ -228,6 +274,13 @@ impl EvalSession {
     pub fn eval_source(&mut self, source: &SourceInput) -> Result<EvalResult, EvalDiagnostic> {
         let _operation = self.begin()?;
         self.source(source)
+    }
+    /// Load only through the configured file capability, preserving session roots.
+    pub fn load_file(&mut self, path: &str) -> Result<EvalResult, EvalDiagnostic> {
+        let _operation = self.begin()?;
+        let _file = FileLoadGuard::begin(&self.file_loading, path)?;
+        let source = file_source(&self.options, path, &self.namespace())?;
+        self.source(&source)
     }
     fn source(&mut self, source: &SourceInput) -> Result<EvalResult, EvalDiagnostic> {
         if source.file.ends_with(".clj") {
@@ -287,20 +340,23 @@ impl EvalSession {
                 message,
                 location: Some(form.span()),
             })?;
+        if requests.is_some() {
+            self.sync_namespace()?;
+        }
         if let Some(requests) = requests {
             for request in requests {
                 let name = String::from_utf16_lossy(request.namespace.name());
-                if self.loaded.contains(&name)
+                if self.loaded.borrow().contains(&name)
                     && request.reload == crate::source_provider::Reload::None
                 {
                     continue;
                 }
-                if self.loading.contains(&name) {
+                if self.loading.borrow().contains(&name) {
                     return Err(EvalDiagnostic {
                         data: None,
                         message: format!(
                             "namespace load cycle: {} -> {name}",
-                            self.loading.join(" -> ")
+                            self.loading.borrow().join(" -> ")
                         ),
                         location: Some(form.span()),
                     });
@@ -332,12 +388,13 @@ impl EvalSession {
                         })?
                 };
                 let namespace = self.namespace();
-                self.loading.push(name.clone());
+                self.loading.borrow_mut().push(name.clone());
                 let result = self.source(&source);
-                self.loading.pop();
+                self.loading.borrow_mut().pop();
                 self.compiler.borrow_mut().set_namespace(&namespace);
+                self.sync_namespace()?;
                 self.engine.release(result?.value)?;
-                self.loaded.insert(name);
+                self.loaded.borrow_mut().insert(name);
             }
             self.compiler
                 .borrow()
@@ -635,10 +692,61 @@ impl EvalSession {
         )
     }
     fn install_services(&mut self) -> Result<(), EvalDiagnostic> {
+        self.sync_namespace()?;
+        let assertions = self.value(&Datum::new(DatumKind::Boolean(self.options.assertions)))?;
+        self.engine.bind("assertions", assertions, true)?;
+        self.release(assertions)?;
+        for (name, source) in [
+            ("hostClock", self.options.clock.clone()),
+            ("hostRandom", self.options.random.clone()),
+        ] {
+            if let Some(source) = source {
+                let callback: HostCallback =
+                    Rc::new(move |call, _| call.value(&Datum::new(DatumKind::Double(source()?))));
+                let value =
+                    self.engine
+                        .install_host_function(name, HostArity::Exact(0), callback)?;
+                self.engine.bind(name, value, true)?;
+                self.engine.release(value)?;
+            }
+        }
+        let compiler = Rc::downgrade(&self.compiler);
+        let namespace_update = self.namespace_update;
+        let options = self.options.clone();
+        let loaded = self.loaded.clone();
+        let loading = self.loading.clone();
+        let file_loading = self.file_loading.clone();
+        let callback: HostCallback = Rc::new(move |call, args| {
+            let compiler = compiler
+                .upgrade()
+                .ok_or_else(|| EvalError("session dropped".into()))?;
+            let path = call.string(args[0])?;
+            let _file = FileLoadGuard::begin(&file_loading, &path)?;
+            let namespace = compiler.borrow().namespace().to_owned();
+            let source = file_source(&options, &path, &namespace)?;
+            callback_source(
+                call,
+                &compiler,
+                namespace_update,
+                &options,
+                &loaded,
+                &loading,
+                &source,
+            )
+            .map_err(|error| EvalError(error.to_string()))
+        });
+        let value = self
+            .engine
+            .install_host_function("loadFile", HostArity::Exact(1), callback)?;
+        self.engine.bind("loadFile", value, true)?;
+        self.engine.release(value)?;
         let print = self.options.print.clone();
         for (name, kind) in [
             ("printReadably", DatumKind::Boolean(print.readably)),
             ("printNewline", DatumKind::Boolean(print.newline)),
+            ("printMeta", DatumKind::Boolean(print.meta)),
+            ("printDup", DatumKind::Boolean(print.dup)),
+            ("flushOnNewline", DatumKind::Boolean(print.flush_on_newline)),
             (
                 "printNamespaceMaps",
                 DatumKind::Boolean(print.namespace_maps),
@@ -761,4 +869,160 @@ impl EvalSession {
         }
         Ok(())
     }
+    fn sync_namespace(&self) -> Result<(), EvalDiagnostic> {
+        let name = self.value(&Datum::new(DatumKind::Symbol(
+            crate::compiler_data::Name::new(None, &self.namespace()),
+        )))?;
+        let result = self.engine.call(self.namespace_update, &[name]);
+        self.engine.release(name)?;
+        self.engine.release(result?)?;
+        Ok(())
+    }
+}
+
+fn file_source(
+    options: &EvalOptions,
+    path: &str,
+    namespace: &str,
+) -> Result<SourceInput, EvalError> {
+    if path.ends_with(".clj") {
+        return Err(EvalError(
+            "native .clj evaluation is retired; use .cljs or .cljc".into(),
+        ));
+    }
+    let provider = options
+        .file_provider
+        .as_ref()
+        .ok_or_else(|| EvalError("load-file requires an explicit file provider".into()))?;
+    provider(&FileLoadRequest {
+        path: path.into(),
+        requesting_namespace: namespace.into(),
+    })?
+    .ok_or_else(|| EvalError(format!("missing file {path}")))
+}
+
+/// Runtime callbacks use the already active engine context and this session's
+/// compiler. No second evaluator or filesystem authority is introduced.
+fn callback_source(
+    call: &HostCall<'_, '_>,
+    compiler: &Rc<RefCell<InteractiveCompiler>>,
+    namespace_update: ValueId,
+    options: &EvalOptions,
+    loaded: &Rc<RefCell<HashSet<String>>>,
+    loading: &Rc<RefCell<Vec<String>>>,
+    source: &SourceInput,
+) -> Result<ValueId, EvalDiagnostic> {
+    if source.file.ends_with(".clj") {
+        return Err(
+            EvalError("native .clj evaluation is retired; use .cljs or .cljc".into()).into(),
+        );
+    }
+    if source.source.len() > options.max_source_bytes {
+        return Err(EvalError("compiler source byte limit exceeded".into()).into());
+    }
+    let mut cursor = 0;
+    let mut last = call.value(&Datum::new(DatumKind::Nil))?;
+    loop {
+        call.control().poll()?;
+        let next = compiler
+            .borrow()
+            .next_form(source, &mut cursor)
+            .map_err(|message| EvalDiagnostic {
+                message,
+                location: None,
+                data: None,
+            })?;
+        let Some(form) = next else { return Ok(last) };
+        let located = |message: String| EvalDiagnostic {
+            message,
+            location: Some(form.span()),
+            data: None,
+        };
+        let requests = compiler.borrow_mut().directive(&form).map_err(located)?;
+        if requests.is_some() {
+            callback_sync_namespace(call, compiler, namespace_update)?;
+        }
+        if let Some(requests) = requests {
+            for request in requests {
+                let name = String::from_utf16_lossy(request.namespace.name());
+                if name == "cljs.core"
+                    || name == "clojure.core"
+                    || (loaded.borrow().contains(&name)
+                        && request.reload == crate::source_provider::Reload::None)
+                {
+                    continue;
+                }
+                if loading.borrow().contains(&name) {
+                    return Err(located(format!(
+                        "namespace load cycle: {} -> {name}",
+                        loading.borrow().join(" -> ")
+                    )));
+                }
+                let dependency = if let Some(text) = crate::compiler_libraries::source(&name) {
+                    SourceInput::new(format!("<builtin>/{name}.cljs"), text)
+                } else {
+                    options
+                        .source_provider
+                        .as_ref()
+                        .ok_or_else(|| located(format!("no source provider for {name}")))?
+                        .load(&request)
+                        .map_err(|error| located(error.to_string()))?
+                        .ok_or_else(|| located(format!("missing namespace {name}")))?
+                };
+                let namespace = compiler.borrow().namespace().to_owned();
+                loading.borrow_mut().push(name.clone());
+                let result = callback_source(
+                    call,
+                    compiler,
+                    namespace_update,
+                    options,
+                    loaded,
+                    loading,
+                    &dependency,
+                );
+                loading.borrow_mut().pop();
+                compiler.borrow_mut().set_namespace(&namespace);
+                callback_sync_namespace(call, compiler, namespace_update)?;
+                call.release_scoped(result?)?;
+                loaded.borrow_mut().insert(name);
+            }
+            compiler.borrow().validate_imports().map_err(located)?;
+            let value = call.value(&Datum::new(DatumKind::Nil))?;
+            call.release_scoped(last)?;
+            last = value;
+        } else {
+            let program =
+                compiler
+                    .borrow_mut()
+                    .analyze_form(&form)
+                    .map_err(|error| EvalDiagnostic {
+                        message: error.to_string(),
+                        location: form
+                            .span()
+                            .source()
+                            .span(error.span)
+                            .or_else(|| Some(form.span())),
+                        data: None,
+                    })?;
+            let value = call
+                .unit(&crate::emitter::emit_interactive_unit(&program))
+                .map_err(|error| located(error.0))?;
+            call.release_scoped(last)?;
+            last = value;
+        }
+    }
+}
+
+fn callback_sync_namespace(
+    call: &HostCall<'_, '_>,
+    compiler: &Rc<RefCell<InteractiveCompiler>>,
+    namespace_update: ValueId,
+) -> Result<(), EvalError> {
+    let name = call.value(&Datum::new(DatumKind::Symbol(
+        crate::compiler_data::Name::new(None, compiler.borrow().namespace()),
+    )))?;
+    let result = call.invoke(namespace_update, &[name]);
+    call.release_scoped(name)?;
+    call.release_scoped(result?)?;
+    Ok(())
 }

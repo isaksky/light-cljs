@@ -30,6 +30,7 @@ pub fn core_macro(name: &str) -> bool {
             | "ns-publics"
             | "ns-interns"
             | "ns-imports"
+            | "ns-refers"
             | "doseq"
             | "when-first"
             | "and"

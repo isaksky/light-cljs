@@ -951,8 +951,9 @@ def boundary_support_contract():
             elif set(local) != {"category", "warning_trace"} or local["category"] != "accepted" or not valid_warning_trace(local["warning_trace"]):
                 raise ValueError(f"supplemental support requires compilation and precise warnings: {identity}")
             if probe in local_probes:
-                if not reject or any(layer in probe for layer in ("release", "checkout")):
-                    raise ValueError(f"local phase proof requires an independent rejection: {identity}")
+                var_identity = identity == "macro-defmacro" and probe["id"] == "boundary-defmacro-phase-var"
+                if reject == var_identity or any(layer in probe for layer in ("release", "checkout")):
+                    raise ValueError(f"local phase proof requires its independent identity/rejection contract: {identity}")
                 continue
             for layer in ("release", "checkout"):
                 ref = probe.get(layer, {})

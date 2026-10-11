@@ -7,6 +7,7 @@ use crate::analyzer::*;
 /// Existing global IDs remain stable; a fragment definition updates its flags,
 /// and supplied metadata replaces metadata on the matching global.
 pub(crate) fn append(target: &mut Program, fragment: &Program) -> ExprId {
+    for namespace in &fragment.namespaces { if !target.namespaces.contains(namespace) { target.namespaces.push(namespace.clone()); } }
     let expr_offset = target.exprs.len();
     let mut remap = Remap {
         map_expr: |id: ExprId| ExprId(id.0 + expr_offset),

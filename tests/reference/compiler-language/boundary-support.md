@@ -51,8 +51,10 @@ both checked reference launchers:
   `local_runtime` instead executes compile-time source expansion, original
   `&form`, expression `&env`, and multiple/variadic macro methods from a real
   namespace fixture. Separate hashed `local_probes` require exact phase errors
-  for runtime value, `apply` target and Var uses. Local declarations emit no
-  application macro function or Var. This verifies the deliberate phase change;
+  for runtime value and `apply` targets; quoted Var identity now compiles. The
+  runtime fixture checks real Var identity, `:macro` metadata and the phase error
+  on root consumption. Local declarations emit no executable application macro
+  root. This verifies the deliberate phase change;
   it does not count unchanged runtime compatibility or an upstream assertion.
 - Duplicate namespace aliases retain function identity and callable alias and
   macro imports; reserved `js` aliases preserve JavaScript interop. `.cljc`

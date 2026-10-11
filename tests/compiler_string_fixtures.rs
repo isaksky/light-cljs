@@ -110,8 +110,8 @@ fn adapted_source(id: &str, source: &str) -> String {
         .replace("3/2", "(/ 3 2)")
         .replace("1/2", "(/ 1 2)")
 }
-// Explicit host outcomes; P124 entries are evidence for the printing follow-up,
-// not native parity. UTF-16 expectations remain compiler reader literals.
+// Explicit non-printing host outcomes. Printing expectations are independently
+// verified against both pinned CLJS references; native outcomes stay separate.
 const OVERRIDES: &[(&str, &str, &str)] = &[
     (
         "sci-string-str-scalars",
@@ -122,36 +122,6 @@ const OVERRIDES: &[(&str, &str, &str)] = &[
         "sci-string-str-collections",
         r#"[:returned "[\"x\" \"\\n\" nil](1 2){:a \"x\"}#{:x}"]"#,
         "JS character representation",
-    ),
-    (
-        "sci-string-pr-scalars",
-        r#"[:returned "nil true false 12 -3 0.5 :x n/x"]"#,
-        "JS ratio representation",
-    ),
-    (
-        "sci-string-pr-characters",
-        r#"[:returned "\"a\" \" \" \"\\n\" \"\\t\" \"\\r\" \"\\b\" \"\\f\" \"λ\""]"#,
-        "JS character representation",
-    ),
-    (
-        "sci-string-pr-collections",
-        r#"[:returned "[] () {} #{} [1 \"x\" \"a\" nil] (1 2) {:a 1, :b 2} #{:x}"]"#,
-        "JS character representation",
-    ),
-    (
-        "sci-string-pr-length-zero",
-        r#"[:returned "[...] [] (...) () {:a 1} {} #{1} #{}"]"#,
-        "P124 maps/sets ignore length",
-    ),
-    (
-        "sci-string-pr-length-one",
-        r#"[:returned "[1 ...] {:a 1, :b 2} (1 ...)"]"#,
-        "P124 maps ignore length",
-    ),
-    (
-        "sci-string-pr-length-negative",
-        r#"[:returned "[...]"]"#,
-        "P124 negative print length",
     ),
     (
         "sci-string-name-type",
@@ -224,61 +194,6 @@ const OVERRIDES: &[(&str, &str, &str)] = &[
         "JS documented non-nil escape result",
     ),
     (
-        "sci-string-pr-length-false",
-        r#"[:returned "[...]"]"#,
-        "P124 false print length",
-    ),
-    (
-        "sci-string-pr-length-double-fraction",
-        r#"[:returned "[1 2 ...]"]"#,
-        "P124 fractional print length",
-    ),
-    (
-        "sci-string-pr-length-ratio-fraction",
-        r#"[:returned "[1 2 ...]"]"#,
-        "P124 fractional print length",
-    ),
-    (
-        "sci-string-pr-length-negative-fraction",
-        r#"[:returned "[...]"]"#,
-        "P124 negative print length",
-    ),
-    (
-        "sci-string-pr-length-nan",
-        r#"[:returned "[...]"]"#,
-        "P124 NaN print length",
-    ),
-    (
-        "sci-string-pr-length-negative-infinity",
-        r#"[:returned "[...]"]"#,
-        "P124 negative print length",
-    ),
-    (
-        "sci-string-pr-length-true-error",
-        r#"[:returned "[1 ...]"]"#,
-        "JS boolean print length conversion",
-    ),
-    (
-        "sci-string-pr-level-false",
-        r##"[:returned "#"]"##,
-        "JS boolean print level conversion",
-    ),
-    (
-        "sci-string-pr-level-double-fraction",
-        r#"[:returned "[1 [2 #]]"]"#,
-        "P124 fractional print level",
-    ),
-    (
-        "sci-string-pr-level-ratio-fraction",
-        r#"[:returned "[1 [2 #]]"]"#,
-        "P124 fractional print level",
-    ),
-    (
-        "sci-string-pr-level-true-error",
-        r#"[:returned "[1 #]"]"#,
-        "JS boolean print level conversion",
-    ),
-    (
         "sci-string-index-character-wrap",
         "[:returned [nil 0 nil 0]]",
         "JS index conversion without int32 narrowing",
@@ -304,24 +219,23 @@ const OVERRIDES: &[(&str, &str, &str)] = &[
         "JS substring swaps reversed endpoints",
     ),
 ];
-const DEFERRED_PRINT_META: &[&str] = &[
-    "sci-string-str-ignores-bindings",
-    "sci-string-pr-meta-enabled",
-    "sci-string-pr-meta-tag",
-    "sci-string-pr-meta-unreadable",
-    "sci-string-pr-tag-nil",
-    "sci-string-pr-tag-false",
-    "sci-string-pr-tag-true",
-    "sci-string-pr-tag-keyword",
-    "sci-string-pr-tag-integer",
-    "sci-string-pr-tag-string",
-    "sci-string-pr-meta-level-zero",
-    "sci-string-pr-meta-level-one",
-    "sci-string-pr-meta-level-two",
-    "sci-string-pr-meta-length-zero",
-    "sci-string-pr-meta-length-one",
-];
+fn printing_expected(id: &str) -> Option<(&'static str, &'static str)> {
+    include_str!("fixtures/compiler-native-printing.tsv")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?;
+            let source = fields.next()?;
+            let expected = fields.next()?;
+            assert!(fields.next().is_none(), "invalid printing fixture {name}");
+            (name == id).then_some((source, expected))
+        })
+}
 fn expected(id: &str, outcome: &native::Outcome) -> String {
+    if let Some((_, expected)) = printing_expected(id) {
+        return expected.into();
+    }
     if let Some((_, expected, _)) = OVERRIDES.iter().find(|(name, _, _)| *name == id) {
         return (*expected).into();
     }
@@ -353,7 +267,7 @@ fn node(script: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 #[test]
-fn all_131_native_string_bodies_retain_executed_and_deferred_evidence() {
+fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     let cases = native::cases(include_str!("fixtures/sci-outcomes.tsv")).unwrap();
     let cases = cases
         .iter()
@@ -364,7 +278,7 @@ fn all_131_native_string_bodies_retain_executed_and_deferred_evidence() {
     let mut failures = Vec::new();
     let mut scripts = Vec::new();
     let mut ids = Vec::new();
-    let mut deferred_compile = Vec::new();
+    let mut printing_bodies = 0;
     for case in cases {
         assert!(
             case.stdout.is_empty() && case.stderr.is_empty(),
@@ -393,16 +307,9 @@ fn all_131_native_string_bodies_retain_executed_and_deferred_evidence() {
             "(ns user (:require [clojure.string :as s] [clojure.string :as string])) {repeated_require} (def effects (atom [])) (defn observe [x] (swap! effects conj x) x) (def actual (try [:returned (do {body})] (catch :default e [:error]))) #js [(= actual {}) (= @effects {effects}) (pr-str actual) (pr-str @effects)]",
             expected(case.id, &case.outcome)
         );
-        if DEFERRED_PRINT_META.contains(&case.id) {
-            assert!(case.source.contains("*print-meta*"), "{}", case.id);
-            let error = sources.compile(&source).unwrap_err();
-            assert!(
-                error.message.contains("unresolved symbol: *print-meta*"),
-                "{}: {error}",
-                case.id
-            );
-            deferred_compile.push(case.id);
-            continue;
+        if let Some((canonical_source, _)) = printing_expected(case.id) {
+            assert_eq!(body, canonical_source, "complete printing body {}", case.id);
+            printing_bodies += 1;
         }
         let javascript = match sources.compile(&source) {
             Ok(js) => js,
@@ -438,10 +345,9 @@ fn all_131_native_string_bodies_retain_executed_and_deferred_evidence() {
         "native string migration differences:\n{}",
         failures.join("\n")
     );
-    assert_eq!(ids.len(), 116);
-    assert_eq!(deferred_compile.len(), 15);
-    assert_eq!(ids.len() + deferred_compile.len(), 131);
-    assert_eq!(OVERRIDES.len(), 38);
+    assert_eq!(ids.len(), 131);
+    assert_eq!(printing_bodies, 58);
+    assert_eq!(OVERRIDES.len(), 21);
     for (id, _, reason) in OVERRIDES {
         assert!(
             ids.iter().any(|(native_id, _)| native_id == id),
@@ -449,10 +355,42 @@ fn all_131_native_string_bodies_retain_executed_and_deferred_evidence() {
         );
     }
     println!(
-        "Native string evidence: {} executed; {} deferred print-meta compile rows",
+        "Native string evidence: {} executed; {} canonical printing bodies",
         ids.len(),
-        deferred_compile.len()
+        printing_bodies
     );
+}
+
+#[test]
+fn native_printing_sources_and_canonical_expectations_preserve_provenance() {
+    let output = Command::new("python3")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-B", "tests/reference/compiler-native-printing.py"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "requires Clojure CLI, Java, Node, and both pinned CLJS references"]
+fn all_58_native_printing_bodies_match_both_pinned_cljs_references() {
+    let output = Command::new("python3")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-B", "tests/reference/compiler-native-printing.py", "--run"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
 }
 
 #[test]

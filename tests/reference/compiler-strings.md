@@ -97,17 +97,31 @@ JavaScript's own zero-width matching rules.
 rows from `tests/fixtures/sci-outcomes.tsv`, the exact filter used by
 `tests/interpreter_strings.rs`. It retains the original ID, source, native
 outcome, and effect trace. Expected strings are constructed as explicit
-`\uNNNN` units, preserving lone surrogates. The test emits 116 bodies and checks
+`\uNNNN` units, preserving lone surrogates. The test emits all 131 bodies and checks
 returned values (or a caught failure boundary) and ordered effects in both
 QuickJS and Node. Native exception phase/category distinctions are not equated
 with JavaScript Error subclasses.
 
-The other 15 source bodies contain `*print-meta*`, which is not in the executable
-compiler core yet. Each is retained as an asserted compiler rejection naming
-that unresolved symbol. These are concrete deferred printing evidence for
-Pellet124; this suite does not claim native parity for them. Other known
-print-length/level differences execute in both engines with explicit current
-compiler outcomes, also identified as deferred Pellet124 evidence below.
+The 15 source bodies containing `*print-meta*` now execute in both engines.
+`tests/fixtures/compiler-native-printing.tsv` records all 58 complete printing
+bodies and explicit canonical ClojureScript outcomes; the historical native
+outcomes remain separately recorded in `sci-outcomes.tsv`. Only ratio reader
+literals are adapted to numeric division. Each migrated body is compared with
+its exact saved source before execution. Metadata, bounded maps/sets, fractional
+and negative limits, readability, and lazy printing effects all use the outcomes
+observed independently from both pinned references. There are no deferred
+metadata compiler rejections or provisional printing overrides.
+
+Canonical metadata prints the complete map, including `:tag`; it remains visible
+when `*print-readably*` is false. Metadata itself respects print level and length.
+Collection `str`/`toString` uses the direct writer protocol and omits root metadata,
+while still honoring level and length. Thus the retained native fixture named
+`str-ignores-bindings` returns `"#"` in ClojureScript under its level-zero binding.
+Negative, fractional, false, and NaN print lengths do not reach the exact numeric
+zero termination condition; they print the full collection. Boolean true prints
+one item. Print levels use decrement/comparison, so false hides a collection and
+fractional levels can stop between integral depths. These are explicit host
+contracts, separate from the native interpreter's historical expectations.
 
 The source adapters are narrow and explicit:
 
@@ -153,12 +167,6 @@ expectation and reason live beside the executable test.
 | --- | --- |
 | `sci-string-str-scalars` | JS ratio/character representation |
 | `sci-string-str-collections` | JS character representation |
-| `sci-string-pr-scalars` | JS ratio representation |
-| `sci-string-pr-characters` | JS character representation |
-| `sci-string-pr-collections` | JS character representation |
-| `sci-string-pr-length-zero` | P124 maps/sets ignore length |
-| `sci-string-pr-length-one` | P124 maps ignore length |
-| `sci-string-pr-length-negative` | P124 negative print length |
 | `sci-string-name-type` | JS character/string identity |
 | `sci-string-keyword-split` | JS pinned keyword split |
 | `sci-string-keyword-type` | JS keyword argument conversion |
@@ -173,24 +181,14 @@ expectation and reason live beside the executable test.
 | `sci-string-replace-char-type` | JS character/string identity |
 | `sci-string-replace-string-type` | JS character/string identity |
 | `sci-string-escape-map` | JS documented non-nil escape result |
-| `sci-string-pr-length-false` | P124 false print length |
-| `sci-string-pr-length-double-fraction` | P124 fractional print length |
-| `sci-string-pr-length-ratio-fraction` | P124 fractional print length |
-| `sci-string-pr-length-negative-fraction` | P124 negative print length |
-| `sci-string-pr-length-nan` | P124 NaN print length |
-| `sci-string-pr-length-negative-infinity` | P124 negative print length |
-| `sci-string-pr-length-true-error` | JS boolean print length conversion |
-| `sci-string-pr-level-false` | JS boolean print level conversion |
-| `sci-string-pr-level-double-fraction` | P124 fractional print level |
-| `sci-string-pr-level-ratio-fraction` | P124 fractional print level |
-| `sci-string-pr-level-true-error` | JS boolean print level conversion |
 | `sci-string-index-character-wrap` | JS index conversion without int32 narrowing |
 | `sci-string-index-empty-wrap` | JS index conversion without int32 narrowing |
 | `sci-string-subs-negative` | JS substring clamping |
 | `sci-string-subs-too-long` | JS substring clamping |
 | `sci-string-subs-reversed` | JS substring swaps reversed endpoints |
 
-The 15 deferred unresolved `*print-meta*` rows are:
+The 15 formerly deferred `*print-meta*` rows now execute with independently
+verified canonical expectations:
 
 - `sci-string-str-ignores-bindings`
 - `sci-string-pr-meta-enabled`
@@ -207,6 +205,14 @@ The 15 deferred unresolved `*print-meta*` rows are:
 - `sci-string-pr-meta-level-two`
 - `sci-string-pr-meta-length-zero`
 - `sci-string-pr-meta-length-one`
+
+The provenance check in `tests/reference/compiler-native-printing.py` verifies
+all 58 original/adapted body hashes, expectation hashes, and the two pinned
+reference identities. Its `--run` mode uses `tests/reference/execution.clj` to
+compile every complete body and compare its returned printing outcome and
+ordered effects against the saved expectations. Both references agree on all
+58 bodies, including the two lazy realization callbacks. The actual observations
+are retained under `/tmp/light-cljs-124-native-printing-references`.
 
 ## Executed pinned references
 
@@ -239,6 +245,8 @@ Commands executed:
 ```sh
 cargo test --test compiler_string_fixtures --test compiler_strings -- --nocapture
 cargo test --test compiler_string_fixtures full_upstream_bodies_pass_both_pinned_cljs_references -- --ignored --nocapture
+cargo test --test compiler_string_fixtures all_58_native_printing_bodies_match_both_pinned_cljs_references -- --ignored --nocapture
+python3 -B tests/reference/compiler-native-printing.py
 ```
 
 The ignored reference check invokes `tests/reference/execution.clj` in program

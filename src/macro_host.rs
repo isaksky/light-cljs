@@ -695,6 +695,19 @@ impl MacroHost {
         }
         Ok(expanded)
     }
+    /// Macro identity/metadata is source reflection; its executable closure remains private.
+    pub(crate) fn reflected_macro(&self, caller: &str, requested: &str) -> Option<(String, String, Option<crate::compiler_data::Datum>)> {
+        if let Some(key) = self.source_macro_key(caller, requested)
+            && let Some(declaration) = self.javascript_macros.get(&key) {
+            let (namespace, name) = key.split_once('/')?;
+            return Some((namespace.into(), name.into(), declaration.metadata.clone()));
+        }
+        let (namespace, name) = requested.split_once('/').unwrap_or(("cljs.core",requested));
+        if matches!(namespace, "cljs.core" | "clojure.core") && !self.has_source_value(caller, requested) && crate::CoreFnId::resolve(name).is_none() && (core_macro(name) || is_definition_macro(namespace, name)) {
+            return Some(("cljs.core".into(), name.into(), None));
+        }
+        None
+    }
     fn expand_namespace_reflection(
         &self,
         form: &Form,
@@ -702,7 +715,7 @@ impl MacroHost {
     ) -> Result<Option<Form>, String> {
         let operation = String::from_utf16_lossy(name.name());
         let operation = operation.strip_prefix("compiler-").unwrap_or(&operation);
-        if !matches!(operation, "ns-publics" | "ns-interns" | "ns-imports") {
+        if !matches!(operation, "ns-publics" | "ns-interns" | "ns-imports" | "ns-refers") {
             return Ok(None);
         }
         let run = || -> Result<_, Box<dyn std::error::Error>> {
@@ -725,7 +738,9 @@ impl MacroHost {
                 unreachable!()
             };
             let namespace = String::from_utf16(namespace.name())?;
-            let mut declarations = if operation == "ns-imports" {
+            let mut declarations = if operation == "ns-refers" {
+                self.reader_refers(&namespace).into_iter().map(|(local, ns, original)| (local, format!("{ns}/{original}"))).collect()
+            } else if operation == "ns-imports" {
                 self.namespace_imports
                     .get(&namespace)
                     .cloned()
@@ -739,7 +754,17 @@ impl MacroHost {
                     .map(|(local, _)| (local.clone(), format!("{namespace}/{local}")))
                     .collect()
             };
+            if matches!(operation, "ns-interns" | "ns-publics") {
+                if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
+                    declarations.extend(crate::compiler_reader::core_public_bindings().filter(|(local, _)| crate::CoreFnId::resolve(local).is_some() || crate::compiler_names::core_macro(local) || crate::compiler_names::is_definition_macro("cljs.core", local)).map(|(local, _)| (local.into(), format!("cljs.core/{local}"))));
+                }
+                declarations.extend(self.javascript_macros.keys().filter_map(|key| {
+                    let (ns, local) = key.split_once('/')?;
+                    (ns == namespace && (operation == "ns-interns" || !self.source_binding_private(ns, local))).then(|| (local.into(), key.clone()))
+                }));
+            }
             declarations.sort();
+            declarations.dedup();
             let c = crate::compiler_data::DataBuilder;
             let symbol = |s: &str| c.symbol(Name::new(None, s));
             let mut entries = Vec::new();
@@ -756,6 +781,18 @@ impl MacroHost {
             Ok(Form::from_expansion(c.map(&entries)?, form, name.clone()))
         };
         run().map(Some).map_err(|e| e.to_string())
+    }
+    pub(crate) fn register_macro_view(&self, view: &mut crate::compiler_reader::NamespaceView) {
+        let mut names = self.javascript_macros.keys().collect::<Vec<_>>();
+        names.sort();
+        for (index, key) in names.into_iter().enumerate() {
+            let (namespace, local) = key.split_once('/').unwrap();
+            let name = Name::new(Some(namespace), local);
+            let binding = crate::compiler_reader::ResolvedBinding { id: crate::compiler_reader::BindingId(usize::MAX / 2 - index), kind: crate::compiler_reader::BindingKind::Macro, name: name.clone() };
+            view.bindings.insert(name.clone(), binding.clone());
+            if view.namespace == Name::new(None, namespace) { view.bindings.insert(Name::new(None, local), binding.clone()); }
+            for (local, target) in &view.refers { if target == &name { view.bindings.insert(local.clone(), binding.clone()); } }
+        }
     }
     pub(crate) fn reader_refers(&self, namespace: &str) -> Vec<(String, String, String)> {
         let mut names = self

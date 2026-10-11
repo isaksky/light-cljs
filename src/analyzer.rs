@@ -31,6 +31,36 @@ pub struct NamedLiteral {
 /// The finite executable JavaScript core; independent of interpreter Vars.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CoreFnId {
+    ExecTapFn,
+    NamespaceClass,
+    CreateNs,
+    FindNs,
+    NsName,
+    TheNs,
+    AllNs,
+    CurrentNs,
+    Assertions,
+    CompilerMacroVar,
+    SystemTime,
+    AddTap,
+    RemoveTap,
+    TapGreater,
+    LoadFile,
+    PrintMeta,
+    PrintDup,
+    FlushOnNewline,
+    SetPrintFn,
+    SetPrintErrFn,
+    StringPrint,
+    Flush,
+    PrStrWithOpts,
+    PrnStrWithOpts,
+    PrSequentialWriter,
+    PrSeqWriter,
+    PrintMetaQ,
+    EnableConsolePrint,
+    PrintFnBodies,
+
     MultiFn,
     IMultiFn,
     MakeHierarchy,
@@ -1307,6 +1337,35 @@ impl CoreFnId {
             "eval" => Self::Eval,
             "macroexpand" => Self::Macroexpand,
             "macroexpand-1" => Self::Macroexpand1,
+            "Namespace" => Self::NamespaceClass,
+            "create-ns" => Self::CreateNs,
+            "find-ns" => Self::FindNs,
+            "ns-name" => Self::NsName,
+            "the-ns" => Self::TheNs,
+            "all-ns" => Self::AllNs,
+            "*ns*" => Self::CurrentNs,
+            "*assert*" => Self::Assertions,
+            "compiler-macro-var*" => Self::CompilerMacroVar,
+            "*exec-tap-fn*" => Self::ExecTapFn,
+            "system-time" => Self::SystemTime,
+            "add-tap" => Self::AddTap,
+            "remove-tap" => Self::RemoveTap,
+            "tap>" => Self::TapGreater,
+            "load-file" => Self::LoadFile,
+            "*print-meta*" => Self::PrintMeta,
+            "*print-dup*" => Self::PrintDup,
+            "*flush-on-newline*" => Self::FlushOnNewline,
+            "set-print-fn!" => Self::SetPrintFn,
+            "set-print-err-fn!" => Self::SetPrintErrFn,
+            "string-print" => Self::StringPrint,
+            "flush" => Self::Flush,
+            "pr-str-with-opts" => Self::PrStrWithOpts,
+            "prn-str-with-opts" => Self::PrnStrWithOpts,
+            "pr-sequential-writer" => Self::PrSequentialWriter,
+            "pr-seq-writer" => Self::PrSeqWriter,
+            "print-meta?" => Self::PrintMetaQ,
+            "enable-console-print!" => Self::EnableConsolePrint,
+            "*print-fn-bodies*" => Self::PrintFnBodies,
             "array-map" => Self::ArrayMap,
             _ => return None,
         })
@@ -1316,6 +1375,10 @@ impl CoreFnId {
     // Saved function values still use the ordinary permissive runtime ABI.
     fn accepts_direct_arity(self, arity: usize) -> bool {
         match self {
+            Self::SystemTime | Self::AllNs | Self::Flush | Self::EnableConsolePrint => arity == 0,
+            Self::FindNs | Self::NsName | Self::TheNs | Self::AddTap | Self::RemoveTap | Self::TapGreater | Self::LoadFile | Self::SetPrintFn | Self::SetPrintErrFn | Self::StringPrint => arity == 1,
+            Self::CreateNs => matches!(arity, 1 | 2),
+            Self::NamespaceClass | Self::CompilerMacroVar => arity == 2,
             Self::Gensym => arity <= 1,
             Self::Eval | Self::Macroexpand | Self::Macroexpand1 => arity == 1,
             Self::AGet => arity >= 2,
@@ -1405,6 +1468,35 @@ impl CoreFnId {
 
             Self::Gensym => "gensym",
             Self::CommandLineArgs => "commandLineArgs",
+            Self::NamespaceClass => "Namespace",
+            Self::CreateNs => "createNs",
+            Self::FindNs => "findNs",
+            Self::NsName => "nsName",
+            Self::TheNs => "theNs",
+            Self::AllNs => "allNs",
+            Self::CurrentNs => "currentNs",
+            Self::Assertions => "assertions",
+            Self::CompilerMacroVar => "compilerMacroVar",
+            Self::ExecTapFn => "execTapFn",
+            Self::SystemTime => "systemTime",
+            Self::AddTap => "addTap",
+            Self::RemoveTap => "removeTap",
+            Self::TapGreater => "tapGreater",
+            Self::LoadFile => "loadFile",
+            Self::PrintMeta => "printMeta",
+            Self::PrintDup => "printDup",
+            Self::FlushOnNewline => "flushOnNewline",
+            Self::SetPrintFn => "setPrintFn",
+            Self::SetPrintErrFn => "setPrintErrFn",
+            Self::StringPrint => "stringPrint",
+            Self::Flush => "flush",
+            Self::PrStrWithOpts => "prStrWithOpts",
+            Self::PrnStrWithOpts => "prnStrWithOpts",
+            Self::PrSequentialWriter => "prSequentialWriter",
+            Self::PrSeqWriter => "prSeqWriter",
+            Self::PrintMetaQ => "printMetaQ",
+            Self::EnableConsolePrint => "enableConsolePrint",
+            Self::PrintFnBodies => "printFnBodies",
             Self::PrintErrFn => "printErrFn",
             Self::ReplOne => "replOne",
             Self::ReplTwo => "replTwo",
@@ -2317,6 +2409,8 @@ pub struct CompilationUse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
+    /// Source namespaces present in this unit, including namespaces without Vars.
+    pub namespaces: Vec<String>,
     pub compilation_uses: Vec<CompilationUse>,
     pub exprs: Vec<Expr>,
     pub locals: Vec<LocalBinding>,
@@ -2484,6 +2578,7 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
 
 fn empty_program() -> Program {
     Program {
+        namespaces: Vec::new(),
         compilation_uses: Vec::new(),
         exprs: Vec::new(),
         locals: Vec::new(),
@@ -2679,6 +2774,7 @@ fn analyze_input_state(
         analyzer.source_index = snapshot.source_index;
         analyzer.definition_name = snapshot.definition_name.clone();
     }
+    if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) { analyzer.program.namespaces.push(namespace.into()); }
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
     }
@@ -2824,6 +2920,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
         roots.push(root);
         analyzer.drain_deferred().map_err(|e| (source_index, e))?;
         analyzer.collect_expression_warnings();
+        if !analyzer.program.namespaces.iter().any(|ns| ns == input.name) { analyzer.program.namespaces.push(input.name.into()); }
         program = analyzer.program;
         globals = analyzer.globals;
     }
@@ -5054,6 +5151,18 @@ impl Analyzer<'_> {
             ));
         }
         let name = self.spelling(args[0]).to_owned();
+        if let Some((namespace, local, metadata)) = self.macro_host.reflected_macro(self.namespace, &name) {
+            let symbol = self.data_source(&format!("{namespace}/{local}"))?;
+            let c = crate::compiler_data::DataBuilder;
+            let metadata = metadata.unwrap_or_else(|| c.map(&[(c.keyword(crate::compiler_data::Name::new(None, "macro")), c.boolean(true))]).unwrap());
+            let quoted = c.list(&[c.symbol(crate::compiler_data::Name::new(None, "quote")), metadata]).unwrap();
+            let original = self.compiler_read_form(id).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+            let expanded = Form::from_expansion(quoted, &original, crate::compiler_data::Name::new(None, "var"));
+            let node = self.import_form(&expanded)?;
+            let metadata = self.non_tail_form(node, ExprContext::Value)?;
+            let callee = self.push(ExprKind::CoreFn(CoreFnId::CompilerMacroVar), self.syntax.nodes[id.0].span.clone(), ExprContext::Value);
+            return Ok(self.push(ExprKind::Call { callee, args: vec![symbol, metadata] }, self.syntax.nodes[id.0].span.clone(), context));
+        }
         let locals = std::mem::take(&mut self.env);
         let previous_var = self.resolving_var;
         self.resolving_var = true;
@@ -5178,6 +5287,7 @@ impl Analyzer<'_> {
             ));
         };
         let name = self.spelling(symbol).to_owned();
+        if self.macro_host.reflected_macro(self.namespace, &name).is_some() { return self.var_form(id, &[symbol], context); }
         let resolved = self.existence_target(symbol)?;
         let value = if let ExprKind::Local(local) = resolved {
             let (line, column) = crate::LineIndex::new(self.source)
@@ -7206,6 +7316,7 @@ impl Analyzer<'_> {
                     | "ns-publics"
                     | "ns-interns"
                     | "ns-imports"
+                    | "ns-refers"
             )
         }) {
             if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
@@ -7404,6 +7515,7 @@ impl Analyzer<'_> {
             .iter()
             .map(|n| crate::compiler_data::Name::new(None, n))
             .collect();
+        self.macro_host.register_macro_view(&mut view);
         let binding_kinds = self
             .program
             .exprs

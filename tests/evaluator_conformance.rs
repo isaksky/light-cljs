@@ -32,8 +32,17 @@ fn adapted_source(source: &str) -> String {
 #[ignore = "explicit migration audit; prints observations, never updates expectations"]
 fn audit_historical_corpus_with_compiler_evaluator() {
     let cases = protocol::cases(CORPUS).unwrap();
+    let selected_ids = std::env::var("LIGHT_CLJS_SCI_AUDIT_IDS")
+        .ok()
+        .map(|ids| ids.split(',').map(str::to_owned).collect::<HashSet<_>>());
     let mut report = String::new();
     for case in cases {
+        if selected_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(case.id))
+        {
+            continue;
+        }
         let source = adapted_source(case.source);
         let actual = evaluator::run(case.id, &source, case.profile)
             .unwrap_or_else(|error| panic!("{}: {error}", case.id));

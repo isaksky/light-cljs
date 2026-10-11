@@ -1972,11 +1972,7 @@ mod same_file_javascript_macros {
         for use_form in [
             "m",
             "(apply m [])",
-            "(var m)",
-            "#'m",
-            "(resolve 'm)",
             "@m",
-            "@#'m",
             "(set! m 1)",
         ] {
             let source = format!("(defmacro m [] 42)\n{use_form}");
@@ -1993,6 +1989,14 @@ mod same_file_javascript_macros {
                 error.span
             );
         }
+        // Source reflection exposes macro identity and metadata without a root.
+        // Executing that Var still reports the macro/application phase error.
+        assert_eq!(result(&compile(r#"(defmacro m [] 42)
+          (and (var? (var m)) (= #'m (resolve 'm)) (:macro (meta #'m))
+               (try @#'m (catch :default e
+                 (boolean (re-find #"compile-time macro" (.-message e)))))
+               (try (#'m) (catch :default e
+                 (boolean (re-find #"compile-time macro" (.-message e))))))"#).unwrap()), "true\n");
     }
 
     #[test]
@@ -2797,13 +2801,18 @@ fn imported_macro_values_and_private_macros_remain_phase_errors() {
     let s = Sources::new();
     let mut h = MacroHost::new();
     s.write("tools.cljs", "(ns tools) (defmacro ^:private secret [] 42) (defmacro public [] (secret))");
-    for expression in ["secret", "(t/secret)", "public", "t/public", "(apply public [])", "#'public", "(resolve 'public)"] {
+    for expression in ["secret", "(t/secret)", "public", "t/public", "(apply public [])"] {
         s.write("app.cljs", &format!("(ns app (:require [tools :as t :refer [public]])) {expression}"));
         let e = s.compile_host("app", &mut h).unwrap_err();
         assert!(e.message.contains("private") || e.message.contains("macro") || e.message.contains("unresolved"), "{expression}: {e}");
     }
     s.write("app.cljs", "(ns app (:require [tools :refer [secret]])) 0");
     assert!(s.compile_host("app", &mut h).unwrap_err().message.contains("private"));
+    s.write("app.cljs", r#"(ns app (:require [tools :as t :refer [public]]))
+      (and (var? #'public) (= #'public (resolve 'public)) (:macro (meta #'t/public))
+           (try (#'public) (catch :default e
+             (boolean (re-find #"compile-time macro" (.-message e))))))"#);
+    assert_eq!(result(&s.compile_host("app", &mut h).unwrap()), "true\n");
     s.write("app.cljs", "(ns app (:require [tools :as t :refer [public]])) [(public) (t/public)]");
     assert_eq!(execute(&format!("console.log(String({}));", s.compile_host("app", &mut h).unwrap())), "[42 42]\n");
 }
