@@ -4,7 +4,7 @@
 `hashing_test.cljs`, `hash_map_test.cljs`, `hash_set_test.cljs`,
 `set_equiv_test.cljs`, `metadata_test.cljc`, `map_entry_test.cljs` and
 `var_test.cljs` at checkout `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`.
-The TSV records 418 ordered boolean observations and preserves every helper declaration, setup binding, loop and collection
+The upstream TSV records 418 ordered boolean observations and preserves every helper declaration, setup binding, loop and collection
 size, including the 1,000-entry hash map, 100-element metadata collections and
 all 55 map-entry interface assertions repeated over three entry sources.
 `compiler-equality-provenance.json` pins original complete body and helper hashes.
@@ -43,6 +43,47 @@ engines. No compiler acceptance alone establishes execution. Run
 for the pinned release 1.12.134 and checkout oracle comparison. Both oracle
 runs passed on 2026-10-11. Ordered literal observations are stored in the TSV;
 there is no private object serialization comparison.
+
+## Keyword map reconciliation (light-cljs-130)
+
+The local `compiler-keyword-map-keys.tsv` fixtures supplement the unchanged
+upstream-body provenance. Both Maven ClojureScript 1.12.134 and clean checkout
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` executed all four exact fixture
+sources on 2026-10-11 with the reference driver's checked analysis settings.
+Fixture SHA-256: `06bd28b5ce4116ef958f01d349effb00a02cd64d47c2750674160d455ba74f86`.
+The ignored equality oracle now runs the 22 complete upstream workflows plus
+these four contracts, comparing literal printed results from each reference.
+
+`(keyword nil "a/b")` and `(keyword "a" "b")` compare equal because their
+full spellings match, but hash to **384366870** and **1482224565** respectively.
+This is the pinned core's `Keyword/IEquiv`, `hash-keyword` and `hash-symbol`
+contract, including its unusual equal-value/different-hash edge. It must not
+be normalized by changing the namespace/name parts or by weakening hashing.
+Small literal/array maps compare without a hash guard: `{a 1 b 2}` has one
+entry, both lookups return 2, and the retained key has nil namespace and name
+`"a/b"`. Explicit `(hash-map a 1 b 2)` has two entries and returns 1 and 2.
+Association, removal, `zipmap`/`select-keys`, transient array maps and promotion at the ninth distinct
+key preserve the same representation-specific behavior. In particular, an
+array-map replacement retains the original key's hash when later promoted.
+
+Starting commit `ff3b6b3` returned `true 384366870 1482224565 2 1 2` for the
+literal-map runtime probe. Its preceding reader change renamed the macro
+regression and changed count to 2 without this executed reference contract.
+The runtime defect was hash-guarded array-map insertion/lookup; source identity
+and bridge namespace/name preservation were already correct. The regression
+is restored under its original exact name with count 1. Its ordinary macro
+imports now supply both generated keys and the generated map for all four
+contract workflows, executing literal stdout assertions in Node and QuickJS.
+The direct equality test executes the same sources in both engines. No source
+assertion is excluded and no historical upstream provenance is rewritten.
+
+Final checks: the combined macro/equality/equality-contract/transient/core-helper/
+record/execution/language suites passed 173 tests (45 optional tests ignored;
+the pinned equality oracle was executed separately and passed). Equality fixture
+reproduction, inventory/source provenance validation, and all 14 full-ledger
+regressions passed. The updated equality test-file hashes remain attached to
+their five existing phase and public-obligation witnesses; the complete original
+upstream bodies and their hashes are unchanged.
 
 The intended-language ledger gains 46 previously unmapped public assertion
 witnesses and 14 full workflow fixtures. Existing historical witnesses are

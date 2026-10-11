@@ -40,6 +40,21 @@ fn both(source: &str, expected: &str) {
 }
 
 const FIXTURES: &str = include_str!("fixtures/compiler-equality.tsv");
+const KEYWORD_MAP_FIXTURES: &str = include_str!("fixtures/compiler-keyword-map-keys.tsv");
+
+#[test]
+fn keyword_map_keys_use_canonical_equality_hashing_and_representatives() {
+    let cases: Vec<_> = KEYWORD_MAP_FIXTURES
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert_eq!(cases.len(), 4);
+    for row in cases {
+        let columns: Vec<_> = row.split('\t').collect();
+        assert_eq!(columns.len(), 3);
+        both(columns[1], columns[2]);
+    }
+}
 
 #[test]
 fn complete_upstream_equality_bodies_execute_in_both_engines() {
@@ -117,7 +132,8 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
     let checkout = std::env::var_os("LIGHT_CLJS_REFERENCE_CHECKOUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("research/clojurescript"));
-    let cases: Vec<_> = include_str!("fixtures/compiler-equality.tsv")
+    let fixtures = format!("{FIXTURES}\n{KEYWORD_MAP_FIXTURES}");
+    let cases: Vec<_> = fixtures
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| line.split('\t').collect::<Vec<_>>())
@@ -145,6 +161,7 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
                 .as_nanos()
         ));
         fs::create_dir_all(&output_dir).unwrap();
+        fs::write(output_dir.join("cases.tsv"), &fixtures).unwrap();
         let mut child =
             Command::new(std::env::var_os("CLOJURE").unwrap_or_else(|| "clojure".into()))
                 .current_dir(&root)
@@ -160,7 +177,7 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
                 ])
                 .arg(&output_dir)
                 .arg("cases")
-                .arg(root.join("tests/fixtures/compiler-equality.tsv"))
+                .arg(output_dir.join("cases.tsv"))
                 .stdin(Stdio::null())
                 .stdout(fs::File::create(output_dir.join("build.stdout")).unwrap())
                 .stderr(fs::File::create(output_dir.join("build.stderr")).unwrap())

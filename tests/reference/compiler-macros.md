@@ -152,8 +152,12 @@ API or its dialect:
 - Returned UTF-16 keyword/symbol names and distinct keyword name parts are now
   built with compiled `keyword`/`symbol` calls, replacing native callbacks while
   retaining lone-surrogate preservation and executable-symbol rejection. Returned
-  individual keywords preserve distinct namespace/name parts; a compiled map
-  producer applies canonical JavaScript spelling equality before returning it.
+  individual keywords preserve distinct namespace/name parts. Small literal map
+  producers compare keys by canonical spelling equality and retain the first
+  representative with the last value. Explicit hash maps also check hashes;
+  equal spellings with different namespace/name hashes can remain separate.
+  Executed release/checkout evidence and both application engines are recorded
+  in [the keyword map reconciliation](compiler-equality.md#keyword-map-reconciliation-light-cljs-130).
 - Macro execution is bounded by the JavaScript evaluator's poll budget, then
   checked for recovery with the same host. Expansion depth/count/generated-node
   limits remain separately asserted.

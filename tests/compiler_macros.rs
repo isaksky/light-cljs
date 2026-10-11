@@ -672,15 +672,49 @@ fn generated_maps_preserve_owned_children_order_keys_and_quoted_data() {
 }
 
 #[test]
-fn generated_map_keys_keep_reader_name_parts_through_runtime_equality() {
-    let mut h = host(r#"(ns macros)
+fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() {
+    let mut h = host(
+        r#"(ns macros)
       (defmacro map-names [] {(keyword nil "a/b") 1 (keyword "a" "b") 2})
-      (defmacro key-parts [] [(keyword nil "a/b") (keyword "a" "b")])"#, &["map-names", "key-parts"]);
+      (defmacro key-parts [] [(keyword nil "a/b") (keyword "a" "b")])"#,
+        &["map-names", "key-parts"],
+    );
     let source = "(let [[a b] (key-parts)] (js/console.log (count (map-names)) (namespace a) (name a) (namespace b) (name b)))";
     assert_eq!(
         execute(&compile_with_macros(source, &mut h).unwrap()),
-        "2 null a/b a b\n"
+        "1 null a/b a b\n"
     );
+    let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    // The exact direct-source fixtures also pass through ordinary source macro
+    // imports. Generated keys keep both sets of parts; the generated literal
+    // map keeps the first key representative and the last value.
+    for row in include_str!("fixtures/compiler-keyword-map-keys.tsv")
+        .lines()
+        .filter(|row| !row.is_empty() && !row.starts_with('#'))
+    {
+        let columns: Vec<_> = row.split('\t').collect();
+        let source = columns[1]
+            .replace(
+                "a (keyword nil \"a/b\") b (keyword \"a\" \"b\")",
+                "[a b] (key-parts)",
+            )
+            .replace("m {a 1 b 2}", "m (map-names)");
+        let js =
+            compile_with_macros(&format!("(js/console.log (pr-str {source}))"), &mut h).unwrap();
+        let expected = format!("{}\n", columns[2]);
+        assert_eq!(execute(&js), expected, "Node: {}", columns[0]);
+        let value = evaluator
+            .evaluate_js(&format!(
+                "(() => {{ let output = ''; globalThis.console = {{log: value => {{ output += value + '\\n'; }}}}; try {{ {js}; return output; }} finally {{ delete globalThis.console; }} }})()"
+            ))
+            .unwrap();
+        assert_eq!(
+            evaluator.string(value).unwrap(),
+            expected,
+            "QuickJS: {}",
+            columns[0]
+        );
+    }
 }
 
 #[test]

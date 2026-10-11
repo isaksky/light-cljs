@@ -458,7 +458,12 @@ Host objects/functions compare by identity; nil and undefined compare equal,
 although the observation protocol distinguishes them. `[]` differs from nil,
 and keywords/symbols differ from strings and from each other. Internal hashes
 are consistent across equal sequential values and nil/undefined; foreign objects
-use weak identity bookkeeping. There is no public `hash` function.
+use weak identity bookkeeping. Public `hash` follows the pinned ClojureScript
+contract. For the unusual keywords `(keyword nil "a/b")` and
+`(keyword "a" "b")`, spelling equality is true while namespace/name hashing
+differs. Small literal/array maps merge them and retain the first key with the
+last value; explicit hash maps retain both. The bridge preserves each key's
+namespace/name parts. See the [executed contract](../tests/reference/compiler-equality.md#keyword-map-reconciliation-light-cljs-130).
 
 Vector `.call` uses `nth` semantics for its first index; extra arguments evaluate
 and are ignored. Missing or out-of-range indexes throw ordinary `Error`.

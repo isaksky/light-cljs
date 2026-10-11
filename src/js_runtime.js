@@ -709,9 +709,10 @@
     if (value == null || maps.has(value)) {
       const entries = value == null ? [] : maps.get(value).slice();
       putCollectionEntry(value, entries, key, item);
+      let result = updatedMap(value, entries);
       for (let i = 0; i < pairs.length; i += 2)
-        putCollectionEntry(value, entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
-      return updatedMap(value, entries);
+        result = assoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+      return result;
     }
     const original = vectors.get(value);
     if (!original) throw new Error("assoc not supported on this type");
@@ -756,23 +757,26 @@
     return value;
   }
 
-  function entryIndex(entries, key, keyHash) {
-    return entries.findIndex(entry => entry.hash === keyHash && equalPair(entry.key, key));
+  function entryIndex(entries, key, keyHash, kind) {
+    // Canonical array maps compare keys without a hash guard. Keyword equality uses
+    // fqn, while hashing uses namespace/name; unusual equal keywords can have
+    // different hashes and therefore remain distinct in hash maps.
+    return entries.findIndex(entry => (kind === "array-map" || entry.hash === keyHash) && equalPair(entry.key, key));
   }
 
   // Builders mutate only fresh unpublished arrays. Entry cells and retained
   // equivalent keys are shared by subsequent immutable versions.
-  function putEntry(entries, key, value) {
-    const keyHash = hash(key), index = entryIndex(entries, key, keyHash);
-    const entry = Object.freeze({key: index < 0 ? key : entries[index].key, value, hash: keyHash});
+  function putEntry(entries, key, value, kind) {
+    const keyHash = hash(key), index = entryIndex(entries, key, keyHash, kind);
+    const entry = Object.freeze({key: index < 0 ? key : entries[index].key, value, hash: index < 0 ? keyHash : entries[index].hash});
     if (index < 0) entries.push(entry);
     else entries[index] = entry;
   }
 
-  function mapFromArray(pairs, kind) {
+  function mapFromArray(pairs, kind = pairs.length <= 16 ? "array-map" : "hash-map") {
     if (pairs.length % 2) throw new Error("No value supplied for key: " + str(pairs[pairs.length - 1]));
     const entries = [];
-    for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1]);
+    for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], kind);
     return makeMap(entries, kind);
   }
 
@@ -801,13 +805,13 @@
   function mapConj(value, member) {
     if (member == null) return value;
     if (predicates.isVector(member)) return assoc(value, core.nthProtocol(member, 0), core.nthProtocol(member, 1));
-    const entries = maps.get(value).slice();
+    let result = value;
     for (let current = seq(member); current !== null; current = next(current)) {
       const pair = first(current);
       if (!predicates.isVector(pair)) throw new Error("Map conj requires vector entries");
-      putCollectionEntry(value, entries, core.nthProtocol(pair, 0), core.nthProtocol(pair, 1));
+      result = assoc(result, core.nthProtocol(pair, 0), core.nthProtocol(pair, 1));
     }
-    return updatedMap(value, entries);
+    return result;
   }
 
   const setPrototype = Object.freeze({
@@ -925,7 +929,7 @@
     // persistence in both pinned versions. Array maps and vectors reject it.
     if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
     if (state.kind === "vector") return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
-    const index = entryIndex(state.entries, key, hash(key));
+    const index = entryIndex(state.entries, key, hash(key), state.kind === "map" ? state.mapKind : undefined);
     return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
   }
   function assocTransient(value, key, item, indexed = false) {
@@ -938,9 +942,9 @@
       else outOfBounds();
     } else {
       editableTransient(value, "assoc!");
-      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, hash(key)) < 0)
+      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, hash(key), "array-map") < 0)
         return assocTransient(makeTransient("map", state.entries.slice(), "hash-map"), key, item);
-      putEntry(state.entries, key, item);
+      putEntry(state.entries, key, item, state.mapKind);
     }
     return value;
   }
@@ -961,7 +965,7 @@
     return value;
   }
   function removeTransient(value, key, operation) {
-    const state = editableTransient(value, operation), index = entryIndex(state.entries, key, hash(key));
+    const state = editableTransient(value, operation), index = entryIndex(state.entries, key, hash(key), state.kind === "map" ? state.mapKind : undefined);
     if (index >= 0) {
       if (state.mapKind === "array-map") state.entries[index] = state.entries[state.entries.length - 1];
       state.entries.splice(state.mapKind === "array-map" ? state.entries.length - 1 : index, 1);
@@ -1269,12 +1273,12 @@
     return assoc(value, key, more == null ? updateLeaf(old) : updatePath(old, more, updateLeaf));
   }
   function selectKeys(value, keyseq) {
-    const entries = [];
+    let result = makeMap([]);
     for (let current = seq(keyseq); current != null; current = next(current)) {
       const key = first(current), item = get(value, key, missing);
-      if (item !== missing) putEntry(entries, key, item);
+      if (item !== missing) result = assoc(result, key, item);
     }
-    return withMeta(makeMap(entries), meta(value));
+    return withMeta(result, meta(value));
   }
   function mergeMaps(values, combine) {
     // `some identity` precedes reduction, including its sequence effects.
@@ -1450,14 +1454,14 @@
   function merge(...values) { return mergeMaps(fnRest(values, 0), missing); }
   function mergeWith(fn, ...values) { return mergeMaps(fnRest(values, 0), fn); }
   function zipmap(keys, values) {
-    const entries = [];
+    let result = makeMap([]);
     let ks = seq(keys), vs = seq(values);
     while (ks != null && vs != null) {
-      putEntry(entries, first(ks), first(vs));
+      result = assoc(result, first(ks), first(vs));
       ks = next(ks);
       vs = next(vs);
     }
-    return makeMap(entries);
+    return result;
   }
   function set(value) {
     if (predicates.isSet(value)) return withMeta(value, null);
@@ -2037,7 +2041,7 @@
   }
   function collectionEntryIndex(value, entries, key) {
     const comparator = sortedComparators.get(value);
-    if (!comparator) return entryIndex(entries, key, hash(key));
+    if (!comparator) return entryIndex(entries, key, hash(key), mapKinds.get(value));
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
   }
@@ -2054,7 +2058,14 @@
     const comparator = sortedComparators.get(coll);
     if (comparator) putSortedEntry(entries, key, value, comparator, member);
     else if (member) putMember(entries, key);
-    else putEntry(entries, key, value);
+    else {
+      const kind = mapKinds.get(coll);
+      // A fresh nil map starts as an array map; the ninth distinct key promotes
+      // it. Check existing keys before promotion, as canonical assoc does.
+      const array = (coll == null || kind === "array-map") &&
+        (entries.length < 8 || entryIndex(entries, key, hash(key), "array-map") >= 0);
+      putEntry(entries, key, value, array ? "array-map" : undefined);
+    }
   }
   function buildSortedMap(comparator, pairs) {
     const entries = [];
