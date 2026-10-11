@@ -131,6 +131,53 @@ nonpassing row that now matches the projection fails accounting until its
 disposition is migrated, preventing stale gap classifications from hiding new
 coverage.
 
+### Unchecked-array macro environment snapshots, 2026-10-11
+
+The broad regression at `9ed35d8` reported stale evaluator snapshots for exactly
+`sci-binding-defn-env` and `sci-binding-fn-self-env`; the diagnostic remains in
+`/tmp/light-cljs-133-all-binaries.log`, lines 317–328. An exact-source audit for
+light-cljs-136 at starting commit `0f90430` confirmed the added
+`:light-cljs/unchecked-arrays` key documented by light-cljs-132. The reviewed
+observations are retained in `/tmp/light-cljs-136-env-audit.tsv`.
+
+Only those two current evaluator key-set observations and their explanations
+changed. Their original seven SCI fields and fixture origins remain unchanged.
+Both remain `gap`, owned by light-cljs-125: SCI's flat lexical environment differs
+from the documented compiler map with `:locals` binding records. Refreshing the
+snapshot establishes reproducibility, not SCI conformance.
+
+The independent local test
+`compiler_array_settings::named_function_macro_environments_capture_boolean_array_settings`
+executes source macros in both `defn` and self-named `fn` bodies. It checks the
+exact environment keys, Boolean setting, return context, argument records and
+presence/absence of the lexical self. Default false, source-file true and reset
+false are captured during definition and observed after resetting the setting,
+in independent QuickJS and Node application heaps. The existing array-setting
+witnesses retain their original named tests with refreshed whole-file hashes;
+regenerated inventory records are not execution evidence.
+
+```sh
+LIGHT_CLJS_SCI_AUDIT_IDS=sci-binding-defn-env,sci-binding-fn-self-env \
+  cargo test --locked --test evaluator_conformance \
+  audit_historical_corpus_with_compiler_evaluator -- --ignored --exact --nocapture
+cargo test --locked --test evaluator_conformance \
+  every_historical_sci_case_has_an_executable_evaluator_disposition -- --exact --nocapture
+cargo test --locked --test compiler_array_settings --test compiler_macros \
+  --test compiler_reader --test provenance --quiet
+python3 -B tests/reference/compiler-language/extract_inventory.py --check
+python3 -B tests/reference/compiler-language/test_full_ledger.py
+```
+
+The exact-source two-case audit passed. The complete 2,475-case accounting check
+passed in 163.55 seconds, retaining 1,208 portable, 304 adapted, 877 gap and 86
+retired rows. All 125 relevant Rust tests passed (seven array-setting, 104 macro,
+12 reader and two provenance tests), as did inventory drift verification, all
+14 ledger tests, validation of all 238 current phase witnesses, Rust formatting
+and `git diff --check`. The execution logs are
+`/tmp/light-cljs-136-evaluator-conformance.log` and
+`/tmp/light-cljs-136-macro-array-suites.log`. No full repository suite or new
+upstream oracle run was performed for this snapshot reconciliation.
+
 ### Local verification, 2026-10-10
 
 The corrected harness completed the entire 2,475-row accounting check with native

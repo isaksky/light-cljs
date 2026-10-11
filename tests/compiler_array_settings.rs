@@ -95,6 +95,46 @@ fn array_setting_var_and_macro_state_execute_in_both_phases() {
 }
 
 #[test]
+fn named_function_macro_environments_capture_boolean_array_settings() {
+    let source = r#"(do
+      (defmacro inspect [self]
+        (let [locals (:locals &env)]
+          (list 'quote
+            [(:light-cljs/unchecked-arrays &env)
+             (boolean? (:light-cljs/unchecked-arrays &env))
+             (= #{:locals :context :ns :line :column
+                  :light-cljs/macros :light-cljs/unchecked-arrays}
+                (set (keys &env)))
+             (= (if self (conj '#{x y} self) '#{x y}) (set (keys locals)))
+             (= :return (:context &env))
+             (= {:name 'x :op :binding :local :arg :arg-id 0 :binding-form? true}
+                (select-keys (get locals 'x) [:name :op :local :arg-id :binding-form?]))
+             (= {:name 'y :op :binding :local :arg :arg-id 1 :binding-form? true}
+                (select-keys (get locals 'y) [:name :op :local :arg-id :binding-form?]))
+             (if self
+               (= {:name self :op :binding :local :fn}
+                  (select-keys (get locals self) [:name :op :local :arg-id :binding-form?]))
+               true)])))
+      (defn named-default [x y] (inspect nil))
+      (def self-default (fn foo [x y] (inspect foo)))
+      (set! *unchecked-arrays* true)
+      (defn named-enabled [x y] (inspect nil))
+      (def self-enabled (fn foo [x y] (inspect foo)))
+      (set! *unchecked-arrays* false)
+      (defn named-reset [x y] (inspect nil))
+      (def self-reset (fn foo [x y] (inspect foo)))
+      [(named-default 1 2) (self-default 1 2)
+       (named-enabled 1 2) (self-enabled 1 2)
+       (named-reset 1 2) (self-reset 1 2)])"#;
+    let (p, warnings) = program(source, CheckedArrays::Off);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    both(
+        &p,
+        "[[false true true true true true true true] [false true true true true true true true] [true true true true true true true true] [true true true true true true true true] [false true true true true true true true] [false true true true true true true true]]",
+    );
+}
+
+#[test]
 fn checked_array_options_follow_source_order_and_preserve_argument_effects() {
     let source = r#"(do (def effects (atom []))
       (def errors (atom []))
