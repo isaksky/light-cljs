@@ -23,7 +23,7 @@
   ([test then otherwise]
    (list 'if (list 'cljs.core/not test) then otherwise)))
 (defmacro macro-when [test & body]
-  (list 'if test (cons 'do body) nil))
+  (list 'if test (cons 'do body)))
 (defmacro macro-when-not [test & body]
   (list 'if test nil (cons 'do body)))
 

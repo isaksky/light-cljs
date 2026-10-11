@@ -126,7 +126,7 @@ fn quoted_expansion_runs_without_services_in_application_and_macro_phases() {
 }
 #[test]
 fn quoted_expansion_contract_and_dynamic_host_service_are_independent() {
-    both("[(macroexpand-1 '(unknown x)) (macroexpand '(+ 1 2)) (macroexpand-1 '()) (macroexpand '42) (macroexpand-1 '[1 2]) (macroexpand '(when true 7))]", "[(unknown x) (+ 1 2) () 42 [1 2] (if true (do 7) nil)]");
+    both("[(macroexpand-1 '(unknown x)) (macroexpand '(+ 1 2)) (macroexpand-1 '()) (macroexpand '42) (macroexpand-1 '[1 2]) (macroexpand '(when true 7))]", "[(unknown x) (+ 1 2) () 42 [1 2] (if true (do 7))]");
     both("(defmacro one [] '(two)) (defmacro two [] 42) [(macroexpand-1 '(one)) (macroexpand '(one))]", "[(two) 42]");
     both(
         "(let [macroexpand-1 (fn [x] :local)] (macroexpand-1 '(let [] 1)))",
