@@ -53,6 +53,13 @@ SPECS = [
  ('static', 'src/test/cljs/static/core_test.cljs', ['foo-test'], '(ns static.core-test)', None),
  ('tagged-runtime', 'src/test/cljs/cljs/tagged_literals_test.cljs', ['test-runtime-reader'],
   '(ns cljs.tagged-literals-test (:require [cljs.reader :as reader] [clojure.set :as set]))', None),
+ ('edn-stream', 'src/test/cljs/clojure/edn_test.cljs', ['test-read'],
+  '(ns clojure.edn-test (:require [clojure.edn :as edn] [cljs.reader :as reader] [cljs.reader :as reader-types]))',
+  '(ns clojure.edn-test (:require [clojure.edn :as edn] [cljs.reader :as reader] [cljs.tools.reader.reader-types :as reader-types]))'),
+ ('record-literals', 'src/test/cljs/data_readers_test/records.cljc',
+  ['top-level-003', 'top-level-004', 'top-level-005', 'top-level-006', 'top-level-007'],
+  '(ns data-readers-test.records)',
+  '(ns data-readers-test.records (:require-macros [data-readers-test.records]))'),
 ]
 RATIONALE = ('Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility.')
 
@@ -98,9 +105,10 @@ def generate(catalogs=False):
     for label, path, selected, namespace, reference_namespace in SPECS:
         original = pinned(path)
         original_bodies = [body for body in bodies if body['source'] == path]
-        wanted = [body for body in original_bodies if body['name'] in selected and body['form'] == 'deftest']
+        selected_form = 'assert' if label == 'record-literals' else 'deftest'
+        wanted = [body for body in original_bodies if body['name'] in selected and body['form'] == selected_form]
         assert len(wanted) == len(selected)
-        setup = [body for body in original_bodies if body['form'] not in ('ns', 'deftest')]
+        setup = [body for body in original_bodies if body['form'] not in ('ns', 'deftest', selected_form)]
         # macro_test's other macro tests have no setup forms in this .cljs file.
         forms, origins = [], []
         for body in setup + wanted:
@@ -108,10 +116,14 @@ def generate(catalogs=False):
             assert inv.digest(text.encode()) == body['source_span']['sha256']
             span = body['source_span']
             assert original.encode()[span['start_byte']:span['end_byte']].decode() == text
-            adapt = namespace_assertions if label.startswith('ns-') else residual.adapt
+            adapt = namespace_assertions if label.startswith('ns-') or label == 'edn-stream' else residual.adapt
             forms.append(adapt(text, inv.Reader(text).all()[0]))
             origins.append({'body_id': body['id'], 'source_sha256': span['sha256']})
         expression = '(do ' + ' '.join(forms[len(setup):]) + ')'
+        if label == 'record-literals':
+            # Each complete original top-level assertion must execute before
+            # the driver reports success; none is rewritten as plain data.
+            expression = '(do ' + ' '.join(forms[len(setup):]) + ' true)'
         configuration = None
         if label == 'tagged-runtime':
             # Upstream cljs.reader/add-data-readers initializes these handlers
@@ -157,6 +169,13 @@ def generate(catalogs=False):
             # alias-only context. Its test driver is declared but not invoked.
             dependencies['cljs/ns_test/foo.cljs'] = (ROOT / BASE / 'ns-foo/cljs/ns_test/foo.cljs').read_text()
             dependencies['cljs/ns_test/bar.cljs'] = pinned('src/test/cljs/cljs/ns_test/bar.cljs')
+        if label == 'record-literals':
+            # Canonical record literal reading uses the unchanged CLJC record
+            # declaration through its original self require-macros clause.
+            # This companion is reference-only; no JVM execution is supplied
+            # locally and no passing local record-reader contract is claimed.
+            completion.persist(ROOT / reference_root / 'data_readers_test/records.cljc', original)
+            reference_files['data_readers_test/records.cljc'] = inv.digest(original.encode())
         for relative, text in dependencies.items():
             completion.persist(ROOT / source_root / relative, text)
             support[source_root + '/' + relative] = inv.digest(text.encode())
@@ -169,6 +188,10 @@ def generate(catalogs=False):
             adaptation += (' Original clojure.core JVM macro namespace aliases use the corresponding cljs.core source macro namespace locally; canonical references retain clojure.core require-macros. All observed alias/refer/rename/exclude/as-alias/use clauses and the complete original + definition remain. Unused goog/cljs.analyzer imports are omitted only because these selected bodies call neither; the separate goog body remains unwitnessed. Original assertion messages evaluate eagerly, including the nested original is site in test-cljs-3399. The complete already-proven ns-test.foo helper and byte-identical ns-test.bar dependency retain their original declarations.')
         if label == 'tagged-runtime':
             adaptation += (' Original runtime-reader aliases are preserved. The exact three used handlers from the unchanged full data_readers.cljc configuration are installed through the public registry independently inside each phase; no compiled source tag or unrelated custom test handler is claimed. All four original read-string inputs and results stay unchanged.')
+        if label == 'edn-stream':
+            adaptation += (' The complete original test-reader helper and all three stream read assertions remain unchanged. Its reader-types alias selects the existing first-party cljs.reader/string-push-back-reader constructor locally; pinned references retain cljs.tools.reader.reader-types/string-push-back-reader. Both provide a real mutable pushback stream consumed by the unchanged edn/read and reader/read calls at one, two and four arguments. This explicit constructor namespace adaptation establishes the promised EDN stream operations, not general cljs.tools.reader compatibility; no stream implementation or read-string replacement is supplied by the fixture.')
+        if label == 'record-literals':
+            adaptation += (' The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.')
         provenance = {'module_source': path, 'module_sha256': inv.digest(original.encode()), 'complete_original_provenance': origins,
                       'namespace_source_sha256': next(body['source_span']['sha256'] for body in original_bodies if body['form'] == 'ns')}
         if configuration:
@@ -191,14 +214,18 @@ def generate(catalogs=False):
                               'rationale': adaptation} for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope')
         case['complete_body_phase_mappings'] = [mapping for mapping in phases if mapping['reference_fixture_id'] == identity]
         cases.append(case)
-    pending = set()
+    pending_reasons = {
+        PREFIX + 'edn-stream': 'The complete original EDN stream read body passes both checked pins. Node and QuickJS application execution and actual macro compilation fail with Invalid arity: 4 because clojure.edn/read exposes only zero, one and two arguments. All three assertions and the complete original stream helper remain intended and unmodified; no pass or boundary exclusion is claimed.',
+        PREFIX + 'record-literals': 'All five original record literal assertions and complete Foo setup are retained. No implicit record-tag constructor or JVM companion implementation is supplied locally. This source-contract candidate grants no passing assertion or phase witness; reconcile the ordinary record-reader obligation separately from the excluded JVM companion facility.',
+    }
+    pending = set(pending_reasons)
     fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Complete original namespace contexts executed in both phases; unresolved source retained in proposals.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows if row[0] not in pending)
     completion.persist(ROOT / FIXTURE, fixture)
     for row in phases:
         row['support_source_sha256'][FIXTURE] = inv.digest(fixture.encode())
     for case in cases:
         if case['id'] in pending:
-            case['unwitnessed_reason'] = 'The complete original renamed-core exists? body passes ordinary execution and both pins; actual macro forces the unavailable excluded mapv definition. No pass or boundary exclusion is claimed.'
+            case['unwitnessed_reason'] = pending_reasons[case['id']]
             case['proposed_complete_body_phase_mappings'] = case.pop('complete_body_phase_mappings')
     proposal = {'full-cases.jsonl': [case for case in cases if case['id'] not in pending],
                 'full-witnesses.jsonl': [row for row in witnesses if row['fixture_id'] not in pending],

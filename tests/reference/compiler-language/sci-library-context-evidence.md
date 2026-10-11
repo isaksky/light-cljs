@@ -38,19 +38,19 @@ failure on two Unicode fixtures without changing sources, values or contracts.
 
 ```sh
 python3 -B tests/reference/compiler-language/sci_library_context.py \
-  --write-catalog --plan tests/reference/compiler-language/sci-library-context-plan.jsonl \
   --local --references --timeout 240 \
-  --output /tmp/light-cljs-125-sci-library-context-191-95abbfd
+  --output /tmp/light-cljs-125-sci-library-context-191-a8e8a43
 python3 -B tests/reference/compiler-language/sci_library_context_receipts.py \
-  --write-evidence /tmp/light-cljs-125-sci-library-context-191-95abbfd/evidence.json
+  --write-evidence /tmp/light-cljs-125-sci-library-context-191-a8e8a43/evidence.json
 python3 -B tests/reference/compiler-language/test_sci_library_context.py
 python3 -B tests/reference/compiler-language/test_sci_library_ledger.py
 python3 -B tests/reference/compiler-language/sci_library_context_receipts.py \
-  --evidence /tmp/light-cljs-125-sci-library-context-191-95abbfd/evidence.json
+  --evidence /tmp/light-cljs-125-sci-library-context-191-a8e8a43/evidence.json
 ```
 
-The manifest-bound fresh run completed all 191 originals in both local engines
-and both independently checked pinned compilers:
+The manifest-bound fresh run at frozen production commit
+`a8e8a43fda48f4f22674c6f82ec3ee048c99c3fc` completed all 191 originals in both
+local engines and both independently checked pinned compilers:
 
 | Layer | Original expectation matches | Original expectation differs |
 | --- | ---: | ---: |
@@ -81,9 +81,14 @@ that entire batch. Both ClojureScript identities and `:optimizations :none`,
 current hash binds active records, and its writer retains each complete earlier
 record as history. This refresh actually executed every layer after production
 source hashes changed; it did not rewrite hashes on historical observations.
+The changed inputs since the previous active audit are `src/analyzer.rs`,
+`src/compiler_roots.js`, `src/core_var_metadata.tsv`, `src/emitter.rs`, and
+`src/js_runtime.js`. Their current hashes, and all other source/build hashes,
+remained equal to the frozen starting snapshot throughout this audit. Catalog,
+adapter, driver, original fixtures and tests were unchanged for the refresh.
 All 191 prior records remain verbatim in `prior_evidence`. The original sixteen
-therefore retain both the earlier
-successful active evidence and their nested initial shallow-bridge harness
+therefore retain the earlier successful active evidence and their nested initial
+shallow-bridge harness
 failures. Historical failures grant no passing credit.
 
 `sci-data-edn-tag-discard` remains **original-contract-unresolved**. Its original

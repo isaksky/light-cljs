@@ -636,3 +636,128 @@ adapter/hash/pin/history mutation cases. Log:
 **seven tests**, zero failures/ignored, with log
 `/tmp/light-cljs-125-independent-focused.log`. All production files remain
 byte-identical to frozen HEAD; no cancellation/limits suite was run.
+
+
+## Array/protocol and original source refresh — October 11, 2026
+
+From frozen production HEAD `a8e8a43fda48f4f22674c6f82ec3ee048c99c3fc`, this
+continuation adds six whole literal workflows: array dimensions/identity and
+ordered mutations, direct persistent collection protocol calls, and custom
+state protocol dispatch, with ordinary and `clojure.core/` qualified variants.
+All declared custom ISwap arities execute, including the last sequence-valued
+argument; reset/deref, volatile and delay protocols retain literal results and
+ordered effects. Array paths preserve real nested arrays, cloned identity,
+saved calls, receiver `this-as`, public js-invoke and once-only effects. Direct
+metadata protocol checks observe the newly attached metadata, not just equal
+collection contents. All application and actual macro checks run Node/QuickJS.
+
+The core gate now has **56 workflows** (22 full upstream bodies and 34 literal
+workflows), **865 reviewed call receipts** (105 more), and **32 mapped literal
+both-pin oracles** (five more). Public protocol method definitions are never
+executing call heads: a structural traversal visits their bodies while preserving
+method names/bindings, and three explicit evidence tests protect call arities,
+qualification and quoted forms. Independent review found no false declaration
+credit or expectation weakening.
+
+Both complete authored consumer workflows that originally exposed prim-seq are
+restored **byte-exact**, including the two calls and all literal expected values.
+They pass current local phases/engines and both pins. The preserved omission
+file retains every original field and failure receipt, with a separate current
+resolution pointing to closed light-cljs-157 and actual fresh verification.
+Historical failure evidence is not erased or relabeled.
+
+All eight exact new/restored ordinary and qualified workflows pass both checked
+compilers. Exact reference receipt
+`/tmp/light-cljs-125-protocol-final-reference/evidence.json`, SHA-256
+`9b3ab185784a9cb11b2822924b0b4b0669d6b7ad433ae06066263c55f89ee741`.
+Six core Rust tests pass with no failures or ignored cases in
+`/tmp/light-cljs-125-protocol-core-local.log`. The initial authored method on
+`js/this` was corrected to the proper standard `this-as` receiver form before
+acceptance; its evaluation failure is not passing evidence. An initial Atom
+ISwap probe fails both pins as well as locally; built-in Atom lacks that protocol
+in canonical CLJS, so it is not a defect or passing workflow. Complete custom
+ISwap implementation probes supply the actual positive contracts. The initial
+reference projection selected only seven mapped cases because the fully
+qualified collection protocol variant has no separate name obligation; its
+subsequent exact eight-case reference invocation also executes that supplemental
+variant and all eight pass. No source assertion was removed.
+
+All **191 original library contexts** and **50 original SCI source contexts**
+were actually reexecuted in both local engines and both pins. Their complete
+previous records remain verbatim in history and all original expectations remain
+unchanged. Library results: **163 original agreements, six exact reviewed walk
+pin differences, 22 unresolved contracts**; fresh library evidence SHA-256
+`8d02d8158f33c72823316fa7aa01208722666536445065a19baf9bfc9d9e5115` at
+`/tmp/light-cljs-125-sci-library-context-191-a8e8a43/evidence.json`.
+Source results: **35 original agreements, eight pin differences, seven unresolved
+contracts**, with exact new execution and history documented in
+[sci-source-context-evidence.md](sci-source-context-evidence.md).
+The fourteen focused library tests, integrated ledger test and fresh replay pass.
+These runtime receipts grant no unrelated macro-phase eligibility.
+
+The repaired full renamed-core exists? context independently passes both pins
+and all 12 complete source contexts pass both phases/engines with fresh and
+reused macro hosts. Supported source accounting remains **18 full bodies and
+47 original sites**, without claiming newly retained candidates as passes.
+Two new candidates retain **six full bodies/eight sites**: the EDN test-reader
+helper and complete three-site stream-read body, and Foo record setup plus all
+five record-literal sites. The complete EDN body passes both pins but local
+applications/macros reject its required four-argument read; focused ordinary
+owner **light-cljs-159** now precedes 125. Original setup, source hashes and
+raw exact receipts are retained in the proposals and
+`../compiler-residual-completion.md`. The record-literal candidate preserves its
+canonical CLJC companion and local UnknownTag result; it remains intended and
+unwitnessed while its source-reader/companion scope is reconciled. No automatic
+boundary exclusion, fake stream, read-string substitution or shortened body is
+credited.
+
+Full zero-missing acceptance remains unfinished. This continuation does not
+rerun an unchanged incomplete comprehensive gate or count registration as a
+semantic pass. Production files are unchanged; no new production performance
+claim is made. The separate light-cljs-156 cancellation repair remains an external
+limitation after automatic approval review rejected it twice citing possible
+cybersecurity risk. No retry, delegation, native-crash investigation/repair or
+cancellation/limits suite was performed in this continuation.
+
+The fresh library audit independently compared three of the 22 unresolved
+original SCI contracts to literal canonical observations. The unchanged complete
+join-values source returns `"12"` for its nil separator locally, while both pins
+return `"1null2"`; complete project sources retain relation metadata and the old
+symbol key locally, while both pins return nil relation metadata and the
+requested equivalent symbol key. Both application engines and actual macro
+computation reproduce these differences without errors. They are pure promised
+library operations, not an exact-number, host, serialization-domain or pin-version
+boundary. Historical native projection documentation and original SCI expectations
+remain explicit, unchanged contract conflicts; they do not authorize a blanket
+canonical exclusion. Focused ordinary owners **light-cljs-160** (join) and
+**light-cljs-161** (project metadata/key representative) immediately precede 125,
+following the stream-read owner 159. No implementation of these owners was
+performed here.
+
+`../compiler-library-unresolved-probes.json` retains all three untouched original
+sources, original SCI expected observations, separate literal canonical
+expectations, exact original row/source/library/production hashes, and all four
+fresh raw execution layers (Node/QuickJS applications and actual macros, Maven
+release and clean checkout). Its SHA-256 is `c4375fee2fd931d79af949dd04c63c59885b9a8e6eba5ebc342098b09ad8c25b`.
+Raw local layer `passed` means comparison to the original SCI expectation only;
+the explicit canonical comparison is **mismatch**, and all three full source
+contracts remain **unresolved**. The raw reference mismatch similarly refers to
+the original SCI expectation; the independent canonical literals pass both pins.
+No receipt replacement, expectation weakening or semantic ledger pass follows
+from this artifact. All required reference identities and options were checked.
+
+Final verification for this continuation: **122 Python harness tests pass**
+(`python3 -B -m unittest discover -s tests/reference/compiler-language -p
+'test*.py'`, 660.063 seconds; log
+`/tmp/light-cljs-125-a8e8a43-python.log`). This includes the three new executing
+call/qualification guards and the source/library/ledger receipt tests. The six
+core Rust tests and one complete source-context Rust test also pass, with all
+56 core workflows and 12 supported source contexts exercising both local
+engines and actual macro computation. All eight new/restored exact workflows
+pass both checked references; all 191 library and 50 SCI source contexts were
+freshly reexecuted against both pins with the explicit unresolved counts above.
+The core fixture generator reproduces 22 complete upstream bodies/56 workflows;
+all 865 reviewed call receipts and 32 literal pinned oracles reproduce; lossless
+inventory `--check`, scoped Rust formatting and `git diff --check` pass. No
+comprehensive zero-missing gate pass, cancellation/limits test result, whole
+repository regression result or new production performance result is claimed.

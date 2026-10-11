@@ -781,3 +781,89 @@ The main owner received these exact sources and receipts for focused ownership.
 No production implementation, queue or Git state was changed. The existing
 cancellation/limits work was not investigated or executed. The full language
 gate remains incomplete; this continuation does not rerun or claim that gate.
+
+### Repaired existence source and remaining complete readers — 2026-10-11
+
+At production HEAD `a8e8a43`, light-cljs-158 has already promoted the exact
+`ns-exists` context above. Fresh release **1.12.134** and checkout
+**a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e** execute both original assertions
+with the checked `:optimizations :none`, `:static-fns false`, and
+`:def-emits-var false` settings. Receipt:
+`/tmp/light-cljs-125-fixed-ns-exists-reference/evidence.json`, SHA-256
+`f4aaeb9a99f7ec753893e8fcd4e2011a5b0c5ad1bf3c6d1f333c70a3ff13b5ea`.
+`complete_residual_namespace_bodies_execute_in_both_phases` passed all twelve
+contexts in **17.20 s**, zero failures or ignored tests, including Node and
+QuickJS applications and actual macro execution with fresh and reused
+MacroHosts. Log: `/tmp/light-cljs-125-fixed-ns-exists-local.log`.
+
+The passing TSV and Rust test remain unchanged by this continuation:
+**12 contexts, 18 complete bodies, 47 original sites**. TSV SHA-256 remains
+`3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e`.
+Two new complete contexts retain **6 assertion-bearing bodies / 8 sites** in
+`unwitnessed-source-cases`. They receive no passing case, assertion witness or
+phase mapping. The generator verifies each original byte span and preserves
+all setup, literal expectations and messages.
+
+The `edn-stream` context retains the complete original `test-reader` helper
+and `test-read` body from `src/test/cljs/clojure/edn_test.cljs`, including all
+three `edn/read` versus `reader/read` assertions. Locally the `reader-types`
+alias selects the existing first-party `cljs.reader/string-push-back-reader`
+constructor; references retain `cljs.tools.reader.reader-types`. This is an
+explicit stream-constructor namespace adaptation, without a fixture stream
+implementation, replacement `read-string` call or general reader-types claim.
+Both pins pass the full body. Node and QuickJS applications reach the third
+assertion and fail with `Invalid arity: 4`; actual macro compilation fails
+with the same error. The local `clojure.edn/read` facade provides only zero,
+one and two arguments. This is an intended public EDN stream contract requiring
+focused implementation; neither the original assertion nor its expectation
+is weakened.
+
+- Original module SHA-256:
+  `7034a216f6aba2dd277f876899b2c235ebb54812d405af34087885eca4959abe`.
+- Original `test-read` body SHA-256:
+  `7d7a5a4c39247074c088d8a6859265dde0a271c0b5b496c7815e72d9399f0763`.
+- Original helper SHA-256:
+  `e89a676d30b2aec6c74fbe7c6485f8e767261c1129dcf23e746229a3f0f7e9ec`.
+- Complete adapted program SHA-256:
+  `9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b`.
+- Both-pin receipt `/tmp/light-cljs-125-edn-stream-reference/evidence.json`,
+  SHA-256 `8bf84f3ab26e0d66b0de857addbe04f9b4bef46b8328d0e5f9fbc6a9d26d1131`.
+- Local receipt `/tmp/light-cljs-125-edn-stream-local/evidence.json`, SHA-256
+  `abce3981a19c443b78d45abe6cbbcd307c58ff2e1072ba3077833f4c61afee5b`.
+
+The `record-literals` context retains the entire `Foo` setup and all five
+top-level assertions from `src/test/cljs/data_readers_test/records.cljc`.
+Ordinary, quoted and doubly quoted record tags, symbol-valued fields inside
+lexical shadowing, and both original assertion messages remain. Both pins pass
+using the original self `:require-macros` clause and a byte-identical complete
+CLJC companion. The local header omits that JVM companion clause under the
+existing companion boundary; ordinary and macro source reading both reject
+the first `#data_readers_test.records.Foo` tag with `UnknownTag`. No synthetic
+data reader, map substitute, constructor expansion or runtime pass is supplied.
+This remains a source-contract reconciliation candidate: independently decide
+the ordinary record-reader obligation and the excluded JVM companion facility
+before treating the failure as a demonstrated feature omission or exclusion.
+
+- Original module SHA-256:
+  `b642ad4397ab1723da07245ac6e36cc24a22af44fbddf823ee149a8e7c3a87f2`.
+- Complete adapted program SHA-256:
+  `d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee`.
+- Both-pin receipt `/tmp/light-cljs-125-record-literals-reference/evidence.json`,
+  SHA-256 `24d3f017dac7ecdb47867c4510458c9bb326931792098d683c779e54fef73035`.
+- Local receipt `/tmp/light-cljs-125-record-literals-local/evidence.json`,
+  SHA-256 `a8c2397f0c24720ab22f8f936208edc4a9eb7988580a0fdc18ac14960a19aedb`.
+
+Reproduce the retained candidates without registering passing witnesses:
+
+```sh
+python3 -B tests/reference/compiler-residual-source-context.py
+python3 -B tests/reference/compiler-residual-source-context.py --run --case edn-stream --output /tmp/light-cljs-125-edn-stream-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --audit-local --case edn-stream --output /tmp/light-cljs-125-edn-stream-local-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case record-literals --output /tmp/light-cljs-125-record-literals-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --audit-local --case record-literals --output /tmp/light-cljs-125-record-literals-local-current
+```
+
+Only the source-context generator, proposals, retained source fixtures and this
+documentation changed. Shared catalogs remain owned by the main worker. No
+production, queue, staging or commit changes were made; no full gate,
+cancellation or limits suite was run, and light-cljs-156 was not investigated.

@@ -97,7 +97,7 @@ fn core_numeric_applications_and_macros_execute() {
 
 #[test]
 fn core_collections_applications_and_macros_execute() {
-    cohort("collections", 16);
+    cohort("collections", 22);
 }
 
 #[test]

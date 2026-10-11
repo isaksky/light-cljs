@@ -75,9 +75,17 @@ LITERALS['collections'].append(
 # Independently specified sequence and nested-update workflows retain whole
 # factory/realization/effect paths. Infinite factories are only finitely consumed.
 LITERALS['collections'].extend([
-    ('sequence-consumer-arities', '(let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])', '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5]]'),
+    ('sequence-consumer-arities', '(let [xs [1 2 3 4] nested [[1 2] [3 4]]] [(next nil) (vec (next xs)) (second xs) (ffirst nested) (vec (nfirst nested)) (fnext xs) (vec (nnext xs)) (last xs) (vec (nthrest xs 2)) (vec (nthnext xs 2)) (vec (butlast xs)) (vec (reverse xs)) (vec (rseq xs)) (peek xs) (pop xs) (empty xs) (empty? []) (coll? xs) (set? #{1}) (associative? xs) (sequential? xs) (sorted? (sorted-map)) (map? {}) (record? {}) (vector? xs) (seq? (seq xs)) (list? (list 1)) (reversible? xs) (counted? xs) (indexed? xs) (reduced? (reduced 3)) (unreduced (ensure-reduced 3)) (vec (prim-seq #js [4 5])) (vec (prim-seq #js [4 5] 1)) (vec (array-seq #js [4 5])) (vec (array-seq #js [4 5] 1))])', '[nil [2 3 4] 2 1 [2] 2 [3 4] 4 [3 4] [3 4] [1 2 3] [4 3 2 1] [4 3 2 1] 4 [1 2 3] [] true true true true true true true false true true true true true true true 3 [4 5] [5] [4 5] [5]]'),
     ('sequence-producer-arities', '(let [n (atom 0) f (fn [] (swap! n inc))] [@n (vec (take 3 (repeatedly f))) @n (vec (repeatedly 2 f)) @n (vec (take 4 (range))) (vec (range 4)) (vec (range 1 5)) (vec (range 1 6 2)) (vec (take 3 (repeat :a))) (vec (repeat 2 :a)) (vec (replicate 2 :b)) (vec (take 3 (iterate inc 1))) (vec (take 5 (cycle [1 2]))) (vec (concat)) (vec (concat [1])) (vec (concat [1] [2])) (vec (concat [1] [2] [3])) (vec (list* [1 2])) (vec (list* 1 [2 3])) (vec (list* 1 2 [3 4])) (vec (list* 1 2 3 [4 5])) (vec (list* 1 2 3 4 [5 6])) (vec (interleave)) (vec (interleave [:a :b])) (vec (interleave [:a :b] [1 2])) (vec (interleave [:a] [1] [:x])) (vec (interpose :x [1 2 3])) (mapv vec (partition 2 [1 2 3 4])) (mapv vec (partition 3 2 (range 7))) (mapv vec (partition 3 2 [:p] (range 6))) (mapv vec (partition-all 2 [1 2 3])) (mapv vec (partition-all 2 1 [1 2 3])) (mapv vec (partition-by even? [1 3 2 4 5])) (mapv vec (split-at 2 [1 2 3])) (mapv vec (split-with odd? [1 3 2 5])) (vec (drop-last [1 2 3])) (vec (drop-last 2 [1 2 3])) (vec (take-last 2 [1 2 3])) (vec (map + [1 2] [3 4])) (vec (map + [1] [2] [3])) (vec (map + [1] [2] [3] [4])) (vec (mapcat vector [1 2])) (vec (filter even? [1 2 3 4])) (vec (remove odd? [1 2 3 4])) (vec (take-nth 2 [1 2 3 4 5])) (vec (take-while pos? [1 2 0 3])) (vec (drop-while pos? [1 2 0 3]))])', '[0 [1 2 3] 3 [4 5] 5 [0 1 2 3] [0 1 2 3] [1 2 3 4] [1 3 5] [:a :a :a] [:a :a] [:b :b] [1 2 3] [1 2 1 2 1] [] [1] [1 2] [1 2 3] [1 2] [1 2 3] [1 2 3 4] [1 2 3 4 5] [1 2 3 4 5 6] [] [:a :b] [:a 1 :b 2] [:a 1 :x] [1 :x 2 :x 3] [[1 2] [3 4]] [[0 1 2] [2 3 4] [4 5 6]] [[0 1 2] [2 3 4] [4 5 :p]] [[1 2] [3]] [[1 2] [2 3] [3]] [[1 3] [2 4] [5]] [[1 2] [3]] [[1 3] [2 5]] [1 2] [1] [2 3] [4 6] [6] [10] [1 2] [2 4] [2 4] [1 3 5] [1 2] [0 3]]'),
     ('nested-update-name-arities', '(let [events (atom []) r (reduce-kv (fn [a k v] (swap! events conj [k v]) (conj a [k v])) [] (sorted-map :b 2 :a 1))] [(reduce + 0 [1 2 3]) r @events (vec (sort [3 1 2])) (vec (sort > [3 1 2])) (vec (sort-by count ["bb" "a" "ccc"])) (vec (sort-by count > ["bb" "a" "ccc"])) (vec (keys (sorted-map :b 2 :a 1))) (vec (vals (sorted-map :b 2 :a 1))) (key (find {:a 1} :a)) (val (find {:a 1} :a)) (select-keys {:a 1 :b 2} [:b :missing]) (merge) (merge-with +) (get-in {:a {:b false}} [:a :b] :missing) (get-in {} [:a :b] :missing) (update {:n 1} :n + 2) (update {:n 1} :n + 2 3) (update {:n 1} :n + 2 3 4) (update {:n 1} :n + 2 3 4 5) (update {:n 1} :n + 2 3 4 5 6) (update-in {:a {:n 1}} [:a :n] + 2) (update-in {:a {:n 1}} [:a :n] + 2 3) (update-in {:a {:n 1}} [:a :n] + 2 3 4) (update-in {:a {:n 1}} [:a :n] + 2 3 4 5) (update-in {:a {:n 1}} [:a :n] + 2 3 4 5 6) (max-key count "a") (max-key count "a" "bb") (max-key count "a" "bb" "ccc") (min-key count "a") (min-key count "a" "bb") (min-key count "a" "bb" "ccc") (symbol? (symbol "x")) (namespace (symbol "n" "x")) (name (keyword "x")) (namespace (keyword "n" "x")) (keyword? :x) (ident? :x) (simple-ident? :x) (qualified-ident? :n/x) (simple-symbol? (symbol "x")) (qualified-symbol? (symbol "n" "x")) (simple-keyword? :x) (qualified-keyword? :n/x) (keyword-identical? :x (keyword "x")) (symbol-identical? (symbol "x") (symbol "x"))])', '[6 [[:a 1] [:b 2]] [[:a 1] [:b 2]] [1 2 3] [3 2 1] ["a" "bb" "ccc"] ["ccc" "bb" "a"] [:a :b] [1 2] :a 1 {:b 2} nil nil false :missing {:n 3} {:n 6} {:n 10} {:n 15} {:n 21} {:a {:n 3}} {:a {:n 6}} {:a {:n 10}} {:a {:n 15}} {:a {:n 21}} "a" "bb" "ccc" "a" "a" "a" true "n" "x" "n" true true true true true true true true true true]'),
+])
+
+
+# Array identity/ordered effects and direct public protocol dispatch contracts.
+LITERALS['collections'].extend([
+    ('array-public', '(let [events (atom []) original #js [1 2] copied (aclone original) matrix (make-array nil 2 3) cube (make-array nil 2 1 2) simple (make-array 2) saved-get aget saved-set aset saved-into into-array obj #js {:base 10 :sum (fn [x y] (this-as self (+ (.-base self) x y)))}] (aset simple 0 (do (swap! events conj :first) 4)) (saved-set simple 1 (do (swap! events conj :second) 5)) (aset original 0 7) (aset matrix 1 2 9) [(alength (make-array 0)) (alength (make-array :ignored 2)) (mapv alength (array-seq matrix)) (mapv (fn [layer] (mapv alength (array-seq layer))) (array-seq cube)) (identical? (aget matrix 0) (aget matrix 1)) (aget matrix 1 2) (saved-get matrix 1 2) (vec original) (vec copied) (vec simple) @events (vec (array)) (vec (array 1)) (vec (array 1 2 3)) (vec (into-array [1 2])) (vec (into-array :ignored (list 3 4))) (vec (saved-into [5 6])) (vec (to-array (list 7 8))) (js-invoke obj "sum" 2 3)])', '[0 2 [3 3] [[2] [2]] false 9 9 [7 2] [1 2] [4 5] [:first :second] [] [1] [1 2 3] [1 2] [3 4] [5 6] [7 8] 15]'),
+    ('protocol-public', '(let [xs [1 2] pair (find {:a 1} :a) a (atom 3) tagged (with-meta [1] {:tag :v})] [(-count xs) (-nth xs 1) (-nth xs 8 :missing) (-first (list 1 2)) (vec (-rest (list 1 2))) (vec (-next (list 1 2))) (vec (-seq xs)) (vec (-rseq xs)) (-lookup {:a 1} :a) (-lookup {} :a :missing) (-contains-key? {:a 1} :a) (-assoc {} :a 1) (-assoc-n [1] 0 2) (-conj [1] 2) (-dissoc {:a 1 :b 2} :a) (-disjoin #{1 2} 1) (-empty xs) (-peek xs) (-pop xs) (-reduce xs +) (-reduce xs + 10) (-kv-reduce (sorted-map :b 2 :a 1) (fn [acc k v] (conj acc [k v])) []) (-key pair) (-val pair) (-compare [1] [2]) (-deref a) (-meta tagged) (let [result (-with-meta [1] {:tag :x})] [result (-meta result)])])', '[2 2 :missing 1 [2] [2] [1 2] [2 1] 1 :missing true {:a 1} [2] [1 2] {:b 2} #{2} [] 2 [1] 3 13 [[:a 1] [:b 2]] :a 1 -1 3 {:tag :v} [[1] {:tag :x}]]'),
+    ('protocol-custom-state', '(let [state (atom 1) events (atom []) r (reify IDeref (-deref [_] @state) IReset (-reset! [_ value] (swap! events conj [:reset value]) (reset! state value)) ISwap (-swap! [_ f] (swap! events conj [:swap 0]) (swap! state f)) (-swap! [_ f a] (swap! events conj [:swap 1]) (swap! state f a)) (-swap! [_ f a b] (swap! events conj [:swap 2]) (swap! state f a b)) (-swap! [_ f a b xs] (swap! events conj [:swap 3 (vec xs)]) (apply swap! state f a b xs))) v (volatile! 2)] [(-swap! r inc) (-swap! r + 3) (-swap! r + 1 2) (-swap! r + 1 2 (list 3 4)) (-reset! r 20) (-deref r) @events (-vreset! v 4) (-deref v) (-realized? (delay 3)) (let [d (delay 3)] [(-deref d) (-realized? d)])])', '[2 5 8 18 20 20 [[:swap 0] [:swap 1] [:swap 2] [:swap 3 [3 4]] [:reset 20]] 4 4 false [3 true]]'),
 ])
 
 # Reviewed names used as direct calls in these exact workflows. No unbound names,
@@ -96,9 +104,28 @@ identity constantly complement comp partial fnil every-pred some-fn juxt memoize
 not-empty every? not-every? some not-any? distinct? into mapv filterv zipmap frequencies
 group-by map-indexed keep keep-indexed
 next second ffirst nfirst fnext nnext last nthrest nthnext butlast reverse rseq peek pop empty empty? coll? set? associative? sequential? sorted? map? record? vector? seq? list? reversible? counted? indexed? reduced? unreduced ensure-reduced reduced prim-seq array-seq vec seq sorted-map range repeat replicate repeatedly iterate cycle concat list* interleave interpose partition partition-all partition-by split-at split-with drop-last take-last map mapcat filter remove take-nth take-while drop-while take reduce reduce-kv sort sort-by keys vals key val select-keys merge merge-with get-in update update-in max-key min-key symbol? symbol namespace name keyword keyword? ident? simple-ident? qualified-ident? simple-symbol? qualified-symbol? simple-keyword? qualified-keyword? keyword-identical? symbol-identical?
+make-array alength aclone array aget aset into-array to-array js-invoke this-as
+-count -nth -first -rest -next -seq -rseq -lookup -contains-key? -assoc -assoc-n -conj -dissoc -disjoin -empty -peek -pop -reduce -kv-reduce -key -val -compare -deref -meta -with-meta -swap! -reset! -vreset! -realized?
 any? object? string? char? fn? ifn? js-fn? seqable? iterable? js-iterable? cloneable? clone ifind? reduceable?
 and or if-let when-let when when-not cond case for doseq dotimes some-> some->>
 cond-> cond->> as-> -> ->>'''.split())
+METHOD_CONTAINERS = {'reify', 'deftype', 'defrecord', 'extend-type',
+                     'extend-protocol', 'specify', 'specify!'}
+
+
+def executing_children(node):
+    """Visit method bodies without treating protocol definitions as calls."""
+    if inv.head(node).removeprefix('clojure.core/') in METHOD_CONTAINERS:
+        for child in node.children:
+            if (child.kind == 'list' and len(child.children) >= 2
+                    and child.children[1].kind == 'vector'):
+                yield from child.children[2:]
+            else:
+                yield child
+    else:
+        yield from node.children
+
+
 def qualify_literal_core_calls(source):
     """Retain a whole literal workflow while executing exact compatibility aliases.
 
@@ -112,7 +139,7 @@ def qualify_literal_core_calls(source):
         if node.kind == 'list' and node.children and inv.head(node) in NAMES:
             head = node.children[0]
             edits.append((head.start, head.end, 'clojure.core/' + inv.head(node)))
-        for child in node.children:
+        for child in executing_children(node):
             walk(child)
     for node in inv.Reader(source).all():
         walk(node)
@@ -189,7 +216,7 @@ def calls(source):
             # Their public macro arity is exact, but nested calls receive
             # implicit arguments and cannot be assigned their raw list length.
             return
-        for child in node.children:
+        for child in executing_children(node):
             walk(child)
     for node in inv.Reader(source).all():
         walk(node)

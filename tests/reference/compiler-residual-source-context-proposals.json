@@ -1454,5 +1454,201 @@
       }
     }
   ],
-  "unwitnessed-source-cases": []
+  "unwitnessed-source-cases": [
+    {
+      "id": "cljs-residual-source-context-edn-stream",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns clojure.edn-test (:require [clojure.edn :as edn] [cljs.reader :as reader] [cljs.reader :as reader-types]))\n(defn- test-reader []\n  (reader-types/string-push-back-reader \"[1 2 3]\"))\n(defn run [] (do (do (do (assert (= (edn/read (test-reader))\n         (reader/read (test-reader)))) (assert (= (edn/read {} (test-reader))\n           (reader/read {} (test-reader)))) (assert (= (edn/read (test-reader) false \"EOF\" {})\n           (reader/read (test-reader) false \"EOF\" {})))) true)))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/edn-stream",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/edn-stream",
+      "entry": "clojure.edn-test",
+      "export": "run",
+      "reference_files_sha256": {
+        "clojure/edn_test.cljs": "908223964586ababdaebb0b3831f8bb3d63449c3b6375c7b2efe1baac709616f"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original test-reader helper and all three stream read assertions remain unchanged. Its reader-types alias selects the existing first-party cljs.reader/string-push-back-reader constructor locally; pinned references retain cljs.tools.reader.reader-types/string-push-back-reader. Both provide a real mutable pushback stream consumed by the unchanged edn/read and reader/read calls at one, two and four arguments. This explicit constructor namespace adaptation establishes the promised EDN stream operations, not general cljs.tools.reader compatibility; no stream implementation or read-string replacement is supplied by the fixture.",
+      "module_source": "src/test/cljs/clojure/edn_test.cljs",
+      "module_sha256": "7034a216f6aba2dd277f876899b2c235ebb54812d405af34087885eca4959abe",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/clojure/edn_test.cljs::test-reader",
+          "source_sha256": "e89a676d30b2aec6c74fbe7c6485f8e767261c1129dcf23e746229a3f0f7e9ec"
+        },
+        {
+          "body_id": "src/test/cljs/clojure/edn_test.cljs::test-read",
+          "source_sha256": "7d7a5a4c39247074c088d8a6859265dde0a271c0b5b496c7815e72d9399f0763"
+        }
+      ],
+      "namespace_source_sha256": "bf52dd9b5d88b396ffd55a809b7a3f5135652ba7694880f48c2f6f1ca7fb1a8c",
+      "expected": {
+        "id": "cljs-residual-source-context-edn-stream",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "unwitnessed_reason": "The complete original EDN stream read body passes both checked pins. Node and QuickJS application execution and actual macro compilation fail with Invalid arity: 4 because clojure.edn/read exposes only zero, one and two arguments. All three assertions and the complete original stream helper remain intended and unmodified; no pass or boundary exclusion is claimed.",
+      "proposed_complete_body_phase_mappings": [
+        {
+          "body_id": "src/test/cljs/clojure/edn_test.cljs::test-read",
+          "body_sha256": "7d7a5a4c39247074c088d8a6859265dde0a271c0b5b496c7815e72d9399f0763",
+          "reference_fixture_id": "cljs-residual-source-context-edn-stream",
+          "reference_source_sha256": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
+          "reference_contract_sha256": "9eb7ea3f788f9b7b9bd000350be4b9f8585702670865794953417dbcecf634fb",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original test-reader helper and all three stream read assertions remain unchanged. Its reader-types alias selects the existing first-party cljs.reader/string-push-back-reader constructor locally; pinned references retain cljs.tools.reader.reader-types/string-push-back-reader. Both provide a real mutable pushback stream consumed by the unchanged edn/read and reader/read calls at one, two and four arguments. This explicit constructor namespace adaptation establishes the promised EDN stream operations, not general cljs.tools.reader compatibility; no stream implementation or read-string replacement is supplied by the fixture.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "876b17ab644a89f87350c8349011f7cfb1fd8191b87642bc3b6ce9eca0e68484"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/edn-stream/clojure/edn_test.cljs": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
+            "tests/fixtures/compiler-residual-source-context.tsv": "3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cljs-residual-source-context-record-literals",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns data-readers-test.records)\n(defrecord Foo [a b])\n(defn run [] (do (assert (= (Foo. 1 2) #data_readers_test.records.Foo{:a 1 :b 2})) (assert (= (Foo. 1 2)\n           '#data_readers_test.records.Foo{:a 1 :b 2})) (assert (= (Foo. 1 2)\n           (second ''#data_readers_test.records.Foo{:a 1 :b 2}))) (assert (= (Foo. 'a 'b)\n           (let [a 1\n                 b 2]\n             #data_readers_test.records.Foo{:a a :b b}))\n        (pr-str\n          (let [a 1\n                b 2]\n            #data_readers_test.records.Foo{:a a :b b}))) (assert (= (Foo. 'a 'b)\n           (let [a 1\n                 b 2]\n             '#data_readers_test.records.Foo{:a a :b b}))\n        (pr-str\n          (let [a 1\n                b 2]\n            '#data_readers_test.records.Foo{:a a :b b}))) true))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/record-literals",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/record-literals",
+      "entry": "data-readers-test.records",
+      "export": "run",
+      "reference_files_sha256": {
+        "data_readers_test/records.cljs": "e7d09624fdfd97840a4ecd5f8ccb2a035a02d4a074f09b35b1612cb0c693f0b4",
+        "data_readers_test/records.cljc": "b642ad4397ab1723da07245ac6e36cc24a22af44fbddf823ee149a8e7c3a87f2"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.",
+      "module_source": "src/test/cljs/data_readers_test/records.cljc",
+      "module_sha256": "b642ad4397ab1723da07245ac6e36cc24a22af44fbddf823ee149a8e7c3a87f2",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::Foo",
+          "source_sha256": "68164f3e51d9f9876a2db936b167343df50da603486a34951f67507b6f3d8e67"
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-003",
+          "source_sha256": "00af86681cb33b83f4cfb2b38bde5278d3be54ae44c8bbf3957a037b8986cb46"
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-004",
+          "source_sha256": "5f0c5845d78117bfcacccf0a206c326b2ef7853a49959ccbf51e90410a23cb5d"
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-005",
+          "source_sha256": "50edf7880b47b04328324af2e024aec2cb26dd7b076a141384e9ebdaf2da00c0"
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-006",
+          "source_sha256": "a9610b07f68bcfb2a725a86d1b2327a4b2da679809fc73992d9c7be916780e1f"
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-007",
+          "source_sha256": "5200acfeb77750a88fa79821ade1ec346cca33b137e84ee689e4de8f4ffc534b"
+        }
+      ],
+      "namespace_source_sha256": "cd6043d2b487617662890f79f20ca7c2c7927acd97bcd4708a7cf931bfb38579",
+      "expected": {
+        "id": "cljs-residual-source-context-record-literals",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "unwitnessed_reason": "All five original record literal assertions and complete Foo setup are retained. No implicit record-tag constructor or JVM companion implementation is supplied locally. This source-contract candidate grants no passing assertion or phase witness; reconcile the ordinary record-reader obligation separately from the excluded JVM companion facility.",
+      "proposed_complete_body_phase_mappings": [
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-003",
+          "body_sha256": "00af86681cb33b83f4cfb2b38bde5278d3be54ae44c8bbf3957a037b8986cb46",
+          "reference_fixture_id": "cljs-residual-source-context-record-literals",
+          "reference_source_sha256": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+          "reference_contract_sha256": "88c7d9c5a9e39c0e8d5aa20e341f169f7dd879a9c815a6e7a997a255cecd0df1",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "876b17ab644a89f87350c8349011f7cfb1fd8191b87642bc3b6ce9eca0e68484"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+            "tests/fixtures/compiler-residual-source-context.tsv": "3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e"
+          }
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-004",
+          "body_sha256": "5f0c5845d78117bfcacccf0a206c326b2ef7853a49959ccbf51e90410a23cb5d",
+          "reference_fixture_id": "cljs-residual-source-context-record-literals",
+          "reference_source_sha256": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+          "reference_contract_sha256": "88c7d9c5a9e39c0e8d5aa20e341f169f7dd879a9c815a6e7a997a255cecd0df1",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "876b17ab644a89f87350c8349011f7cfb1fd8191b87642bc3b6ce9eca0e68484"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+            "tests/fixtures/compiler-residual-source-context.tsv": "3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e"
+          }
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-005",
+          "body_sha256": "50edf7880b47b04328324af2e024aec2cb26dd7b076a141384e9ebdaf2da00c0",
+          "reference_fixture_id": "cljs-residual-source-context-record-literals",
+          "reference_source_sha256": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+          "reference_contract_sha256": "88c7d9c5a9e39c0e8d5aa20e341f169f7dd879a9c815a6e7a997a255cecd0df1",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "876b17ab644a89f87350c8349011f7cfb1fd8191b87642bc3b6ce9eca0e68484"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+            "tests/fixtures/compiler-residual-source-context.tsv": "3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e"
+          }
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-006",
+          "body_sha256": "a9610b07f68bcfb2a725a86d1b2327a4b2da679809fc73992d9c7be916780e1f",
+          "reference_fixture_id": "cljs-residual-source-context-record-literals",
+          "reference_source_sha256": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+          "reference_contract_sha256": "88c7d9c5a9e39c0e8d5aa20e341f169f7dd879a9c815a6e7a997a255cecd0df1",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "876b17ab644a89f87350c8349011f7cfb1fd8191b87642bc3b6ce9eca0e68484"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+            "tests/fixtures/compiler-residual-source-context.tsv": "3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e"
+          }
+        },
+        {
+          "body_id": "src/test/cljs/data_readers_test/records.cljc::top-level-007",
+          "body_sha256": "5200acfeb77750a88fa79821ade1ec346cca33b137e84ee689e4de8f4ffc534b",
+          "reference_fixture_id": "cljs-residual-source-context-record-literals",
+          "reference_source_sha256": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+          "reference_contract_sha256": "88c7d9c5a9e39c0e8d5aa20e341f169f7dd879a9c815a6e7a997a255cecd0df1",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The entire original Foo record setup and all five top-level assertions remain, including ordinary/quoted/doubly quoted tags, symbol-valued fields inside lexical shadowing and both original assertion messages. Assertions execute inside the driver after the unchanged record declaration. Canonical references retain the original self require-macros and a byte-identical CLJC companion; locally that JVM companion clause is omitted under the explicit .clj companion boundary. No fabricated record data reader or constructor expansion is supplied, and this candidate remains unwitnessed pending source-contract reconciliation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "876b17ab644a89f87350c8349011f7cfb1fd8191b87642bc3b6ce9eca0e68484"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
+            "tests/fixtures/compiler-residual-source-context.tsv": "3f3fbb3ffadf6c02cf6334da6a353592474909fc46b00300367764cc4a2b275e"
+          }
+        }
+      ]
+    }
+  ]
 }

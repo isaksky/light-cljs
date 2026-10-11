@@ -144,3 +144,33 @@ excuse a local result that matches neither. The eight difference rows retain
 failing reference mismatches visible. Context execution grants no macro-phase
 eligibility to other public API obligations. This focused run is not a broad
 full-gate pass.
+
+
+## Frozen-production source refresh — October 11, 2026
+
+All 50 complete original source contexts were executed again on production HEAD
+`a8e8a43fda48f4f22674c6f82ec3ee048c99c3fc`, in Node/QuickJS and both independently
+checked pinned references. Every original source/setup/expectation binding is
+unchanged. The fresh classification remains **35 original agreements, eight
+verified pin differences and seven unresolved original contracts**. Both local
+engines match all 50 SCI expectations; release matches 40, rejects two and
+otherwise differs in eight; checkout matches 38, rejects two and otherwise
+differs in ten. Neither pin rejection nor SCI/pin mismatch becomes an original
+agreement. No unrelated public macro eligibility is inferred.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/sci_source_context.py \
+  --local --references --timeout 240 \
+  --output /tmp/light-cljs-125-sci-source-context-50-a8e8a43
+python3 -B tests/reference/compiler-language/sci_source_context_receipts.py \
+  --evidence /tmp/light-cljs-125-sci-source-context-50-a8e8a43/evidence.json
+```
+
+Fresh evidence SHA-256:
+`d3c3d6488f9b58bc000f98f537b06b3b2f9e9d39e3413b1bb280871c0602b7c7`.
+Literal receipt replay passed. Active receipt layers now contain these actual
+new executions; each complete earlier record is retained verbatim under
+`prior_evidence`, including its prior historical raw snapshots. Additional
+production-head/source/build hashes record the frozen observation context,
+without relabeling older observations. The full runner still supplies fresh
+layers and stored receipts never grant report coverage.

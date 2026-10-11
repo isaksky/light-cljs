@@ -112,5 +112,37 @@
     ]
   },
   "scope_basis": "Public prim-seq is independently intended. No implementation, pass, diagnostic acceptance or boundary reclassification is supplied. Passing independent workflows split these unsupported operations into this unchanged retained probe; no upstream body or original expectation was removed.",
-  "source_sha256": "b4572b11a5394cbfdea1b927456c21f0ffe8730beefabcab5032ca2023842781"
+  "source_sha256": "b4572b11a5394cbfdea1b927456c21f0ffe8730beefabcab5032ca2023842781",
+  "current_resolution": {
+    "status": "verified-fixed",
+    "owner": "light-cljs-157",
+    "implementation_commit": "76c74d7",
+    "production_head": "a8e8a43fda48f4f22674c6f82ec3ee048c99c3fc",
+    "original_full_workflows_restored_byte_exact": true,
+    "local_execution": {
+      "test_file": "tests/compiler_core_gate.rs",
+      "test_name": "core_collections_applications_and_macros_execute",
+      "test_source_sha256": "60bd81f1fbfb36c54847b4fac0143caac797fab26a3d9c2c666eb42308ee9c81",
+      "engines": [
+        "Node",
+        "QuickJS"
+      ],
+      "phases": [
+        "application",
+        "actual compiler macro"
+      ],
+      "log": "/tmp/light-cljs-125-protocol-core-local.log",
+      "status": "passed"
+    },
+    "reference_evidence": {
+      "path": "/tmp/light-cljs-125-protocol-final-reference/evidence.json",
+      "sha256": "9b3ab185784a9cb11b2822924b0b4b0669d6b7ad433ae06066263c55f89ee741",
+      "identities": [
+        "release 1.12.134",
+        "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e"
+      ],
+      "status": "passed"
+    },
+    "reason": "The former omission and all original failure receipts remain historical; both original full authored workflows are restored byte-exact in current cases and execute both local engines/phases and both checked pins. This does not satisfy the broad language gate."
+  }
 }
