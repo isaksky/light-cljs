@@ -1449,7 +1449,9 @@ by the JavaScript host; no identical PRNG stream across engines is promised.
 `js-symbol?` recognizes primitive and boxed ECMAScript Symbols; `special-symbol?`
 checks the pinned unqualified special-form symbol set. `clone` uses ICloneable,
 and aliases retain their own source Var metadata even when runtime operations are
-shared. See the [complete utility audit](../tests/reference/compiler-utilities-completion-evidence.md).
+shared. The [mapped metadata audit](../tests/reference/compiler-core-var-metadata.md)
+records the full pinned table, declaration boundaries and executing phase witnesses.
+See the [complete utility audit](../tests/reference/compiler-utilities-completion-evidence.md).
 
 Generated type fields use munged host properties; writes remain visible to method
 field reads and record lookup, with independent fields on metadata copies.

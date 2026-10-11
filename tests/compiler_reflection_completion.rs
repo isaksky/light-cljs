@@ -1,11 +1,14 @@
 //! Compiler-owned namespace reflection, source identity and phase separation.
 use light_cljs::{
-    MacroHost, analyze_with_macros,
+    analyze_with_macros,
     emitter::emit_js_unit,
     evaluator::{Evaluator, EvaluatorOptions},
-    parse,
+    parse, MacroHost,
 };
-use std::process::Command;
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
@@ -20,7 +23,22 @@ fn both(source: &str, expected: &str) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         emit_js_unit(&program)
     );
-    let out = Command::new("node").args(["-e", &script]).output().unwrap();
+    // ns-publics may request metadata for every mapped core Var. Feed the
+    // resulting program over stdin instead of relying on the OS argv limit.
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -149,8 +167,8 @@ fn namespace_view_contains_core_binding_kinds_without_engine_roots() {
 #[test]
 fn namespace_refers_use_actual_public_var_identity() {
     use light_cljs::{
-        EvalOptions, EvalSession,
         source_provider::{LoadRequest, SourceInput},
+        EvalOptions, EvalSession,
     };
     use std::rc::Rc;
     let mut session = EvalSession::new(EvalOptions {

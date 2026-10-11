@@ -1,0 +1,34 @@
+;; Mapped spellings without a pinned cljs.core analyzer declaration.
+;; This provenance catalog is not an execution pass; residual public contracts: light-cljs-125.
+*file*	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+*in*	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+all-ns	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+compiler-edn-read	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-edn-read-string	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-macro-var*	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-close	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-current-input	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-deregister-default-tag-parser	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-deregister-tag-parser	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-initial-tag-table	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-input-provider	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-parse-timestamp	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-parse-timestamp-fields	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-read	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-read-line	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-read-string	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-register-default-tag-parser	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-register-tag-parser	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-string-reader	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+compiler-reader-with-input	light-cljs-125	Internal compiler service; public source bindings are supplied by compiler libraries.
+implements?	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+js-in	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+macroexpand	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+macroexpand-1	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+read	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+read-line	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+read-string	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+satisfies?	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+the-ns	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+unchecked-get	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.
+unchecked-set	light-cljs-125	Compiler/source extension or macro intrinsic; no cljs.core runtime declaration at the pin. Retain its existing intrinsic/macro/extension handling; residual public source and metadata contracts remain with this owner.

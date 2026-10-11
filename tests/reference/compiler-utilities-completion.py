@@ -251,7 +251,7 @@ def execution_mappings():
                 json.dumps(row['signature'], sort_keys=True).encode()).hexdigest()
         direct.append({**common, 'local_execution': execution, 'assertion_ids': []})
         phase.append({**common, **execution})
-    assert len(direct) == 37, len(direct)
+    assert len(direct) == 39, len(direct)
     assert sum(row['obligation_id'].startswith('api::') for row in direct) == 22
     return direct, phase
 

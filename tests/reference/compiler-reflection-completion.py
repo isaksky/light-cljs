@@ -40,19 +40,29 @@ for name, declarations in sorted(by_name.items()):
                 if result: return result
         doc = find_doc(form.children[1]) or 'nil'
     params = list(dict.fromkeys('[' + ' '.join(d['signature']['parameters']) + ']' for d in declarations))
-    arglists = '()' if name.startswith('*') else '(' + ' '.join(params) + ')'
-    metadata[name] = f'{{:file "cljs/core.cljs" :line {span["start_line"]} :column 1 :doc {doc} :arglists {arglists}' + (' :dynamic true' if name.startswith('*') else '') + '}'
+    arglists = '()' if name.startswith('*') or row['declaration'] == 'deftype' else '(' + ' '.join(params) + ')'
+    column = 10 if row['declaration'] == 'deftype' else 1
+    metadata[name] = f'{{:file "cljs/core.cljs" :line {span["start_line"]} :column {column} :doc {doc} :arglists {arglists}' + (' :dynamic true' if name.startswith('*') else '') + '}'
 path = ROOT / 'src/core_public_bindings.tsv'
 meta_path = ROOT / 'src/core_var_metadata.tsv'
 if '--write' in sys.argv:
     path.write_text(catalog)
-    old = [line for line in meta_path.read_text().splitlines() if line.split('\t')[0] not in metadata]
-    meta_path.write_text('\n'.join(old) + '\n' + ''.join(f'{name}\t{data}\n' for name,data in metadata.items()))
-else:
-    assert path.read_text() == catalog, 'Public core declaration catalog differs from pinned inventory'
-    current = dict(line.split('\t', 1) for line in meta_path.read_text().splitlines() if '\t' in line)
-    for name,data in metadata.items(): assert current.get(name) == data, f'Var metadata differs: {name}'
-    print(f'{len(names)} pinned public names/kinds and {len(metadata)} reflected Var metadata declarations match')
+# The pinned analyzer generator owns the complete metadata table. Compare the
+# independent public-source projection structurally; extra analyzer fields and
+# map key order are immaterial. Never replace canonical rows with this subset.
+assert path.read_text() == catalog, 'Public core declaration catalog differs from pinned inventory'
+current = dict(line.split('\t', 1) for line in meta_path.read_text().splitlines() if '\t' in line)
+def shape(text, node):
+    if node.children: return (node.kind, tuple(shape(text, child) for child in node.children))
+    return (node.kind, text[node.start:node.end])
+def fields(text):
+    form = inv.Reader(text).all()[0]
+    return {key.token: shape(text, value) for key, value in zip(form.children[::2], form.children[1::2])}
+for name, data in metadata.items():
+    expected, actual = fields(data), fields(current[name])
+    for key, value in expected.items():
+        assert actual.get(key, ('atom', 'nil')) == value, f'Var metadata differs: {name} {key}'
+print(f'{len(names)} pinned public names/kinds and {len(metadata)} reflected Var metadata projections match')
 # Executable declaration/arity links are independently hashed; source catalogs
 # above do not supply a semantic pass.
 import hashlib

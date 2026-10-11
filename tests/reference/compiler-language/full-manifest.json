@@ -44,7 +44,7 @@
       "upstream-internals": 357,
       "reference-harness": 5
     },
-    "obligations": 4881,
+    "obligations": 5219,
     "public_api_arities": 1327,
     "intended_assertions": 3805
   },
@@ -1399,7 +1399,7 @@
   ],
   "scope": "intended-language",
   "generator_sha256": "12faaa42319ee741b59027b1a313efdf42d31f5ed88b90797cc94493934d42f5",
-  "obligations_sha256": "23deb8aad77b28b65089b133b48a1313ac06f7971b490e52f73a92f5b52cdb19",
+  "obligations_sha256": "ad0c20869f19fff243161ac56c04d7dce8bab2067eb0a6d2e2e95dee8a9f5720",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1444,7 +1444,7 @@
     },
     {
       "path": "src/core_var_metadata.tsv",
-      "sha256": "1c7ef9ebb0fc90f1d2985896d9ccba02eb614facfcab1b8422c0a895152bd2b5"
+      "sha256": "1694470aeab9708a2ac95faad8d9c96455a1d9563ab37b468ea277a1cebddd14"
     },
     {
       "path": "tests/reference/sci/runtime.tsv",
@@ -1470,19 +1470,19 @@
     "execution_evidence"
   ],
   "families": {
-    "public-residual": 7247,
+    "public-residual": 7483,
     "array-compiler-settings": 4,
-    "utilities": 447,
-    "lazy-sequences": 270,
-    "transducers": 487,
-    "hash-equality": 186,
-    "printing-reflection": 206,
-    "sorted-collections": 188,
-    "transient-collections": 105,
-    "multimethods-hierarchies": 58,
+    "utilities": 449,
+    "lazy-sequences": 284,
+    "transducers": 502,
+    "hash-equality": 195,
+    "printing-reflection": 212,
+    "sorted-collections": 202,
+    "transient-collections": 126,
+    "multimethods-hierarchies": 77,
     "regex": 46,
     "library": 273,
-    "reader": 80,
+    "reader": 82,
     "tap-delivery": 3,
     "sequence-transform": 5,
     "eduction": 4

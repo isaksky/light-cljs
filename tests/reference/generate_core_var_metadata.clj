@@ -10,7 +10,16 @@
 (env/with-compiler-env (env/default-compiler-env)
   (ana/analyze-file (io/resource "cljs/core.cljs"))
   (let [defs (get-in @env/*compiler* [:cljs.analyzer/namespaces 'cljs.core :defs])
-        names (map second (re-seq #"(?m)^            \"([^\"\n]+)\" => Self::" (slurp "src/analyzer.rs")))
+        ;; Read every spelling in the resolver, including combined alias arms
+        ;; and arms whose Self expression is on the following line.
+        resolver (second (str/split (slurp "src/analyzer.rs") #"pub\(crate\) fn resolve\(name: &str\)" 2))
+        resolver (first (str/split resolver #"\n    }" 2))
+        names (map second (re-seq #"\"([^\"\n]+)\"" resolver))
+        missing (set (remove #(contains? defs (symbol %)) names))
+        boundaries (set (for [row (str/split-lines (slurp "tests/reference/core-var-metadata-boundaries.tsv"))
+                             :when (not (str/starts-with? row ";;"))]
+                         (first (str/split row #"\t"))))
+        _ (assert (= missing boundaries) (str "Mapped metadata boundary drift: " missing))
         result (str ";; Generated from ClojureScript " revision " core definitions; EPL-1.0.\n"
                  (apply str (for [n (sort names) :let [v (get defs (symbol n))] :when v]
                    (str n "\t" (pr-str

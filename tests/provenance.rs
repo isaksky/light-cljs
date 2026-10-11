@@ -66,17 +66,7 @@ fn validate_origin(row: &str) -> Result<[&str; 9], &'static str> {
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| "expected nine provenance columns")?;
-    let [
-        _,
-        ids,
-        origin,
-        repository,
-        commit,
-        path,
-        anchor,
-        rationale,
-        behavior,
-    ] = fields;
+    let [_, ids, origin, repository, commit, path, anchor, rationale, behavior] = fields;
     if fields.iter().any(|field| field.trim().is_empty())
         || ids.split(',').any(|id| id.is_empty())
         || rationale == "-"
@@ -210,6 +200,15 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 "tests/compiler_reader.rs" => assert!(
                     contains_rust_test(include_str!("compiler_reader.rs"), id),
                     "unknown compiler reader test: {id}"
+                ),
+                "tests/compiler_core_var_metadata.rs" => assert!(
+                    contains_rust_test(include_str!("compiler_core_var_metadata.rs"), id),
+                    "unknown core metadata test: {id}"
+                ),
+                "tests/fixtures/compiler-core-var-metadata.cljs" => assert!(
+                    include_str!("fixtures/compiler-core-var-metadata.cljs")
+                        .contains(&format!("(defn {id} ")),
+                    "unknown core metadata contract: {id}"
                 ),
                 "tests/fixtures/reader-coverage/cljs/syntax_quote_test.cljs" => assert!(
                     include_str!("fixtures/reader-coverage/cljs/syntax_quote_test.cljs")

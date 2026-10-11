@@ -17,7 +17,8 @@ Namespace equality/hash/identity and public arities execute explicitly.
 
 The compiler declaration view uses 889 pinned public name/kind declarations,
 filtered by the executable registry. Nineteen newly exposed Var metadata entries
-are reproduced from the pinned source, independent of test outcomes. Empty
+are checked as independent source projections of the complete canonical
+[mapped metadata table](compiler-core-var-metadata.md), independent of test outcomes. Empty
 source namespaces register in emitted programs. No upstream analyzer AST or
 cache representation is emulated.
 

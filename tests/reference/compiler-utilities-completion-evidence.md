@@ -59,12 +59,14 @@ the independent upstream references, because they are a local phase dialect.
 The fifth probe preserves the complete independent 100,000-input seeded numeric
 roundtrip workflow. It is separate from the original test.check properties.
 
-37 exact declaration mappings (22 public arity rows, fourteen added metadata
+39 exact declaration mappings (22 public arity rows, sixteen metadata
 Vars, and the historical SCI subs declaration) bind ordinary and macro execution
 to public_utilities_execute_in_applications_and_macros. Each mapping retains the
 declaration and resolved signature hashes, named test and whole Rust source
 hash. The script validates them on every reproduction run. Mapping alone does
-not declare passing execution.
+not declare passing execution. The complete mapped metadata reconciliation adds
+the rand and subs metadata rows to these existing executing contracts; see the
+[mapped metadata audit](compiler-core-var-metadata.md).
 
 The following residual source obligations remain explicit in the ledger:
 
