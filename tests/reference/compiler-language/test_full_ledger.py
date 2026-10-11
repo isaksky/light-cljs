@@ -109,7 +109,9 @@ class FullLedgerTests(unittest.TestCase):
         witness = {"fixture_id": "fixture"}
         historical = {"counts": {key: 0 for key in ("covered", "verified-rejection", "verified-warning", "missing", "version-difference", "unrelated")}, "strict_complete": True, "boundary_strict_complete": True}
         evidence = {"fixture": {layer: {"status": "passed"} for layer in report.SEMANTIC_LAYERS}}
-        with patch.object(full, "load", return_value=([source], [], {"counts": {}})), patch.object(full, "load_obligation_witnesses", return_value={}):
+        with patch.object(full, "load", return_value=([source], [], {"counts": {}})), \
+             patch.object(full, "load_obligation_witnesses", return_value={}), \
+             patch.object(full, "load_phase_witnesses", return_value={}):
             self.assertTrue(full.expand_report(historical, {"one": witness}, evidence)["strict_complete"])
             selected = full.expand_report(historical, {"one": witness}, evidence, identities=("one",))
             self.assertFalse(selected["strict_complete"])

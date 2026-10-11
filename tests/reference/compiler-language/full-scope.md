@@ -73,7 +73,7 @@ alone establishes no public operation's macro eligibility.
 
 `full-cases.jsonl` and `full-witnesses.jsonl` accept further expression/namespace
 adapters through the same body/hash/expectation/provenance validation and execution
-runner as historical witnesses. They begin empty. `obligation-witnesses.jsonl`
+runner as historical witnesses. They now include fourteen complete transient body adapters. `obligation-witnesses.jsonl`
 maps a public name/arity to complete body assertion execution mappings, with its
 exact declaration hash, signature hash, and a reviewed faithfulness rationale.
 A selected body subset cannot satisfy an API obligation. API registrations and
@@ -86,7 +86,8 @@ and requires Cargo's one-test/one-pass/zero-ignored outcome. Zero tests, failure
 timeouts, unavailable tools or stale source cannot establish macro eligibility.
 No phase witnesses are inferred from test names or existing implementation.
 Public API completion requires both ordinary operation evidence and this phase
-evidence. The current empty phase catalog deliberately claims no new passes.
+evidence. The phase catalog now binds all 27 transient public name/arity rows to the
+canonical macro contract; a binding alone still supplies no passing observation.
 
 A full-scope selection cannot claim completion when `--feature` or `--id` selects
 a subset, even if every selected witness passes. Independently sourced API/arity,

@@ -1155,3 +1155,60 @@ console.log('public core protocol consumers and reduction boundaries passed');
   assert.equal(core.get(core.meta(set), 'm'), true);
 }
 console.log('persistent helper snapshots, metadata, map entries and traversal assertions passed');
+
+// Transient ownership is private, independently of compiler observations.
+{
+  const original = c.withMeta(c.vector(1), c.hashMap('source', true));
+  const t = c.transient(original);
+  assert.equal(c.satisfies(c.IEditableCollection, original), true);
+  assert.equal(c.satisfies(c.ITransientVector, t), true);
+  for (const protocol of [c.ISeqable, c.ISequential, c.ICollection, c.IHash, c.IEquiv, c.IMeta, c.IWithMeta])
+    assert.equal(c.satisfies(protocol, t), false);
+  assert.equal(c.conjBang(t, 2), t);
+  assert.equal(c.assocBang(t, 1, 20), t);
+  const persistent = c.persistentBang(t);
+  assert.equal(c.prStr(original), '[1]');
+  assert.equal(c.prStr(persistent), '[1 20]');
+  assert.equal(c.meta(persistent), null);
+  assert.equal(c.hash(persistent), c.hash(c.vector(1,20)));
+  for (const operation of [() => c.persistentBang(t), () => c.conjBang(t,3), () => c.assocBang(t,0,3), () => c.popBang(t), () => c.count(t), () => c.get(t,99), () => c.nth(t,0)])
+    assert.throws(operation, /persistent!/);
+  assert.equal(c.nth(t,99,'missing'),'missing');
+  const retained = c.withMeta(c.vector(1),c.hashMap('key','retained')), query=c.vector(1);
+  const tm=c.transient(c.hashMap(retained,10,0,20));
+  c.assocBang(tm,query,11,-0,21);
+  const pm=c.persistentBang(tm);
+  assert.equal(c.count(pm),2);
+  assert.equal(c.nth(c.find(pm,query),0),retained);
+  assert.equal(c.get(tm,query),11); // Pinned hash-map lookup remains readable.
+  assert.throws(() => c.count(tm), /persistent!/);
+  const small=c.transient(c.arrayMap('a',1));
+  c.persistentBang(small);
+  assert.throws(() => c.get(small,'a'), /persistent!/);
+  assert.equal(c.satisfies(c.IDrop,c.hashSet(retained)),false);
+  const ts=c.transient(c.hashSet(retained));
+  assert.equal(c.get(ts,query),query); // A transient set returns the query key.
+  const ps=c.persistentBang(ts);
+  assert.equal(c.get(ps,query),retained);
+  assert.throws(() => c.get(ts,query), /persistent!/); // Small set's array map.
+  const large=c.transient(c.set(c.range(10)));
+  c.disjBang(large,2,4);c.persistentBang(large);
+  assert.equal(c.get(large,3),3);
+  assert.throws(() => c.disjBang(large,3), /persistent!/);
+  let promoted=c.transient(c.arrayMap());
+  const old=promoted;
+  for(let i=0;i<9;i++) promoted=c.assocBang(promoted,i,i);
+  assert.notEqual(promoted,old);
+  assert.equal(c.count(old),8);
+  assert.equal(c.count(c.persistentBang(promoted)),9);
+  c.assocBang(old,0,42);
+  assert.equal(c.get(c.persistentBang(old),0),42);
+  const fail=c.transient(c.vector(1,2));
+  assert.throws(() => c.assocBang(fail,0,5,5,9), /bounds/);
+  assert.equal(c.prStr(c.persistentBang(fail)),'[5 2]');
+  for(const value of [null,c.list(1),c.subvec(c.vector(1),0),c.sortedMap(1,2),{}])
+    assert.throws(() => c.transient(value), /IEditableCollection/);
+  // Forged prototypes and fields never confer editable storage.
+  assert.throws(() => c.conjBang(Object.create(Object.getPrototypeOf(t)),3), /ITransientCollection/);
+}
+console.log('transient ownership, persistence, protocol and lookup assertions passed');

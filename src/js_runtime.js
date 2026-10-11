@@ -12,6 +12,8 @@
   const mapKinds = new WeakMap();
   const mapEntries = new WeakSet();
   const sets = new WeakMap();
+  const setKinds = new WeakMap();
+  const transients = new WeakMap();
   const cells = new WeakMap();
   const views = new WeakMap();
   const reducedValues = new WeakMap();
@@ -674,7 +676,7 @@
         const entries = sets.get(result).slice();
         putMember(entries, args[i]);
         if (entries.length === sets.get(result).length) continue;
-        result = makeSet(entries);
+        result = makeSet(entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
       }
       else if (result == null) result = cons(args[i], emptyList, "list");
       else if (cells.has(result) || views.has(result) || lazyValues.has(result))
@@ -801,9 +803,10 @@
     }
   });
 
-  function makeSet(entries) {
+  function makeSet(entries, kind = entries.length > 8 ? "hash-map" : "array-map") {
     const value = builtinValue("PersistentHashSet", setPrototype);
     sets.set(value, Object.freeze(entries));
+    setKinds.set(value, kind);
     return value;
   }
 
@@ -844,8 +847,127 @@
       if (index >= 0) entries.splice(index, 1);
     }
     if (entries.length === original.length) return value;
-    return preserveMeta(value, makeSet(entries));
+    return preserveMeta(value, makeSet(entries, setKinds.get(value)));
   }
+
+  // Transient payloads own a private mutable copy of canonical collection
+  // storage. Persistence freezes that storage; no persistent alias can mutate it.
+  const transientPrototype = Object.freeze({
+    apply(_self, args) { return this.call(null, ...Array.from(args)); },
+    toString() { return print(this, true); },
+    call(_self, key, notFound) {
+      if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
+      return transientLookup(this, key, arguments.length === 2 ? null : notFound);
+    }
+  });
+  function makeTransient(kind, entries, mapKind) {
+    const name = kind === "vector" ? "TransientVector" : kind === "set" ? "TransientHashSet" : mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap";
+    const result = builtinValue(name, transientPrototype);
+    transients.set(result, {kind, entries, mapKind, editable: true});
+    return result;
+  }
+  function editableTransient(value, operation) {
+    const state = transients.get(value);
+    if (!state?.editable) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
+    return state;
+  }
+  function transient(value) { return core.asTransientProtocol(value); }
+  function asTransient(value) {
+    if (vectors.has(value)) return makeTransient("vector", vectors.get(value).slice());
+    if (maps.has(value)) return makeTransient("map", maps.get(value).slice(), mapKinds.get(value));
+    return makeTransient("set", sets.get(value).slice(), setKinds.get(value));
+  }
+  function persistentBang(value) { return core.persistentBangProtocol(value); }
+  function persistTransient(value) {
+    const state = editableTransient(value, "persistent!");
+    state.editable = false;
+    if (state.kind === "vector") return makeVector(state.entries);
+    if (state.kind === "map") return makeMap(state.entries, state.mapKind);
+    return makeSet(state.entries, state.mapKind);
+  }
+  function transientNth(value, index, fallback) {
+    const state = transients.get(value);
+    // Pinned CLJS's three-argument -nth returns an out-of-range fallback
+    // even after persistence; in-range access still checks ownership.
+    if (fallback !== missing && !(index >= 0 && index < state.entries.length)) return fallback;
+    editableTransient(value, "nth");
+    return vectorNth(state.entries, index, fallback);
+  }
+  function transientLookup(value, key, notFound) {
+    const state = transients.get(value);
+    // TransientHashMap (and its set wrapper) retains readable lookup after
+    // persistence in both pinned versions. Array maps and vectors reject it.
+    if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
+    if (state.kind === "vector") return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
+    const index = entryIndex(state.entries, key, hash(key));
+    return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
+  }
+  function assocTransient(value, key, item, indexed = false) {
+    const state = transients.get(value);
+    if (state.kind === "vector") {
+      if (!indexed && typeof key !== "number") throw new Error("TransientVector's key for assoc! must be a number.");
+      editableTransient(value, "assoc!");
+      if (key >= 0 && key < state.entries.length) state.entries[key & 0x7fffffff] = item;
+      else if (key === state.entries.length) state.entries.push(item);
+      else outOfBounds();
+    } else {
+      editableTransient(value, "assoc!");
+      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, hash(key)) < 0)
+        return assocTransient(makeTransient("map", state.entries.slice(), "hash-map"), key, item);
+      putEntry(state.entries, key, item);
+    }
+    return value;
+  }
+  function conjTransient(value, member) {
+    const state = editableTransient(value, "conj!");
+    if (state.kind === "vector") { state.entries.push(member); return value; }
+    if (state.kind === "set") {
+      putMember(state.entries, member);
+      if (state.entries.length > 8) state.mapKind = "hash-map";
+      return value;
+    }
+    if (predicates.isMapEntry(member)) return core.assocBangProtocol(value, core.keyProtocol(member), core.valProtocol(member));
+    if (predicates.isVector(member)) return core.assocBangProtocol(value, member.call(null, 0), member.call(null, 1));
+    for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) {
+      const entry = first(s);
+      value = core.assocBangProtocol(value, core.keyProtocol(entry), core.valProtocol(entry));
+    }
+    return value;
+  }
+  function removeTransient(value, key, operation) {
+    const state = editableTransient(value, operation), index = entryIndex(state.entries, key, hash(key));
+    if (index >= 0) {
+      if (state.mapKind === "array-map") state.entries[index] = state.entries[state.entries.length - 1];
+      state.entries.splice(state.mapKind === "array-map" ? state.entries.length - 1 : index, 1);
+    }
+    return value;
+  }
+  function popTransient(value) {
+    const state = editableTransient(value, "pop!");
+    if (!state.entries.length) throw new Error("Can't pop empty vector");
+    state.entries.pop(); return value;
+  }
+  function conjBang(value, ...members) {
+    if (!arguments.length) return transient(vector());
+    for (const member of members) value = core.conjBangProtocol(value, member);
+    return value;
+  }
+  function assocBang(value, key, item, ...pairs) {
+    value = core.assocBangProtocol(value, key, item);
+    for (let i = 0; i < pairs.length; i += 2) value = core.assocBangProtocol(value, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+    return value;
+  }
+  function dissocBang(value, key, ...keys) {
+    value = core.dissocBangProtocol(value, key);
+    for (const key of keys) value = core.dissocBangProtocol(value, key);
+    return value;
+  }
+  function disjBang(value, key, ...keys) {
+    value = core.disjoinBangProtocol(value, key);
+    for (const key of keys) value = core.disjoinBangProtocol(value, key);
+    return value;
+  }
+  function popBang(value) { return core.popBangProtocol(value); }
 
   const vectorPrototype = Object.freeze({
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
@@ -946,6 +1068,7 @@
   function count(value) {
     const method = value == null ? null : publicMethod(value, "ICounted/-count", 1, true, true);
     if (method) return method.call(value, value);
+    if (transients.has(value)) return editableTransient(value, "count").entries.length;
     if (lazyValues.has(value)) return accumulatingCount(value);
     if (chunkBuffers.has(value)) return chunkBuffers.get(value).end;
     if (chunks.has(value)) { const c = chunks.get(value); return c.end - c.offset; }
@@ -991,6 +1114,7 @@
     const fallback = arity === 2 ? missing : notFound;
     const method = publicMethod(value, "IIndexed/-nth", arity, true, true);
     if (method) return method.call(value, ...arguments);
+    if (transients.has(value)) return transientNth(value, index, fallback);
     if (chunks.has(value)) return chunkNth(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
     if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
@@ -1031,6 +1155,7 @@
   }
 
   function lookup(value, key, notFound) {
+    if (transients.has(value)) return transientLookup(value, key, notFound);
     const members = sets.get(value);
     if (members) {
       const index = entryIndex(members, key, hash(key));
@@ -1630,7 +1755,8 @@
   const IPending = function () {}, IDeref = function () {}, IAtom = function () {}, IReset = function () {}, ISwap = function () {}, IVolatile = function () {}, IWatchable = function () {};
   const Fn = function () {}, IList = function () {}, IFn = function () {}, ISeqable = function () {}, ISeq = function () {}, INext = function () {}, ICounted = function () {}, IIndexed = function () {}, ILookup = function () {}, ISequential = function () {}, IAssociative = function () {};
   const IReduce = function () {}, IKVReduce = function () {}, IVector = function () {}, IMap = function () {}, ICollection = function () {}, IEmptyableCollection = function () {}, ISet = function () {}, IStack = function () {}, IReversible = function () {}, IComparable = function () {}, IIterable = function () {};
-  const coreProtocolNames = new Map([[IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
+  const IEditableCollection = function () {}, ITransientCollection = function () {}, ITransientAssociative = function () {}, ITransientMap = function () {}, ITransientVector = function () {}, ITransientSet = function () {};
+  const coreProtocolNames = new Map([[IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
   const coreProtocolsByName = new Map([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
   IMeta.function = true; Fn.function = true; ICounted.null = true; IHash._ = true; IEquiv._ = true;
   // Metadata belongs to values, never structural equality or hash payloads.
@@ -1838,6 +1964,15 @@
     return builtinCoreImplementation(protocol, value);
   }
   function builtinCoreImplementation(protocol, value) {
+    const transient = transients.get(value);
+    if (protocol === IEditableCollection) return vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && mapKinds.get(value) !== "sorted-map" || sets.has(value);
+    if (protocol === ITransientCollection) return !!transient;
+    if (protocol === ITransientAssociative) return !!transient && transient.kind !== "set";
+    if (protocol === ITransientVector || protocol === IIndexed && transient) return transient?.kind === "vector";
+    if (protocol === ITransientMap) return transient?.kind === "map";
+    if (protocol === ITransientSet) return transient?.kind === "set";
+    if (transient && (protocol === ICounted || protocol === ILookup || protocol === IFn)) return true;
+    if (transient) return false;
     if (protocol === Fn) return metaFunctions.has(value) || vars.has(value);
     if (protocol === IList) return ["list", "cons"].includes(cells.get(value)?.kind);
     if (protocol === IFn) return !!ifnMethods(value) || isIdent(value) || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
@@ -2053,7 +2188,7 @@
       maps.set(result, maps.get(value)); mapKinds.set(result, mapKinds.get(value));
     }
     else {
-      const stores = [symbols, vectors, maps, mapKinds, sets, cells, views, queues, lazyValues, vars, subvecSources];
+      const stores = [symbols, vectors, maps, mapKinds, setKinds, sets, cells, views, queues, lazyValues, vars, subvecSources];
       if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       result = Object.create(Object.getPrototypeOf(value));
       for (const store of [...stores, protocolImplementations, typeFields, recordTypes]) if (store.has(value)) store.set(result, store.get(value));
@@ -2245,7 +2380,7 @@
     const method = value[protocolSlot(key, arity)];
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
-  const protocolStores = [keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  const protocolStores = [transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   function ownedProtocolValue(value) { return protocolStores.some(store => store.has(value)); }
   function builtin(value, key, arity) {
     const method = directMethod(value, key, arity);
@@ -3050,56 +3185,23 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  function intoReducer(to) {
-    // Editable built-ins use construction operations rather than persistent
-    // protocol overrides, matching CLJS's transient path without exposing it.
-    if (vectors.has(to) && !mapEntries.has(to)) return (acc, item) => makeVector([...vectors.get(acc), item]);
-    if (sets.has(to)) return (acc, item) => { const entries = sets.get(acc).slice(); putMember(entries, item); return makeSet(entries); };
-    if (maps.has(to) && !recordTypes.has(to) && mapKinds.get(to) !== "sorted-map") {
-      const associate = (acc, key, value) => {
-        const entries = maps.get(acc).slice(); putEntry(entries, key, value);
-        return makeMap(entries, mapKinds.get(acc) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
-      };
-      return (acc, item) => {
-        if (predicates.isMapEntry(item)) return associate(acc, core.keyProtocol(item), core.valProtocol(item));
-        if (predicates.isVector(item)) return associate(acc, item.call(null, 0), item.call(null, 1));
-        for (let current = seq(item); current != null; current = next(current)) {
-          const entry = first(current);
-          if (!truth(entry)) break;
-          acc = associate(acc, core.keyProtocol(entry), core.valProtocol(entry));
-        }
-        return acc;
-      };
-    }
-    return to == null ? conj : core.conjProtocol;
-  }
-  function editableCollection(value) {
-    return vectors.has(value) && !mapEntries.has(value) || sets.has(value) || maps.has(value) && !recordTypes.has(value) && mapKinds.get(value) !== "sorted-map";
-  }
-  function editableInitial(value) {
-    if (vectors.has(value)) return makeVector(vectors.get(value).slice());
-    if (sets.has(value)) return makeSet(sets.get(value).slice());
-    return makeMap(maps.get(value).slice(), mapKinds.get(value));
-  }
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
       case 1: return to;
       case 2: {
-        const editable = editableCollection(to);
-        const result = reduce(intoReducer(to), editable ? editableInitial(to) : to, from);
-        return editable ? withMeta(result, meta(to)) : result;
+        if (implementsProtocol(IEditableCollection, to))
+          return core.withMetaProtocol(persistentBang(reduce(core.conjBangProtocol, transient(to), from)), meta(to));
+        return reduce(to == null ? conj : core.conjProtocol, to, from);
       }
       case 3: {
-        const editable = editableCollection(to), metadata = editable ? meta(to) : null;
-        const add = intoReducer(to);
+        const editable = implementsProtocol(IEditableCollection, to), metadata = editable ? meta(to) : null;
         const rf = !editable ? conj : function (...args) {
-          if (args.length === 1) return withMeta(args[0], metadata);
-          if (args.length === 2) return add(args[0], args[1]);
+          if (args.length === 1) return core.withMetaProtocol(persistentBang(args[0]), metadata);
+          if (args.length === 2) return conjBang(args[0], args[1]);
           return invalidArity(args.length);
         };
-        const transformed = from.call(null, rf);
-        return transformed.call(null, reduce(transformed, editable ? editableInitial(to) : to, source));
+        return transduce(from, rf, editable ? transient(to) : to, source);
       }
       default: return invalidArity(arguments.length);
     }
@@ -3208,6 +3310,10 @@
     if (typeof value === "boolean") return String(value);
     if (typeof value === "function" && value.cljs$lang$type && typeNames.has(value)) return typeNames.get(value);
     if (value instanceof ExceptionInfo) return value.toString();
+    if (transients.has(value)) {
+      const state = transients.get(value);
+      return "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]";
+    }
     if (atoms.has(value) || volatiles.has(value)) return "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val " + print(value.state, readable) + "}]";
     if (delays.has(value)) {
       const state = delays.get(value);
@@ -3417,11 +3523,11 @@
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
     const result = Object.create(Object.getPrototypeOf(value));
-    for (const store of [...protocolStores, metadataValues, mapKinds, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
+    for (const store of [...protocolStores, metadataValues, mapKinds, setKinds, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
   });
-  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], nth), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
+  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], function (value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
   for (const [names, base] of [
     [["PersistentVector", "Subvec", "MapEntry"], vectorPrototype],
     [["PersistentArrayMap", "PersistentHashMap", "PersistentTreeMap"], mapPrototype],
@@ -3429,6 +3535,7 @@
     [["Keyword"], keywordPrototype], [["Symbol"], symbolPrototype], [["Reduced"], reducedPrototype], [["UUID"], uuidPrototype]
   ]) for (const name of names) builtinType(name, base);
   builtinType("Delay", Object.prototype);
+  for (const name of ["TransientVector", "TransientArrayMap", "TransientHashMap", "TransientHashSet"]) builtinType(name, transientPrototype);
   Object.defineProperty(builtinTypes.Subvec.prototype, "v", {get() { return subvecSources.get(this); }});
   for (const [Type, store, fields] of [
     [builtinTypes.Delay, delays, {f: "thunk", value: "value"}],
@@ -3481,6 +3588,16 @@
     return makeMap(entries, "hash-map");
   };
   const core = {...builtinTypes, IChunk, IChunkedNext, IDrop,
+    IEditableCollection, ITransientCollection, ITransientAssociative, ITransientMap, ITransientVector, ITransientSet,
+    transient, persistentBang, conjBang, assocBang, dissocBang, disjBang, popBang,
+    asTransientProtocol: coreMethod("IEditableCollection/-as-transient", [1], asTransient),
+    persistentBangProtocol: coreMethod("ITransientCollection/-persistent!", [1], persistTransient),
+    conjBangProtocol: coreMethod("ITransientCollection/-conj!", [2], conjTransient),
+    assocBangProtocol: coreMethod("ITransientAssociative/-assoc!", [3], assocTransient),
+    assocNBangProtocol: coreMethod("ITransientVector/-assoc-n!", [3], (value, index, item) => assocTransient(value, index, item, true)),
+    dissocBangProtocol: coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!")),
+    disjoinBangProtocol: coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!")),
+    popBangProtocol: coreMethod("ITransientVector/-pop!", [1], popTransient),
     chunkedNextProtocol: coreMethod("IChunkedNext/-chunked-next", [1], value => seq(ownedChunkRest(value))),
     dropProtocol: coreMethod("IDrop/-drop", [2], dropOwned),
     dropFirstProtocol: coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; }),

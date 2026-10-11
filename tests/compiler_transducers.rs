@@ -178,14 +178,7 @@ fn fixture_provenance_keeps_complete_upstream_bodies_and_native_case_identity() 
         .filter(|case| case.local != "-")
         .map(|case| case.id)
         .collect();
-    assert_eq!(
-        persistent_differences,
-        [
-            "native-into-xf-bad-xf-arity",
-            "native-into-xf-bad-step",
-            "native-into-xf-bad-completion"
-        ]
-    );
+    assert!(persistent_differences.is_empty());
     for (id, assertions) in [
         ("upstream-test-map-new-transducers", 3),
         ("upstream-test-into+halt-when", 2),

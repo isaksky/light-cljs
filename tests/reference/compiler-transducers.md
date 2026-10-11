@@ -98,14 +98,12 @@ but release realizes effect log `[0 1 2]`, while checkout realizes `[0 1 2 3]`.
 The optional release column retains the release observation; generated
 JavaScript follows the pinned checkout contract.
 
-Exactly three persistent fallback differences are recorded:
-`native-into-xf-bad-xf-arity`, `native-into-xf-bad-step`, and
-`native-into-xf-bad-completion` expose an opaque CLJS `TransientVector` when the
-malformed transform bypasses ordinary completion. The persistent implementation
-returns `[]`, `[]`, and `[1 nil]`, respectively. Both oracle observations remain
-in the fixture; the optional local column tests the declared persistent results.
-Ordinary valid transformed `into` values, metadata, targets and effects match
-the references. Transient optimization/object exposure is outside this task.
+The former three persistent fallback differences for malformed `into` transforms
+were removed when canonical transients landed. `native-into-xf-bad-xf-arity`,
+`native-into-xf-bad-step`, and `native-into-xf-bad-completion` now expose the same
+opaque `TransientVector` as both pinned references when completion is bypassed.
+No local persistent fallback expectation remains; `into` uses the public editable
+and transient protocols. See the [transient audit](compiler-transients.md).
 
 ## Verification
 

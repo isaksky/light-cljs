@@ -74,6 +74,27 @@ pub enum CoreFnId {
     Dissoc,
     Disj,
     Conj,
+    Transient,
+    PersistentBang,
+    ConjBang,
+    AssocBang,
+    DissocBang,
+    DisjBang,
+    PopBang,
+    IEditableCollection,
+    ITransientCollection,
+    ITransientAssociative,
+    ITransientMap,
+    ITransientVector,
+    ITransientSet,
+    AsTransientProtocol,
+    PersistentBangProtocol,
+    ConjBangProtocol,
+    AssocBangProtocol,
+    DissocBangProtocol,
+    DisjoinBangProtocol,
+    PopBangProtocol,
+    AssocNBangProtocol,
     Assoc,
     Seq,
     SeqToMap,
@@ -620,6 +641,27 @@ impl CoreFnId {
             "dissoc" => Self::Dissoc,
             "disj" => Self::Disj,
             "conj" => Self::Conj,
+            "transient" => Self::Transient,
+            "persistent!" => Self::PersistentBang,
+            "conj!" => Self::ConjBang,
+            "assoc!" => Self::AssocBang,
+            "dissoc!" => Self::DissocBang,
+            "disj!" => Self::DisjBang,
+            "pop!" => Self::PopBang,
+            "IEditableCollection" => Self::IEditableCollection,
+            "ITransientCollection" => Self::ITransientCollection,
+            "ITransientAssociative" => Self::ITransientAssociative,
+            "ITransientMap" => Self::ITransientMap,
+            "ITransientVector" => Self::ITransientVector,
+            "ITransientSet" => Self::ITransientSet,
+            "-as-transient" => Self::AsTransientProtocol,
+            "-persistent!" => Self::PersistentBangProtocol,
+            "-conj!" => Self::ConjBangProtocol,
+            "-assoc!" => Self::AssocBangProtocol,
+            "-dissoc!" => Self::DissocBangProtocol,
+            "-disjoin!" => Self::DisjoinBangProtocol,
+            "-pop!" => Self::PopBangProtocol,
+            "-assoc-n!" => Self::AssocNBangProtocol,
             "assoc" => Self::Assoc,
             "seq" => Self::Seq,
             "seq-to-map-for-destructuring" => Self::SeqToMap,
@@ -1247,6 +1289,27 @@ impl CoreFnId {
             Self::Dissoc => "dissoc",
             Self::Disj => "disj",
             Self::Conj => "conj",
+            Self::Transient => "transient",
+            Self::PersistentBang => "persistentBang",
+            Self::ConjBang => "conjBang",
+            Self::AssocBang => "assocBang",
+            Self::DissocBang => "dissocBang",
+            Self::DisjBang => "disjBang",
+            Self::PopBang => "popBang",
+            Self::IEditableCollection => "IEditableCollection",
+            Self::ITransientCollection => "ITransientCollection",
+            Self::ITransientAssociative => "ITransientAssociative",
+            Self::ITransientMap => "ITransientMap",
+            Self::ITransientVector => "ITransientVector",
+            Self::ITransientSet => "ITransientSet",
+            Self::AsTransientProtocol => "asTransientProtocol",
+            Self::PersistentBangProtocol => "persistentBangProtocol",
+            Self::ConjBangProtocol => "conjBangProtocol",
+            Self::AssocBangProtocol => "assocBangProtocol",
+            Self::DissocBangProtocol => "dissocBangProtocol",
+            Self::DisjoinBangProtocol => "disjoinBangProtocol",
+            Self::PopBangProtocol => "popBangProtocol",
+            Self::AssocNBangProtocol => "assocNBangProtocol",
             Self::Assoc => "assoc",
             Self::Seq => "seq",
             Self::SeqToMap => "seqToMap",
@@ -5908,6 +5971,13 @@ impl Analyzer<'_> {
                         | "IEmptyableCollection"
                         | "ISet"
                         | "IStack"
+                        | "IEditableCollection"
+                        | "ITransientCollection"
+                        | "ITransientAssociative"
+                        | "ITransientMap"
+                        | "ITransientVector"
+                        | "ITransientSet"
+
                         | "IReversible"
                         | "IComparable"
                         | "IIterable"
@@ -6039,6 +6109,14 @@ impl Analyzer<'_> {
                         ("IEncodeClojure", "-js->clj") => vec![2],
                         ("IFn", "-invoke") => (1..=22).collect(),
                         ("IReduce", "-reduce") => vec![2, 3],
+                        ("IEditableCollection", "-as-transient")
+                        | ("ITransientCollection", "-persistent!")
+                        | ("ITransientVector", "-pop!") => vec![1],
+                        ("ITransientCollection", "-conj!")
+                        | ("ITransientMap", "-dissoc!")
+                        | ("ITransientSet", "-disjoin!") => vec![2],
+                        ("ITransientAssociative", "-assoc!")
+                        | ("ITransientVector", "-assoc-n!") => vec![3],
                         ("IMapEntry", "-key" | "-val")
                         | ("IChunkedSeq", "-chunked-first" | "-chunked-rest")
                         | ("IChunkedNext", "-chunked-next")

@@ -13,8 +13,9 @@ prints exactly `4\n`. Source macros and first-party core macro algorithms use
 the compiled JavaScript host; compiler-owned declaration/binding transforms
 remain in Rust. Immutable vectors/lists/maps/sets, symbols/keywords,
 quoted data, lazy sequence sources and a finite set of first-class core functions
-execute through a first-party JavaScript runtime. Sorted sets and transients
-remain missing intended-language features. Explicit compilation-use records and
+execute through a first-party JavaScript runtime. Transient vectors/maps/sets
+and IEditableCollection/ITransient* protocols use that same runtime in applications
+and macro computations. Sorted sets remain missing intended-language features. Explicit compilation-use records and
 conservative application reachability now live in Rust. A bundled general standard library
 is not currently provided. See the
 [language coverage boundaries](evaluator-migration.md#language-coverage-and-completion-boundaries)
@@ -1351,11 +1352,12 @@ analysis as in the reference; receiver expressions returning nil fail at runtime
 
 This is the existing selected-scope gate. Its strict result does not establish
 full intended-language completion: the current inventory excludes, among other
-families, transients, transducers, sorted collections and multimethods. Those
-remain assigned implementation work. The
+families, transients, transducers, sorted collections and multimethods. Transients
+and eager transducers now have separate executable audits; remaining obligations
+stay visible in the full ledger. The
 [broader coverage contract](evaluator-migration.md#language-coverage-and-completion-boundaries)
 requires separate parsing, lowering, native, canonical JS, macro-execution and
-execution-evidence accounting; that ledger expansion is planned in
+execution-evidence accounting; the full ledger was expanded in
 `light-cljs-116`, with language completion in `light-cljs-125`.
 
 The [assertion inventory](../tests/reference/compiler-language/README.md) retains
@@ -1740,6 +1742,23 @@ transducer constructors and transient collection APIs remain outside this helper
 member. See the [collection helper audit](../tests/reference/compiler-collection-helpers.md)
 for 164 imported assertion sites, independent probes and measured output costs.
 
+
+## Transient collections
+
+`transient`, `persistent!`, `conj!`, `assoc!`, `dissoc!`, `disj!`, and `pop!`
+are first-class functions for canonical vectors, maps, and sets. Their
+IEditableCollection/ITransientCollection/ITransientAssociative/ITransientMap/
+ITransientVector/ITransientSet methods also dispatch to custom implementations.
+Vectors provide indexed access; all three provide lookup, count, and IFn calls.
+Transients own private mutable copies of persistent storage. Persistence drops
+metadata, freezes the result, and prevents subsequent mutation or counting.
+Pinned CLJS allows lookup on persisted hash-map transients; array-map transients
+and vectors reject it. Out-of-range three-argument vector nth returns its fallback
+even after persistence. Transient sets return the query key during lookup, while
+persisted sets retain the original representative. Array maps can promote to a
+new transient hash map; callers must retain the operation's returned value.
+Lists, subvecs, sorted maps, and records require an explicit editable protocol
+implementation. See the [complete-body and phase audit](../tests/reference/compiler-transients.md).
 
 ## Lazy sequence operations and comprehensions
 

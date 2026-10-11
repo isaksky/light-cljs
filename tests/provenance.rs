@@ -1,7 +1,12 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 7] = [
+const CASE_FILES: [(&str, &str, usize); 8] = [
+    (
+        "tests/fixtures/compiler-transients.tsv",
+        include_str!("fixtures/compiler-transients.tsv"),
+        4,
+    ),
     (
         "tests/fixtures/compiler-language.tsv",
         include_str!("fixtures/compiler-language.tsv"),
@@ -152,6 +157,7 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
             match local_path {
                 "tests/fixtures/sci-outcomes.tsv"
                 | "tests/fixtures/compiler-language.tsv"
+                | "tests/fixtures/compiler-transients.tsv"
                 | "tests/fixtures/execution.tsv"
                 | "tests/fixtures/execution-outcomes.tsv"
                 | "tests/fixtures/execution-literals.tsv"

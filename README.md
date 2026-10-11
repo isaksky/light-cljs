@@ -330,7 +330,9 @@ JavaScript Error identity and arbitrary thrown values. The
 [exception evidence](tests/reference/compiler-language/evidence.md#exceptions-member--2026-10-09)
 records 42 selected upstream assertions and 56 independent pinned comparisons.
 The self-contained runtime is included once only when used; primitive output
-keeps its existing small helpers. Sorted sets and transient collections remain
+keeps its existing small helpers. Transient vectors/maps/sets and their public
+protocols execute in the shared runtime and during macro expansion; see the
+[transient audit](tests/reference/compiler-transients.md). Sorted sets remain
 intended language gaps. Rust application preparation removes unused inert
 definitions while retaining ordered effects, entry results, explicit exports and
 Var observations. It conservatively specializes proven immutable top-level calls;
@@ -550,8 +552,8 @@ retains every runtime test/support file from the pinned checkout, independent
 public core/library names and arities, syntax, and SCI/API provenance. It exposes
 parse, analysis/lowering, removed native execution, canonical JavaScript,
 QuickJS macro eligibility, and meaningful execution evidence separately.
-Missing transients, transducers, sorted collections, multimethods, and other
-unexecuted obligations have responsible Pellet links. `--strict` currently fails
+Unexecuted sorted collection, multimethod, and other obligations have responsible
+Pellet links. Transients and eager transducers have separate executing audits. `--strict` currently fails
 for the full scope; parser acceptance and passing historical subsets cannot
 establish completion. `--scope historical-selected` reproduces the earlier
 18-file batch and its scoped execution gate.
