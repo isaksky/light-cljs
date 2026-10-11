@@ -328,6 +328,16 @@ class FullLedgerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     full.load_obligation_witnesses([target], sources, {"a": {}, "b": {}})
 
+    def test_phase_provenance_is_loaded_once_per_operation_validation(self):
+        assertions, obligations, _ = full.load()
+        _, witnesses, _ = report.load_contract("intended-language")
+        with patch.object(full, "load_phase_witnesses", wraps=full.load_phase_witnesses) as phases:
+            first = full.load_obligation_witnesses(obligations, assertions, witnesses)
+            self.assertEqual(phases.call_count, 1)
+            second = full.load_obligation_witnesses(obligations, assertions, witnesses)
+            self.assertEqual(phases.call_count, 2)
+        self.assertEqual(first, second)
+
     def test_macro_phase_execution_rejects_zero_tests_skips_and_failed_runs(self):
         item = {"test_file": "tests/compiler_macros.rs", "test_name": "example", "test_source_sha256": "complete-source"}
         valid = "running 1 test\ntest example ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s\n"

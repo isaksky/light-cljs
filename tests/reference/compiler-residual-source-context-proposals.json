@@ -43,13 +43,13 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_test.cljs": "ad38e35648b0f3a87b66cc3d39fa86c729718cb0af0981f521553fd3fc3cb944",
             "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_other.cljs": "69ef5d99fd02fd13da46a188ad06ff5b5d802f7ce6b416b827c7f07e4e5f8225",
             "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_macros.cljs": "d6d0d1cbbefd8095c2a782faf243b7a24f9e843d48ecbc50e858eacf49cccbd3",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -95,12 +95,12 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/syntax-quote/cljs/syntax_quote_test.cljs": "9cb089e6140b4afc686a0a392c67f837e6bb82fe02e79d93518de3e78b80b616",
             "tests/fixtures/compiler-residual-source-context/syntax-quote/cljs/test.cljs": "b62c34451bb313b8402ad3663e32f9a5a39558986979554ae777f26fd0aa22ca",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -162,11 +162,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -179,11 +179,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -250,12 +250,12 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/cljs-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
             "tests/fixtures/compiler-residual-source-context/cljs-shadow/baz.cljs": "c4744629eb1f40d5b95469f57391d4102450646a056c9fbfa4e894ddddec12a2",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -322,12 +322,12 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/foo-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
             "tests/fixtures/compiler-residual-source-context/foo-shadow/baz.cljs": "c4744629eb1f40d5b95469f57391d4102450646a056c9fbfa4e894ddddec12a2",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -381,11 +381,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/top-level/cljs/top_level.cljs": "ecf36324188c46de092ddad498b959db3af3339a81a80fc97ee720b55d3ba5c5",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -431,11 +431,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/js-keys/cljs/macro_test.cljs": "3782514a131be6ba1f6a06ddc953a5f99bfa2624a18020962be77ca52a179572",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -496,14 +496,14 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
             "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -516,14 +516,14 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
             "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -536,14 +536,14 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
             "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -556,14 +556,14 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
             "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -623,13 +623,13 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -642,13 +642,13 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -661,13 +661,13 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -719,13 +719,13 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test.cljs": "62f941cd8dcba802c664c068ee0d6c1901bb98f62485edd533e4f4e9569b02d3",
             "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
             "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -771,11 +771,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/static/static/core_test.cljs": "746c42306c1fd4ca957cf2dd92196d46e90ba5bd4d9f2deadebbff66f3e560d9",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -827,11 +827,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/tagged-runtime/cljs/tagged_literals_test.cljs": "4414eb7222cb6a88517fa70afd4ba1140299543b860c53b994a800aad41ae7e2",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -881,11 +881,374 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/edn-stream/clojure/edn_test.cljs": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cljs-residual-source-context-apply",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns cljs.apply-test)\n(defn fn-returning-this\n  [x]\n  (this-as this\n    this))\n(def meta-f (with-meta (fn [& a] a) {}))\n(defn run [] (do (do (assert (= 1 (apply js/parseInt [\"1\"]))) (assert (= 1 (apply js/parseInt \"1\" nil))) (assert (= 1 (apply js/parseInt \"1\" []))) (assert (= 15 (apply js/parseInt \"F\" [16]))) (let [source-context-value__ (identical? fn-returning-this (apply fn-returning-this [0])) source-context-message__ \"apply should supply the this object to be the function itself\"] (assert source-context-value__ source-context-message__)) true) (do (assert (= 1 (apply #{1} [1]))) (assert (= nil (apply #{1} [2]))) (assert (= 1 (apply #{1} 1 [2]))) (assert (= 2 (apply #{} 1 [2]))) (let [source-context-value__ (try (apply #{} []) false (catch js/Error sequence-error true)) source-context-message__ \"We should still get wrong arity errors\"] (assert source-context-value__ source-context-message__)) true) (do (assert (= nil (apply meta-f []))) (let [source-context-value__ (= '(1)) source-context-message__ (apply meta-f [1])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= '(1)) source-context-message__ (apply meta-f 1 [])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= '(1 2)) source-context-message__ (apply meta-f 1 2 [])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= '(1 2 3)) source-context-message__ (apply meta-f 1 2 3 [])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= '(1 2 3 4)) source-context-message__ (apply meta-f 1 2 3 4 [])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= '(1 2 3 4 5)) source-context-message__ (apply meta-f 1 2 3 4 5 [])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= (range 1 8)) source-context-message__ (apply meta-f 1 2 3 4 5 [6 7])] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= (range 21) (apply meta-f (range 21))) source-context-message__ \"Should properly call the last IFn arity with 20 args with last being a seq\"] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= (range 22) (apply meta-f (range 22))) source-context-message__ \"Should properly call the last IFn arity with 20 args with last being a seq\"] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= (range 22) (.apply meta-f nil (to-array (range 22)))) source-context-message__ \".apply should also handle >20 arguments\"] (assert source-context-value__ source-context-message__)) (let [ctor #(.apply meta-f nil (js-arguments))] \n    (assert (= '(1 2 3) (.apply ctor nil #js [1 2 3])))\n    (assert (= (range 30) (.apply ctor nil (to-array (range 30)))))) true) (do (assert (= 2 (apply (fn ([a] a) ([a b] b)) 1 [2]))) (assert (= 1 (apply (fn ([a] a) ([a b] b)) 1 []))) (assert (= 1 (apply (fn ([a] a) ([a b] b)) 1 nil))) (assert (try (apply (fn ([a] a) ([a b] b)) 1 2 3 nil) false (catch js/Error sequence-error true))) (assert (try (apply (fn ([a b] a)\n                                 ([a b c] a)) [1]) false (catch js/Error sequence-error true))) true) (do (doseq [f [(fn [& r] r)\n             (fn [a & r] (list* a r))\n             (fn [a b & r] (list* a b r))\n             (fn [a b c & r] (list* a b c r))\n             (fn [a b c d & r] (list* a b c d r))\n             (fn [a b c d e & r] (list* a b c d e r))]]\n    (assert (= (range 10) (apply f (range 10))))\n    (assert (= (range 10) (apply f 0 (range 1 10))))\n    (assert (= (range 10) (apply f 0 1 (range 2 10))))\n    (assert (= (range 10) (apply f 0 1 2 (range 3 10))))\n    (assert (= (range 10) (apply f 0 1 2 3 (range 4 10))))\n    (assert (= (range 10) (apply f 0 1 2 3 4 (range 5 10))))\n    (assert (= (range 10) (apply f 0 1 2 3 4 5 (range 6 10))))) (let [source-context-value__ (nil? (apply (fn [a & b] b) [1])) source-context-message__ \"rest should stay nil\"] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (nil? (apply (fn [a & b] b) 1 [])) source-context-message__ \"rest should be nil'd\"] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= '(2) (apply (fn [a & b] b) 1 [2])) source-context-message__ \"rest should be nil'd\"] (assert source-context-value__ source-context-message__)) (let [source-context-value__ (= (range 30)\n         (apply (fn [_ _ _ _ _ a b c d e _ _ _ _ _ f g h i j k _ _ _ _ _ & R]\n                  (let [a (array)]\n                    (copy-arguments a)\n                    (concat (.slice a 0 26) R)))\n                (range 30))) source-context-message__ \"Variadic function are not limited to 20 params\"] (assert source-context-value__ source-context-message__)) true) (do (doseq [f [(fn ([]) ([& r] r))\n             (fn ([a]) ([a & r] (list* a r)))\n             (fn ([a]) ([a b & r] (list* a b r)))\n             (fn ([a]) ([a b c & r] (list* a b c r)))\n             (fn ([a]) ([a b c d & r] (list* a b c d r)))\n             (fn ([a]) ([a b c d e & r] (list* a b c d e r)))]]\n    (assert (= (range 10) (apply f (range 10))))\n    (assert (= (range 10) (apply f 0 (range 1 10))))\n    (assert (= (range 10) (apply f 0 1 (range 2 10))))\n    (assert (= (range 10) (apply f 0 1 2 (range 3 10))))\n    (assert (= (range 10) (apply f 0 1 2 3 (range 4 10))))\n    (assert (= (range 10) (apply f 0 1 2 3 4 (range 5 10))))\n    (assert (= (range 10) (apply f 0 1 2 3 4 5 (range 6 10))))) (assert (= 1 (apply (fn ([a] a) ([a & b] b)) [1]))) (assert (= '(2) (apply (fn ([a] a) ([a & b] b)) 1 [2]))) (assert (= 1 (apply (fn ([a] a) ([a & b] b)) 1 []))) (assert (= 1 (apply (fn ([a] a) ([a & b] b)) [1]))) (assert (= '(2 3 4 5 6) (apply (fn ([a] a) ([a & b] b)) 1 2 3 4 5 [6]))) (assert (= '(2 3 4 5) (apply (fn ([a] a) ([a & b] b)) 1 2 3 4 5 []))) (let [source-context-value__ (= (range 30)\n         (apply (fn ([a])\n                  ([_ _ _ _ _ a b c d e _ _ _ _ _ f g h i j k _ _ _ _ _ & R]\n                   (let [a (array)]\n                     (copy-arguments a)\n                     (concat (.slice a 0 26) R))))\n                (range 30))) source-context-message__ \"Variadic function are not limited to 20 params\"] (assert source-context-value__ source-context-message__)) true)))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/apply",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/apply",
+      "entry": "cljs.apply-test",
+      "export": "run",
+      "reference_files_sha256": {
+        "cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "module_source": "src/test/cljs/cljs/apply_test.cljs",
+      "module_sha256": "f5663f0448826f0fe5f30cee65670c5132845bca922a2589d58cbd2011012699",
+      "complete_original_provenance": [
+        {
+          "body_id": "apply_test.cljs::fn-returning-this",
+          "source_sha256": "fc9d170d21fb9f931e6c39f3561aeaafbbe7523d36b5a639ef0d91e26b581c74"
+        },
+        {
+          "body_id": "apply_test.cljs::meta-f",
+          "source_sha256": "3b5f9e55c5dd95769a6b11c82c2374c6c2c23cc037143b245dab20d7cbc8a1fc"
+        },
+        {
+          "body_id": "apply_test.cljs::js-fns-test",
+          "source_sha256": "fbb14994ccf1a76dfc3487e6d3229777976f30b1a24bd5b29d0e2ef423157c20"
+        },
+        {
+          "body_id": "apply_test.cljs::data-structures-test",
+          "source_sha256": "8ac691e75bf17bd29dda9f1ea3f8aede99d50bd0c93f3f332bb076b1f12ed67e"
+        },
+        {
+          "body_id": "apply_test.cljs::meta-fn-test",
+          "source_sha256": "06c3fc72895dfcad0b3c116323e98487189e03d16938ad0bb3c0bca06eef9090"
+        },
+        {
+          "body_id": "apply_test.cljs::multi-arity-test",
+          "source_sha256": "91539c4e0a8f1293732248f424fc34da136493a43d13446cfef4e74390ee431f"
+        },
+        {
+          "body_id": "apply_test.cljs::single-arity-variadic-test",
+          "source_sha256": "451306ba1a6d6693a756d9a5a0243460f329b6624eec4ffb3e65296296deca91"
+        },
+        {
+          "body_id": "apply_test.cljs::multi-arity-variadic-test",
+          "source_sha256": "eb1f9f91371c77cf6057f9fd53ba998dd6204647963ca5ac6bf6b65b20609809"
+        }
+      ],
+      "namespace_source_sha256": "a821463469d27550398d62ca6ae0ac1613fb960dcd701354155d5956333e60d7",
+      "expected": {
+        "id": "cljs-residual-source-context-apply",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mappings": [
+        {
+          "body_id": "apply_test.cljs::js-fns-test",
+          "body_sha256": "fbb14994ccf1a76dfc3487e6d3229777976f30b1a24bd5b29d0e2ef423157c20",
+          "reference_fixture_id": "cljs-residual-source-context-apply",
+          "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+          "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "apply_test.cljs::data-structures-test",
+          "body_sha256": "8ac691e75bf17bd29dda9f1ea3f8aede99d50bd0c93f3f332bb076b1f12ed67e",
+          "reference_fixture_id": "cljs-residual-source-context-apply",
+          "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+          "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "apply_test.cljs::meta-fn-test",
+          "body_sha256": "06c3fc72895dfcad0b3c116323e98487189e03d16938ad0bb3c0bca06eef9090",
+          "reference_fixture_id": "cljs-residual-source-context-apply",
+          "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+          "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "apply_test.cljs::multi-arity-test",
+          "body_sha256": "91539c4e0a8f1293732248f424fc34da136493a43d13446cfef4e74390ee431f",
+          "reference_fixture_id": "cljs-residual-source-context-apply",
+          "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+          "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "apply_test.cljs::single-arity-variadic-test",
+          "body_sha256": "451306ba1a6d6693a756d9a5a0243460f329b6624eec4ffb3e65296296deca91",
+          "reference_fixture_id": "cljs-residual-source-context-apply",
+          "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+          "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "apply_test.cljs::multi-arity-variadic-test",
+          "body_sha256": "eb1f9f91371c77cf6057f9fd53ba998dd6204647963ca5ac6bf6b65b20609809",
+          "reference_fixture_id": "cljs-residual-source-context-apply",
+          "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+          "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cljs-residual-source-context-binding",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns cljs.binding-test (:require [cljs.binding-test-other-ns :as o]))\n(def ^:dynamic *a* 1)\n(def ^:dynamic *b* nil)\n(def a 1)\n(def b nil)\n(def ^:dynamic *foo* false)\n(def ^:dynamic ^boolean *foo-tagged* false)\n(defn bar [] (if *foo* 1 2))\n(defn bar-tagged [] (if *foo-tagged* 1 2))\n(defn run [] (do (do (assert (binding [o/*foo* 2]\n        (= o/*foo* 2))) (assert (= o/*foo* 1)) true) (do (assert (with-redefs [o/bar 2]\n        (= o/bar 2))) (assert (= o/bar 10)) true) (do (assert (= 2 (binding [*a* 10\n                     *b* (inc *a*)]\n             *b*))) true) (do (assert (= 2 (with-redefs [a 10\n                         b (inc a)]\n             b))) true)))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/binding",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/binding",
+      "entry": "cljs.binding-test",
+      "export": "run",
+      "reference_files_sha256": {
+        "cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+        "cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+      "module_source": "src/test/cljs/cljs/binding_test.cljs",
+      "module_sha256": "a982a6f19af2ceffca0e769a9fa6a76bcb2e7e480da4351725e29b7cdab46c14",
+      "complete_original_provenance": [
+        {
+          "body_id": "binding_test.cljs::*a*",
+          "source_sha256": "e70eab9177af6c094c10af7a1958d5109411281edd47ae1fe342328cd36a3bb9"
+        },
+        {
+          "body_id": "binding_test.cljs::*b*",
+          "source_sha256": "14a2474a74be457432fb499d59ca7b38a852bcbff5d25dceb9224406aa97cbce"
+        },
+        {
+          "body_id": "binding_test.cljs::a",
+          "source_sha256": "7839afe24eabe69bb9040569bf0a9999a4fda63abd10187ae01440689d0c30bc"
+        },
+        {
+          "body_id": "binding_test.cljs::b",
+          "source_sha256": "7924d06ef8e7b20af888e30b843fd65452957ffcf91174499025608e8327481c"
+        },
+        {
+          "body_id": "binding_test.cljs::*foo*",
+          "source_sha256": "cb28191e82dfaf1a467ce91a5721a526f82bbce87116c28080b040898b28b5ff"
+        },
+        {
+          "body_id": "binding_test.cljs::*foo-tagged*",
+          "source_sha256": "a810a40a6d20568fae999b8a8e3c9febffa9b290ef8d1c426a36762ca8fa5294"
+        },
+        {
+          "body_id": "binding_test.cljs::bar",
+          "source_sha256": "fbeccfd2835a19d8a09f4ec67c9daad7b7ade49162aa1f717952a4b1c22255ad"
+        },
+        {
+          "body_id": "binding_test.cljs::bar-tagged",
+          "source_sha256": "834a3addbd2b4fc913f4d25858ecfb3c2b415763e668b007ac522d9750dce5de"
+        },
+        {
+          "body_id": "binding_test.cljs::test-binding",
+          "source_sha256": "9d731f084914da58dfd62fa0f4dd9e7f8356accc9d1af58741edb409b2333c1c"
+        },
+        {
+          "body_id": "binding_test.cljs::test-with-redefs",
+          "source_sha256": "8f9b77737c120a2d47a5086e3b84f7980420f501e77f68ef7b9c9406f432364f"
+        },
+        {
+          "body_id": "binding_test.cljs::test-binding-parallel",
+          "source_sha256": "f34eb2292b07538697931097c934a03615f5252fe0e3211d7bcae9e288386951"
+        },
+        {
+          "body_id": "binding_test.cljs::test-redefs-parallel",
+          "source_sha256": "59d9aed5b470036c16d00a6f6401ec90ff02e0227bfc3d9bcc0b674fe3d4a8d7"
+        }
+      ],
+      "namespace_source_sha256": "29e60a15d368551991d6460c6f48cdf333c7052b3e6459118195a4b6419fa45b",
+      "expected": {
+        "id": "cljs-residual-source-context-binding",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mappings": [
+        {
+          "body_id": "binding_test.cljs::test-binding",
+          "body_sha256": "9d731f084914da58dfd62fa0f4dd9e7f8356accc9d1af58741edb409b2333c1c",
+          "reference_fixture_id": "cljs-residual-source-context-binding",
+          "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+          "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "binding_test.cljs::test-with-redefs",
+          "body_sha256": "8f9b77737c120a2d47a5086e3b84f7980420f501e77f68ef7b9c9406f432364f",
+          "reference_fixture_id": "cljs-residual-source-context-binding",
+          "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+          "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "binding_test.cljs::test-binding-parallel",
+          "body_sha256": "f34eb2292b07538697931097c934a03615f5252fe0e3211d7bcae9e288386951",
+          "reference_fixture_id": "cljs-residual-source-context-binding",
+          "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+          "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        },
+        {
+          "body_id": "binding_test.cljs::test-redefs-parallel",
+          "body_sha256": "59d9aed5b470036c16d00a6f6401ec90ff02e0227bfc3d9bcc0b674fe3d4a8d7",
+          "reference_fixture_id": "cljs-residual-source-context-binding",
+          "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+          "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+            "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cljs-residual-source-context-letfn",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns cljs.letfn-test)\n\n(defn run [] (do (do (letfn [(ev? [x]\n            (if (zero? x)\n              true\n              (od? (dec x))))\n          (od? [x]\n            (if (zero? x)\n              false\n              (ev? (dec x))))]\n    (assert (ev? 0))\n    (assert (ev? 10))\n    (assert (not (ev? 1)))\n    (assert (not (ev? 11)))\n    (assert (not (od? 0)))\n    (assert (not (od? 10)))\n    (assert (od? 1))\n    (assert (od? 11))) true)))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/letfn",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/letfn",
+      "entry": "cljs.letfn-test",
+      "export": "run",
+      "reference_files_sha256": {
+        "cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. The complete original mutually recursive ev?/od? letfn definitions and all eight original calls remain in their original body; no recursive helper is replaced or lifted out of the lexical scope.",
+      "module_source": "src/test/cljs/cljs/letfn_test.cljs",
+      "module_sha256": "8dee47e57d6cea66085dee180cb2f23341e135d642183e160de4003642b91bef",
+      "complete_original_provenance": [
+        {
+          "body_id": "letfn_test.cljs::test-letfn",
+          "source_sha256": "fb3bd30a44b086316b9972b4785c646eab885bec8daba0814cbaab0446471902"
+        }
+      ],
+      "namespace_source_sha256": "053b2feb37a7524dad477c6dc74ec6792dab433b7fa99e0bc03f5bd3a2766d35",
+      "expected": {
+        "id": "cljs-residual-source-context-letfn",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mappings": [
+        {
+          "body_id": "letfn_test.cljs::test-letfn",
+          "body_sha256": "fb3bd30a44b086316b9972b4785c646eab885bec8daba0814cbaab0446471902",
+          "reference_fixture_id": "cljs-residual-source-context-letfn",
+          "reference_source_sha256": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
+          "reference_contract_sha256": "fc30f8a6da7f2823611c17385cf71529c703f85df85de5aa1eef228eedf7f0de",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. The complete original mutually recursive ev?/od? letfn definitions and all eight original calls remain in their original body; no recursive helper is replaced or lifted out of the lexical scope.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/letfn/cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
@@ -1204,13 +1567,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_test.cljs": "ad38e35648b0f3a87b66cc3d39fa86c729718cb0af0981f521553fd3fc3cb944",
         "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_other.cljs": "69ef5d99fd02fd13da46a188ad06ff5b5d802f7ce6b416b827c7f07e4e5f8225",
         "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_macros.cljs": "d6d0d1cbbefd8095c2a782faf243b7a24f9e843d48ecbc50e858eacf49cccbd3",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1223,12 +1586,12 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/syntax-quote/cljs/syntax_quote_test.cljs": "9cb089e6140b4afc686a0a392c67f837e6bb82fe02e79d93518de3e78b80b616",
         "tests/fixtures/compiler-residual-source-context/syntax-quote/cljs/test.cljs": "b62c34451bb313b8402ad3663e32f9a5a39558986979554ae777f26fd0aa22ca",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1241,11 +1604,11 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1258,11 +1621,11 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1275,12 +1638,12 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/cljs-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
         "tests/fixtures/compiler-residual-source-context/cljs-shadow/baz.cljs": "c4744629eb1f40d5b95469f57391d4102450646a056c9fbfa4e894ddddec12a2",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1293,12 +1656,12 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/foo-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
         "tests/fixtures/compiler-residual-source-context/foo-shadow/baz.cljs": "c4744629eb1f40d5b95469f57391d4102450646a056c9fbfa4e894ddddec12a2",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1311,11 +1674,11 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/top-level/cljs/top_level.cljs": "ecf36324188c46de092ddad498b959db3af3339a81a80fc97ee720b55d3ba5c5",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1328,11 +1691,11 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/js-keys/cljs/macro_test.cljs": "3782514a131be6ba1f6a06ddc953a5f99bfa2624a18020962be77ca52a179572",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1345,14 +1708,14 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
         "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1365,14 +1728,14 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
         "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1385,14 +1748,14 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
         "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1405,14 +1768,14 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/macros.cljs": "538e012d9fd9cc06f0ef8273f93d1fc0290025112014365f5882cc2c399dc591",
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test/cljs2852.cljs": "1a7f0c837808c6c865df2f35723a9a9df9622e630bc0c8a77e8f53c73ebc38df",
         "tests/fixtures/compiler-residual-source-context/macro-source/single_seg_macros.cljs": "6f9d9a92486bdcdddcac91fc775dbc1a792c8646e47009b6e75779523b6e9b41",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1425,13 +1788,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1444,13 +1807,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1463,13 +1826,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1482,13 +1845,13 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test.cljs": "62f941cd8dcba802c664c068ee0d6c1901bb98f62485edd533e4f4e9569b02d3",
         "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
         "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test/bar.cljs": "3542cd99a70379dca6c6dd0f7048edf77b6798ce038144c22438c20d3c158008",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1501,11 +1864,11 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/static/static/core_test.cljs": "746c42306c1fd4ca957cf2dd92196d46e90ba5bd4d9f2deadebbff66f3e560d9",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1518,11 +1881,11 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/tagged-runtime/cljs/tagged_literals_test.cljs": "4414eb7222cb6a88517fa70afd4ba1140299543b860c53b994a800aad41ae7e2",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     },
     {
@@ -1535,11 +1898,202 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/edn-stream/clojure/edn_test.cljs": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
-        "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "apply_test.cljs::js-fns-test",
+      "body_sha256": "fbb14994ccf1a76dfc3487e6d3229777976f30b1a24bd5b29d0e2ef423157c20",
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "apply_test.cljs::data-structures-test",
+      "body_sha256": "8ac691e75bf17bd29dda9f1ea3f8aede99d50bd0c93f3f332bb076b1f12ed67e",
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "apply_test.cljs::meta-fn-test",
+      "body_sha256": "06c3fc72895dfcad0b3c116323e98487189e03d16938ad0bb3c0bca06eef9090",
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "apply_test.cljs::multi-arity-test",
+      "body_sha256": "91539c4e0a8f1293732248f424fc34da136493a43d13446cfef4e74390ee431f",
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "apply_test.cljs::single-arity-variadic-test",
+      "body_sha256": "451306ba1a6d6693a756d9a5a0243460f329b6624eec4ffb3e65296296deca91",
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "apply_test.cljs::multi-arity-variadic-test",
+      "body_sha256": "eb1f9f91371c77cf6057f9fd53ba998dd6204647963ca5ac6bf6b65b20609809",
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All six original active bodies retain fn-returning-this/meta-f setup, both complete six-function doseq candidate lists, all argument counts including the thirty-argument copy-arguments paths, callable data arity errors and original message computations. The two upstream discarded assertion-free tests remain independent and are not counted as active assertions.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "binding_test.cljs::test-binding",
+      "body_sha256": "9d731f084914da58dfd62fa0f4dd9e7f8356accc9d1af58741edb409b2333c1c",
+      "reference_fixture_id": "cljs-residual-source-context-binding",
+      "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+      "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "binding_test.cljs::test-with-redefs",
+      "body_sha256": "8f9b77737c120a2d47a5086e3b84f7980420f501e77f68ef7b9c9406f432364f",
+      "reference_fixture_id": "cljs-residual-source-context-binding",
+      "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+      "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "binding_test.cljs::test-binding-parallel",
+      "body_sha256": "f34eb2292b07538697931097c934a03615f5252fe0e3211d7bcae9e288386951",
+      "reference_fixture_id": "cljs-residual-source-context-binding",
+      "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+      "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "binding_test.cljs::test-redefs-parallel",
+      "body_sha256": "59d9aed5b470036c16d00a6f6401ec90ff02e0227bfc3d9bcc0b674fe3d4a8d7",
+      "reference_fixture_id": "cljs-residual-source-context-binding",
+      "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+      "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. All original local Var/function setup and the complete original binding-test-other-ns module remain. Four contiguous complete bodies retain cross-namespace binding/redefs, restoration and parallel initializer semantics. The separate type-hint inference body is not selected; this context makes no assertion about upstream static type-hint optimization.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "body_id": "letfn_test.cljs::test-letfn",
+      "body_sha256": "fb3bd30a44b086316b9972b4785c646eab885bec8daba0814cbaab0446471902",
+      "reference_fixture_id": "cljs-residual-source-context-letfn",
+      "reference_source_sha256": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
+      "reference_contract_sha256": "fc30f8a6da7f2823611c17385cf71529c703f85df85de5aa1eef228eedf7f0de",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. This complete namespace context adds independently executed full-body phase evidence beyond the historical flattened assertion witnesses; those sites are not duplicated in the proposed witness catalog. All original setup and eager assertion messages remain, without reduced inputs or substituted calls. The complete original mutually recursive ev?/od? letfn definitions and all eight original calls remain in their original body; no recursive helper is replaced or lifted out of the lexical scope.",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/letfn/cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
       }
     }
   ],
@@ -1595,6 +2149,19 @@
         "stdout": ""
       },
       "native_stdout": null,
+      "source_contract_review": {
+        "status": "retained-unwitnessed-no-blanket-exclusion",
+        "canonical_companion_control": "Both identity-checked pins pass the complete Foo setup and five original assertions with the original self require-macros/CLJC companion. Both reject the same complete local-header source without that companion with ClassNotFoundException: data_readers_test.records.Foo, before the original assertions execute.",
+        "local_observation": "Both ordinary and actual-macro source reading reject the first original record tag with located UnknownTag; no record assertion executes.",
+        "scope_basis": "The exact unchanged-source oracle uses a JVM record class supplied by the original self require-macros companion, explicitly excluded by the adopted group scope. This control cannot establish an automatic JVM-free record-tag constructor facility. Ordinary tagged-reader capabilities and defrecord/constructor/record value semantics remain intended; retain the source sites unresolved until the adopted local constructor-reader contract is reconciled. No original assertion is retired or counted as passing.",
+        "reference_receipt": "/tmp/light-cljs-125-source-next-reference/evidence.json",
+        "reference_receipt_sha256": "1febb5f675bf4222000af4130507da8f271dc76b836d5910b02d9cf9787c5bcc",
+        "local_receipt": "/tmp/light-cljs-125-source-next-local/evidence.json",
+        "local_receipt_sha256": "15224ccb15e53dfae48c664ee4ba071a06c22dcc3af9679a5db97fd6cdea154c",
+        "companion_control_receipt": "/tmp/light-cljs-125-record-companion-control-current/evidence.json",
+        "companion_control_receipt_sha256": "b6ed1388e0b30caf0bbf31201e4b7c405cac2983e10dc030ff98d97d1b5a7637",
+        "reproduce_control": "python3 -B tests/reference/compiler-residual-source-context.py --audit-record-companion --output /tmp/light-cljs-125-record-companion-control"
+      },
       "unwitnessed_reason": "All five original record literal assertions and complete Foo setup are retained. No implicit record-tag constructor or JVM companion implementation is supplied locally. This source-contract candidate grants no passing assertion or phase witness; reconcile the ordinary record-reader obligation separately from the excluded JVM companion facility.",
       "proposed_complete_body_phase_mappings": [
         {
@@ -1607,11 +2174,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -1624,11 +2191,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -1641,11 +2208,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -1658,11 +2225,11 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         },
         {
@@ -1675,14 +2242,262 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
-            "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8"
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
           }
         }
       ]
     }
-  ]
+  ],
+  "embedding-source-cases": [
+    {
+      "id": "cljs-residual-source-context-tagged-source",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns cljs.tagged-literals-test (:require [cljs.reader :as reader]))\n\n(defn run [] (do (do (assert (= #cljs/tag [1 2 3] [1 2 3])) true)))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/tagged-source",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/tagged-source",
+      "entry": "cljs.tagged-literals-test",
+      "export": "run",
+      "reference_files_sha256": {
+        "cljs/tagged_literals_test.cljs": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
+        "data_readers.cljc": "2f353c072cbe6cdc4683e4447e4e10472cdc7f8ffafe1116c06856b589346b57"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation.",
+      "module_source": "src/test/cljs/cljs/tagged_literals_test.cljs",
+      "module_sha256": "8776d67a34a9a492b9c72975c6203bd863b2330a23ec73cd7edee4ded03d7cf8",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal",
+          "source_sha256": "e44f87cf162a70c7deba9146fac8bf6db796ee6be1770dc54f6d955ea495fed3"
+        }
+      ],
+      "namespace_source_sha256": "76c08f2f3300cb83908efb55d3d313625c4931770974e627a01b4a574a2bcb2d",
+      "original_data_reader_configuration": {
+        "source": "src/test/cljs/data_readers.cljc",
+        "sha256": "344170f2e2b2b00dd8e21d4450f33b951eb48c9da62ef4857e175282a1f7f9d9",
+        "text": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n{cljs/tag clojure.core/identity\n cljs/inc clojure.core/inc\n cljs/union clojure.set/union\n test/custom-identity data-readers-test.core/custom-identity\n test/custom-form #?(:cljs data-readers-test.core/custom-form-cljs :clj clojure.core/identity)}\n",
+        "adapter": "Install the exact original cljs/tag=clojure.core/identity entry through the public compiler-data-reader registry before reading each fresh/reused phase source. Reference data_readers.cljc selects this exact original entry; the entire original map is retained here as provenance. Unused custom handlers require separate companion namespaces and are not supplied or claimed."
+      },
+      "expected": {
+        "id": "cljs-residual-source-context-tagged-source",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mappings": [
+        {
+          "body_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal",
+          "body_sha256": "e44f87cf162a70c7deba9146fac8bf6db796ee6be1770dc54f6d955ea495fed3",
+          "reference_fixture_id": "cljs-residual-source-context-tagged-source",
+          "reference_source_sha256": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
+          "reference_contract_sha256": "069bddf77efb460c33bd9117e20b32dcd006abd1d5d7025cfd868f26fc620de7",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/tagged-source/cljs/tagged_literals_test.cljs": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        }
+      ],
+      "compiler_data_readers": [
+        {
+          "tag": "cljs/tag",
+          "operation": "identity"
+        }
+      ],
+      "local_execution_boundary": "The public compiler embedding installs the original reader operation before source reading. The ordinary CLI cannot install this capability; generic report integration requires an explicit hosted compiler adapter. The Rust suite executes all phases/engines, but CLI compilation is not claimed.",
+      "proposed_original_assertion_witnesses": [
+        {
+          "assertion_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal::assertion-001",
+          "assertion_sha256": "b3736cb88cceca8fc292d000bc3387d263755608c7d5ea923ed77bfe6ef5a44a",
+          "fixture_id": "cljs-residual-source-context-tagged-source",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation."
+        }
+      ]
+    }
+  ],
+  "obligation-witnesses.jsonl": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::apply::arity-3",
+      "body_sha256": "fa0746b45b6cbb451e3fbf04e57e29b7db2864f75b1e415a87f735069cf3b672",
+      "signature_sha256": "efd93c040d0846db21e77d3e7bfbc48acb7b5d4b20ff1d952995e9a8992e6992",
+      "rationale": "Each of the six original function candidates executes this four-argument apply call inside the complete original doseq, asserting the literal range 0 through 9. The separate original multi-arity-variadic doseq repeats the call across all six candidates. All six complete active apply bodies, both original setup forms, every other argument path, errors and eager messages remain in the namespace oracle. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
+      "assertion_ids": [],
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+      "reference_contract_sha256": "7225f2a4368de8d90a1bd4ab0b86e6727d6277ad28cd87729b6db141783560e8"
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::binding::arity-1",
+      "body_sha256": "886732e2e87dfdcc3d92e6d9326a0195b43e1b3951e84121addd4c6720ea9bdb",
+      "signature_sha256": "bbce2142210ff6d05831b75efcba8523d8c57f11c137ed69448700c494e521ad",
+      "rationale": "The complete original test-binding body executes binding with its original vector and body, asserts the cross-namespace value is 2 inside and restored to 1 afterward. The complete original parallel binding body asserts initializer visibility remains 2. The complete companion namespace and every original local setup form remain; separate redefs bodies also execute unchanged. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
+      "assertion_ids": [],
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "reference_fixture_id": "cljs-residual-source-context-binding",
+      "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+      "reference_contract_sha256": "f05a58423d0ad25e8f4bdd9c1d750cd91de73744698517b55c3edafe28328c07"
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::letfn~2::arity-1",
+      "body_sha256": "fdab89f3a539051682f2e1e1dfe3299e5a0abeff675473b02e9432ae563cc6e1",
+      "signature_sha256": "c32cec30dc79c1f6a8fca623f7c0a9dada31d0c6ed0a9b5d4ac87d8689d51cf0",
+      "rationale": "The complete original test-letfn body executes the actual public letfn macro with its original vector of mutually recursive ev?/od? function specs and all eight original assertion body forms. Every recursive call and literal zero/even/odd result remains in lexical scope. This maps only the resolved defmacro signature; the distinct imported letfn declaration with unresolved signature receives no credit. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
+      "assertion_ids": [],
+      "local_execution": {
+        "test_file": "tests/compiler_residual_source_context.rs",
+        "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+      },
+      "reference_fixture_id": "cljs-residual-source-context-letfn",
+      "reference_source_sha256": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
+      "reference_contract_sha256": "fc30f8a6da7f2823611c17385cf71529c703f85df85de5aa1eef228eedf7f0de"
+    }
+  ],
+  "phase-witnesses.jsonl": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::apply::arity-3",
+      "body_sha256": "fa0746b45b6cbb451e3fbf04e57e29b7db2864f75b1e415a87f735069cf3b672",
+      "signature_sha256": "efd93c040d0846db21e77d3e7bfbc48acb7b5d4b20ff1d952995e9a8992e6992",
+      "rationale": "Each of the six original function candidates executes this four-argument apply call inside the complete original doseq, asserting the literal range 0 through 9. The separate original multi-arity-variadic doseq repeats the call across all six candidates. All six complete active apply bodies, both original setup forms, every other argument path, errors and eager messages remain in the namespace oracle. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
+      "test_file": "tests/compiler_residual_source_context.rs",
+      "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+      "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6",
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::binding::arity-1",
+      "body_sha256": "886732e2e87dfdcc3d92e6d9326a0195b43e1b3951e84121addd4c6720ea9bdb",
+      "signature_sha256": "bbce2142210ff6d05831b75efcba8523d8c57f11c137ed69448700c494e521ad",
+      "rationale": "The complete original test-binding body executes binding with its original vector and body, asserts the cross-namespace value is 2 inside and restored to 1 afterward. The complete original parallel binding body asserts initializer visibility remains 2. The complete companion namespace and every original local setup form remain; separate redefs bodies also execute unchanged. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
+      "test_file": "tests/compiler_residual_source_context.rs",
+      "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+      "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6",
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
+        "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::letfn~2::arity-1",
+      "body_sha256": "fdab89f3a539051682f2e1e1dfe3299e5a0abeff675473b02e9432ae563cc6e1",
+      "signature_sha256": "c32cec30dc79c1f6a8fca623f7c0a9dada31d0c6ed0a9b5d4ac87d8689d51cf0",
+      "rationale": "The complete original test-letfn body executes the actual public letfn macro with its original vector of mutually recursive ev?/od? function specs and all eight original assertion body forms. Every recursive call and literal zero/even/odd result remains in lexical scope. This maps only the resolved defmacro signature; the distinct imported letfn declaration with unresolved signature receives no credit. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
+      "test_file": "tests/compiler_residual_source_context.rs",
+      "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+      "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6",
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-source-context/letfn/cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
+        "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+      }
+    }
+  ],
+  "complete-context-operation-reviews": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::apply::arity-3",
+      "declaration": "defn",
+      "original_declaration_span": {
+        "start_line": 4111,
+        "end_line": 4157,
+        "start_byte": 108056,
+        "end_byte": 109904,
+        "sha256": "fa0746b45b6cbb451e3fbf04e57e29b7db2864f75b1e415a87f735069cf3b672",
+        "text": "(defn apply\n  \"Applies fn f to the argument list formed by prepending intervening arguments to args.\"\n  ([f args]\n   (if (.-cljs$lang$applyTo f)\n     (let [fixed-arity (.-cljs$lang$maxFixedArity f)\n           bc (bounded-count (inc fixed-arity) args)]\n       (if (<= bc fixed-arity)\n         (apply-to f bc args)\n         (.cljs$lang$applyTo f args)))\n     (apply-to-simple f (seq args))))\n  ([f x args]\n   (if (.-cljs$lang$applyTo f)\n     (let [arglist (list* x args)\n           fixed-arity (.-cljs$lang$maxFixedArity f)\n           bc (inc (bounded-count fixed-arity args))]\n       (if (<= bc fixed-arity)\n         (apply-to f bc arglist)\n         (.cljs$lang$applyTo f arglist)))\n     (apply-to-simple f x (seq args))))\n  ([f x y args]\n   (if (.-cljs$lang$applyTo f)\n     (let [arglist (list* x y args)\n           fixed-arity (.-cljs$lang$maxFixedArity f)\n           bc (+ 2 (bounded-count (dec fixed-arity) args))]\n       (if (<= bc fixed-arity)\n         (apply-to f bc arglist)\n         (.cljs$lang$applyTo f arglist)))\n     (apply-to-simple f x y (seq args))))\n  ([f x y z args]\n   (if (.-cljs$lang$applyTo f)\n     (let [arglist (list* x y z args)\n           fixed-arity (.-cljs$lang$maxFixedArity f)\n           bc (+ 3 (bounded-count (- fixed-arity 2) args))]\n       (if (<= bc fixed-arity)\n         (apply-to f bc arglist)\n         (.cljs$lang$applyTo f arglist)))\n     (apply-to-simple f x y z (seq args))))\n  ([f a b c d & args]\n   (if (.-cljs$lang$applyTo f)\n     (let [spread-args (spread args)\n           arglist (cons a (cons b (cons c (cons d spread-args))))\n           fixed-arity (.-cljs$lang$maxFixedArity f)\n           bc (+ 4 (bounded-count (- fixed-arity 3) spread-args))]\n       (if (<= bc fixed-arity)\n         (apply-to f bc arglist)\n         (.cljs$lang$applyTo f arglist)))\n     (apply-to-simple f a b c d (spread args)))))"
+      },
+      "signature": {
+        "kind": "fixed",
+        "minimum": 4,
+        "parameters": [
+          "f",
+          "x",
+          "y",
+          "args"
+        ]
+      },
+      "complete_original_test_body_id": "apply_test.cljs::single-arity-variadic-test",
+      "complete_original_test_body_sha256": "451306ba1a6d6693a756d9a5a0243460f329b6624eec4ffb3e65296296deca91",
+      "executed_original_call": "(apply f 0 1 (range 2 10))",
+      "actual_call_argument_count": 4,
+      "reference_fixture_id": "cljs-residual-source-context-apply",
+      "review": "Each of the six original function candidates executes this four-argument apply call inside the complete original doseq, asserting the literal range 0 through 9. The separate original multi-arity-variadic doseq repeats the call across all six candidates. All six complete active apply bodies, both original setup forms, every other argument path, errors and eager messages remain in the namespace oracle. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage."
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::binding::arity-1",
+      "declaration": "defmacro",
+      "original_declaration_span": {
+        "start_line": 2496,
+        "end_line": 2507,
+        "start_byte": 103910,
+        "end_byte": 104436,
+        "sha256": "886732e2e87dfdcc3d92e6d9326a0195b43e1b3951e84121addd4c6720ea9bdb",
+        "text": "(core/defmacro binding\n  \"binding => var-symbol init-expr\n\n  Creates new bindings for the (already-existing) vars, with the\n  supplied initial values, executes the exprs in an implicit do, then\n  re-establishes the bindings that existed before.  The new bindings\n  are made in parallel (unlike let); all init-exprs are evaluated\n  before the vars are bound to their new values.\"\n  [bindings & body]\n  (core/let [names (take-nth 2 bindings)]\n    (cljs.analyzer/confirm-bindings &env names)\n    `(with-redefs ~bindings ~@body)))"
+      },
+      "signature": {
+        "kind": "variadic",
+        "minimum": 1,
+        "parameters": [
+          "bindings",
+          "&",
+          "body"
+        ]
+      },
+      "complete_original_test_body_id": "binding_test.cljs::test-binding",
+      "complete_original_test_body_sha256": "9d731f084914da58dfd62fa0f4dd9e7f8356accc9d1af58741edb409b2333c1c",
+      "executed_original_call": "(binding [o/*foo* 2]\n        (= o/*foo* 2))",
+      "actual_call_argument_count": 2,
+      "reference_fixture_id": "cljs-residual-source-context-binding",
+      "review": "The complete original test-binding body executes binding with its original vector and body, asserts the cross-namespace value is 2 inside and restored to 1 afterward. The complete original parallel binding body asserts initializer visibility remains 2. The complete companion namespace and every original local setup form remain; separate redefs bodies also execute unchanged. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage."
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::letfn~2::arity-1",
+      "declaration": "defmacro",
+      "original_declaration_span": {
+        "start_line": 367,
+        "end_line": 378,
+        "start_byte": 15320,
+        "end_byte": 15852,
+        "sha256": "fdab89f3a539051682f2e1e1dfe3299e5a0abeff675473b02e9432ae563cc6e1",
+        "text": "(core/defmacro letfn\n     \"fnspec ==> (fname [params*] exprs) or (fname ([params*] exprs)+)\n\n     Takes a vector of function specs and a body, and generates a set of\n     bindings of functions to their names. All of the names are available\n     in all of the definitions of the functions, as well as the body.\"\n     {:forms '[(letfn [fnspecs*] exprs*)],\n      :special-form true, :url nil}\n     [fnspecs & body]\n     `(letfn* ~(vec (interleave (map first fnspecs)\n                      (map #(cons `fn %) fnspecs)))\n        ~@body))"
+      },
+      "signature": {
+        "kind": "variadic",
+        "minimum": 1,
+        "parameters": [
+          "fnspecs",
+          "&",
+          "body"
+        ]
+      },
+      "complete_original_test_body_id": "letfn_test.cljs::test-letfn",
+      "complete_original_test_body_sha256": "fb3bd30a44b086316b9972b4785c646eab885bec8daba0814cbaab0446471902",
+      "executed_original_call": "(letfn [(ev? [x]\n            (if (zero? x)\n              true\n              (od? (dec x))))\n          (od? [x]\n            (if (zero? x)\n              false\n              (ev? (dec x))))]\n    (is (ev? 0))\n    (is (ev? 10))\n    (is (not (ev? 1)))\n    (is (not (ev? 11)))\n    (is (not (od? 0)))\n    (is (not (od? 10)))\n    (is (od? 1))\n    (is (od? 11)))",
+      "actual_call_argument_count": 9,
+      "reference_fixture_id": "cljs-residual-source-context-letfn",
+      "review": "The complete original test-letfn body executes the actual public letfn macro with its original vector of mutually recursive ev?/od? function specs and all eight original assertion body forms. Every recursive call and literal zero/even/odd result remains in lexical scope. This maps only the resolved defmacro signature; the distinct imported letfn declaration with unresolved signature receives no credit. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage."
+    }
+  ],
+  "superseded-context-operation-mappings": []
 }

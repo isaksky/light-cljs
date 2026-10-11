@@ -76,7 +76,20 @@ def expression_rows(rows, contexts=None):
     return [row for row in rows if row["id"] not in by_id]
 
 
+def compiler_sources():
+    paths = sorted(path for path in (sci.ROOT / "src").rglob("*") if path.is_file())
+    paths += [sci.ROOT / name for name in ("Cargo.toml", "Cargo.lock", "build.rs")
+              if (sci.ROOT / name).is_file()]
+    return {str(path.relative_to(sci.ROOT)): sci.digest(path.read_bytes()) for path in paths}
+
+
+def adapter_hash():
+    return sci.digest(Path(__file__).read_bytes())
+
+
 def local_cases(rows, directory, timeout):
+    production_hashes = compiler_sources()
+    adapter_source_hash = adapter_hash()
     directory.mkdir(parents=True, exist_ok=True)
     source, output = directory / "input.tsv", directory / "observations.tsv"
     source.write_text("".join(row["id"] + "\t" + row["source"].encode().hex() + "\n" for row in rows))
@@ -101,6 +114,8 @@ def local_cases(rows, directory, timeout):
     (directory / "cargo.stdout").write_text(stdout); (directory / "cargo.stderr").write_text(stderr)
     if timed_out or process.returncode or "running 1 test" not in stdout or "test result: ok. 1 passed; 0 failed; 0 ignored;" not in stdout or not output.is_file():
         return {row["id"]: {"status": "timeout" if timed_out else "failed"} for row in rows}
+    if compiler_sources() != production_hashes or adapter_hash() != adapter_source_hash:
+        return {row["id"]: {"status": "source-drift"} for row in rows}
     raw = [line.split("\t") for line in output.read_text().splitlines()]
     if [line[0] for line in raw] != [row["id"] for row in rows]:
         raise ValueError("missing, extra, duplicate or reordered local source context observations")
@@ -115,7 +130,9 @@ def local_cases(rows, directory, timeout):
         result[row["id"]] = {"status": "passed" if all(x["status"] == "passed" for x in layers.values()) else "mismatch",
             "engines": layers, "source_sha256": row["source_sha256"], "test_file": DRIVER,
             "test_name": TEST, "test_source_sha256": sci.digest((sci.ROOT / DRIVER).read_bytes()),
-            "adapter_source_sha256": sci.digest((sci.ROOT / "tests/support/sci_execution_observation.js").read_bytes())}
+            "adapter_source_sha256": sci.digest((sci.ROOT / "tests/support/sci_execution_observation.js").read_bytes()),
+            "source_context_adapter_sha256": adapter_source_hash,
+            "compiler_source_sha256": production_hashes}
     return result
 
 

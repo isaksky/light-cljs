@@ -931,3 +931,165 @@ The six focused arity/phase accounting regressions and all fourteen library
 accounting regressions pass. Focused Clippy succeeds;
 strict `-D warnings` reports 53 existing diagnostics in ten unchanged source
 files and is not represented as a clean lint run.
+
+## Complete namespace evidence continuation at 9964c3c (2026-10-11)
+
+The source-context suite now executes **17 contexts, 31 complete original
+bodies and 118 original assertion sites** through Node and QuickJS applications
+and actual macro computations, each with fresh and reused MacroHosts. Its exact
+Rust test passes with zero ignored checks. This is focused source/phase evidence;
+full zero-missing language acceptance remains incomplete.
+
+Three new ordinary namespace contexts preserve **11 complete bodies / 67
+original sites** that previously had historical flattened assertion witnesses:
+
+| Context | Complete original evidence | Program SHA-256 |
+| --- | --- | --- |
+| `apply` | Six active bodies / 53 sites, original `fn-returning-this` and `meta-f` setup, both full six-function `doseq` lists, 30-argument paths, callable-data arity errors and eager original assertion-message computations | `c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7` |
+| `binding` | Four contiguous bodies / six sites, every original local setup form and byte-identical `binding-test-other-ns` dependency, cross-namespace binding/redefs, restoration and parallel initializers | `6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad` |
+| `letfn` | One complete body / eight sites, lexical mutually recursive `ev?`/`od?` definitions and every original call | `fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd` |
+
+Both identity/settings-checked pins pass all three complete contexts. Direct
+local source probes also return true in both engines/application and actual
+macro phases. These add missing complete-body source/phase contexts without
+duplicating their existing assertion witnesses or granting new assertion counts.
+The independent binding type-hint inference body and the two upstream discarded
+apply bodies are not selected or counted. Their original source remains intact.
+
+The closed EDN stream repair is independently reverified here. The complete
+original helper and all three original `test-read` assertions remain unchanged;
+program SHA-256 is
+`9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b`.
+Both pins pass, direct Node/QuickJS source observations return true in both
+phases, and the suite executes it in fresh/reused hosts. The existing stream
+constructor namespace adaptation remains explicit. No production repair or
+weakened original assertion was needed.
+
+The new `tagged-source` context supplies supplemental proof for the genuinely
+unregistered complete `test-identity-custom-literal` body and its original
+`#cljs/tag [1 2 3]` assertion. Program SHA-256 is
+`c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e`;
+original body SHA-256 is
+`e44f87cf162a70c7deba9146fac8bf6db796ee6be1770dc54f6d955ea495fed3`.
+The Rust embedding installs the exact original `cljs/tag=clojure.core/identity`
+operation through `register_compiler_data_reader` before reading the unchanged
+source in each fresh/reused host. All application/macro and Node/QuickJS paths
+pass. Both pins pass with the exact original tag entry selected in the reference
+`data_readers.cljc`; the entire original configuration remains in provenance.
+The initial reference attempt that supplied every configuration entry failed
+with `Var$Unbound` because unused custom handlers require their own JVM companion
+namespaces. That failed receipt is retained separately and is not a pass.
+
+The ordinary CLI has no compiler-data-reader installation argument. Therefore
+`tagged-source` is retained in **`embedding-source-cases`**, with its required
+capability, complete-body mapping and proposed original assertion witness. It
+is absent from generic `full-cases.jsonl`/`full-witnesses.jsonl` proposals until
+a faithful hosted report adapter is integrated. Its source site remains intended;
+a Rust test or reference receipt alone cannot grant ordinary report credit.
+The remaining ordinary proposal comprises 16 contexts, 30 complete-body mappings
+and 50 nonduplicated original assertion witnesses.
+
+The record-literal reconciliation now includes an independent companion
+control. Both checked pins pass the unchanged `Foo` setup and all five original
+top-level assertions with the original self `:require-macros` clause and complete
+byte-identical CLJC companion. Both checked pins reject the same complete source
+with the local header and no JVM companion, with `ClassNotFoundException` for
+`data_readers_test.records.Foo`, before any assertion executes. Local ordinary
+and actual-macro source reading still reject the first original tag with located
+`UnknownTag`. No constructor expansion, map replacement or invented data reader
+is supplied. The exact upstream literal oracle depends on the JVM record class
+provided by the explicitly excluded companion facility; this is scope evidence,
+not a blanket exclusion of record values, constructors or ordinary tagged-reader
+capabilities. All five original source sites remain intended/unwitnessed pending
+the adopted JVM-free constructor-reader contract, with no passing witness or
+source-site retirement. The complete review and receipt hashes are durable in
+the retained proposal's `source_contract_review`.
+
+Fresh receipts:
+
+- `/tmp/light-cljs-125-source-next-reference/evidence.json`, SHA-256
+  `1febb5f675bf4222000af4130507da8f271dc76b836d5910b02d9cf9787c5bcc`:
+  both pins pass EDN, apply, binding, letfn and the original record companion
+  context; the no-companion record control fails independently in both pins.
+- `/tmp/light-cljs-125-record-companion-control-current/evidence.json`, SHA-256
+  `b6ed1388e0b30caf0bbf31201e4b7c405cac2983e10dc030ff98d97d1b5a7637`: fresh reproduction of the checked
+  original-companion pass and no-companion failure in both pins.
+- `/tmp/light-cljs-125-source-next-local/evidence.json`, SHA-256
+  `15224ccb15e53dfae48c664ee4ba071a06c22dcc3af9679a5db97fd6cdea154c`:
+  direct both-engine/phase observations; record sources retain located rejection.
+- `/tmp/light-cljs-125-tagged-source-next-reference-corrected/evidence.json`,
+  SHA-256 `f963b97774374d1eb523479ddf4c77c844f9eb12f42a0d002310f6469b82611f`:
+  both pins pass the complete source-tag assertion with the exact original entry.
+- `/tmp/light-cljs-125-tagged-source-next-reference/evidence.json` retains the
+  failed unbound-unused-handler attempt; it receives no passing credit.
+- `/tmp/light-cljs-125-source-next-rust17.log`, SHA-256
+  `432e997009bae8facbcfaa885042188ee2e34ed459eb4c994239d457bbf1ea06`:
+  one exact source-context test passes all 17 contexts, zero ignored.
+
+Reproduction:
+
+```sh
+python3 -B tests/reference/compiler-residual-source-context.py
+python3 -B tests/reference/compiler-residual-source-context.py --run --case apply --output /tmp/light-cljs-125-apply-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case binding --output /tmp/light-cljs-125-binding-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case letfn --output /tmp/light-cljs-125-letfn-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case tagged-source --output /tmp/light-cljs-125-tagged-source-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --audit-record-companion --output /tmp/light-cljs-125-record-companion-control-current
+cargo test --locked --test compiler_residual_source_context complete_residual_namespace_bodies_execute_in_both_phases -- --exact --nocapture
+```
+
+The generator's byte-span/source-tree checks, scoped Rust formatting and owned
+file diff checks pass. Shared full case/witness/phase catalogs remain owned by
+the main integration worker. No queue, staging, commit, production, cancellation
+or limits actions occurred, and the preserved light-cljs-156 native-crash work
+was neither investigated nor changed.
+
+### Public declaration anchors for complete contexts
+
+The three new ordinary contexts are independently anchored in the operation
+ledger, so their complete sources remain executable report fixtures while the
+67 historical assertion witnesses stay byte-identical. The generator proposes
+three exact public operation rows and their matching phase rows:
+
+| Complete context | Reviewed obligation | Exact executed source call/signature |
+| --- | --- | --- |
+| `apply` | `api::src/main/cljs/cljs/core.cljs::apply::arity-3` | Fixed `[f x y args]`, four arguments: `(apply f 0 1 (range 2 10))`, executed for every original function in each complete six-candidate `doseq` |
+| `binding` | `api::src/main/clojure/cljs/core.cljc::binding::arity-1` | Actual `defmacro` `[bindings & body]`, exercised by the original cross-namespace binding assertion and parallel-initializer body |
+| `letfn` | `api::src/main/clojure/cljs/core.cljc::letfn~2::arity-1` | Actual `defmacro` `[fnspecs & body]`, exercised by the complete mutually recursive `ev?`/`od?` vector and all eight original assertion forms |
+
+`apply::arity-3` is the third declaration branch, not a three-argument call.
+The distinct imported `letfn` declaration has an unresolved signature and is
+not mapped. Each mapping retains the exact pinned declaration body/signature,
+original executing test-body/call provenance, current whole-source Rust test,
+fixture/support hashes, full reference-source hash and literal true/empty
+trace/stdout contract hash. The fixture assertion witnesses are not replaced by
+operation assertions; the operation rows use their independently verified named
+application/macro test and both-pin full-source oracle.
+
+All three selected operation/phase IDs previously had no mapping. If a future
+reconciliation replaces another operation or phase receipt, the generator
+preserves that exact row/hash in `superseded-context-operation-mappings` before
+replacing it. Historical source-assertion witnesses remain outside this ownership.
+
+The generated operation/phase rows and exact review are durable in
+`compiler-residual-source-context-proposals.json`. The main integration worker
+installs them through the existing coordinated catalog workflow:
+
+```sh
+python3 -B tests/reference/compiler-residual-source-context.py --write --catalogs
+python3 -B tests/reference/compiler-residual-source-context.py --catalogs
+```
+
+These commands are catalog integration/freshness checks, not execution passes.
+The complete local and both-pin source receipts above establish the corresponding
+executions. The configured source-tag embedding and unresolved record literal
+contexts remain outside these generic operation anchors.
+
+Read-only candidate overlays verify the integration before any shared writes:
+`/tmp/light-cljs-125-source-anchor-contract-validation.json` records a passing
+`report.load_contract('intended-language')` with 4,728 assertion rows, 3,763
+witnesses and 1,026 fixtures. `/tmp/light-cljs-125-source-anchor-validation.json`
+records passing public-operation and phase loaders for all three proposed IDs,
+including current test/support hashes and exact source/literal oracle matching.
+These are structural integrity checks; the semantic executions remain the
+full-source receipts above.

@@ -25,7 +25,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
         .collect();
     assert_eq!(
         rows.len(),
-        13,
+        17,
         "empty or partial supported namespace selection"
     );
     let mut reused_host = MacroHost::new();
@@ -56,6 +56,21 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                 };
                 std::fs::write(file, source).unwrap();
                 let mut fresh_host = MacroHost::new();
+                if fields[0] == "cljs-residual-source-context-tagged-source" {
+                    // Original data_readers.cljc selects clojure.core/identity.
+                    // Install the promised source-reader capability before
+                    // reading the unchanged complete upstream tag body.
+                    let host = if reused {
+                        &mut reused_host
+                    } else {
+                        &mut fresh_host
+                    };
+                    host.register_compiler_data_reader(
+                        light_cljs::compiler_data::Name::new(Some("cljs"), "tag"),
+                        "identity",
+                    )
+                    .unwrap();
+                }
                 let javascript = light_cljs::compile_namespace_with_macros(
                     fields[1],
                     &[root.clone()],

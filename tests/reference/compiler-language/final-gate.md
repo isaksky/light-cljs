@@ -761,3 +761,93 @@ all 865 reviewed call receipts and 32 literal pinned oracles reproduce; lossless
 inventory `--check`, scoped Rust formatting and `git diff --check` pass. No
 comprehensive zero-missing gate pass, cancellation/limits test result, whole
 repository regression result or new production performance result is claimed.
+
+
+## Chunk/state and complete source evidence — October 11, 2026
+
+Starting production `9964c3c79bd2cbb3acba57b79c977be37390126f` includes closed
+stream/join/project owners 159–161. This continuation changes evidence/harness
+only; all production files remain unchanged. Eight complete ordinary/qualified
+literal workflows add chunk buffer mutation, constructors, backing storage,
+finite traversal/reduction, metadata, saved public factories/calls, custom
+chunked-next versus chunked-rest dispatch, exact empty-chunk error and ordered
+effects, plus atom reference metadata mutation and volatile updates. All 56
+previous workflow rows remain byte-identical. Current totals: **64 workflows
+(22 original bodies/42 literals), 915 reviewed call receipts (+50, including 24
+public arities), 39 mapped literal oracles (+7)**. The supplemental qualified
+chunk factory variant executes normally even without a distinct new obligation.
+All 8 exact new workflows pass Node/QuickJS applications, actual macro
+computation and both identity/settings-checked pins. Exact fresh reference
+receipt `/tmp/light-cljs-125-public-arity-pins/receipt.json`; six core Rust tests
+pass. Three existing call/qualification guards, fixture reproduction and edited
+Rust formatting pass.
+
+Complete apply/binding/letfn contexts retain **11 bodies/all 67 original sites**
+previously present only as historical flattened witnesses, including full setup,
+both complete apply loops, every original assertion/error/eager message,
+cross-namespace dependency and mutually recursive bindings. All reference/local
+application/macro/fresh/reused paths pass. Three exact independently missing
+resolved public rows anchor these complete sources: fixed `[f x y args]` apply,
+resolved `[bindings & body]` binding macro and resolved `[fnspecs & body]` letfn
+macro. Unresolved imported letfn is not assigned an arity. Historical witnesses
+remain intact and no existing source assertion is duplicated. Initial catalog
+integration correctly rejected the three unanchored fixtures; their exact
+operation/phase bindings resolve that harness failure without fake source credit.
+Final ordinary source accounting: **16 contexts/30 bodies/50 independently added
+sites**; the Rust suite additionally executes one configured source-tag context,
+**17 contexts/31 bodies/118 original sites**. Original EDN stream source remains
+integrated and was reverified rather than counted as new work.
+
+The source-tag context preserves its complete original assertion and exact
+identity data-reader configuration. Both pins and explicit public compiler-reader
+embedding pass all local phases/engines; it remains an embedding-source-case
+pending a faithful hosted report adapter. Generic CLI compilation cannot install
+that embedding capability and gets no implied source-site pass. The full Foo
+setup/all five record-literal assertions remain intended/unwitnessed. Both pins
+pass with the original JVM companion and reject the unchanged no-companion
+control with ClassNotFoundException; local source reading rejects UnknownTag.
+No blanket scope exclusion or fabricated record-tag handler is proposed. Exact
+sources, commands, proofs and pending scope are in
+`../compiler-residual-completion.md` and the source-context proposal.
+
+The 50 original SCI source contexts were freshly executed after adding enforced
+production/compiler/library/build and producer provenance. Drift during local
+execution, missing/stale hashes and partial/reordered evidence cannot grant
+coverage. A new atomic fresh writer preserves complete previous records and
+unchanged original SCI expectations. All 18 focused source/receipt tests pass;
+classification stays 35 original agreements, eight reviewed pin differences and
+seven unresolved originals. Initial pre-writer legacy validations failed closed;
+the fresh bound replay/current rerun passes. The earlier execution without this
+new producer provenance is retained separately, never promoted by replacing
+hashes.
+
+All 191 original library sources were also actually reexecuted:180 local original
+matches/11 mismatches,163 release matches/28 mismatches,169 checkout matches/22
+mismatches. The prior active audit already had current production hashes; this
+refresh preserves it verbatim and does not infer a new pass from its history.
+Reconciliation stays 163 original agreements/six exact walk pin differences/22
+unresolved originals. Three join/project original sources now match both
+canonical pins while differing from original SCI expectations. Their fresh
+canonical-fixed resolution and actual fresh/reused macro tests are separate in
+`../compiler-library-unresolved-probes.json`; every earlier failure, original
+source and expectation remains unchanged. The fresh source/library commands and
+receipt hashes are recorded in their linked evidence notes. Runtime receipts
+grant no unrelated macro eligibility.
+
+During comprehensive gate preparation, repeated full phase-catalog revalidation
+per local operation caused avoidable repeated hashing. `load_obligation_witnesses`
+now validates one fresh phase snapshot per invocation; it never retains a cache
+between calls. All 19 ledger tests pass, including current provenance/arity/subset
+checks and the two-invocation snapshot regression. The bound manifest was
+regenerated with unchanged source inventories/obligations/dispositions. Earlier
+pre-regeneration manifest-drift checks failed closed and are retained as failures;
+no acceptance was weakened or failed check counted as passing. Source/compiler
+bytecode accidentally generated by a delegate was reconciled only for its exact
+known owned files; unrelated `.DS_Store` is preserved.
+
+Comprehensive current execution and final harness outcomes follow below when
+complete. Full original acceptance remains in force. The separate 156 asynchronous
+cancellation/native-crash repair remains externally blocked after automatic
+approval review twice rejected it citing possible cybersecurity risk. It was not
+retried, delegated, investigated or repaired; no cancellation/limits suites or
+new production performance result are claimed in this continuation.

@@ -174,3 +174,39 @@ new executions; each complete earlier record is retained verbatim under
 production-head/source/build hashes record the frozen observation context,
 without relabeling older observations. The full runner still supplies fresh
 layers and stored receipts never grant report coverage.
+
+## Enforced production provenance and fresh writer — October 11, 2026
+
+The source-context producer now captures every compiler/library/build input hash
+and its own adapter hash before executing the original sources, rejects drift
+during that local execution, and binds those captured hashes to every actual
+Node/QuickJS layer. The receipt/full-report classifier checks them against the
+current inputs. Missing or stale provenance cannot grant coverage. The new
+`--write-evidence` writer records validated complete fresh layers atomically and
+retains every complete previous record verbatim; it never changes original SCI
+expectations, setup, source spans, pin differences or original nonpass status.
+These checks replace the earlier supplemental production hashes that were only
+documented observation context, not enforced by the classifier.
+
+All 50 complete original contexts were actually reexecuted after this producer
+change against frozen production `9964c3c79bd2cbb3acba57b79c977be37390126f`, both
+local engines and both checked pins. Classification remains **35 original
+agreements, eight reviewed pin differences, seven unresolved contracts**.
+Initial full execution before the producer change remains a separate unbound
+raw receipt and supplies no current source-provenance pass. The final fresh
+execution was not created by replacing hashes on its older observations.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/sci_source_context.py --local --references --timeout 240 --output /tmp/light-cljs-125-sci-source-context-50-9964c3c-bound
+python3 -B tests/reference/compiler-language/sci_source_context_receipts.py --write-evidence /tmp/light-cljs-125-sci-source-context-50-9964c3c-bound/evidence.json
+python3 -B tests/reference/compiler-language/sci_source_context_receipts.py --evidence /tmp/light-cljs-125-sci-source-context-50-9964c3c-bound/evidence.json
+```
+
+Fresh evidence SHA-256 `a9cb1dc667b94b38d254e47566b93c28598e93d820e4a900a402220585162141`.
+All 18 focused source/receipt/ledger tests pass, including stale production/source
+adapter rejection, preserved complete history/conflicts, and partial/reordered
+fresh evidence rejection. The initial test process began before the fresh writer
+completed and correctly rejected two legacy active records; its final rerun
+against the atomic new records passes all18. No assertion was relaxed. Original
+bindings and all50 complete previous records were checked byte-equivalently.
+Stored receipts continue to grant no full-report or unrelated macro-phase pass.

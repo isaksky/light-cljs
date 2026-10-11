@@ -123,10 +123,11 @@ ordinary report executes the original canonical namespace adapters on both
 pins. The walk metadata body records every failed assertion ID before returning,
 so the release's two metadata differences cannot hide its later paths.
 
-`../compiler-core-gate.py` retains 22 complete upstream core workflows and six
-independent literal contracts. `../compiler-core-gate-mappings.py` reproduces
-reviewed direct-call/arity receipts, ordinary and phase mappings, and the six
-literal oracles. Quoted/data/discarded forms and ambiguous threaded arities are
+`../compiler-core-gate.py` retains 22 complete upstream core workflows and 42
+independent literal workflows (64 total). `../compiler-core-gate-mappings.py`
+reproduces 915 reviewed direct-call/arity receipts, ordinary and phase mappings,
+and 39 mapped literal oracles. Supplemental qualified variants still execute
+locally and against both pins even when they introduce no separate obligation. Quoted/data/discarded forms and ambiguous threaded arities are
 not inferred as calls. Whole-body local assertions and both checked references
 remain required; these generated receipts are not execution evidence.
 
@@ -308,3 +309,36 @@ Independent generators compare only their owned rows and preserve unrelated
 rows when regenerating shared catalogs. Registration never supplies a semantic
 pass. The [recovery receipt](final-gate.md) records focused observations, outside
 boundary bases, remaining canonical owners and the still-incomplete full gate.
+
+
+## Complete source and chunk/state evidence continuation — October 11, 2026
+
+The retained complete source-context adapter now registers 16 ordinary contexts,
+30 complete bodies and50 independently added original sites. It also executes
+one configured embedding context in its exact Rust suite, totaling17 contexts,
+31 complete bodies and118 original sites. The three new ordinary contexts retain
+all 67 original apply/binding/letfn sites previously flattened in historical
+witnesses; they add complete setup/loops/errors/effects and exact source-phase
+execution without duplicating any historical assertion. Three independently
+missing resolved public rows (four-argument apply, resolved binding macro and
+resolved letfn macro) bind these full contexts to literal pinned oracles and
+named actual macro/application execution tests. Imported unresolved letfn
+signatures supply no arity credit. Historical witnesses remain unchanged.
+
+The complete original source-tag assertion passes both references and explicit
+public compiler-reader embedding, including fresh/reused hosts and both phases.
+It remains a separate embedding-source-case requiring a faithful hosted report
+adapter: the generic CLI cannot install that capability and gets no implied
+source-site pass. The complete original Foo record setup/all five tagged-literal
+assertions remain intended and unwitnessed. Both references pass with the
+original JVM companion and fail without it; the local source-reader UnknownTag
+is retained. This is source-specific scope evidence, not a blanket exclusion or
+completion claim.
+
+Source-context receipts now enforce current production/compiler/library/build
+and producer hashes, rejecting captured-source drift as well as stale/missing
+provenance. The fresh writer preserves complete previous records and unchanged
+SCI expectations. Library conflicts after canonical join/project repairs remain
+separately unresolved against original SCI expectations. None of the supplemental
+receipts establishes a comprehensive pass; the current final execution receipt
+and remaining obligations are tracked in final-gate.md.

@@ -662,6 +662,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
             body_ids.setdefault(row["body_id"], []).append(row["id"])
     result = {}
     reference_fixtures = None
+    phase_mappings = None
     for line in (HERE / "obligation-witnesses.jsonl").read_text().splitlines():
         item = json.loads(line)
         target = targets.get(item.get("obligation_id"))
@@ -676,7 +677,9 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
             # Local public protocol contracts need direct execution evidence when
             # upstream has no corresponding test body. Reuse the exact hashed,
             # named phase test, which must also execute both application engines.
-            phase = load_phase_witnesses(obligations).get(target["id"])
+            if phase_mappings is None:
+                phase_mappings = load_phase_witnesses(obligations)
+            phase = phase_mappings.get(target["id"])
             if (not phase or item["local_execution"] != {key: phase[key] for key in
                     ("test_file", "test_name", "test_source_sha256")} or item.get("assertion_ids")):
                 raise ValueError("Local obligation witness needs its exact application/macro execution test")

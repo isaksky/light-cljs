@@ -45,6 +45,8 @@ def classification(row, layers):
     if (javascript.get("status") != "passed" or javascript.get("source_sha256") != row["source_sha256"] or
         javascript.get("test_file") != context.DRIVER or javascript.get("test_name") != context.TEST or
         javascript.get("test_source_sha256") != sci.digest((sci.ROOT / context.DRIVER).read_bytes()) or
+        javascript.get("source_context_adapter_sha256") != context.adapter_hash() or
+        javascript.get("compiler_source_sha256") != context.compiler_sources() or
         javascript.get("adapter_source_sha256") != sci.digest((sci.ROOT / "tests/support/sci_execution_observation.js").read_bytes())):
         raise ValueError("Original local source not verified: " + row["id"])
     if set(javascript.get("engines", {})) != {"Node", "QuickJS"}:
@@ -118,6 +120,33 @@ def load():
     return receipts
 
 
+def record_evidence(document, evidence_path, prior_records=()):
+    """Save actual fresh layers, retaining every complete previous record."""
+    rows = context.load()
+    catalog_hash = sci.digest(context.CATALOG.read_bytes())
+    evidence = document.get("evidence", {})
+    if (document.get("catalog_sha256") != catalog_hash or
+            list(evidence) != [row["id"] for row in rows]):
+        raise ValueError("Fresh source-context catalog or identities changed")
+    previous = {record["id"]: record for record in prior_records}
+    if len(previous) != len(prior_records):
+        raise ValueError("Duplicate previous source-context receipt")
+    records = []
+    evidence_hash = sci.digest(Path(evidence_path).read_bytes())
+    for row in rows:
+        layers = evidence[row["id"]]
+        result = classification(row, layers)
+        record = {"schema_version": 1, "id": row["id"], "catalog_sha256": catalog_hash,
+                  "source_binding": source_binding(row), "layers": layers,
+                  "reconciliation": result,
+                  "original_expectation_status": "passed" if result == "original-source-agreement" else "unresolved",
+                  "evidence_path": str(evidence_path), "evidence_sha256": evidence_hash}
+        if row["id"] in previous:
+            record["prior_evidence"] = dict(previous[row["id"]])
+        records.append(record)
+    return records
+
+
 def verify(evidence):
     receipts = load()
     if list(evidence) != [receipt["id"] for receipt in receipts]:
@@ -140,8 +169,16 @@ def verify(evidence):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--evidence", type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--evidence", type=Path)
+    mode.add_argument("--write-evidence", type=Path)
     args = parser.parse_args()
+    if args.write_evidence:
+        prior = [json.loads(line) for line in RECEIPTS.read_text().splitlines() if line]
+        records = record_evidence(json.loads(args.write_evidence.read_text()), args.write_evidence, prior)
+        temporary = RECEIPTS.with_suffix(".jsonl.tmp")
+        temporary.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in records))
+        temporary.replace(RECEIPTS)
     results = (verify(json.loads(args.evidence.read_text())["evidence"]) if args.evidence
                else {row["id"]: row["reconciliation"] for row in load()})
     print(dict(collections.Counter(results.values())))

@@ -148,3 +148,28 @@ literal version contracts, and rejection of automatic reconciliation for other
 library differences. The separate full-ledger test checks static missing
 status, fresh agreement coverage, exact reviewed version differences,
 unresolved SCI contracts, absent phase credit, and a failing gate exit.
+
+## Fresh audit after stream/join/project repairs — October 11, 2026
+
+All 191 complete originals were reexecuted at frozen production
+`9964c3c79bd2cbb3acba57b79c977be37390126f`, against both local engines and both
+identity/settings-checked pins. Every complete previous record and source binding
+remains verbatim in prior_evidence. All production input hashes match the retained
+active audit from the completed fixes. The actual new layers give
+**180 local original matches / 11 mismatches**, **163 release matches / 28
+mismatches**, and **169 checkout matches / 22 mismatches**. Reconciliation remains
+**163 original agreements, six exact reviewed walk pin differences, 22 other
+unresolved originals**. The three repaired join/project sources now match both
+canonical pins but differ from their original SCI expectations, which remain
+unchanged and unresolved; their fresh literal canonical resolution and previous
+failures are separate in `../compiler-library-unresolved-probes.json`.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/sci_library_context.py --local --references --timeout 240 --output /tmp/light-cljs-125-sci-library-context-191-9964c3c
+python3 -B tests/reference/compiler-language/sci_library_context_receipts.py --write-evidence /tmp/light-cljs-125-sci-library-context-191-9964c3c/evidence.json
+python3 -B tests/reference/compiler-language/sci_library_context_receipts.py --evidence /tmp/light-cljs-125-sci-library-context-191-9964c3c/evidence.json
+```
+
+Fresh evidence SHA-256 `9ff8a88dd75e67162c54c8a6633787dcfd65ae1113d4d05885e24960b71ede30`.
+Stored receipts grant no report pass or unrelated macro eligibility; all original
+contracts, version contracts and strict acceptance are unchanged.

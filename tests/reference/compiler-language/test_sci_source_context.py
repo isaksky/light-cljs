@@ -85,6 +85,47 @@ class SourceContextTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 receipts.classification(row, changed)
 
+    def test_production_and_source_adapter_drift_cannot_grant_fresh_coverage(self):
+        row = context.load()[0]
+        original = receipts.load()[0]['layers']
+        for key in ('compiler_source_sha256', 'source_context_adapter_sha256'):
+            for replacement in (None, 'stale'):
+                changed = copy.deepcopy(original)
+                changed['javascript'][key] = replacement
+                self.assertEqual(receipts.full_report_evidence(row, changed)['status'], 'missing')
+        changed_production = dict(context.compiler_sources())
+        changed_production['src/js_runtime.js'] = 'new-production'
+        with mock.patch.object(context, 'compiler_sources', return_value=changed_production):
+            self.assertEqual(receipts.full_report_evidence(row, original)['status'], 'missing')
+
+    def test_fresh_writer_preserves_complete_history_and_original_conflicts(self):
+        prior = receipts.load()
+        document = {'catalog_sha256': sci.digest(context.CATALOG.read_bytes()),
+                    'evidence': {record['id']: record['layers'] for record in prior}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'evidence.json'
+            path.write_text(json.dumps(document))
+            fresh = receipts.record_evidence(document, path, prior)
+        self.assertEqual([record['prior_evidence'] for record in fresh], prior)
+        self.assertEqual([record['source_binding'] for record in fresh],
+                         [record['source_binding'] for record in prior])
+        self.assertEqual([record['reconciliation'] for record in fresh],
+                         [record['reconciliation'] for record in prior])
+        for record in fresh:
+            self.assertEqual(record['original_expectation_status'],
+                             'passed' if record['reconciliation'] == 'original-source-agreement' else 'unresolved')
+
+    def test_fresh_writer_rejects_partial_or_reordered_evidence(self):
+        prior = receipts.load()
+        complete = {'catalog_sha256': sci.digest(context.CATALOG.read_bytes()),
+                    'evidence': {record['id']: record['layers'] for record in prior}}
+        for identities in ([record['id'] for record in prior[:-1]],
+                           [record['id'] for record in reversed(prior)]):
+            changed = copy.deepcopy(complete)
+            changed['evidence'] = {identity: complete['evidence'][identity] for identity in identities}
+            with self.assertRaisesRegex(ValueError, 'catalog or identities'):
+                receipts.record_evidence(changed, Path('not-read.json'), prior)
+
     def test_missing_engines_and_incomplete_execution_fail_closed(self):
         row = context.load()[0]
         original = receipts.load()[0]['layers']

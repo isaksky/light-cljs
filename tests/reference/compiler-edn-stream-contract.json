@@ -42,10 +42,10 @@
   },
   "support_source_sha256": {
     "tests/fixtures/compiler-residual-source-context/edn-stream/clojure/edn_test.cljs": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
-    "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8",
+    "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982",
     "tests/fixtures/compiler-edn-stream.cljs": "a1b701f509b4b5c7d451d1fe6de5d22f46a4da602c24c0de5949a3eec64f062b",
     "tests/fixtures/compiler-edn-stream-parity.cljs": "c1199b46952d5a86b549ae6fe68dd9a7d3d29ef827a57c6f5e68d590f555595d",
-    "tests/compiler_residual_source_context.rs": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c"
+    "tests/compiler_residual_source_context.rs": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
   },
   "rationale": "The complete original test-reader helper and all three test-read assertions execute unchanged in Node/QuickJS applications and fresh/reused actual macros, with both identity/settings-checked reference pins. The separate strict EDN contract retains literal cursor results, zero-argument explicit input, one/two/four arities, exact EOF values and error-flag precedence, ordered tag/provider effects, local reader/default precedence, malformed/unsupported input and located host/reader failures. Unsupported macro result values remain distinct diagnostics. The constructor namespace adaptation does not promise general tools.reader compatibility or ambient strict readers.",
   "evidence_boundary": "Source and arity bindings are not execution results. Fresh literal reference and both-engine/phase observations are required."
