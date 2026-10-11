@@ -8,7 +8,9 @@ use crate::analyzer::*;
 /// and supplied metadata replaces metadata on the matching global.
 pub(crate) fn append(target: &mut Program, fragment: &Program) -> ExprId {
     for namespace in &fragment.namespaces { if !target.namespaces.contains(namespace) { target.namespaces.push(namespace.clone()); } }
+    target.reader_contexts.extend(fragment.reader_contexts.clone());
     let expr_offset = target.exprs.len();
+    target.namespace_entries.extend(fragment.namespace_entries.iter().map(|(id, ns)| (ExprId(id.0 + expr_offset), ns.clone())));
     let mut remap = Remap {
         map_expr: |id: ExprId| ExprId(id.0 + expr_offset),
         local: target.locals.len(),
@@ -154,6 +156,7 @@ pub(crate) fn resolution_snapshot(program: &Program) -> Program {
     let remap = identity_remap(program, |id| indices[id.0]);
     let mut snapshot = program.clone();
     snapshot.compilation_uses.clear();
+    snapshot.namespace_entries.clear();
     snapshot.exprs = program
         .exprs
         .iter()

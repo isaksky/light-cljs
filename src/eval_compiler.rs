@@ -323,6 +323,8 @@ impl InteractiveCompiler {
                 &self.requires,
                 (1, 1),
             )?;
+            let env = self.host.reader_environment(env, &self.namespace, &self.resolution.refers,
+                &self.resolution.excludes, self.globals())?;
             let next = if self.host.has_javascript_macro(&self.namespace, &target) {
                 Some(self.host.expand_source_javascript(
                     &self.namespace,

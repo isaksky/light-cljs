@@ -2411,9 +2411,20 @@ pub struct CompilationUse {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeReaderNamespace {
+    pub aliases: Vec<(String, String)>,
+    pub refers: Vec<(String, String, String)>,
+    pub excludes: Vec<String>,
+    pub macros: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     /// Source namespaces present in this unit, including namespaces without Vars.
     pub namespaces: Vec<String>,
+    /// Explicit source reader contexts; runtime reads never consult a loader.
+    pub reader_contexts: HashMap<String, RuntimeReaderNamespace>,
+    pub namespace_entries: HashMap<ExprId, String>,
     pub compilation_uses: Vec<CompilationUse>,
     pub exprs: Vec<Expr>,
     pub locals: Vec<LocalBinding>,
@@ -2597,6 +2608,8 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
 fn empty_program() -> Program {
     Program {
         namespaces: Vec::new(),
+        reader_contexts: HashMap::new(),
+        namespace_entries: HashMap::new(),
         compilation_uses: Vec::new(),
         exprs: Vec::new(),
         locals: Vec::new(),
@@ -2795,10 +2808,12 @@ fn analyze_input_state(
         analyzer.definition_name = snapshot.definition_name.clone();
     }
     if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) { analyzer.program.namespaces.push(namespace.into()); }
+    analyzer.program.reader_contexts.insert(namespace.into(), RuntimeReaderNamespace {aliases: aliases.to_vec(), refers: analyzer.resolution.refers.clone(), excludes: analyzer.resolution.excludes.clone(), macros: Vec::new()});
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
     }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
+    analyzer.program.reader_contexts.get_mut(namespace).unwrap().macros = analyzer.macro_host.source_macro_names(namespace);
     analyzer.read_discards_before(source.len())?;
     analyzer.drain_deferred()?;
     analyzer.collect_expression_warnings();
@@ -2939,6 +2954,8 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
         analyzer
             .read_discards_before(input.source.len())
             .map_err(|e| (source_index, e))?;
+        analyzer.program.reader_contexts.insert(input.name.into(), RuntimeReaderNamespace {aliases: input.aliases.to_vec(), refers: analyzer.resolution.refers.clone(), excludes: analyzer.resolution.excludes.clone(), macros: analyzer.macro_host.source_macro_names(input.name)});
+        analyzer.program.namespace_entries.insert(root, input.name.into());
         roots.push(root);
         analyzer.drain_deferred().map_err(|e| (source_index, e))?;
         analyzer.collect_expression_warnings();
@@ -7477,6 +7494,8 @@ impl Analyzer<'_> {
         environment: crate::compiler_data::Datum,
     ) -> Result<crate::compiler_data::Datum, String> {
         let c = crate::compiler_data::DataBuilder;
+        let environment = self.macro_host.reader_environment(environment, self.namespace,
+            &self.resolution.refers, &self.resolution.excludes, &self.program.globals)?;
         c.assoc(
             &environment,
             &c.keyword(crate::compiler_data::Name::new(

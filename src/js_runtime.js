@@ -2757,6 +2757,40 @@
     else if (obj != null) namespaces.get(key).obj = obj;
     return namespaces.get(key);
   }
+  // Pinned source names from core_public_bindings.tsv and core_var_metadata.tsv.
+  // Qualification describes source identity and does not demand a core value.
+  const readerCoreNames = new Set("* *1 *2 *3 *assert* *clojurescript-version* *command-line-args* *e *eval* *exec-tap-fn* *flush-on-newline* *loaded-libs* *main-cli-fn* *ns* *out* *print-dup* *print-err-fn* *print-fn* *print-fn-bodies* *print-length* *print-level* *print-meta* *print-namespace-maps* *print-newline* *print-readably* *unchecked-arrays* *unchecked-if* *warn-on-infer* + - --destructure-map -> ->> ->ArrayChunk ->ArrayIter ->Atom ->ChunkBuffer ->ChunkedCons ->ChunkedSeq ->Cons ->Cycle ->Delay ->ES6EntriesIterator ->ES6Iterator ->ES6IteratorSeq ->ES6SetEntriesIterator ->Eduction ->Empty ->EmptyList ->IndexedSeq ->IndexedSeqIterator ->IntegerRange ->IntegerRangeChunk ->Iterate ->KeySeq ->Keyword ->LazySeq ->List ->Many ->MapEntry ->MetaFn ->MultiFn ->MultiIterator ->Namespace ->PersistentArrayMap ->PersistentArrayMapIterator ->PersistentArrayMapSeq ->PersistentHashMap ->PersistentHashSet ->PersistentQueue ->PersistentQueueIter ->PersistentQueueSeq ->PersistentTreeMap ->PersistentTreeMapSeq ->PersistentTreeSet ->PersistentVector ->RSeq ->Range ->RangeIterator ->RangedIterator ->RecordIter ->Reduced ->Repeat ->SeqIter ->Single ->StringBufferWriter ->StringIter ->Subvec ->Symbol ->TaggedLiteral ->TransformerIterator ->UUID ->ValSeq ->Var ->Volatile -add-method -add-watch -as-transient -assoc -assoc! -assoc-n -assoc-n! -chunked-first -chunked-next -chunked-rest -clj->js -clone -comparator -compare -conj -conj! -contains-key? -count -default-dispatch-val -deref -deref-with-timeout -disjoin -disjoin! -dispatch-fn -dissoc -dissoc! -drop -drop-first -empty -entry-key -equiv -find -first -flush -get-method -hash -invoke -iterator -js->clj -key -key->js -kv-reduce -lookup -meta -methods -name -namespace -next -notify-watches -nth -peek -persistent! -pop -pop! -pr-writer -prefer-method -prefers -realized? -reduce -remove-method -remove-watch -reset -reset! -rest -rseq -seq -sorted-seq -sorted-seq-from -swap! -val -vreset! -with-meta -write .. / < <= = == > >= APersistentVector ASeq ArrayChunk ArrayIter Atom CHAR_MAP ChunkBuffer ChunkedCons ChunkedSeq Cons Cycle DEMUNGE_MAP DEMUNGE_PATTERN Delay ES6EntriesIterator ES6Iterator ES6IteratorSeq ES6SetEntriesIterator Eduction Empty EmptyList ExceptionInfo Fn IAssociative IAtom IChunk IChunkedNext IChunkedSeq ICloneable ICollection IComparable ICounted IDeref IDerefWithTimeout IDrop IEditableCollection IEmptyableCollection IEncodeClojure IEncodeJS IEquiv IFind IFn IHash IIndexed IIterable IKVReduce IList ILookup IMap IMapEntry IMeta IMultiFn INIT INamed INext IPending IPrintWithWriter IRecord IReduce IReset IReversible ISeq ISeqable ISequential ISet ISorted IStack ISwap ITransientAssociative ITransientCollection ITransientMap ITransientSet ITransientVector IUUID IVector IVolatile IWatchable IWithMeta IWriter IndexedSeq IndexedSeqIterator Inst IntegerRange IntegerRangeChunk Iterate KeySeq Keyword LazySeq List LongImpl MODULE_INFOS MODULE_URIS Many MapEntry MetaFn MultiFn MultiIterator NS_CACHE NaN? Namespace PROTOCOL_SENTINEL PersistentArrayMap PersistentArrayMapIterator PersistentArrayMapSeq PersistentHashMap PersistentHashSet PersistentQueue PersistentQueueIter PersistentQueueSeq PersistentTreeMap PersistentTreeMapSeq PersistentTreeSet PersistentVector RSeq Range RangeIterator RangedIterator RecordIter Reduced Repeat START SeqIter Single StringBufferWriter StringIter Subvec Symbol TaggedLiteral Throwable->map TransformerIterator UUID ValSeq Var Volatile abs aclone add-tap add-to-string-hash-cache add-watch aget alength alter-meta! amap ancestors and any? apply apply-to areduce array array-chunk array-index-of array-iter array-list array-map array-seq array? as-> aset assert assoc assoc! assoc-in associative? atom await bases binding bit-and bit-and-not bit-clear bit-count bit-flip bit-not bit-or bit-set bit-shift-left bit-shift-right bit-shift-right-zero-fill bit-test bit-xor boolean boolean? booleans bounded-count butlast byte bytes case cat char char? chars chunk chunk-append chunk-buffer chunk-cons chunk-first chunk-next chunk-rest chunked-seq chunked-seq? clj->js clone cloneable? coercive-= coercive-boolean coercive-not coercive-not= coll? comment comp comparator compare compare-and-set! complement completing concat cond cond-> cond->> condp conj conj! cons constantly contains? copy-arguments count counted? create-ns cycle dec declare dedupe default-dispatch-val defmacro defmethod defmulti defn defn- defonce defprotocol defrecord deftype delay delay? demunge deref derive descendants destructure disj disj! dispatch-fn dissoc dissoc! distinct distinct? divide doall dorun doseq dotimes doto double double-array double? doubles drop drop-last drop-while dt->et eduction empty empty? enable-console-print! ensure-reduced equiv-map es6-entries-iterator es6-iterable es6-iterator es6-iterator-seq es6-set-entries-iterator eval even? every-pred every? ex-cause ex-data ex-info ex-message exists? extend-protocol extend-type false? ffirst filter filterv find find-macros-ns find-ns find-ns-obj first flatten float float? floats flush fn fn? fnext fnil for force frequencies gen-apply-to gen-apply-to-simple gensym gensym_counter get get-in get-method get-validator goog-define group-by halt-when hash hash-combine hash-double hash-keyword hash-long hash-map hash-ordered-coll hash-set hash-string hash-string* hash-unordered-coll ident? identical? identity if-let if-not if-some ifind? ifn? implements? import inc indexed? infinite? inst-ms inst-ms* inst? instance? int int-array int-rotate-left int? integer? interleave interpose into into-array ints is_proto_ isa? iter iterable? iterate iteration js->clj js-arguments js-comment js-debugger js-delete js-fn? js-in js-inline-comment js-invoke js-iterable? js-keys js-mod js-obj js-reserved js-str js-symbol? juxt keep keep-indexed key key->js key-test keys keyword keyword-identical? keyword? last lazy-cat lazy-seq let letfn list list* list? load-file load-file* locking long long-array longs loop m3-C1 m3-C2 m3-fmix m3-hash-int m3-hash-unencoded-chars m3-mix-H1 m3-mix-K1 m3-seed macroexpand macroexpand-1 make-array make-hierarchy map map-entry? map-indexed map? mapcat mapv max max-key memfn memoize merge merge-with meta methods min min-key missing-protocol mix-collection-hash mk-bound-fn mod munge munge-str name namespace nat-int? native-satisfies? neg-int? neg? newline next nfirst nil-iter nil? nnext not not-any? not-empty not-every? not-native not= ns-imports ns-interns ns-interns* ns-name ns-publics ns-unmap nth nthnext nthrest number? object-array object? odd? or parents parse-boolean parse-double parse-long parse-uuid partial partition partition-all partition-by partitionv partitionv-all peek persistent! persistent-array-map-seq pop pop! pos-int? pos? pr pr-seq-writer pr-sequential-writer pr-str pr-str* pr-str-with-opts prefer-method prefers prim-seq print print-map print-meta? print-prefix-map print-str println println-str prn prn-str prn-str-with-opts qualified-ident? qualified-keyword? qualified-symbol? quot rand rand-int rand-nth random-sample random-uuid range ranged-iterator re-find re-matches re-pattern re-seq realized? record? reduce reduce-kv reduceable? reduced reduced? reductions refer-clojure refer-global regexp? reify rem remove remove-all-methods remove-method remove-tap remove-watch repeat repeatedly replace replicate req! require require-global require-macros reset! reset-meta! reset-vals! resolve rest reverse reversible? rseq rsubseq run! satisfies? second select-keys selector seq seq-iter seq-to-map-for-destructuring seq? seqable? sequence sequential? set set-from-indexed-seq set-lite-check set-print-err-fn! set-print-fn! set-validator! set? short shorts shuffle simple-benchmark simple-ident? simple-keyword? simple-symbol? some some-> some->> some-fn some-vals some? sort sort-by sorted-map sorted-map-by sorted-set sorted-set-by sorted? special-symbol? specify specify! split-at split-with splitv-at spread str str_ string-hash-cache string-hash-cache-count string-iter string-print string? subs subseq subvec supers swap! swap-vals! symbol symbol-identical? symbol? system-time tagged-literal tagged-literal? take take-last take-nth take-while tap> test this-as time to-array to-array-2d trampoline transduce transformer-iterator transient tree-seq true? truth_ type type->str unchecked-add unchecked-add-int unchecked-byte unchecked-char unchecked-dec unchecked-dec-int unchecked-divide-int unchecked-double unchecked-float unchecked-get unchecked-inc unchecked-inc-int unchecked-int unchecked-long unchecked-max unchecked-min unchecked-multiply unchecked-multiply-int unchecked-negate unchecked-negate-int unchecked-remainder-int unchecked-set unchecked-short unchecked-subtract unchecked-subtract-int undefined? underive unreduced unsafe-bit-and unsafe-cast unsigned-bit-shift-right update update-in update-keys update-vals uri? use use-macros uuid uuid? val vals var? vary-meta vec vec-lite vector vector-lite vector? volatile! volatile? vreset! vswap! when when-first when-let when-not when-some while with-meta with-out-str with-redefs write-all zero? zipmap".split(" "));
+  function registerReaderNamespace(name, context) {
+    const ns = createNs(symbol(null, name));
+    ns.readerContext = {aliases: new Map(context.aliases ?? []),
+      refers: new Map((context.refers ?? []).map(([local, ns, name]) => [local, [ns, name]])),
+      excludes: new Set(context.excludes ?? []), bindings: new Set(context.bindings ?? [])};
+    return ns;
+  }
+  function macroReaderFunction(fn) {
+    const wrapped = function (...args) { return withMacroReaderContext(fn, args); };
+    return Object.assign(wrapped, fn);
+  }
+  function withMacroReaderContext(fn, args) {
+    const saved = core.currentNs, env = get(args[1], keyword(null, "ns"));
+    const name = get(env, keyword(null, "name"));
+    if (name == null) return Reflect.apply(fn, null, args);
+    const ns = createNs(name);
+    const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};
+    const aliases = new Map(context.aliases);
+    for (const pair of toArray(get(env, keyword(null, "requires")))) aliases.set(str(nth(pair, 0)), str(nth(pair, 1)));
+    const previous = ns.readerContext;
+    const view = get(args[1], keyword("light-cljs", "reader-context"));
+    const refers = new Map(context.refers), excludes = new Set(context.excludes), bindings = new Set(context.bindings);
+    if (view != null) {
+      for (const entry of toArray(get(view, keyword(null, "refers")))) refers.set(nth(entry, 0), [nth(entry, 1), nth(entry, 2)]);
+      for (const name of toArray(get(view, keyword(null, "excludes")))) excludes.add(name);
+      for (const name of toArray(get(view, keyword(null, "bindings")))) bindings.add(name);
+    }
+    ns.readerContext = {aliases, refers, excludes, bindings}; core.currentNs = ns;
+    try { return Reflect.apply(fn, null, args); }
+    finally { ns.readerContext = previous; core.currentNs = saved; }
+  }
   function findNs(name) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (name == null) return null;
@@ -4706,6 +4740,17 @@
   function parse(s, opts) {
     let nodes = 0, anonymousArgs = null, suppressTags = 0;
     const splices = new WeakMap();
+    // Capture this invocation's active view. Nested/tag reads can bind *ns*
+    // independently without changing qualification in the enclosing read.
+    const current = opts.profile === 'code' ? c.currentNs : null;
+    const currentName = current === null ? null : c.str(c.nsName(current));
+    const context = current?.readerContext;
+    function alias(name) {
+      const resolved = context?.aliases.get(name);
+      if (resolved === undefined) fail(s, 'Missing namespace alias: ' + name);
+      return resolved;
+    }
+
     function required(depth) {
       let value; do { value = form(depth); } while (value === discarded);
       if (value === absent) fail(s, 'Unexpected EOF');
@@ -4759,8 +4804,11 @@
         fail(s, 'Invalid symbolic value');
       }
       if (ch === ':') {
-        take(s); if (peek(s) === ':') fail(s, 'Auto-resolved namespaced maps are unsupported');
-        const namespace = token(s); if (namespace.includes('/')) fail(s, 'Invalid map namespace');
+        take(s); const auto = peek(s) === ':';
+        if (auto) { if (opts.profile !== 'code') fail(s, 'Auto-resolved namespaced maps are unsupported'); take(s); }
+        const spelling = peek(s) === '{' || whitespace(peek(s)) ? '' : token(s, opts.profile === 'code');
+        if (spelling.includes('/') || spelling.includes(':') || (!auto && !spelling)) fail(s, 'Invalid map namespace');
+        const namespace = auto ? (spelling ? alias(spelling) : currentName) : spelling;
         skip(s); if (take(s) !== '{') fail(s, 'Expected namespaced map');
         return collection(depth, '}', 'map', namespace);
       }
@@ -4829,9 +4877,14 @@
         if (data.namespace === null) {
           if (data.name.endsWith('#')) { if (!gensyms.has(data.name)) gensyms.set(data.name, c.gensym(data.name.slice(0,-1) + '__')); resolved = gensyms.get(data.name); }
           else if (!['if','do','let*','fn*','loop*','recur','throw','try','new','set!','quote','var','def'].includes(data.name)) {
-            const runtimeName = ({'+':'add','-':'subtract','*':'multiply','/':'divide','=':'equal','map':'mapSeq'})[data.name] ?? data.name.replace(/-([a-z])/g, (_,ch) => ch.toUpperCase());
-            resolved = rt.symbol(Object.prototype.hasOwnProperty.call(c,runtimeName) || ['let','letfn','fn','loop','defn','when','when-not','and','or','cond','if-let','when-let','doseq','for','lazy-seq'].includes(data.name) ? 'cljs.core' : 'user', data.name);
+            resolved = rt.symbol(readerCoreNames.has(data.name) ? 'cljs.core' : currentName, data.name);
           }
+        }
+        if (data.namespace !== null && context?.aliases.has(data.namespace)) resolved = rt.symbol(context.aliases.get(data.namespace), data.name);
+        if (data.namespace === null && !data.name.endsWith('#')) {
+          if (context?.bindings.has(data.name) || context?.excludes.has(data.name)) resolved = rt.symbol(currentName, data.name);
+          const referred = context?.refers.get(data.name);
+          if (referred && !context?.bindings.has(data.name)) resolved = rt.symbol(...referred);
         }
         return rt.listFromArray([rt.symbol(null,'quote'), resolved]);
       }
@@ -4878,7 +4931,11 @@
         if (!anonymousArgs.args.has(n)) anonymousArgs.args.set(n, c.gensym(n ? 'p' + n + '__' : 'rest__'));
         anonymousArgs.max = Math.max(anonymousArgs.max,n); return anonymousArgs.args.get(n);
       }
-      if (opts.profile === 'code' && text.startsWith('::')) return named(s, 'user/' + text.slice(2), true);
+      if (opts.profile === 'code' && text.startsWith('::')) {
+        const local = text.slice(2), slash = local.indexOf('/');
+        const namespace = slash < 0 ? currentName : alias(local.slice(0, slash));
+        return named(s, namespace + '/' + (slash < 0 ? local : local.slice(slash + 1)), true);
+      }
       if (text === 'nil') return null; if (text === 'true') return true; if (text === 'false') return false;
       if (/^[+-]?\d/.test(text)) return number(s, text);
       if (text.startsWith(':')) return named(s, text.slice(1), true);
@@ -5024,7 +5081,7 @@
     shuffle: hostShuffle, randomUuid: hostRandomUuid,
     loadFile: function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); }
   });
-  Object.assign(core, {Namespace, createNs, findNs, nsName, theNs, allNs, compilerMacroVar,
+  Object.assign(core, {Namespace, registerReaderNamespace, macroReaderFunction, createNs, findNs, nsName, theNs, allNs, compilerMacroVar,
     currentNs: createNs(symbol(null, "cljs.user")), assertions: true});
   createNs(symbol(null, "cljs.core"));
   Object.seal(core);

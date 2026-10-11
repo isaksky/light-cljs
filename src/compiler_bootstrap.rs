@@ -366,7 +366,7 @@ impl MacroHost {
                 .map_err(|e| e.to_string())?;
         let function = engine
             .unwrap_or(bootstrap.evaluator.as_ref())
-            .evaluate_unit(&crate::emitter::emit_deferred_unit(&program))
+            .evaluate_unit(&format!("rt => rt.core.macroReaderFunction(({})(rt))", crate::emitter::emit_deferred_unit(&program)))
             .map_err(|e| e.to_string())?;
         self.javascript_macros.insert(
             format!("{namespace}/{name}"),

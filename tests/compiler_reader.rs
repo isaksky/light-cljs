@@ -473,3 +473,126 @@ fn compiler_forms_can_be_constructed_without_any_evaluator() {
     };
     assert_eq!(number.to_bits(), (-0.0_f64).to_bits());
 }
+
+
+#[test]
+fn runtime_reader_uses_dynamic_namespace_and_restores_nested_reads() {
+    check(r##"(pr-str (let [events (atom [])]
+      [(read-string "::x")
+       (binding [*ns* (create-ns 'other)]
+         (swap! events conj (read-string "::x"))
+         (binding [*ns* (create-ns 'inner)] (swap! events conj (read-string "::x")))
+         (swap! events conj (read-string "::x"))
+         (try (binding [*ns* (create-ns 'throwing)] (read-string "::missing/x"))
+              (catch :default _ (swap! events conj (read-string "::x"))))
+         (read-string "`local"))
+       (read-string "::x") @events (second (read-string "`nil?"))]))"##,
+      "[:cljs.user/x (quote other/local) :cljs.user/x [:other/x :inner/x :other/x :other/x] cljs.core/nil?]");
+}
+
+#[test]
+fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
+    let root = std::env::temp_dir().join(format!("light-cljs-reader-context-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("reader")).unwrap();
+    std::fs::write(root.join("reader/dep.cljs"), r##"(ns reader.dep) (def value 9) (def observed (read-string "::value"))"##).unwrap();
+    std::fs::write(root.join("reader/app.cljs"), r##"
+      (ns reader.app (:require [reader.dep :as d :refer [value]]) (:refer-clojure :exclude [map]))
+      (def local 1)
+      (defmacro inc [] 1)
+      (defmacro reader-probe []
+        (and (= (ns-name *ns*) 'reader.app)
+             (= (read-string "::d/x") :reader.dep/x)
+             (= (second (read-string "`value")) 'reader.dep/value)
+             (= (second (read-string "`local")) 'reader.app/local)
+             (= (second (read-string "`map")) 'reader.app/map)
+             (= (second (read-string "`inc")) 'reader.app/inc)))
+      (def source-agrees (= [::local ::d/value '#::d{:x 1 :_/y 2} `d/value `local `value `map]
+         [(read-string "::local") (read-string "::d/value") (read-string "#::d{:x 1 :_/y 2}")
+          (second (read-string "`d/value")) (second (read-string "`local"))
+          (second (read-string "`value")) (second (read-string "`map"))]))
+      (and (reader-probe) source-agrees (= reader.dep/observed :reader.dep/value)
+           (= (ns-name *ns*) 'reader.app)
+           (= (read-string "#::{:x 1}") {:reader.app/x 1})
+           (= (read-string "::d/value") :reader.dep/value)
+           (= (second (read-string "`value")) 'reader.dep/value)
+           (= (second (read-string "`local")) 'reader.app/local)
+           (= (second (read-string "`map")) 'reader.app/map)
+           (= (second (read-string "`inc")) `inc))"##).unwrap();
+    let js = light_cljs::compile_namespace("reader.app", &[root.clone()]).unwrap();
+    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    assert_eq!(e.string(e.evaluate_js(&format!("String({js})")).unwrap()).unwrap(), "true");
+    assert_eq!(run(&js), "true\n");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_reader_macro_and_reused_session_contexts_are_explicit() {
+    use light_cljs::{EvalSession, EvalOptions};
+    let mut session = EvalSession::new(EvalOptions {namespace: "reader.session".into(),
+      aliases: vec![("d".into(), "reader.dep".into())], ..Default::default()}).unwrap();
+    for text in [r##"[(read-string "::x") (read-string "::d/x") (second (read-string "`d/x"))]"##,
+                 r##"(defmacro read-context [] (list 'quote [(read-string "::x") (read-string "::d/x") (second (read-string "`d/x"))])) (read-context)"##] {
+      let value = session.eval_string(text).unwrap().value;
+      assert_eq!(session.print(value).unwrap(), "[:reader.session/x :reader.dep/x reader.dep/x]");
+      session.release(value).unwrap();
+    }
+    session.eval_string("(in-ns 'reader.other)").unwrap();
+    let value = session.eval_string(r##"[(read-string "::x") (binding [*ns* (the-ns 'reader.session)] (read-string "::d/x"))]"##).unwrap().value;
+    assert_eq!(session.print(value).unwrap(), "[:reader.other/x :reader.dep/x]");
+    session.release(value).unwrap();
+    session.eval_string("(in-ns 'reader.session)").unwrap();
+    let value = session.eval_string(r##"(read-string "::d/x")"##).unwrap().value;
+    assert_eq!(session.print(value).unwrap(), ":reader.dep/x");
+    session.release(value).unwrap();
+}
+
+#[test]
+fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
+    let checks = r##"
+      const c = rt.core;
+      c.currentNs = c.registerReaderNamespace('reader.outer', {aliases: [['d','reader.dep']]});
+      for (const text of ['::absent/x', '#::absent{:x 1}']) {
+        assert.throws(() => c.readString(text), e => e.category === 'reader' &&
+          e.source === '<read-string>' && e.line === 1 && e.column > 1 && /Missing namespace alias: absent/.test(e.message));
+      }
+      for (const read of [c.ednReadString,c.readerReadString]) {
+        for (const text of ['::x','#::{:x 1}','`x']) assert.throws(() => read(text));
+      }
+      c.readerRegisterTagParser(rt.symbol(null,'nested'), value => {
+        const saved = c.currentNs; c.currentNs = c.createNs(rt.symbol(null,'reader.inner'));
+        try { return c.readString('::x'); } finally { c.currentNs = saved; }
+      });
+      assert.equal(c.prStr(c.readString('[::x #nested 0 ::x]')), '[:reader.outer/x :reader.inner/x :reader.outer/x]');
+      c.readerRegisterTagParser(rt.symbol(null,'bad'), value => {
+        const saved = c.currentNs; c.currentNs = c.createNs(rt.symbol(null,'reader.inner'));
+        try { return c.readString('::absent/x'); } finally { c.currentNs = saved; }
+      });
+      assert.throws(() => c.readString('#bad 0'), /Missing namespace alias/);
+      assert.equal(c.prStr(c.readString('::x')), ':reader.outer/x');
+      assert.throws(() => c.readString('#=(1)'), /Unsupported dispatch syntax/);
+      const env = c.hashMap(rt.keyword(null,'ns'), c.hashMap(rt.keyword(null,'name'), rt.symbol(null,'reader.caller'),
+        rt.keyword(null,'requires'), c.hashMap(rt.symbol(null,'d'), rt.symbol(null,'reader.dep'))));
+      const macro = c.macroReaderFunction(() => c.prStr(c.vector(c.readString('::x'),c.readString('::d/x'))));
+      assert.equal(macro(null,env), '[:reader.caller/x :reader.dep/x]');
+      const badMacro = c.macroReaderFunction(() => c.readString('::absent/x'));
+      assert.throws(() => badMacro(null,env), /Missing namespace alias/);
+      assert.equal(c.prStr(c.readString('::d/x')), ':reader.dep/x');
+      assert.equal(c.prStr(c.readString('::x')), ':reader.outer/x');
+    "##;
+    let script = format!("const assert = require('node:assert/strict'); const rt = {}; {}", include_str!("../src/js_runtime.js"),checks);
+    let output = Command::new("node").args(["-e", &script]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let script = format!("(() => {{ const rt = {}; const assert = {{equal: (a,b) => {{if (a !== b) throw Error(a+' != '+b);}}, throws: (f,test) => {{try {{f();}} catch(e) {{ if (test === undefined || (typeof test === 'function' ? test(e) : test.test(e.message))) return; throw e;}} throw Error('Expected failure');}} }}; {}; return true; }})()", include_str!("../src/js_runtime.js"), checks);
+    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    e.evaluate_js(&script).unwrap();
+}
+
+#[test]
+fn runtime_reader_core_name_inventory_matches_the_source_reader_tables() {
+    let runtime = include_str!("../src/js_runtime.js");
+    let line = runtime.lines().find(|line| line.contains("const readerCoreNames = new Set(")).unwrap();
+    let names = line.split('"').nth(1).unwrap().split(' ').collect::<std::collections::BTreeSet<_>>();
+    let expected = [include_str!("../src/core_public_bindings.tsv"), include_str!("../src/core_var_metadata.tsv")].into_iter()
+        .flat_map(str::lines).filter_map(|line| line.split_once('\t').map(|(name, _)| name)).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(names, expected, "Regenerate runtime reader core names when pinned source tables change");
+}

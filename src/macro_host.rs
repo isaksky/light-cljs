@@ -831,6 +831,28 @@ impl MacroHost {
         }
         aliases
     }
+    pub(crate) fn source_macro_names(&self, namespace: &str) -> Vec<String> {
+        let prefix = format!("{namespace}/");
+        let mut names = self.javascript_macros.keys().filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned)).collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    pub(crate) fn reader_environment(
+        &self, environment: crate::compiler_data::Datum, namespace: &str,
+        refers: &[(String, String, String)], excludes: &[String], globals: &[crate::GlobalBinding],
+    ) -> Result<crate::compiler_data::Datum, String> {
+        let c = crate::compiler_data::DataBuilder;
+        let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
+        let key = |s| c.keyword(Name::new(None, s));
+        let context = c.map(&[
+            (key("refers"), c.vector(&refers.iter().chain(self.reader_refers(namespace).iter()).map(|(local, ns, name)| c.vector(&[string(local), string(ns), string(name)])).collect::<Result<Vec<_>, _>>()?).map_err(|e| e.to_string())?),
+            (key("excludes"), c.vector(&excludes.iter().map(|s| string(s)).collect::<Vec<_>>()).map_err(|e| e.to_string())?),
+            (key("bindings"), c.vector(&globals.iter().filter(|g| g.namespace == namespace).map(|g| string(&g.name)).chain(self.source_macro_names(namespace).iter().map(|name| string(name))).collect::<Vec<_>>()).map_err(|e| e.to_string())?),
+        ]).map_err(|e| e.to_string())?;
+        c.assoc(&environment, &c.keyword(Name::new(Some("light-cljs"), "reader-context")), &context)
+    }
+
     pub fn compiler_environment(
         &self,
         namespace: &str,

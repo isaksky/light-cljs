@@ -88,7 +88,7 @@ fn emit_js_mode(
         }
         emitter.output.insert_str(prelude_end, host);
     }
-    if demand_roots || application_roots || program.exprs.iter().enumerate().any(|(id, expr)| {
+    if demand_roots || application_roots || !program.namespace_entries.is_empty() || program.exprs.iter().enumerate().any(|(id, expr)| {
         emitter.used.contains(&ExprId(id)) && (
         matches!(
             expr.kind,
@@ -125,7 +125,21 @@ fn emit_js_mode(
             let previous = std::mem::take(&mut emitter.output);
             emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
             let literal = std::mem::replace(&mut emitter.output, previous);
-            writeln!(runtime, "  rt.core.createNs(rt.symbol(null, {literal}));").unwrap();
+            writeln!(runtime, "  rt.core.registerReaderNamespace({literal}, {{aliases: [").unwrap();
+            if let Some(context) = program.reader_contexts.get(namespace) {
+                for (alias, target) in &context.aliases {
+                    writeln!(runtime, "    [{}, {}],", js_string(alias), js_string(target)).unwrap();
+                }
+                runtime.push_str("  ], refers: [\n");
+                for (local, ns, original) in &context.refers {
+                    writeln!(runtime, "    [{}, {}, {}],", js_string(local), js_string(ns), js_string(original)).unwrap();
+                }
+                writeln!(runtime, "  ], excludes: [{}],", context.excludes.iter().map(|s| js_string(s)).collect::<Vec<_>>().join(",")).unwrap();
+            } else { runtime.push_str("  ],\n"); }
+            writeln!(runtime, "  bindings: [{}]}});", program.globals.iter().filter(|g| g.namespace == *namespace).map(|g| js_string(&g.name)).chain(program.reader_contexts.get(namespace).into_iter().flat_map(|c| &c.macros).map(|name| js_string(name))).collect::<Vec<_>>().join(",")).unwrap();
+        }
+        if shared.is_none() && let Some(namespace) = program.namespaces.last() {
+            writeln!(runtime, "  rt.core.currentNs = rt.core.theNs(rt.symbol(null, {}));", js_string(namespace)).unwrap();
         }
         for range in &mut emitter.raw_segments { if range.start >= prelude_end { range.start += runtime.len(); range.end += runtime.len(); } }
         if shared.is_none() {
@@ -315,6 +329,10 @@ impl Emitter<'_> {
         if context == ExprContext::Value {
             self.value(id);
             return;
+        }
+        if let Some(namespace) = self.program.namespace_entries.get(&id) {
+            self.indentation();
+            writeln!(self.output, "rt.core.currentNs = rt.core.theNs(rt.symbol(null, {}));", js_string(namespace)).unwrap();
         }
         match &self.program.exprs[id.0].kind {
             ExprKind::JsTemplate { segments, args } => {
@@ -1710,7 +1728,10 @@ impl Emitter<'_> {
                 self.output.push_str("})()");
             }
             ExprKind::Fn { name, methods } => {
-                self.function(*name, methods, self.program.macro_functions.contains(&id))
+                let macro_function = self.program.macro_functions.contains(&id);
+                if macro_function { self.output.push_str("rt.core.macroReaderFunction("); }
+                self.function(*name, methods, macro_function);
+                if macro_function { self.output.push(')'); }
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
@@ -1824,4 +1845,10 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
     let body = emit_js_mode(program, Some("__lightInteractiveRuntime"), false, true, None);
     format!("(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return {body}; }}")
+}
+
+fn js_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for unit in text.encode_utf16() { write!(out, "\\u{unit:04x}").unwrap(); }
+    out.push('"'); out
 }

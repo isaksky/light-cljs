@@ -70,6 +70,23 @@ no browser global namespace traversal is assumed. `ns-name` also accepts source
 symbols retained in Var metadata. These compiler snapshots describe the supported
 source surface and do not emulate upstream analyzer AST or cache structures.
 
+Runtime `read` and `read-string` use the active dynamic `*ns*`. The default is
+`cljs.user` for standalone compilation, the source namespace during namespace
+initialization, and the configured/current namespace in an evaluation session.
+`::x` and `#::{:x 1}` qualify to that name; `::alias/x`, `#::alias{...}` and
+syntax-quoted alias-qualified symbols use explicitly registered source aliases.
+Syntax quote also honors local declarations, refers and core exclusions. Missing
+auto-resolved aliases report reader source, line and column. Namespace creation
+alone installs no aliases, and reading never loads a namespace or evaluates input.
+Each read captures its context; nested tag reads and `*ns*` bindings preserve the
+enclosing view. Macro computations bind the caller's explicit reader context and
+restore it after success or failure. `&env :light-cljs/reader-context` retains
+finite descriptive refers, exclusions and declaration names alongside the ordinary
+namespace alias metadata; it grants no loading or evaluation capability. Strict `clojure.edn` and `cljs.reader` profiles
+continue to reject auto-resolved/syntax-quote forms. Source strings still use the
+Rust reader's immutable `NamespaceView`; runtime observations establish a separate
+execution contract.
+
 The pure compiler seed in `compiler_binding_macros` and
 `compiler_destructuring` expands binding/function declarations and their extended
 map patterns. Protocol/type/record analysis remains compiler-owned; method forms

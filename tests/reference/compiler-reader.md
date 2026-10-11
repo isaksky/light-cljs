@@ -228,7 +228,7 @@ JVM support code, or the entire checkout.
 | Discards and reader conditionals | `.cljc` selects the first matching `:cljs`/`:default`, supports collection splices and diagnoses selected map arity; `.cljs` rejects contextual conditionals. Malformed inactive literal/collection/read-eval syntax still fails parsing | Selected anonymous parameters, inactive tags/duplicates, exact reader effect counts and session recovery have direct observations. Owned structured diagnostics preserve failing spans after session teardown and retain the existing public located message without a doubled location prefix. Existing namespace/reader suites separately execute emitted conditional programs. |
 | Duplicate numeric data | Reader identity equates integer/`N`/integral-ratio spellings and equivalent decimal spellings, while retaining integer/float/decimal distinctions, including nested keys; emitted Number equality remains separate | Source sets now detect `1`/`1N`, integral-ratio and decimal duplicates. Distinct integer/float reader values remain accepted, while the documented runtime Number/map policy can collapse equal emitted keys. Generated macro Numbers retain their actual data rather than being reclassified by the invocation's source spelling. |
 | Public reader APIs and phase boundary | The expanded ledger binds the two `tagged-literal` declarations, four retained core/EDN read APIs and `&` syntax to exact local tests | Fixed constructor/predicate arities, saved/applied calls, tag/form lookup, zero/options/explicit-stream/EOF reads and string/options reads execute in a called application function and a demanded macro helper. Options-only `read` now uses the current input in the shared runtime, including macro execution. No registration/name scan supplies a pass. |
-| Runtime code-reader namespace state | Source compiler reading uses its immutable NamespaceView; runtime string reading is a separate layer | The direct dynamic `*ns*` probe still returns `[:user/x :user/x]`. This demonstrated residual has live focused owner **light-cljs-134**, created after duplicate checks under the broader light-cljs-125 reconciliation. It is not a passing contextual runtime-reader observation. |
+| Runtime code-reader namespace state | Source compiler reading uses its immutable NamespaceView; runtime string reading is a separate layer | The previously demonstrated `[:user/x :user/x]` discrepancy is repaired by **light-cljs-134**: the preserved SCI probe freshly executes as `[:user/x :other/x]` in its explicit user session. Standalone/default compiler tests intentionally use `cljs.user`. New direct Node/QuickJS runtime tests execute aliases, auto-resolved maps, syntax quote, nested/throwing reads and missing-alias locations; canonical macro and reused-session tests execute caller contexts and restoration. Strict EDN/cljs.reader rejections remain separate. These local runtime observations do not relabel an unexecuted pinned-CLJS comparison. |
 | Read-eval and JVM boundaries | `#=` is rejected even in discarded/inactive branches; JVM classes/host reader evaluation and exact numeric operations are excluded by the adopted dialect | No execution or parser pass is claimed for those excluded semantics. |
 
 The full-suite accounting run also exposed a message-compatibility regression while adding owned reader locations; the public located message is preserved, and formatting adds its location once. The SCI collection-key row now executes successfully after source numeric-category repair, but retains its original SCI observation separately: emitted JavaScript Numbers intentionally collapse integer/float map identities. It is explicitly retired from SCI exact-key equivalence, not relabeled portable.
@@ -272,3 +272,35 @@ It was not a full compiler/reference comparison. No new Maven/checkout
 whole-reader semantic comparison, whole-language strict pass, SCI oracle
 regeneration, cross-platform run or hosted CI result is claimed. Earlier
 reference results above remain historical evidence.
+
+### Runtime namespace execution follow-up (light-cljs-134)
+
+`compiler_reader` now has five focused runtime namespace tests. They exercise
+active `*ns*`, nested/throwing binding restoration, explicit aliases, namespaced
+map underscore escapes, syntax-quote core/local/referred names, emitted dependency
+namespace initialization, macro caller contexts, and reused session namespace
+switches. Direct runtime checks execute in Node and QuickJS; source and canonical
+macro fixtures remain separate. `clojure.edn`/`cljs.reader` profile rejections and
+`#=` rejection execute in both engines. No runtime read acquires loader authority.
+
+The seven scoped suites (`compiler_reader`, `compiler_macros`,
+`compiler_namespace_completion`, `eval_sessions`, `compiler_data_libraries`,
+`compiler_edn`, `compiler_host_hooks`) passed 178 tests. The additional library,
+bootstrap, boundary, optimization, execution and provenance selection passed
+108 tests; its 43 opt-in ignored execution tests were not run. The fresh selected
+SCI audit observed `[:user/x :other/x]`, with unchanged effects/output and original
+SCI columns retained. This is current canonical execution, not a fresh pinned
+CLJS oracle comparison. Pinned seven-file reader source verification retains
+137 bodies/72,143 bytes and explicitly reports its oracle unexecuted.
+
+`cargo bench --locked --bench compiler -- --samples 9 --iterations 1` validated
+423 samples across 47 scenario/phase combinations. The 20-iteration evaluator
+benchmark validated fresh, reused and bounded-loop/reset/recovery results (15.63,
+0.112 and 67.54 ms per iteration on this host). These are measurements and
+validation, not a baseline-relative speedup claim or language coverage count.
+
+Final-tree SCI accounting verified all 2,475 retained dispositions (1,209 portable,
+304 adapted, 876 gap and 86 retired). Gaps/retirements are explicit nonconformance
+observations. Two `keys &env` rows retain the SCI flat-environment observation
+and their nonpassing status while freshly recording the added descriptive reader
+context key; no SCI expectation was replaced to declare those rows compatible.
