@@ -287,10 +287,20 @@ impl Datum {
     }
 }
 
+/// Owned provenance for one executed macro expansion. It survives heap teardown.
+#[derive(Clone, Debug)]
+pub struct ExpansionOrigin {
+    pub macro_name: Name,
+    pub call: SourceSpan,
+    pub definition: Option<SourceSpan>,
+    pub helpers: Vec<Name>,
+}
+
 struct Forms {
     nodes: Box<[FormNode]>,
     data: Box<[Datum]>,
     spans: Box<[SourceSpan]>,
+    expansions: Vec<ExpansionOrigin>,
 }
 /// Immutable semantic arena, retaining owned compiler data and source provenance.
 /// Children are source ordered, including alternating map keys/values. Datum
@@ -314,6 +324,7 @@ impl Form {
                 nodes: nodes.into(),
                 data: data.into(),
                 spans: spans.into(),
+                expansions: vec![],
             }),
             id,
         }
@@ -358,6 +369,9 @@ impl Form {
         let (mut nodes, mut values, mut spans) = (vec![], vec![], vec![]);
         let id = add(data, &span, &origin, &mut nodes, &mut values, &mut spans);
         Self::from_parts(nodes, values, spans, id)
+    }
+    pub fn expansions(&self) -> &[ExpansionOrigin] {
+        &self.forms.expansions
     }
     pub fn id(&self) -> FormId {
         self.id
@@ -712,12 +726,35 @@ impl Form {
         fn collect(f: &Form, originals: &mut std::collections::HashMap<usize, Form>) {
             originals.insert(f.data().identity(), f.clone());
             for child in f.children() {
-                collect(&child, originals)
+                collect(&child, originals);
             }
             if let Some(meta) = f.metadata() {
-                collect(&meta, originals)
+                collect(&meta, originals);
+            }
+            if let Some(payload) = f.node().compiler_payload.and_then(|id| f.at(id)) {
+                collect(&payload, originals);
             }
         }
+        let mut originals = std::collections::HashMap::new();
+        collect(original, &mut originals);
+        Self::from_bridge_expansion(
+            data,
+            original,
+            ExpansionOrigin {
+                macro_name: name,
+                call: original.span(),
+                definition: None,
+                helpers: vec![],
+            },
+            &originals,
+        )
+    }
+    pub(crate) fn from_bridge_expansion(
+        data: Datum,
+        original: &Form,
+        expansion: ExpansionOrigin,
+        originals: &std::collections::HashMap<usize, Form>,
+    ) -> Self {
         fn add(
             data: Datum,
             original: &Form,
@@ -759,19 +796,21 @@ impl Form {
             spans.push(span);
             id
         }
-        let mut originals = std::collections::HashMap::new();
-        collect(original, &mut originals);
         let (mut nodes, mut values, mut spans) = (vec![], vec![], vec![]);
         let id = add(
             data,
             original,
-            &originals,
-            &name,
+            originals,
+            &expansion.macro_name,
             &mut nodes,
             &mut values,
             &mut spans,
         );
-        Self::from_parts(nodes, values, spans, id)
+        let mut result = Self::from_parts(nodes, values, spans, id);
+        let forms = Rc::get_mut(&mut result.forms).unwrap();
+        forms.expansions = original.expansions().to_vec();
+        forms.expansions.push(expansion);
+        result
     }
 }
 

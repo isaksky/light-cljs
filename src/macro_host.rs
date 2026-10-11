@@ -1,4 +1,5 @@
-//! Native compile-time execution, independent of runtime globals and JS paths.
+//! Compiler-owned macro requests and configuration. The transitional native
+//! adapter remains until light-cljs-115; JavaScript expansion uses owned forms.
 use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::ExprContext;
@@ -61,8 +62,79 @@ pub struct MacroHost {
 impl MacroHost {
     /// Allocate a fresh synchronous heap for a clean compilation.
     /// The legacy native macro adapter is removed by light-cljs-115.
-    pub fn new_evaluator(&self) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
+    pub fn new_evaluator(
+        &self,
+    ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
         crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+    }
+
+    /// Execute a compiler-emitted macro function with hidden &form/&env arguments.
+    /// Function handles are generation-scoped IDs, never engine values in Program.
+    pub fn expand_javascript(
+        &mut self,
+        evaluator: &crate::evaluator::Evaluator,
+        function: crate::evaluator::ValueId,
+        call: &Form,
+        environment: &crate::compiler_data::Datum,
+        origin: crate::compiler_data::ExpansionOrigin,
+    ) -> Result<Form, String> {
+        if self.expansions >= self.limits.expansions {
+            return Err("compiler macro expansion limit exceeded".into());
+        }
+        self.expansions += 1;
+        let limits = crate::form_bridge::ConversionLimits {
+            nodes: self
+                .limits
+                .generated_nodes
+                .saturating_sub(self.generated_nodes),
+            depth: 128,
+        };
+        let run = || -> Result<Form, crate::evaluator::EvalError> {
+            let mut args = vec![
+                evaluator.import_form(call, limits)?,
+                evaluator.import_data(environment, limits)?,
+            ];
+            for argument in call.children().iter().skip(1) {
+                args.push(evaluator.import_form(argument, limits)?);
+            }
+            let result = evaluator.call(function, &args)?;
+            let expanded = evaluator.export_form(result, call, origin.clone(), limits);
+            // Root release is best effort after terminal engine failure.
+            let _ = evaluator.release(result);
+            for id in args {
+                let _ = evaluator.release(id);
+            }
+            expanded
+        };
+        let expanded = run().map_err(|e| {
+            let location = crate::compiler_data::DiagnosticLocation::from_span(&origin.call);
+            let mut message = format!(
+                "{}:{}:{}: macro {}/{}: {}",
+                location.source,
+                location.line,
+                location.column,
+                String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or(&[])),
+                String::from_utf16_lossy(origin.macro_name.name()),
+                e
+            );
+            if let Some(definition) = &origin.definition {
+                let d = crate::compiler_data::DiagnosticLocation::from_span(definition);
+                message.push_str(&format!(
+                    "; definition {}:{}:{}",
+                    d.source, d.line, d.column
+                ));
+            }
+            for helper in &origin.helpers {
+                message.push_str(&format!(
+                    "; helper {}/{}",
+                    String::from_utf16_lossy(helper.namespace().unwrap_or(&[])),
+                    String::from_utf16_lossy(helper.name())
+                ));
+            }
+            message
+        })?;
+        self.generated_nodes = self.generated_nodes.saturating_add(expanded.nodes().len());
+        Ok(expanded)
     }
 
     pub fn new() -> Self {
@@ -763,6 +835,19 @@ impl MacroHost {
         requires: &[String],
         location: (usize, usize),
     ) -> Result<RootedValue, String> {
+        let data =
+            self.compiler_environment(namespace, context, locals, aliases, requires, location)?;
+        crate::native_form_adapter::native_datum(self.context_mut(), &data)
+    }
+    pub fn compiler_environment(
+        &self,
+        namespace: &str,
+        context: ExprContext,
+        locals: &[(String, usize, &'static str, Option<usize>)],
+        aliases: &[(String, String)],
+        requires: &[String],
+        location: (usize, usize),
+    ) -> Result<crate::compiler_data::Datum, String> {
         let imports = self.imports.get(namespace).cloned().unwrap_or_default();
         let namespace_symbol = self.namespace_symbols.get(namespace).cloned();
         let namespace_doc = self.namespace_docs.get(namespace).cloned();
@@ -771,18 +856,10 @@ impl MacroHost {
             .get(namespace)
             .cloned()
             .unwrap_or_default();
-        let c = self.context_mut();
-        let namespace_symbol = namespace_symbol
-            .as_ref()
-            .map(|d| crate::native_form_adapter::native_datum(c, d))
-            .transpose()?;
-        let namespace_doc = namespace_doc
-            .as_ref()
-            .map(|d| crate::native_form_adapter::native_datum(c, d))
-            .transpose()?;
+        let c = crate::compiler_data::DataBuilder;
         let key = |s| c.keyword(Name::new(None, s));
         let sym = |s: &str| c.symbol(Name::new(None, s));
-        let build = || -> Result<RootedValue, crate::interpreter::CollectionError> {
+        let build = || -> Result<crate::compiler_data::Datum, String> {
             let mut local_map = c.map(&[])?;
             for (name, id, kind, argument) in locals {
                 let name = sym(name);

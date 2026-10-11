@@ -5,9 +5,11 @@
 The architecture adopted on October 10, 2026 uses **rquickjs to execute JavaScript
 emitted by light-cljs**, including macro bodies and their ordinary helpers.
 Rust remains the compiler. This document describes the accepted design;
-**the migration is not implemented yet**. The current checkout still uses the
-native interpreter for compiler macros, embedding, scripts and the REPL, and
-`Cargo.toml` does not yet depend on rquickjs.
+**the migration is partially implemented**. Immutable compiler data/reading,
+the pinned synchronous rquickjs evaluator, and the structured compiler/JavaScript
+form bridge are executable. The default compiler macro bootstrap, source macro
+registration, embedding, scripts and REPL still use the transitional native
+adapter. See [evaluator reference](evaluator.md) for the delivered APIs and tests.
 
 The [compiler reference](compiler.md) and [native interpreter reference](interpreter.md)
 document that current implementation. Their native execution, companion-file and

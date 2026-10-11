@@ -43,3 +43,38 @@ returns its final expression instead of emitting only top-level statements.
 Shared native reader syntax-quote rules remain an intentional boundary, and
 runtime helper availability is checked by the existing JS analyzer. SCI's normal
 macro APIs keep their separate flat environment semantics.
+
+
+## Structured JavaScript bridge execution provenance
+
+`tests/compiler_macros.rs::javascript_form_bridge` contains original,
+hand-authored fixtures for light-cljs's compiler-owned bridge, rather than
+imported upstream tests. They execute Rust-compiled macro functions in the pinned
+QuickJS evaluator and analyze returned forms directly. Observations cover:
+
+- Identity and literal categories, ordered map/set structural keys, metadata,
+  regex/instant/UUID/explicit `#js` payloads and lone-surrogate UTF-16.
+- Returned-code execution with effects in order and exact Number special values.
+- Actual nested call `&form`, bounded environment shadow IDs/args/context/aliases,
+  reader definition-site syntax quote and session gensym freshness.
+- Nested compiler services with GC during conversion, mutable literal detection,
+  constructed metadata and session-owned handles.
+- Bounded lazy realization and rejection of unsupported/cyclic results, located
+  definition/helper/call diagnostics, and fresh-session recovery. Getter,
+  proxy-trap and `toString` probes verify that rejection does not inspect arbitrary
+  host objects by executing their code.
+
+These bridge fixtures do not claim source `defmacro` declarations/default
+bootstrap have switched to JavaScript, nor implement demand-driven source helpers.
+Those integration seams retain their separate migration scopes. Executed checks:
+
+- `cargo test --locked --test compiler_macros --test provenance --test evaluator`:
+  56 macro tests (including 11 bridge tests), 2 provenance tests and 8 evaluator
+  tests passed. The existing ignored startup measurement was not executed.
+- `cargo test --locked --test evaluator --test compiler_reader`: 8 evaluator and
+  7 reader prerequisite tests passed; the same startup measurement was ignored.
+- `cargo test --locked --lib compiler_owned_origin_tests`: 1 provenance/lifetime
+  unit test passed.
+- `node tests/support/js_runtime.test.js`: all canonical runtime assertions passed.
+- `git diff --check`: passed. No full suite or all-features build was run for this
+  focused bridge delivery.

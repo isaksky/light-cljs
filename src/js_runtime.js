@@ -114,9 +114,13 @@
   }
 
   let gensymCounter = 0;
+  const generatedNames = new Set();
   function gensym(prefix) {
     if (arguments.length > 1) return invalidArity(arguments.length);
-    return symbolCore(str(arguments.length === 0 ? "G__" : prefix, ++gensymCounter));
+    const base = str(arguments.length === 0 ? "G__" : prefix);
+    let name; do { name = base + ++gensymCounter; } while (generatedNames.has(name));
+    generatedNames.add(name);
+    return symbolCore(name);
   }
 
   // Evaluators install their expansion services without replacing core or
@@ -1263,6 +1267,178 @@
     return identityHashes.get(value);
   }
 
+  // Versioned in-process compiler bridge. Descriptors are private arrays,
+  // never printed text or JSON. Only brands above authorize language values.
+  function compilerFormBridge() {
+    const borrowed = new WeakMap(), literals = new WeakMap(), primitives = new Map();
+    const negativeZero = Object.freeze({});
+    const primitiveKey = v => typeof v === "number" && Object.is(v, -0) ? negativeZero : v;
+    const dateTime = Function.prototype.call.bind(Date.prototype.getTime);
+    const regexSource = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get);
+    const regexFlags = [["hasIndices","d"],["global","g"],["ignoreCase","i"],["multiline","m"],["dotAll","s"],["unicode","u"],["sticky","y"]]
+      .map(([property, letter]) => [Object.getOwnPropertyDescriptor(RegExp.prototype, property)?.get, letter]);
+    const fromUnits = units => {
+      let result = "";
+      for (let i = 0; i < units.length; i += 4096)
+        result += String.fromCharCode(...units.slice(i, i + 4096));
+      return result;
+    };
+    const units = text => {
+      const result = [];
+      for (let i = 0; i < text.length; i++) result.push(text.charCodeAt(i));
+      return result;
+    };
+    let terminal = null;
+    const fail = (category, path) => {
+      const message = "Unsupported macro result " + category + " at " + path;
+      if (category.includes("limit")) terminal ??= message;
+      throw new Error(message);
+    };
+    function decode(d) {
+      const [kind, id, metadata, a, b] = d;
+      let value;
+      switch (kind) {
+        case "nil": value = null; break;
+        case "bool": case "number": value = a; break;
+        case "string": case "character": value = fromUnits(a); break;
+        case "symbol": case "keyword": value = (kind === "symbol" ? symbol : keyword)(a == null ? null : fromUnits(a), fromUnits(b)); if (kind === "symbol" && a == null) generatedNames.add(fromUnits(b)); break;
+        case "list": value = listFromArray(a.map(decode));
+          if (a.length === 0) { value = builtinValue("EmptyList", sequencePrototype); cells.set(value, cells.get(emptyList)); }
+          break;
+        case "vector": value = vectorFromArray(a.map(decode)); break;
+        case "map": value = mapFromArray(a.map(decode)); break;
+        case "set": value = setFromArray(a.map(decode)); break;
+        case "regex": value = rePattern(decode(a)); break;
+        case "instant": value = new Date(decode(a)); break;
+        case "uuid": value = uuid(decode(a)); break;
+        case "queue": value = queueFromArray(vectors.get(decode(a))); break;
+        case "js-array": value = vectors.get(decode(a)).slice(); literals.set(value, "js-array"); break;
+        case "js-object": {
+          const payload = decode(a), pairs = [];
+          for (const e of maps.get(payload)) pairs.push(typeof e.key === "string" ? e.key : name(e.key), e.value);
+          value = jsObject(pairs); literals.set(value, "js-object"); break;
+        }
+        default: throw new Error("Unknown compiler form descriptor");
+      }
+      if (metadata != null) {
+        const m = decode(metadata);
+        // Compiler metadata uses the canonical private store, never user hooks.
+        if (value == null || (typeof value !== "object" && typeof value !== "function")) throw new Error("Invalid compiler metadata target");
+        metadataValues.set(value, m);
+      }
+      if (value != null && typeof value === "object") borrowed.set(value, id);
+      else primitives.set(primitiveKey(value), id);
+      return value;
+    }
+    function encode(value, limit, depthLimit) {
+      let remaining = limit;
+      const active = new WeakSet();
+      function visit(v, path, depth) {
+        if (--remaining < 0) fail("node limit", path);
+        if (depth > depthLimit) fail("depth limit", path);
+        const kind = typeof v;
+        const object = v != null && (kind === "object" || kind === "function");
+        if (object && active.has(v)) fail("cyclic data", path);
+        if (object) active.add(v);
+        try {
+          let tag, a, b;
+          if (v === null) tag = "nil";
+          else if (kind === "boolean") { tag = "bool"; a = v; }
+          else if (kind === "number") { tag = "number"; a = v; }
+          else if (kind === "string") { tag = "string"; a = units(v); }
+          else if (kind !== "object") fail(kind, path);
+          else if (vars.has(v)) fail("Var", path);
+          else if (atoms.has(v)) fail("atom", path);
+          else if (volatiles.has(v)) fail("volatile", path);
+          else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) fail("protocol/type instance", path);
+          else if (symbols.has(v) || keywords.has(v)) {
+            const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
+            a = n.namespace == null ? null : units(n.namespace); b = units(n.name);
+          } else if (vectors.has(v)) { tag = "vector"; a = vectors.get(v).map((x, i) => visit(x, path + "[" + i + "]", depth + 1)); }
+          else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
+            for (const e of maps.get(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
+          } else if (sets.has(v)) { tag = "set"; a = sets.get(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
+          else if (queues.has(v)) { tag = "queue"; a = visit(vectorFromArray(queues.get(v)), path + ".payload", depth + 1); }
+          else if (uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), path + ".payload", depth + 1); }
+          else if (literals.has(v)) {
+            tag = literals.get(v);
+            const data = Object.getOwnPropertyDescriptors(v), items = [];
+            if (tag === "js-array") {
+              const length = data.length.value;
+              if (length > remaining) fail("node limit", path);
+              for (let i = 0; i < length; i++) {
+                const d = data[i]; if (!d || !("value" in d)) fail("accessor/hole in #js array", path + "[" + i + "]");
+                items.push(visit(d.value, path + "[" + i + "]", depth + 2));
+              }
+            } else {
+              for (const key of Reflect.ownKeys(data)) {
+                if (typeof key !== "string") fail("symbol key in #js object", path);
+                const d = data[key]; if (!("value" in d)) fail("accessor in #js object", path);
+                items.push(visit(key, path + ".key", depth + 2), visit(d.value, path + "." + key, depth + 2));
+              }
+            }
+            a = [tag === "js-array" ? "vector" : "map", 0, null, items];
+          } else if (cells.has(v) || views.has(v) || lazyValues.has(v)) {
+            tag = "list"; a = [];
+            const seen = new WeakSet(); let current = v;
+            while (true) {
+              if (--remaining < 0) fail("sequence limit", path);
+              if (current == null) break;
+              if (!cells.has(current) && !views.has(current) && !lazyValues.has(current)) fail("noncanonical sequence tail", path);
+              if (seen.has(current)) fail("cyclic sequence", path); seen.add(current);
+              // Lazy realization is intentionally executable but shares limits.
+              // Work only with private payloads. User protocol objects are not
+              // expansion trees; realization cannot call their getters to diagnose.
+              try {
+                while (lazyValues.has(current)) {
+                  if (--remaining < 0) fail("sequence limit", path);
+                  current = deferredValue(lazyValues.get(current), true);
+                }
+              } catch (_) { fail("lazy realization failure", path); }
+              if (current == null) break;
+              if (vectors.has(current)) current = view(vectors.get(current), 0, true);
+              if (cells.has(current)) {
+                const cell = cells.get(current);
+                if (cell.kind === "list" && cell.count === 0) break;
+                let head, tail;
+                try { head = cell.head; tail = cell.tail; } catch (_) { fail("sequence realization failure", path); }
+                a.push(visit(head, path + "[" + a.length + "]", depth + 1));
+                current = tail;
+              } else if (views.has(current)) {
+                const slice = views.get(current);
+                if (slice.offset >= slice.storage.length) break;
+                a.push(visit(slice.storage[slice.offset], path + "[" + a.length + "]", depth + 1));
+                current = slice.offset + 1 < slice.storage.length ? view(slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail;
+              } else fail("noncanonical sequence tail", path);
+            }
+          } else {
+            // Intrinsic brand checks avoid getters, custom toString and instanceof.
+            try { const ms = dateTime(v); tag = "instant"; if (!Number.isFinite(ms)) fail("invalid instant", path); a = visit(ms, path + ".payload", depth + 1); } catch (e) { if (tag) throw e; }
+            if (!tag) {
+              let pattern;
+              try { pattern = regexSource(v); } catch (_) {}
+              if (pattern != null) {
+                let flags = "";
+                for (const [g, letter] of regexFlags) {
+                  if (g && g.call(v)) flags += letter;
+                }
+                tag = "regex"; a = visit(flags ? "(?" + flags + ")" + pattern : pattern, path + ".payload", depth + 1);
+              }
+            }
+            if (!tag) fail("arbitrary object (including promise)", path);
+          }
+          const metadata = object && metadataValues.has(v) ? visit(metadataValues.get(v), path + ".meta", depth + 1) : null;
+          return [tag, object ? borrowed.get(v) || 0 : primitives.get(primitiveKey(v)) || 0, metadata, a, b];
+        } finally { if (object) active.delete(v); }
+      }
+      return visit(value, "$", 0);
+    }
+    return Object.freeze({version: 1, decode, encode, check: () => { if (terminal != null) throw new Error(terminal); },
+      // Explicit descriptors authorize host literal data; ordinary objects remain invalid.
+      jsArray: items => { const v = Array.from(items); literals.set(v, "js-array"); return v; },
+      jsObject: pairs => { const v = jsObject(pairs); literals.set(v, "js-object"); return v; }});
+  }
+
   // Private test adapter. Production emission keeps this factory local; only
   // the observation harness registers inspect. Exposed storage remains frozen.
   function inspect(value) {
@@ -1753,7 +1929,7 @@
   function rePattern(pattern) {
     if (pattern instanceof RegExp) return pattern;
     if (typeof pattern !== "string") throw new TypeError("regex pattern requires a string");
-    const prefix = /^\(\?([idmsux]*)\)/.exec(pattern);
+    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
     return new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : "");
   }
   function reMatch(re, text, full) {
@@ -3110,5 +3286,6 @@
     uncheckedGet: (object, key) => object[key], uncheckedSet: jsSet,
     checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,
     constantly, complement, comp, partial, juxt, fnil});
-  return Object.freeze({keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, core, inspect, hash});
+  const compilerForms = compilerFormBridge();
+  return Object.freeze({compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

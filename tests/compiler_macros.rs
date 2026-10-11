@@ -1216,3 +1216,411 @@ fn generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_met
         "true\n"
     );
 }
+
+// Hand-authored compiler/QuickJS bridge observations. These use emitted macro
+// functions directly; source defmacro registration is a later migration seam.
+mod javascript_form_bridge {
+    use super::*;
+    use light_cljs::{
+        analyzer::{ExprContext, analyze_compiler_form},
+        compiler_data::{
+            Datum, DatumKind, ExpansionOrigin, Form, Name as CompilerName, Origin, Source,
+        },
+        evaluator::{Evaluator, EvaluatorOptions},
+        form_bridge::ConversionLimits,
+    };
+    fn read(text: &str) -> Form {
+        let source = Source::new("caller.cljs", text);
+        MacroHost::new()
+            .read_compiler_form(&source)
+            .unwrap()
+            .unwrap()
+    }
+    fn origin(call: &Form) -> ExpansionOrigin {
+        let definition = Source::new("macros.cljs", "(defmacro identity [x] x)");
+        ExpansionOrigin {
+            macro_name: CompilerName::new(Some("macros"), "identity"),
+            call: call.span(),
+            definition: definition.span(0..definition.text().len()),
+            helpers: vec![CompilerName::new(Some("macros"), "helper")],
+        }
+    }
+    fn function(e: &Evaluator, text: &str) -> light_cljs::evaluator::ValueId {
+        e.evaluate(&light_cljs::analyze(text, &parse(text).unwrap()).unwrap())
+            .unwrap()
+    }
+    fn execute_form(e: &Evaluator, form: &Form) -> light_cljs::evaluator::ValueId {
+        e.evaluate(&analyze_compiler_form(form).unwrap()).unwrap()
+    }
+    #[test]
+    fn identity_preserves_owned_forms_and_executes_returned_code() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let id = function(&e, "(fn* [form env x] x)");
+        let call = read(
+            r#"(macros/identity '^:kept [foo :foo () [] {1 :one [2] :vector {3 4} :map} #{1 [2]} "\ud800" #"a" #inst "2000" #uuid "1-1-1-1-1" #js [1] #js {:x 2}])"#,
+        );
+        let mut host = MacroHost::new();
+        let output = host
+            .expand_javascript(&e, id, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        assert_eq!(output.span().bytes(), call.children()[1].span().bytes());
+        assert_eq!(output.node().origin, call.children()[1].node().origin);
+        assert!(output.children()[1].metadata().is_some());
+        let value = execute_form(&e, &output);
+        let text = e.print(value).unwrap();
+        assert!(
+            text.starts_with("[foo :foo () [] {1 :one, [2] :vector, {3 4} :map} #{1 [2]}"),
+            "{text}"
+        );
+        let inspect = function(
+            &e,
+            "(fn* [v] [(symbol? (nth v 0)) (keyword? (nth v 1)) (list? (nth v 2)) (vector? (nth v 3)) (get (nth v 4) [2]) (contains? (nth v 5) [2]) (.charCodeAt (nth v 6) 0) (.-x (nth v 11))])",
+        );
+        assert_eq!(
+            e.print(e.call(inspect, &[value]).unwrap()).unwrap(),
+            "[true true true true :vector true 55296 2]"
+        );
+        e.collect_garbage();
+        assert_eq!(e.print(value).unwrap(), text);
+        drop(e);
+        assert_eq!(
+            output.expansions()[0]
+                .definition
+                .as_ref()
+                .unwrap()
+                .source()
+                .name(),
+            "macros.cljs"
+        );
+    }
+    #[test]
+    fn unchanged_scalar_arguments_keep_their_original_location() {
+        for text in [
+            "(macros/identity -0.0)",
+            "(macros/identity \"\\ud800\")",
+            "(macros/identity true)",
+            "(macros/identity nil)",
+        ] {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let call = read(text);
+            let f = function(&e, "(fn* [form env x] x)");
+            let output = MacroHost::new()
+                .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+                .unwrap();
+            assert_eq!(output.span().bytes(), call.children()[1].span().bytes());
+            assert_eq!(output.node().origin, call.children()[1].node().origin);
+        }
+    }
+    #[test]
+    fn generated_code_executes_in_order_and_preserves_number_bits() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("\n(macros/identity)");
+        let f = function(
+            &e,
+            r#"(fn* [form env] (list 'let* ['a (list 'atom [])] (list 'do (list 'swap! 'a 'conj 1) (list 'swap! 'a 'conj 2) (list 'vector (list 'deref 'a) ##NaN ##Inf ##-Inf -0.0))))"#,
+        );
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        assert!(matches!(output.node().origin, Origin::MacroExpansion(_)));
+        assert_eq!(output.span().bytes(), call.span().bytes());
+        let result = execute_form(&e, &output);
+        let check = function(
+            &e,
+            "(fn* [v] [(nth v 0) (js/Number.isNaN (nth v 1)) (= (nth v 2) ##Inf) (= (nth v 3) ##-Inf) (js/Object.is (nth v 4) -0.0)])",
+        );
+        assert_eq!(
+            e.print(e.call(check, &[result]).unwrap()).unwrap(),
+            "[[1 2] true true true true]"
+        );
+    }
+    #[test]
+    fn form_and_bounded_environment_use_actual_nested_call_and_shadow_ids() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("(outer (macros/identity))").children()[1].clone();
+        let mut host = MacroHost::new();
+        let env = host
+            .compiler_environment(
+                "app",
+                ExprContext::Return,
+                &[
+                    ("x".into(), 1, "let", None),
+                    ("x".into(), 2, "arg", Some(0)),
+                ],
+                &[("t".into(), "tools".into())],
+                &["tools".into()],
+                (1, 8),
+            )
+            .unwrap();
+        let f = function(
+            &e,
+            "(fn* [form env] (list 'quote [form (get-in env [:locals 'x :light-cljs/id]) (get-in env [:locals 'x :shadow :light-cljs/id]) (get-in env [:locals 'x :arg-id]) (:context env) (get-in env [:ns :requires 't]) (:line env) (:column env)]))",
+        );
+        let output = host
+            .expand_javascript(&e, f, &call, &env, origin(&call))
+            .unwrap();
+        assert_eq!(
+            e.print(execute_form(&e, &output)).unwrap(),
+            "[(macros/identity) 2 1 0 :return tools 1 8]"
+        );
+        assert_eq!(
+            output.children()[1].children()[0].span().bytes(),
+            call.span().bytes()
+        );
+    }
+    #[test]
+    fn nested_services_share_forms_and_survive_gc_without_rust_collection_callbacks() {
+        use std::{cell::RefCell, rc::Rc};
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("(macros/identity [40 2])");
+        let seen = Rc::new(RefCell::new(vec![]));
+        let record = seen.clone();
+        let span = call.span();
+        e.install_form_services(
+            call.clone(),
+            origin(&call),
+            ConversionLimits::default(),
+            move |control, form, all| {
+                control.poll()?;
+                record.borrow_mut().push(all);
+                if all {
+                    Ok(Form::from_data(
+                        Datum::new(DatumKind::Double(42.0)),
+                        span.clone(),
+                        Origin::SuppliedData,
+                    ))
+                } else {
+                    Ok(form)
+                }
+            },
+        )
+        .unwrap();
+        e.install_gc_callback("bridgeGC").unwrap();
+        let f = function(
+            &e,
+            "(fn* [form env x] (let* [v (macroexpand-1 x)] (js/bridgeGC) (macroexpand (conj v 9))))",
+        );
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        assert_eq!(e.number(execute_form(&e, &output)).unwrap(), 42.0);
+        assert_eq!(*seen.borrow(), vec![false, true]);
+        e.collect_garbage();
+        assert_eq!(e.number(execute_form(&e, &output)).unwrap(), 42.0);
+    }
+    #[test]
+    fn unsupported_and_unbounded_results_are_located_and_fresh_sessions_recover() {
+        for (body, category) in [
+            ("(fn* [] 1)", "function"),
+            ("(atom 0)", "atom"),
+            ("(js/Promise.resolve 1)", "object"),
+            ("(js/Symbol 'x)", "symbol"),
+            ("(js/BigInt 1)", "bigint"),
+            ("#js [1]", "object"),
+            ("(range)", "limit"),
+            ("(lazy-seq (throw (js/Error. \"bad\")))", "realization"),
+            (
+                "(js* \"(()=>{const x=rt.compilerForms.jsArray([]); x.push(x); return x;})()\")",
+                "cyclic",
+            ),
+        ] {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            // Runtime exposes the session-private explicit literal constructors
+            // only through the evaluator embedding, not ordinary compiler globals.
+            let f = if category == "cyclic" {
+                e.evaluate_js(
+                    "(()=>{const x=rt.compilerForms.jsArray([]);x.push(x);return ()=>x;})()",
+                )
+                .unwrap()
+            } else {
+                function(&e, &format!("(fn* [form env] {body})"))
+            };
+            let call = read("\n(macros/identity)");
+            let mut host = MacroHost::new();
+            host.limits.generated_nodes = 100;
+            let error = host
+                .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+                .unwrap_err();
+            assert!(error.contains(category), "{body}: {error}");
+            for detail in [
+                "caller.cljs:2:1",
+                "macros/identity",
+                "macros.cljs:1:1",
+                "macros/helper",
+                "$",
+            ] {
+                assert!(error.contains(detail), "{error}");
+            }
+            let fresh = host.new_evaluator().unwrap();
+            assert_eq!(
+                fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(),
+                42.0
+            );
+        }
+    }
+    #[test]
+    fn definition_namespace_syntax_quote_and_gensym_are_hygienic() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let source = Source::new("definition.cljs", "(fn* [form env x] `[::tag ~x])");
+        let view = light_cljs::compiler_reader::NamespaceView::new("definition", &source);
+        let form = light_cljs::compiler_reader::read_form(&source, &view)
+            .unwrap()
+            .unwrap();
+        let f = e.evaluate(&analyze_compiler_form(&form).unwrap()).unwrap();
+        let call = read("(macros/identity 7)");
+        let env = MacroHost::new()
+            .compiler_environment(
+                "caller",
+                ExprContext::Value,
+                &[],
+                &[("definition".into(), "wrong".into())],
+                &[],
+                (1, 1),
+            )
+            .unwrap();
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &env, origin(&call))
+            .unwrap();
+        assert_eq!(
+            e.print(execute_form(&e, &output)).unwrap(),
+            "[:definition/tag 7]"
+        );
+        let f = function(
+            &e,
+            "(fn* [form env x] (let* [g (gensym)] (list 'let* [g 7] (list 'vector g (list 'quote x)))))",
+        );
+        let call = read("(macros/identity G__1)");
+        let mut host = MacroHost::new();
+        let a = host
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        let b = host
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        let symbol = |f: &Form| match f.children()[1].children()[0].data().kind() {
+            DatumKind::Symbol(n) => n.clone(),
+            _ => panic!(),
+        };
+        assert_ne!(symbol(&a), symbol(&b));
+        assert_ne!(symbol(&a), CompilerName::new(None, "G__1"));
+        assert_eq!(e.print(execute_form(&e, &a)).unwrap(), "[7 G__1]");
+    }
+    #[test]
+    fn literal_mutations_and_constructed_metadata_decode_without_stale_origins() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("(macros/identity #js {:x 1})");
+        let f = function(&e, "(fn* [form env x] (do (aset x \"x\" 2) x))");
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        assert!(matches!(output.node().origin, Origin::MacroExpansion(_)));
+        let result = execute_form(&e, &output);
+        let get = function(&e, "(fn* [x] (.-x x))");
+        assert_eq!(e.number(e.call(get, &[result]).unwrap()).unwrap(), 2.0);
+        let f = function(
+            &e,
+            "(fn* [form env x] (list 'quote (with-meta ['s :s] {:kept x})))",
+        );
+        let call = read("(macros/identity 9)");
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        let result = execute_form(&e, &output);
+        let get = function(&e, "(fn* [x] (:kept (meta x)))");
+        assert_eq!(e.number(e.call(get, &[result]).unwrap()).unwrap(), 9.0);
+        let f = e.evaluate_js("()=>rt.core.vector(new RegExp('a','gi'), new Date(0), rt.compilerForms.jsArray([1,2]))").unwrap();
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        let result = execute_form(&e, &output);
+        let get = function(
+            &e,
+            "(fn* [x] [(.-flags (nth x 0)) (inst-ms (nth x 1)) (aget (nth x 2) 1)])",
+        );
+        assert_eq!(
+            e.print(e.call(get, &[result]).unwrap()).unwrap(),
+            "[\"gi\" 0 2]"
+        );
+    }
+    #[test]
+    fn finite_lazy_results_realize_under_shared_control_and_handles_stay_session_owned() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        e.install_gc_callback("bridgeGC").unwrap();
+        let call = read("(macros/identity)");
+        let f = function(
+            &e,
+            "(fn* [form env] (cons 'vector (map (fn* [x] (js/bridgeGC) (inc x)) (range 40))))",
+        );
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        let result = execute_form(&e, &output);
+        let count = function(&e, "(fn* [x] [(count x) (first x) (last x)])");
+        assert_eq!(
+            e.print(e.call(count, &[result]).unwrap()).unwrap(),
+            "[40 1 40]"
+        );
+        let other = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert!(
+            other
+                .export_data(result, ConversionLimits::default())
+                .unwrap_err()
+                .0
+                .contains("another")
+        );
+        assert_eq!(
+            other.number(other.evaluate_js("42").unwrap()).unwrap(),
+            42.0
+        );
+    }
+    #[test]
+    fn caught_nested_conversion_limits_cannot_reset_the_session_budget() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("(macros/identity)");
+        e.install_form_services(
+            call.clone(),
+            origin(&call),
+            ConversionLimits {
+                nodes: 100,
+                depth: 128,
+            },
+            |_, form, _| Ok(form),
+        )
+        .unwrap();
+        let f = function(
+            &e,
+            "(fn* [form env] (try (macroexpand (range)) (catch :default e 42)))",
+        );
+        let error = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap_err();
+        assert!(error.contains("limit"), "{error}");
+        assert!(e.evaluate_js("42").is_err());
+    }
+    #[test]
+    fn rejection_never_calls_arbitrary_getters_or_to_string() {
+        use std::sync::Arc;
+        let hits = Arc::new(AtomicUsize::new(0));
+        for expression in [
+            "()=>rt.core.vector({get constructor(){probe('bad');return Object;},get then(){probe('bad');return null;},toString(){probe('bad');return 'object';}})",
+            "()=>{const x=rt.compilerForms.jsArray([1]);Object.defineProperty(x,'0',{get(){probe('bad');return 1;}});return x;}",
+            "()=>rt.core.vector(new Proxy({}, {get(){probe('bad');return 1;},getPrototypeOf(){probe('bad');return Object.prototype;}}))",
+            "()=>new rt.core.LazySeq(null,()=>({get [Symbol.iterator](){probe('bad');return ()=>[];}}),null)",
+        ] {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let h = hits.clone();
+            e.install_callback("probe", move |_, _| {
+                h.fetch_add(1, Ordering::Relaxed);
+                Ok(String::new())
+            })
+            .unwrap();
+            let f = e.evaluate_js(expression).unwrap();
+            let call = read("(macros/identity)");
+            let error = MacroHost::new()
+                .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+                .unwrap_err();
+            assert!(error.contains("Unsupported macro result"), "{error}");
+        }
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+    }
+}

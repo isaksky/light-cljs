@@ -31,6 +31,9 @@ pub struct NamedLiteral {
 /// The finite executable JavaScript core; independent of interpreter Vars.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CoreFnId {
+    Gensym,
+    Macroexpand,
+    Macroexpand1,
     Keyword,
     Symbol,
     Vector,
@@ -1048,6 +1051,9 @@ impl CoreFnId {
             "ex-cause" => Self::ExCause,
             "instance?" => Self::IsInstance,
             "Throwable->map" => Self::ThrowableToMap,
+            "gensym" => Self::Gensym,
+            "macroexpand" => Self::Macroexpand,
+            "macroexpand-1" => Self::Macroexpand1,
             "array-map" => Self::ArrayMap,
             _ => return None,
         })
@@ -1057,6 +1063,8 @@ impl CoreFnId {
     // Saved function values still use the ordinary permissive runtime ABI.
     fn accepts_direct_arity(self, arity: usize) -> bool {
         match self {
+            Self::Gensym => arity <= 1,
+            Self::Macroexpand | Self::Macroexpand1 => arity == 1,
             Self::AGet => arity >= 2,
             Self::ASet => arity >= 3,
             Self::UncheckedGet | Self::JsDelete | Self::JsIn => arity == 2,
@@ -1120,6 +1128,9 @@ impl CoreFnId {
 
     pub(crate) fn runtime_name(self) -> &'static str {
         match self {
+            Self::Gensym => "gensym",
+            Self::Macroexpand => "macroexpand",
+            Self::Macroexpand1 => "macroexpand1",
             Self::Keyword => "keyword",
             Self::Symbol => "symbol",
             Self::Vector => "vector",
@@ -2120,9 +2131,38 @@ pub fn analyze_with_macro_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
+    analyze_input(source, syntax, macro_host, options, warnings, None)
+}
+
+/// Start a standalone compilation from an immutable compiler form. Generated
+/// spellings and literal payloads enter the analyzer directly, without a reader.
+pub fn analyze_compiler_form(form: &Form) -> Result<Program, AnalysisError> {
+    let source = form.span().source().clone();
+    let syntax = SyntaxTree {
+        nodes: vec![],
+        roots: vec![],
+    };
+    analyze_input(
+        source.text(),
+        &syntax,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        Some(form),
+    )
+}
+
+fn analyze_input(
+    source: &str,
+    syntax: &SyntaxTree,
+    macro_host: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    owned_form: Option<&Form>,
+) -> Result<Program, AnalysisError> {
     macro_host.begin_compilation();
     let (syntax, discards) = compiler_syntax(source, syntax);
-    let roots = syntax.roots.clone();
+    let mut roots = syntax.roots.clone();
     let mut analyzer = Analyzer {
         source,
         syntax,
@@ -2152,6 +2192,9 @@ pub fn analyze_with_macro_warnings(
         resolving_var: false,
         definition_name: None,
     };
+    if let Some(form) = owned_form {
+        roots = vec![analyzer.import_form(form)?];
+    }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
     analyzer.read_discards_before(source.len())?;
     analyzer.collect_expression_warnings();

@@ -36,8 +36,58 @@ code sandbox. ECMAScript Math, strings, RegExp, JSON and Object work. DOM, proce
 Node module loading and network globals are absent unless explicitly provided;
 untaken branches do not probe them. `install_callback` currently supports a small
 owned-string bridge. Its callable captures only Rust state, plus a weak execution
-control reference. The forthcoming structured compiler-form bridge does not use
-this string API as a form encoding. No promises are pumped or awaited.
+control reference. The structured compiler-form bridge does not use this string API as a form encoding. No promises are pumped or awaited.
+
+## Compiler form bridge
+
+`form_bridge::FORM_BRIDGE_VERSION` and `rt.compilerForms.version` identify the
+in-process descriptor ABI (currently 1). `Evaluator::import_form`/`import_data`
+and `export_form`/`export_data` transport actual engine arrays with primitive
+payloads. Strings and name components cross as UTF-16 code units; Number payloads
+cross as doubles, preserving signed zero and nonfinite values. Neither ordinary
+JSON nor printing/reading is used. Symbols and keywords retain separate namespace
+and name components; list/vector/map/set kinds remain distinct. Metadata stays in
+the canonical runtime's private metadata store and never affects equality/hash.
+
+A session-private identity table retains borrowed compiler data, original ordered
+children and locations. Conversion snapshots the canonical form once on import.
+Unchanged returned values recover their original data/source nodes, including
+reader lexical distinctions. Mutated Date or explicit `#js` values instead create
+new forms. Constructed forms retain call location and an owned `ExpansionOrigin`
+with macro, definition, helper chain and prior expansions. These compiler forms
+remain valid after evaluator teardown; engine value IDs cannot cross sessions.
+`analyzer::analyze_compiler_form` analyzes returned code directly without parsing.
+
+`MacroHost::expand_javascript` accepts a compiler-emitted function's session ID,
+actual call Form, compiler-owned environment Datum and ExpansionOrigin. It invokes
+the hidden `&form`/`&env` ABI followed by call arguments. `compiler_environment`
+builds bounded lexical IDs/names/kinds/arguments, shadow records, context,
+namespace/import information and line/column using compiler data alone. Source
+macro registration and default bootstrap switching remain separate migration
+steps; the native adapter is explicitly temporary until light-cljs-115.
+
+Finite canonical lists, sequences, vectors, maps and sets are readable results.
+Lazy sequences may realize under the same engine control and conversion bounds;
+functions, Vars, atoms, type/protocol objects, promises, arbitrary objects,
+JavaScript Symbols/BigInts and cycles are rejected with category and path.
+Diagnostics include macro definition/call and helpers, and do not call arbitrary
+getters or `toString`. Regex, valid instants and UUIDs retain compiler literals.
+Host arrays/objects require explicit `rt.compilerForms.jsArray`/`jsObject`
+descriptors; an arbitrary host object never becomes a Clojure map implicitly.
+
+`install_form_services` routes nested `macroexpand-1` and `macroexpand` through
+one compiler-supplied resolution service. It releases all Rust table borrows
+before compiler reentry and uses the active `Ctx` for nested engine work. Callback
+returns own only Rust forms; lifetime-generic `IntoJs` creates temporary JS edges.
+An explicit `install_gc_callback` exercises GC during lazy output conversion and
+between nested service callbacks, verifying retained descriptors and roots.
+Normal collection operations remain JavaScript operations. Gensym shares one
+session counter and avoids imported call/environment symbol names; exact spelling
+is not an API promise. Syntax quote retains the reader's definition-site view.
+
+Focused bridge execution checks are hand-authored in
+`tests/compiler_macros.rs::javascript_form_bridge`; their provenance and precise
+scope are recorded in `tests/reference/compiler-macros.md`.
 
 ## Resource controls
 
