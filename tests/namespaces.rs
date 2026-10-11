@@ -551,7 +551,7 @@ fn qualified_definitions_syntax_quotes_and_clojure_namespace_aliases_keep_identi
 }
 
 #[test]
-fn shared_primitive_selection_adds_no_runtime_bytes_and_cli_matches_api() {
+fn shared_primitive_selection_preserves_reader_context_and_matches_cli() {
     let s = Sources::new();
     s.write("main.cljc", "(ns main) #?(:clj missing-jvm-symbol :cljs 3)");
     let shared = s.compile("main").unwrap();
@@ -567,7 +567,8 @@ fn shared_primitive_selection_adds_no_runtime_bytes_and_cli_matches_api() {
     );
     s.write("main.cljs", "(ns main) 3");
     assert_eq!(shared, s.compile("main").unwrap());
-    assert!(!shared.contains("const rt ="));
+    assert_eq!(shared.matches("\n  const rt = ").count(), 1);
+    assert_eq!(execute(&format!("console.log({shared});")), "3\n");
 }
 
 #[test]

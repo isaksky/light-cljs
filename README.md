@@ -376,6 +376,9 @@ sources use the same supported language features. See the
 [migration and language boundaries](docs/evaluator-migration.md#language-coverage-and-completion-boundaries)
 and the
 [executable core contract](docs/compiler.md) for exact limits and testing.
+The [full language gate receipt](tests/reference/compiler-language/final-gate.md)
+records remaining public protocol, constructor and Var source-metadata gaps;
+whole-language completion remains incomplete.
 
 Compiled atoms and volatiles support dereference, all swap/reset arities,
 old/new returns, validators, synchronous watches, and mutable metadata. Custom

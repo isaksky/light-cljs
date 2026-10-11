@@ -678,7 +678,13 @@ fn runtime_inclusion_preserves_primitive_output_and_is_once_per_combined_unit() 
         requires: &["cljs.core".into()],
     }])
     .unwrap();
-    assert!(!light_cljs::emit_js(&program).contains("const rt ="));
+    // Namespace entry initializes the runtime reader context even when the
+    // application result is primitive; source-free primitives stay compact.
+    let js = light_cljs::emit_js(&program);
+    assert_eq!(js.matches("\n  const rt = ").count(), 1);
+    assert!(js.contains("rt.core.registerReaderNamespace(\"app.main\""));
+    assert!(js.contains("rt.core.currentNs = rt.core.theNs("));
+    assert!(js.contains("return 42;"));
 }
 
 #[test]

@@ -5,6 +5,11 @@ fails: implemented or historically tested behavior without a faithful execution
 mapping remains missing. This ledger is accounting evidence, not a parallel task
 queue. Pellets owns implementation work and the report identifies its owners.
 
+The [final gate receipt](final-gate.md) preserves fresh execution results,
+confirmed public protocol/constructor/source-metadata omissions and their live
+owners, together with the explicit dialect and ecosystem boundaries. Language
+completion remains incomplete; the receipt does not replace the full strict gate.
+
 ```sh
 python3 -B tests/reference/compiler-language/extract_inventory.py
 python3 -B tests/reference/compiler-language/extract_inventory.py --check
