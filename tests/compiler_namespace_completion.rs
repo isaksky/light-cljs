@@ -205,6 +205,7 @@ fn reserved_js_alias_warns_only_under_the_explicit_warning_api() {
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: false,
+            ..AnalysisOptions::default()
         },
         &mut warnings,
     )
@@ -255,6 +256,7 @@ fn repeated_header_aliases_preserve_function_identity_and_macro_invocation() {
             AnalysisOptions {
                 warning_mode: true,
                 checked_arrays: false,
+                ..AnalysisOptions::default()
             },
             &mut warnings,
         )
@@ -296,6 +298,7 @@ fn ordinary_alias_conflicts_for_value_and_macro_namespaces_fail_in_both_modes() 
                 AnalysisOptions {
                     warning_mode,
                     checked_arrays: false,
+                    ..AnalysisOptions::default()
                 },
                 &mut Vec::new(),
             )
@@ -331,6 +334,7 @@ fn retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_mod
                 AnalysisOptions {
                     warning_mode,
                     checked_arrays: false,
+                    ..AnalysisOptions::default()
                 },
                 &mut Vec::new(),
             )

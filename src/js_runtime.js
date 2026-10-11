@@ -4224,13 +4224,25 @@
     if (!(array != null && (Array.isArray(array) || (typeof array === "object" && typeof array.length === "number"))) ||
         typeof index !== "number" || index < 0 || !(index < array.length)) throw new Error("Assert failed: array index out of bounds");
   }
+  function checkedAget(array, index, ...indices) {
+    try { if (core.assertions) checkedIndex(array, index); }
+    catch (error) { if (core.printErrFn) core.printErrFn.call(null, error); }
+    const value = array[index];
+    return indices.length ? checkedAget(value, ...indices) : value;
+  }
+  function checkedAset(array, index, value, ...more) {
+    if (more.length) return checkedAset(checkedAget(array, index), value, ...more);
+    try { if (core.assertions) checkedIndex(array, index); }
+    catch (error) { if (core.printErrFn) core.printErrFn.call(null, error); }
+    return jsSet(array, index, value);
+  }
   function checkedAgetStrict(array, index, ...indices) {
-    checkedIndex(array, index);
+    if (core.assertions) checkedIndex(array, index);
     const value = array[index];
     return indices.length ? checkedAgetStrict(value, ...indices) : value;
   }
   function checkedAsetStrict(array, index, value, ...more) {
-    checkedIndex(array, index);
+    if (core.assertions) checkedIndex(array, index);
     if (more.length) return checkedAsetStrict(array[index], value, ...more);
     return jsSet(array, index, value);
   }
@@ -4431,7 +4443,7 @@
     printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct, isDistinct, sort, sortBy,
     someFn, everyPred, memoize, rand, randInt, randNth, parseLong, parseDouble, parseUuid, parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
     replOne: null, replTwo: null, replThree: null, replError: null, sourceFile: null,
-    commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
+    uncheckedArrays: false, commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
     printMeta: false, printDup: false, flushOnNewline: true, printFnBodies: false,
     setPrintFn, setPrintErrFn, stringPrint, flush, enableConsolePrint, prStrWithOpts, prnStrWithOpts, prSequentialWriter, prSeqWriter, printMetaQ, printForHost,
     println, prn, pr, newline, prnStr, printStr, printlnStr, taggedLiteral, isTaggedLiteral: value => value instanceof TaggedLiteral,
@@ -4451,7 +4463,7 @@
     aget, aset, alength: array => array.length, aclone, makeArray, intoArray, toArray2d, intArray, longArray, doubleArray, objectArray,
     jsObj, jsKeys, jsInvoke, jsDelete, jsIn: (key, object) => key in object,
     uncheckedGet: (object, key) => object[key], uncheckedSet: jsSet,
-    checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,
+    checkedAget, checkedAset, checkedAgetStrict, checkedAsetStrict,
     constantly, complement, comp, partial, juxt, fnil};
   const compilerForms = compilerFormBridge();
   // First-party bounded EDN and explicit synchronous input capability runtime.

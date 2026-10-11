@@ -296,3 +296,4 @@ set-print-fn!	{:file "cljs/core.cljs" :line 100 :column 1 :doc "Set *print-fn* t
 string-print	{:file "cljs/core.cljs" :line 10436 :column 1 :doc nil :arglists ([x])}
 system-time	{:file "cljs/core.cljs" :line 434 :column 1 :doc "Returns highest resolution time offered by host in milliseconds." :arglists ([])}
 tap>	{:file "cljs/core.cljs" :line 12083 :column 1 :doc "Sends x to any taps. Returns the result of *exec-tap-fn*, a Boolean value." :arglists ([x])}
+*unchecked-arrays*	{:file "cljs/core.cljs", :line 30, :column 1, :end-line 30, :end-column 24, :arglists ()}

@@ -646,6 +646,7 @@ pub enum CoreFnId {
     Test,
     Print,
     PrintFn,
+    UncheckedArrays,
     PrintNewline,
     PrintReadably,
     PrintLength,
@@ -1282,6 +1283,7 @@ impl CoreFnId {
             "test" => Self::Test,
             "print" => Self::Print,
             "*print-fn*" => Self::PrintFn,
+            "*unchecked-arrays*" => Self::UncheckedArrays,
             "*print-newline*" => Self::PrintNewline,
             "*print-readably*" => Self::PrintReadably,
             "*print-length*" => Self::PrintLength,
@@ -2059,6 +2061,7 @@ impl CoreFnId {
             Self::Test => "test",
             Self::Print => "printCore",
             Self::PrintFn => "printFn",
+            Self::UncheckedArrays => "uncheckedArrays",
             Self::PrintNewline => "printNewline",
             Self::PrintReadably => "printReadably",
             Self::PrintLength => "printLength",
@@ -2456,12 +2459,25 @@ pub struct AnalysisWarning {
     pub source_index: usize,
 }
 
+/// Runtime validation for direct source aget/aset calls. Saved functions retain
+/// their ordinary runtime behavior, as in upstream macro expansion.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CheckedArrays {
+    #[default]
+    Off,
+    Warn,
+    Error,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AnalysisOptions {
     /// CLJS permits undeclared Vars and conflicting function arities with a
     /// warning. Existing strict entry points retain their error contracts.
     pub warning_mode: bool,
+    /// Preserve the existing opt-in static array diagnostics.
     pub checked_arrays: bool,
+    /// :checked-arrays :warn/:error runtime validation (also enables diagnostics).
+    pub array_checks: CheckedArrays,
 }
 
 impl fmt::Display for AnalysisError {
@@ -2541,6 +2557,8 @@ struct Analyzer<'a> {
     source_index: usize,
     resolution: NamespaceResolution,
     options: AnalysisOptions,
+    unchecked_arrays: bool,
+    checked_array_exprs: std::collections::HashSet<ExprId>,
     warnings: &'a mut Vec<AnalysisWarning>,
     resolving_var: bool,
     definition_name: Option<String>,
@@ -2759,6 +2777,8 @@ fn analyze_input_state(
         source_index: 0,
         resolution,
         options,
+        unchecked_arrays: snapshot.is_some_and(|s| s.unchecked_arrays),
+        checked_array_exprs: Default::default(),
         warnings,
         resolving_var: false,
         definition_name: None,
@@ -2867,6 +2887,8 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             source_index,
             resolution,
             options,
+            unchecked_arrays: false,
+            checked_array_exprs: Default::default(),
             warnings,
             resolving_var: false,
             definition_name: None,
@@ -3122,7 +3144,7 @@ impl Analyzer<'_> {
                 break;
             }
         }
-        for expr in &self.program.exprs {
+        for (expr_index, expr) in self.program.exprs.iter().enumerate() {
             if expr.source_index != self.source_index {
                 continue;
             }
@@ -3222,17 +3244,28 @@ impl Analyzer<'_> {
                     _ => {}
                 }
             }
-            if self.options.checked_arrays {
+            if self.checked_array_exprs.contains(&ExprId(expr_index)) {
                 let indexed = match &expr.kind {
-                    ExprKind::JsIndex { receiver, indices } => Some((*receiver, indices, None)),
+                    ExprKind::JsIndex { receiver, indices } => {
+                        Some((*receiver, indices.as_slice(), None))
+                    }
                     ExprKind::SetGlobal { target, value } => {
                         match &self.program.exprs[target.0].kind {
                             ExprKind::JsIndex { receiver, indices } => {
-                                Some((*receiver, indices, Some(*value)))
+                                Some((*receiver, indices.as_slice(), Some(*value)))
                             }
                             _ => None,
                         }
                     }
+                    ExprKind::Call { callee, args } => match self.program.exprs[callee.0].kind {
+                        ExprKind::CoreFn(CoreFnId::CheckedAGet | CoreFnId::CheckedAGetStrict) => {
+                            Some((args[0], &args[1..], None))
+                        }
+                        ExprKind::CoreFn(CoreFnId::CheckedASet | CoreFnId::CheckedASetStrict) => {
+                            Some((args[0], &args[1..args.len() - 1], args.last().copied()))
+                        }
+                        _ => None,
+                    },
                     _ => None,
                 };
                 if let Some((receiver, indices, value)) = indexed {
@@ -3315,6 +3348,12 @@ impl Analyzer<'_> {
     }
     fn push(&mut self, kind: ExprKind, span: Span, context: ExprContext) -> ExprId {
         let id = ExprId(self.program.exprs.len());
+        if !self.unchecked_arrays
+            && (self.options.checked_arrays || self.options.array_checks != CheckedArrays::Off)
+            && matches!(kind, ExprKind::JsIndex { .. } | ExprKind::SetGlobal { .. })
+        {
+            self.checked_array_exprs.insert(id);
+        }
         self.program.exprs.push(Expr {
             kind,
             span,
@@ -4004,10 +4043,35 @@ impl Analyzer<'_> {
                     | CoreFnId::JsDelete
             )
         {
+            let checks = if self.unchecked_arrays {
+                CheckedArrays::Off
+            } else {
+                self.options.array_checks
+            };
             let mut values = args
                 .iter()
                 .map(|&arg| self.non_tail_form(arg, ExprContext::Value))
                 .collect::<Result<Vec<_>, _>>()?;
+            if matches!(core, CoreFnId::AGet | CoreFnId::ASet) && checks != CheckedArrays::Off {
+                let checked = match (core, checks) {
+                    (CoreFnId::AGet, CheckedArrays::Warn) => CoreFnId::CheckedAGet,
+                    (CoreFnId::AGet, _) => CoreFnId::CheckedAGetStrict,
+                    (CoreFnId::ASet, CheckedArrays::Warn) => CoreFnId::CheckedASet,
+                    _ => CoreFnId::CheckedASetStrict,
+                };
+                let callee = self.push(
+                    ExprKind::CoreFn(checked),
+                    self.syntax.nodes[operator.0].span.clone(),
+                    ExprContext::Value,
+                );
+                let call = self.push(
+                    ExprKind::Call { callee, args: values },
+                    self.syntax.nodes[id.0].span.clone(),
+                    context,
+                );
+                self.checked_array_exprs.insert(call);
+                return Ok(call);
+            }
             let receiver = values.remove(0);
             let kind = if core == CoreFnId::JsDelete {
                 ExprKind::JsDelete {
@@ -4862,6 +4926,7 @@ impl Analyzer<'_> {
             resolution: self.resolution.clone(),
             resolution_program: crate::program_fragment::resolution_snapshot(&self.program),
             options: self.options,
+            unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
             extension_frontier: self.macro_host.session_handle().map_or(0, |s| s.extension_frontier()),
@@ -5494,6 +5559,24 @@ impl Analyzer<'_> {
                 AnalysisErrorKind::InvalidForm(
                     "set! requires a target and value, or object, property and value",
                 ),
+            ));
+        }
+        if args.len() == 2
+            && matches!(self.syntax.nodes[args[0].0].kind, NodeKind::Symbol)
+            && self.spelling(args[0]) == "*unchecked-arrays*"
+        {
+            self.assignment_target(args[0])?;
+            if let NodeKind::Boolean(value) = self.syntax.nodes[args[1].0].kind {
+                self.unchecked_arrays = value;
+            }
+            // Non-REPL CLJS analyzes the RHS, then emits a no-op. In particular,
+            // a computed boolean neither changes compiler state nor mutates the
+            // runtime Var. Diagnostics and macro expansion still run on the RHS.
+            self.non_tail_form(args[1], ExprContext::Value)?;
+            return Ok(self.push(
+                ExprKind::Nil,
+                self.syntax.nodes[id.0].span.clone(),
+                context,
             ));
         }
         let target = if args.len() == 3 {
@@ -7295,7 +7378,8 @@ impl Analyzer<'_> {
                     self.requires,
                     location,
                 )
-                .map_err(error)?;
+                .map_err(&error)?;
+            let env = self.array_environment(env).map_err(error)?;
             let result = self
                 .macro_host
                 .expand_source_javascript(self.namespace, target, &form, &env, self.engine)
@@ -7377,7 +7461,8 @@ impl Analyzer<'_> {
                     self.requires,
                     location,
                 )
-                .map_err(error)?;
+                .map_err(&error)?;
+            let environment = self.array_environment(environment).map_err(error)?;
             let expanded = self
                 .macro_host
                 .expand_core_javascript(&core_name, &form, &environment, self.engine)
@@ -7385,6 +7470,21 @@ impl Analyzer<'_> {
             return self.import_form(&expanded).map(Some);
         }
         Ok(None)
+    }
+
+    fn array_environment(
+        &self,
+        environment: crate::compiler_data::Datum,
+    ) -> Result<crate::compiler_data::Datum, String> {
+        let c = crate::compiler_data::DataBuilder;
+        c.assoc(
+            &environment,
+            &c.keyword(crate::compiler_data::Name::new(
+                Some("light-cljs"),
+                "unchecked-arrays",
+            )),
+            &c.boolean(self.unchecked_arrays),
+        )
     }
 
     fn needs_reader(&self, root: NodeId) -> bool {

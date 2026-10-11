@@ -1335,6 +1335,7 @@ The compiler's supported `&env` map follows the pinned CLJS analyzer:
 | `:context` | `:expr`, `:statement`, or `:return`. Fn bodies and value-position let bodies return; a multi-form value-position `do` also has a returning tail. |
 | `:ns` | `:name` caller symbol and `:doc`; `:requires` maps ordinary required namespaces and aliases to their namespace identities; `:uses` maps referred and renamed macro names to their declaring namespaces. `:require-macros` and `:use-macros` remain empty compatibility descriptions, not accepted import syntax. |
 | `:line`, `:column` | One-based call-site location; `&form` also retains original metadata and compiler source provenance. |
+| `:light-cljs/unchecked-arrays` | Boolean compiler setting for the calling source file; ordinary `.cljs`/`.cljc` macros may inspect it. |
 
 The caller namespace is available through `(:ns &env)`. This is a bounded CLJS
 environment contract, not the
@@ -1894,14 +1895,18 @@ Prefix a compiler command with `--warnings` to emit located warnings on stderr,
 for example `light-cljs --warnings --compile source.cljs`. This mode permits
 undeclared Vars/namespaces and diagnosed function overloads to proceed through analysis;
 ordinary commands retain their strict unresolved-symbol and invalid-overload
-errors. `--checked-arrays-warn` also enables receiver/index diagnostics for
-`aget` and `aset`. Both flags work with namespace compilation through `--entry`
-and `--source-root`. Successful commands retain their normal stdout format.
+errors. `--checked-arrays-warn` also enables receiver/index diagnostics and
+runtime validation for direct `aget` and `aset` calls. Invalid runtime accesses
+report through `*print-err-fn*` and continue. `--checked-arrays-error` throws
+instead. These flags work with namespace compilation through `--entry` and
+`--source-root`. Successful commands retain their normal stdout format.
 
 Embedding callers can use `analyzer::analyze_with_warnings`,
 `analyzer::analyze_with_macro_warnings`, or
 `compiler::compile_namespace_with_warnings` with `analyzer::AnalysisOptions`
-and a mutable `Vec<analyzer::AnalysisWarning>`. Each diagnostic contains a kind,
+and a mutable `Vec<analyzer::AnalysisWarning>`. `checked_arrays: true` retains
+static operand diagnostics; `array_checks: analyzer::CheckedArrays::Warn` or
+`Error` additionally selects runtime validation. Each diagnostic contains a kind,
 message, source index, and byte span. Diagnostics already collected remain
 available when a later error stops compilation. Warning collection includes
 private Var access (Var literals bypass that warning), JavaScript local
@@ -1909,6 +1914,18 @@ shadowing, declared/defined argument lists, function and record arities,
 non-dynamic earmuffed names, arithmetic operand types, checked array access,
 single-segment namespaces, and the reserved `js` namespace alias. Type diagnostics use bounded inference
 over analyzed expressions, including loop recurrence and returning `try` paths.
+
+The public `*unchecked-arrays*` Var has a false runtime root. In compiled files,
+unqualified `(set! *unchecked-arrays* true)` and `false` change compiler state
+and emit nil; the RHS is analyzed, and computed values neither change that
+setting nor emit runtime effects. This matches the pinned non-REPL intrinsic.
+The setting suppresses checked array diagnostics and runtime checks until reset.
+Each loaded source file and fresh compilation starts false; deferred definitions
+capture their source setting. Qualified Var assignment remains an ordinary
+runtime assignment. Ordinary source macros inspect
+`(:light-cljs/unchecked-arrays &env)`; JVM analyzer macros remain reference-only.
+The [array setting evidence](../tests/reference/compiler-array-settings.md)
+retains both complete upstream bodies and their alpha/beta/helper setup.
 
 The source coverage report tracks these assertions as `verified-warning`,
 separately from executed JavaScript. It checks complete original probes, ordered

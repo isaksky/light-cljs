@@ -80,6 +80,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             Some("--checked-arrays-warn") => {
                 options.warning_mode = true;
                 options.checked_arrays = true;
+                options.array_checks = light_cljs::analyzer::CheckedArrays::Warn;
+            }
+            Some("--checked-arrays-error") => {
+                options.warning_mode = true;
+                options.checked_arrays = true;
+                options.array_checks = light_cljs::analyzer::CheckedArrays::Error;
             }
             _ => break,
         }
@@ -109,7 +115,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let source = match first.as_deref() {
         Some(arg) if arg == "--help" || arg == "-h" => {
             println!(
-                "{USAGE}\nPrepend --warnings for ClojureScript warning-compatible analysis (undeclared Vars and conflicting arities are warnings).\nPrepend --checked-arrays-warn to also validate array operand types.\n\n{}",
+                "{USAGE}\nPrepend --warnings for ClojureScript warning-compatible analysis (undeclared Vars and conflicting arities are warnings).\nPrepend --checked-arrays-warn or --checked-arrays-error for array operand diagnostics and runtime warning/error checks.\n\n{}",
                 eval_cli::USAGE
             );
             return Ok(());

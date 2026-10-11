@@ -11,6 +11,7 @@ fn run(source: &str, warning_mode: bool) {
                 AnalysisOptions {
                     warning_mode,
                     checked_arrays: false,
+                    ..AnalysisOptions::default()
                 },
                 &mut Vec::new(),
             )
@@ -70,6 +71,7 @@ fn unknown_namespace_warning_mode_keeps_actual_host_namespace_values() {
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: false,
+            ..AnalysisOptions::default()
         },
         &mut warnings,
     )
@@ -120,6 +122,7 @@ fn anonymous_raw_overloads_match_ordered_public_warning_messages() {
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: false,
+            ..AnalysisOptions::default()
         },
         &mut warnings,
     )
@@ -146,6 +149,7 @@ fn dotted_host_var_metadata_reports_both_test_reference_resolutions() {
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: false,
+            ..AnalysisOptions::default()
         },
         &mut warnings,
     )

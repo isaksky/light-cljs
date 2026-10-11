@@ -68,6 +68,20 @@ def fixtures(scope="historical-selected"):
     return unique(result, "id", "fixture")
 
 
+def validate_reference_source(case):
+    if "reference_source_root" in case:
+        reference_root = Path(case["reference_source_root"])
+        if ("source_root" not in case or reference_root.is_absolute()
+                or not reference_root.parts or ".." in reference_root.parts
+                or not case.get("reference_adaptation", "").strip()):
+            raise ValueError(f"invalid explicit reference source root: {case['id']}")
+        root = ROOT / reference_root
+        hashes = {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in sorted(root.rglob("*")) if path.is_file()}
+        if not hashes or hashes != case.get("reference_files_sha256"):
+            raise ValueError(f"reference source tree drift: {case['id']}")
+
+
 def validate_diagnostic(case, inventory, bodies):
     """Negative witnesses retain complete bodies, every probe, and exact reasons.
 
@@ -310,6 +324,7 @@ def load_contract(scope="historical-selected"):
     for case in cases.values():
         if "nodejs_rt" in case and (case["nodejs_rt"] is not False or "source_root" not in case):
             raise ValueError(f"invalid explicit Node bootstrap setting: {case['id']}")
+        validate_reference_source(case)
         if "diagnostic" in case:
             validate_diagnostic(case, inventory, bodies)
         if "warning" in case:
@@ -757,11 +772,12 @@ def reference_diagnostics(cases, kind, checkout, directory, timeout):
 
 def reference_program(case, kind, checkout, directory, timeout):
     """Use the same checked program oracle as the Rust namespace comparisons."""
+    validate_reference_source(case)
     directory.mkdir(parents=True, exist_ok=True)
     identity = RELEASE if kind == "release" else REVISION
     dependency = (f'{{:mvn/version "{RELEASE}"}}' if kind == "release"
                   else "{:local/root " + json.dumps(str(checkout)) + "}")
-    root = ROOT / case["source_root"]
+    root = ROOT / case.get("reference_source_root", case["source_root"])
     command = [os.environ.get("CLOJURE", "clojure"), "-Srepro", "-Sdeps",
                "{:paths [" + json.dumps(str(root)) + "] :deps {org.clojure/clojurescript " + dependency + "}}",
                "-M", "tests/reference/execution.clj", kind, identity,

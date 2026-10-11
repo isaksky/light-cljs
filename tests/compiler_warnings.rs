@@ -10,6 +10,7 @@ fn warnings(source: &str, arrays: bool) -> Vec<AnalysisWarning> {
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: arrays,
+            ..AnalysisOptions::default()
         },
         &mut warnings,
     )
@@ -39,6 +40,7 @@ fn warning_mode_retains_strict_default_and_reports_before_later_failure() {
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: false,
+            ..AnalysisOptions::default()
         },
         &mut diagnostics,
     )
@@ -185,6 +187,7 @@ fn namespace_private_access_and_reserved_alias_have_structured_locations() {
     let options = AnalysisOptions {
         warning_mode: true,
         checked_arrays: false,
+        ..AnalysisOptions::default()
     };
     let mut diagnostics = Vec::new();
     light_cljs::compiler::compile_namespace_with_warnings(
@@ -278,6 +281,7 @@ fn deferred_warning_placeholders_reuse_later_definition_identity() {
     let mut warnings = vec![];
     let program = analyze_with_warnings(source, &parse(source).unwrap(), AnalysisOptions {
         warning_mode: true, checked_arrays: false,
+        ..AnalysisOptions::default()
     }, &mut warnings).unwrap();
     assert_eq!(program.globals.iter().filter(|g| g.name == "future").count(), 1);
     assert_eq!(warnings.iter().filter(|w| w.kind == "undeclared-var").count(), 1);
