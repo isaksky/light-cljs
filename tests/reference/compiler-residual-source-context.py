@@ -215,7 +215,6 @@ def generate(catalogs=False):
         case['complete_body_phase_mappings'] = [mapping for mapping in phases if mapping['reference_fixture_id'] == identity]
         cases.append(case)
     pending_reasons = {
-        PREFIX + 'edn-stream': 'The complete original EDN stream read body passes both checked pins. Node and QuickJS application execution and actual macro compilation fail with Invalid arity: 4 because clojure.edn/read exposes only zero, one and two arguments. All three assertions and the complete original stream helper remain intended and unmodified; no pass or boundary exclusion is claimed.',
         PREFIX + 'record-literals': 'All five original record literal assertions and complete Foo setup are retained. No implicit record-tag constructor or JVM companion implementation is supplied locally. This source-contract candidate grants no passing assertion or phase witness; reconcile the ordinary record-reader obligation separately from the excluded JVM companion facility.',
     }
     pending = set(pending_reasons)
@@ -236,6 +235,7 @@ def generate(catalogs=False):
         for name, field in [('full-cases.jsonl', 'id'), ('full-witnesses.jsonl', 'fixture_id')]:
             residual.update_owned(name, lambda row: row.get(field, '').startswith(PREFIX), proposal[name])
         reconcile_exists(cases)
+        reconcile_edn_read(cases)
     print(f'{len(proposal["full-cases.jsonl"])} supported contexts, {len(proposal["complete-body-phase-mappings"])} complete bodies, {len(proposal["full-witnesses.jsonl"])} original sites proposed; {len(pending)} complete sources remain unwitnessed', flush=True)
     return cases
 
@@ -267,6 +267,62 @@ def reconcile_exists(cases):
                  'reference_contract_sha256': inv.digest(json.dumps(case['expected'], sort_keys=True).encode())}
     for name, row in [('obligation-witnesses.jsonl', operation), ('phase-witnesses.jsonl', phase)]:
         residual.update_owned(name, lambda item: item['obligation_id'] == target['id'], [row])
+
+
+def reconcile_edn_read(cases):
+    """Bind the public stream operation to its complete source and phase tests."""
+    target = next(row for row in residual.read('obligations.jsonl')
+                  if row['name'] == 'clojure.edn/read' and row['obligation_kind'] == 'local-api')
+    case = next(row for row in cases if row['id'] == PREFIX + 'edn-stream')
+    test = 'tests/compiler_edn_stream.rs'
+    execution = {'test_file': test,
+                 'test_name': 'edn_stream_contract_executes_in_fresh_and_reused_application_and_macro_phases',
+                 'test_source_sha256': inv.digest((ROOT / test).read_bytes())}
+    rationale = ('The complete original test-reader helper and all three test-read assertions '
+                 'execute unchanged in Node/QuickJS applications and fresh/reused actual macros, '
+                 'with both identity/settings-checked reference pins. The separate strict EDN '
+                 'contract retains literal cursor results, zero-argument explicit input, '
+                 'one/two/four arities, exact EOF values and error-flag precedence, ordered '
+                 'tag/provider effects, local reader/default precedence, malformed/unsupported '
+                 'input and located host/reader failures. Unsupported macro result values '
+                 'remain distinct diagnostics. The constructor namespace adaptation does '
+                 'not promise general tools.reader compatibility or ambient strict readers.')
+    common = {'obligation_id': target['id'], 'body_sha256': target['body_sha256'],
+              'rationale': rationale}
+    supports = {**case['complete_body_phase_mappings'][0]['support_source_sha256'],
+                'tests/fixtures/compiler-edn-stream.cljs': inv.digest((ROOT / 'tests/fixtures/compiler-edn-stream.cljs').read_bytes()),
+                'tests/fixtures/compiler-edn-stream-parity.cljs': inv.digest((ROOT / 'tests/fixtures/compiler-edn-stream-parity.cljs').read_bytes()),
+                TEST: inv.digest((ROOT / TEST).read_bytes())}
+    phase = {**common, **execution, 'support_source_sha256': supports}
+    operation = {**common, 'assertion_ids': [], 'local_execution': execution,
+                 'reference_fixture_id': case['id'],
+                 'reference_source_sha256': inv.digest(case['source'].encode()),
+                 'reference_contract_sha256': inv.digest(json.dumps(case['expected'], sort_keys=True).encode())}
+    for name, row in [('obligation-witnesses.jsonl', operation), ('phase-witnesses.jsonl', phase)]:
+        residual.update_owned(name, lambda item: item['obligation_id'] == target['id'], [row])
+    canonical_path = 'src/main/cljs/clojure/edn.cljs'
+    local_path = 'src/compiler_libraries/clojure/edn.cljs'
+    def read_contract(source):
+        form = next(node for node in inv.Reader(source).all()
+                    if inv.short_head(node) == 'defn' and source[node.children[1].start:node.children[1].end] == 'read')
+        text = source[form.start:form.end]
+        arities = [len(node.children[0].children) for node in form.children
+                   if node.kind == 'list' and node.children and node.children[0].kind == 'vector']
+        return {'text': text, 'sha256': inv.digest(text.encode()), 'arities': arities}
+    canonical = read_contract(pinned(canonical_path))
+    local = read_contract((ROOT / local_path).read_text())
+    assert canonical['arities'] == [1, 2, 4] and local['arities'] == [0, 1, 2, 4]
+    receipt = {'public_name': 'clojure.edn/read', 'obligation_id': target['id'],
+               'canonical_source': canonical_path, 'canonical_read': canonical,
+               'local_source': local_path, 'local_read': local,
+               'runtime_sha256': inv.digest((ROOT / 'src/js_runtime.js').read_bytes()),
+               'original_body_reference_fixture': case['id'],
+               'original_body_source_sha256': inv.digest(case['source'].encode()),
+               'complete_original_provenance': case['complete_original_provenance'],
+               'local_execution': execution, 'support_source_sha256': supports,
+               'rationale': rationale,
+               'evidence_boundary': 'Source and arity bindings are not execution results. Fresh literal reference and both-engine/phase observations are required.'}
+    completion.persist(ROOT / 'tests/reference/compiler-edn-stream-contract.json', json.dumps(receipt, indent=2) + '\n')
 
 
 def audit_local(cases, output):

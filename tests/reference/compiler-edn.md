@@ -21,6 +21,15 @@ accepts metadata and explicit namespaced maps but rejects executable prefixes,
 read-eval, regex, reader conditionals, auto-resolution, JVM classes and implicit
 built-in host-valued tags.
 
+`clojure.edn/read` accepts a real stream at one argument, an options map and
+stream at two arguments, and `[stream eof-error? eof opts]` at four arguments.
+One argument returns nil at EOF. Two arguments throw unless `:eof` is supplied.
+At four arguments, a truthy error flag throws at EOF; nil/false selects the exact
+EOF value, overriding any `:eof` in the options. Readers and default handlers
+remain local to strict EDN options. The supported zero-argument embedding reads
+the explicit current input and throws at EOF; it discovers no host input. A
+one-argument map is an invalid stream, including inside `with-in-str`.
+
 `cljs.reader` supplies the CLJS data reader facade and local/global tag parser
 functions. It adds `#inst`, `#uuid`, `#queue` and `#js` literals and returns nil for
 empty strings. Instants use UTC defaults, validate calendar fields, apply explicit

@@ -5468,12 +5468,12 @@
     let stream, option;
     if (args.length === 0) stream = c.readerCurrentInputValue;
     else if (args.length === 1) {
-      if (profile !== 'reader' && inspect(args[0])?.kind === 'map') {
+      if (profile === 'code' && inspect(args[0])?.kind === 'map') {
         option = args[0]; stream = c.readerCurrentInputValue;
       } else stream = args[0];
     }
     else if (args.length === 2) [option, stream] = args;
-    else if (profile === 'reader' && args.length === 4) {
+    else if ((profile === 'reader' || profile === 'edn') && args.length === 4) {
       stream = args[0]; option = args[3];
     } else if (profile === 'code' && (args.length === 3 || args.length === 4)) {
       stream = args[0]; option = c.hashMap(rt.keyword(null,'eof'), args[1] !== false && args[1] != null ? absent : args[2]);
@@ -5481,6 +5481,9 @@
     const opts = options(option, profile), state = stateOf(stream);
     if (profile === 'reader') {
       if (args.length < 2) opts.eof = null;
+      else if (args.length === 4) opts.eof = args[1] !== false && args[1] != null ? absent : args[2];
+    } else if (profile === 'edn') {
+      if (args.length === 1) opts.eof = null;
       else if (args.length === 4) opts.eof = args[1] !== false && args[1] != null ? absent : args[2];
     }
     if (state.failed) { if (opts.eof !== absent) return opts.eof; fail(state, 'EOF while reading'); }

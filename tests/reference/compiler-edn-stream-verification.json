@@ -1,0 +1,44 @@
+{
+  "source_sha256": {
+    "src/js_runtime.js": "bb8140c402301188da25c452db4b9b4e3a07c1443fa694724b7354aab9ffba2b",
+    "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+    "tests/compiler_edn_stream.rs": "a28e086c6a6b64f9bbb871908171ddf705182c6fe082198583439f1ef9401387",
+    "tests/fixtures/compiler-edn-stream.cljs": "a1b701f509b4b5c7d451d1fe6de5d22f46a4da602c24c0de5949a3eec64f062b",
+    "tests/fixtures/compiler-edn-stream-parity.cljs": "c1199b46952d5a86b549ae6fe68dd9a7d3d29ef827a57c6f5e68d590f555595d",
+    "tests/compiler_residual_source_context.rs": "085af457d5e9ad7381c39f0bcd031745b9ded38932e2a1f2e20d4f9fd79fba7c",
+    "tests/fixtures/compiler-residual-source-context.tsv": "4ffd649a75f3020c3b8ba56b764e108722e86d3a85866ceba58bfc3ab28472a8",
+    "tests/reference/compiler-residual-source-context.py": "5d7a66b0e05a64352e84f8d1c5db49c8f69e9a49eaea44c2757b862b46381aaf",
+    "tests/reference/compiler-edn-stream.py": "d4d186fe43ffb3f43b6982c74adc260d9ddc29164c83e0ac62dd84772401a935"
+  },
+  "evidence_sha256": {
+    "/tmp/light-cljs-159-edn-stream-current/evidence.json": "faeb6b83dbfc638acd9b35abdf366647864426a25c6ad19574dd9bdaa3de8a80",
+    "/tmp/light-cljs-159-edn-eof-reference-current/evidence.json": "aad0394c44b209c1044f3bc4762d568224f0feb865ac83eb9bae6253e65a7d66",
+    "/tmp/light-cljs-159-performance-current/output-startup.json": "120ea2b968ccf0c76dbf142080552b75317e9ef1d4964068cd7310f1cd0425ab",
+    "/tmp/light-cljs-159-checks/reader-phase.log": "936295ba068bf75411a31b0119abb505c0ba6e17e4ccb2fcad0e0e8c6d9aa066",
+    "/tmp/light-cljs-159-checks/focused-accounting.log": "1f6c41c8b6bb392c87b679a8743239ceb4ea30abb1d9e9f9ca6a59e1c2429195",
+    "/tmp/light-cljs-159-checks/clippy-stream.log": "8e4e32047dd5d7673688f5551297452800ad483446737cd7584cb69d3323bf11",
+    "/tmp/light-cljs-159-library-current/evidence.json": "2ac4af822e9c90961b3fe8d0f47a9d249bf3b2390d765aa90985d2862af7dbe9",
+    "/tmp/light-cljs-159-checks/library-accounting.log": "27c08b3687d32621bfdf4415888cf9b8d65e7473dcda4770f69ca9ddb2818659"
+  },
+  "starting_head": "32923c175436ee2834269be038b01f1d599f6bf8",
+  "original_source_assertions": 3,
+  "local_reader_phase_tests": 36,
+  "accounting_tests": 6,
+  "clippy": "Focused test succeeds; 53 warnings in unchanged library sources prevent -D warnings.",
+  "public_source_arity_phase_binding": "passed; exact current test/support hashes, unchanged original module/program and public operation/reference links validated",
+  "library_evidence": {
+    "local_cases": 191,
+    "engines": [
+      "Node",
+      "QuickJS"
+    ],
+    "references": "Existing complete identity/settings/source-checked release and checkout layers retained byte-for-byte; all local layers rerun or checked against finalized compiler/library hashes. Prior full receipt history retained.",
+    "classifications": {
+      "original-source-agreement": 163,
+      "verified-pinned-version-difference": 6,
+      "original-contract-unresolved": 22
+    },
+    "boundary": "The unchanged 22 unresolved contracts grant no passing coverage; focused existing owners continue independently."
+  },
+  "library_accounting_tests": 14
+}

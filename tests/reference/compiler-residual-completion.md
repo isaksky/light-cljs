@@ -867,3 +867,67 @@ Only the source-context generator, proposals, retained source fixtures and this
 documentation changed. Shared catalogs remain owned by the main worker. No
 production, queue, staging or commit changes were made; no full gate,
 cancellation or limits suite was run, and light-cljs-156 was not investigated.
+
+## EDN stream closure after the retained omission (2026-10-11)
+
+The earlier four-argument failure above is historical. `clojure.edn/read` now
+exports the canonical one/two/four stream arities through the strict first-party
+runtime, retaining the supported explicit zero-argument embedding. The original
+`test-reader` helper, complete `test-read` body, all three assertions, their
+expectations and the existing constructor alias adaptation remain unchanged.
+The passing context TSV now contains 13 contexts, 19 complete bodies and 50
+original assertion sites. Only the separate record-literal candidate remains
+unwitnessed; this focused completion makes no broad zero-missing claim.
+
+The complete context passes both identity/settings-checked pins and literal
+Node/QuickJS application observations. The Rust source-context suite executes
+all 13 contexts in applications and actual macro computation, with fresh and
+reused MacroHosts. `tests/compiler_edn_stream.rs` additionally runs literal
+cursor/EOF/options/provider observations in all four combinations and both
+engines, then checks located macro failures, unsupported expansion-result
+values and recovery in the same host. Runtime stream errors and the macro
+expansion-result boundary remain separate diagnostics.
+
+`tests/reference/compiler-edn-stream-contract.json` binds the canonical public
+read declaration and its 1/2/4 arities, current 0/1/2/4 source facade, current
+runtime, unchanged complete helper/body provenance, phase test and every
+support fixture to exact hashes. The public API witness now points to this
+current strict stream contract and the complete original reference case.
+Hashes and registrations alone grant no execution credit.
+
+Reproduce the original body and local source observations:
+
+```sh
+cargo build --locked --bin light-cljs
+python3 -B tests/reference/compiler-residual-source-context.py --catalogs --case edn-stream --run --audit-local --output /tmp/light-cljs-159-edn-stream-current
+cargo test --locked --test compiler_edn --test compiler_edn_stream --test compiler_reader --test compiler_residual_source_context
+python3 -B tests/reference/compiler-edn-stream.py --output /tmp/light-cljs-159-edn-eof-reference
+```
+
+The separate parity fixture checks one-argument nil EOF, mandatory two-argument
+EOF errors, four-argument error-flag truthiness including 0/empty string, exact
+nil/false/string/keyword EOF values overriding `:eof`, and ordered local reader
+callbacks. Both pins pass. Strict unsupported syntax, host capabilities and
+ambient-tag exclusions stay in the independently executed local fixture.
+
+Checked performance samples are retained in
+`benchmarks/results/edn-stream-2026-10-11/output-startup.json`: nine fresh Node
+processes verify the complete integrated value/effects/stdout on every sample,
+plus primitive/core-call values and runtime multiplicity. The emitted integrated
+program is 346,575 bytes (82,502 gzip); median parse/initialize/execute/total are
+4.602/3.388/8.091/16.165 ms. This is a current checked sample, not a comparative
+speedup claim or an EDN throughput benchmark.
+
+All 191 complete SCI library cases were observed in Node and QuickJS against
+finalized compiler/library hashes. Earlier batches whose inputs changed were
+rerun. The new active receipts retain the exact source/identity/settings-checked
+release/checkout observations and every prior receipt. Classification remains
+163 original agreements, 6 verified pin differences and 22 unresolved original
+contracts; no mismatch is promoted or expectation changed. In particular, the
+separate string/set omissions retain their live owners. Evidence:
+`/tmp/light-cljs-159-library-current/evidence.json`; current source and evidence
+hashes are retained in `tests/reference/compiler-edn-stream-verification.json`.
+The six focused arity/phase accounting regressions and all fourteen library
+accounting regressions pass. Focused Clippy succeeds;
+strict `-D warnings` reports 53 existing diagnostics in ten unchanged source
+files and is not represented as a clean lint run.
