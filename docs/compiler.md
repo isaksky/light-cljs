@@ -2012,3 +2012,13 @@ retained. These values can be intermediate macro computations; arbitrary types,
 functions and iterator objects still receive unsupported expansion-result
 diagnostics when returned as macro expansions. See the
 [factory signatures and reference evidence](../tests/reference/compiler-core-factories.md).
+
+### Public iterator helpers
+
+`seq-iter [coll]` creates a canonical SeqIter with lazy INIT/START initialization.
+`ranged-iterator [v start end]` creates a canonical RangedIterator with explicit
+vector bounds and chunk state. Both helpers support saved and apply invocation
+in applications and intermediate macro computations. Their exhausted behavior
+matches the pinned classes: SeqIter next throws, while RangedIterator next is
+unchecked. Iterator objects are unsupported macro expansion results. See the
+[helper contracts and checked references](../tests/reference/compiler-iterator-helpers.md).

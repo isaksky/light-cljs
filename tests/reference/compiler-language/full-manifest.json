@@ -44,7 +44,7 @@
       "upstream-internals": 357,
       "reference-harness": 5
     },
-    "obligations": 5260,
+    "obligations": 5262,
     "public_api_arities": 1327,
     "intended_assertions": 3805
   },
@@ -1398,8 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "e644453d3f345a835cdfa16cbe484feeca24ef324a62dc9cef4771d4a66ab511",
-  "obligations_sha256": "e43635da6fe4f191eede9aec9f3c45c43a2472e180d8d1b96beacfcf5a983734",
+  "generator_sha256": "e88db40afd7c1fd9389ab484ea19be77df5ec9f663ff410c54fa75fbe8735966",
+  "obligations_sha256": "b4255ca0e97320ad30d604b8db22289acbc43017a5cd77d47458d8374d5c145d",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,11 +1440,11 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "ec8969a78fbc71f5754d4ef85ff765fc7949ae54da4b688832349a196072087c"
+      "sha256": "c1502668ff8cee06a8ad5034c491e09c2df8d2798641ee386416ac420b52ba86"
     },
     {
       "path": "src/core_var_metadata.tsv",
-      "sha256": "09acf59b600ddf7f6264a4c3dcb958412e1138ce4f064ba920179c518e35fc85"
+      "sha256": "73dfffdffa292b9b9fa36c0256f09a7ba5991bb798c06e3169fd9c597fb3fe7b"
     },
     {
       "path": "tests/reference/sci/runtime.tsv",
@@ -1470,7 +1470,7 @@
     "execution_evidence"
   ],
   "families": {
-    "public-residual": 7402,
+    "public-residual": 7400,
     "array-compiler-settings": 4,
     "utilities": 449,
     "lazy-sequences": 282,
@@ -1488,6 +1488,7 @@
     "tap-delivery": 3,
     "public-protocols": 18,
     "public-construction-factories": 26,
+    "public-iterator-helpers": 4,
     "sequence-transform": 5,
     "eduction": 4
   }

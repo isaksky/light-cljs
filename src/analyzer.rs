@@ -47,6 +47,8 @@ pub enum CoreFnId {
     MultiFnFactory,
     SeqIterFactory,
     RangedIteratorFactory,
+    SeqIterHelper,
+    RangedIteratorHelper,
     NamespaceFactory,
     TaggedLiteralFactory,
 
@@ -1389,6 +1391,8 @@ impl CoreFnId {
             "->MultiFn" => Self::MultiFnFactory,
             "->SeqIter" => Self::SeqIterFactory,
             "->RangedIterator" => Self::RangedIteratorFactory,
+            "seq-iter" => Self::SeqIterHelper,
+            "ranged-iterator" => Self::RangedIteratorHelper,
             "->Namespace" => Self::NamespaceFactory,
             "->TaggedLiteral" => Self::TaggedLiteralFactory,
 
@@ -1537,6 +1541,8 @@ impl CoreFnId {
             Self::MultiFnFactory => "MultiFnFactory",
             Self::SeqIterFactory => "SeqIterFactory",
             Self::RangedIteratorFactory => "RangedIteratorFactory",
+            Self::SeqIterHelper => "seqIter",
+            Self::RangedIteratorHelper => "rangedIterator",
             Self::NamespaceFactory => "NamespaceFactory",
             Self::TaggedLiteralFactory => "TaggedLiteralFactory",
 

@@ -831,6 +831,7 @@
     const base = start - start % 32;
     return new RangedIterator(start, base, start < count(value) ? vectors.get(value).slice(base, base + 32) : null, value, start, end);
   }
+  function seqIter(value) { return new SeqIter(iteratorInit, value); }
   function iterator(value) {
     const method = builtin(value, "IIterable/-iterator", 1);
     if (method) return method.call(value, value);
@@ -4908,7 +4909,7 @@
     IPending, realized, force, isDelay: value => delays.has(value), nthrest, nthnext,
     IDeref, IDerefWithTimeout, Inst, IUUID, ASeq, IAtom, IReset, ISwap, IVolatile, IWatchable,
     derefWithTimeoutProtocol: coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null),
-    IReduce, IKVReduce, IVector, IMap, ICollection, IEmptyableCollection, ISet, IStack, IReversible, IComparable, IIterable, reduceKv, subvec, equivMap, SeqIter, RangedIterator,
+    IReduce, IKVReduce, IVector, IMap, ICollection, IEmptyableCollection, ISet, IStack, IReversible, IComparable, IIterable, reduceKv, subvec, equivMap, SeqIter, RangedIterator, seqIter, rangedIterator,
     reduceProtocol: coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); }),
     kvReduceProtocol: coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value)),
     assocProtocol: coreMethod("IAssociative/-assoc", [3], assoc), assocNProtocol: coreMethod("IVector/-assoc-n", [3], assoc),

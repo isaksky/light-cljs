@@ -41,6 +41,7 @@ OWNERS = {
     "tap-delivery": "light-cljs-124", "library": "light-cljs-123",
 }
 NAME_FAMILIES = (
+    ("public-iterator-helpers", "light-cljs-144", {"seq-iter", "ranged-iterator"}),
     ("public-protocols", "light-cljs-138", set("Inst inst-ms* inst-ms inst? IUUID uuid? IDerefWithTimeout -deref-with-timeout ASeq".split())),
     ("public-construction", "light-cljs-139", set("Cons ->Cons Reduced ->Reduced Symbol ->Symbol".split())),
     ("public-collection-construction", "light-cljs-141", set("List ->List EmptyList ->EmptyList Keyword ->Keyword Cycle ->Cycle Repeat ->Repeat Iterate ->Iterate PersistentVector ->PersistentVector Subvec ->Subvec ChunkedSeq ->ChunkedSeq PersistentQueue ->PersistentQueue PersistentArrayMap ->PersistentArrayMap PersistentHashMap ->PersistentHashMap PersistentHashSet ->PersistentHashSet".split())),

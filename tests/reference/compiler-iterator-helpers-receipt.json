@@ -1,0 +1,227 @@
+{
+  "owner": "light-cljs-144",
+  "cases": [
+    {
+      "id": "iterator-helper-contract",
+      "source": "(do (defn iterator-helper-contract []   (doseq [make-iter [(fn [coll] (seq-iter coll)) seq-iter                     (fn [coll] (apply seq-iter [coll]))]]     (let [events (atom [])           coll (lazy-seq (swap! events conj :head)                  (cons 1 (lazy-seq (swap! events conj :tail) (list 2))))           i (make-iter coll)]       (assert (instance? SeqIter i))       (assert (identical? INIT (.-_seq i)))       (assert (identical? coll (.-_next i)))       (assert (= [] @events))       (assert (.hasNext i)) (assert (.hasNext i))       (assert (= [:head] @events))       (assert (identical? START (.-_seq i)))       (assert (= 1 (.next i)))       (assert (= [:head] @events))       (assert (.hasNext i)) (assert (.hasNext i))       (assert (= [:head :tail] @events))       (assert (= 2 (.next i)))       (assert (not (.hasNext i))) (assert (not (.hasNext i)))       (assert (= \"No such element\" (try (.next i) nil (catch js/Error e (.-message e)))))       (assert (= \"Unsupported operation\" (.-message (.remove i)))))     (doseq [coll [nil '() []]]       (let [i (make-iter coll)]         (assert (not (.hasNext i)))         (assert (= \"No such element\" (try (.next i) nil (catch js/Error e (.-message e)))))))     (let [arr #js [1 2] i (make-iter arr)]       (aset arr 0 9)       (assert (= 9 (.next i)))       (aset arr 1 8)       (assert (= 8 (.next i)))       (assert (not (.hasNext i)))))   (doseq [make-iter [(fn [v start end] (ranged-iterator v start end)) ranged-iterator                     (fn [v start end] (apply ranged-iterator [v start end]))]]     (let [v (vec (range 70)) i (make-iter v 31 66) arr (.-arr i)]       (assert (instance? RangedIterator i))       (assert (identical? v (.-v i)))       (assert (= [31 0 31 66] [(.-i i) (.-base i) (.-start i) (.-end i)]))       (assert (.hasNext i)) (assert (.hasNext i))       (assert (= 31 (.-i i)))       (aset arr 31 91)       (assert (= 91 (.next i)))       (assert (identical? arr (.-arr i)))       (assert (= 32 (.next i)))       (assert (= 32 (.-base i)))       (assert (not (identical? arr (.-arr i))))       (loop [n 33] (when (< n 66)         (assert (.hasNext i)) (assert (.hasNext i))         (assert (= n (.next i))) (recur (inc n))))       (assert (= [66 64] [(.-i i) (.-base i)]))       (assert (not (.hasNext i))) (assert (not (.hasNext i)))       (assert (= 66 (.next i))) (assert (not (.hasNext i))))     (doseq [[start end] [[0 0] [32 32] [40 39] [70 70]]]       (let [v (vec (range 70)) i (make-iter v start end)]         (assert (= start (.-i i)))         (assert (= (- start (js-mod start 32)) (.-base i)))         (assert (not (.hasNext i)))         (assert (= (< start 70) (some? (.-arr i))))))     (let [i (make-iter [] 0 0)]       (assert (nil? (.-arr i))) (assert (not (.hasNext i)))       (assert (true? (try (.next i) false (catch js/Error e true)))))     (let [i (make-iter [3 4 5] 1 3)]       (assert (= [4 5 false] [(.next i) (.next i) (.hasNext i)]))))   (assert (= '([coll]) (:arglists (meta #'seq-iter))))   (assert (= '([v start end]) (:arglists (meta #'ranged-iterator))))   (assert (= 'seq-iter (:name (meta #'seq-iter))))   (assert (= 'ranged-iterator (:name (meta #'ranged-iterator))))   true) (iterator-helper-contract))",
+      "isolated": true,
+      "expected": {
+        "id": "iterator-helper-contract",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match",
+      "source": "(do (defn seq-iter-match   [coll]   (let [i (-iterator coll)]     (loop [s (seq coll)            n 0]       (if (seq s)         (do           (when-not (.hasNext i)             (throw               (js/Error.                 (str  \"Iterator exhausted before seq at(\" n \")\" ))))           (let [iv (.next i)                 sv (first s)]             (when-not (= iv sv)               (throw                 (js/Error.                   (str \"Iterator value \" iv \" and seq value \" sv \" did not match at ( \"  n \")\")))))           (recur (rest s) (inc n)))         (if (.hasNext i)           (throw             (js/Error.               (str  \"Seq exhausted before iterator at (\" n \")\")))           true))))) (defrecord TestIterRec [a b]) (do (do (let [test-map (apply hash-map (range 200))           test-set (apply hash-set (range 200))           test-queue (into cljs.core.PersistentQueue.EMPTY (vec (range 100)))           test-record (into (TestIterRec. 1 2) {:c 3 :d 4})]       (assert (= true (seq-iter-match test-map)))       (assert (= true (seq-iter-match test-set)))       (assert (= true (seq-iter-match test-queue)))       (assert (= true (seq-iter-match test-record))))) true))",
+      "isolated": true,
+      "expected": {
+        "id": "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    }
+  ],
+  "unchanged_source_sha256": {
+    "iterator-helper-contract": "43846851896124a048a253839df7719b974e0fe6e52ece5bee34f6497483ee10",
+    "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match": "2fd292e05196ebd844c6263afb955e363e538dbe49f9d3c9587f80b90bcccefb"
+  },
+  "references": {
+    "release": {
+      "iterator-helper-contract": {
+        "status": "passed",
+        "observed": {
+          "id": "iterator-helper-contract",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match": {
+        "status": "passed",
+        "observed": {
+          "id": "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    },
+    "checkout": {
+      "iterator-helper-contract": {
+        "status": "passed",
+        "observed": {
+          "id": "iterator-helper-contract",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match": {
+        "status": "passed",
+        "observed": {
+          "id": "core-factory-body-src-test-cljs-cljs-iterator-test-coll-iter-seq-match",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    }
+  },
+  "complete_upstream_declarations": {
+    "release": [
+      {
+        "name": "INIT",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(def INIT #js {})",
+        "sha256": "658a45715383770465173a54f0d3a14cdd938c7a3c707622096f2a5218dde1ae",
+        "start_line": 4229
+      },
+      {
+        "name": "START",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(def START #js {})",
+        "sha256": "493080f508f3c186a4b03719bd412f3d845fc538b54c44da3227a04ab9d4a3ba",
+        "start_line": 4230
+      },
+      {
+        "name": "SeqIter",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(deftype SeqIter [^:mutable _seq ^:mutable _next]\n  Object\n  (hasNext [_]\n    (if (identical? _seq INIT)\n      (do\n        (set! _seq START)\n        (set! _next (seq _next)))\n      (if (identical? _seq _next)\n        (set! _next (next _seq))))\n    (not (nil? _next)))\n  (next [this]\n    (if-not ^boolean (.hasNext this)\n      (throw (js/Error. \"No such element\"))\n      (do\n        (set! _seq _next)\n        (first _next))))\n  (remove [_] (js/Error. \"Unsupported operation\")))",
+        "sha256": "f59841c3a1ebc8425491773edaa4bbf541e4a4f9b354aa9560181515a926dc01",
+        "start_line": 4232
+      },
+      {
+        "name": "seq-iter",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(defn seq-iter [coll]\n  (SeqIter. INIT coll))",
+        "sha256": "2799d337b5bbbc6b4db2e2cd59daaa250d42721dfc35d344c03e0e704fc2aa38",
+        "start_line": 4250
+      },
+      {
+        "name": "RangedIterator",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(deftype RangedIterator [^:mutable i ^:mutable base ^:mutable arr v start end]\n  Object\n  (hasNext [this]\n    (< i end))\n  (next [this]\n    (when (== (- i base) 32)\n      (set! arr (unchecked-array-for v i))\n      (set! base (+ base 32)))\n    (let [ret (aget arr (bit-and i 0x01f))]\n      (set! i (inc i))\n      ret)))",
+        "sha256": "5999100e5c119d3ea83a85d5b8ba63fde67dbbc8ecaaecc1f809bb2ec3bf73ce",
+        "start_line": 5672
+      },
+      {
+        "name": "ranged-iterator",
+        "source": "Maven org.clojure/clojurescript 1.12.134 cljs/core.cljs",
+        "text": "(defn ranged-iterator [v start end]\n  (let [i start]\n    (RangedIterator. i (- i (js-mod i 32))\n      (when (< start (count v))\n        (unchecked-array-for v i))\n      v start end)))",
+        "sha256": "7dad60d425d3b2066a2fe72b7ca5d9b5bc0474f556107d179c5dea2d203aac49",
+        "start_line": 5684
+      }
+    ],
+    "checkout": [
+      {
+        "name": "INIT",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(def INIT #js {})",
+        "sha256": "658a45715383770465173a54f0d3a14cdd938c7a3c707622096f2a5218dde1ae",
+        "start_line": 4240
+      },
+      {
+        "name": "START",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(def START #js {})",
+        "sha256": "493080f508f3c186a4b03719bd412f3d845fc538b54c44da3227a04ab9d4a3ba",
+        "start_line": 4241
+      },
+      {
+        "name": "SeqIter",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(deftype SeqIter [^:mutable _seq ^:mutable _next]\n  Object\n  (hasNext [_]\n    (if (identical? _seq INIT)\n      (do\n        (set! _seq START)\n        (set! _next (seq _next)))\n      (if (identical? _seq _next)\n        (set! _next (next _seq))))\n    (not (nil? _next)))\n  (next [this]\n    (if-not ^boolean (.hasNext this)\n      (throw (js/Error. \"No such element\"))\n      (do\n        (set! _seq _next)\n        (first _next))))\n  (remove [_] (js/Error. \"Unsupported operation\")))",
+        "sha256": "f59841c3a1ebc8425491773edaa4bbf541e4a4f9b354aa9560181515a926dc01",
+        "start_line": 4243
+      },
+      {
+        "name": "seq-iter",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(defn seq-iter [coll]\n  (SeqIter. INIT coll))",
+        "sha256": "2799d337b5bbbc6b4db2e2cd59daaa250d42721dfc35d344c03e0e704fc2aa38",
+        "start_line": 4261
+      },
+      {
+        "name": "RangedIterator",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(deftype RangedIterator [^:mutable i ^:mutable base ^:mutable arr v start end]\n  Object\n  (hasNext [this]\n    (< i end))\n  (next [this]\n    (when (== (- i base) 32)\n      (set! arr (unchecked-array-for v i))\n      (set! base (+ base 32)))\n    (let [ret (aget arr (bit-and i 0x01f))]\n      (set! i (inc i))\n      ret)))",
+        "sha256": "5999100e5c119d3ea83a85d5b8ba63fde67dbbc8ecaaecc1f809bb2ec3bf73ce",
+        "start_line": 5698
+      },
+      {
+        "name": "ranged-iterator",
+        "source": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e src/main/cljs/cljs/core.cljs",
+        "text": "(defn ranged-iterator [v start end]\n  (let [i start]\n    (RangedIterator. i (- i (js-mod i 32))\n      (when (< start (count v))\n        (unchecked-array-for v i))\n      v start end)))",
+        "sha256": "7dad60d425d3b2066a2fe72b7ca5d9b5bc0474f556107d179c5dea2d203aac49",
+        "start_line": 5710
+      }
+    ]
+  },
+  "complete_upstream_setup": [
+    {
+      "body_id": "src/test/cljs/cljs/iterator_test.cljs::seq-iter-match",
+      "source": "src/test/cljs/cljs/iterator_test.cljs",
+      "sha256": "dc7f6c0532615d0716cf9df65376ad41f7e86d0ad22896cd6946c55a2675c14b"
+    },
+    {
+      "body_id": "src/test/cljs/cljs/iterator_test.cljs::TestIterRec",
+      "source": "src/test/cljs/cljs/iterator_test.cljs",
+      "sha256": "a707f8b89aa3b8fcab1385f9bec8078ef309fd4232ea6ba444ae6ff00b869abd"
+    },
+    {
+      "body_id": "src/test/cljs/cljs/iterator_test.cljs::coll-iter-seq-match",
+      "source": "src/test/cljs/cljs/iterator_test.cljs",
+      "sha256": "8cc2a3265732993995c562371e0b9c7dde6689f254caa7cfcf67771c307a3fdc"
+    }
+  ],
+  "local_witnesses": {
+    "tests/compiler_iterator_helpers.rs": "dfac8773803fe352da2b5ad5e8ba63104e583d59565254a48dadd5577a73c781",
+    "tests/fixtures/compiler-iterator-helpers.cljs": "a17bb0ed55f951d753794a7d5548260a309aca5b6d90236106ecb9a671039d24",
+    "tests/fixtures/compiler-core-factory-bodies.tsv": "2a51ee636f65fcb4a8dfaeafd011cdd61e24e4392d411152f09b75b8c22f5bbb"
+  }
+}
