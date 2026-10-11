@@ -13,8 +13,8 @@ the compiled JavaScript host; compiler-owned declaration/binding transforms
 remain in Rust. Immutable vectors/lists/maps/sets, symbols/keywords,
 quoted data, lazy sequence sources and a finite set of first-class core functions
 execute through a first-party JavaScript runtime. Sorted sets and transients
-remain missing intended-language features; the migration also introduces explicit
-phase roots and a Rust optimization boundary. A bundled general standard library
+remain missing intended-language features. Explicit compilation-use records and
+conservative application reachability now live in Rust. A bundled general standard library
 is not currently provided. See the
 [language coverage boundaries](evaluator-migration.md#language-coverage-and-completion-boundaries)
 for feature ownership and the distinct completion milestones.
@@ -70,8 +70,8 @@ it may add deferred-root access and bypass optional application optimization.
 See [session ownership and reentrancy](evaluator-migration.md#sessions-ownership-and-reentrancy).
 
 `parse(source)` constructs the existing syntax arena. `analyze(source, &syntax)`
-constructs a separate `Program`; `emit_js(&program)` recursively writes one
-JavaScript expression into a `String`. `compile(source)` composes these stages
+constructs a separate `Program`; `emit_js(&program)` prepares an application in
+Rust, then recursively writes one JavaScript expression into a `String`. `compile(source)` composes these stages
 and distinguishes parser errors from analysis errors. `--compile` accepts files,
 stdin, or `--text`; `--analyze` prints the resolved representation. Existing token
 and parser CLI modes retain their behavior.
@@ -86,6 +86,43 @@ namespace's dependency-order index for a combined program). Analysis requires th
 used to parse the syntax; the resulting program no longer borrows that source.
 IDs are local to a single compilation unit, and the emitter expects an
 analyzer-produced program.
+
+### Application preparation
+
+`prepare_application(&program, ApplicationOptions::default())` is the public
+pre-emission boundary. `emit_js` uses this default; callers can retain the
+`PreparedApplication` and call its `emit_js()` repeatedly without rerunning the
+pass. `ApplicationOptions { optimize: false, exports: vec![] }` provides an
+unoptimized comparison, while `exports: Vec<GlobalId>` explicitly keeps runtime
+binding identities and their source generations. Exports are retention roots;
+this API does not add a JavaScript module export wrapper.
+
+The entry result, all standalone expressions, unknown or effectful initializers,
+throws, definition tests, and protocol/type/extension declarations retain their
+source/dependency order. Discarded top-level definitions are removable only when
+their initializers are proven inert (primitive literals, function construction,
+core function values, inert lists/vectors, and maps/sets with scalar keys). Runtime references and escaped
+Vars retain their definitions transitively, including metadata and all source
+generations. Non-scalar hashing, reader literals, arbitrary calls, and metadata operations
+are conservatively effectful. Retained raw JavaScript prevents elimination and
+specialization; raw code inside an otherwise discarded function is not a root.
+This is deliberately conservative reachability, not a general optimizer.
+
+Specialization currently covers eager top-level calls after a sole, non-dynamic
+initialization, with no value/Var escape or mutation: fixed entries of multi-arity
+functions and aliases to already-resolved core operations. Fixed entries retain
+`.call(null)` and source-order argument evaluation. Missing arities, mutable
+roots, deferred function-body calls and unknown protocol targets keep ordinary
+shared lowering. Single fixed-arity functions already have no dispatcher.
+
+`Program::compilation_uses` records deferred ordinary-unit names, generations,
+actual analysis counts and compile-time emission counts. Analysis for application
+output does not imply compile-time execution; macro demand does not create a
+runtime root. Macro/bootstrap functions remain outside application IR. Deferred
+unit emission bypasses this pass, caches each generation's emitted code, and
+shares canonical runtime operations. Applications have no deferred-unit compiler
+callback or demand-slot dependency. Statistics and optimizer on/off execution
+checks are recorded in [application evidence](../tests/reference/compiler-optimization.md).
 
 The environment is a stack of scopes containing binding IDs. Lookup walks scopes
 and their bindings from newest to oldest. Binding records survive scope exit.

@@ -10,6 +10,7 @@
 use std::{iter::FusedIterator, ops::Range};
 
 pub mod analyzer;
+pub mod application;
 mod char_classes;
 pub mod compiler;
 mod compiler_binding_macros;
@@ -36,6 +37,7 @@ pub use analyzer::{
     NamespaceInput, Program, Span, StringId, analyze, analyze_namespaces,
     analyze_namespaces_with_macros, analyze_with_macros,
 };
+pub use application::{ApplicationOptions, ApplicationStats, PreparedApplication, prepare_application};
 pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_with_macros,
     compile_with_macros,

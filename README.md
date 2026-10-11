@@ -363,9 +363,12 @@ JavaScript Error identity and arbitrary thrown values. The
 records 42 selected upstream assertions and 56 independent pinned comparisons.
 The self-contained runtime is included once only when used; primitive output
 keeps its existing small helpers. Sorted sets and transient collections remain
-intended language gaps. Whole-program reachability and specialization belong in
-the Rust compiler under the adopted roadmap; the current compiler does not yet
-provide that optimizer. Package acquisition and bundling are not migration goals,
+intended language gaps. Rust application preparation removes unused inert
+definitions while retaining ordered effects, entry results, explicit exports and
+Var observations. It conservatively specializes proven immutable top-level calls;
+[the preparation API](docs/compiler.md#application-preparation) also supports
+optimizer-off comparisons and repeated emission. Package acquisition and bundling
+are not migration goals,
 and a general standard library is not currently bundled. Caller-supplied library
 sources use the same supported language features. See the
 [migration and language boundaries](docs/evaluator-migration.md#language-coverage-and-completion-boundaries)

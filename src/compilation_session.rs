@@ -35,6 +35,8 @@ struct Unit {
     snapshot: DefinitionSnapshot,
     host: MacroHost,
     state: AnalysisState,
+    analyses: usize,
+    emission: Option<String>,
 }
 #[derive(Clone)]
 enum AnalysisState {
@@ -79,7 +81,11 @@ impl CompilationSession {
                 let evaluator = engine.upgrade().ok_or("evaluator expired")?;
                 let active = evaluator.active(ctx).map_err(|e| e.to_string())?;
                 let (program, _) = session.analyze(id as usize, Some(&active))?;
-                Ok(crate::emitter::emit_deferred_unit(&program))
+                let unit = session.catalog.borrow().units[id as usize].clone();
+                let mut unit = unit.borrow_mut();
+                Ok(unit.emission
+                    .get_or_insert_with(|| crate::emitter::emit_deferred_unit(&program))
+                    .clone())
             })
             .map_err(|e| e.to_string())?;
         // Registry and root states stay in JS, so ready reads never cross Rust.
@@ -111,6 +117,17 @@ impl CompilationSession {
             }
         }
         Ok(())
+    }
+    pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
+        self.catalog.borrow().units.iter().map(|unit| {
+            let unit = unit.borrow();
+            crate::analyzer::CompilationUse {
+                name: unit.name.clone(),
+                generation: unit.request.generation,
+                analyses: unit.analyses,
+                emissions: usize::from(unit.emission.is_some()),
+            }
+        }).collect()
     }
     pub fn extension_frontier(&self) -> usize {
         self.catalog.borrow().bundle_count
@@ -236,6 +253,8 @@ impl CompilationSession {
                     snapshot,
                     host,
                     state: AnalysisState::Unstarted,
+                    analyses: 0,
+                    emission: None,
                 })));
                 id
             });
@@ -304,6 +323,7 @@ impl CompilationSession {
                 return Err(message);
             }
             unit.state = AnalysisState::Analyzing;
+            unit.analyses += 1;
             // The request has stable identity even if a newer same-kind source
             // generation is activated while this frame is suspended.
             let request = unit.request;

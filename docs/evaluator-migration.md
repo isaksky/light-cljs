@@ -42,9 +42,9 @@ Compile-time emission may add deferred-root access and take a conservative,
 fast compilation path. It must not become a second implementation of the language.
 Whole-program reachability and specialization belong in Rust before final
 application emission; invoking a macro must not rerun the application optimizer.
-The current emitter is not evidence of a complete whole-program optimization
-pass: explicit phase roots and effect-preserving reachability are part of
-`light-cljs-111`.
+The Rust application preparation pass now separates compile-time demand from
+ordered effect roots and conservative reachability; it is not a complete general
+optimizer. See [the preparation boundary](compiler.md#application-preparation).
 
 The migration does not introduce SCI or another evaluator in JavaScript, an
 upstream self-hosted compiler, a permanent native fallback, or a Rust numeric

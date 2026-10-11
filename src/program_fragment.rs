@@ -152,6 +152,7 @@ pub(crate) fn resolution_snapshot(program: &Program) -> Program {
     }
     let remap = identity_remap(program, |id| indices[id.0]);
     let mut snapshot = program.clone();
+    snapshot.compilation_uses.clear();
     snapshot.exprs = program
         .exprs
         .iter()
@@ -184,15 +185,25 @@ pub(crate) fn resolution_snapshot(program: &Program) -> Program {
     snapshot
 }
 
-fn identity_remap<F: Fn(ExprId) -> ExprId>(program: &Program, map_expr: F) -> Remap<F> {
+/// Visit semantic child IDs using the same exhaustive mapping as fragment linking.
+pub(crate) fn children(program: &Program, id: ExprId) -> Vec<ExprId> {
+    let children = std::cell::RefCell::new(Vec::new());
+    identity_remap(program, |child| {
+        children.borrow_mut().push(child);
+        child
+    }).kind(&mut program.exprs[id.0].kind.clone());
+    children.into_inner()
+}
+
+fn identity_remap<F: Fn(ExprId) -> ExprId>(_program: &Program, map_expr: F) -> Remap<F> {
     Remap {
         map_expr,
         local: 0,
         recur: 0,
         string: 0,
         named: 0,
-        globals: (0..program.globals.len()).map(GlobalId).collect(),
-        js: (0..program.js_globals.len()).map(JsGlobalId).collect(),
+        globals: Vec::new(),
+        js: Vec::new(),
     }
 }
 
@@ -202,6 +213,7 @@ struct Remap<F> {
     recur: usize,
     string: usize,
     named: usize,
+    /// An empty table is the identity mapping used by read-only traversals.
     globals: Vec<GlobalId>,
     js: Vec<JsGlobalId>,
 }
@@ -214,7 +226,9 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
         id.0 += self.local;
     }
     fn global(&self, id: &mut GlobalId) {
-        *id = self.globals[id.0];
+        if !self.globals.is_empty() {
+            *id = self.globals[id.0];
+        }
     }
     fn exprs(&self, ids: &mut [ExprId]) {
         for id in ids {
@@ -265,7 +279,9 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             Keyword(id) | Symbol(id) => id.0 += self.named,
             Local(id) => self.local(id),
             Global(id) => self.global(id),
-            JsGlobal(id) => *id = self.js[id.0],
+            JsGlobal(id) => {
+                if !self.js.is_empty() { *id = self.js[id.0]; }
+            },
             ReaderLiteral { items, .. }
             | List(items)
             | Vector(items)

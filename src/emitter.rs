@@ -8,13 +8,22 @@ use crate::analyzer::{
 };
 
 /// Emit one JavaScript expression whose value is the last source form (or nil).
-/// The result is self-contained, including its ClojureScript truth predicate.
+/// The result is self-contained. The default Rust application preparation pass
+/// runs first; use `prepare_application` to select options or reuse preparation.
 pub fn emit_js(program: &Program) -> String {
-    emit_js_mode(program, None, false)
+    crate::application::prepare_application(program, Default::default()).emit_js()
+}
+
+pub(crate) fn emit_application(
+    program: &Program,
+    globals: &[bool],
+    calls: &std::collections::HashMap<ExprId, usize>,
+) -> String {
+    emit_js_mode(program, None, false, Some((globals, calls)))
 }
 
 /// Emit a function accepting the session canonical runtime as its sole argument.
-/// This avoids embedding or recreating runtime brands for every evaluated unit.
+/// This shares runtime brands and bypasses optional application optimization.
 pub fn emit_js_unit(program: &Program) -> String {
     emit_unit_mode(program, false)
 }
@@ -32,13 +41,20 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
         if !raw.contains(&candidate) { break candidate; }
         index += 1;
     };
-    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter), demand_roots))
+    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter), demand_roots, None))
 }
 
-fn emit_js_mode(program: &Program, shared: Option<&str>, demand_roots: bool) -> String {
+fn emit_js_mode(
+    program: &Program,
+    shared: Option<&str>,
+    demand_roots: bool,
+    application: Option<(&[bool], &std::collections::HashMap<ExprId, usize>)>,
+) -> String {
     let mut emitter = Emitter {
         program,
         demand_roots,
+        needs_host: false,
+        specialized_calls: application.map(|(_, calls)| calls),
         output: String::new(),
         indent: 1,
         captures: Vec::new(),
@@ -54,19 +70,21 @@ fn emit_js_mode(program: &Program, shared: Option<&str>, demand_roots: bool) -> 
         .output
         .push_str("(() => {\n  const truth = (value) => value != null && value !== false;\n");
     let prelude_end = emitter.output.len();
-    if !program.js_globals.is_empty()
-        || program
-            .globals
-            .iter()
-            .any(|global| global.name.contains('.'))
-    {
-        emitter.output.push_str("  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n");
-    }
     for global in 0..program.globals.len() {
+        if application.is_some_and(|(globals, _)| !globals[global]) {
+            continue;
+        }
         writeln!(emitter.output, "  let g{global};").unwrap();
     }
     emitter.emit(program.root, ExprContext::Return);
     emitter.output.push_str("})()\n");
+    if emitter.needs_host {
+        let host = "  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n";
+        for range in &mut emitter.raw_segments {
+            if range.start >= prelude_end { range.start += host.len(); range.end += host.len(); }
+        }
+        emitter.output.insert_str(prelude_end, host);
+    }
     if demand_roots || program.exprs.iter().enumerate().any(|(id, expr)| {
         emitter.used.contains(&ExprId(id)) && (
         matches!(
@@ -108,10 +126,7 @@ fn emit_js_mode(program: &Program, shared: Option<&str>, demand_roots: bool) -> 
 
     // Raw JavaScript is an escape hatch, but its user-authored identifiers must
     // not accidentally capture compiler locals or be captured by our helpers.
-    if program
-        .exprs
-        .iter()
-        .any(|expr| matches!(expr.kind, ExprKind::JsTemplate { .. }))
+    if emitter.used.iter().any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
     {
         hygienic_js(emitter.output, emitter.raw_segments)
     } else {
@@ -122,6 +137,8 @@ fn emit_js_mode(program: &Program, shared: Option<&str>, demand_roots: bool) -> 
 struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
+    needs_host: bool,
+    specialized_calls: Option<&'a std::collections::HashMap<ExprId, usize>>,
     output: String,
     indent: usize,
     captures: Vec<(LocalId, RecurTargetId)>,
@@ -176,6 +193,7 @@ impl Emitter<'_> {
     fn global(&mut self, id: GlobalId) {
         let name = &self.program.globals[id.0].name;
         if name.contains('.') {
+            self.needs_host = true;
             let path = crate::analyzer::munge_js_path(name);
             self.output.push_str("host(");
             self.string_units(&path[0].encode_utf16().collect::<Vec<_>>());
@@ -1458,6 +1476,7 @@ impl Emitter<'_> {
             ExprKind::Local(local) => self.local_value(*local),
             ExprKind::Global(global) => self.global(*global),
             ExprKind::JsGlobal(global) => {
+                self.needs_host = true;
                 let path = &self.program.js_globals[global.0].path;
                 write!(self.output, "host(\"{}\")", path[0]).unwrap();
                 for part in &path[1..] {
@@ -1657,6 +1676,9 @@ impl Emitter<'_> {
             ExprKind::Call { callee, args } => {
                 self.output.push('(');
                 self.value(*callee);
+                if let Some(arity) = self.specialized_calls.and_then(|calls| calls.get(&id)) {
+                    write!(self.output, ".cljs$core$IFn$_invoke$arity${arity}").unwrap();
+                }
                 if matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) {
                     // A JS path is a host invocation and retains its final receiver.
                     self.output.push_str(")(");

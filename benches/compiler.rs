@@ -1,12 +1,21 @@
 //! Resident phases; raw output is consumed by benchmarks/run_compiler.py.
 use light_cljs::{
-    MacroHost, MacroImport, NamespaceInput, Program, SyntaxTree, analyze, analyze_namespaces,
-    analyze_with_macros, compile, compile_namespace, compile_namespace_with_macros,
-    compile_with_macros, emit_js, interpreter::Name, parse,
+    ApplicationOptions, MacroHost, MacroImport, NamespaceInput, Program, SyntaxTree, analyze,
+    analyze_namespaces, analyze_with_macros, compile, compile_namespace,
+    compile_namespace_with_macros, compile_with_macros, emit_js, interpreter::Name, parse,
+    prepare_application,
 };
 #[cfg(not(feature = "count-allocations"))]
 use std::time::Instant;
-use std::{env, error::Error, fs, hint::black_box, path::PathBuf};
+use std::{
+    env,
+    error::Error,
+    fs,
+    hint::black_box,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 #[cfg(feature = "count-allocations")]
 #[path = "support/allocations.rs"]
 mod allocations;
@@ -144,9 +153,118 @@ fn namespace_program(trees: &[SyntaxTree], combined: bool) -> Program {
     }
 }
 
+// This focused path does not enter the transitional native macro benchmarks.
+fn application_node(js: &str) -> Vec<u8> {
+    let mut child = Command::new(env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .args([
+            "--eval",
+            "console.log(JSON.stringify(eval(require('fs').readFileSync(0,'utf8'))));",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("application benchmarks require Node");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(js.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+fn application_phases(
+    name: &str,
+    source: &str,
+    samples: usize,
+    iterations: usize,
+    dump: Option<&PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    let tree = parse(source)?;
+    let program = analyze(source, &tree)?;
+    let unoptimized = prepare_application(
+        &program,
+        ApplicationOptions {
+            optimize: false,
+            exports: vec![],
+        },
+    );
+    let expected = application_node(&unoptimized.emit_js());
+    for optimize in [false, true] {
+        let scenario = format!("{name}-{}", if optimize { "on" } else { "off" });
+        let options = ApplicationOptions {
+            optimize,
+            exports: vec![],
+        };
+        let prepared = prepare_application(&program, options.clone());
+        let js = prepared.emit_js();
+        assert_eq!(application_node(&js), expected, "{scenario}");
+        batch(&scenario, "prepare", samples, iterations, || {
+            let application = prepare_application(black_box(&program), options.clone());
+            black_box(&application);
+            let stats = application.stats();
+            stats.retained_globals + stats.removed_definitions + stats.specialized_calls
+        });
+        // The emit checksum is emitted UTF-8 bytes per iteration.
+        batch(&scenario, "prepared-emit", samples, iterations, || {
+            let output = prepared.emit_js();
+            black_box(&output);
+            output.len()
+        });
+        // Includes fresh process startup, JS parsing/evaluation and output validation.
+        // Child allocations are not included in the optional Rust allocator counts.
+        batch(
+            &scenario,
+            "node-startup-execute",
+            samples,
+            iterations,
+            || {
+                let output = application_node(black_box(&js));
+                assert_eq!(output, expected, "{scenario}");
+                output.len()
+            },
+        );
+        if let Some(dir) = dump {
+            fs::write(dir.join(format!("{scenario}.js")), js)?;
+        }
+    }
+    Ok(())
+}
+
+fn application_benchmarks(
+    samples: usize,
+    iterations: usize,
+    dump: Option<&PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    for (name, source) in primitive_sources() {
+        application_phases(name, source, samples, iterations, dump)?;
+    }
+    application_phases("collections", COLLECTION, samples, iterations, dump)?;
+    let mut source = String::from(
+        "(def factor 2) (defn twice [x] (* factor x)) (defmacro doubled [x] (twice x))\n",
+    );
+    // Bounded generated source provides 24 ordinary helpers used only in expansion.
+    for n in 0..24 {
+        source.push_str(&format!("(def constant{n} {n}) (defn helper{n} [x] (+ constant{n} x)) (defmacro macro{n} [x] (helper{n} x))\n"));
+    }
+    source.push_str("[(doubled 21) (twice 21)");
+    for n in 0..24 {
+        source.push_str(&format!(" (macro{n} 1)"));
+    }
+    source.push(']');
+    application_phases("macro-helpers", &source, samples, iterations, dump)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let (mut samples, mut iterations) = (9, 32);
-    let (mut counted, mut primitives) = (false, false);
+    let (mut counted, mut primitives, mut application_only) = (false, false, false);
     let mut dump = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -155,11 +273,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--iterations" => iterations = args.next().ok_or("missing iterations")?.parse()?,
             "--allocations" => counted = true,
             "--primitive-only" => primitives = true,
+            "--application-only" => application_only = true,
             "--dump" => dump = Some(PathBuf::from(args.next().ok_or("missing dump directory")?)),
             "--bench" => {}
             "--help" | "-h" => {
                 println!(
-                    "compiler [--samples N>=9] [--iterations N] [--allocations] [--primitive-only] [--dump DIR]"
+                    "compiler [--samples N>=9] [--iterations N] [--allocations] [--primitive-only] [--application-only] [--dump DIR]"
                 );
                 return Ok(());
             }
@@ -179,6 +298,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "scenario,phase,sample,iterations,elapsed_ns,allocations,reallocations,requested_bytes,checksum"
     );
+    if application_only {
+        return application_benchmarks(samples, iterations, dump.as_ref());
+    }
     for (name, source) in primitive_sources() {
         phases(name, source, samples, iterations);
         if let Some(dir) = &dump {

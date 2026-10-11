@@ -1924,8 +1924,20 @@ pub struct LocalBinding {
     pub source_index: usize,
 }
 
+/// Compilation demand is recorded separately from application reachability.
+/// A generation can be analyzed for final output without ever being executed
+/// by a macro. These owned facts contain no evaluator handles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompilationUse {
+    pub name: String,
+    pub generation: usize,
+    pub analyses: usize,
+    pub emissions: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
+    pub compilation_uses: Vec<CompilationUse>,
     pub exprs: Vec<Expr>,
     pub locals: Vec<LocalBinding>,
     pub recur_targets: Vec<RecurTarget>,
@@ -2092,6 +2104,7 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
 
 fn empty_program() -> Program {
     Program {
+        compilation_uses: Vec::new(),
         exprs: Vec::new(),
         locals: Vec::new(),
         recur_targets: Vec::new(),
@@ -2274,6 +2287,9 @@ fn analyze_input(
     analyzer.read_discards_before(source.len())?;
     analyzer.drain_deferred()?;
     analyzer.collect_expression_warnings();
+    if snapshot.is_none() && let Some(session) = analyzer.macro_host.session_handle() {
+        analyzer.program.compilation_uses = session.compilation_uses();
+    }
     Ok(analyzer.program)
 }
 
@@ -2412,6 +2428,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
         program = analyzer.program;
         globals = analyzer.globals;
     }
+    program.compilation_uses = macro_host.session_handle().map_or_else(Vec::new, |s| s.compilation_uses());
     program.root = ExprId(program.exprs.len());
     program.exprs.push(Expr {
         kind: ExprKind::Do(roots),
