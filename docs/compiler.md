@@ -1331,7 +1331,7 @@ The compiler's supported `&env` map follows the pinned CLJS analyzer:
 | Key | Supported value |
 | --- | --- |
 | `:locals` | Symbol-to-binding map for visible lexical names. Each record contains `:name`, `:form`, `:op :binding`, `:local :let/:arg/:fn`, and stable per-program `:light-cljs/id`. |
-| Binding details | Let/argument records have `:binding-form? true`; arguments have zero-based `:arg-id`; shadowed bindings appear under `:shadow`. Fn self bindings omit `:binding-form?`. |
+| Binding details | Let/argument records have `:binding-form? true`; arguments have zero-based `:arg-id`; repeated shadowing retains each previous record under `:shadow`. Fn self bindings omit `:binding-form?`. `:light-cljs/id` has namespace `light-cljs` and name `id`, including in shadow records. |
 | `:context` | `:expr`, `:statement`, or `:return`. Fn bodies and value-position let bodies return; a multi-form value-position `do` also has a returning tail. |
 | `:ns` | `:name` caller symbol and `:doc`; `:requires` maps ordinary required namespaces and aliases to their namespace identities; `:uses` maps referred and renamed macro names to their declaring namespaces. `:require-macros` and `:use-macros` remain empty compatibility descriptions, not accepted import syntax. |
 | `:line`, `:column` | One-based call-site location; `&form` also retains original metadata and compiler source provenance. |

@@ -977,6 +977,49 @@ fn overload_macro_environments_keep_method_parameters_and_rest_argument_identity
 }
 
 #[test]
+fn imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain() {
+    let s = Sources::new();
+    s.write(
+        "env/tools.cljs",
+        r#"(ns env.tools)
+(def hits (atom 0))
+(defmacro capture []
+  (swap! hits inc)
+  (list 'quote
+    [(get-in &env [:locals 'x :light-cljs/id])
+     (get-in &env [:locals 'x :shadow :light-cljs/id])
+     (get-in &env [:locals 'x :shadow :shadow :light-cljs/id])
+     (get-in &env [:locals 'x :shadow :shadow :shadow :light-cljs/id])
+     (get-in &env [:locals 'x :shadow :shadow :shadow :shadow])
+     (get-in &env [:locals 'x :shadow :shadow :arg-id])
+     (:context &env) (get-in &env [:ns :name])
+     (get-in &env [:ns :requires 'e])
+     (:line &env) (:column &env) &form @hits]))"#,
+    );
+    s.write(
+        "app.cljs",
+        "(ns app (:require [env.tools :as e]))
+(pr-str
+ [(let* [x 10]
+    ((fn* [x]
+       (let* [x 30 x 40]
+         (e/capture))) 20))
+  @e/hits])",
+    );
+    let expected = "[[3 2 1 0 nil 0 :return app env.tools 6 10 (e/capture) 1] 0]";
+    let mut h = MacroHost::new();
+    for _ in 0..2 {
+        let js = s.compile_host("app", &mut h).unwrap();
+        assert_eq!(result(&js), format!("{expected}\n"));
+        // Application evaluation owns a fresh heap: macro mutation is quoted
+        // into the expansion, while the imported application atom stays zero.
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        let value = e.evaluate_js(&js).unwrap();
+        assert_eq!(e.string(value).unwrap(), expected);
+    }
+}
+
+#[test]
 fn macros_emit_mutual_letfn_with_the_complete_lexical_environment() {
     let mut h = host(
         r#"(ns macros)
@@ -1425,6 +1468,52 @@ mod javascript_form_bridge {
         assert_eq!(
             e.print(execute_form(&e, &output)).unwrap(),
             "[(macros/identity) 2 1 0 :return tools 1 8]"
+        );
+        assert_eq!(
+            output.children()[1].children()[0].span().bytes(),
+            call.span().bytes()
+        );
+    }
+    #[test]
+    fn qualified_environment_keys_keep_a_long_shadow_chain_and_binding_shape() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("(outer (macros/identity))").children()[1].clone();
+        let mut host = MacroHost::new();
+        let env = host
+            .compiler_environment(
+                "app",
+                ExprContext::Return,
+                &[
+                    ("x".into(), 5, "fn", None),
+                    ("x".into(), 6, "arg", Some(0)),
+                    ("x".into(), 7, "let", None),
+                    ("x".into(), 8, "let", None),
+                ],
+                &[],
+                &[],
+                (1, 8),
+            )
+            .unwrap();
+        let f = function(
+            &e,
+            r#"(fn* [form env]
+              (let* [a (get-in env [:locals 'x])
+                     b (:shadow a) c (:shadow b) d (:shadow c)]
+                (list 'quote
+                  [form (mapv :light-cljs/id [a b c d]) (:shadow d)
+                   (mapv :local [a b c d]) (mapv :binding-form? [a b c d])
+                   (:arg-id c) (mapv :op [a b c d])
+                   (mapv :name [a b c d]) (mapv :form [a b c d])
+                   (mapv (fn [k] [(namespace k) (name k)])
+                     (filter (fn [k] (= "id" (name k))) (keys a)))])))"#,
+        );
+        let output = host
+            .expand_javascript(&e, f, &call, &env, origin(&call))
+            .unwrap();
+        let app = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            app.print(execute_form(&app, &output)).unwrap(),
+            "[(macros/identity) [8 7 6 5] nil [:let :let :arg :fn] [true true true nil] 0 [:binding :binding :binding :binding] [x x x x] [x x x x] [[\"light-cljs\" \"id\"]]]"
         );
         assert_eq!(
             output.children()[1].children()[0].span().bytes(),

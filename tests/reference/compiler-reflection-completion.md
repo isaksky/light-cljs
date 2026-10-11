@@ -91,6 +91,11 @@ existing warnings. The repository-wide formatting check also reports existing
 formatting drift; no formatting pass is claimed and unrelated files were not
 rewritten.
 
+Subsequent reader work (`ff3b6b3`) repaired the qualified environment-key
+construction. [Qualified identity evidence](compiler-macros.md#qualified-local-identities-light-cljs-131)
+records light-cljs-131's passing original regression and deeper imported-macro
+and shadow-chain checks. The counts above retain the original reflection run.
+
 The focused host/session/core-helper rerun passed 5 + 20 + 3 tests. Source
 reflection passed all 7 tests, and relevant protocol/record/eduction suites
 passed 5 + 6 + 2 tests with one external oracle check explicitly ignored.

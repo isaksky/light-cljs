@@ -47,6 +47,48 @@ macro APIs keep their separate flat environment semantics.
 
 ## Structured JavaScript bridge execution provenance
 
+### Qualified local identities (light-cljs-131)
+
+The original nested-call regression passes at starting commit `bc46624`: reader
+work in `ff3b6b3` already changed `MacroHost::compiler_environment` to split
+qualified keyword names into namespace/name parts. This task retains that local
+construction repair and canonical keyword equality/hash. The historical bounded
+environment contract remains owned by light-cljs-107; light-cljs-131 supplies
+the qualified-key regression and deeper source/bridge evidence. These are local
+contract fixtures, not upstream analyzer AST or full-language ledger passes.
+
+Two additional hand-authored fixtures in `tests/compiler_macros.rs` execute:
+
+- `javascript_form_bridge::qualified_environment_keys_keep_a_long_shadow_chain_and_binding_shape`
+  observes IDs `[8 7 6 5]` through four bindings, the terminating nil shadow,
+  let/argument/fn kinds, binding flags, argument index, names/forms and binding
+  operations. Inspecting the actual key returns `["light-cljs" "id"]`. The
+  returned nested call retains its original source span and executes in a fresh
+  application evaluator.
+- `imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain`
+  imports an ordinary `.cljs` macro and observes
+  `[[3 2 1 0 nil 0 :return app env.tools 6 10 (e/capture) 1] 0]` in both Node and
+  fresh QuickJS application heaps. The quoted macro counter is one; the imported
+  application atom remains zero. Recompiling with the same host repeats those
+  literal observations, proving that macro state is fresh on reuse. IDs,
+  argument index, context, alias, caller namespace, call form and location come
+  from the actual analyzer environment.
+
+The unchanged exact regression still observes
+`[(macros/identity) 2 1 0 :return tools 1 8]` and checks the nested call's span.
+Verification:
+
+```sh
+cargo test --locked --test compiler_macros javascript_form_bridge::form_and_bounded_environment_use_actual_nested_call_and_shadow_ids -- --exact --nocapture
+cargo test --locked --test compiler_macros --test compiler_reader --test namespaces --test compiler_namespace_completion --test provenance --quiet
+git diff --check
+```
+
+All 156 relevant tests passed: 104 macro, 12 reader, 28 namespace, 10 namespace
+completion and two provenance cases. The exact original regression and diff
+whitespace check also passed. No new production change or performance claim is
+needed for this acceptance coverage.
+
 `tests/compiler_macros.rs::javascript_form_bridge` contains original,
 hand-authored fixtures for light-cljs's compiler-owned bridge, rather than
 imported upstream tests. They execute Rust-compiled macro functions in the pinned
