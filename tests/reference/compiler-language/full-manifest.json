@@ -44,7 +44,7 @@
       "upstream-internals": 357,
       "reference-harness": 5
     },
-    "obligations": 5228,
+    "obligations": 5244,
     "public_api_arities": 1327,
     "intended_assertions": 3805
   },
@@ -1399,7 +1399,7 @@
   ],
   "scope": "intended-language",
   "generator_sha256": "e644453d3f345a835cdfa16cbe484feeca24ef324a62dc9cef4771d4a66ab511",
-  "obligations_sha256": "e67d64836a3728be85ba23436e1b81d0c76f788bcad07ad265ae09c7a0abbde9",
+  "obligations_sha256": "dada468b73c097bd2a4dd62a8020ebb655096bc1abf52808c099bf0d0456fb9d",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,11 +1440,11 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "ac9d12048cc5d2efa815cdbe53efbf9fee12ee8026e3fc5ed1ed1c55bb13e5a3"
+      "sha256": "44ffaec60fc8e3f09b1e923c2461e46ea766878de7853063a074c5e68638930b"
     },
     {
       "path": "src/core_var_metadata.tsv",
-      "sha256": "280bbaf3959cb94922823abfe6e3bce39d173a5ebf9e5d0c13fdd57c7d50c051"
+      "sha256": "06453bad2e14bf45cb862c728f4970130286d695363d2aff09ad4e9cf5d80a28"
     },
     {
       "path": "tests/reference/sci/runtime.tsv",
@@ -1479,7 +1479,7 @@
     "printing-reflection": 212,
     "sorted-collections": 202,
     "transient-collections": 126,
-    "public-collection-construction": 46,
+    "public-collection-construction": 62,
     "multimethods-hierarchies": 77,
     "public-construction": 21,
     "regex": 46,

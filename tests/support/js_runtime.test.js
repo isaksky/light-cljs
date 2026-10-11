@@ -1247,7 +1247,12 @@ console.log('transient ownership, persistence, protocol and lookup assertions pa
 }
 
 // Public field accessors preserve brands even when host objects copy prototypes.
-for (const [Type, fields] of [[c.Symbol, ['name', '_hash', '_meta']], [c.Cons, ['first', '__hash', 'meta']]]) {
+for (const [Type, fields] of [
+  [c.Symbol, ['name', '_hash', '_meta']], [c.Cons, ['first', '__hash', 'meta']],
+  [c.Keyword, ['_hash']], [c.List, ['__hash']], [c.Repeat, ['next', '__hash']],
+  [c.Cycle, ['current', '_next']], [c.Iterate, ['seed', 'next']],
+  ...['PersistentVector', 'Subvec', 'ChunkedSeq', 'PersistentQueue', 'PersistentArrayMap', 'PersistentHashMap', 'PersistentHashSet'].map(name => [c[name], ['__hash']])
+]) {
   for (const field of fields) {
     const forged = Object.create(Type.prototype);
     assert.throws(() => { forged[field] = 9; }, /Expected public core value/);

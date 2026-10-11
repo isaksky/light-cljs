@@ -1,6 +1,6 @@
 //! Public positional construction in both canonical execution phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {
@@ -96,7 +96,16 @@ fn public_constructor_api_arities_and_macro_phase_execute() {
 #[test]
 fn unsupported_constructor_results_keep_expansion_diagnostics_and_recover() {
     let mut host = MacroHost::new();
-    for expression in ["(Reduced. 42)", "(->Reduced 42)", "Cons", "->Symbol"] {
+    for expression in [
+        "(Reduced. 42)",
+        "(->Reduced 42)",
+        "Cons",
+        "->Symbol",
+        "PersistentVector",
+        "->PersistentHashMap",
+        "Cycle",
+        "->Iterate",
+    ] {
         let source = format!("(defmacro bad [] {expression}) (bad)");
         let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
             .unwrap_err()
@@ -126,4 +135,55 @@ fn constructors_report_invalid_arities_and_tail_arguments_without_overflow() {
        (message #(next (Cons. nil 1 42 nil)))])"#,
         "[\"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 6\" \"42 is not ISeqable\"]",
     );
+}
+
+#[test]
+fn collection_constructor_phase_roots_and_bounded_repetition() {
+    both(
+        r#"(def counter (atom 0))
+        (defn witness []
+          (let [n (swap! counter inc) x (->List nil n nil 1 nil)
+                k (apply ->Keyword [nil "key" "key" nil])
+                q (->PersistentQueue nil 1 x [] nil)]
+            [(first x) (get (->PersistentArrayMap nil 1 #js [k n] nil) k) (peek q)]))
+        (defmacro phase [] (witness))
+        [(phase) @counter (witness) @counter (phase) @counter]"#,
+        "[[1 1 1] 0 [1 1 1] 1 [2 2 2] 1]",
+    );
+    both(
+        "(defmacro form [] (->List nil '+ (list 1 2) 3 nil)) (form)",
+        "3",
+    );
+    both(
+        r#"(loop [n 1000 total 0]
+          (if (zero? n) total
+            (let [x (PersistentVector. nil 3 5 nil #js [1 2 3] nil)
+                  s (->Subvec nil x 1 3 nil)
+                  m (apply ->PersistentArrayMap [nil 1 #js [:a n] nil])
+                  l (List. nil n nil 1 nil)]
+              (recur (dec n) (+ total (count l) (reduce + s) (get m :a))))))"#,
+        "506500",
+    );
+}
+
+#[test]
+fn explicit_collection_slots_and_protocol_membership_survive_construction() {
+    let source = r#"(let [c (Cycle. nil (list 1 2) nil (list 1 2) nil)
+          i (Iterate. nil inc 40 7 nil) r (Repeat. nil 2 9 nil nil)
+          v (PersistentVector. nil 1 5 nil #js [1 2] nil)
+          h (hash-map :a 1 :b 2)
+          copy (PersistentHashMap. nil 2 (.-root h) false 99 nil)]
+        (assert (not (satisfies? IHash c))) (assert (not (satisfies? IEquiv c)))
+        (assert (not (satisfies? IStack c))) (assert (not (satisfies? IIterable c)))
+        (assert (not (satisfies? IHash i))) (assert (not (satisfies? IEquiv i)))
+        (assert (not (satisfies? IStack r))) (assert (not (satisfies? IIterable r)))
+        (assert (number? (hash c))) (assert (number? (hash i)))
+        (assert (satisfies? ASeq (ChunkedSeq. [1 2] #js [1 2] 0 0 nil nil)))
+        (assert (= 1 (count v))) (assert (= [1 2] (vec (seq v))))
+        (assert (= 1 (reduce + v))) (assert (= 3 (reduce + 0 v)))
+        (assert (= -2 (count (Subvec. nil [0 1 2 3] 3 1 nil))))
+        (assert (= h copy)) (assert (= 99 (.-nil-val copy)))
+        (assert (= #{:a :b} (PersistentHashSet. nil h nil))) true)"#;
+    both(source, "true");
+    both(&format!("(defmacro slots [] {source}) (slots)"), "true");
 }
