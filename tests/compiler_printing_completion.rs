@@ -85,7 +85,7 @@ fn length_level_readability_metadata_and_option_overrides() {
                         (binding [*print-length* 1] (pr-str #js [1 2])) " "
                         (binding [*print-length* 0] (pr-str #js {:a 1})))))
         (assert (= "[[1 #] {:a #}]" (binding [*print-level* 2] (pr-str [[1 [2]] {:a [3]}]))))
-        (assert (= "# # # # #" (binding [*print-level* 0] (pr-str [1] {:a 1} #{1} #js [1] #js {:a 1}))))
+        (assert (= "# # # # #js #" (binding [*print-level* 0] (pr-str [1] {:a 1} #{1} #js [1] #js {:a 1}))))
         (assert (= "[1 2]" (binding [*print-length* 0] (pr-str-with-opts [[1 2]] {:readably true}))))
         (assert (= "[1 …] {:a 1, …} #{1 …} #js [1 …]"
                    (pr-str-with-opts [[1 2] (array-map :a 1 :b 2) (sorted-set 1 2) #js [1 2]]
@@ -108,6 +108,72 @@ fn length_level_readability_metadata_and_option_overrides() {
       [(printing-witness) (printing-macro-witness)]"##,
         "[true true]",
     );
+}
+
+#[test]
+fn javascript_object_prefixes_survive_depth_limits_in_both_phases_and_sessions() {
+    const SOURCE: &str = r##"
+      (def prefix-calls (atom 0))
+      (defn prefix-observations []
+        (swap! prefix-calls inc)
+        (let [settings [*print-level* *print-length* *print-readably* *print-meta*]
+              observations
+              [(binding [*print-level* 0]
+                 (pr-str [1] {:a 1} #{1} #js [1] #js {:a 1}))
+               (binding [*print-level* 1]
+                 (pr-str [#js {:a 1} #js [1] {:a 1} [1] #{1}]))
+               (binding [*print-level* 2]
+                 (pr-str [#js {:a #js {:b 1} :b #js [1]}]))
+               (binding [*print-level* 1 *print-length* 1 *print-readably* false]
+                 (pr-str #js {:a #js {:b "x"} :b "y"}))
+               (binding [*print-level* 0]
+                 (pr-str-with-opts [#js {:a 1} #js [1]] {:readably true :print-length 0}))
+               (binding [*print-meta* true *print-level* 1]
+                 (pr-str (with-meta [#js {:a 1}] {:tag "v"})))]]
+          (assert (= "printer" (try
+            (binding [*print-level* 1 *print-length* 0 *print-readably* false *print-meta* true]
+              (pr-str-with-opts [#js {:a #js {:b 1}}]
+                {:alt-impl (fn [x writer opts]
+                  (if (keyword? x) (throw (js/Error. "printer"))
+                    ((:fallback-impl opts) x writer opts)))}))
+            (catch js/Error e (.-message e)))))
+          (conj observations
+            (= settings [*print-level* *print-length* *print-readably* *print-meta*])
+            (pr-str #js {:a 1} #js [1]))))
+      (defmacro prefix-macro [] (prefix-observations))
+      [(prefix-macro) @prefix-calls (prefix-observations) @prefix-calls]
+    "##;
+    const OBSERVATIONS: &str = r##"["# # # # #js #" "[#js # # # # #]" "[#js {:a #js #, :b #}]" "#js {:a #js #, ...}" "#js # #" "^{:tag \"v\"} [#js #]" true "#js {:a 1} #js [1]"]"##;
+    let expected = format!("[{OBSERVATIONS} 0 {OBSERVATIONS} 1]");
+    both(SOURCE, &expected);
+
+    let mut session = light_cljs::EvalSession::new(light_cljs::EvalOptions::default()).unwrap();
+    for iteration in 0..2 {
+        let source = if iteration == 0 {
+            SOURCE
+        } else {
+            "[(prefix-macro) @prefix-calls (prefix-observations) @prefix-calls]"
+        };
+        let result = session.eval_string(source).unwrap().value;
+        assert_eq!(
+            session.print(result).unwrap(),
+            format!(
+                "[{OBSERVATIONS} {iteration} {OBSERVATIONS} {}]",
+                iteration + 1
+            )
+        );
+        session.release(result).unwrap();
+        let settings = session
+            .eval_string("[*print-level* *print-length* *print-readably* *print-meta*]")
+            .unwrap()
+            .value;
+        assert_eq!(session.print(settings).unwrap(), "[nil nil true false]");
+        session.release(settings).unwrap();
+    }
+    let mut fresh = session.fresh_session().unwrap();
+    let result = fresh.eval_string(SOURCE).unwrap().value;
+    assert_eq!(fresh.print(result).unwrap(), expected);
+    fresh.release(result).unwrap();
 }
 
 #[test]

@@ -4355,10 +4355,12 @@
     const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
     const ns = truth(core.printNamespaceMaps) && names.length && names[0]?.namespace;
     const lifted = !prefix && ns && names.every(name => name?.namespace === ns);
+    // JavaScript object tags precede the map printer's depth suppression.
+    if (prefix) write(writer, prefix);
     return prSequentialWriter(writer, (entry, target, opts) => {
       const key = lifted ? keywords.has(entry.key) ? keyword(null, name(entry.key)) : symbol(null, name(entry.key)) : entry.key;
       printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
-    }, prefix + (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
+    }, (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
   function printWriter(value, writer, options) {
     const alt = get(options, keyword(null, "alt-impl"));
