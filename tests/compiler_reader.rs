@@ -1,4 +1,4 @@
-use light_cljs::{MacroHost, MacroImport, compile, compile_with_macros};
+use light_cljs::{MacroHost, compile, compile_with_macros};
 use std::io::Write;
 use std::process::{Command, Stdio};
 fn run(js: &str) -> String {
@@ -90,17 +90,9 @@ fn reader_values() {
 #[test]
 fn macro_values_keep_semantic_types() {
     let mut h = MacroHost::new();
-    h.context_mut().eval_string(r#"(ns macros) (defmacro same [x] x) (defmacro value [] [#inst "2000" #uuid "1-1-1-1-1" #"a"])"#).unwrap();
-    h.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "macros".into(),
-            alias: Some("m".into()),
-            refers: vec![],
-        }],
-    )
-    .unwrap();
-    let source = r#"(= [(inst? (nth (m/value) 0)) (uuid? (nth (m/value) 1)) (regexp? (nth (m/value) 2)) (m/same (#(+ % %2) 1 2))] [true true true 3])"#;
+    h.disable_native_evaluation();
+    let source = r#"(defmacro same [x] x) (defmacro value [] [#inst "2000" #uuid "1-1-1-1-1" #"a"])
+        (= [(inst? (nth (value) 0)) (uuid? (nth (value) 1)) (regexp? (nth (value) 2)) (same (#(+ % %2) 1 2))] [true true true 3])"#;
     assert_eq!(run(&compile_with_macros(source, &mut h).unwrap()), "true\n");
 }
 #[test]
@@ -123,38 +115,30 @@ fn invalid_reader_syntax_stays_located() {
 
 #[test]
 fn configured_readers_run_once_and_keep_effect_order_including_discards() {
-    use light_cljs::interpreter::{Arity, Name, NativeDefinition, NativeEffects, NativeMetadata};
-    use std::sync::Mutex;
-    static SEEN: Mutex<Vec<i64>> = Mutex::new(Vec::new());
-    static READER: NativeDefinition = NativeDefinition {
-        metadata: NativeMetadata {
-            namespace: "test",
-            name: "reader",
-            arity: Arity::Exact(1),
-            effects: NativeEffects::Host,
-            errors: &[],
-        },
-        callback: |_, args| {
-            let light_cljs::interpreter::ValueView::Integer(n) = args[0].inspect() else {
-                panic!()
-            };
-            SEEN.lock().unwrap().push(n);
-            Ok(args[0].clone())
-        },
-    };
+    use light_cljs::compiler_data::Name;
     let mut host = MacroHost::new();
-    host.context_mut()
-        .register_data_reader(Name::new(Some("test"), "tag"), &READER);
-    let source = "#_ #test/tag 1 (let [x #test/tag 2] (if false #test/tag 3 x)) #_ #test/tag 4";
-    assert_eq!(run(&compile_with_macros(source, &mut host).unwrap()), "2\n");
-    assert_eq!(*SEEN.lock().unwrap(), [1, 2, 3, 4]);
-    host.context_mut()
-        .register_data_reader(Name::new(None, "inst"), &READER);
+    host.disable_native_evaluation();
+    // Reader functions own counters in the fresh canonical JS compilation heap.
+    // Discarded and untaken forms are still read in source order; host reuse
+    // preserves reader configuration and creates fresh mutable reader roots.
+    let reader = "(let [seen (atom 0)] (fn [x] [x (swap! seen inc)]))";
+    host.register_compiler_data_reader(Name::new(Some("test"), "tag"), reader)
+        .unwrap();
+    let source = "#_ #test/tag 1 (assert (= [2 2] (let [x #test/tag 2] (if false #test/tag 3 x)))) #_ #test/tag 4 (= [5 5] #test/tag 5)";
+    assert_eq!(
+        run(&compile_with_macros(source, &mut host).unwrap()),
+        "true\n"
+    );
+    assert_eq!(
+        run(&compile_with_macros("(= [5 1] #test/tag 5)", &mut host).unwrap()),
+        "true\n"
+    );
+    host.register_compiler_data_reader(Name::new(None, "inst"), "(fn [x] x)")
+        .unwrap();
     assert_eq!(
         run(&compile_with_macros("#inst 5", &mut host).unwrap()),
         "5\n"
     );
-    assert_eq!(*SEEN.lock().unwrap(), [1, 2, 3, 4, 5]);
     assert_eq!(
         run(&compile_with_macros("(= ::x :cljs.user/x)", &mut host).unwrap()),
         "true\n"
@@ -208,15 +192,10 @@ fn compiler_forms_and_ir_survive_host_teardown_without_native_roots() {
     let input = String::from(r#"^:kept {:z [#js [1] "\ud800"] :a #uuid "1-1-1-1-1"}"#);
     let source = Source::new("owned.cljs", input.clone());
     let mut host = MacroHost::new();
-    host.context_mut().collect_garbage();
-    let before = host.context_mut().memory_stats();
+    host.disable_native_evaluation();
     let form = host.read_compiler_form(&source).unwrap().unwrap();
     assert_eq!(form.span().source().id(), source.id());
-    // Keeping the compiler arena cannot root native reader units or sources.
-    host.context_mut().collect_garbage();
-    let after = host.context_mut().memory_stats();
-    assert_eq!(after.executable_units, before.executable_units);
-    assert_eq!(after.sources, before.sources);
+    // Owned compiler forms outlive the entire host without native roots.
     let program_source = format!("(count {input})");
     let program = light_cljs::analyze_with_macros(
         &program_source,

@@ -1,11 +1,18 @@
 # Pinned JVM SCI reference corpus
 
-The [interpreter profile](../../../docs/interpreter.md) records current status,
-portable semantics, deliberate differences and exclusions. The 2411 committed
-rows in `tests/fixtures/sci-outcomes.tsv` are **pinned reference expectations**. Ordinary Rust tests execute every row
-with exact native results, effects, stdout and stderr, while checking 23 explicit
-differences separately. They also validate lossless encoding, provenance and pin
-without Java, network, or `research/`.
+The 2,475 committed rows in `tests/fixtures/sci-outcomes.tsv` are **historical
+pinned JVM SCI observations**, preserved with their original source and provenance.
+The native coverage sections below describe historical milestones; their native
+successes do not establish compiler-backed evaluator compatibility.
+
+[Evaluator accounting](evaluator-accounting.md) describes the current execution
+gate: every original row has a separate executable disposition. There are 1,484
+matching observations (1,180 original-source portable rows and 304 explicit
+source adaptations), 906 nonpassing gaps and 85 intentional retirements.
+Gap/retirement assertions are accounting regressions, never conformance passes.
+The corpus/protocol/provenance checks remain offline and require no Java,
+network or `research/`. See the [evaluator profile](../../../docs/evaluator.md)
+for the production execution API.
 
 ## Regenerate or compare explicitly
 

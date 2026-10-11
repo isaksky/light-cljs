@@ -2,9 +2,10 @@
 
 This reference describes the **current implementation**. Macros and demanded
 ordinary helpers execute JavaScript emitted by this compiler through rquickjs.
-The [evaluator migration](evaluator-migration.md) also covers the remaining
-native evaluation consumers. Explicit native embedding adapters remain available
-until that migration removes them.
+Production evaluation consumers use the [compiler-backed session API](evaluation.md).
+The [migration gate](../tests/reference/evaluator-migration/README.md) rejects every
+legacy native execution entrypoint while checking the supported compiler/evaluation
+paths. Explicit legacy embedding adapters await physical removal under light-cljs-115.
 
 The compiler supports small programs with lexical closures, mutable globals,
 source namespaces, and JavaScript interop. The two-namespace example
@@ -58,10 +59,9 @@ Reading, seed expansion and namespace/core metadata inspection need neither a
 native Context nor a JavaScript runtime. `source_provider` owns the load request,
 input and error contracts separately from eager native loading.
 
-`native_form_adapter` remains an explicit temporary macro execution bridge.
-It converts structured data directly and retains source identity/nested expansion
-origins. Explicit native custom reader callbacks also use this adapter during
-migration. Filesystem compiler imports use the same `.cljs`/`.cljc` namespace
+`native_form_adapter` remains only for explicitly selected legacy host callbacks.
+Production macros use the structured compiler/QuickJS form bridge; configured
+compiler readers execute canonical JavaScript functions over immutable data. Filesystem compiler imports use the same `.cljs`/`.cljc` namespace
 loader for both phases and never read `.clj` companions. Native public source/form
 APIs remain available until `light-cljs-115` deletes the adapter and native
 compatibility storage. The evaluator boundary executes compiled macro/helper units.
@@ -293,7 +293,7 @@ runtime size/startup observations.
 ## Reader forms and runtime literals
 
 The compiler expands `#()`, `%`, `%n`, `%&`, `@`, `#'`, metadata, namespaced maps,
-and syntax quote/unquote through its native semantic reader boundary. Reader
+and syntax quote/unquote through its compiler-owned semantic reader boundary. Reader
 aliases include runtime and explicit macro aliases; macro aliases take precedence.
 Anonymous arguments have fresh identities, nested shorthand is rejected, and
 rest arguments are nil when empty. Syntax quote qualifies symbols and preserves
@@ -719,8 +719,8 @@ Traversal is iterative, uses direct immutable storage offsets and allocates no
 captured closure or seq wrapper per step. Map/set traversal may materialize O(n)
 entry/member storage once; vectors/lists/seq views need O(1) traversal state.
 Temporary storage stays local and private brands use weak maps. Runtime execution
-uses host resources/GC and the existing test subprocess timeout; the current
-native macro host has separate fuel/cancellation limits. `reduce-kv` dispatches
+uses host resources/GC and the existing test subprocess timeout; compiled macros
+use shared QuickJS polling, cancellation, memory, stack and deadline controls. `reduce-kv` dispatches
 `IKVReduce` and supports owned maps and vectors. `transduce` supports both
 three- and four-argument forms; `completing` adds completion to a step function,
 and `ensure-reduced` preserves an existing Reduced marker. Without an explicit
@@ -810,20 +810,20 @@ Evaluating output produces the program's value; explicit host calls such as
 `js/console.log` can print.
 
 List analysis dispatches primitive special forms before touching binding vectors
-or other operands. The macro hook then resolves and executes macros in the native
-Rust interpreter, with the current lexical environment and expression context,
-before ordinary call analysis. It expands each call once, then analyzes its result
-and any nested calls. Lexical bindings shadow unqualified macros. Explicit macro
-imports take precedence over same-named runtime definitions; runtime definitions
-shadow the fallback core macro names. Qualified macro calls bypass simple lexical
-shadowing. `cljs.core/` and `clojure.core/` select the same supported native core
-expanders; this does not expose interpreter functions to the JS runtime.
-Unknown names remain unresolved.
+or other operands. The macro hook resolves source/core macros, compiles their
+bodies through this Rust compiler and executes the emitted JavaScript in QuickJS
+with the current lexical environment and expression context. Each valid generation
+expands once; semantic IR is shared between compile-time and application emission.
+Lexical bindings shadow unqualified macros; qualified macro calls retain explicit
+identity. A namespace binding cannot be both macro and value. Runtime definitions
+can shadow fallback core macro names. `cljs.core/` and `clojure.core/` select the
+same compiler bootstrap operations. Unknown names remain unresolved.
 
 The parser remains unchanged. Original calls are lowered from their retained
 `SyntaxTree` into shared owned `Form` data. Returned data is appended directly to
 a private copy of the syntax arena, with indexed spelling/value/Form side tables;
-there is no printing, reparsing, JVM macro process, or JS macro executor. Generated
+there is no printing/reparsing representation, JVM macro process, or second
+language evaluator. QuickJS executes this compiler's emitted macro functions. Generated
 forms retain their call-site spans and macro attribution. Original input objects
 retained in the result keep available source provenance. Scalar/generated leaves
 may use the entire call span. Analysis never mutates the caller's syntax tree.
@@ -1251,15 +1251,13 @@ compile-time roots. Definition snapshots preserve already-expanded code inside
 that compilation; edits, import changes and conditional selection cannot reuse
 stale application IR from a previous compilation.
 
-The separate native embedding adapter remains available to explicit host callers.
-Embedders may use `host.context_mut()` to evaluate/register macro code or configure
-native limits/effects, then `set_imports(caller, Vec<MacroImport>)` to validate
-already-loaded imports. `host.register_macro(&NativeDefinition)` installs a host
-macro using the same ABI: callback arguments are `&form`, `&env`, then unevaluated
-source arguments; declared arity includes those two implicit arguments. Native
-namespaces registered this way do not require filesystem sources. The lower-level
-`Context::expand_macro_call` accepts an explicitly resolved macro Var and a custom
-environment without applying SCI's flat lexical-map convention.
+Source macros are ordinary `.cljs`/`.cljc` declarations imported through
+`:require`. Embedding functions and reader capabilities use
+[`EvalOptions` and `EvalSession`](evaluation.md). `context_mut`, `register_macro`,
+`NativeDefinition`, native import setup and native macro timing APIs are historical
+adapter contracts awaiting removal under light-cljs-115; they are excluded from
+the production migration gate. Their dedicated adapter tests retain the old ABI
+observations separately.
 
 The compiler's supported `&env` map follows the pinned CLJS analyzer:
 
@@ -1269,10 +1267,10 @@ The compiler's supported `&env` map follows the pinned CLJS analyzer:
 | Binding details | Let/argument records have `:binding-form? true`; arguments have zero-based `:arg-id`; shadowed bindings appear under `:shadow`. Fn self bindings omit `:binding-form?`. |
 | `:context` | `:expr`, `:statement`, or `:return`. Fn bodies and value-position let bodies return; a multi-form value-position `do` also has a returning tail. |
 | `:ns` | `:name` caller symbol and `:doc`; `:requires` maps ordinary required namespaces and aliases to their namespace identities; `:uses` maps referred and renamed macro names to their declaring namespaces. `:require-macros` and `:use-macros` remain empty compatibility descriptions, not accepted import syntax. |
-| `:line`, `:column` | One-based call-site location, also attached to `&form` metadata. |
+| `:line`, `:column` | One-based call-site location; `&form` also retains original metadata and compiler source provenance. |
 
-`*ns*` is dynamically bound to the caller during expansion and restored afterward,
-including after failures. This is a bounded CLJS environment contract, not the
+The caller namespace is available through `(:ns &env)`. This is a bounded CLJS
+environment contract, not the
 entire upstream analyzer AST: `:defs`, inferred types, compiler internals,
 `:info`, binding source locations and other keys are absent. This compiler emits
 an expression with a returning final form; standalone/entry tails consequently
@@ -1285,17 +1283,11 @@ compilation, with 64 nested macro expansions (also the hard cap). Generated
 runtime analysis has a 128-frame nesting bound. `evaluator_options` configures
 QuickJS memory, stack, timeout and shared polling bounds. Failures discard the
 JavaScript bootstrap session; the next clean compilation creates a new one.
-Native macro calls/load operations
-also obey interpreter limits; the default host uses 1,000,000 fuel units and
-2,000,000 allocation units per interpreter operation. Embedders may lower these
-limits or supply cancellation/poll callbacks through the context. Failures are
-explicit, and no partial JS is emitted. Arbitrary native callbacks remain subject
-to the interpreter's cooperative cancellation limitations.
-
-Enable `host.context_mut().set_macro_diagnostics(true)` to retrieve
-`macro_expansion_stats()`: macro name, definition location when available,
-expansion count, generated node count and elapsed native expansion/conversion
-time. Diagnostics default off; no expansion clock reads occur in that mode.
+Failures are explicit and produce no partial application output. A caught host
+cancellation or terminal limit still aborts the compilation. Later clean
+compilations allocate fresh roots, heaps and dispatch tables while retaining host
+configuration. Native fuel/allocation units and native expansion timing counters
+are retired; they are not mapped to invented equivalent QuickJS units.
 
 ## JavaScript interop
 

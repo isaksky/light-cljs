@@ -6,10 +6,10 @@
 
 # Native interpreter compatibility profile
 
-**Current implementation reference; native evaluation is being replaced.**
+**Historical compatibility reference; production evaluation has migrated.**
 The adopted [evaluator architecture](evaluator-migration.md) uses this Rust
 compiler's emitted JavaScript in rquickjs for macros and retained evaluation,
-script, REPL and embedding consumers. The migration is not implemented yet;
+script, REPL and embedding consumers. The production consumers are implemented in `EvalSession`;
 the APIs and commands below still describe the checkout.
 
 Compiler-owned forms, names, reader transforms, namespace views and source

@@ -487,6 +487,7 @@ impl AnalyzedForm {
 
 /// Evaluate in a fresh, isolated context. The result owns its runtime values.
 pub fn eval_string(text: &str) -> Result<RootedValue, EvalError> {
+    assert_execution_enabled();
     Context::new().eval_string(text)
 }
 
@@ -506,12 +507,14 @@ impl Context {
     /// Read, analyze and execute each top-level form before reading the next.
     /// Empty input returns nil. No host capabilities are installed by default.
     pub fn eval_string(&mut self, text: &str) -> Result<RootedValue, EvalError> {
+        assert_execution_enabled();
         let source = self.source("<eval>", text);
         self.eval_source(&source)
     }
 
     /// Evaluate an owned, named source; diagnostics keep that source alive.
     pub fn eval_source(&mut self, source: &Source) -> Result<RootedValue, EvalError> {
+        assert_execution_enabled();
         let _scope = self.accounting.enter();
         let owner = self.owner.clone();
         let previous = self
@@ -579,6 +582,7 @@ impl Context {
     /// to affect analysis of later children. A nested expression is analyzed
     /// completely before any of its instructions execute.
     pub fn eval_form(&mut self, form: &Form) -> Result<RootedValue, EvalError> {
+        assert_execution_enabled();
         let _scope = self.accounting.enter();
         if self.macros.form_depth >= self.accounting.depths().1 {
             return Err(analysis_error(
@@ -724,6 +728,7 @@ impl Context {
     }
 
     pub fn eval_analyzed(&mut self, analyzed: &AnalyzedForm) -> Result<RootedValue, EvalError> {
+        assert_execution_enabled();
         let _scope = self.accounting.enter();
         if !Rc::ptr_eq(&self.owner, &analyzed.unit.owner) {
             return Err(EvalError {
@@ -782,6 +787,7 @@ impl Context {
         callee: &RootedValue,
         arguments: &[RootedValue],
     ) -> Result<RootedValue, InvokeError> {
+        assert_execution_enabled();
         let _scope = self.accounting.enter();
         self.accounting
             .check()

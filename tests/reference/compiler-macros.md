@@ -126,3 +126,70 @@ No full suite, all-features build, external pinned compiler comparison or
 platform-specific build was run for this scoped migration. The shared evaluator
 poll-budget failure/recovery case covers bounded compiled macro execution;
 public load cancellation APIs remain with evaluator consumer migration.
+
+### Compiler gate fixture migration (light-cljs-114)
+
+The historical `host(source, refers)` fixtures now create ordinary `macros.cljs`
+and `cljs/user.cljs` source namespaces and use the same namespace compiler as
+application sources. Caller-owned syntax immutability and the raw form/environment ABI also have a
+compiled source macro test. Every producer, helper, source effect and generated form in
+`tests/compiler_macros.rs` therefore executes through compiler-owned JavaScript.
+The helper preserves original caller-relative error spans by subtracting only its
+synthetic `ns` header; definition/helper paths remain in the diagnostic. The
+bridge and newer same-file/helper-demand/declaration tests keep their direct
+compiler APIs. The complete target is checked with
+`LIGHT_CLJS_DISABLE_NATIVE_EVAL=1`.
+
+The old observations were adapted where they depended on the native embedding
+API or its dialect:
+
+- Source macros receive ordinary imports. A public helper value is available at
+  runtime. Local runtime definitions shadow ordinarily referred macros, while
+  qualified macro calls still expand. Switching a source declaration between
+  macro and value kinds is a located source diagnostic.
+  Lexical shadowing, explicit qualified expansion and core fallback still have
+  direct expected-output checks.
+- Returned UTF-16 keyword/symbol names and distinct keyword name parts are now
+  built with compiled `keyword`/`symbol` calls, replacing native callbacks while
+  retaining lone-surrogate preservation and executable-symbol rejection. Returned
+  individual keywords preserve distinct namespace/name parts; a compiled map
+  producer applies canonical JavaScript spelling equality before returning it.
+- Macro execution is bounded by the JavaScript evaluator's poll budget, then
+  checked for recovery with the same host. Expansion depth/count/generated-node
+  limits remain separately asserted.
+- A depth-exhausted producer uses a distinctive throwing body to prove that it
+  does not run; restoring the depth budget exposes the throw. Quoted generated
+  data uses a source macro assertion to prove its nested producer has no effect.
+- Caller source line is read from `&env`; generated collection diagnostics point
+  at the unresolved child symbol. The namespace compiler analyzes its final
+  expression in `:return` context.
+- Caller namespace/context observations and expansion-failure recovery remain
+  source tests. Native dynamic `*ns*`, `ns-name` and namespace-object identity
+  remain embedding API contracts in the adapter target. Macro declaration
+  metadata is read from the descriptive
+  `:light-cljs/macros` environment map, rather than retrieving a callable native
+  macro Var.
+
+The compiler gate permits canonical JavaScript interop in macro code (including
+existing `js/Math.imul`, thrown `js/Error` values and runtime helper demand cases).
+Unsupported arbitrary host results remain bridge errors; JavaScript source
+spelling alone is not a prohibition.
+
+Three API-specific native adapter tests are retained in the separate
+`tests/compiler_native_adapter.rs` target until light-cljs-115 removes that seam:
+`native_host_macros_use_the_same_form_env_and_arity_abi`,
+`macro_statistics_attribute_native_and_interpreted_expansion_work`, and
+`macro_call_namespace_binding_is_restored_and_do_context_matches_cljs`. This target
+is explicitly outside the native-disabled compiler gate, and is still part of
+the ordinary Rust suite. No compiler source fixture calls `context_mut`,
+`register_macro`, or a native evaluator entrypoint.
+
+Verification for this fixture migration:
+
+- `LIGHT_CLJS_DISABLE_NATIVE_EVAL=1 cargo test --locked --test compiler_macros --quiet`:
+  all 99 compiler macro cases passed, including the compiled ABI/syntax counterpart.
+- Native-disabled `generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality`:
+  passed after strengthening the returned-keyword name-part assertions.
+- `env -u LIGHT_CLJS_DISABLE_NATIVE_EVAL cargo test --locked --test compiler_native_adapter --quiet`:
+  all three explicit native adapter cases passed.
+- `git diff --check` over the three changed fixture/provenance files: passed.

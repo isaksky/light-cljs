@@ -195,6 +195,7 @@ impl Context {
         definition: &'static NativeDefinition,
         arguments: &[RootedValue],
     ) -> NativeResult {
+        assert_execution_enabled();
         let _scope = self.accounting.enter();
         self.check_native(definition)
             .map_err(InvokeError::Dispatch)?;

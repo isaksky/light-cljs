@@ -30,6 +30,19 @@ class AccountingTests(unittest.TestCase):
             "lexer": {"status": "accepted"}, "parser": {"status": "accepted"},
             "native": {"status": "passed"}}})[0], "missing")
 
+    def test_eval_cli_does_not_relabel_historical_native_observations(self):
+        case = {**self.case, "native_stdout": "true\n"}
+        def invoke(command, directory, **kwargs):
+            if "--compile" in command:
+                return {"status": "failed", "stderr": "unimplemented fixture"}
+            return {"status": "completed", "stdout": "true\n", "stderr": ""}
+        with tempfile.TemporaryDirectory() as directory, patch.object(report, "invoke", side_effect=invoke):
+            layers = report.local_layers(case, "compiler", Path(directory), 1)
+        self.assertEqual(layers["native"]["status"], "historical-not-executed")
+        self.assertEqual(layers["native"]["observed"], "true\n")
+        self.assertEqual(layers["evaluation"]["status"], "passed")
+        self.assertEqual(report.classify(self.row, self.witness, {"example": layers})[0], "missing")
+
     def test_every_nonpass_status_stays_missing_in_every_required_layer(self):
         for layer in report.SEMANTIC_LAYERS:
             for status in ("missing", "rejected", "skipped", "not-run", "timed-out", "reference-unavailable",

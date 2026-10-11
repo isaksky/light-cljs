@@ -69,8 +69,9 @@ actual call Form, compiler-owned environment Datum and ExpansionOrigin. It invok
 the hidden `&form`/`&env` ABI followed by call arguments. `compiler_environment`
 builds bounded lexical IDs/names/kinds/arguments, shadow records, context,
 namespace/import information and line/column using compiler data alone. Source
-macro registration and default bootstrap switching remain separate migration
-steps; the native adapter is explicitly temporary until light-cljs-115.
+macro registration and the default core bootstrap both execute compiler-emitted
+JavaScript. The native adapter is only an explicit historical embedding surface
+until light-cljs-115. The migration gate rejects its execution entrypoints.
 
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;

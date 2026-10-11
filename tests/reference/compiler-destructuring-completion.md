@@ -140,3 +140,12 @@ The additional fixture and source-hash mappings are
 `/tmp/light-cljs-99-seventh-extra-{fixtures.tsv,witnesses.jsonl,origins.tsv}`.
 Reference logs and observed envelopes are under
 `/tmp/light-cljs-destructuring-audit/{checkout-selector,release-selector,local-selector}`.
+
+## JavaScript evaluator gate
+
+The complete checkout bodies in `compiler_destructuring_completion` remain
+verbatim. Their first-party `deftest/testing/is/are` harness now uses same-namespace
+source `defmacro` declarations compiled through this compiler to QuickJS, with
+native evaluation disabled. This replaces native preloading of assertion macros;
+no expected predicates or upstream body statements were removed. Native
+macro timing/descriptors are historical observations rather than the harness.

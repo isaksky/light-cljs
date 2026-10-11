@@ -9,6 +9,16 @@
 //! unrooted IDs, so language cycles do not become Rust reference-count cycles.
 //! See `docs/interpreter.md` for the collection and reset contract.
 
+/// Temporary execution fence for the migration gate (removed with this adapter
+/// by light-cljs-115). Compiler readers may retain immutable adapter utilities;
+/// no production consumer may cross an old execution entrypoint in this mode.
+pub(super) fn assert_execution_enabled() {
+    assert!(
+        std::env::var_os("LIGHT_CLJS_DISABLE_NATIVE_EVAL").is_none(),
+        "native evaluation is disabled by LIGHT_CLJS_DISABLE_NATIVE_EVAL"
+    );
+}
+
 mod arena;
 mod binding_macros;
 mod control_macros;

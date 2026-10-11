@@ -146,3 +146,14 @@ A negative diagnostic from a mixed positive/negative body may declare
 ordered subset of the complete hashed body. Every other source assertion remains
 independently required by strict completion. This does not turn positive analyses
 into negative diagnostic evidence.
+
+## Evaluator migration accounting
+
+The legacy fixture `native_stdout` column is retained as historical evidence.
+`report.py` reports it as `native: historical-not-executed`; the CLI's `--eval`
+now executes `EvalSession` and has its own `evaluation` column. Matching compatible
+historical stdout can pass that evaluation check; differing observations stay
+mismatches. Lexer/parser acceptance and either evaluation column cannot satisfy
+the required JavaScript/release/checkout semantic layers. The broader
+[evaluator gate](../evaluator-migration/README.md) also executes phase semantics,
+QuickJS/Node comparisons and the complete SCI fixture accounting separately.

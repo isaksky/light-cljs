@@ -3,7 +3,7 @@
 
 The committed inventory is source evidence, never a passing result. Only this
 invocation's complete compiler + checked release/checkout observations can cover
-an assertion. Parser acceptance and native execution have independent columns.
+an assertion. Parser acceptance, historical native observations and current evaluation have independent columns.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 REVISION = "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e"
 RELEASE = "1.12.134"
-LAYERS = ("lexer", "parser", "native", "javascript", "diagnostic", "release", "checkout")
+LAYERS = ("lexer", "parser", "native", "evaluation", "javascript", "diagnostic", "release", "checkout")
 SEMANTIC_LAYERS = ("javascript", "release", "checkout")
 REJECTION_LAYERS = ("diagnostic", "release", "checkout")
 
@@ -456,18 +456,20 @@ def local_layers(case, binary, directory, timeout, *, warning_mode=False):
         return local_warning(case, binary, directory, timeout)
     if "diagnostic" in case:
         return local_diagnostic(case, binary, directory, timeout)
-    layers = {}
-    for layer, flags in (("lexer", []), ("parser", ["--parse"]), ("native", ["--eval"])):
-        if layer == "native" and case["native_stdout"] is None:
-            layers[layer] = result("not-applicable", "no native expectation; compiler-only host behavior")
+    # Retain the fixture's old native observation separately. --eval now runs
+    # EvalSession and cannot establish native evidence.
+    layers = {"native": result("historical-not-executed", "legacy fixture observation; native adapter is retired for CLI evaluation", observed=case["native_stdout"])}
+    for layer, flags in (("lexer", []), ("parser", ["--parse"]), ("evaluation", ["--eval"])):
+        if layer == "evaluation" and case["native_stdout"] is None:
+            layers[layer] = result("not-applicable", "no compatible CLI stdout expectation; compiler-only host behavior")
             continue
         run = invoke([binary, *flags, "-"], directory / layer, source=case["source"], timeout=timeout)
         if run["status"] == "completed":
-            if layer == "native":
+            if layer == "evaluation":
                 status = "passed" if run["stdout"] == case["native_stdout"] else "mismatch"
             else:
                 status = "accepted"
-            layers[layer] = result(status, observed=run["stdout"] if layer == "native" else None)
+            layers[layer] = result(status, observed=run["stdout"] if layer == "evaluation" else None)
         else:
             layers[layer] = result("rejected" if run["status"] == "failed" else run["status"],
                                    run.get("detail", run.get("stderr", "")))

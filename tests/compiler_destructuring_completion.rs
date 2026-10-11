@@ -142,22 +142,19 @@ const ASSERTION_MACROS: &str = r#"
 
 #[test]
 fn complete_pinned_checkout_destructuring_bodies() {
-    use light_cljs::{MacroHost, MacroImport, compile_with_macros};
+    use light_cljs::{MacroHost, compile_with_macros};
     let mut host = MacroHost::new();
-    host.context_mut().eval_string(ASSERTION_MACROS).unwrap();
-    host.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "destructure.test-macros".into(),
-            alias: None,
-            refers: ["deftest", "testing", "is", "are"]
-                .map(str::to_owned)
-                .into(),
-        }],
-    )
-    .unwrap();
+    host.disable_native_evaluation();
     for (name, body) in CHECKOUT_BODIES {
-        let js = compile_with_macros(body, &mut host).unwrap_or_else(|e| panic!("{name}: {e}"));
+        // Keep every complete upstream body unchanged; first-party assertion
+        // macros are now compiled source declarations in the same namespace.
+        let macros = ASSERTION_MACROS
+            .trim()
+            .strip_prefix("(ns destructure.test-macros)")
+            .unwrap()
+            .replace("destructure.test-macros/is", "cljs.user/is");
+        let source = format!("{macros}\n{body}");
+        let js = compile_with_macros(&source, &mut host).unwrap_or_else(|e| panic!("{name}: {e}"));
         let output = Command::new("node")
             .args(["--eval", &format!("console.log({js});")])
             .output()

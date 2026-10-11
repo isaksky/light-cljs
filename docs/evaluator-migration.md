@@ -4,17 +4,20 @@
 
 The architecture adopted on October 10, 2026 uses **rquickjs to execute JavaScript
 emitted by light-cljs**, including macro bodies and their ordinary helpers.
-Rust remains the compiler. This document describes the accepted design;
-**the migration is partially implemented**. Immutable compiler data/reading,
-the pinned synchronous rquickjs evaluator, and the structured compiler/JavaScript
-form bridge are executable. The default compiler macro bootstrap, source macro
-registration, embedding, scripts and REPL still use the transitional native
-adapter. See [evaluator reference](evaluator.md) for the delivered APIs and tests.
+Rust remains the compiler. Production core/source macros, ordinary helper demand,
+embedding, scripts and the REPL now execute compiler-emitted JavaScript in QuickJS.
+Immutable compiler reading, structured forms, declaration bundles, ordinary
+`.cljs`/`.cljc` imports and effect-preserving application preparation are implemented.
+The [execution gate](../tests/reference/evaluator-migration/README.md) tests this
+contract with every old native execution entrypoint disabled. The temporary native
+library, its API-specific tests and historical benchmarks remain for physical
+removal under light-cljs-115; the gate does not authorize their retention as a
+fallback or claim whole-language completion.
 
-The [compiler reference](compiler.md) and [native interpreter reference](interpreter.md)
-document that current implementation. Their native execution, companion-file and
-exact-number contracts are being replaced as described here. Existing behavior
-must not be relabeled as migrated before its replacement executes successfully.
+The [compiler reference](compiler.md) and [evaluation API](evaluation.md) describe
+the supported production paths. The [native interpreter reference](interpreter.md)
+is historical compatibility evidence. Its exact-number, companion-file, heap and
+collector contracts are not the current evaluation contract.
 
 Pellets is authoritative for implementation scope, prerequisites, acceptance and
 status. The `native-cljs-macros` name is retained for continuity; its context now
@@ -191,9 +194,9 @@ generation snapshots, failure recovery and shared limits are exercised by
 `reentrant_deferred_units` in the same suite. Ordinary value demand, lazy Var
 identity/resolve, root generations/failures/defonce and exact overlay restoration
 are now exercised by `ordinary_helper_demand`; [validation evidence](../tests/reference/compiler-helper-demand.md)
-records commands and phase-isolation witnesses. Declaration bundles and source
-imports remain assigned to light-cljs-110/103.
-Legacy imported native source macros remain explicit adapters until those stages.
+records commands and phase-isolation witnesses. Declaration bundles and ordinary source imports are now implemented and exercised
+by their demand/import suites. Only explicit legacy embedding APIs retain native
+adapters until light-cljs-115; production sources cannot load `.clj` companions.
 
 Same-file macro validation on 2026-10-10 passed
 `cargo test --test compiler_bootstrap --test compiler_macros --test compiler_boundary_completion`

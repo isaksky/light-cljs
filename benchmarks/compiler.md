@@ -371,3 +371,44 @@ are retained. Reproduce with:
 python3 -B benchmarks/measure_compiler_language.py \
   --output /tmp/light-cljs-language-measurement
 ```
+
+## Evaluator migration gate — October 10, 2026
+
+The native-disabled execution gate and its incomplete broad-check evidence are
+recorded in [the migration verification](../tests/reference/evaluator-migration/verification.md).
+Historical native macro/collector timings above remain historical; production
+macros and evaluation consumers execute compiler-emitted JavaScript in QuickJS.
+The native bench targets remain for physical retirement under light-cljs-115.
+The canonical runtime was unchanged by the gate/test migration.
+
+Executed the existing application preparation benchmark with native entrypoints
+fenced, Node v24.18.0, Rust 1.99.0, and nine samples per scenario/mode/phase:
+
+```sh
+LIGHT_CLJS_DISABLE_NATIVE_EVAL=1 cargo bench --locked --bench compiler -- --application-only --samples 9 --iterations 1 --dump /tmp/light-cljs-114-performance
+```
+
+The run exited 0 with **270 measured samples**. The
+[raw CSV](results/evaluator-migration-2026-10-10/application.csv) retains every
+sample. Preparation and prepared emission start from previously analyzed IR;
+Node startup includes process launch, parsing, execution and result comparison
+against unoptimized output. Every invocation, including warmups, checked its
+complete serialized result. These measurements do not measure macro compilation
+or the persistent QuickJS session path.
+
+| Scenario | Output bytes, off / on | Prepared emission median µs, off / on | Node median ms, off / on |
+| --- | ---: | ---: | ---: |
+| integer | 88 / 88 | 0.292 / 0.292 | 123.467 / 60.786 |
+| nested-closure | 297 / 297 | 1.334 / 1.417 | 56.404 / 56.714 |
+| js-nested-method | 126 / 126 | 0.625 / 0.666 | 57.650 / 57.175 |
+| collections | 233,326 / 233,326 | 10.291 / 10.250 | 63.739 / 63.384 |
+| macro-helpers | 237,669 / 233,493 | 49.541 / 16.959 | 62.565 / 61.558 |
+
+Macro-only helper elimination still removes **4,176 bytes**, and all off/on
+values agree. Concurrent debug Cargo builds contended with this local run,
+especially its initial integer/off samples; these noisy timings establish no
+speedup, reliable performance regression or comparison to historical snapshot
+startup. No allocation, cross-platform, old native-GC or full legacy benchmark
+run is claimed. The initial three-sample invocation was rejected by the existing
+benchmark's minimum-nine-samples contract; the corrected invocation above is the
+completed measurement.

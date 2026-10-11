@@ -14,13 +14,13 @@ Tokens never allocate text; syntax leaves keep byte spans wherever possible.
 The project is moving to **rquickjs execution of JavaScript emitted by this Rust
 compiler**, including macro bodies and ordinary helpers. Rust keeps reading,
 resolution, analysis, semantic IR, optimization and emission. Macro and application
-execution will share canonical runtime operations and JavaScript Number semantics,
+execution share canonical runtime operations and JavaScript Number semantics,
 with separate mutable state and demand-initialized compile-time helper roots.
 Macros live in `.cljs`/`.cljc` and use ordinary `:require`.
 
 The [synchronous evaluator](docs/evaluator.md) now executes compiler units with
 one canonical runtime per session, bounded host controls and owned value IDs.
-**Consumer migration is still in progress.** Core compiler macros run as
+**Production consumers use compiled JavaScript.** Core compiler macros run as
 compiler-emitted JavaScript in QuickJS. Ordinary helper initializers can be
 compiled on macro demand, including nested helper/macro compilation; definition
 snapshots and shared semantic IR prevent repeated source expansion. See the
@@ -33,6 +33,10 @@ and API examples below describe that current checkout. See the
 semantics, interpreter extraction, consumer migration and completion criteria.
 Pellets holds the implementation queue; evaluator migration and full intended
 language completion are separate milestones.
+The [migration execution gate](tests/reference/evaluator-migration/README.md) runs
+compiler, evaluation, CLI and runtime checks with every legacy native execution
+entrypoint disabled. Physical removal of the temporary native adapter is the next
+migration step; the gate does not claim complete ClojureScript support.
 
 ## Evaluate ClojureScript and use a REPL
 
@@ -247,7 +251,7 @@ rounding and 32-bit bit operations; saved functions, aliases and `apply` share
 the same runtime. The [numeric audit](tests/reference/compiler-numeric.md) records
 arities, coercions, predicates, the direct comparison macro distinction, and
 verification against both pinned references. Functions support overload dispatch and arbitrary variadic fixed prefixes, including
-metadata wrappers, native macro expansion and namespace boundaries. The
+metadata wrappers, compiled macro expansion and namespace boundaries. The
 [function arity audit](tests/reference/compiler-functions.md) records callable
 entry points, rest sequences and pinned comparisons. All `apply` prefixes,
 callable data, metadata and captured `reify` implementations are supported, along with

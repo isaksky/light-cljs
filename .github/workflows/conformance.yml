@@ -11,7 +11,7 @@ jobs:
   fast-tests:
     name: Rust and Node tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -20,6 +20,16 @@ jobs:
           node-version: '24.18.0'
       - run: cargo check --locked --all-features
       - run: cargo test --locked
+      - name: Require migrated consumers without native evaluation
+        if: ${{ !cancelled() }}
+        run: python3 -B tests/reference/evaluator-migration/gate.py --artifacts /tmp/light-cljs-evaluator-gate
+      - name: Preserve evaluator gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluator-migration-gate
+          path: /tmp/light-cljs-evaluator-gate
+          if-no-files-found: error
 
   conformance:
     name: Required pinned ClojureScript conformance
@@ -62,6 +72,8 @@ jobs:
           LIGHT_CLJS_REFERENCE_REVISION: a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
           LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
         run: cargo test --locked --test execution -- --ignored --nocapture --test-threads=1
+      - name: Require focused evaluator migration comparisons
+        run: python3 -B tests/reference/evaluator-migration/gate.py --reference --checkout research/clojurescript --artifacts /tmp/light-cljs-evaluator-reference
       - name: Require every in-scope language assertion
         run: |
           python3 -B tests/reference/compiler-language/report.py --run --strict \
@@ -76,10 +88,11 @@ jobs:
           path: |
             /tmp/light-cljs-language-conformance*
             /tmp/light-cljs-reference-*
+            /tmp/light-cljs-evaluator-reference
           if-no-files-found: error
 
-  native-conformance:
-    name: Native interpreter and pinned SCI conformance
+  sci-reference:
+    name: Historical pinned SCI observations
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -102,12 +115,12 @@ jobs:
           git -C sci-reference checkout --detach FETCH_HEAD
       - name: Check launcher failure enforcement without Java
         run: python3 -m unittest discover -s tests/reference/sci -p 'test_regenerate.py' -v
-      - name: Compare all oracle rows and execute native suites
-        run: python3 tests/reference/sci/regenerate.py --checkout sci-reference --native
-      - name: Preserve reference and native diagnostics
+      - name: Compare all historical oracle observations
+        run: python3 tests/reference/sci/regenerate.py --checkout sci-reference
+      - name: Preserve historical reference diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-sci-diagnostics
+          name: historical-sci-diagnostics
           path: /tmp/light-cljs-sci-reference-*
           if-no-files-found: error

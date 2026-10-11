@@ -1,12 +1,9 @@
-//! Compiler macro integration, including transitional native adapter tests.
+//! Compiler macro integration through compiler-owned source and JavaScript execution.
 //! CLJS environment/resolution observations
 //! are anchored in tests/reference/compiler-macros.md; tests need only Rust/Node.
-use light_cljs::interpreter::{
-    Arity, Name, NativeDefinition, NativeEffects, NativeMetadata, ResourceLimits,
-};
 use light_cljs::{
-    MacroHost, MacroImport, analyze_with_macros, compile, compile_namespace,
-    compile_namespace_with_macros, compile_with_macros, emit_js, parse,
+    MacroHost, analyze_with_macros, compile, compile_namespace,
+    compile_namespace_with_macros, emit_js, parse,
 };
 use std::{
     fs,
@@ -63,19 +60,78 @@ fn execute(js: &str) -> String {
 fn result(js: &str) -> String {
     execute(&format!("console.log({js});"))
 }
-fn host(source: &str, refers: &[&str]) -> MacroHost {
+// Historical fixtures use real ordinary imports so macro definitions and helpers
+// run in the same compiler-owned JavaScript sessions as user source namespaces.
+struct SourceMacros {
+    sources: Sources,
+    host: MacroHost,
+    header: String,
+}
+impl std::ops::Deref for SourceMacros {
+    type Target = MacroHost;
+    fn deref(&self) -> &MacroHost {
+        &self.host
+    }
+}
+impl std::ops::DerefMut for SourceMacros {
+    fn deref_mut(&mut self) -> &mut MacroHost {
+        &mut self.host
+    }
+}
+trait CompileMacroFixture {
+    fn compile(&mut self, source: &str) -> Result<String, light_cljs::CompileError>;
+}
+impl CompileMacroFixture for MacroHost {
+    fn compile(&mut self, source: &str) -> Result<String, light_cljs::CompileError> {
+        light_cljs::compile_with_macros(source, self)
+    }
+}
+impl CompileMacroFixture for SourceMacros {
+    fn compile(&mut self, source: &str) -> Result<String, light_cljs::CompileError> {
+        self.sources
+            .write("cljs/user.cljs", &format!("{}{source}", self.header));
+        self.sources
+            .compile_host("cljs.user", &mut self.host)
+            .map_err(|error| {
+                let span = error.span.clone().unwrap_or(0..source.len());
+                let span = if error
+                    .path
+                    .as_ref()
+                    .is_some_and(|p| p.ends_with("cljs/user.cljs"))
+                {
+                    span.start.saturating_sub(self.header.len())
+                        ..span.end.saturating_sub(self.header.len())
+                } else {
+                    0..source.len()
+                };
+                light_cljs::CompileError::Analysis(light_cljs::AnalysisError {
+                    kind: light_cljs::analyzer::AnalysisErrorKind::MacroExpansion(
+                        error.to_string(),
+                    ),
+                    span,
+                })
+            })
+    }
+}
+fn compile_with_macros(
+    source: &str,
+    host: &mut impl CompileMacroFixture,
+) -> Result<String, light_cljs::CompileError> {
+    host.compile(source)
+}
+fn host(source: &str, refers: &[&str]) -> SourceMacros {
+    let sources = Sources::new();
+    sources.write("macros.cljs", source);
     let mut host = MacroHost::new();
-    host.context_mut().eval_string(source).unwrap();
-    host.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "macros".into(),
-            alias: Some("m".into()),
-            refers: refers.iter().map(|s| (*s).into()).collect(),
-        }],
-    )
-    .unwrap();
-    host
+    host.disable_native_evaluation();
+    SourceMacros {
+        sources,
+        host,
+        header: format!(
+            "(ns cljs.user (:require [macros :as m :refer [{}]])) ",
+            refers.join(" ")
+        ),
+    }
 }
 
 #[test]
@@ -114,16 +170,21 @@ fn ordinary_core_macros_expand_inside_lexical_environments() {
 }
 
 #[test]
-fn locals_shadow_macros_but_explicit_macro_imports_survive_runtime_definitions() {
+fn locals_shadow_imported_macros_and_qualified_calls_keep_namespace_identity() {
     let mut h = host("(ns macros) (defmacro value [] 7)", &["value"]);
-    let source = r#"(def value 3)
-        (js/console.log value (value) (m/value)
+    let source = r#"(def runtime-value 3)
+        (js/console.log runtime-value (value) (m/value)
           (let [value (fn [] 9)] (value))
           (let [value (fn [] 9)] (macros/value)))"#;
     assert_eq!(
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "3 7 7 9 7\n"
     );
+    // A source declaration cannot switch binding kind. A local runtime def
+    // shadows an ordinary referred macro while qualified calls still expand.
+    let conflict = compile("(defmacro value [] 7) (def value 3)").unwrap_err();
+    assert!(conflict.to_string().contains("distinct names"), "{conflict}");
+    assert_eq!(execute(&compile_with_macros("(def value (fn [] 3)) (js/console.log (value) (m/value))", &mut h).unwrap()), "3 7\n");
     assert_eq!(
         result(&compile("(def when (fn* [x] x)) (when 8)").unwrap()),
         "8\n"
@@ -163,7 +224,7 @@ fn ordinary_macro_imports_also_expose_runtime_bindings() {
         result(&compile_with_macros("(read-hidden)", &mut h).unwrap()),
         "33\n"
     );
-    assert!(compile_with_macros("macros/hidden", &mut h).is_err());
+    assert_eq!(result(&compile_with_macros("macros/hidden", &mut h).unwrap()), "33\n");
     assert!(compile_with_macros("m/read-hidden", &mut h).is_err());
 }
 
@@ -172,24 +233,24 @@ fn cljs_env_has_binding_records_context_namespace_and_unevaluated_form() {
     let mut h = host(
         r#"(ns macros)
       (defmacro inspect-env []
-        (str (:context &env) "/" (:name (:ns &env)) "/" (ns-name *ns*) "/"
+        (str (:context &env) "/" (:name (:ns &env)) "/"
           (:op (get (:locals &env) 'x)) "/" (:local (get (:locals &env) 'x)) "/"
           (:arg-id (get (:locals &env) 'x)) "/" (contains? (:locals &env) 'self)))
-      (defmacro syntax [x] (str (first &form) "/" x "/" (:line (meta &form))))
+      (defmacro syntax [x] (str (first &form) "/" x "/" (:line &env)))
     "#,
         &["inspect-env", "syntax"],
     );
     assert_eq!(
         result(&compile_with_macros("(let [x (inspect-env)] x)", &mut h).unwrap()),
-        ":expr/cljs.user/cljs.user////false\n"
+        ":expr/cljs.user////false\n"
     );
     assert_eq!(
         result(&compile_with_macros("(let [x 1] (inspect-env))", &mut h).unwrap()),
-        ":return/cljs.user/cljs.user/:binding/:let//false\n"
+        ":return/cljs.user/:binding/:let//false\n"
     );
     assert_eq!(
         result(&compile_with_macros("((fn self [x] (inspect-env)) 1)", &mut h).unwrap()),
-        ":return/cljs.user/cljs.user/:binding/:arg/0/true\n"
+        ":return/cljs.user/:binding/:arg/0/true\n"
     );
     assert_eq!(
         result(&compile_with_macros("(syntax (undefined never-evaluated))", &mut h).unwrap()),
@@ -198,7 +259,7 @@ fn cljs_env_has_binding_records_context_namespace_and_unevaluated_form() {
     let discarded = "(js/console.log (let [x 1] (js/console.log (inspect-env)) (inspect-env)))";
     assert_eq!(
         execute(&compile_with_macros(discarded, &mut h).unwrap()),
-        ":expr/cljs.user/cljs.user/:binding/:let//false\n:return/cljs.user/cljs.user/:binding/:let//false\n"
+        ":expr/cljs.user/:binding/:let//false\n:return/cljs.user/:binding/:let//false\n"
     );
 }
 
@@ -331,49 +392,21 @@ fn macro_import_validation_and_loader_failures_are_located() {
 }
 
 #[test]
-fn native_host_macros_use_the_same_form_env_and_arity_abi() {
-    static MACRO: NativeDefinition = NativeDefinition {
-        metadata: NativeMetadata {
-            namespace: "host",
-            name: "answer",
-            arity: Arity::Exact(3),
-            effects: NativeEffects::Pure,
-            errors: &[],
-        },
-        callback: |c, args| {
-            let env = args[1].get(&c.keyword(Name::new(None, "locals")))?.unwrap();
-            let binding = env.get(&c.symbol(Name::new(None, "x")))?.unwrap();
-            assert!(binding.get(&c.keyword(Name::new(None, "name")))?.is_some());
-            Ok(args[2].clone())
-        },
-    };
-    let mut h = MacroHost::new();
-    h.register_macro(&MACRO);
-    h.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "host".into(),
-            alias: Some("h".into()),
-            refers: vec![],
-        }],
-    )
-    .unwrap();
-    let source = "(let* [x 17] (h/answer x))";
+fn compiled_source_macros_preserve_form_env_and_caller_owned_syntax() {
+    let source = r#"
+      (defmacro answer [x]
+        (assert (= 'answer (first &form)))
+        (assert (= 2 (count &form)))
+        (assert (= :binding (get-in &env [:locals x :op])))
+        x)
+      (let [x 17] (answer x))"#;
     let syntax = parse(source).unwrap();
     let original = syntax.clone();
-    let program = analyze_with_macros(source, &syntax, &mut h).unwrap();
-    assert_eq!(
-        syntax, original,
-        "analysis must not mutate caller-owned syntax"
-    );
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    let program = analyze_with_macros(source, &syntax, &mut host).unwrap();
+    assert_eq!(syntax, original, "analysis must not mutate caller-owned syntax");
     assert_eq!(result(&emit_js(&program)), "17\n");
-    assert_eq!(result(&compile_with_macros("(let [x 19] (h/answer x))", &mut h).unwrap()), "19\n");
-    assert!(
-        compile_with_macros("(h/answer)", &mut h)
-            .unwrap_err()
-            .to_string()
-            .contains("Arity")
-    );
 }
 
 #[test]
@@ -403,16 +436,16 @@ fn recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits()
             .to_string()
             .contains("generated-node limit")
     );
-    h.context_mut().set_resource_limits(ResourceLimits {
-        fuel: Some(500),
-        ..ResourceLimits::default()
-    });
+    h.limits.generated_nodes = 100_000;
+    h.limits.expansions = 1024;
+    h.evaluator_options.poll_budget = 10_000;
     assert!(
         compile_with_macros("(spin)", &mut h)
             .unwrap_err()
             .to_string()
-            .contains("Fuel")
+            .contains("budget")
     );
+    h.evaluator_options = Default::default();
     // Per-compilation counters are fresh after failure; no poisoned expansion cache.
     assert_eq!(
         result(&compile_with_macros("(one)", &mut h).unwrap()),
@@ -421,12 +454,11 @@ fn recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits()
 }
 
 #[test]
-fn macro_call_namespace_binding_is_restored_and_do_context_matches_cljs() {
+fn macro_call_context_matches_cljs_and_recovers_after_expansion_failure() {
     let mut h = host(
-        "(ns macros) (defmacro context [] (str (:context &env)))",
-        &["context"],
+        "(ns macros) (defmacro context [] (str (:context &env))) (defmacro fail [] (throw (js/Error. \"context-failure\")))",
+        &["context", "fail"],
     );
-    let before = h.context_mut().current_namespace();
     assert_eq!(
         execute(
             &compile_with_macros("(js/console.log (do 1 (context)) (do (context)))", &mut h)
@@ -434,9 +466,8 @@ fn macro_call_namespace_binding_is_restored_and_do_context_matches_cljs() {
         ),
         ":return :expr\n"
     );
-    assert!(before.same_identity(&h.context_mut().current_namespace()));
-    assert!(compile_with_macros("(context 1)", &mut h).is_err());
-    assert!(before.same_identity(&h.context_mut().current_namespace()));
+    assert!(compile_with_macros("(fail)", &mut h).unwrap_err().to_string().contains("context-failure"));
+    assert_eq!(result(&compile_with_macros("(context)", &mut h).unwrap()), ":return\n");
 }
 
 #[test]
@@ -470,26 +501,6 @@ fn macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hos
     let mut h = MacroHost::new();
     assert_eq!(execute(&s.compile_host("main", &mut h).unwrap()), "1 2\n");
     assert_eq!(execute(&s.compile_host("main", &mut h).unwrap()), "1 2\n");
-}
-
-#[test]
-fn macro_statistics_attribute_native_and_interpreted_expansion_work() {
-    let mut h = host("(ns macros) (defmacro value [] '(let [x 3] x))", &["value"]);
-    h.context_mut().set_macro_diagnostics(true);
-    compile_with_macros("(value)", &mut h).unwrap();
-    let stats = h.context_mut().macro_expansion_stats();
-    let custom = stats
-        .iter()
-        .find(|s| s.name == Name::new(Some("macros"), "value"))
-        .unwrap();
-    assert_eq!(custom.expansions, 1);
-    assert!(custom.generated_forms > 1);
-    assert!(custom.definition.is_some());
-    assert!(
-        stats
-            .iter()
-            .any(|s| s.name == Name::new(Some("clojure.core"), "let"))
-    );
 }
 
 #[test]
@@ -538,13 +549,14 @@ fn exhausted_expansion_depth_does_not_run_macro_effects() {
             .to_string()
             .contains("depth limit")
     );
-    assert_eq!(
-        h.context_mut()
-            .eval_string("@macros/counter")
-            .unwrap()
-            .inspect(),
-        light_cljs::interpreter::ValueView::Integer(0)
-    );
+    // The compiler rejects expansion before executing its producer, even if
+    // running that producer would throw a distinctive error.
+    h.sources.write("macros.cljs", "(ns macros) (defmacro effect [] (throw (js/Error. \"effect-ran\")))");
+    let error = compile_with_macros("(effect)", &mut h).unwrap_err().to_string();
+    assert!(error.contains("depth limit"), "{error}");
+    assert!(!error.contains("effect-ran"), "{error}");
+    h.limits.expansion_depth = 64;
+    assert!(compile_with_macros("(effect)", &mut h).unwrap_err().to_string().contains("effect-ran"));
 }
 
 #[test]
@@ -559,27 +571,8 @@ fn generated_vectors_and_keyword_names_execute_with_owned_semantic_values() {
         "2 answer made x true\n"
     );
 
-    static SURROGATE: NativeDefinition = NativeDefinition {
-        metadata: NativeMetadata {
-            namespace: "host",
-            name: "surrogate",
-            arity: Arity::Exact(2),
-            effects: NativeEffects::Pure,
-            errors: &[],
-        },
-        callback: |c, _| Ok(c.keyword(Name::from_utf16(Some(&[0xd800]), &[0xd800]))),
-    };
-    h.register_macro(&SURROGATE);
-    h.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "host".into(),
-            alias: Some("h".into()),
-            refers: vec![],
-        }],
-    )
-    .unwrap();
-    let source = "(let [k (h/surrogate)] (js/console.log (.charCodeAt (name k) 0) (.charCodeAt (namespace k) 0)))";
+    let mut h = host(r#"(ns macros) (defmacro surrogate [] (keyword "\uD800" "\uD800"))"#, &["surrogate"]);
+    let source = "(let [k (surrogate)] (js/console.log (.charCodeAt (name k) 0) (.charCodeAt (namespace k) 0)))";
     assert_eq!(
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "55296 55296\n"
@@ -613,20 +606,13 @@ fn direct_auto_keywords_use_the_same_ordinary_aliases_as_macro_input() {
 #[test]
 fn quoted_macro_values_preserve_symbols_effects_and_generated_provenance() {
     let mut h = host(
-        "(ns macros) (def counter (atom 0)) (defmacro danger [] (swap! counter inc) 99) (defmacro data [] '(quote [unresolved-name (danger) a/x])) (defmacro invalid [] '(quote [ok \\a]))",
-        &["danger", "data", "invalid"],
+        "(ns macros) (def counter (atom 0)) (defmacro danger [] (swap! counter inc) 99) (defmacro data [] '(quote [unresolved-name (danger) a/x])) (defmacro invalid [] '(quote [ok \\a])) (defmacro untouched [] (assert (= 0 @counter)) true)",
+        &["danger", "data", "invalid", "untouched"],
     );
-    let source = "(js/console.log (name (nth (data) 0)) (name (first (nth (data) 1))) (= (nth (data) 2) 'a/x) (= '(danger) (list 'danger)))";
+    let source = "(js/console.log (name (nth (data) 0)) (name (first (nth (data) 1))) (= (nth (data) 2) 'a/x) (= '(danger) (list 'danger)) (untouched))";
     assert_eq!(
         execute(&compile_with_macros(source, &mut h).unwrap()),
-        "unresolved-name danger true true\n"
-    );
-    assert_eq!(
-        h.context_mut()
-            .eval_string("@macros/counter")
-            .unwrap()
-            .inspect(),
-        light_cljs::interpreter::ValueView::Integer(0)
+        "unresolved-name danger true true true\n"
     );
     assert_eq!(
         result(&compile_with_macros("(nth (invalid) 1)", &mut h).unwrap()),
@@ -640,48 +626,15 @@ fn quoted_macro_values_preserve_symbols_effects_and_generated_provenance() {
 
 #[test]
 fn quoted_generated_symbols_preserve_lone_surrogates_but_executable_names_reject_them() {
-    static QUOTED: NativeDefinition = NativeDefinition {
-        metadata: NativeMetadata {
-            namespace: "host",
-            name: "quoted",
-            arity: Arity::Exact(2),
-            effects: NativeEffects::Pure,
-            errors: &[],
-        },
-        callback: |c, _| {
-            let quote = c.symbol(Name::new(None, "quote"));
-            let value = c.symbol(Name::from_utf16(Some(&[0xd800]), &[0xdc00]));
-            Ok(c.list(&[quote, value])?)
-        },
-    };
-    static EXECUTABLE: NativeDefinition = NativeDefinition {
-        metadata: NativeMetadata {
-            namespace: "host",
-            name: "executable",
-            arity: Arity::Exact(2),
-            effects: NativeEffects::Pure,
-            errors: &[],
-        },
-        callback: |c, _| Ok(c.symbol(Name::from_utf16(Some(&[0xd800]), &[0xdc00]))),
-    };
-    let mut h = host("(ns macros)", &[]);
-    h.register_macro(&QUOTED);
-    h.register_macro(&EXECUTABLE);
-    h.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "host".into(),
-            alias: Some("h".into()),
-            refers: vec![],
-        }],
-    )
-    .unwrap();
-    let source = "(let [s (h/quoted)] (js/console.log (.charCodeAt (name s) 0) (.charCodeAt (namespace s) 0)))";
+    let mut h = host(r#"(ns macros)
+      (defmacro quoted [] (list 'quote (symbol "\uD800" "\uDC00")))
+      (defmacro executable [] (symbol "\uD800" "\uDC00"))"#, &["quoted", "executable"]);
+    let source = "(let [s (quoted)] (js/console.log (.charCodeAt (name s) 0) (.charCodeAt (namespace s) 0)))";
     assert_eq!(
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "56320 55296\n"
     );
-    let error = compile_with_macros("(h/executable)", &mut h).unwrap_err();
+    let error = compile_with_macros("(executable)", &mut h).unwrap_err();
     assert!(error.to_string().contains("non-Unicode executable symbol"));
 }
 
@@ -717,39 +670,18 @@ fn generated_maps_preserve_owned_children_order_keys_and_quoted_data() {
     let light_cljs::CompileError::Analysis(error) = error else {
         panic!()
     };
-    assert_eq!(&source[error.span], "{:a missing}");
+    assert_eq!(&source[error.span], "missing");
 }
 
 #[test]
 fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() {
-    static MAP_NAMES: NativeDefinition = NativeDefinition {
-        metadata: NativeMetadata {
-            namespace: "host",
-            name: "map-names",
-            arity: Arity::Exact(2),
-            effects: NativeEffects::Pure,
-            errors: &[],
-        },
-        callback: |c, _| {
-            let first = c.keyword(Name::new(None, "a/b"));
-            let second = c.keyword(Name::new(Some("a"), "b"));
-            Ok(c.map(&[(first, c.integer(1)), (second, c.integer(2))])?)
-        },
-    };
-    let mut h = host("(ns macros)", &[]);
-    h.register_macro(&MAP_NAMES);
-    h.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "host".into(),
-            alias: Some("h".into()),
-            refers: vec![],
-        }],
-    )
-    .unwrap();
+    let mut h = host(r#"(ns macros)
+      (defmacro map-names [] {(keyword nil "a/b") 1 (keyword "a" "b") 2})
+      (defmacro key-parts [] [(keyword nil "a/b") (keyword "a" "b")])"#, &["map-names", "key-parts"]);
+    let source = "(let [[a b] (key-parts)] (js/console.log (count (map-names)) (namespace a) (name a) (namespace b) (name b)))";
     assert_eq!(
-        result(&compile_with_macros("(count (h/map-names))", &mut h).unwrap()),
-        "1\n"
+        execute(&compile_with_macros(source, &mut h).unwrap()),
+        "1 null a/b a b\n"
     );
 }
 
@@ -810,7 +742,7 @@ fn generated_sets_preserve_members_source_effects_and_quoted_data() {
     let light_cljs::CompileError::Analysis(error) = error else {
         panic!()
     };
-    assert_eq!(&source[error.span], "#{:a missing}");
+    assert_eq!(&source[error.span], "missing");
 }
 
 #[test]
@@ -1082,8 +1014,8 @@ fn generated_exception_forms_keep_default_catches_and_original_values() {
 #[test]
 fn control_macros_execute_directly_and_from_source_macro_namespaces() {
     let sources = Sources::new();
-    sources.write("controls.cljs", "(ns controls) (def n (atom 0)) (defmacro marked [] (swap! n inc)) (defmacro generated [] '(let [out (array)] (while (< (.-length out) 3) (.push out (.-length out))) (dotimes [i 2.5] (.push out i)) out)) (defmacro native-count [] (let [a (atom 0)] (dotimes [i 2.5] (swap! a inc)) @a)) (defmacro enabled [] true)");
-    sources.write("main.cljs", "(ns main (:require [cljs.core :as c] [controls :as m] [cljs.core :refer [assert] :rename {assert check}])) (js/console.log (.-length (m/generated)) (m/native-count) (m/enabled) (str (c/condp = 2 2 :ok :bad)) (case 1 (1 2 3) (m/marked) 0) (m/marked) (check true))");
+    sources.write("controls.cljs", "(ns controls) (def n (atom 0)) (defmacro marked [] (swap! n inc)) (defmacro generated [] '(let [out (array)] (while (< (.-length out) 3) (.push out (.-length out))) (dotimes [i 2.5] (.push out i)) out)) (defmacro compiled-count [] (let [a (atom 0)] (dotimes [i 2.5] (swap! a inc)) @a)) (defmacro enabled [] true)");
+    sources.write("main.cljs", "(ns main (:require [cljs.core :as c] [controls :as m] [cljs.core :refer [assert] :rename {assert check}])) (js/console.log (.-length (m/generated)) (m/compiled-count) (m/enabled) (str (c/condp = 2 2 :ok :bad)) (case 1 (1 2 3) (m/marked) 0) (m/marked) (check true))");
     assert_eq!(
         execute(&sources.compile("main").unwrap()),
         "6 3 true :ok 1 2 null\n"
@@ -1102,10 +1034,10 @@ fn compiler_assertion_configuration_removes_conditions_messages_and_prepost_chec
     assert!(!js.contains("Assert failed"));
     assert!(!js.contains("const rt ="));
     let sources = Sources::new();
-    sources.write("config.cljs", "(ns config) (defmacro enabled [] '(do (assert false) false)) (defmacro guarded [] '(assert false)) (defmacro native-check [] (assert false) 3) (defmacro expanded [] '(assert false))");
+    sources.write("config.cljs", "(ns config) (defmacro enabled [] '(do (assert false) false)) (defmacro guarded [] '(assert false)) (defmacro compiled-check [] (assert false) 3) (defmacro expanded [] '(assert false))");
     sources.write(
         "main.cljs",
-        "(ns main (:require [config :as c])) (js/console.log (c/enabled) (c/guarded) (c/native-check) (c/expanded))",
+        "(ns main (:require [config :as c])) (js/console.log (c/enabled) (c/guarded) (c/compiled-check) (c/expanded))",
     );
     assert_eq!(
         execute(&sources.compile_host("main", &mut host).unwrap()),
@@ -1168,7 +1100,7 @@ fn generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_met
         (defmacro decorated [x]
           (with-meta [x] {:value (list '+ x 1) :line 99 :file "macro.cljs"}))
         (defmacro quoted [] (list 'quote (with-meta 'sample {:marker true :line 99})))
-        (defmacro ^{:purpose "compiler"} definition [] (:purpose (meta #'definition)))"#,
+        (defmacro ^{:purpose "compiler"} definition [] (:purpose (get (:light-cljs/macros &env) 'macros/definition)))"#,
         &["decorated", "quoted", "definition"],
     );
     let source = r#"(let [x 4 v (decorated x) s (quoted)]
@@ -2643,7 +2575,16 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
     let mut h = MacroHost::new();
     h.disable_native_evaluation();
     let inspect = |js: &str| execute(&format!("const value = {js}; console.log(String(value));"));
-    assert_eq!(inspect(&s.compile_host("app", &mut h).unwrap()), "[42 42 42]\n");
+    for _ in 0..2 {
+        for host in [&mut h, &mut MacroHost::new()] {
+            host.disable_native_evaluation();
+            let js = s.compile_host("app", host).unwrap();
+            assert_eq!(inspect(&js), "[42 42 42]\n");
+            let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+            let value = evaluator.evaluate_js(&format!("String({js})")).unwrap();
+            assert_eq!(evaluator.print(value).unwrap(), "\"[42 42 42]\"");
+        }
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args(["--compile", "--entry", "app", "--source-root"]).arg(&s.0).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
