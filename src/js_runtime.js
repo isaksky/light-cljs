@@ -935,6 +935,7 @@
   }
 
   const mapPrototype = Object.freeze({
+    equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
     get(key, notFound = null) { return get(this, key, notFound); },
     keys() { return es6Iterator(keys(this)); },
@@ -1019,6 +1020,7 @@
   }
 
   const setPrototype = Object.freeze({
+    equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
     keys() { return es6Iterator(this); },
     values() { return es6Iterator(this); },
@@ -1206,6 +1208,7 @@
   function popBang(value) { return core.popBangProtocol(value); }
 
   const vectorPrototype = Object.freeze({
+    equiv(other) { return objectEquiv(this, other); },
     [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return print(this, true); },
@@ -1692,11 +1695,26 @@
     for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current));
     return makeSet(entries);
   }
+  // Object.equiv calls the receiver's IEquiv implementation directly, even
+  // when an extension rejects an identical value. Language = keeps its own
+  // identity shortcut. Saved Object methods dispatch on the borrowed receiver.
+  function objectEquiv(value, other) {
+    const equiv = builtin(value, "IEquiv/-equiv", 2);
+    if (equiv) return equiv.call(value, value, other);
+    if (maps.has(value)) return !predicates.isRecord(other) && equivMap(value, other);
+    // The collection protocol compares contents even for the same receiver
+    // (for example, a vector containing NaN is not equivalent to itself).
+    return sets.has(value) || vectors.has(value)
+      ? structuralEqualPair(value, other) : equalPair(value, other);
+  }
   function equalPair(left, right) {
     if (left == null) return right == null;
     if (left === right) return true;
     const equiv = builtin(left, "IEquiv/-equiv", 2);
     if (equiv) return equiv.call(left, left, right);
+    return structuralEqualPair(left, right);
+  }
+  function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     if (uuids.has(left)) return uuids.has(right) && uuids.get(left) === uuids.get(right);
     if (vars.has(left)) return vars.has(right) && equalPair(vars.get(left).symbol, vars.get(right).symbol);

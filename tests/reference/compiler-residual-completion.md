@@ -61,8 +61,8 @@ Fresh original failure receipts verified exact source identity against this gene
   `/tmp/light-cljs-125-object-equiv-local-receivers.json`.
 
 These two semantic omissions received focused owners before light-cljs-125.
-The variadic IFn omission is repaired below; light-cljs-150 still owns
-persistent collection Object `.equiv`. Original reproductions were:
+The variadic IFn and persistent collection Object `.equiv` omissions are repaired
+below. Original reproductions were:
 
 1. `core_test.cljs::test-cljs-2133` with complete original `Partial` setup
    returns **3** in both references. All four local engine/phase paths at `ce1487c`
@@ -133,6 +133,63 @@ residual generators, inventory `--check`, focused Rust formatting and
 
 Other residual missing obligations and the unfinished light-cljs-125 full gate
 remain open; this single repaired body does not establish full completion.
+
+## Persistent collection Object equiv repair and complete-body integration
+
+On 2026-10-11 from starting HEAD `f83237f`, light-cljs-150 added public
+Object `.equiv` methods to the persistent map/vector/set prototypes. They
+consult the actual receiver's `IEquiv` method before default structural
+comparison, preserving overridden equality even for identical receivers.
+Default `.equiv` also compares the contents of an identical collection, including nonreflexive `NaN` contents; language `=` retains its identity shortcut. Saved functions dispatch through
+the borrowed receiver, and metadata copies/public constructors inherit the
+same methods. The compiler/adapter does not rewrite `.equiv` to `=`.
+
+The unchanged complete non-lite `interop_test.cljs::test-obj-equiv` probe
+retains all seven original assertions and source SHA-256
+`18ab06bef880d002aaa5584b75724664bc0cd0aacd0bf61894e6bcc3aee08d40`.
+It now returns **true** through Node/QuickJS applications and when independently
+computed by QuickJS macros before execution in both application engines.
+Nine supplemental literal contracts cover map kinds, separately constructed
+values, empty/equal/unequal values, vector/list/lazy-sequence compatibility,
+metadata, positional constructors, saved/borrowed methods, custom equality,
+hash/key membership, identity and ordered lazy effects and nonreflexive contents. A separate test checks
+application failure/reuse and fresh/reused macro-host recovery.
+
+Reproduce the exact source, mappings and both-pin evidence:
+
+```
+python3 -B tests/reference/compiler-object-equiv.py --catalogs --run --output /tmp/light-cljs-150-reference-final
+cargo test --test compiler_object_equiv -- --nocapture
+python3 -B tests/reference/compiler-residual-completion.py --catalogs
+```
+
+Both pins pass all ten contracts, with verified release **1.12.134**, clean
+checkout **a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, and
+`:optimizations :none`, `:static-fns false`, `:def-emits-var false`.
+Complete local source and fixture hashes accompany the fresh reference receipts.
+The generator registers seven original assertion mappings only after proof.
+The source case also retains its complete body and exact hashed
+application/macro execution test mapping. Assertion-bearing bodies have no
+independent `body::` obligation in this ledger, so none is fabricated.
+
+The runtime/helper suites and affected compiler interop, equality, construction,
+Object/protocol/extension, record, macro, sequence, collection and execution
+regressions passed. Focused logs and reference receipts are under
+`/tmp/light-cljs-150-*`. The compiler performance smoke run uses nine samples
+and one iteration with checked outputs; it is not a before/after speed claim.
+Ignored reference-only tests in normal Rust suites remain explicitly ignored;
+the full original body and supplemental oracles were freshly run in both pins.
+
+Two separate demonstrated defects received focused live owners after duplicate
+searches. light-cljs-151 owns overridden `IEquiv` on existing sequence/name
+Object `.equiv` methods: the exact List probe returns `[false true]` in both
+pins and `[true true]` locally. light-cljs-152 owns a false extension-declaration
+cycle while the core `and` macro expands inside persistent collection `IEquiv`
+extensions. Its original guarded source and both-pin successful receipts are
+preserved at `/tmp/light-cljs-150-reference-final-guarded`; the final supplemental
+collection-dispatch control uses the equivalent `if` guard. These are separate
+from the seven unchanged upstream assertions and were not implemented here.
+The full light-cljs-125 language gate remains incomplete and unchanged.
 
 ## Retained gaps and boundaries
 

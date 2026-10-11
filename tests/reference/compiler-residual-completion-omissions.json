@@ -38,8 +38,8 @@
       "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-007"
     ],
     "expected_returned_value": true,
-    "status": "unwitnessed-semantic-omission",
-    "focused_owner_scope": "Normal non-lite map, vector and set values need their upstream Object .equiv method. Keep all seven original assertions; keywords, symbols, lists and lazy sequences already pass isolated current engine probes."
+    "status": "witnessed-semantic-omission",
+    "focused_owner_scope": "Repaired by light-cljs-150: complete original non-lite Object .equiv body retains all seven assertions and returns true in Node/QuickJS applications and independent QuickJS macro computations against both pinned references; original probe and provenance preserved."
   },
   {
     "body_id": "src/test/cljs/cljs/predicates_test.cljs::test-int-preds",

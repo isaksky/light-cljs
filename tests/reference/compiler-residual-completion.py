@@ -64,7 +64,7 @@ def omission_probes(bodies):
         ('core_test.cljs::test-cljs-2133', ['core_test.cljs::Partial'], 3,
          'Repaired by light-cljs-149: complete original Partial/test-cljs-2133 now returns 3 in Node/QuickJS application and QuickJS macro computations against both pinned references; original probe and provenance preserved.'),
         ('src/test/cljs/cljs/interop_test.cljs::test-obj-equiv', [], True,
-         'Normal non-lite map, vector and set values need their upstream Object .equiv method. Keep all seven original assertions; keywords, symbols, lists and lazy sequences already pass isolated current engine probes.'),
+         'Repaired by light-cljs-150: complete original non-lite Object .equiv body retains all seven assertions and returns true in Node/QuickJS applications and independent QuickJS macro computations against both pinned references; original probe and provenance preserved.'),
         ('src/test/cljs/cljs/predicates_test.cljs::test-int-preds', ['src/test/cljs/cljs/predicates_test.cljs::int-val-table'], True,
          'Pending explicit host-input boundary review: the complete original table includes goog.math.Long and goog.math.Integer representations via upstream LongImpl and Integer setup. Current compiler cannot resolve cljs.core/LongImpl; preserve all fourteen table rows, eight predicate columns and original loops. This does not establish a defect in JavaScript-number predicate behavior or assign a focused feature owner.'),
     ]
@@ -89,7 +89,7 @@ def omission_probes(bodies):
         result.append({'body_id': identity, 'source': source,
             'source_sha256': inv.digest(source.encode()), 'complete_original_provenance': origins,
             'assertion_ids': bodies[identity]['assertions'], 'expected_returned_value': expected,
-            'status': 'witnessed-semantic-omission' if identity.endswith('::test-cljs-2133') else 'unwitnessed-host-input-boundary' if identity.endswith('::test-int-preds') else 'unwitnessed-semantic-omission',
+            'status': 'witnessed-semantic-omission' if identity.endswith(('::test-cljs-2133', '::test-obj-equiv')) else 'unwitnessed-host-input-boundary' if identity.endswith('::test-int-preds') else 'unwitnessed-semantic-omission',
             'focused_owner_scope': scope})
     persist(ROOT / 'tests/reference/compiler-residual-completion-omissions.json', json.dumps(result, indent=2) + '\n')
 

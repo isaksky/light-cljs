@@ -1,0 +1,3 @@
+# Copyright (c) Rich Hickey. Eclipse Public License 1.0.
+# id	source	expected	complete original body/setup hashes
+cljs-object-equiv-original	(do (def LITE_MODE false) (do (do (assert (.equiv :foo :foo)) (assert (.equiv 'foo 'foo)) (when-not LITE_MODE       (assert (.equiv {:foo 1 :bar 2} {:foo 1 :bar 2}))) (assert (.equiv [1 2 3] [1 2 3])) (assert (.equiv '(1 2 3) '(1 2 3))) (assert (.equiv (map inc [1 2 3]) (map inc [1 2 3]))) (when-not LITE_MODE       (assert (.equiv #{:cat :dog :bird} #{:cat :dog :bird})))) true))	true	[{"body_id":"src/test/cljs/cljs/interop_test.cljs::test-obj-equiv","source_sha256":"9d52796012fca3fe4fdf4adc8d3672db5d68e9b0ce110c54fa2e41e061df0ca2"}]

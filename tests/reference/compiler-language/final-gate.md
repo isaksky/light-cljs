@@ -372,7 +372,16 @@ integrated. Seven supplemental callable contracts also match both references,
 including borrowed receivers, overload behavior, ordered effects and saved
 sequence entries on infinite inputs. See the dated continuation in
 [residual completion evidence](../compiler-residual-completion.md).
-light-cljs-150 and the full light-cljs-125 gate remain unfinished.
+A focused light-cljs-150 continuation then repaired persistent collection
+Object `.equiv`, retaining all seven unchanged non-lite upstream assertions.
+Both applications and independent QuickJS macro computation now return `true`,
+matching fresh observations from both pins. Seven assertion mappings and the
+full source/body/phase provenance are integrated; nine supplemental contracts
+preserve custom equality, receiver binding, metadata, sequence compatibility,
+hash membership and identity. Focused owners light-cljs-151 and light-cljs-152
+retain separate demonstrated sequence/name Object-dispatch and false extension
+cycle defects. The full light-cljs-125 gate remains unfinished; this repair
+supplies no comprehensive zero-missing claim.
 
 The full fourteen-row/eight-predicate integer table, private tapset-dependent
 setup, complete 100,000-trial generative sources, inference checks and invocation

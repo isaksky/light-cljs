@@ -1,0 +1,102 @@
+{
+  "full-cases.jsonl": [
+    {
+      "id": "cljs-object-equiv-original",
+      "source": "(do (def LITE_MODE false) (do (do (assert (.equiv :foo :foo)) (assert (.equiv 'foo 'foo)) (when-not LITE_MODE       (assert (.equiv {:foo 1 :bar 2} {:foo 1 :bar 2}))) (assert (.equiv [1 2 3] [1 2 3])) (assert (.equiv '(1 2 3) '(1 2 3))) (assert (.equiv (map inc [1 2 3]) (map inc [1 2 3]))) (when-not LITE_MODE       (assert (.equiv #{:cat :dog :bird} #{:cat :dog :bird})))) true))",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv",
+          "source_sha256": "9d52796012fca3fe4fdf4adc8d3672db5d68e9b0ce110c54fa2e41e061df0ca2"
+        }
+      ],
+      "expected": {
+        "id": "cljs-object-equiv-original",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mapping": {
+        "body_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv",
+        "body_sha256": "9d52796012fca3fe4fdf4adc8d3672db5d68e9b0ce110c54fa2e41e061df0ca2",
+        "reference_fixture_id": "cljs-object-equiv-original",
+        "reference_source_sha256": "18ab06bef880d002aaa5584b75724664bc0cd0aacd0bf61894e6bcc3aee08d40",
+        "reference_contract_sha256": "aff9040939b7ad64105c43b59e47416b3c1d5533f7d3d22d838830088394a3db",
+        "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion.",
+        "local_execution": {
+          "test_file": "tests/compiler_object_equiv.rs",
+          "test_name": "complete_non_lite_object_equiv_body_executes_in_both_phases",
+          "test_source_sha256": "05f8e3a01ff60ce4102627d5a725784cf0f8abd81b05fceb4d52445f29f8e449"
+        },
+        "support_source_sha256": {
+          "tests/fixtures/compiler-object-equiv-original.tsv": "c2db19e3190e4486ee8b02eedd8262e84046d917e7e4fa53f09c2aaa673cf433"
+        }
+      }
+    }
+  ],
+  "full-witnesses.jsonl": [
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-001",
+      "assertion_sha256": "c10a2b6737534cad6a6a3195233841851728167a03b12e6e815bcb4be3d9f20a",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-002",
+      "assertion_sha256": "6df0b0c858cf825f05f9e5236ccd49fd2c8766ff288d67e0cda0ff4a2edf711d",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-003",
+      "assertion_sha256": "695812fe3f117c25b54e74d414c997277f417f9abc60475fa52e6eb7f22fc812",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-004",
+      "assertion_sha256": "3da7749c33f09d6c9ee774d9bed77cbaa92cbfad2b1cebdaf57192a46746d07b",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-005",
+      "assertion_sha256": "ef5e211bea8d1d5fa21673f0b20519944218711ff4bee205f3138353f591cddf",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-006",
+      "assertion_sha256": "f48422ee0dc0b6a9d6d61cd6b9ca32da8b8788dbd8fe5260f1bcf2d3d6899289",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv::assertion-007",
+      "assertion_sha256": "da261b2aaea007f20595aaced8c8015128e6e5af6c946a0ad91efe00f49dc592",
+      "fixture_id": "cljs-object-equiv-original",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion."
+    }
+  ],
+  "complete-body-phase-mappings": [
+    {
+      "body_id": "src/test/cljs/cljs/interop_test.cljs::test-obj-equiv",
+      "body_sha256": "9d52796012fca3fe4fdf4adc8d3672db5d68e9b0ce110c54fa2e41e061df0ca2",
+      "reference_fixture_id": "cljs-object-equiv-original",
+      "reference_source_sha256": "18ab06bef880d002aaa5584b75724664bc0cd0aacd0bf61894e6bcc3aee08d40",
+      "reference_contract_sha256": "aff9040939b7ad64105c43b59e47416b3c1d5533f7d3d22d838830088394a3db",
+      "rationale": "Complete original non-lite Object equiv body with all seven assertions and LITE_MODE false; only cljs.test testing/is become executing do/assert and the body returns true after all assertions. Every .equiv call, collection literal and lazy computation is preserved. Ordinary applications execute in Node/QuickJS; macros independently compute the full body in QuickJS before expansion.",
+      "local_execution": {
+        "test_file": "tests/compiler_object_equiv.rs",
+        "test_name": "complete_non_lite_object_equiv_body_executes_in_both_phases",
+        "test_source_sha256": "05f8e3a01ff60ce4102627d5a725784cf0f8abd81b05fceb4d52445f29f8e449"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-object-equiv-original.tsv": "c2db19e3190e4486ee8b02eedd8262e84046d917e7e4fa53f09c2aaa673cf433"
+      }
+    }
+  ]
+}
