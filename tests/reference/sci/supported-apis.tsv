@@ -1,9 +1,9 @@
-# api	kind	disposition	evidence (SCI id or native test)	reviewed scope
+# api	kind	disposition	evidence (SCI id or executable test)	reviewed scope
 clojure.core/*	function	sci-exact	sci-iteration-for-basic	vec fully realizes for body, invoking multiplication for x=1,2,3
-clojure.core/*1	variable	native-only	tests/native_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	REPL history; also errors_do_not_shift_history test at native_cli.rs:343
-clojure.core/*2	variable	native-only	tests/native_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	REPL history; also errors_do_not_shift_history test at native_cli.rs:343
-clojure.core/*3	variable	native-only	tests/native_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	REPL history; also errors_do_not_shift_history test at native_cli.rs:343
-clojure.core/*e	variable	native-only	tests/native_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	REPL history; also errors_do_not_shift_history test at native_cli.rs:343
+clojure.core/*1	variable	compiled-replacement	tests/eval_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	Compiler-backed REPL replacement verifies history and error recovery with native evaluation disabled; supersedes the removed native_cli.rs test.
+clojure.core/*2	variable	compiled-replacement	tests/eval_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	Compiler-backed REPL replacement verifies history and error recovery with native evaluation disabled; supersedes the removed native_cli.rs test.
+clojure.core/*3	variable	compiled-replacement	tests/eval_cli.rs::repl_retains_history_definitions_namespace_and_current_reader_context	Compiler-backed REPL replacement verifies history and error recovery with native evaluation disabled; supersedes the removed native_cli.rs test.
+clojure.core/*e	variable	compiled-replacement	tests/eval_cli.rs::repl_continues_after_reader_analysis_execution_and_print_errors	Compiler-backed REPL replacement verifies history and error recovery with native evaluation disabled; supersedes the removed native_cli.rs test.
 clojure.core/*err*	variable	sci-exact	sci-io-stdout-stderr	binding evaluates *err* and redirects actual println output to it
 clojure.core/*file*	variable	sci-exact	sci-vars-file-binding	binding sets *file*, reads bound value and inspects dynamic Var metadata
 clojure.core/*flush-on-newline*	variable	native-only	tests/interpreter_io.rs::channels_flush_and_bindings_restore_without_duplicate_writes	interpreter_io.rs:223 binds false and asserts flush count

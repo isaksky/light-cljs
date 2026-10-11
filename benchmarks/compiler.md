@@ -374,12 +374,14 @@ python3 -B benchmarks/measure_compiler_language.py \
 
 ## Evaluator migration gate — October 10, 2026
 
-The native-disabled execution gate and its incomplete broad-check evidence are
+The native-disabled execution gate and its completed local evidence are
 recorded in [the migration verification](../tests/reference/evaluator-migration/verification.md).
 Historical native macro/collector timings above remain historical; production
 macros and evaluation consumers execute compiler-emitted JavaScript in QuickJS.
 The native bench targets remain for physical retirement under light-cljs-115.
-The canonical runtime was unchanged by the gate/test migration.
+The initial gate/test migration left the canonical runtime unchanged. The
+resumed verification also repairs the retained applied-constructor lazy-tail
+contract; its refreshed measurements appear below.
 
 Executed the existing application preparation benchmark with native entrypoints
 fenced, Node v24.18.0, Rust 1.99.0, and nine samples per scenario/mode/phase:
@@ -412,3 +414,34 @@ startup. No allocation, cross-platform, old native-GC or full legacy benchmark
 run is claimed. The initial three-sample invocation was rejected by the existing
 benchmark's minimum-nine-samples contract; the corrected invocation above is the
 completed measurement.
+
+### Final resumed application measurement
+
+After all default-stack Cargo and native-disabled/reference gates passed, the
+existing benchmark was rerun against the constructor repair, with the same tools
+and nine samples per group. No concurrent compiler build was running.
+
+```sh
+LIGHT_CLJS_DISABLE_NATIVE_EVAL=1 cargo bench --locked --bench compiler -- --application-only --samples 9 --iterations 1 --dump /tmp/light-cljs-114-resume-performance
+```
+
+Exit 0; **270 samples**, every complete off/on result checked, including warmups.
+[Final raw CSV](results/evaluator-migration-2026-10-10/final-application.csv)
+retains all samples.
+
+| Scenario | Output bytes, off / on | Prepared emission median µs, off / on | Node median ms, off / on |
+| --- | ---: | ---: | ---: |
+| integer | 88 / 88 | 0.292 / 0.333 | 56.678 / 53.851 |
+| nested-closure | 297 / 297 | 1.417 / 1.208 | 52.916 / 52.982 |
+| js-nested-method | 126 / 126 | 0.625 / 0.792 | 53.701 / 53.058 |
+| collections | 234,491 / 234,491 | 10.833 / 9.542 | 57.633 / 58.482 |
+| macro-helpers | 238,834 / 234,658 | 36.000 / 29.250 | 57.045 / 58.316 |
+
+The canonical runtime gains **1,165 emitted bytes** for the bounded constructor
+ABIs. Primitive output sizes remain identical, and macro-only helper elimination
+still removes **4,176 bytes** with equal complete results. Node startup medians
+span 52.916–58.482 ms. The earlier run had concurrent-build contention; it is
+unsuitable for claiming a reliable speedup or regression from these samples.
+These are application preparation/emission and fresh Node measurements, not
+macro compilation, persistent QuickJS throughput, allocation or native GC
+measurements.

@@ -11,23 +11,24 @@ are compared separately, including completed effects before failure.
 
 | Disposition | Rows | Evidence |
 | --- | ---: | --- |
-| portable | 1,180 | Original source agrees with the documented CLJS comparison projection |
+| portable | 1,184 | Original source agrees with the documented CLJS comparison projection |
 | adapted | 304 | Recorded source explicitly imports SCI-preinstalled libraries and/or replaces JVM catch selectors with `:default`; projected observation agrees |
-| gap | 906 | Current evaluator observation is recorded, but does **not** satisfy the SCI comparison |
+| gap | 902 | Current evaluator observation is recorded, but does **not** satisfy the SCI comparison |
 | retired | 85 | Exact JVM numeric, configured `:bb` reader or native `.clj` loading contract is outside the settled compiler-backed target |
 
-Only **1,484** matching observations contribute to conformance coverage. The 906
+Only **1,488** matching observations contribute to conformance coverage. The 902
 gaps include 305 cases that emit an owned diagnostic but lack a matching SCI
-phase/category transport contract. The other 601 entries require language or
+phase/category transport contract. The other 597 entries require language or
 dialect review; their recorded baselines are **not accepted language semantics**.
 An accounting test passing means those unresolved cases remain visible and their
 current observations remain reproducible. It cannot establish that migration is
-complete. In particular, `sci-state-volatile-order` and
-`sci-state-volatile-two-targets` remain nonpassing under **light-cljs-126**.
+complete. The repaired `sci-state-volatile-order` and `sci-state-volatile-two-targets`
+execute unchanged source and match the original values and ordered effects
+under the Number projection after **light-cljs-126**.
 
 The matching rows span the entire corpus, including 175 lazy, 141 transducer
-constructor, 106 control, 96 binding/destructuring, 94 collection, 72 sequence,
-66 iteration, 60 string, 159 set/walk/EDN data, 54 state, 32 IO, 26 transduce,
+constructor, 106 control, 96 binding/destructuring, 94 collection, 73 sequence,
+66 iteration, 60 string, 159 set/walk/EDN data, 56 state, 32 IO, 26 transduce,
 25 record, 23 exception and 20 macro cases. All 12 loop and all eight letfn
 observations match. Cardinality checks require at least 1,000 unchanged-source
 portable rows and at least 30 matching rows each in nine substantial families;
@@ -64,13 +65,12 @@ The current live owners inspected with `pl --json list` are recorded per case:
 | --- | ---: | --- |
 | light-cljs-116 | 305 | Explicit error-transport accounting; SCI categories are not inferred from arbitrary exception messages |
 | light-cljs-125 | 219 | Residual state/function/control/protocol/record/library integration review |
-| light-cljs-121 | 124 | Sequence/lazy/iteration and finite-demand review |
+| light-cljs-121 | 122 | Sequence/lazy/iteration and finite-demand review |
 | light-cljs-124 | 110 | Printing, namespace/Var reflection and host hooks |
 | light-cljs-9 | 63 | Reader/contextual/syntax-quote review |
 | light-cljs-49 | 57 | JVM versus ECMAScript string/regex/coercion review |
 | light-cljs-122 | 23 | Core numeric/data utility review |
 | light-cljs-120 | 3 | Equality/metadata review |
-| light-cljs-126 | 2 | Known `vswap!` target-order regression |
 
 These links assign evidence review; they do not defer current migration
 requirements automatically. The existing library port light-cljs-123 is closed;
@@ -98,13 +98,15 @@ read/analysis/execution categories.
 
 Ordinary rows retain the evaluator's default 1,000,000-poll budget and a
 30-second backup deadline, including cold compiler bootstrap. Only
-`sci-recur-operand-failure` and `sci-deferred-lazy-partial-infinite` cancel after
-256 observation events; these nonpassing probes currently loop or over-realize.
+`sci-recur-operand-failure` cancels after 256 observation events; this nonpassing
+probe currently loops. The repaired `sci-deferred-lazy-partial-infinite` uses
+the ordinary default budget and returns true after exactly five observations.
 Only `sci-deferred-lazy-self` and `sci-deferred-lazy-mutual` use a three-second
 backup deadline. Their deadline or poll-budget termination is represented as
 `(resource-bound lazy-cycle)`, with the complete observed effects retained. This
 explicit nonpassing resource outcome avoids comparing machine speed, and does
-not normalize ordinary evaluator errors. All four remain owned language gaps.
+not normalize ordinary evaluator errors. The three remaining resource probes
+stay owned language gaps.
 All returned collection exports retain the bounded compiler form bridge. No
 infinite result is counted as successful finite transport.
 
@@ -164,3 +166,17 @@ was preserved; passing observations were not rebaselined to its resource errors.
 The corrected harness restores the default budget and confines special resource
 handling to the four documented nonpassing probes. This passing accounting
 result does not resolve the language gaps or authorize migration completion.
+
+### Bounded constructor reconciliation, 2026-10-10
+
+The applied `partial` and `juxt` constructors now retain their variadic sequence
+tails. A reviewed 18-case audit executed every historical source containing an
+applied constructor against the Cargo-built evaluator. Two unchanged-source
+rows (`sci-deferred-lazy-partial-infinite`, `sci-seq-apply-juxt-constructor`)
+now match the original projected SCI observations. Two delayed-tail error rows
+now preserve the original completed effects; their owned diagnostic category
+transport remains explicitly nonpassing. No original source/observation changed.
+The former partial effect-cancellation special case was removed. Direct Node
+and compiler witnesses check finite demand, capture reuse, invocation order and
+fresh macro/runtime heaps. Final whole-repository and fenced gate results are
+recorded in [migration verification](../evaluator-migration/verification.md).

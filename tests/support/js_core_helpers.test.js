@@ -43,6 +43,56 @@ assert.equal(c.apply(c.everyPred, guarded(0, () => () => false))(1), false);
 // Callable data participates through .call just like a function.
 assert.equal(c.someFn(c.hashMap("x", 0))("x"), 0);
 
+// Applied constructors capture unbounded inputs after the fixed prefix. The
+// returned function need not consume that tail until it is actually invoked.
+const partialEffects = [], juxtEffects = [];
+function observedTail(effects, limit = Infinity, value = x => x, i = 0) {
+  return new c.LazySeq(null, () => {
+    if (i === limit) return null;
+    if (i > 8 && limit === Infinity) throw Error("constructor consumed an unbounded tail");
+    effects.push(i);
+    return c.cons(value(i), observedTail(effects, limit, value, i + 1));
+  }, null, null);
+}
+assert.equal(typeof c.apply(c.partial, c.vector, observedTail(partialEffects)), "function");
+assert.equal(typeof c.apply(c.juxt, observedTail(juxtEffects, Infinity, i => () => i)), "function");
+assert.deepEqual(partialEffects, [0, 1, 2, 3, 4]);
+assert.deepEqual(juxtEffects, [0, 1, 2, 3, 4]);
+partialEffects.length = 0;
+const deferredPartial = c.apply(c.partial, c.vector, observedTail(partialEffects, 8));
+assert.deepEqual(partialEffects, [0, 1, 2, 3, 4]);
+equivalent(deferredPartial(9), c.vector(0, 1, 2, 3, 4, 5, 6, 7, 9));
+equivalent(c.apply(deferredPartial, c.list(10, 11)), c.vector(0, 1, 2, 3, 4, 5, 6, 7, 10, 11));
+assert.deepEqual(partialEffects, [0, 1, 2, 3, 4, 5, 6, 7]);
+juxtEffects.length = 0;
+const juxtCalls = [];
+const deferredJuxt = c.apply(c.juxt, observedTail(juxtEffects, 6, i => (...args) => {
+  juxtCalls.push(i);
+  return i + args.reduce((a, b) => a + b, 0);
+}));
+assert.deepEqual(juxtEffects, [0, 1, 2, 3, 4]);
+equivalent(deferredJuxt(10), c.vector(10, 11, 12, 13, 14, 15));
+equivalent(c.apply(deferredJuxt, c.list(1, 2, 3, 4)), c.vector(10, 11, 12, 13, 14, 15));
+assert.deepEqual(juxtEffects, [0, 1, 2, 3, 4, 5]);
+assert.deepEqual(juxtCalls, [0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5]);
+assert.equal(c.partial(c.vector), c.vector);
+assert.throws(() => c.partial()(), TypeError);
+assert.throws(() => c.juxt()(), TypeError);
+for (let n = 0; n <= 6; n++) {
+  const prefix = Array.from({length: n}, (_, i) => i);
+  for (let argc = 0; argc <= 6; argc++) {
+    const args = Array.from({length: argc}, (_, i) => 10 + i);
+    equivalent(c.partial(c.vector, ...prefix)(...args), c.vector(...prefix, ...args));
+    equivalent(c.apply(c.partial, c.list(c.vector, ...prefix))(...args), c.vector(...prefix, ...args));
+    if (n) {
+      const fns = prefix.map(i => (...xs) => i + xs.reduce((a, b) => a + b, 0));
+      const expected = c.vector(...prefix.map(i => i + args.reduce((a, b) => a + b, 0)));
+      equivalent(c.juxt(...fns)(...args), expected);
+      equivalent(c.apply(c.juxt, c.list(...fns))(...args), expected);
+    }
+  }
+}
+
 let evaluations = 0;
 const memoized = c.memoize(function (...args) { return ++evaluations % 2 ? null : false; });
 assert.equal(memoized(c.vector(1, 2)), null);

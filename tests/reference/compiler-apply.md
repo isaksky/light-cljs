@@ -129,3 +129,24 @@ medians **12.12 µs before** and **15.75 µs after**. This is a small local
 initialization measurement with visible run-to-run noise; it excludes JS parse
 and compilation and is not a browser benchmark. The additional callable
 entries and supporting helpers have a measurable initialization cost.
+
+## Deferred constructor migration verification (2026-10-10)
+
+`partial` and `juxt` constructors now expose the same canonical fixed/variadic
+sequence ABI as their returned functions. Applying either constructor to an
+infinite lazy tail realizes only the bounded dispatch prefix (the witnesses
+observe positions 0 through 4), then retains the remaining tail. Calling a
+finite captured partial realizes its remaining values once; repeated calls
+reuse the cached sequence. Juxt callbacks still execute in left-to-right order
+on every invocation. This replaces retained native finite-demand behavior; it
+is separate from the remaining intended sequence inventory.
+
+`compiler_core_helpers::applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases`
+executes exact effects and values in independent macro/application heaps,
+QuickJS and Node, and two clean compilations with a reused MacroHost. Direct
+`js_core_helpers.test.js` assertions exercise applied constructor prefixes and
+returned function arities, finite capture reuse, unbounded construction, and
+missing-argument behavior. Both Node scripts and all three compiler-core-helper
+tests passed locally with native evaluation disabled at the default Rust stack.
+The final full gate results are recorded in
+[evaluator migration verification](evaluator-migration/verification.md).

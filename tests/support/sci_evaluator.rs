@@ -134,10 +134,7 @@ pub fn run(id: &str, source: &str, profile: &str) -> Result<Observation, String>
     };
     let trace = Rc::new(RefCell::new(Vec::<Datum>::new()));
     let capture = trace.clone();
-    let bounded_effects = matches!(
-        id,
-        "sci-recur-operand-failure" | "sci-deferred-lazy-partial-infinite"
-    );
+    let bounded_effects = id == "sci-recur-operand-failure";
     let lazy_cycle_probe = matches!(id, "sci-deferred-lazy-self" | "sci-deferred-lazy-mutual");
     let stdout = Rc::new(RefCell::new(String::new()));
     let out = stdout.clone();

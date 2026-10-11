@@ -9,8 +9,12 @@ embedding, scripts and the REPL now execute compiler-emitted JavaScript in Quick
 Immutable compiler reading, structured forms, declaration bundles, ordinary
 `.cljs`/`.cljc` imports and effect-preserving application preparation are implemented.
 The [execution gate](../tests/reference/evaluator-migration/README.md) tests this
-contract with every old native execution entrypoint disabled. The temporary native
-library, its API-specific tests and historical benchmarks remain for physical
+contract with every old native execution entrypoint disabled. The final local
+full Cargo run and both default-stack fenced gate modes passed, including the
+retained applied `partial`/`juxt` finite-demand behavior; see the
+[exact evidence and remaining gaps](../tests/reference/evaluator-migration/verification.md#final-resumed-verification).
+The temporary native library, its API-specific tests and historical benchmarks
+remain for physical
 removal under light-cljs-115; the gate does not authorize their retention as a
 fallback or claim whole-language completion.
 

@@ -843,8 +843,8 @@ primitive forms, analyzer-handled `declare`/`defonce`, and the `unquote` sentine
 `interpreter_coverage` compares the inventory with actual namespace registries
 (including private Rust registration functions), validates every evidence target,
 and rejects new or removed APIs without a disposition. Evidence distinguishes
-direct SCI assertions, expansion helpers, native-only checks and explicit
-unsupported numeric registrations. Each reference identifies reachable use, not
+direct SCI assertions, expansion helpers, native-only checks, compiled REPL
+replacements and explicit unsupported numeric registrations. Each reference identifies reachable use, not
 just a token occurrence; it establishes some executable coverage, not exhaustive
 arity/type/interaction coverage. The feature suites supply that additional depth.
 `catch`/`finally` are clauses of `try`, not callable Vars.

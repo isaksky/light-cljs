@@ -40,17 +40,17 @@ fn every_runtime_api_has_reviewed_executable_evidence() {
                     "{api} incorrectly claims exact agreement"
                 );
             }
-            "native-only" | "unsupported-explicit" => {
+            "native-only" | "unsupported-explicit" | "compiled-replacement" => {
                 let (path, test) = evidence
                     .split_once("::")
-                    .expect("native coverage needs path::test");
+                    .expect("test coverage needs path::test");
                 let source = std::fs::read_to_string(
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path),
                 )
                 .unwrap();
                 assert!(
                     source.contains(&format!("#[test]\nfn {test}(")),
-                    "unknown native coverage {api}: {evidence}"
+                    "unknown test coverage {api}: {evidence}"
                 );
                 assert!(source.contains("#[test]"), "{evidence}");
             }

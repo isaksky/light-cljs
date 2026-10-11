@@ -1,19 +1,21 @@
 # Migration gate verification — October 10, 2026
 
-**Incomplete.** This evidence does not authorize native deletion or close
-light-cljs-114. The supported production compiler/evaluator fixtures were
-migrated, and old native entrypoints are fenced, but broad acceptance still
-exposes existing queued defects. The live Pellet description retains the full
-acceptance criteria and resumable evidence.
+**The light-cljs-114 execution gate is complete.** The final default-stack full
+Cargo run and both native-disabled gate modes passed after the four prerequisite
+repairs and the retained lazy-constructor regression described below. This is
+local evidence for the named migration contract. Physical native removal and
+post-removal builds remain light-cljs-115; full intended-language completion
+remains light-cljs-125. Queue closure cannot turn the explicit language gaps
+into passing semantics. Earlier incomplete attempts are retained below.
 
-Starting Git commit: `0413d551bce3493f761be15624a5e3dbea3fd580`.
+Initial starting Git commit: `0413d551bce3493f761be15624a5e3dbea3fd580`.
 Tools: macOS 15.7.3 ARM64; Rust/Cargo 1.99.0; Node v24.18.0; Python 3.14.6;
 Clojure CLI 1.12.4.1618; Java 25.0.2. Required CLJS references are Maven 1.12.134
 and checkout `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`; the checkout reports
 ClojureScript `0.0.135109660` and Clojure 1.12.4. These are local executions,
 not GitHub Actions or cross-platform results.
 
-## Executed focused checks
+## Initial focused checks (before the final rerun)
 
 All Cargo commands below use `--locked`; compiler/evaluation commands also have
 `LIGHT_CLJS_DISABLE_NATIVE_EVAL=1`, unless explicitly marked historical.
@@ -42,7 +44,7 @@ All Cargo commands below use `--locked`; compiler/evaluation commands also have
 | `git diff --check` | Passed |
 | Final `rustc --test` evaluator-conformance target against Cargo-built dependencies, native disabled | 2 passed, 0 failed, 2 ignored in 141.70s; all 2,475 dispositions executed. Exact compile/invocation commands are in [SCI accounting](../sci/evaluator-accounting.md#local-verification-2026-10-10). This is not a fresh Cargo/full-gate run |
 
-## Pinned comparisons actually executed
+## Initial pinned comparisons actually executed
 
 With `LIGHT_CLJS_REFERENCE=both`, explicit checkout path and full revision,
 `LIGHT_CLJS_DISABLE_NATIVE_EVAL=1`:
@@ -56,7 +58,7 @@ not rerun and are not passes. Local phase/macro dialect assertions do not requir
 an upstream compiler to accept source-only `.cljs` macros. Historical SCI golden
 rows were preserved; a new JVM regeneration of every SCI row was not run locally.
 
-## Known failing acceptance
+## Initial acceptance failures (resolved before the final rerun)
 
 - **light-cljs-126:** `RUST_MIN_STACK=8388608 cargo test --test execution`
   produced **52 passed, 1 failed, 43 ignored**. The sole failure is
@@ -78,7 +80,7 @@ rows were preserved; a new JVM regeneration of every SCI row was not run locally
   aborted with a Rust default-test-stack overflow. The accepted source was not
   rejected or skipped to make the gate pass.
 
-## Broad command status
+## Initial broad command status (incomplete historical attempts)
 
 `cargo test --locked --no-fail-fast` and the normal native-disabled gate were
 attempted at the default test stack. Both reached the required descriptor witness
@@ -113,7 +115,7 @@ adaptations), 906 gaps and 85 retirements. Of the gaps, 305 concern diagnostic
 transport and 601 require language/dialect review. The live owners govern those
 gaps; recording them does not automatically satisfy migration acceptance.
 
-## Performance
+## Initial performance measurement
 
 The existing `--application-only` benchmark executed with the fence and nine
 samples: **270 measured rows**, all complete values checked in Node. The
@@ -121,3 +123,84 @@ samples: **270 measured rows**, all complete values checked in Node. The
 retains raw samples and output sizes. Concurrent compiler builds make timing
 comparisons noisy; no reliable startup regression/speedup or native-GC claim is
 made. CI configuration was updated but no remote Actions run was started.
+
+## Final resumed verification
+
+Resumed from `4e31ce8a87d038b02041c020144ec104b55fa34b`, incorporating
+`9e75092` (volatile target order), `766198f` (Number-key provenance),
+`0be8eaa` (explicit quoted #js descriptors) and `4e31ce8` (analyzer stack).
+All commands below ran with `RUST_MIN_STACK` unset. Gate children carry
+`LIGHT_CLJS_DISABLE_NATIVE_EVAL=1`; the full Cargo command permits its explicitly
+historical native compatibility tests. No native fallback was enabled in a gate.
+
+| Exact command | Final result and retained receipt |
+| --- | --- |
+| `env -u RUST_MIN_STACK -u LIGHT_CLJS_DISABLE_NATIVE_EVAL cargo test --locked` | Exit 0; **912 passed, 0 failed, 52 ignored**, 84 harnesses; `/tmp/light-cljs-114-resume-cargo-final.log` |
+| `env -u RUST_MIN_STACK python3 -B tests/reference/evaluator-migration/gate.py --artifacts /tmp/light-cljs-114-resume-gate` | Exit 0; **15 stages**; `/tmp/light-cljs-114-resume-gate/results.json` |
+| `env -u RUST_MIN_STACK python3 -B tests/reference/evaluator-migration/gate.py --reference --checkout research/clojurescript --artifacts /tmp/light-cljs-114-resume-reference` | Exit 0; **19 stages**; `/tmp/light-cljs-114-resume-reference/results.json` |
+| `rustfmt --edition 2024 --check tests/compiler_core_helpers.rs tests/interpreter_coverage.rs`; `git diff --check` | Passed |
+
+Each gate completed all **37 consumer targets: 432 passed, 0 failed,
+49 ignored**, then **19 unit tests** across seven modules, both direct Node
+scripts, **58 compiler-language Python tests**, and **6 SCI launcher tests**
+with one explicit skip (the separate `LIGHT_CLJS_SCI_CHECKOUT` transport job
+was not selected). Both default/all-feature locked builds passed. Cold bootstrap,
+all three acceptance programs, standalone mutation, fresh/reused host checks,
+form/descriptors, declaration bundles, cancellation recovery, phase root/effect
+contracts, scripts, REPL, embedding and the accepted nested source all execute
+with the native fence. The new applied constructor witnesses execute literal
+values/effects in both phases and both engines.
+
+Reference mode independently verified the exact pinned inventory (**3,237
+assertions, 696 bodies; 2,535 missing / 702 unrelated**) and reran **58 helper,
+56 sequence and 316 eager transducer cases per reference**, including ordered
+effects/stdout. That is **430 cases per reference**, against Maven 1.12.134 and
+checkout `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. Other ignored oracle and
+startup tests were not executed and are not passes. No remote Actions run,
+cross-platform verification, whole-language strict pass or fresh JVM regeneration
+of every historical SCI row is claimed. The local gate runs the commands wired
+into the migration CI stages; broader intended-language CI remains separate.
+
+### Retained behavior and evidence repairs
+
+The first resumed full Cargo attempt passed the migration suites but exited 101
+at `interpreter_coverage`, because four historical REPL history rows still pointed
+to removed `tests/native_cli.rs`. The inventory now identifies the actual
+compiler-backed history and error-recovery tests as `compiled-replacement`
+evidence. The focused inventory check passed **2 tests**, and the final full run
+passed it too. The failed attempt is retained in
+`/tmp/light-cljs-114-resume-cargo.log`.
+
+A scope audit also identified the retained native/CLJS finite-demand promise for
+applied `partial` and `juxt`. Their constructors had lacked the canonical
+variadic sequence ABI, causing eager realization of the supplied tail. They now
+capture that tail, while preserving fixed arities, callback order and repeated
+finite capture reuse. Direct Node checks and three native-disabled
+`compiler_core_helpers` tests passed before the full gates. The exact infinite
+partial witness now returns true after effects **0..4** using the default budget;
+its special cancellation substitution was removed. Details are in
+[the apply audit](../compiler-apply.md#deferred-constructor-migration-verification-2026-10-10).
+
+The reviewed eighteen-source constructor audit and both complete gate corpus
+checks preserve all **2,475 original SCI rows**. The two repaired volatile rows
+and two recovered constructor rows are unchanged-source matches. Two delayed-tail
+failure rows now preserve the original completed effects; their unmatched
+diagnostic category transport stays nonpassing. Current accounting is
+**1,488 matches (1,184 portable / 304 adapted), 902 gaps and 85 retirements**.
+The gaps retain **305 diagnostic transport / 597 language-or-dialect review**
+rows with live owners. Their existence does not waive a concrete retained
+migration regression; the constructor regression above was resolved here rather
+than deferred through owner assignment. Neither these counts nor this gate
+authorize silently deleting intended behavior or closing the broader ledger.
+
+### Final application performance check
+
+`LIGHT_CLJS_DISABLE_NATIVE_EVAL=1 cargo bench --locked --bench compiler --
+--application-only --samples 9 --iterations 1 --dump /tmp/light-cljs-114-resume-performance`
+exited 0, recording **270 samples** after the final gates. Every complete off/on
+result was checked. The runtime ABI repair adds 1,165 emitted bytes to
+runtime-bearing applications; primitive sizes are unchanged and pure macro
+helper elimination remains 4,176 bytes. The
+[benchmark record](../../../benchmarks/compiler.md#final-resumed-application-measurement)
+retains raw samples and medians. No native-GC, allocation, persistent QuickJS or
+reliable before/after timing claim is made.

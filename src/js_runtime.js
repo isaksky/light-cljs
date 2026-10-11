@@ -3011,20 +3011,37 @@
     return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
       (x, y, z, tail) => run([x, y, z], tail));
   }
-  function partial(fn, ...prefix) {
-    if (!arguments.length) { fn = undefined; prefix = [undefined, undefined, undefined]; }
+  function partialFixed(fn, prefix) {
     if (!prefix.length) return fn;
-    if (prefix.length > 3) return callable(0, {}, args => apply(fn, ...prefix.slice(0, 3), concat(prefix.slice(3), args)));
     const run = (...args) => fn.call(null, ...prefix, ...args);
     return callable(3, {0: () => run(), 1: x => run(x), 2: (x, y) => run(x, y), 3: (x, y, z) => run(x, y, z)},
       (x, y, z, tail) => apply(fn, ...prefix, x, y, z, tail));
   }
-  function juxt(...fns) {
-    if (!fns.length) fns = [undefined, undefined, undefined];
+  // Constructors need the same sequence ABI as their returned functions: apply
+  // may supply an infinite tail which construction must only capture.
+  const partial = callable(4, {
+    0: () => partialFixed(undefined, [undefined, undefined, undefined]),
+    1: fn => fn,
+    2: (fn, a) => partialFixed(fn, [a]),
+    3: (fn, a, b) => partialFixed(fn, [a, b]),
+    4: (fn, a, b, c) => partialFixed(fn, [a, b, c])
+  }, (fn, a, b, c, more) => callable(0, {}, args => apply(fn, a, b, c, concat(more, args))));
+  function juxtFixed(fns) {
     const run = (args, tail) => vectorFromArray(fns.map(fn => directOrApply(fn, args, tail)));
     return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
       (x, y, z, tail) => run([x, y, z], tail));
   }
+  const juxt = callable(3, {
+    0: () => juxtFixed([undefined, undefined, undefined]),
+    1: f => juxtFixed([f]),
+    2: (f, g) => juxtFixed([f, g]),
+    3: (f, g, h) => juxtFixed([f, g, h])
+  }, (f, g, h, more) => {
+    const fns = listStar(f, g, h, more);
+    const run = (args, tail) => vectorFromArray(toArray(mapSeq(fn => directOrApply(fn, args, tail), fns)));
+    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
+      (x, y, z, tail) => run([x, y, z], tail));
+  });
   function fnil(fn, ...defaults) {
     if (defaults.length < 1 || defaults.length > 3) return invalidArity(arguments.length);
     const patch = args => args.map((x, i) => i < defaults.length && x == null ? defaults[i] : x);

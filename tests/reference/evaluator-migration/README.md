@@ -58,7 +58,7 @@ executing replacement. It does not infer passing from a closed Pellet.
 | Lifetime/foreign handles/cycles/callback captures, sticky cancellation/limits and recovery | 106, 112 | `evaluator`, `eval_sessions`, bootstrap cancellation tests; native GC/internal counters have these replacement lifetime/limit regressions before retirement |
 | Embedding forms/analyze/evaluate/invoke/eval/macroexpand, loading/state/IO/libraries/transducers | 112, 118, 123 | `eval_sessions`, `evaluator_conformance`, library/reader/transducer suites |
 | Script/text/stdin/REPL/history/errors/reset/explicit controls | 113 | `eval_cli`, `eval_examples`, `cli`; subprocesses inherit the fence |
-| Canonical operations in QuickJS/Node and direct runtime assertions | 106, 114 | `evaluator`, direct `js_runtime.test.js` and `js_core_helpers.test.js` |
+| Canonical operations in QuickJS/Node and direct runtime assertions | 106, 114 | `evaluator`, `compiler_core_helpers` (bounded applied partial/juxt constructors in both phases), direct `js_runtime.test.js` and `js_core_helpers.test.js` |
 
 ## Historical expectations and remaining language work
 
