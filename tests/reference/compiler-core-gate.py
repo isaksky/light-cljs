@@ -65,10 +65,17 @@ LITERALS['control'].extend([
 LITERALS['collections'].append(
     ('collection-function-arities', '[(not-empty []) (not-empty [1]) (every? pos? [1 2]) (not-every? pos? [1 -1]) (some #{2} [1 2 3]) (not-any? neg? [1 2]) (distinct? 1) (distinct? 1 2) (distinct? 1 2 3) (distinct? 1 2 1) (into) (into [1]) (into [] [1 2]) (into [] (map inc) [1 2]) (mapv inc [1 2]) (mapv + [1 2] [3 4]) (mapv + [1] [2] [3]) (mapv + [1] [2] [3] [4]) (filterv even? [1 2 3 4]) (zipmap [:a :b] [1 2]) (frequencies [:a :b :a]) (group-by even? [1 2 3 4]) (vec (map-indexed vector [:a :b])) (into [] (keep identity) [nil false 2]) (vec (keep identity [nil false 2])) (into [] (keep-indexed (fn [i x] (when x i))) [true nil true]) (vec (keep-indexed (fn [i x] (when x i)) [true nil true]))]', '[nil [1] true true 2 true true true true false [] [1] [1 2] [2 3] [2 3] [4 6] [6] [10] [2 4] {:a 1, :b 2} {:a 2, :b 1} {false [1 3], true [2 4]} [[0 :a] [1 :b]] [false 2] [false 2] [0 2] [0 2]]'))
 
+# Numeric inputs stay in the adopted JavaScript Number domain; the complete
+# upstream Long/Integer table remains a separate source fixture obligation.
+LITERALS['numeric'].append(
+    ('number-predicate-domain', '[(number? 0) (number? "0") (number? ##NaN) (number? ##Inf) (integer? 0) (integer? 1.5) (integer? ##NaN) (integer? ##Inf) (integer? -0.0) (integer? 1000000000000) (integer? 1e21) (int? 0) (int? 1.5) (int? 1e21) (pos-int? 1) (pos-int? 0) (pos-int? -1) (pos-int? 1.5) (neg-int? -1) (neg-int? 0) (neg-int? 1) (nat-int? 0) (nat-int? -0.0) (nat-int? 1) (nat-int? -1) (float? 0) (float? ##NaN) (float? "0") (double? 1.5) (double? ##Inf) (double? nil) (infinite? ##Inf) (infinite? ##-Inf) (infinite? ##NaN) (infinite? 0) (NaN? ##NaN) (NaN? 0)]', '[true false true true true false false false true true false true false false true false false false true false false true true true false true true false true true false true true false false true false]'))
+LITERALS['collections'].append(
+    ('type-predicate-domain', '(let [cloned (reify ICloneable (-clone [_] :copy)) f (fn [x] x) m (with-meta f {:tag :m}) effects (atom [])] [(any? nil) (any? false) (any? 0) (object? #js {}) (object? #js []) (object? nil) (object? {}) (string? "a") (string? :a) (char? "a") (char? "ab") (char? "😀") (fn? f) (fn? m) (fn? :a) (ifn? f) (ifn? :a) (ifn? []) (ifn? 1) (js-fn? f) (js-fn? m) (js-fn? nil) (js-fn? {}) (js-fn? (do (swap! effects conj :once) f)) @effects (seqable? nil) (seqable? "ab") (seqable? #js [1]) (seqable? 1) (iterable? []) (iterable? nil) (js-iterable? "ab") (js-iterable? nil) (cloneable? cloned) (cloneable? nil) (clone cloned) (ifind? {}) (ifind? #js {}) (reduceable? []) (reduceable? #js {})])', '[true true true true false false false true false true false false true true false true true true false true false false false true [:once] true true true false true false true false true false :copy true false true false]'))
+
 # Reviewed names used as direct calls in these exact workflows. No unbound names,
 # private storage/host helpers, quoted data or textual occurrences become arities.
 NAMES = set('''+ - * / = not= < <= > >= inc dec max min quot rem mod zero? pos? neg?
-even? odd? number? integer? int bit-xor bit-and bit-or bit-and-not bit-clear bit-set
+even? odd? number? integer? int? pos-int? neg-int? nat-int? float? double? infinite? NaN? int bit-xor bit-and bit-or bit-and-not bit-clear bit-set
 bit-flip bit-test bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right
 apply not boolean true? false? nil? some? identical? compare
 get assoc dissoc contains? find conj disj count list vector hash-map array-map hash-set
@@ -80,8 +87,35 @@ ex-info ex-data ex-message ex-cause instance? str pr-str
 identity constantly complement comp partial fnil every-pred some-fn juxt memoize trampoline
 not-empty every? not-every? some not-any? distinct? into mapv filterv zipmap frequencies
 group-by map-indexed keep keep-indexed
+any? object? string? char? fn? ifn? js-fn? seqable? iterable? js-iterable? cloneable? clone ifind? reduceable?
 and or if-let when-let when when-not cond case for doseq dotimes some-> some->>
 cond-> cond->> as-> -> ->>'''.split())
+def qualify_literal_core_calls(source):
+    """Retain a whole literal workflow while executing exact compatibility aliases.
+
+    Replace only actual unquoted call heads, never data, lexical names or
+    saved-function bindings. Ordinary and macro executions check the result.
+    """
+    edits = []
+    def walk(node):
+        if node.kind in {'quote', 'syntax-quote', 'discard', 'var'} or inv.head(node) == 'quote':
+            return
+        if node.kind == 'list' and node.children and inv.head(node) in NAMES:
+            head = node.children[0]
+            edits.append((head.start, head.end, 'clojure.core/' + inv.head(node)))
+        for child in node.children:
+            walk(child)
+    for node in inv.Reader(source).all():
+        walk(node)
+    for start, end, replacement in sorted(edits, reverse=True):
+        source = source[:start] + replacement + source[end:]
+    return source
+
+for group, literals in LITERALS.items():
+    literals.extend([('qualified-' + name, qualify_literal_core_calls(source), expected)
+                     for name, source, expected in list(literals)])
+NAMES |= {'clojure.core/' + name for name in NAMES}
+
 THREADS = {'->', '->>', 'some->', 'some->>', 'cond->', 'cond->>', 'as->'}
 TESTS = {group: 'core_' + group + '_applications_and_macros_execute' for group in GROUPS}
 FIXTURE = ROOT / 'tests/fixtures/compiler-core-gate.tsv'
@@ -142,7 +176,7 @@ def calls(source):
             return
         if head in NAMES and node.kind == 'list':
             result.setdefault(head, set()).add(len(node.children) - 1)
-        if head in THREADS:
+        if head.removeprefix('clojure.core/') in THREADS:
             # Their public macro arity is exact, but nested calls receive
             # implicit arguments and cannot be assigned their raw list length.
             return

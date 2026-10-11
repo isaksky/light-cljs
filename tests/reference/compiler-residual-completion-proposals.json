@@ -57,6 +57,137 @@
       "native_stdout": null
     },
     {
+      "id": "cljs-residual-completion-cljs-2866-test",
+      "source": "(do (do (assert (zero? ((fn [x]                 (while (pos? @x)                   (let [curr @x]                     (when (number? curr)                       (reset! x (dec curr)))))                 @x) (atom 1)))) true))",
+      "expected": {
+        "id": "cljs-residual-completion-cljs-2866-test",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mapping": {
+        "body_sha256": "d19b1c06e47d08746e78a4e61aaf7e2ffc84d554f970cd9fbaba9c0a20773305",
+        "reference_fixture_id": "cljs-residual-completion-cljs-2866-test",
+        "reference_source_sha256": "7d7dc1dc4ce22689a5dced635786b03453c33482482543b3bb214a8e1f8ce426",
+        "reference_contract_sha256": "4f4aef75491e06673a014382251b96998222fa16fa2cf0040971ffd07bfdc3d4",
+        "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+        "body_id": "src/test/cljs/cljs/inference_test.cljs::cljs-2866-test",
+        "local_execution": {
+          "test_file": "tests/compiler_residual_completion.rs",
+          "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+          "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+        },
+        "support_source_sha256": {
+          "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+          "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+          "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+        }
+      }
+    },
+    {
+      "id": "cljs-residual-completion-cljs-3068-test",
+      "source": "(do (def foo-var-3068 (merge)) (do (if foo-var-3068 foo-var-3068) (assert true) true))",
+      "expected": {
+        "id": "cljs-residual-completion-cljs-3068-test",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mapping": {
+        "body_sha256": "68730faa866b68996857a987b436a7d885e27ae5fd561032b6740b74267d3f1c",
+        "reference_fixture_id": "cljs-residual-completion-cljs-3068-test",
+        "reference_source_sha256": "5b8d31f081e54dcd54e6f3c26a6d0f0f466c58a8fd2490b451769af13ac8f894",
+        "reference_contract_sha256": "776427e72a7c19c585075a77205aae202c696ee7a2b0e9309264dc2b494a9682",
+        "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+        "body_id": "src/test/cljs/cljs/inference_test.cljs::cljs-3068-test",
+        "local_execution": {
+          "test_file": "tests/compiler_residual_completion.rs",
+          "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+          "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+        },
+        "support_source_sha256": {
+          "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+          "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+          "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+        }
+      }
+    },
+    {
+      "id": "cljs-residual-completion-qualified-method-return-position-test",
+      "source": "(do (def String js/String) (do (do (let [f (fn [] String/.toUpperCase)           m (f)]       (assert (= \"FOO\" (m \"foo\"))))) true))",
+      "expected": {
+        "id": "cljs-residual-completion-qualified-method-return-position-test",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mapping": {
+        "body_sha256": "18b3840d4077d4cb0fac64c78c9901c77606d82621b1aba96221aaccb1dec463",
+        "reference_fixture_id": "cljs-residual-completion-qualified-method-return-position-test",
+        "reference_source_sha256": "c50d5c2926e975d025ca825b4e2839a485c6ef73c7ac41e08918a6302b14826c",
+        "reference_contract_sha256": "eb377592b292491858fdba1215f18d6f43ee1007b99b957a87c49447824508ca",
+        "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+        "body_id": "src/test/cljs/cljs/qualified_method_test.cljs::qualified-method-return-position-test",
+        "local_execution": {
+          "test_file": "tests/compiler_residual_completion.rs",
+          "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+          "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+        },
+        "support_source_sha256": {
+          "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+          "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+          "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+        }
+      }
+    },
+    {
+      "id": "cljs-residual-completion-test-read-string",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns residualcomplete.readstring (:require [clojure.edn] [cljs.reader]))\n(defn run [] (do (do (do (assert (= (clojure.edn/read-string \"(+ 1 2)\")            (cljs.reader/read-string \"(+ 1 2)\"))) (assert (= (clojure.edn/read-string \"{:a #{[1]}}\")            (cljs.reader/read-string \"{:a #{[1]}}\")))) true)))\n",
+      "expected": {
+        "id": "cljs-residual-completion-test-read-string",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "source_root": "tests/fixtures/compiler-residual-completion",
+      "entry": "residualcomplete.readstring",
+      "export": "run",
+      "complete_body_phase_mapping": {
+        "body_sha256": "b0bb4c88e22b1d3ca6b942bfebc4a25ef1e447be8d20fcb7e5fc804867e44f15",
+        "reference_fixture_id": "cljs-residual-completion-test-read-string",
+        "reference_source_sha256": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24",
+        "reference_contract_sha256": "b24b3077aad9b085b88c6d6dc1be5a8101f7c326b8cf4fd6f9bc5b5a3b37b13d",
+        "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+        "body_id": "src/test/cljs/clojure/edn_test.cljs::test-read-string",
+        "local_execution": {
+          "test_file": "tests/compiler_residual_completion.rs",
+          "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+          "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+        },
+        "support_source_sha256": {
+          "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+          "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+          "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+        }
+      }
+    },
+    {
       "id": "cljs-residual-completion-array-access-program",
       "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns residualcomplete.arrayprobe (:require [cljs.array-access-test :refer [suppress-errs]]))\n(defn run [] (let [previous *print-err-fn* result (suppress-errs (nil? *print-err-fn*))] [result (identical? previous *print-err-fn*)]))\n",
       "source_root": "tests/fixtures/compiler-residual-completion",
@@ -85,58 +216,163 @@
       "native_stdout": null
     }
   ],
-  "full-witnesses.jsonl": [],
+  "full-witnesses.jsonl": [
+    {
+      "assertion_id": "src/test/cljs/cljs/inference_test.cljs::cljs-2866-test::assertion-001",
+      "assertion_sha256": "06eca6258c5e771c52b80c5996933a8116b39adef9c3d6b115229c569959d668",
+      "fixture_id": "cljs-residual-completion-cljs-2866-test",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/inference_test.cljs::cljs-3068-test::assertion-001",
+      "assertion_sha256": "29b48aac48dcd163294bd34f4bc6f2211446cccc78dac61064fd140601093e5f",
+      "fixture_id": "cljs-residual-completion-cljs-3068-test",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/qualified_method_test.cljs::qualified-method-return-position-test::assertion-001",
+      "assertion_sha256": "250ab5343fa1e31d883b46adab38234864c4b2dcd11b7fed19f7e7dedeb41e9f",
+      "fixture_id": "cljs-residual-completion-qualified-method-return-position-test",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace."
+    },
+    {
+      "assertion_id": "src/test/cljs/clojure/edn_test.cljs::test-read-string::assertion-001",
+      "assertion_sha256": "eeea0952cd33fd4270cca5779d0c58ab3f123940774ec3747c3c1fd6fe165108",
+      "fixture_id": "cljs-residual-completion-test-read-string",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace."
+    },
+    {
+      "assertion_id": "src/test/cljs/clojure/edn_test.cljs::test-read-string::assertion-002",
+      "assertion_sha256": "5ae22df69399af01bd46e2371602f8086b5e816890299408244266de78751735",
+      "fixture_id": "cljs-residual-completion-test-read-string",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace."
+    }
+  ],
+  "complete-body-phase-mappings": [
+    {
+      "body_sha256": "d19b1c06e47d08746e78a4e61aaf7e2ffc84d554f970cd9fbaba9c0a20773305",
+      "reference_fixture_id": "cljs-residual-completion-cljs-2866-test",
+      "reference_source_sha256": "7d7dc1dc4ce22689a5dced635786b03453c33482482543b3bb214a8e1f8ce426",
+      "reference_contract_sha256": "4f4aef75491e06673a014382251b96998222fa16fa2cf0040971ffd07bfdc3d4",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "body_id": "src/test/cljs/cljs/inference_test.cljs::cljs-2866-test",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_completion.rs",
+        "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+      }
+    },
+    {
+      "body_sha256": "68730faa866b68996857a987b436a7d885e27ae5fd561032b6740b74267d3f1c",
+      "reference_fixture_id": "cljs-residual-completion-cljs-3068-test",
+      "reference_source_sha256": "5b8d31f081e54dcd54e6f3c26a6d0f0f466c58a8fd2490b451769af13ac8f894",
+      "reference_contract_sha256": "776427e72a7c19c585075a77205aae202c696ee7a2b0e9309264dc2b494a9682",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "body_id": "src/test/cljs/cljs/inference_test.cljs::cljs-3068-test",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_completion.rs",
+        "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+      }
+    },
+    {
+      "body_sha256": "18b3840d4077d4cb0fac64c78c9901c77606d82621b1aba96221aaccb1dec463",
+      "reference_fixture_id": "cljs-residual-completion-qualified-method-return-position-test",
+      "reference_source_sha256": "c50d5c2926e975d025ca825b4e2839a485c6ef73c7ac41e08918a6302b14826c",
+      "reference_contract_sha256": "eb377592b292491858fdba1215f18d6f43ee1007b99b957a87c49447824508ca",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "body_id": "src/test/cljs/cljs/qualified_method_test.cljs::qualified-method-return-position-test",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_completion.rs",
+        "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+      }
+    },
+    {
+      "body_sha256": "b0bb4c88e22b1d3ca6b942bfebc4a25ef1e447be8d20fcb7e5fc804867e44f15",
+      "reference_fixture_id": "cljs-residual-completion-test-read-string",
+      "reference_source_sha256": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24",
+      "reference_contract_sha256": "b24b3077aad9b085b88c6d6dc1be5a8101f7c326b8cf4fd6f9bc5b5a3b37b13d",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "body_id": "src/test/cljs/clojure/edn_test.cljs::test-read-string",
+      "local_execution": {
+        "test_file": "tests/compiler_residual_completion.rs",
+        "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
+      },
+      "support_source_sha256": {
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
+      }
+    }
+  ],
   "obligation-witnesses.jsonl": [
     {
-      "obligation_id": "body::core_test.cljs::test-cljs-2133",
       "body_sha256": "de0422b2ae6a31a59a864126b0dd2915a98981f12a356325a3f7612348cbf2b9",
       "reference_fixture_id": "cljs-residual-completion-test-cljs-2133",
       "reference_source_sha256": "8c95f33171bb8525c6d059fc5d668c302abad04fa4a8a544b296ac5d91592754",
       "reference_contract_sha256": "f25a9f197eab4069196ca84c9646308f4dd0e90c89e346271f5da835748bb8b5",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::test-cljs-2133",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       }
     },
     {
-      "obligation_id": "body::core_test.cljs::var-desugar-test",
       "body_sha256": "4b3e8fc2fa7f62b6263f2ab2271eb7e17db2d572581d11b11b1300813a05560f",
       "reference_fixture_id": "cljs-residual-completion-var-desugar-test",
       "reference_source_sha256": "e3abf44d477cc266faeb1556e5695a8b43f588eb055713c0209f0bb46fd0877d",
       "reference_contract_sha256": "08c3b7be5949d08d41585b50a644f2e18b0551d252cce4d85e9b6eaa3982cf7b",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::var-desugar-test",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       }
     },
     {
-      "obligation_id": "body::core_test.cljs::test-cljs-3313",
       "body_sha256": "afab6892f7609fc2969ea42e24eda1ba970a2f0fd0daa47edb08232d88ac86a5",
       "reference_fixture_id": "cljs-residual-completion-test-cljs-3313",
       "reference_source_sha256": "81a9ef9bcbe6b30be3d3eef26aa24147a5ffdcf2b91c0140ea350da5030b6c92",
       "reference_contract_sha256": "8a744c55c1e6e844b3012b8c01fa32c6d513f6a9af79c6e6d0d37214e819beba",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::test-cljs-3313",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       }
     },
     {
-      "obligation_id": "body::core_test.cljs::test-new-method",
       "body_sha256": "a8e214d6ff74aca44f363e53515ea8c3e418b98e9598b7ffdb4bcc965d0f633d",
       "reference_fixture_id": "cljs-residual-completion-test-new-method",
       "reference_source_sha256": "9e55e4b55497e89d747b002f19ca4d0aec662cee6cd30b479f2ef720d16b5bda",
       "reference_contract_sha256": "f5a953448d9b62c4209b11f506eca3b2f9e6c57440793baf2c05f7cf77f0c79c",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::test-new-method",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       }
     },
     {
@@ -149,89 +385,93 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       }
     }
   ],
   "phase-witnesses.jsonl": [
     {
-      "obligation_id": "body::core_test.cljs::test-cljs-2133",
       "body_sha256": "de0422b2ae6a31a59a864126b0dd2915a98981f12a356325a3f7612348cbf2b9",
       "reference_fixture_id": "cljs-residual-completion-test-cljs-2133",
       "reference_source_sha256": "8c95f33171bb8525c6d059fc5d668c302abad04fa4a8a544b296ac5d91592754",
       "reference_contract_sha256": "f25a9f197eab4069196ca84c9646308f4dd0e90c89e346271f5da835748bb8b5",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::test-cljs-2133",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
+      "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
-        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
       }
     },
     {
-      "obligation_id": "body::core_test.cljs::var-desugar-test",
       "body_sha256": "4b3e8fc2fa7f62b6263f2ab2271eb7e17db2d572581d11b11b1300813a05560f",
       "reference_fixture_id": "cljs-residual-completion-var-desugar-test",
       "reference_source_sha256": "e3abf44d477cc266faeb1556e5695a8b43f588eb055713c0209f0bb46fd0877d",
       "reference_contract_sha256": "08c3b7be5949d08d41585b50a644f2e18b0551d252cce4d85e9b6eaa3982cf7b",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::var-desugar-test",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
+      "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
-        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
       }
     },
     {
-      "obligation_id": "body::core_test.cljs::test-cljs-3313",
       "body_sha256": "afab6892f7609fc2969ea42e24eda1ba970a2f0fd0daa47edb08232d88ac86a5",
       "reference_fixture_id": "cljs-residual-completion-test-cljs-3313",
       "reference_source_sha256": "81a9ef9bcbe6b30be3d3eef26aa24147a5ffdcf2b91c0140ea350da5030b6c92",
       "reference_contract_sha256": "8a744c55c1e6e844b3012b8c01fa32c6d513f6a9af79c6e6d0d37214e819beba",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::test-cljs-3313",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
+      "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
-        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
       }
     },
     {
-      "obligation_id": "body::core_test.cljs::test-new-method",
       "body_sha256": "a8e214d6ff74aca44f363e53515ea8c3e418b98e9598b7ffdb4bcc965d0f633d",
       "reference_fixture_id": "cljs-residual-completion-test-new-method",
       "reference_source_sha256": "9e55e4b55497e89d747b002f19ca4d0aec662cee6cd30b479f2ef720d16b5bda",
       "reference_contract_sha256": "f5a953448d9b62c4209b11f506eca3b2f9e6c57440793baf2c05f7cf77f0c79c",
-      "rationale": "Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.",
+      "rationale": "Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.",
+      "obligation_id": "body::core_test.cljs::test-new-method",
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
+      "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
-        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
       }
     },
     {
@@ -244,14 +484,15 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_completion.rs",
         "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-        "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410"
+        "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6"
       },
       "test_file": "tests/compiler_residual_completion.rs",
       "test_name": "remaining_complete_residual_bodies_execute_in_both_phases",
-      "test_source_sha256": "a495fed42510ab691193977ee16210ba21d301862b4a088d525d3871c4d49410",
+      "test_source_sha256": "ec11fe03104ddede1fc8eed3b97bd19cbb9b3c49b2aece413b6185c57eed29b6",
       "support_source_sha256": {
-        "tests/fixtures/compiler-residual-completion.tsv": "b203ab00dc2b1a699f672dd3441ed34396cefd816a92478235cf21a0e601df74",
-        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387"
+        "tests/fixtures/compiler-residual-completion.tsv": "d05a9ce0406546feb278113f35eb43d039198a3df33d282101d10b20155f7979",
+        "tests/fixtures/compiler-residual-completion/cljs/array_access_test.cljc": "bf70863f4e30a009e2334cac3640634f3c365eb3a58dcb5d1028c9463f7b2387",
+        "tests/fixtures/compiler-residual-completion/residualcomplete/readstring.cljs": "4e197661c2c769b7c068407edf24dd32019f758852e8df3c2ee583c0714a3c24"
       }
     }
   ]

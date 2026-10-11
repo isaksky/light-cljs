@@ -14,6 +14,10 @@
 
 (defmacro macro-and [& forms] (macro-short-circuit forms false))
 (defmacro macro-or [& forms] (macro-short-circuit forms true))
+(defmacro macro-js-fn? [x]
+  (if (= 2 (count &form))
+    (list 'js* "typeof ~{} === 'function'" x)
+    (throw (ex-info "js-fn? requires one argument" {}))))
 (defmacro macro-with-in-str [text & body]
   (list 'cljs.core/compiler-reader-with-input text
     (cons 'fn* (cons [] body))))

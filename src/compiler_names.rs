@@ -7,6 +7,7 @@ pub fn core_macro(name: &str) -> bool {
             | "let"
             | "doto"
             | "js-obj"
+            | "js-fn?"
             | "memfn"
             | "amap"
             | "areduce"

@@ -82,6 +82,82 @@ fn execute(script: &str) -> (String, String) {
     (node, quickjs)
 }
 
+fn execute_case(line: &str, root: &std::path::Path) -> String {
+    let fields: Vec<_> = line.split('\t').collect();
+    assert_eq!(fields.len(), 3);
+    assert!(
+        fields[0]
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    );
+    match script(
+        fields[0],
+        &unhex(fields[1]),
+        &unhex(fields[2]),
+        &root.join(fields[0]),
+    ) {
+        Ok(script) => {
+            let (node, quickjs) = execute(&script);
+            format!("{}\texecuted\t{node}\t{quickjs}", fields[0])
+        }
+        Err(error) => format!(
+            "{}\trejected\t{}",
+            fields[0],
+            error.replace(['\n', '\t'], " ")
+        ),
+    }
+}
+
+#[test]
+fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
+    let root =
+        std::env::temp_dir().join(format!("light-cljs-library-bridge-{}", std::process::id()));
+    let fixtures = [
+        (
+            "string",
+            "(require '[clojure.string :as string])",
+            "(string/join \"-\" [1 2 3])",
+            r#"{"id":"string","outcome":{"status":"returned","value":"1-2-3"},"trace":[],"stdout":""}"#,
+        ),
+        (
+            "set",
+            "",
+            "(clojure.set/select (fn [v] (observe v) false) #{9})",
+            r#"{"id":"set","outcome":{"status":"returned","value":{"$set":[],"count":0}},"trace":[9],"stdout":""}"#,
+        ),
+        (
+            "walk",
+            "",
+            "(clojure.walk/walk (fn [x] (observe :inner) x) (fn [x] (observe :outer) (inc x)) 1)",
+            r#"{"id":"walk","outcome":{"status":"returned","value":2},"trace":[{"$keyword":{"namespace":null,"name":"outer","spelling":"outer"}}],"stdout":""}"#,
+        ),
+        (
+            "edn",
+            "",
+            "(clojure.edn/read-string {:readers {'tag inc} :default (fn [t v] (observe :bad) 0)} \"#tag 1\")",
+            r#"{"id":"edn","outcome":{"status":"returned","value":2},"trace":[],"stdout":""}"#,
+        ),
+    ];
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = fixtures
+            .into_iter()
+            .map(|(id, declarations, source, expected)| {
+                let root = &root;
+                scope.spawn(move || {
+                    let script = script(id, declarations, source, &root.join(id)).unwrap();
+                    let (node, quickjs) = execute(&script);
+                    assert_eq!(node, expected, "Node {id}");
+                    assert_eq!(quickjs, expected, "QuickJS {id}");
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 #[ignore = "explicit complete SCI library/import original-contract audit"]
 fn retained_library_sources_execute_in_node_and_quickjs() {
@@ -92,34 +168,33 @@ fn retained_library_sources_execute_in_node_and_quickjs() {
         .unwrap()
         .join("sources");
     let mut out = fs::File::create(output).unwrap();
-    let mut count = 0;
-    for line in fs::read_to_string(input).unwrap().lines() {
-        let fields: Vec<_> = line.split('\t').collect();
-        assert_eq!(fields.len(), 3);
-        assert!(
-            fields[0]
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
-        );
-        match script(
-            fields[0],
-            &unhex(fields[1]),
-            &unhex(fields[2]),
-            &root.join(fields[0]),
-        ) {
-            Ok(script) => {
-                let (node, quickjs) = execute(&script);
-                writeln!(out, "{}\texecuted\t{node}\t{quickjs}", fields[0]).unwrap();
-            }
-            Err(error) => writeln!(
-                out,
-                "{}\trejected\t{}",
-                fields[0],
-                error.replace(['\n', '\t'], " ")
-            )
-            .unwrap(),
+    let input = fs::read_to_string(input).unwrap();
+    let lines: Vec<_> = input.lines().collect();
+    // Each worker owns a fresh MacroHost, Node process and QuickJS heap per
+    // original case. Joining in input order preserves the raw receipt protocol.
+    // A single worker is available for literal serial/parallel fixture audits.
+    let workers = std::env::var("LIGHT_CLJS_SCI_LIBRARY_WORKERS")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("worker count"))
+        .unwrap_or(4);
+    assert!((1..=4).contains(&workers), "one through four workers");
+    for batch in lines.chunks(workers) {
+        let observations = std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|line| {
+                    let root = &root;
+                    scope.spawn(move || execute_case(line, root))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for observation in observations {
+            writeln!(out, "{observation}").unwrap();
         }
-        count += 1;
     }
-    assert!(count > 0, "zero source executions");
+    assert!(!lines.is_empty(), "zero source executions");
 }

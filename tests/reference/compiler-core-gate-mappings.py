@@ -30,6 +30,11 @@ for group, identity, source, expected, provenance in gate.fixture_rows():
         if mapping.get('local_execution') and by_receipt[mapping['obligation_id']]['source_body'] == identity:
             mapping.update(reference_fixture_id=fixture_id, reference_source_sha256=gate.digest(expression),
                            reference_contract_sha256=gate.digest(json.dumps(case['expected'],sort_keys=True)))
+# A literal workflow can exercise only arities already bound to an earlier
+# complete oracle. Keep it in the executable core fixture, but do not add an
+# unreferenced report fixture that has no independent obligation mapping.
+linked_oracles = {row.get('reference_fixture_id') for row in ordinary}
+cases = [case for case in cases if case['id'] in linked_oracles]
 for filename, generated, key in [('obligation-witnesses.jsonl',ordinary,'obligation_id'),('phase-witnesses.jsonl',phases,'obligation_id'),
                                  ('full-cases.jsonl',cases,'id')]:
     old=gate.read(filename)

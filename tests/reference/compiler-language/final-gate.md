@@ -408,3 +408,126 @@ remain ignored in the normal invocation and have separately executed fresh
 scoped Rust 2024 formatting and `git diff --check` passed. These checks validate
 this evidence work; they do not replace the unfinished full regression,
 upstream/ignored and performance acceptance.
+
+
+### Predicate, qualified core and complete namespace continuation — 2026-10-11
+
+This continuation starts from `83070de`, after focused owners 149–153 closed.
+It preserves the original gate criteria and every original expectation. The
+small in-scope public `js-fn?` omission is repaired as a compiler-emitted macro:
+it evaluates its single operand once and recognizes JavaScript functions, while
+metadata-wrapped functions remain `fn?`/`ifn?` without becoming `js-fn?`. Wrong
+arities produce located failures; the same MacroHost recovers afterward. Actual
+macro computations retain independent runtime roots and ordered effects.
+The exact function predicate contract matches both required pins in
+`/tmp/light-cljs-125-predicate-discovery`; broad numeric/type predicates match
+both pins in `/tmp/light-cljs-125-predicate-domain-reference`.
+
+Core evidence now has **468** reviewed source/arity call receipts, up from 351.
+There are **44** executable complete workflows: 22 original upstream bodies and
+22 independently specified literal workflows. Eleven literal workflows are also
+executed with actual `clojure.core/` qualified calls; only executable call heads
+are qualified, leaving quoted data, lexical bindings, factories and effects
+unchanged. Both pins pass all eleven in
+`/tmp/light-cljs-125-qualified-core-reference`. Twenty-one literal oracles have
+independent obligation mappings in the full report; a redundant qualified
+workflow remains in the executing core fixture without manufacturing a new
+mapping or an unreferenced report fixture. Public arity and phase receipts bind
+exact source signatures, original body hashes and their complete executing tests.
+
+Another **13 complete original bodies / 22 original assertion sites** now have
+source/setup/reference/application/macro adapters, including original macro
+modules and metadata assertions. Required `.clj` modules stay byte-identical in
+canonical reference trees; local `.cljs` ordinary macro imports have an explicit
+dialect adaptation. The full integer table, private tap setup, complete
+generative/inference/eval sources and complete invocation module retain an
+explicit reviewed basis in `compiler-residual-source-boundary-review.json`.
+That review changes no disposition and supplies no execution credit.
+
+Two complete pending source contexts reveal distinct production defects:
+`ns_shadow_test.cljs` requires namespace `baz` and defines a same-named ordinary
+function, whose original recursive call fails in both local application engines
+and actual macro compilation; the original top-level lexical `let` definitions
+in `top_level.cljs` pass applications but macro demand cannot find `bar`.
+Both full originals pass both required pins. Their exact sources and hashes are
+retained under `unwitnessed-source-cases` in the source-context proposals, with
+fresh local/reference receipts in the residual completion documentation.
+Focused ordinary owners **light-cljs-154** and **light-cljs-155** precede 125.
+Neither failing program is a passing TSV entry, boundary exclusion or partial
+assertion substitute. They are not implemented in this continuation.
+
+Focused regression checks passed: 21 library unit tests, 12 bootstrap tests,
+104 macro tests, 10 evaluator tests and 53 execution tests; 44 explicit ignored
+reference/consumer tests remain distinct. The final evidence/predicate run
+passed 11 active tests with one explicit library audit ignored in normal mode;
+the complete library cohort executes that named ignored driver separately.
+All three direct Node runtime/helper/observation scripts passed.
+`run_compiler.py --samples 9 --iterations 1` completed validated measurements:
+180 fresh-process rows, 423 resident rows and 423 allocation rows, with exact
+binaries/source archive/hash manifests under
+`/tmp/light-cljs-125-predicate-compiler-performance`. These measurements provide
+current validated outputs, without a before/after timing claim. Primitive
+output sizes remain 88 / 297 / 126 bytes. Initial invalid one-sample arguments
+and a nonexistent evaluator-reuse Cargo target were corrected before these
+successful checks and never treated as passes.
+
+The complete `--run --strict` zero-missing acceptance is still unfinished.
+Fresh library evidence and the nonexecuting accounting check are recorded below;
+static rows, retained receipt history and a repeated incomplete full run do not
+grant semantic credit. Useful coherent work is committed, then 125 is released
+behind its focused namespace owners rather than closed.
+
+
+The fresh nonexecuting strict accounting check exits 1 with **0 covered,
+8,605 missing and 1,385 outside dispositions**, preserving all 9,990 rows.
+`extract_inventory.py --check`, all three core/residual generators and reviewed
+mapping reproduction pass. Scoped Rust 2024 formatting and `git diff --check`
+pass. A full check of `compiler_bootstrap.rs` still reports its 129-line baseline
+formatting diff, reproduced from unchanged HEAD; the sole new macro registry
+entry follows the existing formatted list, and unrelated formatting is preserved.
+The initial Python run occurred before the expanded active receipt file was
+written and correctly rejected the old sixteen-receipt file; its five stale
+receipt errors are not passing evidence. Final fresh receipt and Python results
+follow.
+
+
+The expanded SCI library cohort now executes **191 complete original sources**
+(string 34, set 57, walk 44, EDN 56), retaining the initial sixteen source
+bindings and their complete active/nested evidence history. Both local engines
+match 183 originals and differ from eight; release matches 163 and checkout
+169. **163 four-way agreements are covered; 28 original contracts remain
+missing**, including six release/checkout metadata differences and the retained
+EDN discard callback/throwing difference. No additional local-vs-both-pins
+implementation gap was found. Six remaining library candidate contexts retain
+explicit `not-run` planning rows, without an inferred pass or exclusion.
+
+The full runner executes this independent import cohort fresh and checks exact
+compiler/driver/adapter/library/oracle/source hashes, raw Unicode-safe JSON
+frames, identities, both engines and both pins. It preserves disjoint generic,
+source-context and library identities, and grants no macro-phase credit or
+automatic version reconciliation. Receipt replay verified all 191 current rows:
+`/tmp/light-cljs-125-sci-library-context-191-current/evidence.json`. Independent
+read-only review found no material defects in the predicate macro, qualified
+call/arity mappings or fresh library merge. Final Python checks include the
+static-all-missing/fresh-agreement-only full-ledger regression and fail if these
+original mismatches are excused.
+
+
+A bounded integration projection of the **actual fresh 191 library layers** into
+the complete ledger produces **163 covered, 8,442 missing and 1,385 outside**,
+with `strict_complete: false`; all other obligations were explicitly not run.
+Its retained original mismatches still cause the execution-failure check to
+fail. This verifies the new merge without relabeling the projection as a
+comprehensive run: `/tmp/light-cljs-125-library-ledger-integration.json`.
+
+
+Final Python verification checked all **117 current runner/accounting/provenance
+cases**. The full 117-case invocation passed 116 and retained one already-loaded
+obsolete test assertion that required arbitrary build-warning text changes to
+be rejected; valid warning text is retained, while malformed stderr types are
+rejected. After the test-only correction, all **13 current library adapter and
+ledger tests** passed in the targeted rerun (8.46 seconds). No source expectation,
+semantic comparison or acceptance criterion changed. Fresh 191-row literal
+receipt replay, inventory checks, generators and diff checks passed afterward.
+The corrected test and the earlier stale sixteen-receipt failures remain
+recorded as failed attempts, rather than being hidden by a pass claim.

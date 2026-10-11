@@ -29,6 +29,10 @@ SELECTED = {
     'core_test.cljs::var-desugar-test': [],
     'core_test.cljs::test-cljs-3313': ['core_test.cljs::ExtMetaProtocol', 'core_test.cljs::top-level-272'],
     'core_test.cljs::test-new-method': [],
+    'src/test/cljs/cljs/inference_test.cljs::cljs-2866-test': [],
+    'src/test/cljs/cljs/inference_test.cljs::cljs-3068-test': ['src/test/cljs/cljs/inference_test.cljs::foo-var-3068'],
+    'src/test/cljs/cljs/qualified_method_test.cljs::qualified-method-return-position-test': [],
+    'src/test/cljs/clojure/edn_test.cljs::test-read-string': [],
 }
 NOTICE = ';; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n'
 
@@ -97,29 +101,54 @@ def omission_probes(bodies):
 def generate():
     bodies = {b['id']: b for b in residual.read('full-bodies.jsonl')}
     omission_probes(bodies)
-    rows, cases, mappings, phases = [], [], [], []
+    rows, cases, mappings, phases, witnesses, body_phases = [], [], [], [], [], []
     for identity, setup in SELECTED.items():
         forms, provenance = [], []
         for original in [bodies[s] for s in setup] + [bodies[identity]]:
             form, origin = original_form(original)
+            if original['assertions']:
+                text = original['source_span']['text']
+                form = residual.adapt(text, inv.Reader(text).all()[0])
             forms.append(form)
             provenance.append(origin)
         if identity.endswith('::test-new-method'):
             # Original :refer-global :only [Object String] supplies Object.
             # Bind that exact ECMAScript constructor in the portable adapter.
             forms.insert(0, '(def Object js/Object)')
+        if identity.endswith('::qualified-method-return-position-test'):
+            # Original :refer-global :only [String] supplies this constructor.
+            forms.insert(0, '(def String js/String)')
         source = ('(do ' + ' '.join(forms) + ')').replace('\n', ' ').replace('\t', ' ')
+        if identity.endswith('::test-read-string'):
+            # Preserve both complete reader expressions with canonical aliases.
+            source = source.replace('(edn/read-string', '(clojure.edn/read-string')
         case_id = PREFIX + identity.split('::')[-1]
         expected = 3 if identity.endswith('::test-cljs-2133') else True
         rows.append([case_id, source, '3' if expected == 3 else 'true', json.dumps(provenance, separators=(',', ':'))])
         cases.append({'id': case_id, 'source': source,
             'expected': {'id': case_id, 'outcome': {'status': 'returned', 'value': expected}, 'trace': [], 'stdout': ''},
             'native_stdout': None})
-        mappings.append({'obligation_id': 'body::' + identity,
-            'body_sha256': bodies[identity]['source_span']['sha256'], 'reference_fixture_id': case_id,
-            'reference_source_sha256': inv.digest(source.encode()),
+        if identity.endswith('::test-read-string'):
+            program = NOTICE + '(ns residualcomplete.readstring (:require [clojure.edn] [cljs.reader]))\n(defn run [] ' + source + ')\n'
+            persist(ROOT / SOURCE_ROOT / 'residualcomplete/readstring.cljs', program)
+            cases[-1].update(source=program, source_root=SOURCE_ROOT,
+                             entry='residualcomplete.readstring', export='run')
+        mapping = {'body_sha256': bodies[identity]['source_span']['sha256'],
+            'reference_fixture_id': case_id,
+            'reference_source_sha256': inv.digest(cases[-1]['source'].encode()),
             'reference_contract_sha256': inv.digest(json.dumps(cases[-1]['expected'], sort_keys=True).encode()),
-            'rationale': 'Complete assertion-free upstream body and all relevant original setup execute with its actual final returned oracle in both application engines and as a QuickJS macro computation. No source assertion or pass count is invented. Original global Object alias is bound to the identical ECMAScript constructor where required.'})
+            'rationale': 'Complete upstream body and all relevant original setup execute with its original assertions or actual final returned oracle in both application engines and as a QuickJS macro computation. Assertion forms execute without changing operands or results. Original global Object/String aliases bind the identical ECMAScript constructor where required; EDN/reader aliases retain the canonical library namespace.'}
+        if bodies[identity]['assertions']:
+            mapping['body_id'] = identity
+            body_phases.append(mapping)
+            cases[-1]['complete_body_phase_mapping'] = mapping
+            witnesses.extend({'assertion_id': row['id'], 'assertion_sha256': row['assertion']['sha256'],
+                              'fixture_id': case_id, 'rationale': mapping['rationale']}
+                             for row in residual.read('full-inventory.jsonl')
+                             if row['body_id'] == identity and row['disposition'] == 'in-scope')
+        else:
+            mapping['obligation_id'] = 'body::' + identity
+            mappings.append(mapping)
     # This entire upstream module defines one macro, with no assertions or
     # runtime invocations. Preserve the exact module and execute the macro in
     # an explicit supplemental scope/restoration contract rather than count
@@ -157,11 +186,16 @@ def generate():
     persist(ROOT / FIXTURE, text)
     local = {'test_file': TEST, 'test_name': TEST_NAME,
         'test_source_sha256': inv.digest((ROOT / TEST).read_bytes()),
-        'support_source_sha256': {FIXTURE: inv.digest(text.encode()), module_path: inv.digest(module.encode())}}
+        'support_source_sha256': {FIXTURE: inv.digest(text.encode()), module_path: inv.digest(module.encode()),
+                                 SOURCE_ROOT + '/residualcomplete/readstring.cljs': inv.digest((ROOT / SOURCE_ROOT / 'residualcomplete/readstring.cljs').read_bytes())}}
     for row in mappings:
         row['local_execution'] = {key: local[key] for key in ('test_file', 'test_name', 'test_source_sha256')}
         phases.append({**row, **local})
-    proposal = {'full-cases.jsonl': cases, 'full-witnesses.jsonl': [],
+    for row in body_phases:
+        row['local_execution'] = {key: local[key] for key in ('test_file', 'test_name', 'test_source_sha256')}
+        row['support_source_sha256'] = local['support_source_sha256']
+    proposal = {'full-cases.jsonl': cases, 'full-witnesses.jsonl': witnesses,
+        'complete-body-phase-mappings': body_phases,
         'obligation-witnesses.jsonl': mappings, 'phase-witnesses.jsonl': phases}
     persist(ROOT / 'tests/reference/compiler-residual-completion-proposals.json', json.dumps(proposal, indent=2) + '\n')
     if '--catalogs' in sys.argv:
@@ -175,9 +209,24 @@ def generate():
         }
         for name, owned in ownership.items():
             residual.update_owned(name, owned, proposal[name])
-    print(f'{len(SELECTED)} complete assertion-free bodies and 1 complete macro module; proposed witnesses only, execution required')
+    print(f'{len(SELECTED)} complete bodies and 1 complete macro module; {len(witnesses)} original assertion mappings proposed, execution required')
     return cases
 
 
 if __name__ == '__main__':
-    generate()
+    cases = generate()
+    if '--run-additions' in sys.argv:
+        import report
+        output = Path(sys.argv[sys.argv.index('--output') + 1]) if '--output' in sys.argv else Path('/tmp/light-cljs-125-residual-source-additions-reference')
+        selected = [case for case in cases if 'complete_body_phase_mapping' in case]
+        evidence = {'cases': selected, 'references': {}}
+        for kind in ('release', 'checkout'):
+            evidence['references'][kind] = report.reference_cases(selected, kind,
+                ROOT / 'research/clojurescript', output / kind, 240)
+            print(kind, [(identity, result['status']) for identity, result in evidence['references'][kind].items()], flush=True)
+        evidence['source_sha256'] = {case['id']: inv.digest(case['source'].encode()) for case in selected}
+        evidence['support_source_sha256'] = {name: inv.digest((ROOT / name).read_bytes())
+            for name in (TEST, FIXTURE, 'tests/reference/compiler-residual-completion.py', SOURCE_ROOT + '/residualcomplete/readstring.cljs')}
+        output.mkdir(parents=True, exist_ok=True)
+        (output / 'evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        assert all(result['status'] == 'passed' for reference in evidence['references'].values() for result in reference.values())

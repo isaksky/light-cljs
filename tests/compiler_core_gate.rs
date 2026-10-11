@@ -92,27 +92,27 @@ fn cohort(group: &str, expected_workflows: usize) {
 
 #[test]
 fn core_numeric_applications_and_macros_execute() {
-    cohort("numeric", 5);
+    cohort("numeric", 9);
 }
 
 #[test]
 fn core_collections_applications_and_macros_execute() {
-    cohort("collections", 6);
+    cohort("collections", 10);
 }
 
 #[test]
 fn core_state_applications_and_macros_execute() {
-    cohort("state", 6);
+    cohort("state", 7);
 }
 
 #[test]
 fn core_control_applications_and_macros_execute() {
-    cohort("control", 11);
+    cohort("control", 14);
 }
 
 #[test]
 fn core_exceptions_applications_and_macros_execute() {
-    cohort("exceptions", 3);
+    cohort("exceptions", 4);
 }
 
 #[test]

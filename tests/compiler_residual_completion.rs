@@ -14,7 +14,7 @@ fn both(source: &str, expected: &str, macro_phase: bool) {
     };
     std::fs::write(
         root.join("residualcomplete/probe.cljs"),
-        format!("(ns residualcomplete.probe (:require [cljs.array-access-test :refer [suppress-errs]])) {observed}"),
+        format!("(ns residualcomplete.probe (:require [cljs.array-access-test :refer [suppress-errs]] [clojure.edn] [cljs.reader])) {observed}"),
     )
     .unwrap();
     let javascript = light_cljs::compile_namespace_with_macros(
@@ -58,7 +58,7 @@ fn remaining_complete_residual_bodies_execute_in_both_phases() {
         .lines()
         .filter(|row| !row.starts_with('#') && !row.is_empty())
         .collect();
-    assert_eq!(rows.len(), 5, "empty or partial upstream selection");
+    assert_eq!(rows.len(), 9, "empty or partial upstream selection");
     for row in rows {
         let fields: Vec<_> = row.split('\t').collect();
         assert_eq!(fields.len(), 4);

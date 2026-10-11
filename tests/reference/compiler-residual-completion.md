@@ -333,3 +333,150 @@ it. Direct initialization receipts and checked compiler outputs are retained at
 and its sibling release/checkout directories. This establishes the upstream
 runtime limitation; it does not claim local execution coverage or rewrite
 the source-program obligation as complete.
+
+## Complete residual source contexts, 2026-10-11
+
+The continuation from starting HEAD `83070de` adds thirteen complete original
+bodies and **22 original assertion sites** to reproducible proposals. Source
+witness registration remains coordinated by the main light-cljs-125 owner.
+Every original source span is checked against the pinned checkout before
+fixture generation. No production semantics change in these adapters.
+
+Four additional rows in `compiler-residual-completion.tsv` retain the complete
+`cljs-2866-test` loop/reset workflow, `cljs-3068-test` including original
+`foo-var-3068 (merge)` setup and conditional expression, returned
+`String/.toUpperCase` method workflow, and both original EDN/read-string
+comparisons. Their five assertions execute. The qualified method's original
+global String alias binds the identical `js/String` constructor; EDN and reader
+aliases qualify to their original canonical libraries. The EDN source fixture
+retains both imports. No compiler-only acceptance substitutes for execution.
+
+`compiler-residual-source-context.py` adds five supported namespace contexts
+and nine complete bodies with seventeen original assertion sites:
+
+- Keyword reader namespace and original ordinary/macro namespace aliases.
+- All four original syntax-quote assertions with the original namespace and
+  `cljs.test` alias. The local empty namespace marker supplies only this
+  reader context; no test function is implemented or called. References use
+  the actual `cljs.test` library.
+- Both `cljs.ns-test.foo` bodies, including `kw`, quoted `qkw`, and the original
+  `made.up.lib` `:as-alias` clause.
+- The unchanged independent `test-cljs-2283` body.
+- All four remaining original macro-test bodies, including macro arglist
+  metadata and the sorted-map macro result. Every required `.clj` macro module
+  is byte-identical in the local `.cljs` source-macro module and in the
+  canonical `.clj` reference tree. Local ordinary `:require` and canonical
+  `:require-macros` are explicitly separate; original `:use-macros :only`
+  becomes the corresponding `:refer` import.
+
+Support forms retain their original top-level namespace positions. Assertion
+adapters change `deftest/is` to executing `do/assert`, preserve original
+operands/messages, and return true after the complete assertion-bearing body.
+The dedicated Rust test copies each isolated source root, executes its complete
+ordinary program, then computes the complete original body inside an actual
+QuickJS macro at its original namespace before running the expansion. Both
+Node and QuickJS application engines compare the literal result `true`.
+Unsupported source contexts are absent from its passing TSV and retained
+separately in `unwitnessed-source-cases`.
+
+Final focused verification passed both tests: all nine completion fixture rows
+in **5.78 s**, and all five supported namespace contexts in **3.65 s**, zero
+failures or ignored tests. The log is
+`/tmp/light-cljs-125-residual-source-final-tests.log`. Both reference pins pass
+all four new standalone bodies, all seven initial ordinary namespace contexts,
+and the additional complete macro source context. Identities and settings are
+verified: release **1.12.134**, checkout
+**a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, `:optimizations :none`,
+`:static-fns false`, `:def-emits-var false`. These ordinary reference results
+supply compatibility evidence; the local tests supply the deliberate macro
+phase execution evidence.
+
+Reference receipts and SHA-256 values:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `/tmp/light-cljs-125-residual-source-additions-reference/evidence.json` | `8f89d695fc7ce5c4cb293fad33217cb49ffb3edd4983e0382dbf9bc9774a6e19` |
+| `/tmp/light-cljs-125-residual-source-context-reference-final/evidence.json` | `998c53cb1d19bd3e1e1ad06229d83aff8ba5b530e726a8120043dabab8b3bc3c` |
+| `/tmp/light-cljs-125-residual-macro-source-reference/evidence.json` | `f9c32f12f55d9c0bbbe0887538bc4b0bd34c9d71ff05307c44df6199a6bb9f20` |
+
+The first namespace-reference attempt stopped when a source change invalidated
+its source-tree hash; it is discarded. The final receipt above compares the
+frozen exact source files. Later proposal/test eligibility changes preserve
+those observed source bytes. Reproduce the source generation and execution:
+
+```sh
+python3 -B tests/reference/compiler-residual-completion.py
+python3 -B tests/reference/compiler-residual-completion.py --run-additions --output /tmp/light-cljs-125-residual-source-additions-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py
+python3 -B tests/reference/compiler-residual-source-context.py --run --output /tmp/light-cljs-125-residual-source-context-reference-current
+cargo test --locked --test compiler_residual_completion --test compiler_residual_source_context -- --nocapture
+```
+
+### New exact source gaps
+
+Both copies of the complete upstream `foo.ns-shadow-test` source retain the
+required namespace `baz` and same-spelled function `baz`, its zero/one-argument
+recursion, `bar`, qualified call from `quux`, `id`, and function `foo`. Both pins
+return true for all three original assertions. Ordinary local Node and QuickJS
+throw `cannot read property 'call' of undefined`; actual macro compilation also
+fails. The canonical complete adapted program SHA-256 is
+`7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479`.
+No dependency or function is renamed to make it pass.
+
+The complete original `cljs.top-level` setup retains both top-level
+`let`/`defn` closures and both original assertions. Both pins and both local
+ordinary engines return true. Actual QuickJS macro computation fails with
+`unavailable definition: cljs.top-level/bar`. Its adapted ordinary program
+SHA-256 is
+`ecf36324188c46de092ddad498b959db3af3339a81a80fc97ee720b55d3ba5c5`.
+Moving those setup forms into the macro would hide the namespace declaration
+demand gap and is not proposed.
+
+`--audit-local` preserves exact emitted JavaScript plus ordinary/macro source
+hashes, binary identity, compiler diagnostics and both engine outputs. The
+observation-only audit does not assert a failing execution as a pass. Its final
+receipt is `/tmp/light-cljs-125-residual-source-local-final/evidence.json`,
+SHA-256 `79ba7b872bc570dacd62f9b0d1dc305a4dd688c6b1d6f77aafa54125f38afcc3`.
+Both gaps were sent to the main owner with their complete sources and both-pin
+proof for focused ownership. No passing witness is proposed for these three
+complete sources.
+
+### Reviewed residual boundaries
+
+`compiler-residual-source-boundary-review.json` retains every reviewed body,
+all relevant setup forms, original namespace spans and source hashes, the
+complete JVM inference helper, and the complete invocation program. It records
+review bases without modifying or excluding any ledger row.
+
+The integer table's fourteen rows and eight predicate columns remain intact:
+eight native JavaScript Number rows and six `goog.math.Long`/`Integer` rows.
+`LongImpl` is explicitly documented upstream as `INTERNAL: do not use`.
+`int?` and its sign variants separately recognize these Closure objects;
+`integer?` describes native JavaScript numbers. The adopted JavaScript-number
+basis and excluded Closure ecosystem supply no Long/Integer implementation.
+These inputs are neither native Number values nor the separately allowed
+explicit JS BigInt interop operation. The complete original source assertion
+remains unresolved. This review does not truncate JS rows, coerce host objects,
+exclude the whole predicate body, or claim that independently passing native
+number oracles cover this table.
+
+The tap assertions observe explicitly private `tapset` storage and its atom/set
+representation. Public tap registration/delivery remains intended; an invented
+private storage adapter would not witness those source sites. The assertion-free
+inference body uses the complete JVM helper to instrument emitted `truth_`
+coercion calls; its purpose is compiler-emission shape rather than predicate
+return values. Private emitted helper shape, `.clj` companions and general
+pprint have explicit group boundary bases; public predicate APIs remain intended.
+The two generative parse bodies retain **100000** trials and their full
+`test.check` dependency requirements, and the generative string body retains
+its complete original reference implementation. No sampling, fake generator,
+trial reduction or unconditional success is supplied.
+
+The exact eval module states it requires an embedding that installs `*eval*`.
+All fourteen original assertions and live function/Var-containing setup stay
+unwitnessed embedding contracts; default standalone emitted JS/reference builds
+cannot supply this hook. The unchanged invocation module still throws in both
+canonical initializations before its later record forms. Its undefined declared
+function is preserved. A canonical throw supplies neither a local execution
+pass nor an automatic source-program exclusion. The complete source gate and
+all remaining acceptance under light-cljs-125 remain unfinished.

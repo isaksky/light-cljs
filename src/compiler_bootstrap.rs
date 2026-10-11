@@ -15,6 +15,7 @@ const MACROS: &[(&str, &str)] = &[
     ("defmethod", "defmethod"),
     ("and", "and"),
     ("or", "or"),
+    ("js-fn?", "js-fn?"),
     ("if-not", "if-not"),
     ("when", "when"),
     ("when-not", "when-not"),

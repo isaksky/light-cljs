@@ -506,8 +506,14 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
     from sci_execution import load_all as load_sci, digest as sci_digest, canonical_contract, canonical_status, TEST_FILE, TEST_NAME
     from sci_source_context import load as load_source_context, expression_rows
     from sci_source_context_receipts import full_report_evidence as source_context_evidence
+    from sci_library_context import load as load_library_context, expression_rows as library_expression_rows
+    from sci_library_context_receipts import full_report_evidence as library_context_evidence
     source_context_mappings = {item["obligation_id"]: item for item in load_source_context()}
-    sci_mappings = {item["obligation_id"]: item for item in expression_rows(load_sci(), list(source_context_mappings.values()))}
+    library_context_mappings = {item["obligation_id"]: item for item in load_library_context()}
+    if set(source_context_mappings) & set(library_context_mappings):
+        raise ValueError("SCI source/library-context obligation identities overlap")
+    expression_mappings = expression_rows(load_sci(), list(source_context_mappings.values()))
+    sci_mappings = {item["obligation_id"]: item for item in library_expression_rows(expression_mappings, list(library_context_mappings.values()))}
     sci_evidence = sci_evidence or {}
     selected = bool(features or identities)
     rows = []
@@ -531,6 +537,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         layers = {}
         reconciliation = None
         source_reconciliation = None
+        library_reconciliation = None
         if status == "missing" and mapping and not mapping.get("local_execution"):
             source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
                                for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
@@ -606,12 +613,21 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             source_reconciliation = {"id": source_context_mapping["id"],
                                      **source_context_evidence(source_context_mapping, layers)}
             status = source_reconciliation["status"]
+        library_context_mapping = library_context_mappings.get(row["id"])
+        if library_context_mapping:
+            if row["body_sha256"] != library_context_mapping["body_sha256"]:
+                raise ValueError("SCI library-context mapping detached from original obligation")
+            layers = sci_evidence.get(library_context_mapping["id"], {})
+            library_reconciliation = {"id": library_context_mapping["id"],
+                                      **library_context_evidence(library_context_mapping, layers)}
+            status = library_reconciliation["status"]
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
                      "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
                      **({"canonical_reconciliation": reconciliation} if reconciliation else {}),
                      **({"source_context_reconciliation": source_reconciliation} if source_reconciliation else {}),
+                     **({"library_context_reconciliation": library_reconciliation} if library_reconciliation else {}),
                      "completion_reason": "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
     counts = Counter(row["status"] for row in rows)
     sections = {}

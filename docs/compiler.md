@@ -1446,6 +1446,11 @@ value/error modes used by the upstream array-access tests. `js-obj` retains its
 macro's computed-key/literal/symbol grouping and duplicate-key behavior.
 `#js` keeps array holes and ordinary object-literal prototype-key behavior.
 
+The public `js-fn?` macro evaluates its single operand once and checks whether
+its JavaScript type is `function`. Metadata-wrapped callable values remain
+`fn?` and `ifn?` without becoming `js-fn?`. The same predicate works during
+compiler macro computation, with compile-time and application effects isolated.
+
 `to-array-2d` converts ragged seqable rows to ordinary JavaScript arrays.
 `int-array`, `long-array`, `double-array`, and `object-array` support size/seq and
 size/initializer arities, without coercing elements. A numeric size alone fills

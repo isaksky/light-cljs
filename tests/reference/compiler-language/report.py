@@ -1235,8 +1235,11 @@ def main(argv=None):
             if not args.feature and not args.id:
                 import sci_execution
                 import sci_source_context
+                import sci_library_context
                 source_rows = sci_source_context.load()
-                sci_cases = sci_execution.cases(sci_source_context.expression_rows(sci_execution.load_all(), source_rows))
+                library_rows = sci_library_context.load()
+                expression_rows = sci_source_context.expression_rows(sci_execution.load_all(), source_rows)
+                sci_cases = sci_execution.cases(sci_library_context.expression_rows(expression_rows, library_rows))
                 sci_evidence = {case["id"]: {} for case in sci_cases}
                 local = sci_execution.local_cases(sci_cases, artifacts / "sci" / "local", max(180, args.reference_timeout))
                 for identity, observed in local.items():
@@ -1262,6 +1265,21 @@ def main(argv=None):
                 (artifacts / "sci-source-context" / "evidence.json").write_text(json.dumps({
                     "catalog_sha256": sci_execution.digest(sci_source_context.CATALOG.read_bytes()),
                     "evidence": source_evidence}, indent=2) + "\n")
+                library_evidence = {row["id"]: {} for row in library_rows}
+                local = sci_library_context.local_cases(library_rows, artifacts / "sci-library-context" / "local", max(180, args.reference_timeout))
+                for identity, layer in local.items():
+                    library_evidence[identity]["javascript"] = layer
+                for kind in ("release", "checkout"):
+                    if args.reference in (kind, "both"):
+                        observed = sci_library_context.reference_cases(library_rows, kind, artifacts / "sci-library-context" / kind, args.reference_timeout)
+                        for identity, layer in observed.items():
+                            library_evidence[identity][kind] = layer
+                if set(sci_evidence) & set(library_evidence):
+                    raise ValueError("SCI expression/source/library-context execution identities overlap")
+                sci_evidence.update(library_evidence)
+                (artifacts / "sci-library-context" / "evidence.json").write_text(json.dumps({
+                    "catalog_sha256": sci_execution.digest(sci_library_context.CATALOG.read_bytes()),
+                    "evidence": library_evidence}, indent=2) + "\n")
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
@@ -1284,7 +1302,8 @@ def main(argv=None):
         # run failure, even outside strict mode. Only explicitly mapped expected
         # diagnostics can become verified-rejection; they never become passes.
         failure_statuses = {"mismatch", "invalid-output", "invalid-reference", "failed",
-                            "unavailable", "reference-unavailable", "timed-out"}
+                            "unavailable", "reference-unavailable", "timed-out", "timeout",
+                            "rejected", "stale-build-input", "unverified"}
         failed = any(layer.get("status") in failure_statuses for result_layers in evidence.values()
                      for layer in result_layers.values())
         failed |= any(layer.get("status") != "verified-boundary" for layers in boundary_evidence.values() for layer in layers.values())
