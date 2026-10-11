@@ -10,6 +10,7 @@
   const symbols = new WeakMap();
   const maps = new WeakMap();
   const mapKinds = new WeakMap();
+  const sortedComparators = new WeakMap();
   const mapEntries = new WeakSet();
   const sets = new WeakMap();
   const setKinds = new WeakMap();
@@ -34,7 +35,7 @@
   const builtinTypes = {};
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
-      const Type = name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
+      const Type = name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
       Type.prototype = Object.create(base);
       Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
       builtinTypes[name] = Type;
@@ -168,7 +169,7 @@
   function list(...items) { return listFromArray(items); }
 
   function view(storage, offset, indexed, kind = "indexed", tail = null) {
-    const value = builtinValue(kind === "indexed" ? "IndexedSeq" : kind === "chunked" ? "ChunkedSeq" : kind === "hash-map" ? "NodeSeq" : "IndexedSeq", sequencePrototype);
+    const value = builtinValue(kind === "indexed" ? "IndexedSeq" : kind === "chunked" ? "ChunkedSeq" : kind === "hash-map" ? "NodeSeq" : kind === "sorted-map" ? "PersistentTreeMapSeq" : "IndexedSeq", sequencePrototype);
     views.set(value, Object.freeze({storage, offset, indexed, kind, tail}));
     return value;
   }
@@ -684,9 +685,9 @@
       else if (maps.has(result)) result = mapConj(result, args[i]);
       else if (sets.has(result)) {
         const entries = sets.get(result).slice();
-        putMember(entries, args[i]);
+        putCollectionEntry(result, entries, args[i], undefined, true);
         if (entries.length === sets.get(result).length) continue;
-        result = makeSet(entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
+        result = sortedComparators.has(previous) ? makeSet(entries, "sorted-set", sortedComparators.get(previous)) : makeSet(entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
       }
       else if (result == null) result = cons(args[i], emptyList, "list");
       else if (cells.has(result) || views.has(result) || lazyValues.has(result))
@@ -705,9 +706,9 @@
     }
     if (value == null || maps.has(value)) {
       const entries = value == null ? [] : maps.get(value).slice();
-      putEntry(entries, key, item);
+      putCollectionEntry(value, entries, key, item);
       for (let i = 0; i < pairs.length; i += 2)
-        putEntry(entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+        putCollectionEntry(value, entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
       return updatedMap(value, entries);
     }
     const original = vectors.get(value);
@@ -739,10 +740,11 @@
     }
   });
 
-  function makeMap(entries, kind = entries.length <= 8 ? "array-map" : "hash-map") {
+  function makeMap(entries, kind = entries.length <= 8 ? "array-map" : "hash-map", comparator = compareKeys) {
     const value = builtinValue(kind === "hash-map" ? "PersistentHashMap" : kind === "sorted-map" ? "PersistentTreeMap" : "PersistentArrayMap", mapPrototype);
     maps.set(value, Object.freeze(entries));
     mapKinds.set(value, kind);
+    if (kind === "sorted-map") sortedComparators.set(value, comparator);
     return value;
   }
 
@@ -780,7 +782,7 @@
     if (!original) throw new Error("dissoc not supported on this type");
     const entries = original.slice();
     for (const key of keys) {
-      const index = entryIndex(entries, key, hash(key));
+      const index = collectionEntryIndex(value, entries, key);
       if (index >= 0) entries.splice(index, 1);
     }
     const Type = recordTypes.get(value);
@@ -795,7 +797,7 @@
     for (let current = seq(member); current !== null; current = next(current)) {
       const pair = first(current);
       if (!predicates.isVector(pair)) throw new Error("Map conj requires vector entries");
-      putEntry(entries, core.nthProtocol(pair, 0), core.nthProtocol(pair, 1));
+      putCollectionEntry(value, entries, core.nthProtocol(pair, 0), core.nthProtocol(pair, 1));
     }
     return updatedMap(value, entries);
   }
@@ -813,10 +815,11 @@
     }
   });
 
-  function makeSet(entries, kind = entries.length > 8 ? "hash-map" : "array-map") {
-    const value = builtinValue("PersistentHashSet", setPrototype);
+  function makeSet(entries, kind = entries.length > 8 ? "hash-map" : "array-map", comparator = compareKeys) {
+    const value = builtinValue(kind === "sorted-set" ? "PersistentTreeSet" : "PersistentHashSet", setPrototype);
     sets.set(value, Object.freeze(entries));
     setKinds.set(value, kind);
+    if (kind === "sorted-set") sortedComparators.set(value, comparator);
     return value;
   }
 
@@ -853,11 +856,11 @@
     if (!original) throw new Error("disj not supported on this type");
     const entries = original.slice();
     for (const key of keys) {
-      const index = entryIndex(entries, key, hash(key));
+      const index = collectionEntryIndex(value, entries, key);
       if (index >= 0) entries.splice(index, 1);
     }
     if (entries.length === original.length) return value;
-    return preserveMeta(value, makeSet(entries, setKinds.get(value)));
+    return preserveMeta(value, makeSet(entries, setKinds.get(value), sortedComparators.get(value)));
   }
 
   // Transient payloads own a private mutable copy of canonical collection
@@ -1170,12 +1173,12 @@
     if (transients.has(value)) return transientLookup(value, key, notFound);
     const members = sets.get(value);
     if (members) {
-      const index = entryIndex(members, key, hash(key));
+      const index = collectionEntryIndex(value, members, key);
       return index < 0 ? notFound : members[index].key;
     }
     const entries = maps.get(value);
     if (entries) {
-      const index = entryIndex(entries, key, hash(key));
+      const index = collectionEntryIndex(value, entries, key);
       return index < 0 ? notFound : entries[index].value;
     }
     const items = vectors.get(value);
@@ -1218,7 +1221,8 @@
     const method = publicMethod(value, "IFind/-find", 2);
     if (method) return method.call(value, value, key);
     if (value == null || !predicates.isAssociative(value) || !contains(value, key)) return null;
-    const entry = !recordTypes.has(value) && maps.get(value)?.find(entry => equalPair(entry.key, key));
+    const entries = !recordTypes.has(value) && maps.get(value);
+    const entry = entries && entries[collectionEntryIndex(value, entries, key)];
     return mapEntry(entry ? entry.key : key, get(value, key));
   }
 
@@ -1438,8 +1442,9 @@
     }
     const leftSet = sets.get(left);
     if (leftSet) {
-      return predicates.isSet(right) && leftSet.length === count(right) &&
-        leftSet.every(entry => contains(right, entry.key));
+      if (!predicates.isSet(right) || leftSet.length !== count(right)) return false;
+      try { return leftSet.every(entry => contains(right, entry.key)); }
+      catch (error) { if (error instanceof Error) return false; throw error; }
     }
     if (sequential(left)) {
       if (!predicates.isSequential(right)) return false;
@@ -1784,8 +1789,8 @@
     if (value == null) return null;
     if (recordTypes.has(value) || mapEntries.has(value)) return null;
     if (vectors.has(value)) return preserveMeta(value, vector());
-    if (maps.has(value)) return preserveMeta(value, makeMap([], mapKinds.get(value)));
-    if (sets.has(value)) return preserveMeta(value, makeSet([]));
+    if (maps.has(value)) return preserveMeta(value, makeMap([], mapKinds.get(value), sortedComparators.get(value)));
+    if (sets.has(value)) return preserveMeta(value, makeSet([], setKinds.get(value), sortedComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cells.has(value) || views.has(value) || lazyValues.has(value))
       return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? withMeta(emptyList, meta(value)) : emptyList;
@@ -1818,10 +1823,10 @@
   function rseq(value) {
     const method = builtin(value, "IReversible/-rseq", 1);
     if (method) return method.call(value, value);
-    if (!vectors.has(value) && views.get(value)?.kind !== "indexed" && mapKinds.get(value) !== "sorted-map")
+    if (!vectors.has(value) && views.get(value)?.kind !== "indexed" && !sortedComparators.has(value))
       throw new Error("No protocol method IReversible.-rseq defined for this value");
     const items = Object.freeze(toArray(value).reverse());
-    return items.length ? view(items, 0, false, "reverse") : null;
+    return items.length ? view(items, 0, false, maps.has(value) ? "sorted-map" : "reverse") : null;
   }
   function mapProjection(value, index, alreadySeq = false) {
     const entries = alreadySeq ? value : seq(value);
@@ -1895,12 +1900,119 @@
     }
     return -1;
   }
-  function sortedMap(...pairs) {
-    const result = mapFromArray(pairs, "sorted-map");
-    const entries = maps.get(result).slice();
-    entries.sort((a, b) => compareKeys(a.key, b.key));
-    maps.set(result, Object.freeze(entries));
-    return result;
+  // Comparator equality controls sorted membership; structural hashes remain
+  // attached to the retained key for unordered collection equality/hash.
+  function treeEntry(node) {
+    return mapEntries.has(node) || vectors.has(node) ? node : mapEntry(node.key, node.val);
+  }
+  function treeMapConstructor(comparator, tree, _count, metadata, _hash) {
+    const entries = [];
+    function visit(node) {
+      if (node == null) return;
+      visit(node.left);
+      const entry = treeEntry(node);
+      putSortedEntry(entries, nth(entry, 0), nth(entry, 1), comparator);
+      visit(node.right);
+    }
+    visit(tree);
+    return withMeta(makeMap(entries, "sorted-map", comparator), metadata);
+  }
+  function treeSetConstructor(metadata, treeMap, _hash) {
+    if (!sortedComparators.has(treeMap) || !maps.has(treeMap)) throw new Error("Expected sorted map");
+    return withMeta(makeSet(maps.get(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }})), "sorted-set", sortedComparators.get(treeMap)), metadata);
+  }
+  function treeMapSeqConstructor(metadata, stack, ascending, _count, _hash) {
+    const entries = [], pending = toArray(stack);
+    while (pending.length) {
+      const node = pending.shift();
+      entries.push(treeEntry(node));
+      let branch = truth(ascending) ? node.right : node.left;
+      while (branch != null) { pending.unshift(branch); branch = truth(ascending) ? branch.left : branch.right; }
+    }
+    return withMeta(view(Object.freeze(entries), 0, false, "sorted-map"), metadata);
+  }
+  function sortedPosition(entries, key, comparator) {
+    let lo = 0, hi = entries.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (comparator.call(null, entries[mid].key, key) < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+  function collectionEntryIndex(value, entries, key) {
+    const comparator = sortedComparators.get(value);
+    if (!comparator) return entryIndex(entries, key, hash(key));
+    const i = sortedPosition(entries, key, comparator);
+    return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
+  }
+  function putSortedEntry(entries, key, value, comparator, member = false) {
+    const i = sortedPosition(entries, key, comparator);
+    const exists = i < entries.length && comparator.call(null, entries[i].key, key) === 0;
+    if (exists && (member || equalPair(entries[i].value, value))) return;
+    const retained = exists ? entries[i].key : key;
+    const entry = Object.freeze({key: retained, value, get hash() { return hash(retained); }});
+    if (exists) entries[i] = entry;
+    else entries.splice(i, 0, entry);
+  }
+  function putCollectionEntry(coll, entries, key, value, member = false) {
+    const comparator = sortedComparators.get(coll);
+    if (comparator) putSortedEntry(entries, key, value, comparator, member);
+    else if (member) putMember(entries, key);
+    else putEntry(entries, key, value);
+  }
+  function buildSortedMap(comparator, pairs) {
+    const entries = [];
+    for (let i = 0; i < pairs.length; i += 2) putSortedEntry(entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null, comparator);
+    return makeMap(entries, "sorted-map", comparator);
+  }
+  function sortedMap(...pairs) { return buildSortedMap(compareKeys, pairs); }
+  function sortedMapBy(comparator, ...pairs) {
+    return buildSortedMap(fnComparator(comparator), pairs);
+  }
+  function buildSortedSet(comparator, items) {
+    const entries = [];
+    for (const item of items) putSortedEntry(entries, item, undefined, comparator, true);
+    return makeSet(entries, "sorted-set", comparator);
+  }
+  function sortedSet(...items) { return buildSortedSet(compareKeys, items); }
+  function sortedSetBy(comparator, ...items) {
+    return buildSortedSet(fnComparator(comparator), items);
+  }
+  function sortedSeqFrom(value, key, ascending) {
+    const entries = maps.get(value) ?? sets.get(value), comparator = sortedComparators.get(value);
+    let i = sortedPosition(entries, key, comparator);
+    const absent = () => sets.has(value) ? mapSeq(predicates.identity, null) : null;
+    if (!truth(ascending)) {
+      if (i === entries.length || comparator.call(null, entries[i].key, key) !== 0) i--;
+      if (i < 0) return absent();
+    } else if (i === entries.length) return absent();
+    const selected = truth(ascending) ? entries.slice(i) : entries.slice(0, i + 1).reverse();
+    return sets.has(value) ? mapSeq(entry => entry.key, selected) : view(Object.freeze(selected.map(entry => mapEntry(entry.key, entry.value))), 0, false, "sorted-map");
+  }
+  function mkBoundFn(sc, test, key) {
+    if (arguments.length !== 3) return invalidArity(arguments.length);
+    return entry => truth(test.call(null, core.comparatorProtocol(sc).call(null, core.entryKeyProtocol(sc, entry), key), 0));
+  }
+  function subseq(sc, test, key, endTest, endKey) {
+    if (arguments.length !== 3 && arguments.length !== 5) return invalidArity(arguments.length);
+    const include = mkBoundFn(sc, test, key);
+    if (arguments.length === 3 && test !== numeric.greater && test !== numeric.greaterEqual)
+      return takeWhile(include, core.sortedSeqProtocol(sc, true));
+    let s = core.sortedSeqFromProtocol(sc, key, true);
+    if (s == null) return null;
+    if (!include(first(s))) s = next(s);
+    return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, endTest, endKey), s);
+  }
+  function rsubseq(sc, test, key, endTest, endKey) {
+    if (arguments.length !== 3 && arguments.length !== 5) return invalidArity(arguments.length);
+    if (arguments.length === 3 && test !== numeric.less && test !== numeric.lessEqual)
+      return takeWhile(mkBoundFn(sc, test, key), core.sortedSeqProtocol(sc, false));
+    const include = arguments.length === 3 ? mkBoundFn(sc, test, key) : mkBoundFn(sc, endTest, endKey);
+    let s = core.sortedSeqFromProtocol(sc, arguments.length === 3 ? key : endKey, false);
+    if (s == null) return null;
+    if (!include(first(s))) s = next(s);
+    return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, test, key), s);
   }
   function metaSupported(value) {
     return typeof value === "function" || !!builtin(value, "IMeta/-meta", 1) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
@@ -1980,7 +2092,7 @@
     if (protocol === IMultiFn) return multiFns.has(value);
     if (protocol === IFn && multiFns.has(value)) return true;
     const transient = transients.get(value);
-    if (protocol === IEditableCollection) return vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && mapKinds.get(value) !== "sorted-map" || sets.has(value);
+    if (protocol === IEditableCollection) return vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
     if (protocol === ITransientCollection) return !!transient;
     if (protocol === ITransientAssociative) return !!transient && transient.kind !== "set";
     if (protocol === ITransientVector || protocol === IIndexed && transient) return transient?.kind === "vector";
@@ -1999,7 +2111,7 @@
     if (protocol === IPrintWithWriter || protocol === IHash || protocol === IEquiv) return ownedProtocolValue(value);
     if (protocol === IMapEntry) return mapEntries.has(value);
     if (protocol === IFind) return vectors.has(value) || (maps.has(value) && !recordTypes.has(value));
-    if (protocol === ISorted) return mapKinds.get(value) === "sorted-map";
+    if (protocol === ISorted) return sortedComparators.has(value);
     if (protocol === IChunkedSeq) return cells.get(value)?.kind === "range" || ["chunked", "chunked-cons"].includes(views.get(value)?.kind);
     if (protocol === ICloneable) return cloneablePayload(value);
     if (protocol === IVector) return vectors.has(value);
@@ -2008,13 +2120,13 @@
     if (protocol === ICollection) return [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value));
     if (protocol === IEmptyableCollection) return !recordTypes.has(value) && builtinCoreImplementation(ICollection, value);
     if (protocol === IStack) return vectors.has(value) || cells.has(value) || queues.has(value);
-    if (protocol === IReversible) return vectors.has(value) || views.get(value)?.kind === "indexed" || mapKinds.get(value) === "sorted-map";
+    if (protocol === IReversible) return vectors.has(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
     if (protocol === IIterable) return builtinCoreImplementation(ICollection, value);
     if (protocol === IComparable) return vectors.has(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
     if (protocol === ISeqable) return [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value));
     if (protocol === ISeq || protocol === INext) return protocol === ISeq && chunks.get(value)?.integer === true || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
     if (protocol === ISequential) return vectors.has(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
-    if (protocol === ICounted) return chunkBuffers.has(value) || chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || maps.has(value) || sets.has(value) || queues.has(value) || cells.get(value)?.kind === "list" || (views.has(value) && ["indexed", "array-map", "chunked"].includes(views.get(value).kind));
+    if (protocol === ICounted) return chunkBuffers.has(value) || chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || maps.has(value) || sets.has(value) || queues.has(value) || cells.get(value)?.kind === "list" || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind));
     if (protocol === IIndexed) return chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || views.get(value)?.indexed === true;
     if (protocol === ILookup) return vectors.has(value) || maps.has(value) || sets.has(value);
     if (protocol === IAssociative) return vectors.has(value) || maps.has(value);
@@ -2316,8 +2428,9 @@
   function updatedMap(original, entries, removeRecord = false) {
     const Type = !removeRecord && recordTypes.get(original);
     if (mapKinds.get(original) === "sorted-map") {
-      entries.sort((a, b) => compareKeys(a.key, b.key));
-      return preserveMeta(original, makeMap(entries, "sorted-map"));
+      const prior = maps.get(original);
+      if (entries.length === prior.length && entries.every((entry, i) => entry === prior[i])) return original;
+      return preserveMeta(original, makeMap(entries, "sorted-map", sortedComparators.get(original)));
     }
     const result = Type ? new Type(...Type.fieldNames.map(name => {
       const entry = entries.find(e => equalPair(e.key, keyword(null, name)));
@@ -2361,7 +2474,7 @@
       maps.set(result, maps.get(value)); mapKinds.set(result, mapKinds.get(value));
     }
     else {
-      const stores = [symbols, vectors, maps, mapKinds, setKinds, sets, cells, views, queues, lazyValues, vars, subvecSources];
+      const stores = [symbols, vectors, maps, mapKinds, setKinds, sortedComparators, sets, cells, views, queues, lazyValues, vars, subvecSources];
       if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       result = Object.create(Object.getPrototypeOf(value));
       for (const store of [...stores, protocolImplementations, typeFields, recordTypes]) if (store.has(value)) store.set(result, store.get(value));
@@ -3763,7 +3876,7 @@
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
     const result = Object.create(Object.getPrototypeOf(value));
-    for (const store of [...protocolStores, metadataValues, mapKinds, setKinds, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
+    for (const store of [...protocolStores, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
   });
@@ -3771,9 +3884,10 @@
   for (const [names, base] of [
     [["PersistentVector", "Subvec", "MapEntry"], vectorPrototype],
     [["PersistentArrayMap", "PersistentHashMap", "PersistentTreeMap"], mapPrototype],
-    [["PersistentHashSet"], setPrototype], [["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "LazySeq", "PersistentQueue", "Repeat", "Cycle", "Iterate", "Range", "IntegerRange", "NodeSeq"], sequencePrototype],
+    [["PersistentHashSet", "PersistentTreeSet"], setPrototype], [["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "LazySeq", "PersistentQueue", "Repeat", "Cycle", "Iterate", "Range", "IntegerRange", "NodeSeq", "PersistentTreeMapSeq"], sequencePrototype],
     [["Keyword"], keywordPrototype], [["Symbol"], symbolPrototype], [["Reduced"], reducedPrototype], [["UUID"], uuidPrototype]
   ]) for (const name of names) builtinType(name, base);
+  Object.defineProperty(builtinTypes.PersistentTreeMap.prototype, "comp", {get() { return sortedComparators.get(this); }});
   builtinType("Delay", Object.prototype);
   builtinType("Eduction", Object.prototype);
   installMethods(builtinTypes.Eduction.prototype, [
@@ -3909,14 +4023,14 @@
     writeAll: (writer, ...texts) => { for (const text of texts) write(writer, text); return null; },
     keyProtocol: coreMethod("IMapEntry/-key", [1], value => nth(value, 0)), valProtocol: coreMethod("IMapEntry/-val", [1], value => nth(value, 1)),
     findProtocol: coreMethod("IFind/-find", [2], find),
-    sortedSeqProtocol: coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => ascending ? seq(value) : rseq(value)),
-    sortedSeqFromProtocol: coreMethod("ISorted/-sorted-seq-from", [3], (value, key, ascending) => seq(toArray(ascending ? seq(value) : rseq(value)).filter(entry => (ascending ? 1 : -1) * compareKeys(nth(entry, 0), key) >= 0))),
-    entryKeyProtocol: coreMethod("ISorted/-entry-key", [2], (_value, entry) => nth(entry, 0)), comparatorProtocol: coreMethod("ISorted/-comparator", [1], () => compareKeys),
+    sortedSeqProtocol: coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => { const s = truth(ascending) ? seq(value) : rseq(value); return sets.has(value) ? mapSeq(predicates.identity, s) : s; }),
+    sortedSeqFromProtocol: coreMethod("ISorted/-sorted-seq-from", [3], sortedSeqFrom),
+    entryKeyProtocol: coreMethod("ISorted/-entry-key", [2], (value, entry) => sets.has(value) ? entry : core.keyProtocol(entry)), comparatorProtocol: coreMethod("ISorted/-comparator", [1], value => sortedComparators.get(value)),
     chunkedFirstProtocol: coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst),
     chunkedRestProtocol: coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest),
     invokeProtocol: coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args)),...numeric, ...predicates, keyword: keywordCore, symbol: symbolCore, vector, list,
     gensym, macroexpand, macroexpand1, eval: () => { throw new Error("compiler eval service is not installed"); },
-    hashMap, arrayMap, sortedMap, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, subs, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
+    hashMap, arrayMap, sortedMap, sortedMapBy, sortedSet, sortedSetBy, subseq, rsubseq, mkBoundFn, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, subs, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
     reduce, completing, transduce, ensureReduced, haltWhen, dedupe, randomSample, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
     Atom, atomFactory, Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol, resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch, notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
     IPending, realized, force, isDelay: value => delays.has(value), nthrest, nthnext,

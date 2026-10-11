@@ -104,7 +104,10 @@ overload/recur rules, and compiler warnings remain source-language obligations.
 The selected feature inventory separately classifies sorted/transient collection
 implementations, general transducer constructor/execution APIs, standalone library namespaces,
 multimethod/hierarchy and tap-delivery APIs. These categories retain the historical
-batch's exclusions; they are not the current intended-language boundary. Core
+batch's exclusions; they are not the current intended-language boundary.
+All 104 historical sorted sites now have complete executable setup/body adapters
+in the intended-language ledger; see [sorted source evidence](../compiler-sorted-collections.md)
+for both-engine/reference verification and the remaining cross-feature dependencies. Core
 feature gaps and explicit host-hook contracts have owners in the roadmap above.
 The extractor follows named fixture/local references
 to classify mixed bodies per assertion: a normal set assertion stays in scope

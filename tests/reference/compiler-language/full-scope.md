@@ -73,7 +73,11 @@ alone establishes no public operation's macro eligibility.
 
 `full-cases.jsonl` and `full-witnesses.jsonl` accept further expression/namespace
 adapters through the same body/hash/expectation/provenance validation and execution
-runner as historical witnesses. They now include fourteen complete transient body adapters. `obligation-witnesses.jsonl`
+runner as historical witnesses. They include fourteen complete transient body adapters
+and eighteen complete sorted collection bodies; all 104 historical sorted sites
+retain full setup through those adapters and the prior multimethod namespace
+adapter. See [sorted source evidence](../compiler-sorted-collections.md) for the
+remaining hash/library dependencies and exact verification boundary. `obligation-witnesses.jsonl`
 maps a public name/arity to complete body assertion execution mappings, with its
 exact declaration hash, signature hash, and a reviewed faithfulness rationale.
 A selected body subset cannot satisfy an API obligation. API registrations and
@@ -86,7 +90,8 @@ and requires Cargo's one-test/one-pass/zero-ignored outcome. Zero tests, failure
 timeouts, unavailable tools or stale source cannot establish macro eligibility.
 No phase witnesses are inferred from test names or existing implementation.
 Public API completion requires both ordinary operation evidence and this phase
-evidence. The phase catalog binds all 27 transient public name/arity rows and the three
+evidence. The phase catalog binds all 27 transient public name/arity rows, all
+17 sorted public declaration/arity rows, and the three
 `sequence` arities, plus `Eduction` and `eduction`, to their canonical macro
 contracts; a binding alone still supplies no passing observation. The complete `test-cljs-2028` body supplies an
 additional transducing-sequence witness. The complete `test-cljs-1209` body retains

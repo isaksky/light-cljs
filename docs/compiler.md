@@ -530,7 +530,8 @@ vectors or invalid entry sequences fail without mutating the input. These odd
 assoc/long-entry behaviors intentionally differ from the stricter native subset.
 Map seq materialization costs O(n), produces vector-like two-element entries,
 and then advances tails in O(1). `seq {}` is nil; `rest {}` is the empty list.
-Map traversal order is unspecified and is never sorted by the runtime.
+Hash-map and array-map traversal order is unspecified. Sorted maps traverse in
+the retained comparator order; see [sorted collections](#sorted-collections).
 
 Literal duplicate reader data is rejected at the repeated key's source span.
 Reader identity distinguishes integer from floating tokens and equates list/vector
@@ -608,8 +609,8 @@ The shared observer uses a separate `{"$set":[...],"count":N}` tag, checks count
 duplicate complete encoded members, and sorts only the encoded set members.
 Sequences created from sets keep their sequence tag and order. Runtime assertions
 cover collisions, hostile prototype/storage mutation, nested sharing and 512 saved
-versions. This set implementation does not bundle `clojure.set`, sorted sets,
-transients or mutable host-set conversion. Protocol implementations and selected
+versions. Hash-set storage does not imply mutable host-set conversion. Sorted
+sets and transients have separate canonical runtime contracts below. Protocol implementations and selected
 caller-supplied library functions are covered separately. See the
 [set reference evidence](../tests/reference/compiler-collections-runtime.md#structural-sets-2026-10-09)
 and [resident scaling samples](../benchmarks/results/compiler-2026-10-09/sets-smoke/README.md).
@@ -1394,7 +1395,8 @@ This is the existing selected-scope gate. Its strict result does not establish
 full intended-language completion: the current inventory excludes, among other
 families, transients, transducers, sorted collections and multimethods. Transients
 and eager transducers now have separate executable audits, as do
-[multimethods and hierarchies](../tests/reference/compiler-multimethods.md); remaining obligations
+[multimethods and hierarchies](../tests/reference/compiler-multimethods.md) and
+[sorted collections](../tests/reference/compiler-sorted-collections.md); remaining obligations
 stay visible in the full ledger. The
 [broader coverage contract](evaluator-migration.md#language-coverage-and-completion-boundaries)
 requires separate parsing, lowering, native, canonical JS, macro-execution and
@@ -1860,3 +1862,36 @@ separately from executed JavaScript. It checks complete original probes, ordered
 warning kinds/messages, acceptance categories, and effective settings against
 both pinned references. Original `static-fns=true` contexts are also checked
 in both references alongside the mandatory `static-fns=false` baseline.
+
+
+### Sorted collections
+
+`sorted-map`, `sorted-map-by`, `sorted-set`, and `sorted-set-by` use the shared
+canonical runtime in application and macro execution. Comparators accept either
+numeric comparison results or ordering predicates. Sorted membership uses a zero
+comparator result; retained representatives keep their structural equality and
+hashes. Numeric keys remain JavaScript Numbers, including rounding at 2^53 and
+zero/-zero equivalence. Ordinary equal sorted/hash collections have equal hashes.
+Comparators inconsistent with structural equality retain upstream's distinct
+membership and structural-hash roles.
+
+`assoc`, `dissoc`, `conj`, `disj`, lookup/callability, map entry finding, sequence,
+reduction, and reverse traversal preserve sorted order and prior values. Metadata,
+clone, and `empty` retain the comparator; no-op sorted updates preserve collection
+identity. Sorted maps supply nil for an unmatched trailing constructor key. Applying
+`sorted-map-by` or `sorted-set-by` without a comparator returns an empty collection;
+adding multiple keys later exposes the invalid comparator as an ordinary error. Sorted
+collections require an explicit editable protocol extension for transient use.
+
+`subseq` and `rsubseq` support their three- and five-argument ranges with `<`, `<=`,
+`>`, and `>=`, including saved function values and custom `ISorted` dispatch.
+`-sorted-seq`, `-sorted-seq-from`, `-entry-key`, and `-comparator` honor the collection's
+comparator and map/set entry distinction. Empty sorted-map traversals are nil;
+sorted-set protocol traversals retain the upstream lazy-sequence result.
+
+Sorted storage uses private immutable arrays with binary comparator search:
+lookup is O(log n), updates copy O(n) entries, and traversal materialization is
+O(n). This is a semantic implementation, not a red/black-tree storage claim.
+`PersistentTreeMap`, `PersistentTreeSet`, and `PersistentTreeMapSeq` retain public
+type identities and constructor arities; opaque upstream node storage remains
+outside the compiler API. See the [full-body provenance and verification](../tests/reference/compiler-sorted-collections.md).

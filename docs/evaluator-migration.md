@@ -354,13 +354,15 @@ Its historical exclusions include 63 transient, 105 transducer, 104 sorted and
 31 multimethod/hierarchy sites. Those features are intended language obligations,
 not permanent dialect exclusions. Eager transduction now has a separate
 [executing audit](../tests/reference/compiler-transducers.md), and canonical transients
-have a [complete-body/phase audit](../tests/reference/compiler-transients.md). A selected-scope
+have a [complete-body/phase audit](../tests/reference/compiler-transients.md). Sorted
+collections also have a [complete-body/phase audit](../tests/reference/compiler-sorted-collections.md). A selected-scope
 report with zero missing cannot declare the language complete. `light-cljs-116`
 expanded the independent executable ledger.
 
 Canonical lazy transducing `sequence` now has an
 [executing audit](../tests/reference/compiler-sequence-transducers.md). Remaining
-feature ownership is recorded in Pellets: eduction (`60`), multimethods (`47`), sorted collections (`119`),
+feature ownership is recorded in Pellets; sorted collections (`119`), eduction (`60`),
+and multimethods (`47`) now have canonical execution evidence. Remaining families include
 equality/hashing/metadata (`120`), sequence/iterator gaps (`121`), regex (`49`),
 core utilities (`122`), supported string/set/walk/EDN libraries (`123`),
 printing/reflection/host hooks (`124`) and reader coverage (`9`). All IDs have the

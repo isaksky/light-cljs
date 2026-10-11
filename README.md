@@ -599,3 +599,8 @@ a declared field returns a plain map; extension-only updates preserve record ide
 Raw `defrecord*`, constructor aliases, redefinition and external extensions execute
 in the generated JavaScript. See the [record audit](tests/reference/compiler-records.md)
 for source assertions, pinned comparisons and output measurements.
+
+Canonical sorted maps and sets support custom comparators, immutable updates,
+lookup, reduction, reverse traversal, `ISorted`, `subseq`, and `rsubseq` in both
+application and macro execution. The [sorted collection audit](tests/reference/compiler-sorted-collections.md)
+retains full upstream bodies and pinned-reference evidence.
