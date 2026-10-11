@@ -1648,7 +1648,45 @@
   function withMetaSupported(value) {
     return !!builtin(value, "IWithMeta/-with-meta", 2) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
   }
+  let declarationDemand = null;
+  const declarationTransactions = [];
+  function setDeclarationDemand(demand) { declarationDemand = demand; }
+  function demandProtocol(key, value) {
+    if (!declarationDemand) return;
+    const name = typeNames.get(value?.constructor);
+    declarationDemand(key, value, name);
+  }
+  function declarationReceiver(value) { demandProtocol("Object", value); return value; }
+  function patchDeclaration(value, key, descriptor) {
+    const transaction = declarationTransactions.at(-1);
+    if (transaction) {
+      const old = Object.getOwnPropertyDescriptor(value, key);
+      transaction.push({undo: () => old ? Object.defineProperty(value, key, old) : Reflect.deleteProperty(value, key), redo: () => Object.defineProperty(value, key, descriptor), snapshot: () => { const saved = Object.getOwnPropertyDescriptor(value, key); return () => saved ? Object.defineProperty(value, key, saved) : Reflect.deleteProperty(value, key); }});
+    }
+    Object.defineProperty(value, key, descriptor);
+  }
+  function setDeclaration(store, key, value) {
+    const transaction = declarationTransactions.at(-1), present = store.has(key), previous = store.get(key);
+    if (transaction) transaction.push({undo: () => present ? store.set(key, previous) : store.delete(key), redo: () => store.set(key, value), snapshot: () => { const saved = store.get(key), has = store.has(key); return () => has ? store.set(key, saved) : store.delete(key); }});
+    store.set(key, value);
+  }
+  function declarationTransaction(run, capture = false) {
+    const undo = [];
+    declarationTransactions.push(undo);
+    try { const value = run(); return capture ? {value, patches: undo} : value; }
+    catch (error) {
+      for (let i = undo.length - 1; i >= 0; i--) undo[i].undo();
+      throw error;
+    } finally { declarationTransactions.pop(); }
+  }
+  function applyDeclarationPatches(patches, forward) {
+    if (forward) for (const patch of patches) patch.redo();
+    else for (let i = patches.length - 1; i >= 0; i--) patches[i].undo();
+  }
+  function snapshotDeclarationPatches(patches) { return patches.map(patch => patch.snapshot()); }
+  function restoreDeclarationPatches(saved) { for (let i = saved.length - 1; i >= 0; i--) saved[i](); }
   function protocolPredicate(protocol, key, value, direct) {
+    demandProtocol(key, value);
     if (directMethod(value, key, 0)) return true;
     if (direct) return false;
     return !!(protocol[nativeType(value)] || protocol._);
@@ -1659,6 +1697,7 @@
     return coreProtocolImplementation(protocol, value);
   }
   function satisfies(protocol, value) {
+    demandProtocol(protocolNames.get(protocol) ?? coreProtocolNames.get(protocol), value);
     if (implementsProtocol(protocol, value)) return true;
     const key = protocolNames.get(protocol);
     if (key) return !!(protocol[nativeType(value)] || protocol._);
@@ -2059,7 +2098,7 @@
   const nativeMethods = new Map(), coreDispatchers = new Map();
   function protocol(name) {
     const value = function () {};
-    protocolNames.set(value, name); protocolValues.set(name, value);
+    protocolNames.set(value, name); setDeclaration(protocolValues, name, value);
     return value;
   }
   function nativeType(value) { return value == null ? "null" : Array.isArray(value) ? "array" : typeof value; }
@@ -2080,6 +2119,7 @@
     slots.set(arity, slot); return slot;
   }
   function directMethod(value, key, arity) {
+    demandProtocol(arity === 0 ? key : key.slice(0, key.lastIndexOf("/")), value);
     if (value == null) return undefined;
     const method = value[protocolSlot(key, arity)];
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
@@ -2138,8 +2178,8 @@
       if (external != null) return external.call(null, receiver, ...args);
       throw new Error("No protocol method " + metadataName + " defined for this value");
     };
-    protocolKeys.set(dispatch, key); protocolFunctions.set(key, metadataName); protocolVariables.set(metadataName, dispatch);
-    protocolGetters.set(key, getter ?? (() => protocolVariables.get(metadataName)));
+    protocolKeys.set(dispatch, key); setDeclaration(protocolFunctions, key, metadataName); setDeclaration(protocolVariables, metadataName, dispatch);
+    setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
     return dispatch;
   }
   function extendType(target, methods) {
@@ -2149,7 +2189,7 @@
       for (const [key, arity, method] of methods) {
         if (arity === 0) {
           const value = protocolValues.get(key) ?? coreProtocolsByName.get(key);
-          if (value) result = value[target] = true;
+          if (value) { patchDeclaration(value, target, {value: true, writable: true, configurable: true, enumerable: true}); result = true; }
         }
         if (!grouped.has(key)) grouped.set(key, new Map());
         grouped.get(key).set(arity, method);
@@ -2162,10 +2202,10 @@
           return method ? method.call(null, ...args) : invalidArity(args.length);
         };
         result = implementation;
-        if (dispatch) dispatch[target] = implementation;
+        if (dispatch) patchDeclaration(dispatch, target, {value: implementation, writable: true, configurable: true, enumerable: true});
         if (!protocolFunctions.has(key)) {
-          if (!nativeMethods.has(key)) nativeMethods.set(key, new Map());
-          nativeMethods.get(key).set(target, implementations);
+          if (!nativeMethods.has(key)) setDeclaration(nativeMethods, key, new Map());
+          setDeclaration(nativeMethods.get(key), target, implementations);
         }
       }
     } else {
@@ -2181,17 +2221,24 @@
   }
   function installMethods(value, methods) {
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
-    const implementations = protocolImplementations.get(value) ?? new Map(), calls = {}, invokes = {}, objectVariadics = new Map();
+    const oldImplementations = protocolImplementations.get(value), oldCalls = ifnValues.get(value);
+    const transaction = declarationTransactions.at(-1);
+    const implementations = new Map(Array.from(oldImplementations ?? [], ([key, entries]) => [key, new Map(entries)])), calls = {}, invokes = {}, objectVariadics = new Map();
+    if (transaction) transaction.push({
+      undo: () => { if (oldImplementations) protocolImplementations.set(value, oldImplementations); else protocolImplementations.delete(value); if (oldCalls) ifnValues.set(value, oldCalls); else ifnValues.delete(value); },
+      redo: () => { protocolImplementations.set(value, implementations); if (Object.keys(calls).length) ifnValues.set(value, calls); },
+      snapshot: () => { const methods = protocolImplementations.get(value), functions = ifnValues.get(value); return () => { if (methods) protocolImplementations.set(value, methods); else protocolImplementations.delete(value); if (functions) ifnValues.set(value, functions); else ifnValues.delete(value); }; }
+    });
     for (const [dispatch, arity, method, invoke = method, variadic] of methods) {
       const key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch);
       if (!implementations.has(key)) implementations.set(key, new Map());
       if (variadic != null && key.startsWith("Object/")) objectVariadics.set(key, [variadic, method]);
       else implementations.get(key).set(arity, method);
-      if (!key.startsWith("Object/") && key !== "IFn/-invoke") Object.defineProperty(value, protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
+      if (!key.startsWith("Object/") && key !== "IFn/-invoke") patchDeclaration(value, protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
       if (key === "IFn/-invoke") { calls[arity - 1] = method; invokes[arity - 1] = invoke; }
     }
     for (const [key, entries] of implementations) if (key.startsWith("Object/")) {
-      Object.defineProperty(value, mungeMember(key.slice(7)), {value: function (...args) {
+      patchDeclaration(value, mungeMember(key.slice(7)), {value: function (...args) {
         const rest = objectVariadics.get(key);
         const method = !rest && entries.size === 1 ? entries.values().next().value : entries.get(args.length + 1) ?? rest?.[1];
         if (!method) return invalidArity(args.length);
@@ -2203,8 +2250,9 @@
     }
     if (Object.keys(calls).length) {
       ifnValues.set(value, calls);
-      Object.defineProperties(value, {call: {value: ifnPrototype.call, writable: true, configurable: true}, apply: {value: ifnPrototype.apply, writable: true, configurable: true}});
-      for (const [arity, method] of Object.entries(invokes)) value["cljs$core$IFn$_invoke$arity$" + arity] = function (...args) { return method.call(this, this, ...args); };
+      patchDeclaration(value, "call", {value: ifnPrototype.call, writable: true, configurable: true});
+      patchDeclaration(value, "apply", {value: ifnPrototype.apply, writable: true, configurable: true});
+      for (const [arity, method] of Object.entries(invokes)) patchDeclaration(value, "cljs$core$IFn$_invoke$arity$" + arity, {value: function (...args) { return method.call(this, this, ...args); }, writable: true, configurable: true, enumerable: true});
     }
     protocolImplementations.set(value, implementations);
     return value;
@@ -3312,5 +3360,5 @@
     checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,
     constantly, complement, comp, partial, juxt, fnil});
   const compilerForms = compilerFormBridge();
-  return Object.freeze({compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

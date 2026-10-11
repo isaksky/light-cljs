@@ -67,7 +67,7 @@ fn emit_js_mode(program: &Program, shared: Option<&str>, demand_roots: bool) -> 
     }
     emitter.emit(program.root, ExprContext::Return);
     emitter.output.push_str("})()\n");
-    if program.exprs.iter().enumerate().any(|(id, expr)| {
+    if demand_roots || program.exprs.iter().enumerate().any(|(id, expr)| {
         emitter.used.contains(&ExprId(id)) && (
         matches!(
             expr.kind,
@@ -190,6 +190,24 @@ impl Emitter<'_> {
             self.output.push(']');
         } else {
             write!(self.output, "g{}", id.0).unwrap();
+        }
+    }
+
+    // Declaration products may be linked while the bundle is initializing.
+    // Ordinary value references (including method bodies) still use demand roots.
+    fn product(&mut self, id: GlobalId) {
+        if self.demand_roots {
+            self.output
+                .push_str("globalThis.__lightCompilerBundleProducts[");
+            let binding = &self.program.globals[id.0];
+            self.string_units(
+                &format!("{}/{}", binding.namespace, binding.name)
+                    .encode_utf16()
+                    .collect::<Vec<_>>(),
+            );
+            self.output.push(']');
+        } else {
+            self.global(id);
         }
     }
 
@@ -1097,7 +1115,7 @@ impl Emitter<'_> {
                 methods,
             } => {
                 self.output.push_str("(() => { ");
-                self.global(*global);
+                self.product(*global);
                 self.output.push_str(" = rt.makeType(");
                 self.output.push('[');
                 for (index, field) in fields.iter().enumerate() {
@@ -1136,7 +1154,7 @@ impl Emitter<'_> {
                 }
                 self.output.push_str("); ");
                 if let Some(constructor) = constructor {
-                    self.global(*constructor);
+                    self.product(*constructor);
                     self.output.push_str(" = (...args) => new ");
                     self.global(*global);
                     if *record {
@@ -1147,7 +1165,7 @@ impl Emitter<'_> {
                     } else {
                         self.output.push_str("(...args); ");
                     }
-                    self.global(*global);
+                    self.product(*global);
                     self.output.push_str(".getBasis = () => rt.core.vector(");
                     for (index, field) in fields.iter().enumerate() {
                         if index > 0 {
@@ -1158,10 +1176,10 @@ impl Emitter<'_> {
                         self.output.push(')');
                     }
                     self.output.push_str("); ");
-                    self.global(*global);
+                    self.product(*global);
                     self.output.push_str(".cljs$lang$type = true; ");
                     if !*record {
-                        self.global(*global);
+                        self.product(*global);
                         self.output.push_str(".cljs$lang$ctorStr = ");
                         let binding = &self.program.globals[global.0];
                         self.string_units(
@@ -1173,7 +1191,7 @@ impl Emitter<'_> {
                     }
                 }
                 if let Some(map_constructor) = map_constructor {
-                    self.global(*map_constructor);
+                    self.product(*map_constructor);
                     self.output.push_str(" = value => rt.recordFromMap(");
                     self.global(*global);
                     self.output.push_str(", value); ");
@@ -1182,7 +1200,7 @@ impl Emitter<'_> {
                 if let Some(body) = body {
                     self.value(*body);
                 } else {
-                    self.global(*global);
+                    self.product(*global);
                 }
                 self.output.push_str("; })()");
             }
@@ -1236,7 +1254,7 @@ impl Emitter<'_> {
                 via_metadata,
             } => {
                 self.output.push_str("(() => { ");
-                self.global(*global);
+                self.product(*global);
                 self.output.push_str(" = rt.protocol(");
                 let binding = &self.program.globals[global.0];
                 self.string_units(
@@ -1246,7 +1264,7 @@ impl Emitter<'_> {
                 );
                 self.output.push_str("); ");
                 for method in methods {
-                    self.global(method.global);
+                    self.product(method.global);
                     self.output.push_str(" = rt.protocolMethod(");
                     self.string_units(&method.key.encode_utf16().collect::<Vec<_>>());
                     self.output.push_str(", ");
@@ -1552,7 +1570,11 @@ impl Emitter<'_> {
                 self.output.push(')');
             }
             ExprKind::Property { receiver, property } => {
-                self.output.push('(');
+                if self.demand_roots {
+                    self.output.push_str("rt.declarationReceiver(");
+                } else {
+                    self.output.push('(');
+                }
                 self.value(*receiver);
                 self.output.push(')');
                 self.member(property);
@@ -1562,7 +1584,11 @@ impl Emitter<'_> {
                 method,
                 args,
             } => {
-                self.output.push('(');
+                if self.demand_roots {
+                    self.output.push_str("rt.declarationReceiver(");
+                } else {
+                    self.output.push('(');
+                }
                 self.value(*receiver);
                 self.output.push(')');
                 self.member(method);

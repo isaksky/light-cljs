@@ -159,7 +159,11 @@ macro bodies can use canonical core functions and ECMAScript intrinsics. Ordinar
 helpers initialize on actual value demand, including closures, higher-order calls
 and Var consumption. Var identity/metadata and untaken branches preserve pending
 roots. Compile-time scopes restore pending, ready and failed roots without forcing
-them; clean host reuse creates fresh mutable state. Shared namespace loading
+them; clean host reuse creates fresh mutable state. Protocol, type, record and
+extension declarations initialize as bundles, with protocol-specific extension
+demand, source-visible dispatch frontiers and rollback of failed installations.
+Reify and specify! inside executed helpers use ordinary expression semantics.
+Shared namespace loading
 remains a subsequent migration stage; legacy explicit `.clj`/`.cljc` macro imports
 remain an isolated adapter until then.
 Declarations follow source order at top level, inside top-level `do`, and in

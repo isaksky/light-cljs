@@ -441,6 +441,78 @@ mod tests {
     }
 
     #[test]
+    fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        crate::compile_with_macros("(defmacro ready [] 42)", &mut host).unwrap();
+        let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
+        let value = evaluator.evaluate_unit(r#"rt => {
+          const roots = globalThis.__lightCompilerRoots, products = globalThis.__lightCompilerBundleProducts;
+          const names = ["test/T", "test/->T"];
+          let effects = 0, first;
+          globalThis.__lightRegisterBundle(names, rt => {
+            effects++;
+            products["test/T"] = rt.makeType([], [], false);
+            products["test/->T"] = () => new (roots["test/T"])();
+            throw new Error("after-product-installation");
+          }, [], "bundle-test");
+          try { roots["test/T"]; } catch (error) { first = error; }
+          try { roots["test/->T"]; throw new Error("factory was published"); }
+          catch (error) { if (error !== first) throw error; }
+          if (effects !== 1) throw new Error("failed bundle retried");
+          globalThis.__lightRegisterBundle(names, rt => {
+            products["test/T"] = rt.makeType([], [], false);
+            roots["test/T"];
+          }, [], "cycle-test");
+          try { roots["test/T"]; throw new Error("unfinished root was read"); }
+          catch (error) { if (!error.message.includes("bundle initialization cycle")) throw error; }
+          globalThis.__lightRegisterBundle(names, rt => {
+            products["test/T"] = rt.makeType([], [], false);
+            products["test/->T"] = () => new (roots["test/T"])();
+          }, [], "replacement-test");
+          const factory = roots["test/->T"], Type = roots["test/T"];
+          if (!(factory() instanceof Type)) throw new Error("replacement products differ");
+          return null;
+        }"#).unwrap();
+        evaluator.release(value).unwrap();
+    }
+
+    #[test]
+    fn cancelled_extension_bundle_rolls_back_before_reusing_host() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        crate::compile_with_macros(
+            r#"(defprotocol P (f [x]))
+               (def target (js/cancelTarget 0))
+               (extend-protocol P string (f [_] 1) target (f [_] 2))
+               (defmacro m [] (f "s"))"#,
+            &mut host,
+        )
+        .unwrap();
+        let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
+        let control = evaluator.control();
+        evaluator
+            .install_unit_service("cancelTarget", move |_, _| {
+                control.cancel();
+                Ok("(rt) => 42".into())
+            })
+            .unwrap();
+        let function = host.javascript_macros["cljs.user/m"].function;
+        let error = evaluator.call(function, &[]).unwrap_err();
+        assert!(error.0.contains("cancelled"), "{error}");
+        assert!(evaluator.evaluate_js("1").is_err());
+        let js = crate::compile_with_macros(
+            r#"(defprotocol P (f [x])) (extend-type string P (f [_] 42)) (defmacro m [] (f "s")) (m)"#,
+            &mut host,
+        ).unwrap();
+        assert!(js.contains("return 42"));
+        assert!(!Rc::ptr_eq(
+            &evaluator,
+            &host.bootstrap.as_ref().unwrap().evaluator
+        ));
+    }
+
+    #[test]
     fn regenerate_from_first_party_sources_and_collect_during_bootstrap() {
         let mut outputs = Vec::new();
         for collect in [false, true] {

@@ -86,3 +86,7 @@ No full cargo suite, pinned JVM oracle, platform-specific suite, startup benchma
 or unchanged application port was run. Protocol/type/record/extension bundles
 remain required work in `light-cljs-110`; ordinary namespace import migration is
 `light-cljs-103`, and final effect-preserving reachability is `light-cljs-111`.
+
+The subsequent declaration-bundle delivery is documented in
+[compiler-declaration-demand.md](compiler-declaration-demand.md); the historical
+command outcomes and prerequisite scope above are unchanged.

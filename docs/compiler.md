@@ -997,10 +997,41 @@ ordinary root. Executed nested definitions affect only that phase. Standalone
 source expressions run only in the application, and application initialization
 retains source order in its own heap. See the [executing demand evidence](../tests/reference/compiler-helper-demand.md).
 
-Shared-source namespace imports and protocol/type/record/extension declaration
-bundles remain subsequent migration work. An ordinary binding shadowing a core
-name cannot silently call the core implementation from a macro body. The legacy
-import adapter below is retained until namespace migration.
+Top-level `defprotocol`, `deftype`, `defrecord`, `extend-type` and
+`extend-protocol` are demand-initialized declaration bundles, including forms in
+top-level `do` and macro-generated declarations. Protocol descriptors/method Vars,
+type descriptors/factories and extension registrations share one bundle state.
+Method bodies expand and analyze once using the declaration-site snapshot; the
+same IR supplies compile-time and application emission. Demanding any product
+installs the whole bundle. Compiler-emitted descriptor/factory linking can use
+staged identity; ordinary unfinished value reads report a bundle cycle.
+
+Protocol invocation (including saved functions and higher-order calls), marker
+membership, applicable core operations and Object member access demand relevant
+source-visible extensions. Known descriptor/native selectors narrow that index.
+Computed target aliases remain candidates for their resolved protocol and are
+demanded only when a query needs their applicability. An unrelated protocol's
+extensions do not initialize. Earlier deferred macro expansions retain their
+extension frontier, even after newer dispatch has executed. Dispatch uses the
+canonical phase-local tables; replacement generations and frontier changes apply
+owned registration patches without rerunning user initializers.
+
+Failure rolls back staged products and dispatch patches and stays sticky for that
+bundle generation. A matching new extension declaration or clean compilation can
+repair it; user/host effects already performed remain performed. Cancellation is
+terminal for the compilation heap, and reused hosts allocate fresh roots/tables.
+Application declarations still execute in source/dependency order in their own
+heap. See the [executing bundle evidence](../tests/reference/compiler-declaration-demand.md).
+
+`reify`, `specify!`, nested declarations and low-level `deftype*`/`defrecord*`
+inside executed code use ordinary canonical expression semantics. Arbitrary
+standalone expressions, including top-level `specify!`, are application effects
+and are never replayed as macro setup. They are retained in application output.
+This classification is syntactic declaration admission, not an effect inference.
+
+Shared-source namespace imports remain subsequent migration work. An ordinary
+binding shadowing a core name cannot silently call the core implementation from
+a macro body. The legacy import adapter below remains until namespace migration.
 
 ### Legacy native macro import API
 

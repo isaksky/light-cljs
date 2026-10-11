@@ -1,11 +1,13 @@
 // A compilation owns this registry. Canonical emitted functions and collections
 // retain their normal runtime brands; only global storage differs by phase.
 (() => {
-  const slots = new Map(), overlays = new Map(), path = [];
+  const slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
+  let frontier = Infinity;
   function force(name) {
     if (overlays.has(name)) return overlays.get(name);
     const slot = slots.get(name);
     if (!slot || slot.unit === null) throw new Error((slot?.location ? slot.location + ': ' : '') + 'unavailable definition: ' + name);
+    if (slot.bundle) { forceBundle(slot.bundle); return slot.bundle.products.get(name); }
     if (slot.state === 'ready') return slot.value;
     if (slot.state === 'failed') throw slot.error;
     if (slot.state === 'initializing') {
@@ -24,11 +26,80 @@
       slot.state = 'failed'; slot.error = error; throw error;
     } finally { path.pop(); }
   }
+  function forceBundle(bundle) {
+    if (bundle.state === 'ready') return;
+    if (bundle.state === 'failed') throw bundle.error;
+    if (bundle.state === 'initializing') throw new Error('bundle initialization cycle: ' + [...path, bundle.name].join(' -> '));
+    bundle.state = 'initializing'; path.push(bundle.name); installing.push(bundle);
+    try {
+      for (const [protocol] of bundle.indices) if (slots.has(protocol)) force(protocol);
+      const installed = __lightRuntimeForCompiler.declarationTransaction(() => bundle.code(__lightRuntimeForCompiler), true);
+      bundle.patches = installed.patches;
+      bundle.state = 'ready';
+    } catch (error) {
+      bundle.products.clear(); bundle.state = 'failed'; bundle.error = error;
+      if (error instanceof Error) error.message = bundle.location + ': ' + bundle.name + ': ' + error.message;
+      throw error;
+    } finally { installing.pop(); path.pop(); }
+  }
+  globalThis.__lightCompilerBundleProducts = new Proxy(Object.create(null), {
+    get(_, name) {
+      const bundle = installing.at(-1);
+      if (bundle?.names.includes(name)) return bundle.products.get(name);
+      return force(name);
+    },
+    set(_, name, value) {
+      const bundle = installing.at(-1);
+      if (bundle?.names.includes(name)) bundle.products.set(name, value);
+      else slots.set(name, {unit: -1, state: 'ready', value});
+      return true;
+    }
+  });
+  globalThis.__lightRegisterBundle = (names, code, indices, location) => {
+    const bundle = {order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
+    bundles.push(bundle);
+    for (const name of names) slots.set(name, {unit: -1, bundle});
+    for (const [protocol, selector, identity] of indices) {
+      if (!extensions.has(protocol)) extensions.set(protocol, []);
+      // A new declaration for the same protocol/target is a fresh generation.
+      // Failed older generations remain sticky until this exact replacement.
+      const entries = extensions.get(protocol);
+      for (const entry of entries) if (entry.identity === identity && entry.bundle.state === 'failed') entry.superseded = bundle.order;
+      entries.push({bundle, selector, identity});
+    }
+    __lightRuntimeForCompiler.setDeclarationDemand((protocol, value, typeName) => {
+      const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+      for (const {bundle, selector, superseded} of extensions.get(protocol) ?? []) {
+        if (bundle.order > frontier || superseded && frontier >= superseded) continue;
+        if (selector === null || selector === '_' || selector === native || selector === '@' + typeName) forceBundle(bundle);
+      }
+    });
+  };
+  function selectFrontier(next) {
+    if (frontier === next) return;
+    if (!bundles.some(bundle => bundle.indices.length && bundle.state === 'ready' && (bundle.order <= frontier) !== (bundle.order <= next))) { frontier = next; return; }
+    for (let i = bundles.length - 1; i >= 0; i--) {
+      const bundle = bundles[i];
+      if (bundle.indices.length && bundle.state === 'ready' && bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, false);
+    }
+    frontier = next;
+    for (const bundle of bundles) if (bundle.indices.length && bundle.state === 'ready' && bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
+  }
+  globalThis.__lightEnterCompilerFrontier = next => {
+    const changesView = bundles.some(bundle => bundle.indices.length && bundle.state === 'ready' && (bundle.order <= frontier) !== (bundle.order <= next));
+    const saved = changesView ? bundles.flatMap(bundle => bundle.indices.length && bundle.state === 'ready' ? __lightRuntimeForCompiler.snapshotDeclarationPatches(bundle.patches) : []) : null;
+    frontiers.push({previous: frontier, saved}); selectFrontier(next); return null;
+  };
+  globalThis.__lightLeaveCompilerFrontier = () => {
+    const {previous, saved} = frontiers.pop(); selectFrontier(previous);
+    if (saved) __lightRuntimeForCompiler.restoreDeclarationPatches(saved);
+    return null;
+  };
   globalThis.__lightCompilerRoots = new Proxy(Object.create(null), {
     get(_, name) { return force(name); },
     set(_, name, value) {
       if (overlays.has(name)) overlays.set(name, value);
-      else { force(name); slots.get(name).value = value; }
+      else { force(name); slots.set(name, {unit: -1, state: 'ready', value}); }
       return true;
     }
   });

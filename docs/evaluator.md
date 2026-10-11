@@ -174,8 +174,19 @@ and redefinition overlays take precedence; saving/restoring them leaves pending
 and failed roots intact. Failure is sticky within a source generation, and
 ordinary redefinition replaces that generation. Compile-time `defonce` preserves
 any encountered generation, including a pending promise that returns undefined;
-application lowering retains its ordinary undefined check. Declaration bundles
-remain separate migration work.
+application lowering retains its ordinary undefined check.
+
+Declaration bundles use the same unit catalog and generation analysis cache.
+Their JS state stages named descriptor/factory/method products until complete
+installation. Canonical dispatch journals owned property/table patches for
+rollback and for restoring an earlier deferred-analysis extension frontier.
+Relevant extension candidates are indexed by protocol and known target identity;
+computed aliases remain protocol-specific deferred candidates. Ready products,
+method calls and cached target values stay in JS. Reentrant analysis scopes
+restore the dispatch frontier on every nonterminal exit. Runtime output receives
+the same analyzed declaration IR with ordinary source-order effects and an
+independent canonical runtime. The [bundle validation](../tests/reference/compiler-declaration-demand.md)
+records failure, cancellation, replacement and saved-dispatch execution.
 
 The [helper demand validation](../tests/reference/compiler-helper-demand.md)
 records value paths, source effects, scope restoration and cancellation recovery.

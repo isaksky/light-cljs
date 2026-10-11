@@ -2431,3 +2431,243 @@ mod ordinary_helper_demand {
           (= [7 1 4 1 7 7] [(m) x (scoped) x (update) x])"#), "true\n");
     }
 }
+
+mod declaration_bundle_demand {
+    use super::*;
+    fn checked(source: &str) -> String {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        result(&compile_with_macros(source, &mut host).unwrap())
+    }
+    #[test]
+    fn record_type_protocols_and_core_operations_share_lowering_with_separate_state() {
+        assert_eq!(
+            checked(
+                r#"
+          (def hits (atom 0))
+          (defprotocol Own (own [x]))
+          (defprotocol External (external [x]))
+          (defrecord R [x] Own (own [_] (swap! hits inc) x))
+          (deftype T [x] Own (own [this] (if (zero? x) 0 (own (->T (dec x)))))
+            ICounted (-count [_] x) ILookup (-lookup [_ k] (if (= k :x) x nil))
+            IHash (-hash [_] x) IMeta (-meta [_] {:x x}))
+          (extend-type R External (external [this] (+ 10 (:x this))))
+          (defn helper [] (let [r (map->R {:x 7}) t (->T 3) saved own]
+            [(saved r) (external r) (own t) (count t) (get t :x) (hash t)
+             (:x (meta t)) (count r) (:x (meta (with-meta r {:x 9}))) @hits]))
+          (defmacro m [] (list 'quote (helper)))
+          (= [[7 17 0 3 3 3 3 1 9 1] [7 17 0 3 3 3 3 1 9 1] 1]
+             [(m) (helper) @hits])"#
+            ),
+            "true\n"
+        );
+    }
+    #[test]
+    fn native_marker_higher_order_extend_protocol_and_replacement_follow_source_frontier() {
+        assert_eq!(
+            checked(
+                r#"
+          (defprotocol Marker)
+          (defprotocol P (f [x]))
+          (extend-type nil Marker)
+          (extend-protocol P nil (f [_] :nil) string (f [x] (str x "!")) array (f [x] (alength x)) default (f [_] :default))
+          (defn helper [] [(satisfies? Marker nil) (mapv f [nil "s" #js [1 2] true])])
+          (defmacro before [] (list 'quote (helper)))
+          (def first-result (before))
+          (defmacro freeze [] first-result) (freeze)
+          (extend-type string P (f [_] :new))
+          (defmacro after [] (list 'quote (helper)))
+          (= [[true [:nil "s!" 2 :default]] [true [:nil :new 2 :default]] [true [:nil :new 2 :default]]]
+             [first-result (after) (helper)])"#
+            ),
+            "true\n"
+        );
+    }
+    #[test]
+    fn computed_targets_are_protocol_specific_and_initialized_once() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        let js = compile_with_macros(
+            r#"
+          (def hits (atom 0))
+          (defprotocol P (f [x])) (defprotocol Unrelated (other [x]))
+          (deftype T [])
+          (def target (do (swap! hits inc) T))
+          (def unavailable (js/connect))
+          (extend-type unavailable Unrelated (other [_] 99))
+          (extend-type target P (f [_] 42))
+          (defn helper [] [(f (->T)) (f (->T)) @hits])
+          (defmacro m [] (list 'quote (helper)))
+          (pr-str [(m) (helper) @hits])"#,
+            &mut host,
+        )
+        .unwrap();
+        // Runtime executes the standalone declarations in order, so its host
+        // effect needs to exist even though compilation never demanded it.
+        assert_eq!(
+            execute(&format!(
+                "globalThis.connect = () => function Unavailable() {{}}; console.log({js});"
+            )),
+            "[[42 42 1] [42 42 1] 1]\n"
+        );
+    }
+    #[test]
+    fn reify_captures_and_executed_specify_use_canonical_expression_semantics() {
+        assert_eq!(
+            checked(
+                r#"
+          (defprotocol P (f [x]))
+          (def standalone #js {})
+          (specify! standalone P (f [_] :runtime))
+          (defn helper [n] (let [r (reify P (f [_] n)) obj #js {}]
+            (specify! obj P (f [_] (+ n 1))) [(f r) (f obj) (satisfies? P standalone)]))
+          (defmacro m [] (list 'quote (helper 7)))
+          (= [[7 8 false] [7 8 true]] [(m) (helper 7)])"#
+            ),
+            "true\n"
+        );
+    }
+    #[test]
+    fn failed_bundle_is_sticky_and_fresh_compilation_repairs_it() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        let js = compile_with_macros(
+            r#"
+          (def hits (atom 0)) (defprotocol P (f [x]))
+          (def bad (do (swap! hits inc) (throw (js/Error. "bundle-boom"))))
+          (extend-protocol P string (f [_] 1) bad (f [_] 2))
+          (defmacro m []
+            (let [a (try (f "s") (catch :default e (.-message e)))
+                  b (try (f "s") (catch :default e (.-message e)))]
+              (assert (= a b)) (assert (= 1 @hits))
+              (assert (nil? (aget f "string")))
+              (assert (nil? (aget P "string"))) 42))
+          (m)"#,
+            &mut host,
+        )
+        .unwrap();
+        assert!(js.contains("return 42"));
+        assert_eq!(result(&compile_with_macros("(defprotocol P (f [x])) (extend-type string P (f [_] 42)) (defmacro m [] (f \"s\")) (m)", &mut host).unwrap()), "42\n");
+    }
+    #[test]
+    fn bundle_cycles_report_paths_and_declaration_products_support_redefinition() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        let error = compile_with_macros(
+            r#"
+          (defprotocol P (f [x])) (declare target)
+          (extend-type target P (f [_] 7))
+          (def target (do (f "s") js/String))
+          (defmacro m [] (f "s")) (m)"#,
+            &mut host,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("bundle initialization cycle"), "{error}");
+        assert!(error.contains("cljs.user/target"), "{error}");
+        assert_eq!(
+            checked(
+                r#"
+          (deftype T [x]) (def T 17)
+          (defmacro first [] T) (def a (first))
+          (defmacro freeze [] a) (freeze)
+          (deftype T [x] Object (value [_] x))
+          (extend-type T Object (extra [_] 9))
+          (defmacro second [] [(.value (->T 7)) (.extra (->T 7))])
+          (= [17 [7 9] 9] [a (second) (.extra (->T 7))])"#
+            ),
+            "true\n"
+        );
+    }
+}
+
+#[test]
+fn deferred_declaration_methods_expand_once_at_the_definition_site() {
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    let js = compile_with_macros(
+        r#"
+      (def hits (atom 0))
+      (defprotocol P (f [x]))
+      (defmacro value [] (swap! hits inc) 7)
+      (deftype T [] P (f [_] (value)))
+      (defmacro value [] 99)
+      (defmacro run [] (let [v (->T)] (assert (= 7 (f v))) (assert (= 1 @hits)) (f v)))
+      (= [7 7 0] [(run) (f (->T)) @hits])"#,
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(result(&js), "true\n");
+}
+
+#[test]
+fn failed_extension_generation_can_be_replaced_without_repeating_host_effects() {
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    let js = compile_with_macros(
+        r#"
+      (def hits (atom 0)) (defprotocol P (f [x]))
+      (def target (do (swap! hits inc) (throw (js/Error. "bad target"))))
+      (extend-type target P (f [_] 1))
+      (defmacro fail [] (try (f "s") (catch :default e nil)) (assert (= 1 @hits)) nil)
+      (fail) (def target js/String)
+      (extend-type target P (f [_] 42))
+      (defmacro repaired [] (assert (= 1 @hits)) (f "s")) (repaired)"#,
+        &mut host,
+    )
+    .unwrap();
+    assert!(js.contains("return 42"));
+}
+
+#[test]
+fn delayed_macro_expansion_excludes_future_extensions_even_after_new_dispatch_is_ready() {
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    let js = compile_with_macros(
+        r#"
+      (defprotocol P (f [x]))
+      (extend-type string P (f [_] 1))
+      (defmacro snapshot [] (f "s"))
+      (def earlier (snapshot))
+      (extend-type string P (f [_] 2))
+      (snapshot)
+      (defmacro demand-earlier [] earlier)
+      (= [1 2 2] [(demand-earlier) (snapshot) (f "s")])"#,
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(result(&js), "true\n");
+}
+
+#[test]
+fn core_extension_queries_and_saved_protocol_methods_demand_visible_candidates() {
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    let js = compile_with_macros(
+        r#"
+      (def hits (atom 0)) (defprotocol P (f [x])) (deftype T [])
+      (def target (do (swap! hits inc) T))
+      (extend-type target P (f [_] 7) ICounted (-count [_] 9))
+      (def saved f)
+      (defmacro m [] (let [v (->T)] (assert (= 9 (count v)))
+        (assert (= 1 @hits)) [(saved v) (apply saved [v])]))
+      (= [[7 7] 9 1] [(m) (count (->T)) @hits])"#,
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(result(&js), "true\n");
+}
+
+#[test]
+fn restoring_a_dispatch_frontier_preserves_executed_helper_mutation() {
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    let js = compile_with_macros(r#"
+      (defprotocol P (f [x])) (extend-type string P (f [_] 1))
+      (defmacro snapshot [] (f "s")) (def earlier (snapshot))
+      (extend-type string P (f [_] 2))
+      (defmacro mutate [] (f "s") (aset f "string" (fn [_] 7)) nil) (mutate)
+      (defmacro demand-earlier [] earlier)
+      (= [1 7 2] [(demand-earlier) (snapshot) (f "s")])"#, &mut host).unwrap();
+    assert_eq!(result(&js), "true\n");
+}

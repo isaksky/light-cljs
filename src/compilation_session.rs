@@ -19,6 +19,7 @@ pub(crate) struct DefinitionSnapshot {
     pub options: AnalysisOptions,
     pub source_index: usize,
     pub definition_name: Option<String>,
+    pub extension_frontier: usize,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VarId(usize);
@@ -42,13 +43,20 @@ enum AnalysisState {
     Analyzed(Rc<Program>, Vec<AnalysisWarning>),
     Failed(String, Option<crate::AnalysisError>),
 }
+#[derive(Clone)]
+enum Registration {
+    Root(String, Option<usize>, bool, String),
+    Bundle(String),
+}
 #[derive(Default)]
 struct Catalog {
     units: Vec<Rc<RefCell<Unit>>>,
-    active: HashMap<String, (Option<usize>, String)>,
+    active: HashMap<String, bool>,
     bindings: HashMap<String, (VarId, usize)>,
     stack: Vec<usize>,
     bootstrap: Option<Bootstrap>,
+    registrations: Vec<Registration>,
+    bundle_count: usize,
 }
 #[derive(Default)]
 pub(crate) struct CompilationSession {
@@ -84,15 +92,94 @@ impl CompilationSession {
             .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; return null; }")
             .map_err(|e| e.to_string())?;
         evaluator.release(value).map_err(|e| e.to_string())?;
-        let active = {
+        let registrations = {
             let mut catalog = self.catalog.borrow_mut();
             catalog.bootstrap = Some(bootstrap.clone());
-            catalog.active.clone()
+            catalog.registrations.clone()
         };
-        for (name, (unit, location)) in active {
-            Self::install(evaluator.as_ref(), &name, unit, false, &location)?;
+        for registration in registrations {
+            match registration {
+                Registration::Root(name, unit, once, location) => {
+                    Self::install(evaluator.as_ref(), &name, unit, once, &location)?
+                }
+                Registration::Bundle(source) => {
+                    let value = evaluator
+                        .evaluate_unit(&source)
+                        .map_err(|e| e.to_string())?;
+                    evaluator.release(value).map_err(|e| e.to_string())?;
+                }
+            }
         }
         Ok(())
+    }
+    pub fn extension_frontier(&self) -> usize {
+        self.catalog.borrow().bundle_count
+    }
+    pub fn register_bundle(
+        &self,
+        program: &Program,
+        products: &[crate::analyzer::GlobalId],
+        extensions: &[(String, Option<String>, String)],
+        form: Form,
+        snapshot: DefinitionSnapshot,
+        host: MacroHost,
+        location: String,
+    ) -> Result<usize, String> {
+        fn quoted(s: &str) -> String {
+            let mut out = String::from("\"");
+            for c in s.encode_utf16() {
+                out.push_str(&format!("\\u{c:04x}"));
+            }
+            out.push('"');
+            out
+        }
+        let names = products
+            .iter()
+            .map(|g| {
+                let b = &program.globals[g.0];
+                quoted(&format!("{}/{}", b.namespace, b.name))
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let indices = extensions
+            .iter()
+            .map(|(p, t, identity)| {
+                format!(
+                    "[{},{},{}]",
+                    quoted(p),
+                    t.as_deref().map_or("null".into(), quoted),
+                    quoted(identity)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let name = format!("declaration#{}", self.catalog.borrow().units.len());
+        let unit = self
+            .register(name, Some(form), snapshot, host, false, location.clone())?
+            .unwrap();
+        let code = format!(
+            "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
+        );
+        let source = format!(
+            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {})",
+            quoted(&location)
+        );
+        let bootstrap = {
+            let mut c = self.catalog.borrow_mut();
+            c.registrations.push(Registration::Bundle(source.clone()));
+            c.bundle_count += 1;
+            for g in products {
+                let b = &program.globals[g.0];
+                c.active.insert(format!("{}/{}", b.namespace, b.name), true);
+            }
+            c.bootstrap.clone()
+        };
+        if let Some(bootstrap) = bootstrap {
+            let engine = bootstrap.evaluator.as_ref();
+            let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
+            engine.release(value).map_err(|e| e.to_string())?;
+        }
+        Ok(unit)
     }
     fn install(
         engine: &dyn MacroEvaluator,
@@ -153,10 +240,12 @@ impl CompilationSession {
                 id
             });
             if !(id.is_none() && c.active.contains_key(&name)
-                || once && c.active.get(&name).is_some_and(|(unit, _)| unit.is_some()))
+                || once && c.active.get(&name).is_some_and(|defined| *defined))
             {
-                c.active.insert(name.clone(), (id, location.clone()));
+                c.active.insert(name.clone(), id.is_some());
             }
+            c.registrations
+                .push(Registration::Root(name.clone(), id, once, location.clone()));
             (id, c.bootstrap.clone())
         };
         if let Some(bootstrap) = bootstrap {
@@ -232,6 +321,24 @@ impl CompilationSession {
             unit: unit.clone(),
             id,
         };
+        let evaluator = host.bootstrap.as_ref().map(|b| b.evaluator.clone());
+        let engine = engine.or_else(|| {
+            evaluator
+                .as_ref()
+                .map(|e| e.as_ref() as &dyn MacroEvaluator)
+        });
+        let _frontier = if let Some(engine) = engine {
+            let value = engine
+                .evaluate_unit(&format!(
+                    "rt => globalThis.__lightEnterCompilerFrontier({})",
+                    snapshot.extension_frontier
+                ))
+                .map_err(|e| e.to_string())?;
+            engine.release(value).map_err(|e| e.to_string())?;
+            Some(FrontierGuard { engine })
+        } else {
+            None
+        };
         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
         let diagnostic = analysis.as_ref().err().cloned();
         let result = analysis.map(|(p, w)| (Rc::new(p), w)).map_err(|e| {
@@ -263,6 +370,7 @@ impl Clone for DefinitionSnapshot {
             options: self.options,
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
+            extension_frontier: self.extension_frontier,
         }
     }
 }
@@ -278,6 +386,21 @@ impl Drop for AnalysisGuard<'_> {
         let mut unit = self.unit.borrow_mut();
         if matches!(unit.state, AnalysisState::Analyzing) {
             unit.state = AnalysisState::Failed("analysis interrupted".into(), None);
+        }
+    }
+}
+
+struct FrontierGuard<'a> {
+    engine: &'a dyn MacroEvaluator,
+}
+impl Drop for FrontierGuard<'_> {
+    fn drop(&mut self) {
+        // Terminal cancellation makes this heap unusable; no later demand runs.
+        if let Ok(value) = self
+            .engine
+            .evaluate_unit("rt => globalThis.__lightLeaveCompilerFrontier()")
+        {
+            let _ = self.engine.release(value);
         }
     }
 }

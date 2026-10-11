@@ -1662,6 +1662,8 @@ pub struct RecurTarget {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GlobalBinding {
+    /// Active source generation is a type/record descriptor, not an alias.
+    pub type_descriptor: bool,
     /// Existence probes may reserve storage before an actual definition.
     pub declared: bool,
     pub constant: bool,
@@ -2867,7 +2869,7 @@ impl Analyzer<'_> {
                 matches!(
                     name,
                     "do" | "def" | "defonce" | "declare" | "cljs.core/def" | "cljs.core/defonce" | "cljs.core/declare" | "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
-                ) || (self.lookup(name).is_none()
+                ) || matches!(name.rsplit('/').next(), Some("defprotocol" | "deftype" | "defrecord" | "extend-type" | "extend-protocol")) || (self.lookup(name).is_none()
                     && (self.macro_host.has_javascript_macro(self.namespace, name)
                         || self
                             .macro_host
@@ -3255,14 +3257,24 @@ impl Analyzer<'_> {
                             intrinsic == "implements?",
                         );
                     }
-                    "defprotocol" => return self.defprotocol_form(id, args, context),
-                    "extend-type" => return self.extend_type_form(id, args, context),
-                    "extend-protocol" => return self.extend_protocol_form(id, args, context),
+                    "defprotocol" => {
+                        let expr = self.defprotocol_form(id, args, context)?;
+                        return self.catalog_bundle(id, expr);
+                    }
+                    "extend-type" => {
+                        let expr = self.extend_type_form(id, args, context)?;
+                        return self.catalog_bundle(id, expr);
+                    }
+                    "extend-protocol" => {
+                        let expr = self.extend_protocol_form(id, args, context)?;
+                        return self.catalog_bundle(id, expr);
+                    }
                     "specify!" | "specify" => {
                         return self.specify_form(id, args, context, operator_name == "specify");
                     }
                     "deftype" | "defrecord" => {
-                        return self.type_form(id, args, context, intrinsic == "defrecord");
+                        let expr = self.type_form(id, args, context, intrinsic == "defrecord")?;
+                        return self.catalog_bundle(id, expr);
                     }
                     "assert" => return self.assert_form(id, args, context),
                     _ => {}
@@ -3760,6 +3772,7 @@ impl Analyzer<'_> {
                 .or_insert_with(|| {
                     let global = GlobalId(self.program.globals.len());
                     self.program.globals.push(GlobalBinding {
+                        type_descriptor: false,
                         declared: false,
                         constant: false,
                         boolean_tag: false,
@@ -4263,6 +4276,7 @@ impl Analyzer<'_> {
             options: self.options,
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
+            extension_frontier: self.macro_host.session_handle().map_or(0, |s| s.extension_frontier()),
         }
     }
 
@@ -4347,6 +4361,7 @@ impl Analyzer<'_> {
         } else {
             let global = GlobalId(self.program.globals.len());
             self.program.globals.push(GlobalBinding {
+                type_descriptor: false,
                 declared: true,
                 constant: false,
                 boolean_tag: false,
@@ -4439,6 +4454,9 @@ impl Analyzer<'_> {
             .definition_name
             .replace(self.program.globals[global.0].name.clone());
         let initializer = args.get(if args.len() == 3 { 2 } else { 1 }).copied();
+        if initializer.is_some() {
+            self.program.globals[global.0].type_descriptor = false;
+        }
         let top_level = self.top_level;
         self.top_level = false;
         let init = if top_level && self.macro_host.defers_source_units() {
@@ -4764,6 +4782,7 @@ impl Analyzer<'_> {
                 let global = *self.globals.entry(key).or_insert_with(|| {
                     let g = GlobalId(self.program.globals.len());
                     self.program.globals.push(GlobalBinding {
+                        type_descriptor: false,
                         declared: false,
                         constant: false,
                         boolean_tag: false,
@@ -4986,6 +5005,7 @@ impl Analyzer<'_> {
         }
         let global = GlobalId(self.program.globals.len());
         self.program.globals.push(GlobalBinding {
+            type_descriptor: false,
             declared: true,
             constant: false,
             boolean_tag: false,
@@ -5069,6 +5089,110 @@ impl Analyzer<'_> {
         existing.extend(entries);
     }
 
+    /// Only supported source-level top-level declarations are replayable bundles.
+    /// Nested declarations, reify and specify! keep ordinary expression semantics.
+    fn catalog_bundle(&mut self, id: NodeId, expr: ExprId) -> Result<ExprId, AnalysisError> {
+        if !self.top_level || !self.macro_host.defers_source_units() {
+            return Ok(expr);
+        }
+        let Some(session) = self.macro_host.session_handle() else {
+            return Ok(expr);
+        };
+        let mut products = Vec::new();
+        let mut extensions = Vec::new();
+        let mut work = vec![expr];
+        while let Some(value) = work.pop() {
+            match &self.program.exprs[value.0].kind {
+                ExprKind::DefProtocol {
+                    global, methods, ..
+                } => {
+                    products.push(*global);
+                    products.extend(methods.iter().map(|m| m.global));
+                }
+                ExprKind::DefType {
+                    global,
+                    constructor,
+                    map_constructor,
+                    ..
+                } => {
+                    products.push(*global);
+                    products.extend(*constructor);
+                    products.extend(*map_constructor);
+                }
+                ExprKind::Do(forms) => work.extend(forms.iter().rev()),
+                ExprKind::ExtendType {
+                    instance,
+                    target,
+                    methods,
+                    ..
+                } => {
+                    let selector = if *instance {
+                        None
+                    } else {
+                        match &self.program.exprs[target.0].kind {
+                            ExprKind::String(s) => {
+                                Some(String::from_utf16_lossy(&self.program.strings[s.0]))
+                            }
+                            ExprKind::Global(g) if self.program.globals[g.0].type_descriptor => {
+                                let b = &self.program.globals[g.0];
+                                Some(format!("@{}/{}", b.namespace, b.name))
+                            }
+                            _ => None,
+                        }
+                    };
+                    let identity = match &self.program.exprs[target.0].kind {
+                        ExprKind::Global(g) => {
+                            let b = &self.program.globals[g.0];
+                            format!("{}/{}", b.namespace, b.name)
+                        }
+                        _ => selector.clone().unwrap_or_else(|| {
+                            format!("target@{}", self.program.exprs[target.0].span.start)
+                        }),
+                    };
+                    for (dispatch, method) in methods {
+                        let key = match dispatch {
+                            MethodDispatch::Protocol(k) | MethodDispatch::Builtin(k) => k,
+                        };
+                        let protocol = if method.params.is_empty() {
+                            key.as_str()
+                        } else {
+                            key.rsplit_once('/').map_or(key.as_str(), |(p, _)| p)
+                        };
+                        let entry = (protocol.to_owned(), selector.clone(), identity.clone());
+                        if !extensions.contains(&entry) {
+                            extensions.push(entry);
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        for g in &products {
+            let b = &self.program.globals[g.0];
+            self.macro_host
+                .register_runtime_var(&b.namespace, &b.name, false)
+                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        }
+        let form = self
+            .compiler_read_form(id)
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+        let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+        let unit = session
+            .register_bundle(
+                &self.program,
+                &products,
+                &extensions,
+                form,
+                self.definition_snapshot(),
+                self.macro_host.macro_analysis_frame(),
+                format!("{}:{}:{}", loc.source, loc.line, loc.column),
+            )
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        self.program.exprs[expr.0].kind = ExprKind::Nil;
+        self.deferred.push((expr, unit));
+        Ok(expr)
+    }
+
     fn defprotocol_form(
         &mut self,
         id: NodeId,
@@ -5082,6 +5206,7 @@ impl Analyzer<'_> {
             ));
         };
         let global = self.declare_global(name)?;
+        self.program.globals[global.0].type_descriptor = false;
         self.definition(id, &[name], ExprContext::Discard, false)?;
         let protocol_name = format!("{}/{}", self.namespace, self.program.globals[global.0].name);
         let mut metadata = vec![
@@ -5634,6 +5759,9 @@ impl Analyzer<'_> {
                 ));
                 continue;
             }
+            if self.top_level && self.macro_host.defers_source_units() {
+                continue;
+            }
             let NodeKind::Collection {
                 kind: CollectionKind::List,
                 children,
@@ -5878,6 +6006,7 @@ impl Analyzer<'_> {
             ));
         }
         let global = self.declare_global(args[0])?;
+        self.program.globals[global.0].type_descriptor = true;
         if record {
             self.program.record_constructors.insert(global);
         } else {
@@ -5903,6 +6032,7 @@ impl Analyzer<'_> {
             }
             let global = GlobalId(self.program.globals.len());
             self.program.globals.push(GlobalBinding {
+                type_descriptor: false,
                 declared: true,
                 constant: false,
                 boolean_tag: false,
@@ -6017,6 +6147,7 @@ impl Analyzer<'_> {
             ));
         }
         let global = self.declare_global(args[0])?;
+        self.program.globals[global.0].type_descriptor = true;
         let masks = self.datum(args[2], ExprContext::Value)?;
         if record {
             self.program.record_constructors.insert(global);

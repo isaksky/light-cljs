@@ -24,6 +24,7 @@ pub(crate) fn append(target: &mut Program, fragment: &Program) -> ExprId {
             let existing = &mut target.globals[index];
             if global.declared {
                 existing.declared = true;
+                existing.type_descriptor = global.type_descriptor;
                 existing.constant = global.constant;
                 existing.boolean_tag = global.boolean_tag;
             }
