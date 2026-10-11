@@ -45,23 +45,23 @@ fn rows(text: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
 }
 
+fn contains_rust_test(source: &str, id: &str) -> bool {
+    let signature = format!("fn {id}()");
+    source
+        .lines()
+        .zip(source.lines().skip(1))
+        .any(|(attribute, declaration)| {
+            attribute.trim() == "#[test]" && declaration.trim_start().starts_with(&signature)
+        })
+}
+
 fn validate_origin(row: &str) -> Result<[&str; 9], &'static str> {
     let fields: [&str; 9] = row
         .split('\t')
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| "expected nine provenance columns")?;
-    let [
-        _,
-        ids,
-        origin,
-        repository,
-        commit,
-        path,
-        anchor,
-        rationale,
-        behavior,
-    ] = fields;
+    let [_, ids, origin, repository, commit, path, anchor, rationale, behavior] = fields;
     if fields.iter().any(|field| field.trim().is_empty())
         || ids.split(',').any(|id| id.is_empty())
         || rationale == "-"
@@ -188,8 +188,12 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     "unknown execution test: {id}"
                 ),
                 "tests/compiler_macros.rs" => assert!(
-                    include_str!("compiler_macros.rs").contains(&format!("#[test]\nfn {id}()")),
+                    contains_rust_test(include_str!("compiler_macros.rs"), id),
                     "unknown compiler macro test: {id}"
+                ),
+                "src/compiler_bootstrap.rs" => assert!(
+                    contains_rust_test(include_str!("../src/compiler_bootstrap.rs"), id),
+                    "unknown compiler bootstrap test: {id}"
                 ),
                 "tests/namespaces.rs" => assert!(
                     include_str!("namespaces.rs").contains(&format!("#[test]\nfn {id}()")),

@@ -250,3 +250,10 @@ changed numeric lowering. Full Rust, broad upstream and language-inventory
 suites were not repeated for this focused delivery. This adds no new imported
 upstream assertion count: the supplemental key probe has its own hand-authored
 provenance row in `fixture-origins.tsv`.
+
+The Number key probe is independently authored; its provenance row now leaves
+all four upstream-source fields as `-`, as required for that category. Its
+rationale, body and numeric expectations are unchanged. The provenance check
+also recognizes indented macro tests and the registered compiler bootstrap test
+source. `cargo test --locked --test provenance` passes both tests with the
+existing origin-category validation intact.
