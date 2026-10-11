@@ -322,12 +322,17 @@ interface inputs, source provenance, 32 upstream assertions and 38 independent
 probes against both pinned references.
 
 Explicit embedding handlers registered with
-`MacroHost::context_mut().register_data_reader` receive already-read native
-values and return semantic forms. Unknown tags fail without dynamic class,
-filesystem or namespace lookup. Reader handlers execute once in source order,
-including discarded forms and unselected runtime branches. Compiler-only opaque
-values keep regex/Date/UUID/JavaScript literals intact through macro expansion;
-they are never treated as strings or printed and reparsed. Source/argument
+`MacroHost::register_compiler_data_reader(tag, function_source)` execute compiled
+JavaScript over immutable compiler-owned reader data. Only finite form-domain
+results cross the typed boundary; functions, mutable references, opaque host
+objects and cycles are rejected at the original tag span. Handler closures keep
+state within a compilation and reset before the next compilation. Unknown tags
+fail without dynamic class, filesystem or namespace lookup. Reader handlers run
+once in source order, including discarded forms and unselected runtime branches.
+The legacy `context_mut().register_data_reader` adapter remains available during
+native migration; ordinary compiler/library execution needs no interpreter API.
+Compiler-only opaque values keep regex/Date/UUID/JavaScript literals intact
+through macro expansion; they are never printed and reparsed. Source/argument
 payloads retain their original spans. Reader evaluation (`#=`) stays disabled.
 Runtime `.cljc` namespace files select `:cljs` or `:default` reader branches,
 including collection splicing, before dependency discovery. `.cljs` and standalone
@@ -335,6 +340,35 @@ including collection splicing, before dependency discovery. `.cljs` and standalo
 
 The [reader evidence](../tests/reference/compiler-reader.md) records full upstream
 anchors, literal and macro probes, numeric behavior, exact checks and output cost.
+
+## Compiler-owned standard libraries and stream reading
+
+`clojure.string`, `clojure.set`, `clojure.walk`, `cljs.reader` and `clojure.edn`
+are embedded first-party sources compiled by the ordinary namespace resolver.
+Explicit source roots take precedence, as for other namespaces. Runtime imports,
+aliases, refers and unmarked macro helpers use the same sources and canonical
+JavaScript runtime. These library functions use compiler collection protocols;
+collection traversal never calls Rust interpreter callbacks.
+
+`clojure.string` includes all 20 public functions, with UTF-16 text and JavaScript
+regular expressions. Set relations retain metadata and original equivalent key
+representatives when projecting rows. Walks preserve metadata, map entries and
+records, visit callbacks in order and share bounded iterative traversal state
+through callback reentry. Their [data-library evidence](../tests/reference/compiler-data-libraries.md)
+and [string evidence](../tests/reference/compiler-strings.md) identify native
+migration cases, full pinned test bodies and explicit host/version differences.
+
+`clojure.edn/read` and `read-string` implement the existing strict data profile.
+`cljs.reader` exposes code-data reading, built-in tags and compiler-emitted tag
+parser registration. Reader cursors live in JavaScript. `cljs.reader/input-provider`
+and `Evaluator::input_provider` accept explicit synchronous chunk providers;
+`string-push-back-reader` needs no host capability. Core `read`, `read-string`,
+`read-line` and `with-in-str` share those cursors. There is no ambient stdin or
+filesystem. Provider failures, malformed input and same-cursor reentry are
+located; input, node, depth and execution limits bound reading and tag handlers.
+Nested input scopes restore and close their streams after success or failure.
+The [EDN and stream evidence](../tests/reference/compiler-edn.md) records the
+strict profile, source differences, cancellation and provider checks.
 
 ## Numeric operations and fundamental predicates
 

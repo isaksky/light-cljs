@@ -43,6 +43,7 @@ const MACROS: &[(&str, &str)] = &[
     ("lazy-cat", "lazy-cat"),
     ("selector", "selector"),
     ("comment", "comment"),
+    ("with-in-str", "with-in-str"),
 ];
 #[derive(Clone)]
 pub(crate) struct Bootstrap {
@@ -179,11 +180,18 @@ impl MacroHost {
             if self.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
             }
-            self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
+            self.bootstrap = self
+                .session_handle()
+                .and_then(|session| session.bootstrap());
+            if self.bootstrap.is_none() {
+                self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
+            }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
         if engine.is_none() {
-            if let Some(session) = self.session_handle() { session.attach(&bootstrap)?; }
+            if let Some(session) = self.session_handle() {
+                session.attach(&bootstrap)?;
+            }
         }
         let declaration = bootstrap
             .functions
@@ -341,14 +349,23 @@ impl MacroHost {
             crate::macro_host::SourceBindingKind::Macro,
         )?;
         if self.bootstrap.is_none() {
-            self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
+            self.bootstrap = self
+                .session_handle()
+                .and_then(|session| session.bootstrap());
+            if self.bootstrap.is_none() {
+                self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
+            }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
-        if let Some(session) = self.session_handle() { session.attach(&bootstrap)?; }
+        if let Some(session) = self.session_handle() {
+            session.attach(&bootstrap)?;
+        }
         let mut frame = self.macro_analysis_frame();
-        let (program, _) = crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
-            .map_err(|e| e.to_string())?;
-        let function = engine.unwrap_or(bootstrap.evaluator.as_ref())
+        let (program, _) =
+            crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
+                .map_err(|e| e.to_string())?;
+        let function = engine
+            .unwrap_or(bootstrap.evaluator.as_ref())
             .evaluate_unit(&crate::emitter::emit_deferred_unit(&program))
             .map_err(|e| e.to_string())?;
         self.javascript_macros.insert(

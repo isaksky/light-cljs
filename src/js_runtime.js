@@ -928,6 +928,15 @@
     throw new Error("Doesn't support name on this type");
   }
 
+  // ClojureScript subs delegates index coercion and bounds to JS substring.
+  function subs(value, start, end) {
+    switch (arguments.length) {
+      case 2: return value.substring(start);
+      case 3: return value.substring(start, end);
+      default: return invalidArity(arguments.length);
+    }
+  }
+
   function namespace(value) {
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.namespace;
@@ -3448,7 +3457,7 @@
     for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1]);
     return makeMap(entries, "hash-map");
   };
-  const core = Object.seal({...builtinTypes, IChunk, IChunkedNext, IDrop,
+  const core = {...builtinTypes, IChunk, IChunkedNext, IDrop,
     chunkedNextProtocol: coreMethod("IChunkedNext/-chunked-next", [1], value => seq(ownedChunkRest(value))),
     dropProtocol: coreMethod("IDrop/-drop", [2], dropOwned),
     dropFirstProtocol: coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; }),
@@ -3473,7 +3482,7 @@
     chunkedRestProtocol: coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest),
     invokeProtocol: coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args)),...numeric, ...predicates, keyword: keywordCore, symbol: symbolCore, vector, list,
     gensym, macroexpand, macroexpand1,
-    hashMap, arrayMap, sortedMap, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
+    hashMap, arrayMap, sortedMap, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, subs, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
     reduce, completing, transduce, ensureReduced, haltWhen, dedupe, randomSample, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
     Atom, atomFactory, Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol, resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch, notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
     IPending, realized, force, isDelay: value => delays.has(value), nthrest, nthnext,
@@ -3512,7 +3521,518 @@
     jsObj, jsKeys, jsInvoke, jsDelete, jsIn: (key, object) => key in object,
     uncheckedGet: (object, key) => object[key], uncheckedSet: jsSet,
     checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,
-    constantly, complement, comp, partial, juxt, fnil});
+    constantly, complement, comp, partial, juxt, fnil};
   const compilerForms = compilerFormBridge();
+  // First-party bounded EDN and explicit synchronous input capability runtime.
+  Object.assign(core, (rt => {
+  const c = rt.core, inspect = rt.inspect;
+  const streams = new WeakMap(), tags = new Map(), builtinTags = new Map(), readerMaps = new WeakMap();
+  const absent = Object.freeze({}), discarded = Object.freeze({});
+  const MAX_INPUT = 1048576, MAX_NODES = 100000, MAX_DEPTH = 32;
+  let defaultTag = null, activeDepth = 0;
+  function arity(n) { throw new Error('Invalid arity: ' + n); }
+  function located(state, message, category = 'reader') {
+    const error = new Error(message.slice(0,1024) + ' at ' + state.name + ':' + state.line + ':' + state.column);
+    error.source = state.name; error.line = state.line; error.column = state.column;
+    error.offset = state.offset; error.category = category;
+    return error;
+  }
+  function fail(state, message, category) { throw located(state, message, category); }
+  function duplicate(state, kind, key) {
+    const message = kind + ' literal contains duplicate key: ' + c.prStr(key).slice(0,256);
+    const error = located(state,message); error.message = message; throw error;
+  }
+  function stringReader(text, name = '<string-reader>') {
+    if (typeof text !== 'string' || typeof name !== 'string') throw new TypeError('Expected input string and source name');
+    const stream = Object.freeze({});
+    streams.set(stream, {text, position: 0, total: text.length, offset: 0, line: 1, column: 1, cr: false,
+      name: name.slice(0,256), provider: null, eof: true, busy: false, failed: false, closed: false});
+    if (text.length > MAX_INPUT) fail(streams.get(stream), 'Reader input limit exceeded', 'limit');
+    return stream;
+  }
+  function inputProvider(name, provider) {
+    if (typeof name !== 'string' || typeof provider !== 'function') throw new TypeError('Expected source name and input provider');
+    const stream = stringReader('', name), state = streams.get(stream);
+    state.provider = provider; state.eof = false;
+    return stream;
+  }
+  function stateOf(stream) {
+    const state = streams.get(stream);
+    if (!state) throw new TypeError('Expected input stream');
+    if (state.closed) fail(state, 'Input stream is closed', 'host');
+    if (state.busy) fail(state, 'input stream is already in use', 'host');
+    return state;
+  }
+  function peek(s) {
+    while (s.position === s.text.length && !s.eof) {
+      let chunk;
+      try { chunk = s.provider(); }
+      catch (_) { fail(s, 'Input provider failed', 'host'); }
+      if (chunk == null) { s.eof = true; break; }
+      if (typeof chunk !== 'string' || chunk.length === 0) fail(s, 'Input provider must return a nonempty string or nil', 'host');
+      s.total += chunk.length;
+      if (s.total > MAX_INPUT) fail(s, 'Reader input limit exceeded', 'limit');
+      // Drop consumed chunks while retaining absolute locations.
+      s.text = chunk; s.position = 0;
+    }
+    return s.position === s.text.length ? null : s.text.charAt(s.position);
+  }
+  function take(s) {
+    const ch = peek(s); if (ch == null) return null;
+    ++s.position; ++s.offset;
+    if (ch === '\r') { ++s.line; s.column = 1; s.cr = true; }
+    else if (ch === '\n') { if (!s.cr) ++s.line; s.column = 1; s.cr = false; }
+    else if (ch === '\f' && s.cr) { s.column = 1; s.cr = false; }
+    else { ++s.column; s.cr = false; }
+    return ch;
+  }
+  const whitespace = ch => ch !== null && /[\s,]/.test(ch);
+  const delimiter = ch => ch === null || whitespace(ch) || /[\[\]{}()";^\\]/.test(ch);
+  function skip(s) {
+    for (;;) {
+      while (whitespace(peek(s))) take(s);
+      if (peek(s) !== ';') return;
+      while (peek(s) !== null && !['\r', '\n'].includes(take(s))) {}
+    }
+  }
+  function token(s, code = false) {
+    let result = '';
+    while (!delimiter(peek(s)) && !(code && peek(s) !== null && /['@`~]/.test(peek(s)))) result += take(s);
+    if (!result || /[@`~]/.test(result)) fail(s, 'Invalid EDN token');
+    return result;
+  }
+  function named(s, text, keyword = false) {
+    if (!text || text.startsWith(':') || text.endsWith(':') || /[\s\[\]{}()";^\\]/.test(text)) fail(s, 'Invalid name');
+    const slash = text.indexOf('/');
+    if (text !== '/' && (slash === 0 || slash === text.length - 1 || text.indexOf('/', slash + 1) !== -1)) fail(s, 'Invalid name');
+    return (keyword ? rt.keyword : rt.symbol)(slash > 0 ? text.slice(0, slash) : null, slash > 0 ? text.slice(slash + 1) : text);
+  }
+  function number(s, text) {
+    if (/[NM]$/.test(text)) fail(s, 'Unsupported numeric extension');
+    let result;
+    const ratio = /^([+-]?\d+)\/(\d+)$/.exec(text);
+    if (ratio) { if (Number(ratio[2]) === 0) fail(s, 'Invalid ratio'); result = Number(ratio[1]) / Number(ratio[2]); }
+    else if (/^[+-]?0[xX][\da-fA-F]+$/.test(text)) result = (text[0] === '-' ? -1 : 1) * parseInt(text.replace(/^[+-]/, '').slice(2), 16);
+    else {
+      const radix = /^([+-]?)(\d+)[rR]([\da-zA-Z]+)$/.exec(text);
+      if (radix) {
+        const base = Number(radix[2]);
+        if (base < 2 || base > 36 || [...radix[3].toLowerCase()].some(ch => parseInt(ch, 36) >= base)) fail(s, 'Invalid radix integer');
+        result = (radix[1] === '-' ? -1 : 1) * parseInt(radix[3], base);
+      } else if (/^[+-]?0\d+$/.test(text)) {
+        if (/[89]/.test(text)) fail(s, 'Invalid octal integer');
+        result = (text[0] === '-' ? -1 : 1) * parseInt(text.replace(/^[+-]/, ''), 8);
+      } else if (/^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(text)) result = Number(text);
+      else fail(s, 'Invalid number');
+    }
+    if (!Number.isFinite(result)) fail(s, 'Numeric overflow');
+    return result;
+  }
+  function quoted(s, regex = false) {
+    let result = ''; take(s);
+    for (;;) {
+      const ch = take(s);
+      if (ch == null) fail(s, 'Unexpected EOF in string');
+      if (ch === '"') return result;
+      if (ch !== '\\') { result += ch; continue; }
+      const escaped = take(s), escapes = {t:'\t', r:'\r', n:'\n', b:'\b', f:'\f', '"':'"', '\\':'\\'};
+      if (Object.prototype.hasOwnProperty.call(escapes, escaped)) result += escapes[escaped];
+      else if (escaped === 'u') {
+        let digits = ''; for (let i = 0; i < 4; ++i) digits += take(s) ?? '';
+        if (!/^[\da-fA-F]{4}$/.test(digits)) fail(s, 'Invalid Unicode escape');
+        result += String.fromCharCode(parseInt(digits, 16));
+      } else if (escaped !== null && /[0-7]/.test(escaped)) {
+        let digits = escaped;
+        while (digits.length < 3 && peek(s) !== null && /[0-7]/.test(peek(s))) digits += take(s);
+        if (parseInt(digits, 8) > 255) fail(s, 'Invalid octal escape');
+        result += String.fromCharCode(parseInt(digits, 8));
+      } else if (regex && escaped !== null) result += '\\' + escaped;
+      else fail(s, 'Unsupported string escape');
+    }
+  }
+  function character(s) {
+    take(s); const first = take(s);
+    if (first === null) fail(s, 'Unexpected EOF in character');
+    let text = first; while (!delimiter(peek(s))) text += take(s);
+    const names = {newline:'\n', space:' ', tab:'\t', backspace:'\b', formfeed:'\f', return:'\r'};
+    if (text.length === 1) return text;
+    if (names[text] !== undefined) return names[text];
+    if (/^u[\da-fA-F]{4}$/.test(text)) return String.fromCharCode(parseInt(text.slice(1), 16));
+    if (/^o[0-7]{1,3}$/.test(text) && parseInt(text.slice(1), 8) <= 255) return String.fromCharCode(parseInt(text.slice(1), 8));
+    fail(s, 'Invalid character');
+  }
+  function instant(s, value) {
+    try { return parseTimestamp(value); } catch (_) { fail(s, 'Invalid instant'); }
+  }
+  function timestampFields(value) {
+    const m = typeof value === 'string' && /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?)?)?)?(?:Z|([-+])(\d{2}):(\d{2}))?$/.exec(value);
+    if (!m) throw new Error('Unrecognized date/time syntax: ' + c.str(value).slice(0,1024));
+    const [year, month, day, hour, minute, second] = [Number(m[1]),Number(m[2] ?? 1),Number(m[3] ?? 1),Number(m[4] ?? 0),Number(m[5] ?? 0),Number(m[6] ?? 0)];
+    const days = [31,year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,31,30,31,30,31,31,30,31,30,31];
+    const check = (low, n, high, msg) => { if (!(low <= n && n <= high)) throw new Error(msg + ' Failed:  ' + low + '<=' + n + '<=' + high); return n; };
+    check(1,month,12,'timestamp month field must be in range 1..12');
+    check(1,day,days[month-1],'timestamp day field must be in range 1..last day in month');
+    check(0,hour,23,'timestamp hour field must be in range 0..23');
+    check(0,minute,59,'timestamp minute field must be in range 0..59');
+    check(0,second,minute === 59 ? 60 : 59,'timestamp second field must be in range 0..60');
+    const milliseconds = Number((m[7] ?? '').slice(0,3).padEnd(3,'0'));
+    const offset = (m[8] === '-' ? -1 : 1) * (Number(m[9] ?? 0)*60+Number(m[10] ?? 0));
+    return [year,month,day,hour,minute,second,milliseconds,offset];
+  }
+  function parseTimestamp(value) {
+    const [year,month,day,hour,minute,second,milliseconds,offset] = timestampFields(value);
+    return new Date(Date.UTC(year,month-1,day,hour,minute,second,milliseconds)-offset*60000);
+  }
+  function jsLiteral(s, value) {
+        const data = inspect(value);
+        if (data?.kind === 'vector') return rt.compilerForms.jsArray(data.items);
+        if (data?.kind === 'map') {
+          const pairs = [];
+          for (const [key, value] of data.entries) {
+            const name = inspect(key);
+            if (typeof key !== 'string' && !(name?.kind === 'keyword' && name.namespace === null)) fail(s, 'Invalid JS object literal key');
+            pairs.push(typeof key === 'string' ? key : name.name, value);
+          }
+          return rt.compilerForms.jsObject(pairs);
+        }
+        fail(s, 'Invalid JS literal');
+  }
+  function options(value, profile, string = false) {
+    const result = {readers: new Map(profile === 'edn' || (profile === 'reader' && value !== undefined) ? [] : tags), fallback: profile === 'edn' || (profile === 'reader' && value !== undefined) ? null : defaultTag,
+      eof: string && profile !== 'code' && value === undefined ? null : absent, profile};
+    if (value === undefined) return result;
+    const map = inspect(value);
+    if (map?.kind !== 'map' || c.isRecord(value)) throw new TypeError('Expected reader options map');
+    for (const [key, value] of map.entries) {
+      const k = inspect(key);
+      if (k?.kind !== 'keyword' || k.namespace !== null) throw new TypeError('Invalid reader option');
+      if (k.name === 'eof') result.eof = value;
+      else if (profile !== 'code' && k.name === 'default') {
+        if (value != null && typeof value.call !== 'function') throw new TypeError('Expected default reader function');
+        result.fallback = value;
+      } else if (profile !== 'code' && k.name === 'readers') {
+        if (value == null) continue;
+        let entries = typeof value === 'object' && value !== null ? readerMaps.get(value) : undefined;
+        if (entries === undefined) {
+          const readers = inspect(value);
+          if (readers?.kind !== 'map' || c.isRecord(value)) throw new TypeError('Expected readers map');
+          entries = readers.entries.map(([tag, handler]) => {
+            const n = inspect(tag);
+            if (n?.kind !== 'symbol') throw new TypeError('Expected symbol reader key');
+            if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function');
+            return [n.spelling, handler];
+          });
+          // Only immutable privately branded maps have stable validated entries.
+          if (rt.ednKind(value) === 'map') readerMaps.set(value,entries);
+        }
+        for (const [tag, handler] of entries) result.readers.set(tag,handler);
+      } else throw new TypeError('Unsupported reader option: ' + k.name);
+    }
+    return result;
+  }
+  function validate(s, root, depth, allowBuiltins) {
+    const active = new WeakSet(); let nodes = 0;
+    function visit(value, d) {
+      if (++nodes > MAX_NODES || d + activeDepth > MAX_DEPTH) fail(s, 'EDN result limit exceeded', 'limit');
+      if (value === null || ['boolean', 'number', 'string'].includes(typeof value)) return;
+      if (typeof value !== 'object') fail(s, 'Unsupported EDN reader result');
+      if (active.has(value)) fail(s, 'Cyclic EDN reader result', 'limit');
+      active.add(value);
+      try {
+        const kind = rt.ednKind(value);
+        if (allowBuiltins && ['instant', 'uuid'].includes(kind)) return;
+        if (kind === 'seq') {
+          const seen = new WeakSet(); let seq = c.seq(value);
+          while (seq !== null) {
+            if (++nodes > MAX_NODES || seen.has(seq)) fail(s, 'EDN sequence limit exceeded', 'limit');
+            seen.add(seq); if (rt.ednKind(seq) !== 'seq') fail(s, 'Unsupported EDN sequence tail');
+            visit(c.first(seq), d + 1); seq = c.next(seq);
+          }
+        } else {
+          if (!['symbol', 'keyword', 'vector', 'map', 'set'].includes(kind)) fail(s, 'Unsupported EDN reader result');
+          const data = inspect(value);
+          if (!data || !['symbol', 'keyword', 'vector', 'map', 'set'].includes(data.kind)) fail(s, 'Unsupported EDN reader result');
+          if (data.items) for (const item of data.items) visit(item, d + 1);
+          if (data.entries) for (const pair of data.entries) { visit(pair[0], d + 1); visit(pair[1], d + 1); }
+        }
+        const metadata = c.meta(value); if (metadata != null) visit(metadata, d + 1);
+      } finally { active.delete(value); }
+    }
+    visit(root, depth);
+  }
+  function parse(s, opts) {
+    let nodes = 0, anonymousArgs = null, suppressTags = 0;
+    const splices = new WeakMap();
+    function required(depth) {
+      let value; do { value = form(depth); } while (value === discarded);
+      if (value === absent) fail(s, 'Unexpected EOF');
+      return value;
+    }
+    function collection(depth, end, kind, namespace) {
+      const values = [];
+      for (;;) {
+        skip(s); const ch = peek(s);
+        if (ch == null) fail(s, 'Unexpected EOF in collection');
+        if (ch === end) { take(s); break; }
+        const value = form(depth + 1);
+        if (splices.has(value)) values.push(...splices.get(value));
+        else if (value !== discarded) values.push(value);
+      }
+      if (kind === 'map') {
+        if (values.length % 2) fail(s, 'Map requires an even number of forms');
+        let seen = c.hashSet();
+        for (let i = 0; i < values.length; i += 2) {
+          if (namespace !== undefined) {
+            const name = inspect(values[i]);
+            if (name && ['keyword','symbol'].includes(name.kind) && (name.namespace === null || name.namespace === '_'))
+              values[i] = (name.kind === 'keyword' ? rt.keyword : rt.symbol)(name.namespace === '_' ? null : namespace, name.name);
+          }
+          if (c.contains(seen, values[i])) duplicate(s, 'Map', values[i]);
+          seen = c.conj(seen, values[i]);
+        }
+      }
+      if (kind === 'set') {
+        let seen = c.hashSet(); for (const value of values) { if (c.contains(seen, value)) duplicate(s, 'Set', value); seen = c.conj(seen, value); }
+      }
+      return ({vector:rt.vectorFromArray, list:rt.listFromArray, map:rt.mapFromArray, set:rt.setFromArray})[kind](values);
+    }
+    function metadata(depth) {
+      take(s); let metadata = required(depth + 1); const kind = inspect(metadata);
+      if (kind?.kind === 'keyword') metadata = c.hashMap(metadata, true);
+      else if (typeof metadata === 'string' || kind?.kind === 'symbol') metadata = c.hashMap(rt.keyword(null, 'tag'), metadata);
+      else if (kind?.kind !== 'map') fail(s, 'Invalid metadata');
+      const value = required(depth + 1);
+      try { return c.withMeta(value, c.merge(c.meta(value), metadata)); }
+      catch (_) { fail(s, 'Invalid metadata target'); }
+    }
+    function dispatch(depth) {
+      take(s); const ch = peek(s);
+      if (ch === '{') { take(s); return collection(depth, '}', 'set'); }
+      if (ch === '_') { take(s); required(depth + 1); return discarded; }
+      if (ch === '^') return metadata(depth);
+      if (ch === '#') {
+        take(s); const name = token(s);
+        if (name === 'Inf') return Infinity; if (name === '-Inf') return -Infinity; if (name === 'NaN') return NaN;
+        fail(s, 'Invalid symbolic value');
+      }
+      if (ch === ':') {
+        take(s); if (peek(s) === ':') fail(s, 'Auto-resolved namespaced maps are unsupported');
+        const namespace = token(s); if (namespace.includes('/')) fail(s, 'Invalid map namespace');
+        skip(s); if (take(s) !== '{') fail(s, 'Expected namespaced map');
+        return collection(depth, '}', 'map', namespace);
+      }
+      if (opts.profile === 'code' && ch === '?') {
+        take(s); const splice = peek(s) === '@'; if (splice) take(s);
+        skip(s); if (take(s) !== '(') fail(s, 'Expected reader conditional list');
+        let selected = discarded;
+        for (;;) {
+          skip(s); if (peek(s) === ')') { take(s); break; }
+          if (peek(s) === null) fail(s, 'Unexpected EOF in reader conditional');
+          const feature = inspect(required(depth + 1));
+          if (feature?.kind !== 'keyword') fail(s, 'Expected reader conditional feature keyword');
+          const choose = selected === discarded && ['cljs','default'].includes(feature.name);
+          if (!choose) ++suppressTags;
+          let branch; try { branch = required(depth + 1); } finally { if (!choose) --suppressTags; }
+          if (choose) selected = branch;
+        }
+        if (splice && selected !== discarded) {
+          const kind = rt.ednKind(selected);
+          if (!['vector','seq'].includes(kind)) fail(s, 'Reader conditional splice requires sequential data');
+          const marker = Object.freeze({}); splices.set(marker, c.toArray(selected)); return marker;
+        }
+        return selected;
+      }
+      if (opts.profile === 'code' && ch === '(') {
+        if (anonymousArgs !== null) fail(s, 'Nested anonymous function shorthand');
+        anonymousArgs = {args: new Map(), max: 0}; take(s);
+        let body, args;
+        try { body = collection(depth, ')', 'list'); args = anonymousArgs; } finally { anonymousArgs = null; }
+        const parameters = [];
+        for (let n = 1; n <= args.max; ++n) parameters.push(args.args.get(n) ?? c.gensym('p' + n + '__'));
+        if (args.args.has(0)) parameters.push(rt.symbol(null, '&'), args.args.get(0));
+        return rt.listFromArray([rt.symbol(null, 'fn*'), rt.vectorFromArray(parameters), body]);
+      }
+      if (opts.profile === 'code' && ch === '"') return c.rePattern(quoted(s, true));
+      if (opts.profile === 'code' && ch === "'") { take(s); return rt.listFromArray([rt.symbol(null, 'var'), required(depth + 1)]); }
+      if (ch == null || whitespace(ch) || /[=!?('"+\-]/.test(ch)) fail(s, 'Unsupported dispatch syntax');
+      const tag = token(s, opts.profile === 'code'); if (tag.startsWith(':')) fail(s, 'Invalid data tag');
+      const symbol = named(s, tag), value = required(depth + 1);
+      if (suppressTags) return value;
+      let handler = opts.readers.get(tag), result;
+      if (handler != null) {
+        if (handler === builtinTags.get(tag)) {
+          if (tag === 'inst') result = instant(s, value);
+          else if (tag === 'uuid') { if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s,'Invalid UUID'); result = c.uuid(value); }
+          else if (tag === 'js') return jsLiteral(s,value);
+          else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return c.into(c.PersistentQueue.EMPTY,value); }
+        } else result = handler.call(null, value);
+      }
+      else if (opts.profile === 'code' && tag === 'inst') {
+        result = instant(s,value);
+      } else if (opts.profile === 'code' && tag === 'uuid') {
+        if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s, 'Invalid UUID');
+        result = c.uuid(value);
+      } else if (opts.fallback != null) result = opts.fallback.call(null, symbol, value);
+      else fail(s, 'No reader function for tag ' + tag);
+      validate(s, result, depth + 1, opts.profile !== 'edn');
+      return result;
+    }
+    function syntaxQuote(value, gensyms = new Map(), depth = 0) {
+      if (depth + activeDepth > MAX_DEPTH) fail(s, 'Syntax quote depth limit exceeded', 'limit');
+      const data = inspect(value);
+      const sym = name => rt.symbol('cljs.core', name);
+      if (data?.kind === 'symbol') {
+        let resolved = value;
+        if (data.namespace === null) {
+          if (data.name.endsWith('#')) { if (!gensyms.has(data.name)) gensyms.set(data.name, c.gensym(data.name.slice(0,-1) + '__')); resolved = gensyms.get(data.name); }
+          else if (!['if','do','let*','fn*','loop*','recur','throw','try','new','set!','quote','var','def'].includes(data.name)) {
+            const runtimeName = ({'+':'add','-':'subtract','*':'multiply','/':'divide','=':'equal','map':'mapSeq'})[data.name] ?? data.name.replace(/-([a-z])/g, (_,ch) => ch.toUpperCase());
+            resolved = rt.symbol(Object.prototype.hasOwnProperty.call(c,runtimeName) || ['let','letfn','fn','loop','defn','when','when-not','and','or','cond','if-let','when-let','doseq','for','lazy-seq'].includes(data.name) ? 'cljs.core' : 'user', data.name);
+          }
+        }
+        return rt.listFromArray([rt.symbol(null,'quote'), resolved]);
+      }
+      if (!data || !['list','seq','vector','map','set'].includes(data.kind)) return value;
+      const items = data.entries ? data.entries.flat() : data.items;
+      if ((data.kind === 'list' || data.kind === 'seq') && items.length && inspect(items[0])?.kind === 'symbol') {
+        const head = inspect(items[0]).name;
+        if (head === 'unquote') { if (items.length !== 2) fail(s,'Invalid unquote'); return items[1]; }
+        if (head === 'unquote-splicing') fail(s,'Unquote splicing requires a collection');
+      }
+      const pieces = items.map(item => {
+        const data = inspect(item);
+        if ((data?.kind === 'list' || data?.kind === 'seq') && inspect(data.items[0])?.name === 'unquote-splicing') {
+          if (data.items.length !== 2) fail(s,'Invalid unquote splice'); return data.items[1];
+        }
+        return rt.listFromArray([sym('list'), syntaxQuote(item, gensyms, depth + 1)]);
+      });
+      let result = data.kind === 'list' && items.length === 0 ? rt.listFromArray([sym('list')]) :
+        rt.listFromArray([sym('sequence'),rt.listFromArray([sym('seq'),rt.listFromArray([sym('concat'),...pieces])])]);
+      if (data.kind === 'vector') result = rt.listFromArray([sym('vec'),result]);
+      if (data.kind === 'map' || data.kind === 'set') result = rt.listFromArray([sym('apply'),sym(data.kind === 'map' ? 'hash-map' : 'hash-set'),result]);
+      const metadata = c.meta(value);
+      if (metadata !== null) result = rt.listFromArray([sym('with-meta'),result,syntaxQuote(metadata,gensyms,depth + 1)]);
+      return result;
+    }
+    function form(depth) {
+      if (++nodes > MAX_NODES || depth + activeDepth > MAX_DEPTH) fail(s, 'Reader limit exceeded', 'limit');
+      skip(s); const ch = peek(s);
+      if (ch === null) return absent;
+      if (ch === '"') return quoted(s);
+      if (ch === '\\') return character(s);
+      if (ch === '#') return dispatch(depth);
+      if (ch === '^') return metadata(depth);
+      if (ch === '[' || ch === '(' || ch === '{') { take(s); return collection(depth, {'[':']','(':')','{':'}'}[ch], {'[':'vector','(':'list','{':'map'}[ch]); }
+      if (opts.profile === 'code' && ch === "'") { take(s); return rt.listFromArray([rt.symbol(null,'quote'), required(depth + 1)]); }
+      if (opts.profile === 'code' && ch === '@') { take(s); return rt.listFromArray([rt.symbol('cljs.core','deref'), required(depth + 1)]); }
+      if (opts.profile === 'code' && ch === '`') { take(s); return syntaxQuote(required(depth + 1)); }
+      if (opts.profile === 'code' && ch === '~') { take(s); const splice = peek(s) === '@'; if (splice) take(s); return rt.listFromArray([rt.symbol(null,splice ? 'unquote-splicing' : 'unquote'), required(depth + 1)]); }
+      if (/[\])}'@`~]/.test(ch)) fail(s, 'Unsupported reader syntax');
+      const text = token(s, opts.profile === 'code');
+      if (opts.profile === 'code' && anonymousArgs !== null && text.startsWith('%')) {
+        const n = text === '%&' ? 0 : text === '%' ? 1 : /^%[1-9]\d*$/.test(text) ? Number(text.slice(1)) : -1;
+        if (n < 0 || n > MAX_NODES) fail(s, 'Invalid anonymous argument');
+        if (!anonymousArgs.args.has(n)) anonymousArgs.args.set(n, c.gensym(n ? 'p' + n + '__' : 'rest__'));
+        anonymousArgs.max = Math.max(anonymousArgs.max,n); return anonymousArgs.args.get(n);
+      }
+      if (opts.profile === 'code' && text.startsWith('::')) return named(s, 'user/' + text.slice(2), true);
+      if (text === 'nil') return null; if (text === 'true') return true; if (text === 'false') return false;
+      if (/^[+-]?\d/.test(text)) return number(s, text);
+      if (text.startsWith(':')) return named(s, text.slice(1), true);
+      return named(s, text);
+    }
+    let value; do { value = form(0); } while (value === discarded);
+    if (splices.has(value)) fail(s,'Splicing reader conditional outside collection');
+    return value;
+  }
+  function readWith(profile, args) {
+    let stream, option;
+    if (args.length === 0) stream = c.readerCurrentInputValue;
+    else if (args.length === 1) stream = args[0];
+    else if (args.length === 2) [option, stream] = args;
+    else if (profile === 'reader' && args.length === 4) {
+      stream = args[0]; option = args[3];
+    } else if (profile === 'code' && (args.length === 3 || args.length === 4)) {
+      stream = args[0]; option = c.hashMap(rt.keyword(null,'eof'), args[1] !== false && args[1] != null ? absent : args[2]);
+    } else arity(args.length);
+    const opts = options(option, profile), state = stateOf(stream);
+    if (profile === 'reader') {
+      if (args.length < 2) opts.eof = null;
+      else if (args.length === 4) opts.eof = args[1] !== false && args[1] != null ? absent : args[2];
+    }
+    if (state.failed) { if (opts.eof !== absent) return opts.eof; fail(state, 'EOF while reading'); }
+    state.busy = true; ++activeDepth;
+    try { const value = parse(state, opts); if (value !== absent) return value; if (opts.eof !== absent) return opts.eof; fail(state, 'EOF while reading'); }
+    catch (error) { state.failed = true; throw error; }
+    finally { state.busy = false; --activeDepth; }
+  }
+  function readStringWith(profile, args) {
+    if (args.length !== 1 && args.length !== 2) arity(args.length);
+    const text = args[args.length - 1];
+    if (profile !== 'code' && (text == null || text === false)) return null;
+    const opts = options(args.length === 2 ? args[0] : undefined, profile, true);
+    const stream = stringReader(text, profile === 'edn' ? '<edn-read-string>' : '<read-string>');
+    // readWith receives explicit options so preserve the no-option EDN nil EOF.
+    const state = streams.get(stream); ++activeDepth;
+    try { const value = parse(state, opts); if (value !== absent) return value; if (opts.eof !== absent) return opts.eof; fail(state,'EOF while reading'); }
+    finally { --activeDepth; }
+  }
+  function readLine(stream = c.readerCurrentInputValue) {
+    if (arguments.length > 1) arity(arguments.length);
+    const s = stateOf(stream); s.busy = true;
+    try {
+      let result = '', ch;
+      while ((ch = take(s)) !== null) {
+        if (ch === '\n') return result;
+        if (ch === '\r') { if (peek(s) === '\n') take(s); return result; }
+        result += ch;
+      }
+      return result.length ? result : null;
+    } finally { s.busy = false; }
+  }
+  function tagName(tag) { const name = inspect(tag); if (name?.kind !== 'symbol') throw new TypeError('Expected data reader symbol'); return name.spelling; }
+  function register(tag, handler) {
+    if (arguments.length !== 2) arity(arguments.length);
+    if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function');
+    const name = tagName(tag), previous = tags.get(name) ?? null; tags.set(name, handler); return previous;
+  }
+  function deregister(tag) { if (arguments.length !== 1) arity(arguments.length); const name = tagName(tag), previous = tags.get(name) ?? null; tags.delete(name); return previous; }
+  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = handler; return previous; }
+  function deregisterDefault() { if (arguments.length !== 0) arity(arguments.length); const previous = defaultTag; defaultTag = null; return previous; }
+  function withInput(text, thunk) {
+    if (arguments.length !== 2) arity(arguments.length);
+    const previous = c.readerCurrentInputValue, scoped = stringReader(text, '<with-in-str>');
+    c.readerCurrentInputValue = scoped;
+    try { return thunk.call(null); } finally {
+      const state = streams.get(scoped); state.closed = true; state.provider = null; state.text = '';
+      c.readerCurrentInputValue = previous;
+    }
+  }
+  function close(stream) { if (arguments.length !== 1) arity(arguments.length); const s = stateOf(stream); s.closed = true; s.provider = null; s.text = ''; return null; }
+  const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};
+  builtinTags.set('inst', value => instant(builtinLocation,value));
+  builtinTags.set('uuid', value => { if (typeof value !== 'string') throw new TypeError('UUID literal requires a string'); return c.uuid(value); });
+  builtinTags.set('queue', value => { if (inspect(value)?.kind !== 'vector') throw new TypeError('Queue literal requires a vector'); return c.into(c.PersistentQueue.EMPTY,value); });
+  builtinTags.set('js', value => jsLiteral(builtinLocation,value));
+  for (const [tag, handler] of builtinTags) tags.set(tag,handler);
+  return {ednReadString: (...args) => readStringWith('edn', args), ednRead: (...args) => readWith('edn', args),
+    readerReadString: (...args) => readStringWith('reader', args), readerRead: (...args) => readWith('reader', args),
+    readString: (...args) => readStringWith('code', args), read: (...args) => readWith('code', args),
+    readLine: function () { if (arguments.length) arity(arguments.length); return readLine(); },
+    readerStringReader: stringReader, readerInputProvider: inputProvider, readerReadLine: readLine,
+    readerParseTimestampFields: function (value) { if (arguments.length !== 1) arity(arguments.length); return rt.vectorFromArray(timestampFields(value)); },
+    readerParseTimestamp: function (value) { if (arguments.length !== 1) arity(arguments.length); return parseTimestamp(value); },
+    readerInitialTagTable: function () { if (arguments.length) arity(arguments.length); return rt.mapFromArray([...builtinTags].flatMap(([tag,f]) => [rt.symbol(null,tag),f])); },
+    readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
+    readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
+    readerWithInput: withInput, readerCurrentInputValue: null, readerCurrentInput: () => c.readerCurrentInputValue, readerClose: close};
+  })({keyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, core, inspect, compilerForms, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null}));
+
+
+
+
+
+
+  Object.seal(core);
   return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

@@ -141,6 +141,7 @@ use crate::parser::{Node, NumberKind, PrefixKind, SymbolicValue};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,
+    rc::Rc,
 };
 #[derive(Debug)]
 pub enum LowerErrorKind {
@@ -194,6 +195,7 @@ struct Limits {
     max_anonymous_parameters: usize,
 }
 struct Lowerer<'a> {
+    data_reader: Option<&'a DataReader<'a>>,
     builder: DataBuilder,
     source: &'a Source,
     syntax: Syntax<'a>,
@@ -665,6 +667,36 @@ impl Lowerer<'_> {
         input.pending.push_front(InputForm::Syntax(form));
         let data = self.required(input, depth + 1, span.clone())?;
         let span = span.start..span.end.max(self.spans[data.0].bytes().end);
+        if let Some(reader) = self.data_reader {
+            let location = self.source.span(span.clone()).unwrap();
+            if let Some(value) =
+                reader(&tag, &self.values[data.0], &location).map_err(|message| ReadError {
+                    message,
+                    span: location.clone(),
+                    related: None,
+                })?
+            {
+                let form = Form::from_data(value, location, Origin::DataReader(Rc::new(tag)));
+                let offset = self.nodes.len();
+                for node in form.nodes() {
+                    let mut node = node.clone();
+                    if let FormKind::Collection { children, .. } = &mut node.kind {
+                        for child in children.iter_mut() {
+                            child.0 += offset;
+                        }
+                    }
+                    node.metadata = node.metadata.map(|id| FormId(id.0 + offset));
+                    node.compiler_payload = node.compiler_payload.map(|id| FormId(id.0 + offset));
+                    self.nodes.push(node);
+                }
+                for index in 0..form.nodes().len() {
+                    let child = form.at(FormId(index)).unwrap();
+                    self.values.push(child.data());
+                    self.spans.push(child.span());
+                }
+                return Ok(FormId(form.id().0 + offset));
+            }
+        }
         {
             use crate::compiler_data::CompilerLiteralKind as K;
             let tag_name = String::from_utf16_lossy(tag.name());
@@ -1381,6 +1413,18 @@ pub fn lower_form(
     view: &NamespaceView,
     discards: &[NodeId],
 ) -> Result<Form, ReadError> {
+    lower_form_with_reader(source, tree, root, view, discards, None)
+}
+pub(crate) type DataReader<'a> =
+    dyn Fn(&Name, &Datum, &crate::compiler_data::SourceSpan) -> Result<Option<Datum>, String> + 'a;
+pub(crate) fn lower_form_with_reader(
+    source: &Source,
+    tree: &SyntaxTree,
+    root: NodeId,
+    view: &NamespaceView,
+    discards: &[NodeId],
+    data_reader: Option<&DataReader<'_>>,
+) -> Result<Form, ReadError> {
     let span = &tree.nodes[root.0].span;
     let mut discarded = discards
         .iter()
@@ -1389,6 +1433,7 @@ pub fn lower_form(
         .collect::<Vec<_>>();
     discarded.sort_by_key(|id| tree.nodes[id.0].span.start);
     let mut lower = Lowerer {
+        data_reader,
         builder: DataBuilder,
         source,
         syntax: Syntax(&tree.nodes),

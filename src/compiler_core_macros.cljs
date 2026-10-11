@@ -14,6 +14,9 @@
 
 (defmacro macro-and [& forms] (macro-short-circuit forms false))
 (defmacro macro-or [& forms] (macro-short-circuit forms true))
+(defmacro macro-with-in-str [text & body]
+  (list 'cljs.core/compiler-reader-with-input text
+    (cons 'fn* (cons [] body))))
 (defmacro macro-if-not
   ([test then]
    (list 'if (list 'cljs.core/not test) then nil))

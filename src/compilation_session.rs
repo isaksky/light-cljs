@@ -65,6 +65,9 @@ pub(crate) struct CompilationSession {
     catalog: RefCell<Catalog>,
 }
 impl CompilationSession {
+    pub fn bootstrap(&self) -> Option<Bootstrap> {
+        self.catalog.borrow().bootstrap.clone()
+    }
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }

@@ -47,6 +47,7 @@ pub fn core_macro(name: &str) -> bool {
             | "case"
             | "letfn"
             | "vswap!"
+            | "with-in-str"
     )
 }
 

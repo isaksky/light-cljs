@@ -696,14 +696,6 @@ struct Loader {
 }
 
 impl Loader {
-    fn locate(&self, name: &str) -> Result<PathBuf, NamespaceCompileError> {
-        locate_source(&self.roots, name, &["cljs", "cljc"])?.ok_or_else(|| {
-            NamespaceCompileError::new(format!(
-                "namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
-                name.replace('.', "/").replace('-', "_")
-            ))
-        })
-    }
     fn visit(&mut self, name: &str) -> Result<(), NamespaceCompileError> {
         // The bounded first-party core is emitted inside the unit. A require
         // cannot replace it with a file found on a source root.
@@ -727,10 +719,23 @@ impl Loader {
             }
             LoadState::Unseen => {}
         }
-        let path = self.locate(name)?;
-        let source = fs::read_to_string(&path).map_err(|error| {
-            NamespaceCompileError::new(format!("cannot read {}: {error}", path.display()))
-        })?;
+        let (path, source) =
+            if let Some(path) = locate_source(&self.roots, name, &["cljs", "cljc"])? {
+                let source = fs::read_to_string(&path).map_err(|error| {
+                    NamespaceCompileError::new(format!("cannot read {}: {error}", path.display()))
+                })?;
+                (path, source)
+            } else if let Some(source) = crate::compiler_libraries::source(name) {
+                (
+                    PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
+                    source.to_owned(),
+                )
+            } else {
+                return Err(NamespaceCompileError::new(format!(
+                    "namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
+                    name.replace('.', "/").replace('-', "_")
+                )));
+            };
         let mut syntax = parse(&source).map_err(|error| {
             NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
         })?;

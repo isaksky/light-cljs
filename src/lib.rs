@@ -18,6 +18,7 @@ mod compilation_session;
 mod program_fragment;
 pub mod compiler_data;
 mod compiler_destructuring;
+mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
 pub mod emitter;

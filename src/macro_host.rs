@@ -46,6 +46,7 @@ pub(crate) enum SourceBindingKind {
 /// light-cljs-115; reusing this host never reuses JavaScript macro roots.
 #[derive(Default)]
 pub struct MacroHost {
+    compiler_data_readers: std::rc::Rc<std::cell::RefCell<CompilerDataReaders>>,
     context: Option<Context>,
     imports: HashMap<String, Vec<MacroImport>>,
     native_namespaces: HashSet<String>,
@@ -67,6 +68,13 @@ pub struct MacroHost {
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
     pub(crate) generated_nodes: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+#[derive(Default)]
+struct CompilerDataReaders {
+    units: HashMap<Name, String>,
+    evaluator: Option<std::rc::Rc<crate::evaluator::Evaluator>>,
+    functions: HashMap<Name, crate::evaluator::ValueId>,
 }
 
 impl MacroHost {
@@ -195,10 +203,113 @@ impl MacroHost {
                 return crate::native_form_adapter::read_form(context, source);
             }
         }
-        crate::compiler_reader::read_form(
+        let mut parser = crate::Parser::new(source.text()).retaining_discards();
+        let root = parser
+            .read_form()
+            .map_err(|error| crate::compiler_data::ReadError {
+                message: error.to_string(),
+                span: source.span(error.span).unwrap(),
+                related: error.related.map(|span| source.span(span).unwrap()),
+            })?;
+        let mut discards = parser.discarded().to_vec();
+        let syntax = crate::SyntaxTree {
+            nodes: parser.into_nodes(),
+            roots: root.into_iter().collect(),
+        };
+        discards.sort_by_key(|id| syntax.nodes[id.0].span.start);
+        let Some(root) = root else {
+            // Discard-only input still executes explicit tag handlers once.
+            let mut end = 0;
+            for &discard in &discards {
+                let span = &syntax.nodes[discard.0].span;
+                if span.start < end { continue; }
+                self.lower_form_in_view(
+                    source, &syntax, discard,
+                    &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+                    &discards,
+                )?;
+                end = span.end;
+            }
+            return Ok(None);
+        };
+        self.lower_form_in_view(
             source,
+            &syntax,
+            root,
             &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+            &discards,
         )
+        .map(Some)
+    }
+    /// Register an explicit compiler-emitted function over immutable reader data.
+    /// It executes in canonical JavaScript; only finite form-domain results cross
+    /// the typed bridge. Registration grants no stream or filesystem capability.
+    pub fn register_compiler_data_reader(
+        &mut self,
+        tag: Name,
+        function_source: &str,
+    ) -> Result<(), String> {
+        let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
+        let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
+        let unit = crate::emitter::emit_js_unit(&program);
+        let mut readers = self.compiler_data_readers.borrow_mut();
+        readers.units.insert(tag.clone(), unit);
+        if let Some(id) = readers.functions.remove(&tag) {
+            if let Some(evaluator) = &readers.evaluator {
+                let _ = evaluator.release(id);
+            }
+        }
+        Ok(())
+    }
+    fn call_compiler_data_reader(
+        &self,
+        tag: &Name,
+        value: &crate::compiler_data::Datum,
+    ) -> Result<Option<crate::compiler_data::Datum>, String> {
+        let run = || -> Result<Option<crate::compiler_data::Datum>, String> {
+            let (evaluator, function) = {
+                let mut readers = self.compiler_data_readers.borrow_mut();
+                let Some(unit) = readers.units.get(tag).cloned() else {
+                    return Ok(None);
+                };
+                if readers.evaluator.is_none() {
+                    readers.evaluator = Some(std::rc::Rc::new(
+                        self.new_evaluator().map_err(|e| e.to_string())?,
+                    ));
+                }
+                let evaluator = readers.evaluator.as_ref().unwrap().clone();
+                let function = if let Some(function) = readers.functions.get(tag) {
+                    *function
+                } else {
+                    let function = evaluator.evaluate_unit(&unit).map_err(|e| e.to_string())?;
+                    readers.functions.insert(tag.clone(), function);
+                    function
+                };
+                (evaluator, function)
+            };
+            let limits = crate::form_bridge::ConversionLimits {
+                nodes: self.limits.generated_nodes,
+                depth: 128,
+            };
+            let argument = evaluator
+                .import_data(value, limits)
+                .map_err(|e| e.to_string())?;
+            let result = evaluator.call(function, &[argument]);
+            let _ = evaluator.release(argument);
+            let result = result.map_err(|e| e.to_string())?;
+            let data = evaluator
+                .export_data(result, limits)
+                .map_err(|e| e.to_string());
+            let _ = evaluator.release(result);
+            data.map(Some)
+        };
+        let result = run();
+        if result.is_err() {
+            let mut readers = self.compiler_data_readers.borrow_mut();
+            readers.evaluator = None;
+            readers.functions.clear();
+        }
+        result
     }
     pub(crate) fn lower_form_in_view(
         &self,
@@ -243,7 +354,34 @@ impl MacroHost {
                 );
             }
         }
-        crate::compiler_reader::lower_form(source, tree, root, view, discards)
+        let reader = |tag: &Name,
+                      value: &crate::compiler_data::Datum,
+                      location: &crate::compiler_data::SourceSpan| {
+            let value = self.call_compiler_data_reader(tag, value)?;
+            if let Some(value) = &value {
+                let size = Form::from_data(
+                    value.clone(),
+                    location.clone(),
+                    crate::compiler_data::Origin::SuppliedData,
+                )
+                .nodes()
+                .len();
+                let generated = self.generated_nodes.get().saturating_add(size);
+                if generated > self.limits.generated_nodes {
+                    return Err("compiler reader generated-node limit exceeded".into());
+                }
+                self.generated_nodes.set(generated);
+            }
+            Ok(value)
+        };
+        crate::compiler_reader::lower_form_with_reader(
+            source,
+            tree,
+            root,
+            view,
+            discards,
+            Some(&reader),
+        )
     }
     pub fn register_macro(&mut self, definition: &'static NativeDefinition) -> RootedValue {
         self.native_namespaces
@@ -348,6 +486,7 @@ impl MacroHost {
     }
     pub(crate) fn macro_analysis_frame(&self) -> Self {
         Self {
+            compiler_data_readers: self.compiler_data_readers.clone(),
             imports: self.imports.clone(),
             renames: self.renames.clone(),
             namespace_symbols: self.namespace_symbols.clone(),
@@ -381,6 +520,10 @@ impl MacroHost {
     }
     pub(crate) fn begin_compilation(&mut self) {
         if !self.bootstrap_seed {
+            let mut readers = self.compiler_data_readers.borrow_mut();
+            readers.evaluator = None;
+            readers.functions.clear();
+            drop(readers);
             self.bootstrap = None;
             self.javascript_macros.clear();
             self.source_bindings.clear();
@@ -424,22 +567,46 @@ impl MacroHost {
             .insert(name.to_owned(), private);
         Ok(())
     }
-    pub(crate) fn source_namespace<'a>(&'a self, caller: &'a str, qualifier: &'a str) -> Option<&'a str> {
+    pub(crate) fn source_namespace<'a>(
+        &'a self,
+        caller: &'a str,
+        qualifier: &'a str,
+    ) -> Option<&'a str> {
         if caller == qualifier {
             return Some(caller);
         }
-        self.imports.get(caller).into_iter().flatten()
+        self.imports
+            .get(caller)
+            .into_iter()
+            .flatten()
             .find(|i| i.alias.as_deref() == Some(qualifier) || i.namespace == qualifier)
             .map(|i| i.namespace.as_str())
     }
     pub(crate) fn source_binding_private(&self, namespace: &str, name: &str) -> bool {
-        if self.runtime_vars.get(namespace).and_then(|vars| vars.get(name)).copied().unwrap_or(false) {
+        if self
+            .runtime_vars
+            .get(namespace)
+            .and_then(|vars| vars.get(name))
+            .copied()
+            .unwrap_or(false)
+        {
             return true;
         }
-        self.javascript_macros.get(&format!("{namespace}/{name}"))
+        self.javascript_macros
+            .get(&format!("{namespace}/{name}"))
             .and_then(|m| m.metadata.as_ref())
-            .and_then(|m| m.get(&crate::compiler_data::DataBuilder.keyword(Name::new(None, "private"))).ok().flatten())
-            .is_some_and(|v| !matches!(v.inspect(), crate::compiler_data::DatumView::Nil | crate::compiler_data::DatumView::Boolean(false)))
+            .and_then(|m| {
+                m.get(&crate::compiler_data::DataBuilder.keyword(Name::new(None, "private")))
+                    .ok()
+                    .flatten()
+            })
+            .is_some_and(|v| {
+                !matches!(
+                    v.inspect(),
+                    crate::compiler_data::DatumView::Nil
+                        | crate::compiler_data::DatumView::Boolean(false)
+                )
+            })
     }
     pub(crate) fn set_namespace_imports(
         &mut self,

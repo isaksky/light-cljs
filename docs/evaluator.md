@@ -194,3 +194,18 @@ records value paths, source effects, scope restoration and cancellation recovery
 
 Execution evidence and the focused commands are recorded in
 [deferred unit validation](../tests/reference/compiler-deferred-units.md).
+
+## Explicit reader capabilities
+
+`Evaluator::input_provider(name, callback)` creates an opaque input value for
+compiled reader functions. The synchronous Rust callback receives the session's
+`ExecutionControl` and returns `Result<Option<String>, EvalError>`: a nonempty
+chunk, EOF (`None`), or an error. Parsing, tag invocation, cursor ownership,
+compaction and located diagnostics remain canonical JavaScript operations.
+Callbacks must retain only Rust data and poll control during potentially long
+provider work. The provider never discovers stdin or filesystem access.
+
+The ordinary namespace resolver supplies compiler-owned `cljs.reader` and the
+strict `clojure.edn` compatibility facade. See
+[reader validation](../tests/reference/compiler-edn.md) for exact profiles,
+reader limits, source provenance and intentional numeric/host adaptations.

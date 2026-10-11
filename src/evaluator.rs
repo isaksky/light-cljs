@@ -157,6 +157,7 @@ impl Evaluator {
               const save = value => {{ const id = next++; values.set(id, value); return id; }};
               const get = id => {{ if (!values.has(id)) throw new Error('Released or unknown value ID'); return values.get(id); }};
               return Object.freeze({{
+                inputProvider: (name, provider) => save(rt.core.readerInputProvider(name, provider)),
                 importForm: descriptor => save(bridge.decode(descriptor)),
                 exportForm: (id, nodes, depth) => bridge.encode(get(id), nodes, depth),
                 formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({{macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}}),
@@ -450,6 +451,52 @@ impl Evaluator {
                 },
             )?;
             ctx.globals().set(name, f)
+        })
+    }
+    /// Create an explicit synchronous input capability. Providers return nonempty
+    /// chunks or `None` at EOF; the canonical JavaScript cursor performs parsing.
+    /// The closure retains Rust data only and shares the session's control budget.
+    pub fn input_provider(
+        &self,
+        name: &str,
+        provider: impl Fn(ExecutionControl) -> Result<Option<String>, EvalError> + 'static,
+    ) -> Result<ValueId, EvalError> {
+        let control = self.control.clone();
+        self.enter(|ctx| {
+            let callback = Function::new(ctx.clone(), move |ctx: Ctx<'_>| {
+                control
+                    .poll()
+                    .map_err(|e| rquickjs::Exception::throw_message(&ctx, &e.0))?;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    provider(control.clone())
+                }));
+                let chunk = match result {
+                    Ok(Ok(chunk)) => chunk,
+                    Ok(Err(_)) => {
+                        return Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            "input provider failed",
+                        ));
+                    }
+                    Err(_) => {
+                        control.invalidate();
+                        return Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            "input provider panicked",
+                        ));
+                    }
+                };
+                control
+                    .poll()
+                    .map_err(|e| rquickjs::Exception::throw_message(&ctx, &e.0))?;
+                Ok(chunk)
+            })?;
+            let create: Function = ctx.eval("__lightEvaluator.inputProvider")?;
+            let index = create.call((name, callback))?;
+            Ok(ValueId {
+                session: self.generation,
+                index,
+            })
         })
     }
     /// Live engine allocation accounting, useful for focused retention measurements.
