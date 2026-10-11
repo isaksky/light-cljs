@@ -3135,6 +3135,32 @@ impl Analyzer<'_> {
         {
             return self.reader_literal(&form, kind, context, false);
         }
+        // Keep literal/collection lowering temporaries off every recursive list
+        // frame, including in unoptimized builds on the default thread stack.
+        if let NodeKind::Collection {
+            kind: CollectionKind::List,
+            children,
+        } = &node.kind
+        {
+            let value = self.list(id, children, context)?;
+            return if matches!(
+                self.program.exprs[value.0].kind,
+                ExprKind::Fn { .. } | ExprKind::Reify { .. }
+            ) {
+                self.attach_metadata(id, value, context, false)
+            } else {
+                Ok(value)
+            };
+        }
+        self.value_form(id, &node, context)
+    }
+
+    fn value_form(
+        &mut self,
+        id: NodeId,
+        node: &crate::parser::Node,
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
         let kind = match &node.kind {
             NodeKind::Nil => ExprKind::Nil,
             NodeKind::Boolean(value) => ExprKind::Bool(*value),
@@ -3213,20 +3239,6 @@ impl Analyzer<'_> {
                 form,
             } => {
                 return self.datum(*form, context);
-            }
-            NodeKind::Collection {
-                kind: CollectionKind::List,
-                children,
-            } => {
-                let value = self.list(id, children, context)?;
-                return if matches!(
-                    self.program.exprs[value.0].kind,
-                    ExprKind::Fn { .. } | ExprKind::Reify { .. }
-                ) {
-                    self.attach_metadata(id, value, context, false)
-                } else {
-                    Ok(value)
-                };
             }
             other => {
                 let description = match other {
@@ -3332,122 +3344,10 @@ impl Analyzer<'_> {
                         name == &operator_name && imported_intrinsic.is_none()
                     }));
             if !shadowed && self.lookup(&operator_name).is_none() {
-                match intrinsic {
-                    "defmacro" => {
-                        if !self.top_level {
-                            return Err(self.error(
-                                id,
-                                AnalysisErrorKind::InvalidForm(
-                                    "defmacro declarations must appear at top level",
-                                ),
-                            ));
-                        }
-                        let form = self.compiler_read_form(id).map_err(|e| {
-                            self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string()))
-                        })?;
-                        if self.macro_host.bootstrap_seed {
-                            let lowered = crate::compiler_bootstrap::lower_declaration(&form)
-                                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?
-                                .1;
-                            let node = self.import_form(&lowered)?;
-                            return self.form(node, context);
-                        }
-                        self.macro_host
-                            .register_javascript_macro(
-                                self.namespace,
-                                &form,
-                                self.definition_snapshot(),
-                                self.engine,
-                            )
-                            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
-                        return Ok(self.push(
-                            ExprKind::Nil,
-                            self.syntax.nodes[id.0].span.clone(),
-                            context,
-                        ));
-                    }
-                    "delay" | "lazy-seq" => {
-                        return self.deferred_form(id, args, context, intrinsic == "delay");
-                    }
-                    "defonce" => return self.definition(id, args, context, true),
-                    "declare" => return self.declare_form(id, args, context),
-                    "binding" | "with-redefs" => return self.binding_form(id, args, context),
-                    "resolve" => return self.resolve_form(id, args, context),
-                    "require-macros" | "use-macros" => {
-                        return Err(self.error(operator, AnalysisErrorKind::Unsupported(
-                            "legacy macro imports are retired; import macros and functions with ordinary :require from .cljs/.cljc sources".into(),
-                        )));
-                    }
-                    "require" => {
-                        return Err(self.error(
-                            operator,
-                            AnalysisErrorKind::InvalidForm(
-                                "Calls to `require` must appear at the top-level.",
-                            ),
-                        ));
-                    }
-                    "exists?" => return self.exists_form(id, args, context),
-                    "with-out-str" => {
-                        let previous = self.recur_target.take();
-                        let body = self.body(
-                            args,
-                            self.syntax.nodes[id.0].span.clone(),
-                            ExprContext::Discard,
-                        );
-                        self.recur_target = previous;
-                        let body = body?;
-                        return Ok(self.push(
-                            ExprKind::WithOutStr(body),
-                            self.syntax.nodes[id.0].span.clone(),
-                            context,
-                        ));
-                    }
-                    "this-as" => return self.this_as(id, args, context),
-                    "js-arguments" if args.is_empty() => {
-                        return Ok(self.push(
-                            ExprKind::JsArguments,
-                            self.syntax.nodes[id.0].span.clone(),
-                            context,
-                        ));
-                    }
-                    "copy-arguments" if args.len() == 1 => {
-                        let dest = self.non_tail_form(args[0], ExprContext::Value)?;
-                        return Ok(self.push(
-                            ExprKind::CopyArguments(dest),
-                            self.syntax.nodes[id.0].span.clone(),
-                            context,
-                        ));
-                    }
-                    "reify" => return self.reify_form(id, args, context),
-                    "satisfies?" | "implements?" => {
-                        return self.protocol_predicate_form(
-                            id,
-                            args,
-                            context,
-                            intrinsic == "implements?",
-                        );
-                    }
-                    "defprotocol" => {
-                        let expr = self.defprotocol_form(id, args, context)?;
-                        return self.catalog_bundle(id, expr);
-                    }
-                    "extend-type" => {
-                        let expr = self.extend_type_form(id, args, context)?;
-                        return self.catalog_bundle(id, expr);
-                    }
-                    "extend-protocol" => {
-                        let expr = self.extend_protocol_form(id, args, context)?;
-                        return self.catalog_bundle(id, expr);
-                    }
-                    "specify!" | "specify" => {
-                        return self.specify_form(id, args, context, operator_name == "specify");
-                    }
-                    "deftype" | "defrecord" => {
-                        let expr = self.type_form(id, args, context, intrinsic == "defrecord")?;
-                        return self.catalog_bundle(id, expr);
-                    }
-                    "assert" => return self.assert_form(id, args, context),
-                    _ => {}
+                if let Some(value) =
+                    self.intrinsic_form(id, operator, args, context, intrinsic, &operator_name)?
+                {
+                    return Ok(value);
                 }
             }
             if let Some(constructor) = operator_name.strip_suffix('.')
@@ -3539,6 +3439,139 @@ impl Analyzer<'_> {
             }
         }
         self.call_form(id, operator, args, context)
+    }
+
+    // Only intrinsic calls retain this lowering frame. Primitive forms and
+    // ordinary calls return from this probe before analyzing their children.
+    fn intrinsic_form(
+        &mut self,
+        id: NodeId,
+        operator: NodeId,
+        args: &[NodeId],
+        context: ExprContext,
+        intrinsic: &str,
+        operator_name: &str,
+    ) -> Result<Option<ExprId>, AnalysisError> {
+        match intrinsic {
+            "defmacro" => return self.macro_declaration(id, context).map(Some),
+            "delay" | "lazy-seq" => {
+                return self
+                    .deferred_form(id, args, context, intrinsic == "delay")
+                    .map(Some);
+            }
+            "defonce" => return self.definition(id, args, context, true).map(Some),
+            "declare" => return self.declare_form(id, args, context).map(Some),
+            "binding" | "with-redefs" => return self.binding_form(id, args, context).map(Some),
+            "resolve" => return self.resolve_form(id, args, context).map(Some),
+            "require-macros" | "use-macros" => {
+                return Err(self.error(operator, AnalysisErrorKind::Unsupported(
+                    "legacy macro imports are retired; import macros and functions with ordinary :require from .cljs/.cljc sources".into(),
+                )));
+            }
+            "require" => {
+                return Err(self.error(
+                    operator,
+                    AnalysisErrorKind::InvalidForm(
+                        "Calls to `require` must appear at the top-level.",
+                    ),
+                ));
+            }
+            "exists?" => return self.exists_form(id, args, context).map(Some),
+            "with-out-str" => {
+                let previous = self.recur_target.take();
+                let body = self.body(
+                    args,
+                    self.syntax.nodes[id.0].span.clone(),
+                    ExprContext::Discard,
+                );
+                self.recur_target = previous;
+                let body = body?;
+                return Ok(Some(self.push(
+                    ExprKind::WithOutStr(body),
+                    self.syntax.nodes[id.0].span.clone(),
+                    context,
+                )));
+            }
+            "this-as" => return self.this_as(id, args, context).map(Some),
+            "js-arguments" if args.is_empty() => {
+                return Ok(Some(self.push(
+                    ExprKind::JsArguments,
+                    self.syntax.nodes[id.0].span.clone(),
+                    context,
+                )));
+            }
+            "copy-arguments" if args.len() == 1 => {
+                let dest = self.non_tail_form(args[0], ExprContext::Value)?;
+                return Ok(Some(self.push(
+                    ExprKind::CopyArguments(dest),
+                    self.syntax.nodes[id.0].span.clone(),
+                    context,
+                )));
+            }
+            "reify" => return self.reify_form(id, args, context).map(Some),
+            "satisfies?" | "implements?" => {
+                return self
+                    .protocol_predicate_form(id, args, context, intrinsic == "implements?")
+                    .map(Some);
+            }
+            "defprotocol" => {
+                let expr = self.defprotocol_form(id, args, context)?;
+                return self.catalog_bundle(id, expr).map(Some);
+            }
+            "extend-type" => {
+                let expr = self.extend_type_form(id, args, context)?;
+                return self.catalog_bundle(id, expr).map(Some);
+            }
+            "extend-protocol" => {
+                let expr = self.extend_protocol_form(id, args, context)?;
+                return self.catalog_bundle(id, expr).map(Some);
+            }
+            "specify!" | "specify" => {
+                return self
+                    .specify_form(id, args, context, operator_name == "specify")
+                    .map(Some);
+            }
+            "deftype" | "defrecord" => {
+                let expr = self.type_form(id, args, context, intrinsic == "defrecord")?;
+                return self.catalog_bundle(id, expr).map(Some);
+            }
+            "assert" => return self.assert_form(id, args, context).map(Some),
+            _ => return Ok(None),
+        }
+    }
+
+    // Declaration snapshots and generated forms must not inflate the frame
+    // retained by every ordinary list while its children are analyzed.
+    fn macro_declaration(
+        &mut self,
+        id: NodeId,
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
+        if !self.top_level {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::InvalidForm("defmacro declarations must appear at top level"),
+            ));
+        }
+        let form = self
+            .compiler_read_form(id)
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+        if self.macro_host.bootstrap_seed {
+            let lowered = crate::compiler_bootstrap::lower_declaration(&form)
+                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?
+                .1;
+            let node = self.import_form(&lowered)?;
+            return self.form(node, context);
+        }
+        self.macro_host
+            .register_javascript_macro(
+                self.namespace,
+                &form,
+                self.definition_snapshot(),
+                self.engine,
+            )
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        Ok(self.push(ExprKind::Nil, self.syntax.nodes[id.0].span.clone(), context))
     }
 
     // Keep invocation temporaries outside the recursive special-form dispatch.

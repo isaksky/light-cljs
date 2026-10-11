@@ -1184,3 +1184,27 @@ fn definitions_and_temporary_scope_validation_report_source_errors() {
         );
     }
 }
+
+#[test]
+fn accepted_nesting_analyzes_on_the_default_thread_stack() {
+    // Exercise both sides of list/value dispatch and larger recursive handlers.
+    // Do not increase this test's stack: the parser accepts all these sources.
+    for (opening, closing) in [
+        ("(let* [] ", ")"),
+        ("(fn* [] ", ")"),
+        ("(if true ", " nil)"),
+        ("(identity ", ")"),
+        ("(do ", ")"),
+        ("[", "]"),
+        ("{:value ", "}"),
+        ("#{", "}"),
+    ] {
+        let source = format!("{}0{}", opening.repeat(127), closing.repeat(127));
+        let syntax = parse(&source).unwrap();
+        analyze(&source, &syntax).unwrap_or_else(|error| panic!("nested {opening}: {error}"));
+    }
+
+    let source = format!("{}missing{}", "(let* [] ".repeat(127), ")".repeat(127));
+    let error = analyze(&source, &parse(&source).unwrap()).unwrap_err();
+    assert_eq!(&source[error.span], "missing");
+}
