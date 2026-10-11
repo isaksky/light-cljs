@@ -130,6 +130,7 @@ impl Evaluator {
         Self::create(options, true, Some(control))
     }
     fn create(options: EvaluatorOptions, preserve_language_errors: bool, shared: Option<ExecutionControl>) -> Result<Self, EvalError> {
+        if options.memory_limit < 1024 * 1024 { return Err(EvalError("JavaScript memory limit must be at least 1048576 bytes for engine startup".into())); }
         let control = shared.unwrap_or(ExecutionControl(Arc::new(ControlState {
             cancelled: AtomicBool::new(false),
             terminal: AtomicU8::new(0),
@@ -184,7 +185,7 @@ impl Evaluator {
                 formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({{macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}}),
                 bridgeVersion: bridge.version,
                 checkBridge: bridge.check,
-                errorData: () => {{ const error = lastError; lastError = null; return save(rt.core.exData(error)); }},
+                errorData: () => {{ const error = lastError; return save(rt.core.exData(error)); }},
                 evaluate: source => {{
                   lastError = null;
                   try {{ return save((0, eval)(source)(rt)); }}
@@ -201,7 +202,14 @@ impl Evaluator {
                 }},
                 number: id => {{ const v = get(id); if (typeof v !== 'number') throw new TypeError('Expected Number'); return v; }},
                 string: id => {{ const v = get(id); if (typeof v !== 'string') throw new TypeError('Expected string'); return v; }},
-                print: id => rt.core.prStr(get(id)),
+                lastError: () => save(lastError),
+                clearError: () => {{ lastError = null; }},
+                inputWindow: more => rt.core.compilerInputWindow(more),
+                inputConsume: units => rt.core.compilerInputConsume(units),
+                inputRecover: () => rt.core.compilerInputRecover(),
+                inputDiscard: () => rt.core.compilerInputDiscard(),
+                inputCompact: () => rt.core.compilerInputCompact(),
+                print: id => {{ try {{ return rt.core.prStr(get(id)); }} catch (error) {{ lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }} }},
                 validate: id => {{ get(id); }},
                 release: id => {{ get(id); values.delete(id); }},
                 clear: clearValues
@@ -603,6 +611,25 @@ impl Evaluator {
                 session: self.generation,
                 index,
             })
+        })
+    }
+    pub(crate) fn input_window(&self, more: bool) -> Result<(String, usize, bool, usize), EvalError> {
+        self.enter(|ctx| {
+            let f: Function = ctx.eval("__lightEvaluator.inputWindow")?;
+            let a: Array = f.call((more,))?;
+            Ok((a.get(0)?, a.get(1)?, a.get(2)?, a.get(3)?))
+        })
+    }
+    pub(crate) fn input_action(&self, action: &str, units: usize) -> Result<(), EvalError> {
+        self.enter(|ctx| {
+            let f: Function = ctx.eval(format!("__lightEvaluator.{action}"))?;
+            f.call((units,))
+        })
+    }
+    pub(crate) fn last_exception(&self) -> Result<ValueId, EvalError> {
+        self.enter(|ctx| {
+            let f: Function = ctx.eval("__lightEvaluator.lastError")?;
+            Ok(ValueId { session: self.generation, index: f.call(())? })
         })
     }
     /// Live engine allocation accounting, useful for focused retention measurements.

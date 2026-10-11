@@ -92,7 +92,7 @@ No input/output capability is connected implicitly.
 ## Native API migration map
 
 The `interpreter` module is a temporary legacy adapter until **light-cljs-115**.
-The CLI switches independently in light-cljs-113. It is never a fallback for
+The CLI uses this session for scripts and the REPL. It is never a fallback for
 unsupported emitted code. Legacy interpreter tests retain historical native
 behavior until the dedicated suite migration/removal steps.
 
@@ -117,3 +117,67 @@ behavior until the dedicated suite migration/removal steps.
 `9007199254740992`. This is the deliberate numeric migration, not an exact-native
 compatibility claim. See the runnable [embedding example](../examples/embedding.rs)
 and [execution provenance](../tests/reference/eval-sessions.md).
+
+## Script and REPL commands
+
+`light-cljs --eval [OPTIONS] [FILE|-]`, `--eval --text SOURCE`, and
+`--repl [OPTIONS]` compile each form with Rust and execute emitted JavaScript in
+embedded QuickJS. Tokenize/parse/analyze/compile commands retain their existing
+behavior. No Node/JVM is needed by evaluation. `.clj` files receive a migration
+error; use `.cljs` or `.cljc`, ordinary `:require` for helpers/macros, and `:cljs`
+conditionals. Stdin and text use the portable CLJS dialect with conditionals.
+
+Explicit source roots search `.cljs` before `.cljc`, reject ambiguous candidates
+of the selected extension and never discover the script/current directory.
+Bundled libraries need no root. Missing external sources report the namespace
+and the requesting form. ECMAScript Math, strings, objects and RegExp are available;
+Node/DOM/JVM/filesystem/network/process capabilities are not supplied implicitly.
+
+Program print output goes immediately to stdout. Bind `*print-fn*` to
+`*print-err-fn*` for stderr output. The CLI writes a buffered readable last value
+and newline only after all script forms and result rendering succeed. Earlier
+program effects remain on failure. Empty scripts return nil. File/text scripts
+may read stdin; stdin scripts consume it as source before execution. `*file*`
+names the script (or `<text>.cljc`/`<stdin>.cljc`). Strings preserve UTF-16 internally;
+readable output escapes lone surrogates and raw UTF-8 output rejects them.
+
+The REPL reads and evaluates one form before contextually reading the next,
+including namespace changes on the same line. It uses the Rust parser and
+compiler reader; its cursor is shared with canonical runtime `read`/`read-line`.
+Consumed lines compact while retained forms keep their original source locations.
+Terminal namespace prompts and `...=>` continuation prompts appear on stderr;
+redirected input has no prompts. EOF exits, with one diagnostic for unfinished
+syntax. Reader errors discard the buffered suffix; analysis/runtime/printing
+errors preserve following forms. Runtime read failures recover at the same
+buffered boundary, even when caught by the program.
+
+Successfully evaluated and rendered forms rotate `*1`, `*2`, `*3` (initially nil).
+Errors leave them unchanged and update `*e`. Application throws retain their actual
+value and `ex-data`; read/analysis diagnostics become ExceptionInfo with phase and
+available source location. Success preserves `*e`. Definitions return their CLJS
+initializer value; native Var return/printing conventions are retired.
+
+| Flag | Default | Unit/behavior |
+| --- | ---: | --- |
+| `--poll-budget N` | 1000000 | Cooperative engine/compiler polls per operation |
+| `--memory-limit N` | 67108864 | JS heap bytes; minimum 1048576 for startup |
+| `--stack-limit N` | 1048576 | JS engine stack bytes |
+| `--timeout-ms N` | 10000 | Deadline per operation in milliseconds |
+| `--source-limit N` | 4194304 | UTF-8 bytes per source/input window |
+| `--output-limit N` | 1048576 | UTF-8 emitted/rendered bytes per operation |
+| `--print-length N` | 100 | Result collection item bound |
+| `--print-level N` | 20 | Result collection depth bound |
+
+Numbers are nonnegative integers; zero is a real bound. Startup rejects a heap
+limit below its supported minimum. Native `--fuel`, `--allocation-limit`,
+`--call-depth` and `--evaluation-depth` are rejected with explicit replacement
+controls; units are not equivalent. `--output-limit` retains its spelling but
+now measures UTF-8 bytes. Engine poll/deadline/memory failures, uncaught stack failures or cancellation
+terminate the command nonzero; a fresh invocation allocates a fresh session.
+Language errors remain recoverable in the REPL. Source input/host stream failures
+are fatal. Read, evaluation and result rendering are separate operations; nested
+macros/callbacks share their enclosing budget. Blocking host IO is cooperative,
+not preempted by an engine deadline. Native exact numbers, descriptors, JVM catch
+classes and native allocator/fork/GC guarantees are explicitly retired.
+
+See [CLI execution evidence](../tests/reference/eval-cli.md) for scope and commands.

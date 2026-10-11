@@ -1,3 +1,9 @@
+> Historical native API compatibility record. Production `--eval` and `--repl`
+> now use compiler-emitted JavaScript in `EvalSession`; see [evaluation](evaluation.md).
+> The remaining native library is a temporary adapter until light-cljs-115.
+> Exact native arithmetic, class descriptors, JVM facilities, GC/fork contracts
+> and native resource units described below are retired for evaluation commands.
+
 # Native interpreter compatibility profile
 
 **Current implementation reference; native evaluation is being replaced.**
@@ -31,7 +37,7 @@ macros, assertions and constant-data case dispatch, memoized delays/lazy sequenc
 core lazy producers/transformations, bounded/unbounded materialization, lazy `for`,
 effectful `doseq`, `dotimes` and `while`, contextual reader conditionals,
 auto-resolved keywords, namespaced maps, explicit host data readers and host-owned I/O**. Explicit Rust callbacks can be registered;
-native `--eval` scripts and `--repl` run without Java, Node or generated code.
+production script/REPL commands now compile JavaScript and execute it in embedded QuickJS.
 The exact supported API inventory and executable exclusions appear in the
 [conformance coverage](../tests/reference/sci/README.md#integrated-native-conformance) section.
 Every committed SCI row is executed by the integrated native suite; declared
@@ -2852,167 +2858,18 @@ handles, callback reentry, wrong owners, removed capabilities and fork collectio
 Eleven `sci-embedding-*` fixtures compare eval and context state against the exact
 SCI pin. JVM class options in upstream merge tests are intentionally excluded.
 
-## Native script and REPL commands
+## Script and REPL command migration
 
-The compiled `light-cljs` binary now executes the supported interpreter subset
-with no Node, JVM, SCI checkout, generated JavaScript, or runtime dependency.
-Existing token, `--parse`, `--analyze`, and `--compile` commands retain their input
-syntax and behavior. Native interpretation is selected explicitly:
-
-```sh
-cargo build --release
-./target/release/light-cljs --eval --text '(reduce + (range 1 6))'
-# 15
-printf '(let [x 21] (* 2 x))' | ./target/release/light-cljs --eval -
-# 42
-./target/release/light-cljs --eval --source-root examples/native examples/native/demo.clj
-# Hello from native Rust
-# {:squares [1 4 9 16 25], :sum 15}  (map order is unspecified)
-printf '(+ 20\n 22)\n(* *1 2)\n' | ./target/release/light-cljs --repl
-# 42
-# 84
-./target/release/light-cljs --repl
-```
-
-`--eval` accepts exactly one file, `-`/omitted input for stdin, or `--text SOURCE`.
-Options can precede or follow the input. `--` ends option parsing for filenames
-beginning with a dash. Input and filenames support UTF-8. `*file*` is the supplied
-filename, `<text>`, or `<stdin>` during script evaluation. A failed read, analysis,
-execution, or result rendering exits nonzero and prints a source filename,
-one-based line and byte-column, phase, and byte span on stderr. Loaded-module
-failures retain the module's source location and call frames. Unfinished syntax
-also identifies its opening delimiter/prefix. No intermediate or failed final
-result is printed; completed program effects are not rolled back. Empty scripts
-successfully return `nil`.
-
-The CLI explicitly supplies UTF-8 stdin/stdout/stderr capabilities. Language
-`print`/`println` output goes to stdout; a binding to `*err*` writes stderr. After
-successful evaluation, the CLI buffers a readable rendering of the last value
-and writes it with a newline to stdout. Script output therefore precedes the
-result (`(println "hello") 42` produces `hello`, then `42`). A script file or
-`--text` can call `read`/`read-line` on stdin. For a stdin script, stdin is consumed
-as source before evaluation, so runtime reads encounter EOF. Readable string
-results escape lone UTF-16 surrogates; raw printing of an unpaired surrogate to
-a UTF-8 channel reports an error instead of replacement characters.
-
-Repeated `--source-root DIR` flags opt into the existing filesystem provider.
-Roots are searched for `.clj` and `.cljc`; ambiguous canonical candidates fail.
-The current directory, script directory, classpath, and `.cljs` files are not
-implicit loader roots. The CLI grants only the standard streams and these
-requested sources. Arbitrary filesystem, process, network, JVM class, reflection,
-JavaScript interop, thread/async, full numeric tower and other excluded APIs
-remain unavailable. This is the portable interpreter profile documented above,
-not full Clojure or full SCI. In particular, `clojure.repl` doc/apropos/pst helpers,
-terminal editing/completion, and persistent disk history are not implemented.
-
-### REPL state and recovery
-
-The REPL accepts stdin only. Each top-level form is read, executed and displayed
-before the next form is semantically read, even when several share one line.
-Definitions, macros, aliases and the current namespace persist; auto-resolved
-keywords and later forms see namespace changes immediately. The underlying
-stream cursor is shared with interpreted `read` and `read-line`, including bytes
-already buffered after the current form. No separate lexer, delimiter counter,
-or print-and-reparse pass decides when input is complete: the shared parser
-and contextual reader handle missing operands, discarded/conditional forms,
-strings, comments and delimiters. Read callbacks execute once after the complete
-form is available.
-
-For terminal stdin, the current namespace prompt and `...=>` continuation prompt
-go to stderr; redirected input has no prompts or banner. EOF ends the session;
-a final incomplete form reports one reader diagnostic. A successful session
-exit has status zero even if recoverable form errors occurred. Host errors or
-resource exhaustion while fetching a REPL form exit nonzero, as do CLI option
-and result-output I/O failures.
-
-Every successfully evaluated **and rendered** form shifts `*1` to `*2`, `*2` to
-`*3`, and stores the new value in `*1`; initial values are nil. Failed reads,
-evaluation and rendering leave those three values unchanged and update `*e`.
-A thrown language exception is retained directly, preserving its `ex-data` and
-identity. Other diagnostics are wrapped in a portable ExceptionInfo with
-`:phase`, `:file`, `:line`, and `:column` data and a descriptive message. Success
-leaves the last `*e` unchanged. The history names are ordinary builtin dynamic
-Vars visible from other namespaces, with REPL-owned bindings. Host evaluation
-APIs do not rotate them automatically; forked contexts copy their slots like the
-other builtin dynamic controls.
-
-Read errors discard the remainder of currently buffered input, normally the
-bad line, before requesting fresh input. Execution/analysis/rendering errors
-preserve subsequent forms, including later forms on the same line. A failed
-interpreted `read` also recovers its shared stream at the buffered line boundary,
-including an EDN read failure that the program handled with `catch`.
-Definitions and effects completed before failure remain visible. Unreachable
-interpreter objects are collected between interactions. Fully consumed input
-lines are compacted while reusing the buffer capacity; the current partial line
-stays available to shared reads. This avoids copying and charging old history
-against each new form's resource budget. Retained forms/functions and diagnostics
-own the source text they need. Original line numbers and byte-columns survive
-compaction; diagnostic byte spans are relative to each retained source window.
-Allocation limits remain per operation, not a global live-memory cap.
-
-The embedding API exposes this same boundary as
-`Context::read_input_form(&RootedValue) -> Result<Option<Form>, EvalError>`.
-It shares the stream with language reads, returns `None` at EOF, and retains
-source diagnostics. Errors fuse the stream until an explicit
-`Context::recover_input` discards the buffered suffix; recovery does nothing to
-a healthy cursor. Both operations reject streams from another owner.
-`Context::compact_input` explicitly releases fully consumed lines while retaining
-original source line locations; ordinary embedding streams keep their text until
-the host opts into compaction. The REPL calls it between interactions.
-
-### Native CLI limits
-
-All numerical options accept nonnegative integers. Zero is a real limit, never
-an unlimited sentinel. Builtin hard stack-safety caps still apply.
-
-| Flag | Default | Meaning |
-| --- | ---: | --- |
-| `--fuel N` | 1,000,000 | Cooperative work units |
-| `--allocation-limit N` | 16,000,000 | Cumulative semantic storage units, not bytes/RSS |
-| `--output-limit N` | 1,000,000 | UTF-16 bytes formatted/emitted by interpreter operations |
-| `--call-depth N` | 32 | Nested calls, capped at 32 |
-| `--evaluation-depth N` | 128 | Nested expressions, capped at 128 |
-| `--print-length N` | 100 | Result elements per collection |
-| `--print-level N` | 20 | Result collection nesting |
-
-Script evaluation shares one budget across all top-level forms, loading, nested
-eval, macros and native callbacks. REPL stream reading, each top-level evaluation,
-and automatic result rendering each start their own budget; a failure cannot
-reset the budget within an active operation. In particular, a result can cost
-additional work beyond its evaluation, and an infinite result is truncated by
-printing limits. Automatic result printing uses the CLI length/level settings;
-language `*print-*` bindings govern explicit program printing. The CLI newline
-and diagnostic/prompt text are outside interpreter output accounting. These
-cooperative counters cannot preempt a blocking stdin read or arbitrary host
-callback and do not replace operating-system process isolation.
-
-`tests/native_cli.rs` exercises the executable with an empty PATH, including a
-copied binary in a fresh directory with a cleared environment and only explicit
-program sources. Coverage includes UTF-8 paths/input, source/phase diagnostics,
-stdout/stderr/result separation, loader ambiguity, multiline/contextual reading,
-EOF, shared language input, recovery, histories, resource exhaustion and bounded
-lazy printing. Printing and input assertions adapt the pinned SCI
-`test/sci/io_test.cljc` tests listed in the provenance manifest; REPL/CLI policy
-is tested directly rather than attributed to an upstream terminal implementation.
-The existing 2,028-row offline SCI corpus remains unchanged.
-
+The supported command contract is [compiler-backed evaluation](evaluation.md#script-and-repl-commands).
+The old `.clj`, native limits and native stream/history descriptions have been
+replaced by explicit `.cljs`/`.cljc` sources, JavaScript Number, engine byte/poll/
+deadline limits and canonical runtime IO. `tests/eval_cli.rs` / `tests/eval_examples.rs` and the adapted
+compiled examples execute this path without Node/JVM/SCI on PATH.
 
 ## Compiler macro host
 
-The JavaScript compiler currently uses this interpreter for user/native and selected
-core macro expansion. Its runtime globals remain separate from interpreter Vars.
-This integration will be replaced by the
-[compiled JavaScript macro host](evaluator-migration.md#bootstrap-and-form-conversion);
-the description below documents the current bridge until that migration lands.
-Generated JavaScript has its own bounded vector/list/map/set, named-value and
-finite-reduction runtime, including complete macro/namespace collection programs; it does not
-call this interpreter, inherit native collection/arity rules, or gain the native
-protocol/record/transducer surface. See the compiler contract for its distinct
-CLJS target and executable subset.
-`Context::expand_macro_call` invokes an explicitly resolved macro Var with owned
-`Form` input and the caller-supplied environment, preserving direct data conversion,
-macro provenance, resource controls and optional expansion statistics.
-`find_interned_var` performs exact namespace lookup without caller aliases/refers.
-SCI `macroexpand` and its flat lexical environment remain unchanged; the compiler
-builds a separate CLJS-shaped environment. See [the compiler contract](compiler.md#compiler-macros-and-embedding)
-and [the complete example](../examples/macros) for the supported boundary.
+Macros and their ordinary helpers now execute compiler-emitted JavaScript in
+QuickJS with a separate compilation heap. Rust owns contextual reading,
+resolution, analysis and lowering. See [the evaluator contract](evaluator.md)
+and [migration design](evaluator-migration.md). Native interpreter execution is
+never a fallback for compiler or engine failures.

@@ -20,8 +20,7 @@ installs `macroexpand`/`macroexpand1` hooks; missing services fail on use.
 
 `MacroHost::evaluator_options` contains reusable configuration;
 `MacroHost::new_evaluator()` creates a fresh heap. The transitional native macro
-adapter still exists until light-cljs-115; native CLI migration is owned by
-light-cljs-113. Public `EvalSession` embedding uses compiler-emitted JavaScript. Creating this
+adapter still exists until light-cljs-115; CLI scripts and the REPL now use `EvalSession`. Public `EvalSession` embedding uses compiler-emitted JavaScript. Creating this
 session does not execute source macro bodies through the old adapter, and engine
 failure never falls back to native evaluation. `Evaluator::active(ctx)` borrows the
 already-entered context for nested compilation, without reacquiring its runtime

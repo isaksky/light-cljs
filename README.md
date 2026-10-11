@@ -25,8 +25,7 @@ compiler-emitted JavaScript in QuickJS. Ordinary helper initializers can be
 compiled on macro demand, including nested helper/macro compilation; definition
 snapshots and shared semantic IR prevent repeated source expansion. See the
 [reentrant evaluator contract](docs/evaluator.md#deferred-compiler-units). Required namespaces
-share this compiler path for macros and ordinary helpers. Native scripts and the REPL
-still use native evaluation pending their CLI migration. The supported embedding
+share this compiler path for macros and ordinary helpers. Scripts and the REPL use the same compiler-backed `EvalSession` path. The supported embedding
 API is now `EvalSession`, which compiles forms incrementally and executes canonical
 JavaScript in an explicitly owned QuickJS heap. See [session embedding](docs/evaluation.md). The existing commands
 and API examples below describe that current checkout. See the
@@ -35,87 +34,46 @@ semantics, interpreter extraction, consumer migration and completion criteria.
 Pellets holds the implementation queue; evaluator migration and full intended
 language completion are separate milestones.
 
-## Current native interpreter
-
-Compiler forms, exact UTF-16 names, metadata, opaque reader literal payloads and
-source provenance live in `compiler_data`, with no native heap or executable-unit
-roots. Forms and semantic IR survive macro-host teardown; a temporary named
-native reader/macro adapter remains until evaluator migration removes it. See the
-[compiler ownership contract](docs/compiler.md#pipeline-and-ownership).
-
-The native SCI-style interpreter has owned scalar and immutable collection
-values, metadata, structural equality/hashing, source storage, semantic reading,
-owned forms, primitive evaluation, user/native macro expansion, and explicit garbage collection in
-`light_cljs::interpreter`. Its
-[compatibility profile](docs/interpreter.md) and
-[pinned JVM reference corpus](tests/reference/sci/README.md) define its current native profile;
-native calls, explicit host function registration, checked arithmetic and general
-predicates, lexical closures, multiple/variadic arities, mutual recursion and
-stack-safe `loop*`/function `recur`, context-owned namespaces, definitions and
-late-bound Vars, portable exceptions, `try`/`catch`/`finally`, collection core
-functions, callable data, finite seq traversal, reductions, `completing`/`transduce`
-and three-argument `into` with custom callable transducers and composable
-`map`/`filter`/`remove`/`take`/`drop`/`take-while`/`mapcat`/`partition-all` constructors and `cat`, eager higher-order helpers, ordinary destructuring, `let`/`loop`/`fn`/`defn`/`letfn`, and function
-pre/post conditions, conditional/threading macros, assertions and constant-data
-`case`, memoized delays, real lazy-sequence producers, lazy `for` comprehensions,
-effectful `doseq`/`dotimes`/`while` iteration, dynamic Vars, atoms, validators,
-watches and volatiles, bounded readable printing, core string/name operations and
-the literal `clojure.string` subset, explicit host input/output, incremental read
-APIs and nested string I/O scopes, set algebra/relational operations, data walks,
-and restricted EDN reading work. Native `--eval` and `--repl` modes run scripts
-without Node, Java, SCI, or generated JavaScript.
-
-Native `defprotocol` installs namespace-resolved method functions with doc/arglists/
-`:protocol` metadata; `satisfies?` returns false for ordinary values without an
-implementation. Native `reify` creates fresh identity objects with captured methods,
-fixed overloads, partial/marker implementations and replacement metadata. Native
-`defrecord` adds immutable nominal data with positional/map constructors, persistent
-map operations, metadata and record-preserving walks. Record protocol methods read
-receiver fields, retain definition-time lexical captures and preserve old type
-generations across redefinition. `extend-type` and `extend-protocol` update named
-record generations, including existing instances, preserving omitted methods and
-replacing supplied overload sets. Nil, built-in and host selectors remain excluded. See the
-[protocol contract](docs/interpreter.md#user-protocol-declarations).
-
-Native transducers can consume a finite prefix of an unbounded source:
-`(into [] (comp (filter odd?) (map inc) (take 3)) (range))` returns `[2 4 6]`.
-`(transduce (partition-all 3) conj [] (range 5))` returns `[[0 1 2] [3 4]]`,
-including the final partial vector flushed during completion.
-
-```rust
-use light_cljs::interpreter::{eval_string, ValueView};
-let result = eval_string("(let [{:keys [x]} {:x 10}] ((fn [y] (+ x y)) 2))").unwrap();
-assert_eq!(result.inspect(), ValueView::Integer(12));
-```
-
-## Run native Clojure scripts and a REPL
+## Evaluate ClojureScript and use a REPL
 
 ```sh
-cargo run --quiet -- --eval --text '(reduce + (range 1 6))'
-# 15
-cargo run --quiet -- --eval --source-root examples/native examples/native/demo.clj
-# Hello from native Rust
-# {:squares [1 4 9 16 25], :sum 15}  (map order may differ)
+cargo run --quiet -- --eval --text '(/ 1 2)'
+# 0.5
+cargo run --quiet -- --eval --source-root examples/native examples/native/demo.cljs
+# Hello from compiled JavaScript
+# {:squares [1 4 9 16 25], :sum 15}
 printf '(+ 20\n 22)\n(* *1 2)\n' | cargo run --quiet -- --repl
 # 42
 # 84
-cargo run --quiet -- --repl
 ```
 
-`--eval` accepts a UTF-8 file, stdin/`-`, or `--text`. Program printing goes to
-stdout immediately; the readable last value appears only after success.
-`--repl` keeps definitions, namespaces and `*1`/`*2`/`*3`/`*e`, reads multiline
-forms, and continues after language errors. Prompts go to stderr for terminal
-input. Use `--source-root DIR` for required `.clj`/`.cljc` files; no source path
-is discovered implicitly. `--help` lists resource and result-printing controls.
-See the [native CLI contract](docs/interpreter.md#native-script-and-repl-commands)
-for stream ownership, limits, error behavior, and supported scope.
+`--eval` accepts a UTF-8 `.cljs`/`.cljc` script, stdin/`-`, or `--text`.
+Stdin and text use this CLJS dialect, including `:cljs` reader conditionals.
+Program output streams immediately to stdout; the readable last value appears
+only after successful evaluation and rendering. ECMAScript intrinsics such as
+`js/Math.sqrt` work in programs and macros. Execution uses embedded QuickJS,
+with host-owned standard streams and no Node/JVM process.
 
-The [complete native examples](examples/native) include namespace data processing,
-custom macros, a lazy pipeline, stateful callbacks and recoverable exceptions.
-[Conformance coverage](tests/reference/sci/README.md#integrated-native-conformance)
-accounts for every supported language name and executes all pinned SCI cases
-with explicit assertions for declared differences.
+`--repl` keeps definitions, macros, namespaces and `*1`/`*2`/`*3`/`*e`, accepts
+multiline forms and recovers reader/language errors. Runtime reads share its
+input cursor. Terminal prompts go to stderr. Cancellation or engine limits exit
+nonzero; start a fresh command to reset the session.
+
+Use explicit `--source-root DIR` for `.cljs`/`.cljc` namespaces; `.cljs` wins,
+and no root is discovered implicitly. `.clj` scripts and legacy native controls
+(`--fuel`, `--allocation-limit`, `--call-depth`, `--evaluation-depth`) receive
+migration errors. Use `--poll-budget`, `--memory-limit`, `--stack-limit`,
+`--timeout-ms`, `--source-limit` and `--output-limit` for the documented new units.
+JavaScript Number replaces exact native integer/ratio arithmetic. Native class
+and extension descriptors, JVM catches, shared-owner forks and GC counters are
+retired; language extension forms use canonical CLJS runtime behavior.
+
+The [command contract](docs/evaluation.md#script-and-repl-commands) describes
+IO, histories and controls. The [compiled examples](examples/native) retain the
+historical directory name and cover data processing, macros, lazy pipelines,
+state and exceptions. The temporary native library/tests remain until their
+separate removal step; [interpreter documentation](docs/interpreter.md) is a
+historical compatibility record, not the command contract.
 
 ## Execute small programs
 
@@ -560,8 +518,8 @@ cargo bench --bench tokenizer -- --samples 9 --ms 150 \
 ```
 
 Compiler execution and compiler CLI tests require Node.js on `PATH`, or `NODE`
-set to its executable path. Native interpreter tests need only Rust; run
-`cargo test --test native_cli` for the subprocess suite. The compiler differential
+set to its executable path. Evaluator CLI tests need only Rust; run
+`cargo test --test eval_cli` for the subprocess suite. The compiler differential
 test uses the same tiny programs and compares
 values and observable effects; it may download the pinned Maven dependencies.
 

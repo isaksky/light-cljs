@@ -55,3 +55,30 @@ where
         self(request)
     }
 }
+
+/// Explicit compiler source roots, with `.cljs` taking precedence over `.cljc`.
+#[derive(Clone, Debug)]
+pub struct FileSourceProvider {
+    roots: Vec<PathBuf>,
+}
+impl FileSourceProvider {
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self { roots }
+    }
+}
+impl SourceProvider for FileSourceProvider {
+    fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+        let name = String::from_utf16_lossy(request.namespace.name());
+        if !crate::compiler::valid_namespace(&name) {
+            return Err(LoadError::Provider(format!("invalid namespace {name}")));
+        }
+        let Some(path) = crate::compiler::locate_source(&self.roots, &name, &["cljs", "cljc"])
+            .map_err(|e| LoadError::Provider(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| LoadError::Provider(format!("{}: {e}", path.display())))?;
+        Ok(Some(SourceInput::new(path.to_string_lossy(), source)))
+    }
+}

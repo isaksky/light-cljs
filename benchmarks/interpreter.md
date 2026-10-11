@@ -1,3 +1,9 @@
+> Historical native measurements. The three drivers including fresh native CLI
+> scenarios now report retirement explicitly: current `--eval` executes compiled
+> JavaScript and cannot be compared as a native interpreter process. Retained
+> results/source snapshots remain unchanged. For the current evaluator use the
+> [startup measurement](../docs/evaluator.md#verification-and-measurements).
+
 # Native interpreter regression measurements
 
 The release driver measures fresh native CLI processes separately from resident

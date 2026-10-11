@@ -278,6 +278,7 @@ impl EvalSession {
         self.form(form)
     }
     fn form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
+        self.engine.input_action("clearError", 0)?;
         let requests = self
             .compiler
             .borrow_mut()
@@ -365,7 +366,11 @@ impl EvalSession {
                 .map_err(|e| EvalDiagnostic {
                     data: None,
                     message: e.to_string(),
-                    location: Some(form.span()),
+                    location: form
+                        .span()
+                        .source()
+                        .span(e.span)
+                        .or_else(|| Some(form.span())),
                 })?;
         Ok(AnalyzedForm {
             owner: self.identity,
@@ -412,6 +417,106 @@ impl EvalSession {
                 message,
                 location: Some(form.span()),
             })
+    }
+    /// Read one compiler form from the canonical host stream. Language reads use
+    /// the same cursor, including the buffered suffix of the current line.
+    pub fn read_input_form(&self) -> Result<Option<Form>, EvalDiagnostic> {
+        let _operation = self.begin()?;
+        let mut more = false;
+        loop {
+            let (text, units, eof, line) = self.engine.input_window(more)?;
+            let offset = text
+                .char_indices()
+                .scan(0, |n, (i, ch)| {
+                    let start = *n;
+                    *n += ch.len_utf16();
+                    Some((i, start))
+                })
+                .find(|(_, n)| *n == units)
+                .map_or(text.len(), |(i, _)| i);
+            if text.len() > self.options.max_source_bytes {
+                return Err(EvalError("compiler source byte limit exceeded".into()).into());
+            }
+            let input = SourceInput::new("<stdin>.cljc", &text);
+            let source = Source::with_line_offset(&input.file, &text, line - 1);
+            let mut parser = crate::Parser::at_offset(&text, offset).retaining_discards();
+            match parser.read_form() {
+                Err(error)
+                    if !eof
+                        && matches!(
+                            error.kind,
+                            crate::ErrorKind::UnexpectedEof(_)
+                                | crate::ErrorKind::Lexical(
+                                    crate::LexError::UnterminatedString
+                                        | crate::LexError::UnterminatedRegex
+                                )
+                        ) =>
+                {
+                    more = true;
+                    continue;
+                }
+                Err(error) => {
+                    self.engine.input_action("inputDiscard", 0)?;
+                    let mut message = error.to_string();
+                    if let Some(open) = &error.related {
+                        let (line, column) = source.line_column(open.start).unwrap();
+                        message.push_str(&format!("; opened at {}:{line}:{column}", source.name()));
+                    }
+                    return Err(EvalDiagnostic {
+                        message,
+                        location: source.span(error.span),
+                        data: None,
+                    });
+                }
+                Ok(None) if !eof => {
+                    self.engine.input_action(
+                        "inputConsume",
+                        text[offset..parser.position()].encode_utf16().count(),
+                    )?;
+                    self.engine.input_action("inputCompact", 0)?;
+                    more = false;
+                    continue;
+                }
+                _ => {}
+            }
+            let mut cursor = offset;
+            let result =
+                self.compiler
+                    .borrow()
+                    .next_form_in_source(&input, &mut cursor, source.clone());
+            match result {
+                Ok(form) => {
+                    self.engine.input_action(
+                        "inputConsume",
+                        text[offset..cursor].encode_utf16().count(),
+                    )?;
+                    if form.is_none() && !eof {
+                        more = true;
+                        continue;
+                    }
+                    return Ok(form);
+                }
+                Err(message) => {
+                    self.engine.input_action("inputDiscard", 0)?;
+                    return Err(EvalDiagnostic {
+                        message,
+                        location: source.span(offset..parser.position()),
+                        data: None,
+                    });
+                }
+            }
+        }
+    }
+    pub fn recover_input(&self) -> Result<(), EvalDiagnostic> {
+        let _operation = self.begin()?;
+        self.engine.input_action("inputRecover", 0)?;
+        self.engine.input_action("inputCompact", 0)?;
+        Ok(())
+    }
+    /// Retain the last thrown application value for interactive error history.
+    pub fn last_exception(&self) -> Result<ValueId, EvalDiagnostic> {
+        let _operation = self.begin()?;
+        Ok(self.engine.last_exception()?)
     }
     pub fn read_forms(&self, source: &SourceInput) -> Result<Vec<Form>, EvalDiagnostic> {
         let _operation = self.begin()?;

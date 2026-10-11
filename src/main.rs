@@ -10,7 +10,7 @@ use std::{
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_with_warnings};
 use light_cljs::{LineIndex, TokenKind, Tokenizer, analyze, compile_namespace, emit_js, parse};
 
-mod native_cli;
+mod eval_cli;
 
 const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
@@ -86,7 +86,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         first = args.next();
     }
     if let Some(mode @ ("--eval" | "--repl")) = first.as_deref().and_then(|arg| arg.to_str()) {
-        return native_cli::run(mode == "--repl", args);
+        return eval_cli::run(mode == "--repl", args);
     }
     let mode = match first.as_deref().and_then(|arg| arg.to_str()) {
         Some("--parse") => "parse",
@@ -110,7 +110,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some(arg) if arg == "--help" || arg == "-h" => {
             println!(
                 "{USAGE}\nPrepend --warnings for ClojureScript warning-compatible analysis (undeclared Vars and conflicting arities are warnings).\nPrepend --checked-arrays-warn to also validate array operand types.\n\n{}",
-                native_cli::USAGE
+                eval_cli::USAGE
             );
             return Ok(());
         }

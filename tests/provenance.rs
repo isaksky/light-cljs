@@ -204,8 +204,8 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                         .contains(&format!("#[test]\nfn {id}()")),
                     "unknown embedding test: {id}"
                 ),
-                "tests/native_cli.rs" => assert!(
-                    include_str!("native_cli.rs").contains(&format!("#[test]\nfn {id}()")),
+                "tests/eval_cli.rs" => assert!(
+                    include_str!("eval_cli.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown native CLI test: {id}"
                 ),
                 _ => panic!("register a local fixture source before using it: {local_path}"),

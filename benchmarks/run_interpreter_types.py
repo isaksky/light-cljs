@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--samples', type=int, default=9)
     parser.add_argument('--iterations', type=int, default=32)
     args = parser.parse_args()
+    parser.error("native CLI benchmark retired after evaluator migration; use the pinned historical binaries/results or the evaluator startup measurement")
     if args.samples < 9 or args.iterations < 1:
         parser.error('reports require at least nine samples and positive iterations')
     out = args.output.expanduser().resolve()

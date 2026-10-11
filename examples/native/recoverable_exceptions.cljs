@@ -4,7 +4,7 @@
     (when (zero? quantity)
       (throw (ex-info "Quantity must be positive" {:quantity quantity})))
     {:price (/ 20 quantity)}
-    (catch clojure.lang.ExceptionInfo error
+    (catch :default error
       {:rejected (:quantity (ex-data error))})
     (finally (swap! finished conj quantity))))
 (def quotes (mapv quote-price [5 0 4]))

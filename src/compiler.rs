@@ -618,7 +618,7 @@ impl NamespaceSource {
     }
 }
 
-fn valid_namespace(name: &str) -> bool {
+pub(crate) fn valid_namespace(name: &str) -> bool {
     name != "js"
         && name.split('.').all(|part| {
             let mut bytes = part.bytes();
@@ -627,7 +627,7 @@ fn valid_namespace(name: &str) -> bool {
         })
 }
 
-fn locate_source(
+pub(crate) fn locate_source(
     roots: &[PathBuf],
     name: &str,
     extensions: &[&str],

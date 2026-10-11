@@ -3502,6 +3502,7 @@
     identical: (a, b) => a === b, isUuid: value => uuids.has(value), isInst: value => value instanceof Date,
     printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct, isDistinct, sort, sortBy,
     someFn, everyPred, memoize, rand, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
+    replOne: null, replTwo: null, replThree: null, replError: null, sourceFile: null,
     commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
     println, prn, pr, newline, prnStr, printStr, printlnStr, taggedLiteral, isTaggedLiteral: value => value instanceof TaggedLiteral,
     splitVAt, partitionV, partitionVAll, shuffle, jsIterable, iteration, cljToJs, jsToClj, keyToJs, IEncodeJS, IEncodeClojure,
@@ -3546,7 +3547,7 @@
     if (typeof text !== 'string' || typeof name !== 'string') throw new TypeError('Expected input string and source name');
     const stream = Object.freeze({});
     streams.set(stream, {text, position: 0, total: text.length, offset: 0, line: 1, column: 1, cr: false,
-      name: name.slice(0,256), provider: null, eof: true, busy: false, failed: false, closed: false});
+      baseLine: 1, name: name.slice(0,256), provider: null, eof: true, busy: false, failed: false, closed: false});
     if (text.length > MAX_INPUT) fail(streams.get(stream), 'Reader input limit exceeded', 'limit');
     return stream;
   }
@@ -3573,7 +3574,7 @@
       s.total += chunk.length;
       if (s.total > MAX_INPUT) fail(s, 'Reader input limit exceeded', 'limit');
       // Drop consumed chunks while retaining absolute locations.
-      s.text = chunk; s.position = 0;
+      s.text = chunk; s.position = 0; s.baseLine = s.line;
     }
     return s.position === s.text.length ? null : s.text.charAt(s.position);
   }
@@ -4008,6 +4009,42 @@
       c.readerCurrentInputValue = previous;
     }
   }
+  function compilerInputWindow(more = false) {
+    const s = stateOf(c.readerCurrentInputValue);
+    if ((more || s.position === s.text.length) && !s.eof) {
+      const chunk = s.provider();
+      if (chunk == null) s.eof = true;
+      else {
+        if (typeof chunk !== 'string' || !chunk.length) fail(s, 'Invalid input chunk', 'host');
+        if (s.text.length + chunk.length > MAX_INPUT) fail(s, 'Reader input limit exceeded', 'limit');
+        s.text += chunk;
+      }
+    }
+    return [s.text, s.position, s.eof, s.baseLine];
+  }
+  function compilerInputConsume(units) {
+    const s = stateOf(c.readerCurrentInputValue);
+    if (units < 0 || s.position + units > s.text.length) throw new Error('Invalid input cursor');
+    for (let i = 0; i < units; ++i) take(s);
+  }
+  function compilerInputRecover() {
+    const s = stateOf(c.readerCurrentInputValue);
+    if (s.failed) { compilerInputConsume(s.text.length - s.position); s.failed = false; }
+  }
+  function compilerInputDiscard() {
+    const s = stateOf(c.readerCurrentInputValue);
+    compilerInputConsume(s.text.length - s.position); s.failed = false;
+  }
+  function compilerInputCompact() {
+    const s = stateOf(c.readerCurrentInputValue);
+    const prefix = s.text.slice(0, s.position);
+    const end = Math.max(prefix.lastIndexOf('\n'), prefix.lastIndexOf('\r')) + 1;
+    if (end) {
+      const lines = (prefix.slice(0, end).match(/\r\n|\r|\n/g) ?? []).length;
+      s.baseLine += lines; s.text = s.text.slice(end); s.position -= end;
+    }
+    s.total = s.text.length;
+  }
   function close(stream) { if (arguments.length !== 1) arity(arguments.length); const s = stateOf(stream); s.closed = true; s.provider = null; s.text = ''; return null; }
   const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};
   builtinTags.set('inst', value => instant(builtinLocation,value));
@@ -4019,6 +4056,7 @@
     readerReadString: (...args) => readStringWith('reader', args), readerRead: (...args) => readWith('reader', args),
     readString: (...args) => readStringWith('code', args), read: (...args) => readWith('code', args),
     readLine: function () { if (arguments.length) arity(arguments.length); return readLine(); },
+    compilerInputWindow, compilerInputConsume, compilerInputRecover, compilerInputDiscard, compilerInputCompact,
     readerStringReader: stringReader, readerInputProvider: inputProvider, readerReadLine: readLine,
     readerParseTimestampFields: function (value) { if (arguments.length !== 1) arity(arguments.length); return rt.vectorFromArray(timestampFields(value)); },
     readerParseTimestamp: function (value) { if (arguments.length !== 1) arity(arguments.length); return parseTimestamp(value); },

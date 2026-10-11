@@ -126,6 +126,7 @@ def main():
     parser.add_argument("--frontend-ms", type=int, default=100)
     parser.add_argument("--frontend-source", action="append", default=[])
     args = parser.parse_args()
+    parser.error("native CLI benchmark retired after evaluator migration; use the pinned historical binaries/results or the evaluator startup measurement")
     if min(args.samples, args.iterations, args.frontend_ms) < 1:
         parser.error("sample counts, iterations and duration must be positive")
     out = args.output.expanduser().resolve()

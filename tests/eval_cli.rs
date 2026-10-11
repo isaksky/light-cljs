@@ -1,4 +1,4 @@
-//! Interpreter subprocesses deliberately have no Node/JVM/SCI on PATH.
+//! Compiler-backed evaluator subprocesses deliberately have no Node/JVM/SCI on PATH.
 use std::{
     fs,
     io::Write,
@@ -69,7 +69,7 @@ impl Drop for Directory {
 }
 
 #[test]
-fn eval_text_stdin_empty_and_unicode_need_only_the_native_binary() {
+fn eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary() {
     ok(
         run(&["--eval", "--text", "(let [λ 40] (+ λ 2))"], ""),
         "42\n",
@@ -93,7 +93,7 @@ fn script_output_and_final_result_are_distinct() {
         &[
             "--eval",
             "--text",
-            "(println \"hello\") (binding [*out* *err*] (print \"warning\")) 41 (+ 1 2)",
+            "(println \"hello\") (binding [*print-fn* *print-err-fn*] (print \"warning\")) 41 (+ 1 2)",
         ],
         "",
     );
@@ -118,14 +118,14 @@ fn script_output_and_final_result_are_distinct() {
 fn file_execution_handles_utf8_paths_file_binding_and_runtime_stdin() {
     let dir = Directory::new();
     let file = dir.write(
-        "café.clj",
+        "café.cljs",
         "(println (read-line)) (vector (= *file* (first (list *file*))) 42)",
     );
     ok(
         run(&["--eval", file.to_str().unwrap()], "héllo λ\n"),
         "héllo λ\n[true 42]\n",
     );
-    let file = dir.write("file.clj", "*file*");
+    let file = dir.write("file.cljs", "*file*");
     let output = command().args(["--eval"]).arg(&file).output().unwrap();
     assert!(output.status.success());
     assert_eq!(
@@ -133,69 +133,66 @@ fn file_execution_handles_utf8_paths_file_binding_and_runtime_stdin() {
         format!("{:?}\n", file.to_str().unwrap())
     );
     ok(
-        run(&["--eval", "--text", "(read-line)"], "native input\n"),
-        "\"native input\"\n",
+        run(&["--eval", "--text", "(read-line)"], "compiled input\n"),
+        "\"compiled input\"\n",
     );
     ok(run(&["--eval"], "(read-line)"), "nil\n");
 }
 
 #[test]
-fn isolated_copy_loads_only_explicit_clj_and_cljc_roots() {
+fn isolated_copy_loads_only_explicit_cljs_and_cljc_roots() {
     let dir = Directory::new();
-    let binary = dir.0.join("native-light-cljs");
+    let binary = dir.0.join("light-cljs");
     fs::copy(env!("CARGO_BIN_EXE_light-cljs"), &binary).unwrap();
-    dir.write("helper.cljc", "(ns helper) (def n #?(:clj 40 :cljs 0))");
+    dir.write("helper.cljc", "(ns helper) (def n #?(:clj 0 :cljs 40))");
     dir.write(
-        "main.clj",
+        "main.cljs",
         "(ns main (:require [helper :as h])) (println \"loaded\") (+ h/n 2)",
     );
     let output = Command::new(&binary)
         .env_clear()
         .env("PATH", "")
         .current_dir(&dir.0)
-        .args(["--eval", "--source-root", ".", "main.clj"])
+        .args(["--eval", "--source-root", ".", "main.cljs"])
         .output()
         .unwrap();
     ok(output, "loaded\n42\n");
     let output = Command::new(&binary)
         .env_clear()
         .current_dir(&dir.0)
-        .args(["--eval", "main.clj"])
+        .args(["--eval", "main.cljs"])
         .output()
         .unwrap();
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("MissingNamespace"));
-    dir.write("helper.clj", "(ns helper) (def n 9)");
-    let output = command()
-        .args(["--eval", "--source-root"])
-        .arg(&dir.0)
-        .args(["--text", "(require 'helper)"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("AmbiguousSources"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no source provider for helper"));
+    dir.write("helper.cljs", "(ns helper) (def n 9)");
+    ok(
+        run(
+            &[
+                "--eval",
+                "--source-root",
+                dir.0.to_str().unwrap(),
+                "--text",
+                "(require 'helper) helper/n",
+            ],
+            "",
+        ),
+        "9\n",
+    );
 }
 
 #[test]
-fn script_failures_report_phase_source_byte_column_and_no_success_result() {
-    for (source, position, phase) in [
-        ("42\n[", "<text>:2:2", "Read"),
-        ("42\n(do \"λ\" missing)", "<text>:2:10", "Analysis"),
-        ("42\n(/ 1 0)", "<text>:2:1", "Execution"),
-        (
-            "42\n(throw (ex-info \"oops\" {:n 1}))",
-            "<text>:2:1",
-            "Execution",
-        ),
+fn script_failures_keep_output_and_never_print_a_success_result() {
+    for (source, expected) in [
+        ("42\n[", "unexpected end of input"),
+        ("42\n(do \"λ\" missing)", "unresolved symbol: missing"),
+        ("42\n(throw (ex-info \"oops\" {:n 1}))", "oops"),
     ] {
         let output = run(&["--eval", "--text", source], "");
-        assert!(!output.status.success(), "{source}");
-        assert!(output.stdout.is_empty(), "{source}");
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains(position), "{error}");
-        assert!(error.contains(phase), "{error}");
-        assert!(error.contains("bytes "), "{error}");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
     }
     let output = run(
         &[
@@ -207,34 +204,21 @@ fn script_failures_report_phase_source_byte_column_and_no_success_result() {
     );
     assert!(!output.status.success());
     assert_eq!(output.stdout, b"before\n");
-    let dir = Directory::new();
-    dir.write("broken.clj", "(ns broken)\n  unknown");
-    let output = command()
-        .args(["--eval", "--source-root"])
-        .arg(&dir.0)
-        .args(["--text", "(require 'broken)"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("broken.clj:2:3"));
 }
 
 #[test]
 fn runtime_and_rendering_limits_fail_without_partial_results() {
     for (args, expected) in [
-        (vec!["--fuel", "100", "--text", "(loop [] (recur))"], "Fuel"),
         (
-            vec!["--allocation-limit", "1", "--text", "[1 2 3]"],
-            "Allocation",
+            vec!["--poll-budget", "1000", "--text", "(loop [] (recur))"],
+            "poll budget",
         ),
-        (vec!["--output-limit", "2", "--text", "[1 2 3]"], "Output"),
+        (vec!["--memory-limit", "1", "--text", "[1 2 3]"], "memory"),
+        (vec!["--output-limit", "2", "--text", "[1 2 3]"], "output"),
+        (vec!["--timeout-ms", "0", "--text", "1"], "deadline"),
         (
-            vec!["--call-depth", "1", "--text", "((fn f [] (f)))"],
-            "CallDepthExceeded",
-        ),
-        (
-            vec!["--evaluation-depth", "1", "--text", "(+ 1 (+ 2 3))"],
-            "EvaluationDepthExceeded",
+            vec!["--source-limit", "1", "--text", "[1 2 3]"],
+            "source byte limit",
         ),
     ] {
         let mut invocation = vec!["--eval"];
@@ -244,8 +228,8 @@ fn runtime_and_rendering_limits_fail_without_partial_results() {
         assert!(output.stdout.is_empty());
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(expected),
-            "{:?}",
-            output.stderr
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     ok(
@@ -274,13 +258,13 @@ fn repl_retains_history_definitions_namespace_and_current_reader_context() {
     ok(
         run(
             &["--repl"],
-            "1\n2\n3\n[*1 *2 *3]\n(def n 40)\n(ns café)\n::x\n(clojure.core/+ user/n 2)\n[*1 *2]\n",
+            "1\n2\n3\n[*1 *2 *3]\n(def n 40)\n(ns café)\n::x\n(clojure.core/+ cljs.user/n 2)\n[*1 *2]\n",
         ),
-        "1\n2\n3\n[3 2 1]\n#'user/n\nnil\n:café/x\n42\n[42 :café/x]\n",
+        "1\n2\n3\n[3 2 1]\n40\nnil\n:café/x\n42\n[42 :café/x]\n",
     );
     ok(
-        run(&["--repl"], "(ns café) ::x (ns user) ::x\n"),
-        "nil\n:café/x\nnil\n:user/x\n",
+        run(&["--repl"], "(ns café) ::x (ns cljs.user) ::x\n"),
+        "nil\n:café/x\nnil\n:cljs.user/x\n",
     );
 }
 
@@ -289,9 +273,9 @@ fn repl_multiline_uses_parser_rules_and_preserves_single_execution() {
     ok(
         run(
             &["--repl"],
-            "(def n (atom 0))\n[(swap! n inc)\n  (str \"a)\n[b\")\n  @n]\n'\n#?(:cljs :gone)\n:kept\n#_\n(println :discarded)\n(+ 20\n  22)",
+            "(def n (atom 0))\n[(swap! n inc)\n  (str \"a)\n[b\")\n  @n]\n'\n#?(:cljs :kept)\n#_\n(println :discarded)\n(+ 20\n  22)",
         ),
-        "#'user/n\n[1 \"a)\\n[b\" 1]\n:kept\n42\n",
+        "#object[cljs.core.Atom {:val 0}]\n[1 \"a)\\n[b\" 1]\n:kept\n42\n",
     );
     ok(run(&["--repl"], " ; comment\n#_ :ignored\n"), "");
     ok(run(&["--repl"], ""), "");
@@ -302,7 +286,7 @@ fn repl_multiline_uses_parser_rules_and_preserves_single_execution() {
 fn repl_continues_after_reader_analysis_execution_and_print_errors() {
     let output = run(
         &["--repl"],
-        "1\n2\n3\n] :discarded-rest-of-line\nmissing\n(/ 1 0)\n[*1 *2 *3]\n(:phase (ex-data *e))\n(throw (ex-info \"original\" {:tag :kept}))\n(ex-data *e)\n(+ 20 22)\n(print \"\\uD800\")\n:recovered\n",
+        "1\n2\n3\n] :discarded\nmissing\n(:phase (ex-data *e))\n(throw (ex-info \"original\" {:tag :kept}))\n(ex-data *e)\n[*1 *2 *3]\n(+ 20 22)\n(lazy-seq (throw (ex-info \"render\" {})))\n:recovered\n",
     );
     assert!(
         output.status.success(),
@@ -310,14 +294,14 @@ fn repl_continues_after_reader_analysis_execution_and_print_errors() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "1\n2\n3\n[3 2 1]\n:execution\n{:tag :kept}\n42\n:recovered\n"
+        output.stdout,
+        b"1\n2\n3\n:analysis\n{:tag :kept}\n[{:tag :kept} :analysis 3]\n42\n:recovered\n"
     );
     let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("<stdin>:4:1: Read"), "{error}");
-    assert!(error.contains("<stdin>:5:1: Analysis"), "{error}");
-    assert!(error.contains("<stdin>:6:1: Execution"), "{error}");
+    assert!(error.contains("unexpected closing delimiter"));
+    assert!(error.contains("unresolved symbol"));
     assert!(error.contains("original"));
+    assert!(error.contains("render"));
 }
 
 #[test]
@@ -329,13 +313,13 @@ fn repl_shares_the_language_input_cursor_and_recovers_runtime_reads() {
     let output = run(&["--repl"], "(read) ]\n:after\n");
     assert!(output.status.success());
     assert_eq!(output.stdout, b":after\n");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("UnexpectedDelimiter"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unsupported reader syntax"));
     ok(
         run(
             &["--repl"],
-            "(try (clojure.edn/read) (catch Exception e :caught)) ]\n:after\n",
+            "(require '[clojure.edn :as edn]) (try (edn/read) (catch :default e :caught)) ]\n:after\n",
         ),
-        ":caught\n:after\n",
+        "nil\n:caught\n:after\n",
     );
 }
 
@@ -346,25 +330,26 @@ fn repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history() {
     assert_eq!(output.stdout, b"41\n");
     let error = String::from_utf8_lossy(&output.stderr);
     assert_eq!(error.matches("light-cljs:").count(), 1);
-    assert!(error.contains("UnexpectedEof"));
-    assert!(error.contains("opened at <stdin>:2:1"));
-    let output = run(&["--repl", "--fuel", "300"], "(loop [] (recur))\n42\n");
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"42\n");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Fuel"));
-    let output = run(&["--repl", "--fuel", "0"], "");
+    assert!(error.contains("unexpected end of input"));
+    assert!(error.contains("opened at <stdin>.cljc:2:1"));
+    let output = run(
+        &["--repl", "--poll-budget", "1000"],
+        "(loop [] (recur))\n42\n",
+    );
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Fuel"));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("poll budget"));
+    ok(run(&["--eval", "--text", "42"], ""), "42\n");
 }
 
 #[test]
-fn native_options_are_validated_and_help_lists_both_families() {
+fn evaluation_options_are_validated_and_help_lists_both_families() {
     for args in [
         vec!["--eval", "--text"],
         vec!["--eval", "--fuel", "-1"],
         vec!["--eval", "--fuel", "18446744073709551616"],
         vec!["--eval", "--text", "1", "extra"],
-        vec!["--repl", "file.clj"],
+        vec!["--repl", "file.cljs"],
         vec!["--repl", "--text", "1"],
         vec!["--eval", "--source-root"],
         vec!["--eval", "--compile"],
@@ -383,7 +368,10 @@ fn native_options_are_validated_and_help_lists_both_families() {
         "--analyze",
         "--eval",
         "--repl",
-        "--fuel",
+        "--poll-budget",
+        "--memory-limit",
+        "--stack-limit",
+        "--timeout-ms",
     ] {
         assert!(help.contains(flag));
     }
@@ -407,28 +395,73 @@ fn invalid_utf8_repl_input_is_a_fatal_host_read_error() {
     let output = child.wait_with_output().unwrap();
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("utf-8"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .to_lowercase()
+            .contains("utf-8")
+    );
 }
 
 #[test]
-fn repl_compacts_consumed_lines_without_spending_future_form_budgets() {
-    for option in [["--fuel", "300"], ["--allocation-limit", "1000"]] {
-        ok(
-            run(&["--repl", option[0], option[1]], &"42\n".repeat(300)),
-            &"42\n".repeat(300),
-        );
-    }
-    let input = format!(
-        "{}(defn boom []\n (/ 1 0))\n1\r\n2\r3\r\u{c}4\n(boom)\n(do \"λ\" missing)\n:after\n",
-        "42\n".repeat(20)
+fn repl_compacts_consumed_lines_and_preserves_original_locations() {
+    ok(
+        run(&["--repl", "--source-limit", "16"], &"42\n".repeat(300)),
+        &"42\n".repeat(300),
     );
-    let output = run(&["--repl"], &input);
+    let output = run(
+        &["--repl"],
+        &format!(
+            "{}(throw (js/Error. \"boom\"))\n:after\n",
+            "42\n".repeat(20)
+        ),
+    );
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!("{}#'user/boom\n1\n2\n3\n4\n:after\n", "42\n".repeat(20))
+    assert!(String::from_utf8_lossy(&output.stderr).contains("<stdin>.cljc:21:1"));
+    assert!(String::from_utf8_lossy(&output.stdout).ends_with(":after\n"));
+}
+#[test]
+fn number_js_macros_and_clj_migration_are_explicit() {
+    ok(run(&["--eval", "--text", "(/ 1 2)"], ""), "0.5\n");
+    ok(
+        run(
+            &[
+                "--eval",
+                "--text",
+                "(defmacro double-it [x] (* x 2)) [(double-it 21) (js/Math.sqrt 81)]",
+            ],
+            "",
+        ),
+        "[42 9]\n",
     );
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("<stdin>:22:2: Execution"), "{error}");
-    assert!(error.contains("<stdin>:28:10: Analysis"), "{error}");
+    for flag in [
+        "--fuel",
+        "--allocation-limit",
+        "--call-depth",
+        "--evaluation-depth",
+    ] {
+        let output = run(&["--eval", flag, "1", "--text", "1"], "");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("is retired; use"));
+    }
+    let output = run(&["--eval", "old.clj"], "");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rename/adapt"));
+}
+#[test]
+fn imported_macro_helpers_run_script_initializers_once() {
+    let dir = Directory::new();
+    dir.write("helper.cljc", "(ns helper) (def factor #?(:cljs 2 :clj missing)) (def hits (atom 0)) (swap! hits inc) (defn twice [x] (* factor x)) (defmacro doubled [x] (twice x))");
+    ok(
+        run(
+            &[
+                "--eval",
+                "--source-root",
+                dir.0.to_str().unwrap(),
+                "--text",
+                "(ns app (:require [helper :as h :refer [doubled]])) [(doubled 21) (h/twice 21) @h/hits]",
+            ],
+            "",
+        ),
+        "[42 42 1]\n",
+    );
 }

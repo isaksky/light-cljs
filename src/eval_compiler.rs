@@ -124,9 +124,31 @@ impl InteractiveCompiler {
         cursor: &mut usize,
     ) -> Result<Option<Form>, String> {
         let source = Source::new(&input.file, &input.source);
+        self.next_form_in_source(input, cursor, source)
+    }
+    pub(crate) fn next_form_in_source(
+        &self,
+        input: &SourceInput,
+        cursor: &mut usize,
+        source: Source,
+    ) -> Result<Option<Form>, String> {
         loop {
             let mut parser = crate::Parser::at_offset(&input.source, *cursor).retaining_discards();
-            let root = parser.read_form().map_err(|e| e.to_string())?;
+            let root = parser.read_form().map_err(|e| {
+                let (line, column) = source.line_column(e.span.start).unwrap_or((1, 1));
+                let mut message = format!(
+                    "{}:{line}:{column}: {} (bytes {}..{})",
+                    source.name(),
+                    e,
+                    e.span.start,
+                    e.span.end
+                );
+                if let Some(open) = e.related {
+                    let (line, column) = source.line_column(open.start).unwrap();
+                    message.push_str(&format!("; opened at {}:{line}:{column}", source.name()));
+                }
+                message
+            })?;
             *cursor = parser.position();
             let Some(root) = root else { return Ok(None) };
             let mut discards = parser.discarded().to_vec();
@@ -188,13 +210,24 @@ impl InteractiveCompiler {
         self.host.name_policy = Some(self.policy.clone());
         let mut resolution = self.resolution.clone();
         resolution.source_name = Some(form.span().source().name().into());
+        // Previously entered namespaces remain addressable in an explicit session.
+        let mut requires = self.requires.clone();
+        for ns in self
+            .contexts
+            .keys()
+            .chain(self.globals().iter().map(|g| &g.namespace))
+        {
+            if ns != &self.namespace && !requires.contains(ns) {
+                requires.push(ns.clone());
+            }
+        }
         let program = crate::analyzer::analyze_interactive_form(
             form,
             &mut self.host,
             self.program.as_ref(),
             &self.namespace,
             &self.aliases,
-            &self.requires,
+            &requires,
             resolution,
             self.options,
             &mut self.warnings,

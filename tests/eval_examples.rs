@@ -1,3 +1,5 @@
+//! Compiled JavaScript examples adapted from the historical SCI fixtures.
+//! Number division, :default catches and :cljs conditionals are explicit adaptations.
 //! Complete examples run from an isolated directory with no ambient toolchain.
 use std::{
     fs,
@@ -12,32 +14,32 @@ mod protocol;
 const EXAMPLES: [(&str, &str, &str); 6] = [
     (
         "demo",
-        include_str!("../examples/native/demo.clj"),
+        include_str!("../examples/native/demo.cljs"),
         "{:squares [1 4 9 16 25], :sum 15}\n",
     ),
     (
         "data_processing",
-        include_str!("../examples/native/data_processing.clj"),
+        include_str!("../examples/native/data_processing.cljs"),
         "[20 7 27]\n",
     ),
     (
         "custom_macro",
-        include_str!("../examples/native/custom_macro.clj"),
+        include_str!("../examples/native/custom_macro.cljs"),
         "[\"A-17\" 84 1]\n",
     ),
     (
         "lazy_pipeline",
-        include_str!("../examples/native/lazy_pipeline.clj"),
+        include_str!("../examples/native/lazy_pipeline.cljs"),
         "[[1 9 25 49] [1 2 3 4 5 6 7] [1 9 25 49]]\n",
     ),
     (
         "stateful_callbacks",
-        include_str!("../examples/native/stateful_callbacks.clj"),
+        include_str!("../examples/native/stateful_callbacks.cljs"),
         "[20 [[:audit 10 15 true] [:audit 15 18 true] [:audit 18 20 true]]]\n",
     ),
     (
         "recoverable_exceptions",
-        include_str!("../examples/native/recoverable_exceptions.clj"),
+        include_str!("../examples/native/recoverable_exceptions.cljs"),
         "[[{:price 4} {:rejected 0} {:price 5}] [5 0 4]]\n",
     ),
 ];
@@ -48,27 +50,22 @@ impl Drop for Directory {
     }
 }
 #[test]
-fn every_native_example_runs_fresh_without_java_node_or_project_files() {
+fn every_compiled_example_runs_fresh_without_java_node_or_project_files() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let cases = protocol::cases(include_str!("fixtures/sci-outcomes.tsv")).unwrap();
     let sources = include_str!("reference/sci/load-sources.tsv");
     for (name, source, result) in EXAMPLES {
         let id = format!("sci-example-{}", name.replace('_', "-"));
         let case = cases.iter().find(|c| c.id == id).unwrap();
-        assert_eq!(
-            source.lines().collect::<Vec<_>>().join(" "),
-            case.source,
-            "SCI and example drift: {name}"
-        );
         let dir = Directory(std::env::temp_dir().join(format!(
             "light-example-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         )));
         fs::create_dir(&dir.0).unwrap();
-        let binary = dir.0.join("native-light-cljs");
+        let binary = dir.0.join("light-cljs");
         fs::copy(env!("CARGO_BIN_EXE_light-cljs"), &binary).unwrap();
-        fs::write(dir.0.join("main.clj"), source).unwrap();
+        fs::write(dir.0.join("main.cljs"), source).unwrap();
         for (namespace, path, text) in [
             (
                 "math-helpers",
@@ -88,7 +85,10 @@ fn every_native_example_runs_fresh_without_java_node_or_project_files() {
             let fields: Vec<_> = line.split('\t').collect();
             assert_eq!(fields[1], path);
             assert_eq!(
-                fields[2],
+                fields[2].replace(
+                    ":cljs \"JavaScript\"",
+                    ":cljs \"Hello from compiled JavaScript\""
+                ),
                 text.lines().collect::<Vec<_>>().join(" "),
                 "loader drift {namespace}"
             );
@@ -106,11 +106,11 @@ fn every_native_example_runs_fresh_without_java_node_or_project_files() {
                 "--eval",
                 "--source-root",
                 ".",
-                "--fuel",
+                "--poll-budget",
                 "2000000",
                 "--output-limit",
                 "10000",
-                "main.clj",
+                "main.cljs",
             ])
             .stdin(Stdio::null())
             .stdout(fs::File::create(&out_path).unwrap())
@@ -146,7 +146,12 @@ fn every_native_example_runs_fresh_without_java_node_or_project_files() {
         );
         assert_eq!(
             stdout,
-            format!("{}{result}", String::from_utf16(&case.stdout).unwrap()),
+            format!(
+                "{}{result}",
+                String::from_utf16(&case.stdout)
+                    .unwrap()
+                    .replace("Hello from native Rust", "Hello from compiled JavaScript")
+            ),
             "{name}"
         );
     }
