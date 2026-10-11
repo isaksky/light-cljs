@@ -73,8 +73,8 @@ fn acceptance_programs_execute_in_independent_heaps_with_fresh_and_reused_hosts(
 
 #[test]
 fn quoted_js_macro_literals_retain_explicit_descriptors() {
-    // Required form ABI witness, currently blocked by light-cljs-128. Keep this
-    // executable and failing until the descriptor survives the compiled bridge.
+    // Required form ABI witness: quoted #js descriptors survive the compiled
+    // bridge, while arbitrary host objects remain invalid expansion results.
     both(
         &mut MacroHost::new(),
         "(defmacro m [] '(let [out #js []] out)) (alength (m))",

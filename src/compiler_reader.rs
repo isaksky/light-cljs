@@ -134,8 +134,8 @@ pub(crate) fn select_cljs(
 
 // Compiler semantic reader. Construction uses owned data only, never evaluation.
 use crate::compiler_data::{
-    DataBuilder, Datum, DatumView as ValueView, Form, FormId, FormKind, FormNode, Name, Origin,
-    ReadError, Source, SourceSpan,
+    CompilerLiteralKind, DataBuilder, Datum, DatumView as ValueView, Form, FormId, FormKind,
+    FormNode, Name, Origin, ReadError, Source, SourceSpan,
 };
 use crate::parser::{Node, NumberKind, PrefixKind, SymbolicValue};
 use std::{
@@ -900,6 +900,13 @@ impl Lowerer<'_> {
             };
             let symbol = self.scalar(symbol, span.clone(), Origin::SyntaxQuote);
             self.quote_call("quote", vec![symbol], span.clone())?
+        } else if matches!(
+            self.values[id.0].inspect(),
+            ValueView::CompilerLiteral(CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject)
+        ) {
+            // A #js literal is atomic syntax-quote data. Quote it explicitly so
+            // emission preserves the descriptor instead of constructing a host value.
+            return self.quote_call("quote", vec![id], span);
         } else if let FormKind::Collection { kind, children } = self.nodes[id.0].kind.clone() {
             if kind == CollectionKind::List && children.is_empty() {
                 self.quote_call("clojure.core/list", vec![], span.clone())?

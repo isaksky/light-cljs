@@ -67,10 +67,13 @@ rows were preserved; a new JVM regeneration of every SCI row was not run locally
 - **light-cljs-127:** `cargo test --test provenance -- --nocapture` produced
   **1 passed / 1 failed**. `numeric-number-keys` remains labeled hand-authored
   while claiming an upstream source; the validator was preserved.
-- **light-cljs-128:** the explicit `quoted_js_macro_literals_retain_explicit_descriptors`
-  witness requires `(defmacro m [] '(let [out #js []] out))` to compile and execute
-  in both engines. It remains a required failing test until the typed descriptor
-  survives macro output; arbitrary host objects must still be rejected.
+- **light-cljs-128, resolved:** quoted `#js` output now retains explicit compiler
+  descriptors, including nested syntax-quoted literals and metadata/provenance.
+  `LIGHT_CLJS_DISABLE_NATIVE_EVAL=1 cargo test --locked --test evaluator_migration quoted_js_macro_literals_retain_explicit_descriptors -- --exact`
+  passes the required `(defmacro m [] '(let [out #js []] out))` witness in both
+  engines. The compiler macro, compiler reader and evaluator suites pass 119
+  tests (one startup measurement remains intentionally ignored), including
+  arbitrary host result rejection and bounded nested descriptor export.
 - **light-cljs-129:** `cargo test --test execution deeply_nested_accepted_source_compiles_and_executes -- --exact --nocapture`
   aborted with a Rust default-test-stack overflow. The accepted source was not
   rejected or skipped to make the gate pass.

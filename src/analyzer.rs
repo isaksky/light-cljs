@@ -1821,6 +1821,8 @@ pub enum ExprKind {
     ReaderLiteral {
         kind: CompilerLiteralKind,
         items: Vec<ExprId>,
+        /// Quoted #js data keeps its explicit compiler form brand on export.
+        quoted: bool,
     },
     WithMeta {
         value: ExprId,
@@ -3662,6 +3664,7 @@ impl Analyzer<'_> {
             return Ok(ExprKind::ReaderLiteral {
                 kind: CompilerLiteralKind::Queue,
                 items: vec![],
+                quoted: false,
             });
         }
         if let Some(local) = self.lookup(name) {
@@ -4307,7 +4310,8 @@ impl Analyzer<'_> {
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref).cloned()
             && let DatumView::CompilerLiteral(kind) = form.data().inspect()
         {
-            return self.reader_literal(&form, kind, context, true);
+            let value = self.reader_literal(&form, kind, context, true)?;
+            return self.attach_metadata(id, value, context, true);
         }
         let kind = match node.kind {
             NodeKind::Symbol => self.symbol_literal(id),
@@ -7265,7 +7269,11 @@ impl Analyzer<'_> {
             items.push(self.datum(payload, ExprContext::Value)?);
         }
         Ok(self.push(
-            ExprKind::ReaderLiteral { kind, items },
+            ExprKind::ReaderLiteral {
+                kind,
+                items,
+                quoted,
+            },
             form.span().bytes(),
             context,
         ))

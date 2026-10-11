@@ -1579,6 +1579,128 @@ mod javascript_form_bridge {
         );
     }
     #[test]
+    fn quoted_js_literals_preserve_nested_metadata_and_expansion_origins() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let call = read("\n(macros/identity ^:kept [caller-symbol])");
+        let f = function(
+            &e,
+            r#"(fn* [form env x]
+              (let* [out '#js [#js {:x nil}]]
+                (aset (aget out 0) "x" x)
+                (list 'quote out)))"#,
+        );
+        let output = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap();
+        let literal = output.children()[1].clone();
+        assert!(matches!(
+            literal.data().kind(),
+            DatumKind::CompilerLiteral {
+                kind: light_cljs::compiler_data::CompilerLiteralKind::JsArray,
+                ..
+            }
+        ));
+        assert_eq!(literal.span().bytes(), call.span().bytes());
+        assert_eq!(literal.span().source().name(), call.span().source().name());
+        assert!(matches!(literal.node().origin, Origin::MacroExpansion(_)));
+        let borrowed = (0..output.nodes().len())
+            .filter_map(|i| output.at(light_cljs::compiler_data::FormId(i)))
+            .find(|form| {
+                matches!(
+                    form.data().kind(),
+                    DatumKind::Collection {
+                        kind: light_cljs::CollectionKind::Vector,
+                        ..
+                    }
+                ) && form.span().bytes() == call.children()[1].span().bytes()
+            })
+            .unwrap();
+        assert_eq!(borrowed.span().bytes(), call.children()[1].span().bytes());
+        assert_eq!(borrowed.node().origin, call.children()[1].node().origin);
+        assert!(borrowed.metadata().is_some());
+        assert_eq!(output.expansions()[0].macro_name, origin(&call).macro_name);
+        assert_eq!(
+            output.expansions()[0]
+                .definition
+                .as_ref()
+                .unwrap()
+                .source()
+                .name(),
+            "macros.cljs"
+        );
+        assert_eq!(output.expansions()[0].helpers, origin(&call).helpers);
+        let value = execute_form(&e, &output);
+        let get = function(
+            &e,
+            r#"(fn* [x] (let* [v (.-x (aget x 0))]
+              [(:kept (meta v)) (name (first v))]))"#,
+        );
+        assert_eq!(
+            e.print(e.call(get, &[value]).unwrap()).unwrap(),
+            "[true \"caller-symbol\"]"
+        );
+
+        // Embeddings may supply literal metadata directly through owned forms.
+        let quoted = read("'#js [1]");
+        let metadata = read("{:kept true}").data();
+        let data = Datum::new(DatumKind::Collection {
+            kind: light_cljs::CollectionKind::List,
+            children: vec![
+                quoted.children()[0].data(),
+                quoted.children()[1].data().with_metadata(metadata),
+            ]
+            .into(),
+        });
+        let supplied = Form::from_data(data, quoted.span(), Origin::SuppliedData);
+        let value = execute_form(&e, &supplied);
+        let output = e.export_data(value, ConversionLimits::default()).unwrap();
+        assert!(output.metadata().is_some());
+        let get = function(&e, "(fn* [x] [(:kept (meta x)) (aget x 0)])");
+        assert_eq!(e.print(e.call(get, &[value]).unwrap()).unwrap(), "[true 1]");
+    }
+    #[test]
+    fn quoted_js_literal_export_is_bounded_and_unbranded_nested_values_are_rejected() {
+        for (body, limits, detail) in [
+            (
+                "'#js [#js []]",
+                ConversionLimits {
+                    nodes: 3,
+                    depth: 128,
+                },
+                "node limit",
+            ),
+            (
+                "'#js [#js []]",
+                ConversionLimits {
+                    nodes: 100,
+                    depth: 2,
+                },
+                "depth limit",
+            ),
+            (
+                r#"(let* [out '#js [nil]] (aset out 0 (array 1)) out)"#,
+                ConversionLimits::default(),
+                "arbitrary object (including promise) at $[0]",
+            ),
+            (
+                r#"(let* [out '#js {:x nil}] (aset out "x" (js-obj "y" 2)) out)"#,
+                ConversionLimits::default(),
+                "arbitrary object (including promise) at $.x",
+            ),
+        ] {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let f = function(&e, &format!("(fn* [] {body})"));
+            let value = e.call(f, &[]).unwrap();
+            let error = e.export_data(value, limits).unwrap_err().0;
+            assert!(error.contains(detail), "{error}");
+            let fresh = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            assert_eq!(
+                fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(),
+                42.0
+            );
+        }
+    }
+    #[test]
     fn finite_lazy_results_realize_under_shared_control_and_handles_stay_session_owned() {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         e.install_gc_callback("bridgeGC").unwrap();
@@ -1670,6 +1792,32 @@ mod same_file_javascript_macros {
         host
     }
 
+    #[test]
+    fn explicit_quoted_js_forms_do_not_authorize_arbitrary_host_macro_results() {
+        let mut host = javascript_host();
+        for body in ["#js []", "#js {:x 1}", "(array 1)", r#"(js-obj "x" 1)"#] {
+            let source = format!("(defmacro m [] {body})\n(m)");
+            let error = light_cljs::compile_with_macros(&source, &mut host)
+                .unwrap_err()
+                .to_string();
+            for detail in [
+                "arbitrary object (including promise) at $",
+                "cljs.user:2:1",
+                "definition cljs.user:1:1",
+            ] {
+                assert!(error.contains(detail), "{body}: {error}");
+            }
+        }
+        let source = "(defmacro m [] '(let [out #js []] out)) (m)";
+        // Direct regression for the original program, after failed fresh sessions.
+        assert_eq!(
+            result(&format!(
+                "JSON.stringify({})",
+                light_cljs::compile_with_macros(source, &mut host).unwrap()
+            )),
+            "[]\n"
+        );
+    }
     #[test]
     fn compile_and_analyze_emit_expand_hygienically_without_runtime_macro_roots() {
         let source = r#"

@@ -283,3 +283,62 @@ fn wide_radix_literals_round_once_in_applications_and_macro_arguments() {
         }
     }
 }
+
+#[test]
+fn quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps() {
+    let cases = [
+        ("(defmacro m [] '#js []) (alength (m))", "0"),
+        // Keep the original failure path through the generated let binding.
+        ("(defmacro m [] '(let [out #js []] out)) (alength (m))", "0"),
+        (
+            r#"(defmacro m [] '(let [out #js [#js {:x #js [42]}]] out))
+            (aget (.-x (aget (m) 0)) 0)"#,
+            "42",
+        ),
+        (
+            r#"(defmacro m [] '#js {:x #js [42]}) (aget (.-x (m)) 0)"#,
+            "42",
+        ),
+        (
+            r#"(defmacro m [] `[ #js [#js {:x #js [42]}] #js {:y 7}])
+            (let [out (m)] [(aget (.-x (aget (nth out 0) 0)) 0) (.-y (nth out 1))])"#,
+            "[42 7]",
+        ),
+        (
+            r#"(defmacro m [] '(quote ^:kept [#js [unresolved] #js {:x (unresolved)}]))
+            (let [out (m)] [(:kept (meta out)) (name (aget (nth out 0) 0))
+                            (name (first (.-x (nth out 1))))])"#,
+            "[true \"unresolved\" \"unresolved\"]",
+        ),
+    ];
+    let mut host = MacroHost::new();
+    host.disable_native_evaluation();
+    for _ in 0..2 {
+        for (source, expected) in cases {
+            let p = light_cljs::analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+                .unwrap();
+            let evaluator = host.new_evaluator().unwrap();
+            assert_eq!(
+                evaluator.print(evaluator.evaluate(&p).unwrap()).unwrap(),
+                expected,
+                "QuickJS: {source}"
+            );
+            let script = format!(
+                "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
+                light_cljs::evaluator::RUNTIME_SOURCE,
+                emit_js_unit(&p)
+            );
+            let out = Command::new("node").args(["-e", &script]).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap().trim(),
+                expected,
+                "Node: {source}"
+            );
+        }
+    }
+}

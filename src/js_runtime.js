@@ -1496,6 +1496,8 @@
           else if (uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), path + ".payload", depth + 1); }
           else if (literals.has(v)) {
             tag = literals.get(v);
+            if (--remaining < 0) fail("node limit", path + ".payload");
+            if (depth + 1 > depthLimit) fail("depth limit", path + ".payload");
             const data = Object.getOwnPropertyDescriptors(v), items = [];
             if (tag === "js-array") {
               const length = data.length.value;
@@ -1570,7 +1572,11 @@
     return Object.freeze({version: 1, decode, encode, check: () => { if (terminal != null) throw new Error(terminal); },
       // Explicit descriptors authorize host literal data; ordinary objects remain invalid.
       jsArray: items => { const v = Array.from(items); literals.set(v, "js-array"); return v; },
-      jsObject: pairs => { const v = jsObject(pairs); literals.set(v, "js-object"); return v; }});
+      jsObject: pairs => { const v = jsObject(pairs); literals.set(v, "js-object"); return v; },
+      withMeta: (value, metadata) => {
+        if (!literals.has(value)) throw new Error("Invalid compiler literal metadata target");
+        metadataValues.set(value, metadata); return value;
+      }});
   }
 
   // Private test adapter. Production emission keeps this factory local; only

@@ -1366,26 +1366,49 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::String(id) => self.string(*id),
-            ExprKind::ReaderLiteral { kind, items } => {
+            ExprKind::ReaderLiteral {
+                kind,
+                items,
+                quoted,
+            } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
-                self.output.push_str(match kind {
-                    K::BigInteger => unreachable!("integers lower to Number"),
-                    K::Regex => "rt.core.rePattern(",
-                    K::Instant => "new Date(",
-                    K::Uuid => "rt.core.uuid(",
-                    K::JsArray => "[",
-                    K::JsObject => "rt.jsObject([",
-                    K::Queue => "rt.queueFromArray([",
+                self.output.push_str(match (kind, quoted) {
+                    (K::JsArray, true) => "rt.compilerForms.jsArray([",
+                    (K::JsObject, true) => "rt.compilerForms.jsObject([",
+                    _ => match kind {
+                        K::BigInteger => unreachable!("integers lower to Number"),
+                        K::Regex => "rt.core.rePattern(",
+                        K::Instant => "new Date(",
+                        K::Uuid => "rt.core.uuid(",
+                        K::JsArray => "[",
+                        K::JsObject => "rt.jsObject([",
+                        K::Queue => "rt.queueFromArray([",
+                    },
                 });
                 self.arguments(items);
-                self.output.push_str(match kind {
-                    K::JsArray => "]",
-                    K::JsObject | K::Queue => "])",
-                    _ => ")",
+                self.output.push_str(match (kind, quoted) {
+                    (K::JsArray, true) => "])",
+                    _ => match kind {
+                        K::JsArray => "]",
+                        K::JsObject | K::Queue => "])",
+                        _ => ")",
+                    },
                 });
             }
             ExprKind::WithMeta { value, metadata } => {
-                self.output.push_str("rt.core.withMeta(");
+                use crate::compiler_data::CompilerLiteralKind as K;
+                self.output.push_str(if matches!(
+                    self.program.exprs[value.0].kind,
+                    ExprKind::ReaderLiteral {
+                        kind: K::JsArray | K::JsObject,
+                        quoted: true,
+                        ..
+                    }
+                ) {
+                    "rt.compilerForms.withMeta("
+                } else {
+                    "rt.core.withMeta("
+                });
                 self.value(*value);
                 self.output.push_str(", ");
                 self.value(*metadata);
