@@ -78,3 +78,51 @@ Those integration seams retain their separate migration scopes. Executed checks:
 - `node tests/support/js_runtime.test.js`: all canonical runtime assertions passed.
 - `git diff --check`: passed. No full suite or all-features build was run for this
   focused bridge delivery.
+
+### Ordinary source imports (light-cljs-103)
+
+The upstream observations above describe the pinned reference dialect. The
+filesystem compiler intentionally uses ordinary `:require` for both macros and
+runtime bindings in `.cljs`/`.cljc`; it does not load `.clj` companions. Aliases,
+refers and renames share namespace identity, both phases select `:cljs`/ordered
+`:default`, and each clean compilation creates fresh macro/helper roots.
+Legacy macro clauses/options produce located migration diagnostics. Native
+embedding tests retain their explicit adapter until evaluator consumer migration.
+Original reference namespace programs are preserved under
+`tests/fixtures/reference-namespaces`; local fixtures use this import dialect.
+Migrated macro producers use `(array)` in generated code instead of returning
+quoted host arrays, whose explicit compiler-literal bridge coverage is tracked
+separately. Compiler assertion tests use emitted `assert` forms and configured
+host options instead of the native interpreter's `*assert*` Var/macroexpand scope.
+
+Executed checks for the ordinary import migration:
+
+- `cargo check --quiet`: passed.
+- `cargo test --test compiler_macros declaration_bundle_demand --quiet`: six
+  declaration-bundle prerequisite cases passed.
+- `cargo test --test compiler_macros --test namespaces --test cli --quiet`:
+  100 macro, 28 namespace and eight CLI cases passed, including direct API/CLI
+  execution of the `tools.cljc` example yielding `[42 42 42]` with native
+  evaluation disabled for the API checks.
+- `cargo test --locked --test compiler_macros --test namespaces --test cli --test compiler_namespace_completion --quiet`:
+  the 100 macro and eight CLI cases passed; one namespace metadata expectation
+  needed the renamed core macro entry. After correcting that expectation,
+  `cargo test --locked --test namespaces --test compiler_namespace_completion --quiet`
+  passed all 28 namespace and ten namespace completion cases.
+- `cargo test --test execution namespace --quiet`: nine cases passed, 11 pinned
+  reference cases stayed ignored. `cargo test --test execution integrated_language_program --quiet`:
+  the local combined-language program passed; its reference comparison stayed
+  ignored.
+- `cargo test --test provenance --quiet`: the unchanged `numeric-number-keys`
+  hand-authored row has upstream fields and fails validation; repair is tracked
+  by light-cljs-127. A focused validator checked all five changed provenance rows
+  and verified all 50 preserved oracle files byte-for-byte against the starting
+  checkout. The explicit `#js` macro-output descriptor issue is tracked by
+  light-cljs-128.
+- Parsing all 54 active example/namespace source files, matching the collection
+  example to its executable fixture copies, and `git diff --check`: passed.
+
+No full suite, all-features build, external pinned compiler comparison or
+platform-specific build was run for this scoped migration. The shared evaluator
+poll-budget failure/recovery case covers bounded compiled macro execution;
+public load cancellation APIs remain with evaluator consumer migration.

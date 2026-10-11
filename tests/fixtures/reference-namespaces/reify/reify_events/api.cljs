@@ -1,0 +1,5 @@
+(ns reify-events.api)
+(defprotocol UpdateEvent (-update [event state]))
+(defprotocol EffectEvent (-effect [event state context]))
+(defprotocol WatchEvent (-watch [event state stream]))
+(defprotocol Marker)

@@ -524,10 +524,14 @@ cargo run --locked --quiet -- --compile --text '(reduce + 0 [1 2 3])' |
 ## Complete macro and namespace collection program (2026-10-09)
 
 The original four-file `batch.data`, `batch.ops`, `batch.main`, and
-`batch.macros.clj` program is checked in under both `examples/collections` and
-`tests/fixtures/namespaces/collections`. A fast test requires byte-identical
-sources. It compiles through the existing dependency loader and native macro
-host without a new runtime or loader path.
+`batch.macros.clj` reference program is preserved under
+`tests/fixtures/reference-namespaces/collections`. `light-cljs-103` migrates the
+byte-identical active copies under `examples/collections` and
+`tests/fixtures/namespaces/collections` to `batch.macros.cljs` with ordinary
+`:require`. The active copies compile macros through the canonical JavaScript
+compiler/evaluator; the pinned references keep their original macro companion
+and explicit import syntax. The results and evaluation-order contract below are
+shared, while macro source loading is an explicit dialect difference.
 
 The program returns `[[1 2] [1 2 3] :pair true]`, and its first trace value is
 `report`'s `[6 batch/data true "batch.data"]`. The shared typed encoder checks

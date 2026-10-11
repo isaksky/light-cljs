@@ -1,0 +1,1 @@
+{"id":"integrated-language","outcome":{"status":"returned","value":{"$vector":["javascript",20,22,5000050000,18,true,"shared","callback",3,2,6,{"$vector":[]},{"$vector":[3,4,5]},{"$vector":[1,2,3]},10,true,{"$vector":[{"$vector":[0,10]}]},99,1]}},"trace":[{"$vector":[0,10]},"macro","throw","integrated failure"],"stdout":"integrated\ncleanup\n"}

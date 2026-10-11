@@ -4,8 +4,11 @@ This is historical evidence for the selected compiler-language batch. The adopte
 [evaluator migration and broader language contract](../../docs/evaluator-migration.md#language-coverage-and-completion-boundaries)
 retain these observations but do not treat this batch's zero-missing result as
 whole-language completion. Its `.clj` macro fixtures and runtime-defmacro proofs
-describe the previous architecture; migration will preserve reference evidence
-while adding explicit local assertions for the new macro/phase semantics.
+describe the previous architecture. `light-cljs-103` preserves the namespace
+programs in `tests/fixtures/reference-namespaces` and uses ordinary `.cljs`/`.cljc`
+requires for their active local counterparts. The legacy import grammar and
+`:clj` macro-reader feature are explicit dialect differences; runtime results
+remain compared with the preserved reference programs.
 
 This integration retains the pinned source inventory and requires executable
 observations for each selected assertion. It does not claim to build Penpot or
@@ -15,14 +18,16 @@ come from `compiler-language/report.py --run --strict`, including both reference
 ## Integrated source program
 
 `tests/fixtures/namespaces/integrated` contains a `.cljs` entry, shared `.cljc`
-source, and a native `.clj` macro namespace. The program combines overloaded and
+source, and a compiler-emitted `.cljs` macro namespace imported by ordinary
+`:require`. The original native `.clj` dialect is retained under
+`tests/fixtures/reference-namespaces/integrated`. The program combines overloaded and
 variadic functions, `apply`, a 100,000-step stack-safe recurrence, destructuring,
 dynamic binding, exceptions/finally, atom watches, metadata, a record, a custom
 type implementing core protocols, reified IFn behavior, and lazy traversal.
 
 The literal contract in `expected.json` checks the entire returned language
 vector, ordered watch/macro/throw effects, and both output lines. The reference
-harness compiles and executes the same namespace source against Maven 1.12.134
+harness compiles and executes the preserved reference namespace source against Maven 1.12.134
 and checkout `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`, with `:optimizations
 :none`, `:static-fns false`, and `:def-emits-var false`. Native macro execution
 is compilation infrastructure; generated JavaScript execution establishes the

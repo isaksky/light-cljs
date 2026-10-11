@@ -16,7 +16,7 @@ compiler**, including macro bodies and ordinary helpers. Rust keeps reading,
 resolution, analysis, semantic IR, optimization and emission. Macro and application
 execution will share canonical runtime operations and JavaScript Number semantics,
 with separate mutable state and demand-initialized compile-time helper roots.
-Macros will live in `.cljs`/`.cljc` and use ordinary `:require`.
+Macros live in `.cljs`/`.cljc` and use ordinary `:require`.
 
 The [synchronous evaluator](docs/evaluator.md) now executes compiler units with
 one canonical runtime per session, bounded host controls and owned value IDs.
@@ -24,8 +24,9 @@ one canonical runtime per session, bounded host controls and owned value IDs.
 compiler-emitted JavaScript in QuickJS. Ordinary helper initializers can be
 compiled on macro demand, including nested helper/macro compilation; definition
 snapshots and shared semantic IR prevent repeated source expansion. See the
-[reentrant evaluator contract](docs/evaluator.md#deferred-compiler-units). Legacy `.clj`/`.cljc` macro imports, scripts,
-the REPL and embedding APIs still use native evaluation. The existing commands
+[reentrant evaluator contract](docs/evaluator.md#deferred-compiler-units). Required namespaces
+share this compiler path for macros and ordinary helpers. Native scripts, the REPL
+and interpreter embedding APIs still use native evaluation. The existing commands
 and API examples below describe that current checkout. See the
 [evaluator migration design](docs/evaluator-migration.md) for the accepted phase
 semantics, interpreter extraction, consumer migration and completion criteria.
@@ -163,15 +164,16 @@ them; clean host reuse creates fresh mutable state. Protocol, type, record and
 extension declarations initialize as bundles, with protocol-specific extension
 demand, source-visible dispatch frontiers and rollback of failed installations.
 Reify and specify! inside executed helpers use ordinary expression semantics.
-Shared namespace loading
-remains a subsequent migration stage; legacy explicit `.clj`/`.cljc` macro imports
-remain an isolated adapter until then.
+Ordinary `:require` loads both macros and ordinary definitions from `.cljs` or
+`.cljc`; both phases select `:cljs` branches and keep separate mutable state.
+Compiler source lookup never loads `.clj` companions. Legacy macro-import clauses
+produce located migration diagnostics pointing to ordinary `:require`.
 Declarations follow source order at top level, inside top-level `do`, and in
 macro-generated declarations. Same-name macro redefinitions preserve earlier
 expanded code; macro/value kind conflicts and runtime use of a declared macro
 are located phase errors. Local functions shadow unqualified macro calls.
 See the [compiler macro contract](docs/compiler.md)
-for helper demand semantics and the remaining import migration stage.
+for helper demand semantics and namespace imports.
 
 ```rust
 use light_cljs::{analyze, emit_js, parse};
@@ -198,10 +200,10 @@ Conditional bindings, short-circuit/threading forms, `cond`/`condp`, grouped
 failures and per-iteration captures. `MacroHost::set_assertions(false)` omits
 assertions and function pre/post checks. The [control audit](tests/reference/compiler-control.md)
 records the pinned comparisons and remaining separate helper witnesses.
-Current user macros use `:require-macros`, `:include-macros`, `:refer-macros`, or inferred
-self-required companions; compile-time interpreter Vars
-remain separate from runtime JavaScript globals. The complete example has two
-runtime namespaces and one macro namespace:
+User macros use ordinary `:require`, including `:as`, `:refer` and `:rename`.
+A namespace can supply both compile-time macros and runtime functions; macros
+can call its ordinary helpers on demand. The complete example has two runtime
+namespaces and one `.cljs` macro namespace:
 
 ```sh
 cargo run --quiet -- --compile --entry demo.main --source-root examples/macros | node
@@ -209,7 +211,7 @@ cargo run --quiet -- --compile --entry demo.main --source-root examples/macros |
 ```
 
 The [collection example](examples/collections) combines three runtime namespaces,
-a shared dependency and a `.clj` macro. Compile it to one expression returning
+a shared dependency and a `.cljs` macro. Compile it to one expression returning
 `batch.main/run`, then invoke it from JavaScript:
 
 ```sh
@@ -247,8 +249,8 @@ node /tmp/light-demo.js
 Namespace loading searches `.cljs` before `.cljc`, selecting shared-source
 `:cljs`/`:default` reader branches before loading dependencies. It supports namespace
 docstrings/metadata, aliases, runtime and macro refers/renames, and
-`:refer-clojure` exclusions/renames. Compile-time `.clj`/`.cljc` imports remain
-separate from runtime namespace initialization. A virtual `cljs.core` namespace provides first-class
+`:refer-clojure` exclusions/renames. The same source supplies both phases;
+compile-time helper demand is separate from application initialization. A virtual `cljs.core` namespace provides first-class
 `keyword`, `symbol`, `vector`, `list`, `hash-map`, `hash-set`, `conj`, `assoc`,
 `dissoc`, `disj`, `seq`, `first`,
 `rest`, `next`, `name`, `namespace`, `count`, `nth`, `get`, `contains?`, `=`,

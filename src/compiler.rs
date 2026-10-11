@@ -12,7 +12,6 @@ use crate::analyzer::{
     analyze_with_macros,
 };
 use crate::macro_host::{MacroHost, MacroImport};
-use crate::source_provider::{LoadError, LoadRequest, Reload, SourceInput, SourceProvider};
 use crate::{
     AnalysisError, CollectionKind, LineIndex, NodeId, NodeKind, ParseError, PrefixKind, SyntaxTree,
     analyze, emit_js, parse,
@@ -105,8 +104,6 @@ impl std::error::Error for NamespaceCompileError {}
 struct RequireSpec {
     import: MacroImport,
     renames: Vec<(String, String)>,
-    macro_refers: Vec<String>,
-    include_macros: bool,
     alias_only: bool,
     alias_node: Option<NodeId>,
     span: Range<usize>,
@@ -122,7 +119,6 @@ struct NamespaceSource {
     requires: Vec<String>,
     require_spans: Vec<Range<usize>>,
     runtime_specs: Vec<RequireSpec>,
-    macro_specs: Vec<RequireSpec>,
     resolution: crate::analyzer::NamespaceResolution,
     namespace_imports: Vec<(String, String)>,
     warning_mode: bool,
@@ -174,7 +170,6 @@ impl NamespaceSource {
     fn read_spec(
         &self,
         spec: NodeId,
-        macros: bool,
         only: bool,
     ) -> Result<RequireSpec, NamespaceCompileError> {
         let items = if self.symbol(spec).is_some() {
@@ -193,8 +188,6 @@ impl NamespaceSource {
                 ..MacroImport::default()
             },
             renames: vec![],
-            macro_refers: vec![],
-            include_macros: false,
             alias_only: false,
             alias_node: None,
             span: self.syntax.nodes[dependency.0].span.clone(),
@@ -209,7 +202,7 @@ impl NamespaceSource {
                 return Err(self.error(spec, "duplicate require option; only one :as alias and one :refer/:rename option are allowed"));
             }
             if only && !matches!(option, ":only" | ":rename") {
-                return Err(self.error(spec, ":use/:use-macros expects :only and optional :rename"));
+                return Err(self.error(spec, ":use expects :only and optional :rename"));
             }
             match option {
                 ":only" if only => result.import.refers = self.names(pair[1])?,
@@ -217,31 +210,20 @@ impl NamespaceSource {
                     if result.import.alias.is_some() {
                         return Err(self.error(spec, "only one :as alias is allowed"));
                     }
-                    if macros && option == ":as-alias" {
-                        return Err(self.error(spec, "unsupported macro require option :as-alias"));
-                    }
                     result.alias_only = option == ":as-alias";
                     result.alias_node = Some(pair[1]);
                     result.import.alias = Some(self.symbol(pair[1]).filter(|n| valid_namespace(n) || (self.warning_mode && *n == "js")).ok_or_else(|| self.error(pair[1], ":as alias must be a supported namespace symbol; js is reserved"))?.to_owned());
                 }
                 ":refer" => result.import.refers = self.names(pair[1])?,
                 ":rename" => result.renames = self.renames(pair[1])?,
-                ":refer-macros" if !macros => {
-                    result.macro_refers = self.names(pair[1])?;
-                    result.include_macros = true;
-                }
-                ":include-macros" if !macros => {
-                    if !matches!(self.syntax.nodes[pair[1].0].kind, NodeKind::Boolean(_)) {
-                        return Err(self.error(pair[1], ":include-macros needs a boolean"));
-                    }
-                    // CLJS desugars by the presence of this option, including false.
-                    result.include_macros = true;
+                ":refer-macros" | ":include-macros" => {
+                    return Err(self.error(pair[0], format!("{option} is retired; import macros and functions with ordinary :require and :refer from .cljs/.cljc sources")));
                 }
                 _ => return Err(self.error(spec, "unsupported require options")),
             }
         }
         if only && !seen.contains(":only") {
-            return Err(self.error(spec, ":use/:use-macros requires :only"));
+            return Err(self.error(spec, ":use requires :only"));
         }
         for (original, _) in &result.renames {
             if !result.import.refers.contains(original) {
@@ -427,11 +409,8 @@ impl NamespaceSource {
             match kind.as_str() {
                 ":require-global" => {
                     for spec in &parts[1..] {
-                        let parsed = self.read_spec(*spec, false, false)?;
-                        if parsed.include_macros
-                            || parsed.alias_only
-                            || !parsed.macro_refers.is_empty()
-                        {
+                        let parsed = self.read_spec(*spec, false)?;
+                        if parsed.alias_only {
                             return Err(self
                                 .error(*spec, "require-global supports :as, :refer, and :rename"));
                         }
@@ -571,34 +550,12 @@ impl NamespaceSource {
                         }
                     }
                 }
-                ":require" | ":require-macros" | ":use" | ":use-macros" => {
+                ":require-macros" | ":use-macros" => {
+                    return Err(self.error(clause, format!("{kind} is retired; import macros and functions with ordinary :require from .cljs/.cljc sources")));
+                }
+                ":require" | ":use" => {
                     for spec in parts.into_iter().skip(1) {
-                        let is_macro = kind.ends_with("-macros");
-                        let parsed = self.read_spec(spec, is_macro, kind.starts_with(":use"))?;
-                        if is_macro {
-                            if let Some(alias) = &parsed.import.alias
-                                && let Some(previous) = self.macro_specs.iter().find(|previous| {
-                                    previous.import.alias.as_ref() == Some(alias)
-                                        && previous.import.namespace != parsed.import.namespace
-                                })
-                            {
-                                return Err(self.error(
-                                    parsed.alias_node.unwrap_or(spec),
-                                    format!(
-                                        "Alias {alias} already exists in namespace {}, aliasing {}",
-                                        self.name, previous.import.namespace
-                                    ),
-                                ));
-                            }
-                            if self.macro_specs.iter().any(|existing| {
-                                existing.import == parsed.import
-                                    && existing.renames == parsed.renames
-                            }) {
-                                continue;
-                            }
-                            self.macro_specs.push(parsed);
-                            continue;
-                        }
+                        let parsed = self.read_spec(spec, kind == ":use")?;
                         if let Some(alias) = &parsed.import.alias {
                             if let Some((_, previous)) =
                                 self.aliases.iter().find(|(existing, _)| existing == alias)
@@ -620,8 +577,6 @@ impl NamespaceSource {
                             if self.runtime_specs.iter().any(|existing| {
                                 existing.import == parsed.import
                                     && existing.renames == parsed.renames
-                                    && existing.macro_refers == parsed.macro_refers
-                                    && existing.include_macros == parsed.include_macros
                             }) {
                                 continue;
                             }
@@ -725,26 +680,6 @@ fn locate_source(
     }
     Ok(None)
 }
-struct LegacyMacroSourceProvider {
-    roots: Vec<PathBuf>,
-}
-impl SourceProvider for LegacyMacroSourceProvider {
-    fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
-        let name = String::from_utf16(request.namespace.name())
-            .map_err(|e| LoadError::Provider(e.to_string()))?;
-        if request.namespace.namespace().is_some() || !valid_namespace(&name) {
-            return Err(LoadError::InvalidLibspec(name));
-        }
-        let Some(path) = locate_source(&self.roots, &name, &["clj", "cljc"])
-            .map_err(|e| LoadError::Provider(e.to_string()))?
-        else {
-            return Ok(None);
-        };
-        let source = fs::read_to_string(&path).map_err(|e| LoadError::Provider(e.to_string()))?;
-        Ok(Some(SourceInput::new(path.to_string_lossy(), source)))
-    }
-}
-
 #[derive(Clone, Copy)]
 enum LoadState {
     Unseen,
@@ -810,17 +745,17 @@ impl Loader {
         let mut file = NamespaceSource {
             name: name.to_owned(),
             name_span: 0..0,
-            path,
+            path: path.clone(),
             source,
             syntax,
             aliases: Vec::new(),
             requires: Vec::new(),
             require_spans: Vec::new(),
             runtime_specs: Vec::new(),
-            macro_specs: Vec::new(),
             namespace_imports: Vec::new(),
             warning_mode: self.warning_mode,
             resolution: crate::analyzer::NamespaceResolution {
+                source_name: Some(path.to_string_lossy().into_owned()),
                 cljc,
                 ..Default::default()
             },
@@ -835,9 +770,6 @@ impl Loader {
                 && locate_source(&self.roots, namespace, &["cljs", "cljc"])?.is_none()
             {
                 let node = spec.alias_node.unwrap_or(file.syntax.roots[0]);
-                if spec.include_macros {
-                    return Err(file.error(node, "Closure host namespaces do not provide macros"));
-                }
                 file.add_js_refer(node, "goog".into(), "goog".into())?;
                 file.add_js_refer(node, namespace.clone(), namespace.clone())?;
                 if let Some(alias) = &spec.import.alias {
@@ -880,11 +812,6 @@ impl Loader {
                     }
                     file.aliases.push((dependency.clone(), rewritten.clone()));
                     for spec in &mut file.runtime_specs {
-                        if spec.import.namespace == *dependency {
-                            spec.import.namespace = rewritten.clone();
-                        }
-                    }
-                    for spec in &mut file.macro_specs {
                         if spec.import.namespace == *dependency {
                             spec.import.namespace = rewritten.clone();
                         }
@@ -1008,7 +935,7 @@ pub fn compile_namespace_with_macro_warnings(
                     source_index,
                 });
             }
-            for spec in file.runtime_specs.iter().chain(&file.macro_specs) {
+            for spec in file.runtime_specs.iter() {
                 if spec.import.alias.as_deref() == Some("js") {
                     warnings.push(AnalysisWarning {
                         kind: "js-used-as-alias",
@@ -1024,15 +951,6 @@ pub fn compile_namespace_with_macro_warnings(
                 }
             }
         }
-    }
-    if loader.ordered.iter().any(|file| {
-        !file.macro_specs.is_empty() || file.runtime_specs.iter().any(|spec| spec.include_macros)
-    }) {
-        macros
-            .context_mut()
-            .set_source_provider(LegacyMacroSourceProvider {
-                roots: loader.roots.clone(),
-            });
     }
     let inputs = loader
         .ordered
@@ -1058,70 +976,29 @@ pub fn compile_namespace_with_macro_warnings(
                 span,
             };
             let header_span = file.syntax.nodes[file.syntax.roots[0].0].span.clone();
-            let mut specs = file.macro_specs.clone();
-            // Inference follows the dependency's self-required macro namespace.
-            for spec in &file.runtime_specs {
-                if spec.include_macros
-                    || loader.ordered.iter().any(|dep| {
-                        dep.name == spec.import.namespace
-                            && dep
-                                .macro_specs
-                                .iter()
-                                .any(|m| m.import.namespace == dep.name)
-                    })
-                {
-                    let mut inferred = spec.clone();
-                    inferred.import.refers = spec.macro_refers.clone();
-                    inferred.renames.clear();
-                    specs.push(inferred);
-                }
-            }
             let mut imports = Vec::new();
             let mut renamed_macros = Vec::new();
-            let mut macro_names = std::collections::HashSet::new();
-            for spec in &specs {
-                macros
-                    .load_namespace(&spec.import.namespace, Reload::None)
-                    .map_err(|message| {
-                        error(
-                            spec.span.clone(),
-                            format!("macro namespace {}: {message}", spec.import.namespace),
-                        )
-                    })?;
+            for spec in &file.runtime_specs {
                 let mut import = spec.import.clone();
+                import.refers.clear();
                 for original in &spec.import.refers {
-                    let local = spec
-                        .renames
-                        .iter()
-                        .find(|(from, _)| from == original)
-                        .map(|(_, to)| to)
-                        .unwrap_or(original);
-                    if !macro_names.insert(local.clone()) {
+                    if macros.source_binding_private(&import.namespace, original) {
                         return Err(error(
                             spec.span.clone(),
-                            format!("duplicate macro refer: {local}"),
+                            format!("{}/{original} is private; :refer requires a public binding", import.namespace),
                         ));
                     }
-                    if !macros
-                        .has_macro(&import.namespace, original)
+                    if macros.has_macro(&import.namespace, original)
                         .map_err(|m| error(spec.span.clone(), m))?
-                        && !crate::compiler_names::is_definition_macro(&import.namespace, original)
                     {
-                        return Err(error(
-                            spec.span.clone(),
-                            format!(
-                                "macro import {}/{original} does not name a public macro",
-                                import.namespace
-                            ),
-                        ));
-                    }
-                    if local != original {
-                        import.refers.retain(|n| n != original);
-                        renamed_macros.push((
-                            local.clone(),
-                            import.namespace.clone(),
-                            original.clone(),
-                        ));
+                        let local = spec.renames.iter()
+                            .find(|(from, _)| from == original)
+                            .map_or(original, |(_, to)| to);
+                        if local == original {
+                            import.refers.push(original.clone());
+                        } else {
+                            renamed_macros.push((local.clone(), import.namespace.clone(), original.clone()));
+                        }
                     }
                 }
                 imports.push(import);
@@ -1148,19 +1025,11 @@ pub fn compile_namespace_with_macro_warnings(
                     ));
                 }
             }
-            for (local, namespace, original) in &resolution.refers {
-                if (matches!(namespace.as_str(), "cljs.core" | "clojure.core")
-                    || imports.iter().any(|i| &i.namespace == namespace))
-                    && macros
-                        .has_macro(namespace, original)
+            for (local, namespace, original) in &file.resolution.refers {
+                if matches!(namespace.as_str(), "cljs.core" | "clojure.core")
+                    && macros.has_macro(namespace, original)
                         .map_err(|m| error(header_span.clone(), m))?
                 {
-                    if !macro_names.insert(local.clone()) {
-                        return Err(error(
-                            header_span.clone(),
-                            format!("duplicate macro refer: {local}"),
-                        ));
-                    }
                     renamed_macros.push((local.clone(), namespace.clone(), original.clone()));
                 }
             }

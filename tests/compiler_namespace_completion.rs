@@ -47,30 +47,39 @@ impl Drop for Sources {
 }
 
 #[test]
-fn top_level_namespace_forms_load_dependencies_macros_and_repeat_identical_requires() {
+fn ordinary_top_level_requires_import_values_macros_and_shared_alias_metadata() {
     let s = Sources::new();
     s.write(
         "library.cljs",
         "(ns library) (def value 41) (defn add [x] (+ x value))",
     );
     s.write(
-        "macros.clj",
-        "(ns macros) (defmacro twice [x] (list '+ x x))",
+        "macros.cljs",
+        r#"(ns macros)
+         (defmacro twice [x] (list '+ x x))
+         (defmacro import-state []
+           (list 'quote [(:requires (:ns &env))
+                         (:uses (:ns &env))
+                         (:require-macros (:ns &env))
+                         (:use-macros (:ns &env))]))"#,
     );
     s.write(
         "main.cljs",
         r#"(ns main)
       (require '[library :as l :refer [add] :rename {add plus}])
       (do (require '[library :as l]) (require '[library :as l]) (require 'library))
-      (require-macros '[macros :as m :refer [twice]])
-      (require-macros '[macros :as m :refer [twice]])
+      (require '[macros :as m :refer [twice]])
+      (require '[macros :as m :refer [twice]])
       (refer-clojure :exclude '[map] :rename '{when always})
       (defn map [] :own)
       (and (= 42 (plus 1)) (= l/value library/value) (= 6 (m/twice 3))
-           (= 8 (twice 4)) (= :own (map)) (= 9 (always true 9)))"#,
+           (= 8 (twice 4)) (= :own (map)) (= 9 (always true 9))
+           (= [{'library 'library 'l 'library 'macros 'macros 'm 'macros}
+               {'twice 'macros 'always 'cljs.core} {} {}]
+              (m/import-state)))"#,
     );
     s.run("main");
-    s.write("main.cljs", "(ns main) (use '[library :only [add]]) (use-macros '[macros :only [twice]]) (= 43 (add (twice 1)))");
+    s.write("main.cljs", "(ns main) (use '[library :only [add]]) (use '[macros :only [twice]]) (= 43 (add (twice 1)))");
     s.run("main");
 }
 
@@ -97,10 +106,10 @@ fn host_globals_and_imports_keep_constructor_function_identity() {
 fn namespace_reflection_uses_real_vars_and_includes_macro_generated_definitions() {
     let s = Sources::new();
     s.write(
-        "macros.clj",
+        "macros.cljs",
         "(ns macros) (defmacro definitions [] '(do (def generated 7) (def ^:private hidden 8)))",
     );
-    s.write("library.cljs", "(ns library (:require-macros [macros :refer [definitions]])) (defn visible [] 42) (defn- private-fn [] 1) (definitions)");
+    s.write("library.cljs", "(ns library (:require [macros :refer [definitions]])) (defn visible [] 42) (defn- private-fn [] 1) (definitions)");
     s.write(
         "main.cljs",
         r#"(ns main (:require [library :as l]))
@@ -223,7 +232,7 @@ fn repeated_header_aliases_preserve_function_identity_and_macro_invocation() {
         "(ns boundary.lib) (defn add [n] (+ n 41))",
     );
     s.write(
-        "boundary/macros.clj",
+        "boundary/macros.cljs",
         "(ns boundary.macros) (defmacro twice [x] (list '+ x x))",
     );
     for (entry, file, expected_warnings) in [
@@ -231,8 +240,8 @@ fn repeated_header_aliases_preserve_function_identity_and_macro_invocation() {
         ("boundary.main", "boundary/main.cljs", 0),
     ] {
         let source = format!(
-            "(ns {entry} (:require [boundary.lib :as x] [boundary.lib :as x])
-             (:require-macros [boundary.macros :as m :refer [twice]]
+            "(ns {entry} (:require [boundary.lib :as x] [boundary.lib :as x]
+                              [boundary.macros :as m :refer [twice]]
                               [boundary.macros :as m :refer [twice]]))
              (and (identical? x/add boundary.lib/add) (= 42 (x/add 1))
                   (= 6 (m/twice 3)) (= 8 (twice 4)))"
@@ -256,26 +265,29 @@ fn repeated_header_aliases_preserve_function_identity_and_macro_invocation() {
             assert_eq!(warning.kind, "single-segment-namespace");
             assert_eq!(warning.message, "boundary is a single segment namespace");
             assert_eq!(&source[warning.span.clone()], "boundary");
-            assert_eq!(warning.source_index, 1);
+            // Both the value and macro namespace are compiled source dependencies.
+            assert_eq!(warning.source_index, 2);
         }
     }
 }
 
 #[test]
-fn repeated_aliases_for_different_libraries_still_fail_in_both_modes() {
+fn ordinary_alias_conflicts_for_value_and_macro_namespaces_fail_in_both_modes() {
     use light_cljs::analyzer::AnalysisOptions;
     use light_cljs::compiler::compile_namespace_with_warnings;
     let s = Sources::new();
-    for (clause, expected) in [
-        (":require", "conflicting namespace alias: x"),
-        (
-            ":require-macros",
-            "Alias x already exists in namespace boundary.main, aliasing boundary.lib",
-        ),
-    ] {
+    for declaration in ["(def value 1)", "(defmacro value [] 1)"] {
+        s.write(
+            "boundary/lib.cljs",
+            &format!("(ns boundary.lib) {declaration}"),
+        );
+        s.write(
+            "boundary/other.cljs",
+            &format!("(ns boundary.other) {declaration}"),
+        );
         s.write(
             "boundary/main.cljs",
-            &format!("(ns boundary.main ({clause} [boundary.lib :as x] [boundary.other :as x]))"),
+            "(ns boundary.main (:require [boundary.lib :as x] [boundary.other :as x]))",
         );
         for warning_mode in [false, true] {
             let error = compile_namespace_with_warnings(
@@ -288,7 +300,53 @@ fn repeated_aliases_for_different_libraries_still_fail_in_both_modes() {
                 &mut Vec::new(),
             )
             .unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert!(
+                error.message.contains("conflicting namespace alias: x"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_modes() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compiler::compile_namespace_with_warnings;
+    let s = Sources::new();
+    // These are deliberate local rejection probes. Pinned CLJS oracle sources
+    // under compiler-namespaces retain their original supported dialect.
+    for body in [
+        "(ns boundary.main (:require-macros [missing.macros :as m]))",
+        "(ns boundary.main (:use-macros [missing.macros :only [twice]]))",
+        "(ns boundary.main (:require [missing.macros :refer-macros [twice]]))",
+        "(ns boundary.main (:require [missing.macros :include-macros true]))",
+        "(ns boundary.main) (require-macros '[missing.macros :as m])",
+        "(ns boundary.main) (use-macros '[missing.macros :only [twice]])",
+    ] {
+        s.write("boundary/main.cljs", &format!("\n{body}"));
+        for warning_mode in [false, true] {
+            let error = compile_namespace_with_warnings(
+                "boundary.main",
+                std::slice::from_ref(&s.0),
+                AnalysisOptions {
+                    warning_mode,
+                    checked_arrays: false,
+                },
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .message
+                    .contains("retired; import macros and functions with ordinary :require"),
+                "{body}: {error}"
+            );
+            assert!(
+                error.message.contains(".cljs/.cljc sources"),
+                "{body}: {error}"
+            );
+            assert_eq!(error.line_column.unwrap().0, 2, "{body}: {error}");
+            assert!(error.path.unwrap().ends_with("boundary/main.cljs"));
         }
     }
 }

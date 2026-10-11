@@ -1,0 +1,6 @@
+(ns functions.main (:require [functions.library :as lib]))
+(def saved lib/stable)
+(def result [(lib/stable) (lib/invoke lib/stable)])
+(lib/replace-stable)
+(js/console.log (first result) (nth result 1) (saved) (lib/invoke saved)
+                (= {:origin :library} (meta saved)) (lib/stable) (saved 1))

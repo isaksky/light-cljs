@@ -1,4 +1,4 @@
-(ns functions.library (:require-macros [functions.macros :as m]))
+(ns functions.library (:require [functions.macros :as m]))
 (defn make [base] (m/overload base))
 (def stable (with-meta (make 10) {:origin :library}))
 (defn invoke [f] (apply f [1 2 3]))

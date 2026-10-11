@@ -164,9 +164,10 @@ source form early to preserve diagnostics before later errors.
 The unit cache is scoped to a fresh compilation. No application-source artifact
 survives host reuse, so source, options, imports and selected conditional edits
 cannot reuse stale IR. The separately cached bootstrap source is immutable and
-built from this binary's embedded sources. Legacy explicit native macro imports
-keep their existing eager adapter until light-cljs-115; they are not a fallback
-for failed JavaScript compilation. The session's JS registry now retains compiled
+built from this binary's embedded sources. Required `.cljs`/`.cljc` namespaces
+use the same compiler and selected `:cljs` branch for macros and ordinary helpers.
+Legacy macro-import syntax reports a migration diagnostic; `.clj` companions
+are never loaded by compiler source lookup. The session's JS registry now retains compiled
 code and pending/initializing/ready/failed roots. Only missing code crosses the
 Rust service boundary; cached reads and ordinary initializer cycles stay in JS.
 Var construction and `resolve` inspect identity without demanding roots. Dynamic

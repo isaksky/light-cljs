@@ -1,0 +1,8 @@
+(ns state.main (:require [state.store :as store] [cljs.core :as c]))
+(add-watch store/current :log (fn [k a old new] (js/console.log (name k) (:n old) (:n new))))
+(js/console.log (:n (store/change 1 2 3)) (:n @store/current))
+(js/console.log (c/vswap! store/temporary + 2) @store/temporary (:label (meta store/current)))
+(remove-watch store/current :log)
+(js/console.log (compare-and-set! store/current {:n 6} {:n 9}) (:n @store/current))
+(def proxy (reify c/IDeref (-deref [_] (:n @store/current)) c/IReset (-reset! [_ n] (:n (swap! store/current assoc :n n)))))
+(js/console.log @proxy (pr-str (c/reset-vals! proxy 11)) @proxy)

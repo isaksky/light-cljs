@@ -1,6 +1,5 @@
 (ns integrated.main
-  (:require [integrated.shared :as shared])
-  (:require-macros [integrated.macros :refer [traced]]))
+  (:require [integrated.shared :as shared] [integrated.macros :refer [traced]]))
 
 (defn run [observe]
   (js/console.log "integrated")

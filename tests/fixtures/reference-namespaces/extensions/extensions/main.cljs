@@ -1,0 +1,11 @@
+(ns extensions.main (:require [extensions.protocol :as p] [extensions.impl :as i] [cljs.core :as c]))
+(let [saved p/run old p/old r (p/->R 8)]
+  (assert (= [4 7 8 10 "ab"] [(saved old) (apply p/saved old [3]) (saved r) (saved r 2) (saved "a" "b")]))
+  (assert (= 9 (.call (aget (.-prototype p/T) "extensions$protocol$P$run$arity$1") (p/T. 9) nil)))
+  (c/specify! old p/P (run [_] 20))
+  (i/change!)
+  (assert (= [20 12 7] [(saved old) (saved (p/T. 5)) (saved (p/T. 5) 2)]))
+  (assert (= 30 (saved (with-meta r {`p/run (fn [_] 30)}))))
+  (assert (implements? p/P old))
+  (assert (satisfies? p/P "x")))
+(js/console.log "extensions-ok")

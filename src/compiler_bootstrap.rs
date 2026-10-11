@@ -362,16 +362,22 @@ impl MacroHost {
         );
         Ok(())
     }
-    fn source_macro_key(namespace: &str, name: &str) -> String {
-        if name.contains('/') {
-            name.into()
-        } else {
-            format!("{namespace}/{name}")
+    fn source_macro_key(&self, namespace: &str, name: &str) -> Option<String> {
+        if let Some((qualifier, member)) = name.split_once('/') {
+            let target = self.source_namespace(namespace, qualifier)?;
+            return Some(format!("{target}/{member}"));
         }
+        if self.has_source_value(namespace, name)
+            || self.javascript_macros.contains_key(&format!("{namespace}/{name}"))
+        {
+            return Some(format!("{namespace}/{name}"));
+        }
+        self.macro_name(namespace, name, true)
+            .map(|(ns, member)| format!("{ns}/{member}"))
     }
     pub(crate) fn has_javascript_macro(&self, namespace: &str, name: &str) -> bool {
-        self.javascript_macros
-            .contains_key(&Self::source_macro_key(namespace, name))
+        self.source_macro_key(namespace, name)
+            .is_some_and(|key| self.javascript_macros.contains_key(&key))
     }
     pub(crate) fn expand_source_javascript(
         &mut self,
@@ -381,8 +387,14 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
-        let key = Self::source_macro_key(namespace, name);
-        let declaration = self.javascript_macros.get(&key).unwrap().clone();
+        let key = self.source_macro_key(namespace, name)
+            .ok_or_else(|| format!("macro {name} is not visible in namespace {namespace}"))?;
+        let declaration = self.javascript_macros.get(&key)
+            .ok_or_else(|| format!("compile-time macro {key} is not declared"))?.clone();
+        let (owner, member) = key.split_once('/').unwrap();
+        if owner != namespace && self.source_binding_private(owner, member) {
+            return Err(format!("{key} is private; macros can only be imported from public bindings"));
+        }
         let bootstrap = self
             .bootstrap
             .as_ref()

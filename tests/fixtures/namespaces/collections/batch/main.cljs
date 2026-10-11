@@ -1,6 +1,5 @@
 (ns batch.main
-  (:require [batch.data :as d] [batch.ops :as o])
-  (:require-macros [batch.macros :as m]))
+  (:require [batch.data :as d] [batch.ops :as o] [batch.macros :as m]))
 
 (js/console.log "main")
 (defn report []

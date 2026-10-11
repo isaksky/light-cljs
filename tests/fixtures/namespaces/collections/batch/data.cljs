@@ -1,4 +1,4 @@
-(ns batch.data (:require-macros [batch.macros :as m]))
+(ns batch.data (:require [batch.macros :as m]))
 
 (def original (m/initial-data))
 (def words '(batch/data x))

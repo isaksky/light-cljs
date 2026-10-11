@@ -1,6 +1,5 @@
 (ns batch.ops
-  (:require [batch.data :as d] [cljs.core :as c])
-  (:require-macros [batch.macros :as m]))
+  (:require [batch.data :as d] [cljs.core :as c] [batch.macros :as m]))
 
 (js/console.log "ops")
 (defn changed [] (m/append-item d/original :items 3))

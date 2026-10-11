@@ -292,14 +292,14 @@ fn integrated_local() -> String {
 }
 
 #[test]
-fn integrated_language_program_combines_cljs_cljc_and_native_macros() {
+fn integrated_language_program_combines_cljs_cljc_and_compiled_macros() {
     assert_eq!(integrated_local(), INTEGRATED_EXPECTED);
 }
 
 #[test]
 #[ignore = "requires Clojure CLI, Java, Node, and pinned compiler references"]
 fn integrated_language_program_matches_pinned_compilers() {
-    let root = integrated_root();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces/integrated");
     assert_eq!(integrated_local(), INTEGRATED_EXPECTED);
     let driver = format!(
         "globalThis.lightInspectValue = value => lightProgramInspectValue(value);\n{}",

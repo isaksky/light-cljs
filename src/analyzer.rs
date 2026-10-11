@@ -2025,6 +2025,7 @@ pub(crate) struct NamespaceResolution {
     pub excludes: Vec<String>,
     pub js_refers: Vec<(String, String)>,
     pub cljc: bool,
+    pub source_name: Option<String>,
 }
 
 struct Analyzer<'a> {
@@ -2074,13 +2075,19 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
     }
     let mut discards = parser.discarded().to_vec();
     discards.sort_by_key(|id| parser.nodes()[id.0].span.start);
-    (
-        Cow::Owned(SyntaxTree {
-            nodes: parser.into_nodes(),
-            roots,
-        }),
-        discards,
-    )
+    let mut nodes = parser.into_nodes();
+    // Namespace preparation may have replaced top-level require forms with nil.
+    // Retaining discarded forms must preserve those prepared operations.
+    let prepared_nil_spans = syntax.nodes.iter()
+        .filter(|node| matches!(node.kind, NodeKind::Nil))
+        .map(|node| node.span.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for node in &mut nodes {
+        if prepared_nil_spans.contains(&node.span) {
+            node.kind = NodeKind::Nil;
+        }
+    }
+    (Cow::Owned(SyntaxTree { nodes, roots }), discards)
 }
 
 fn empty_program() -> Program {
@@ -2211,7 +2218,14 @@ fn analyze_input(
     if definition_view.is_none() {
         macro_host.begin_compilation();
     }
-    let (syntax, discards) = compiler_syntax(source, syntax);
+    let (syntax, discards) = if owned_form.is_some() {
+        // A deferred semantic form has already selected branches and validated
+        // source discards. Re-reading the whole source would restore inactive
+        // CLJC forms and replay unrelated reader work inside this unit.
+        (Cow::Borrowed(syntax), Vec::new())
+    } else {
+        compiler_syntax(source, syntax)
+    };
     let mut roots = syntax.roots.clone();
     let (namespace, aliases, requires, resolution) =
         definition_view.unwrap_or(("cljs.user", &[], &[], NamespaceResolution::default()));
@@ -3208,7 +3222,12 @@ impl Analyzer<'_> {
                     "declare" => return self.declare_form(id, args, context),
                     "binding" | "with-redefs" => return self.binding_form(id, args, context),
                     "resolve" => return self.resolve_form(id, args, context),
-                    "require" | "require-macros" => {
+                    "require-macros" | "use-macros" => {
+                        return Err(self.error(operator, AnalysisErrorKind::Unsupported(
+                            "legacy macro imports are retired; import macros and functions with ordinary :require from .cljs/.cljc sources".into(),
+                        )));
+                    }
+                    "require" => {
                         return Err(self.error(
                             operator,
                             AnalysisErrorKind::InvalidForm(
@@ -6861,7 +6880,10 @@ impl Analyzer<'_> {
         let globals = self.reader_bindings();
         let source = self
             .macro_source
-            .get_or_insert_with(|| Source::new(self.namespace, self.source));
+            .get_or_insert_with(|| Source::new(
+                self.resolution.source_name.as_deref().unwrap_or(self.namespace),
+                self.source,
+            ));
         let mut view = crate::compiler_reader::NamespaceView::new(self.namespace, source);
         view.aliases = aliases
             .iter()

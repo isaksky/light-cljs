@@ -1,9 +1,9 @@
 (ns definitions.main
   (:require [definitions.values :as v :refer [*value*]]
             [cljs.core :as c :refer [binding with-redefs declare resolve defonce]
-             :rename {binding scope with-redefs replacing declare forward resolve lookup defonce once}])
-  (:require-macros [definitions.macros :as m]
-                  [cljs.core :refer [binding] :rename {binding macro-scope}]))
+             :rename {binding scope with-redefs replacing declare forward resolve lookup defonce once}]
+            [definitions.macros :as m]
+            [cljs.core :refer [binding] :rename {binding macro-scope}]))
 (forward definitions.main/later)
 (defn call-later [] (later))
 (defn later [] 7)

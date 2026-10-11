@@ -1,0 +1,6 @@
+(ns extensions.protocol)
+(defprotocol P :extend-via-metadata true (run [this] [this x]))
+(defrecord R [value])
+(deftype T [value])
+(def old (T. 4))
+(def saved run)

@@ -10,7 +10,7 @@ use crate::interpreter::{
     RootedValue, ValueView,
 };
 
-/// An explicit compile-time namespace import. Runtime aliases are separate.
+/// Compiler import metadata. Filesystem imports share ordinary runtime aliases.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MacroImport {
     pub namespace: String,
@@ -281,7 +281,7 @@ impl MacroHost {
         Ok(())
     }
     /// Configure imports without loading or evaluating code. Filesystem compilation
-    /// loads them separately; embedders may pre-register native/interpreted macros.
+    /// registers source dependencies first; embedders may pre-register native macros.
     pub fn set_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
         let mut aliases = HashMap::new();
         let mut refers = HashSet::new();
@@ -297,11 +297,10 @@ impl MacroHost {
                 {
                     return Err(format!("reserved core macro alias: {alias}"));
                 }
-                if aliases
-                    .insert(alias.clone(), import.namespace.clone())
-                    .is_some()
+                if let Some(previous) = aliases.insert(alias.clone(), import.namespace.clone())
+                    && previous != import.namespace
                 {
-                    return Err(format!("duplicate macro alias: {alias}"));
+                    return Err(format!("conflicting macro alias: {alias}"));
                 }
                 if alias != &import.namespace
                     && (alias == caller || imports.iter().any(|i| &i.namespace == alias))
@@ -319,7 +318,7 @@ impl MacroHost {
                 {
                     continue;
                 }
-                if self.find_macro(&import.namespace, name)?.is_none() {
+                if !self.has_macro(&import.namespace, name)? {
                     return Err(format!(
                         "macro import {}/{name} does not name a public macro",
                         import.namespace
@@ -425,6 +424,23 @@ impl MacroHost {
             .insert(name.to_owned(), private);
         Ok(())
     }
+    pub(crate) fn source_namespace<'a>(&'a self, caller: &'a str, qualifier: &'a str) -> Option<&'a str> {
+        if caller == qualifier {
+            return Some(caller);
+        }
+        self.imports.get(caller).into_iter().flatten()
+            .find(|i| i.alias.as_deref() == Some(qualifier) || i.namespace == qualifier)
+            .map(|i| i.namespace.as_str())
+    }
+    pub(crate) fn source_binding_private(&self, namespace: &str, name: &str) -> bool {
+        if self.runtime_vars.get(namespace).and_then(|vars| vars.get(name)).copied().unwrap_or(false) {
+            return true;
+        }
+        self.javascript_macros.get(&format!("{namespace}/{name}"))
+            .and_then(|m| m.metadata.as_ref())
+            .and_then(|m| m.get(&crate::compiler_data::DataBuilder.keyword(Name::new(None, "private"))).ok().flatten())
+            .is_some_and(|v| !matches!(v.inspect(), crate::compiler_data::DatumView::Nil | crate::compiler_data::DatumView::Boolean(false)))
+    }
     pub(crate) fn set_namespace_imports(
         &mut self,
         namespace: &str,
@@ -462,6 +478,12 @@ impl MacroHost {
         if matches!(namespace, "cljs.core" | "clojure.core") {
             return Ok(core_macro(name));
         }
+        if self.javascript_macros.contains_key(&format!("{namespace}/{name}")) {
+            return Ok(!self.source_binding_private(namespace, name));
+        }
+        if self.context.is_none() {
+            return Ok(false);
+        }
         Ok(self.find_macro(namespace, name)?.is_some())
     }
     pub(crate) fn resolves_macro(
@@ -492,6 +514,9 @@ impl MacroHost {
         // Core macros execute compiler-emitted JavaScript. This resolver is
         // exclusively the legacy source/native embedding adapter (light-cljs-115).
         if namespace == "clojure.core" {
+            return Ok(None);
+        }
+        if self.context.is_none() {
             return Ok(None);
         }
         if self.native_disabled {
@@ -848,16 +873,27 @@ impl MacroHost {
                     macro_refers.push((sym(name), sym(&import.namespace)));
                 }
             }
+            for (local, target, _) in self.renames.get(namespace).into_iter().flatten() {
+                macro_refers.push((sym(local), sym(target)));
+            }
             let mut runtime = requires
                 .iter()
                 .map(|n| (sym(n), sym(n)))
                 .collect::<Vec<_>>();
             runtime.extend(aliases.iter().map(|(a, n)| (sym(a), sym(n))));
+            runtime.extend(macro_aliases);
             let import_names = namespace_imports
                 .iter()
                 .map(|(a, n)| (sym(a), sym(n)))
                 .collect::<Vec<_>>();
             runtime.extend(import_names.iter().cloned());
+            // Repeated ordinary requires and shared phase aliases have one
+            // identity in the metadata map, just as in name resolution.
+            let mut seen_names = HashSet::new();
+            runtime.retain(|(key, _)| match key.inspect() {
+                crate::compiler_data::DatumView::Symbol(name) => seen_names.insert(name),
+                _ => unreachable!("namespace map keys are symbols"),
+            });
             c.map(&[
                 (key("locals"), local_map),
                 // Descriptive compiler bindings only: no runtime Var or callable
@@ -897,8 +933,9 @@ impl MacroHost {
                         (key("doc"), namespace_doc.clone().unwrap_or_else(|| c.nil())),
                         (key("requires"), c.map(&runtime)?),
                         (key("imports"), c.map(&import_names)?),
-                        (key("require-macros"), c.map(&macro_aliases)?),
-                        (key("use-macros"), c.map(&macro_refers)?),
+                        (key("uses"), c.map(&macro_refers)?),
+                        (key("require-macros"), c.map(&[])?),
+                        (key("use-macros"), c.map(&[])?),
                     ])?,
                 ),
                 (key("line"), c.integer(location.0 as i64)),

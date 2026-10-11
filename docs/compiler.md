@@ -1,16 +1,16 @@
 # Executable core
 
-This reference describes the **current implementation**. The adopted
-[evaluator migration](evaluator-migration.md) will execute compiler-emitted
-JavaScript through rquickjs for macros and supported evaluation consumers.
-The native macro APIs and companion-file examples below remain accurate for
-today's checkout, but are scheduled for replacement. No rquickjs implementation
-or new coverage pass is implied by that design.
+This reference describes the **current implementation**. Macros and demanded
+ordinary helpers execute JavaScript emitted by this compiler through rquickjs.
+The [evaluator migration](evaluator-migration.md) also covers the remaining
+native evaluation consumers. Explicit native embedding adapters remain available
+until that migration removes them.
 
 The compiler supports small programs with lexical closures, mutable globals,
 source namespaces, and JavaScript interop. The two-namespace example
-prints exactly `4\n`. Native Rust macro expansion supports explicit user/host
-macros and selected core macros. Immutable vectors/lists/maps/sets, symbols/keywords,
+prints exactly `4\n`. Source macros and first-party core macro algorithms use
+the compiled JavaScript host; compiler-owned declaration/binding transforms
+remain in Rust. Immutable vectors/lists/maps/sets, symbols/keywords,
 quoted data, lazy sequence sources and a finite set of first-class core functions
 execute through a first-party JavaScript runtime. Sorted sets and transients
 remain missing intended-language features; the migration also introduces explicit
@@ -61,11 +61,10 @@ input and error contracts separately from eager native loading.
 `native_form_adapter` remains an explicit temporary macro execution bridge.
 It converts structured data directly and retains source identity/nested expansion
 origins. Explicit native custom reader callbacks also use this adapter during
-migration. `LegacyMacroSourceProvider` keeps the current companion-file behavior
-until source-phase migration. Native public source/form APIs remain available;
-`light-cljs-108` replaces remaining native macro execution and `light-cljs-115`
-deletes the adapter and native compatibility storage.
-The migration then adds an evaluator boundary for compiled macro/helper units.
+migration. Filesystem compiler imports use the same `.cljs`/`.cljc` namespace
+loader for both phases and never read `.clj` companions. Native public source/form
+APIs remain available until `light-cljs-115` deletes the adapter and native
+compatibility storage. The evaluator boundary executes compiled macro/helper units.
 Compile-time emission uses the same semantic IR and canonical runtime operations;
 it may add deferred-root access and bypass optional application optimization.
 See [session ownership and reentrancy](evaluator-migration.md#sessions-ownership-and-reentrancy).
@@ -832,17 +831,16 @@ namespace. Names and aliases contain dot-separated ASCII components matching
 Aliases and full names of directly required namespaces can qualify globals.
 Only one `:require` clause may appear in a namespace declaration.
 The current namespace can qualify its own globals. Transitive-only and unknown
-qualifiers are errors in the strict API. Repeated identical runtime or macro
-imports coalesce; aliases that conflict with another target or redirect a
+qualifiers are errors in the strict API. Repeated identical imports coalesce; aliases that conflict with another target or redirect a
 required/current full namespace name are rejected. `cljs.core` is a virtual dependency: `(:require [cljs.core :as c])`
 never reads `cljs/core.cljs`. Reserved `cljs.core` and `clojure.core` qualifiers
-cannot be redirected to user libraries. Explicit compile-time imports use a separate `:require-macros` clause
-as described below. Runtime `:refer` and `:rename` retain the original namespace
+cannot be redirected to user libraries. Ordinary `:require` imports both macros
+and values from the same `.cljs` or `.cljc` source. `:refer` and `:rename` retain the original namespace
 identity, including saved values and syntax quotes; lexical bindings and own
 definitions can shadow unqualified imported values. `:refer-clojure` exclusions
 and renames affect both core functions and core macros; explicit core qualifiers
 remain usable. Missing and conflicting refers fail even when unused. The equivalent
-`:use [library :only [names] :rename {...}]` and `:use-macros` clauses are
+`:use [library :only [names] :rename {...}]` clause is
 supported, with `:only` required. Namespace
 metadata merges symbol metadata with the optional attribute map; docstrings are
 available separately at `&env :ns :doc`. `:as-alias` is a reader-only alias and
@@ -876,7 +874,9 @@ explicit roots to request filesystem loading.
 ### Complete collection program
 
 [examples/collections](../examples/collections) and its identical differential
-fixture contain `batch.data`, `batch.ops`, `batch.main`, and `batch.macros.clj`.
+fixture contain `batch.data`, `batch.ops`, `batch.main`, and `batch.macros.cljs`.
+The ClojureScript oracle uses a preserved dialect copy under
+`tests/fixtures/reference-namespaces/collections`.
 `main` requires both `data` and `ops`; `ops` also requires `data`, so the shared
 dependency initializes exactly once. The macro-generated original map prints
 `data`, followed by the `ops` and `main` initializers, before the exported `run`
@@ -924,9 +924,9 @@ records measured output size and commands.
 
 ## Compiler macros and embedding
 
-### Accepted replacement contract
+### Macro phase contract
 
-Macros will be compile-time bindings in `.cljs`/`.cljc`, imported alongside runtime
+Macros are compile-time bindings in `.cljs`/`.cljc`, imported alongside runtime
 functions through ordinary `:require`. Unmarked helpers initialize only on actual
 compile-time execution demand, including higher-order and Var paths. Both phases
 select `:cljs` and use canonical JavaScript Number operations, with separate roots
@@ -935,9 +935,11 @@ external host facilities remain explicit. A reused host starts each clean
 compilation with fresh source-defined mutable roots.
 
 The [migration design](evaluator-migration.md) specifies source order, declaration
-bundles, bootstrap, structured forms, reentrancy and cleanup. These are required
-future behaviors, not features of the current API below. Legacy macro import
-clauses and `.clj` macro loading will receive migration diagnostics or be removed.
+bundles, bootstrap, structured forms, reentrancy and cleanup. Compiler namespace
+loading now uses this shared source contract. `:require-macros`, `:use-macros`,
+`:refer-macros` and `:include-macros` produce located migration diagnostics. Move
+macro declarations and helpers to `.cljs`/`.cljc` and use ordinary `:require`;
+compiler source lookup never loads `.clj` companions.
 
 ### Compiled core bootstrap
 
@@ -1029,20 +1031,19 @@ standalone expressions, including top-level `specify!`, are application effects
 and are never replayed as macro setup. They are retained in application output.
 This classification is syntactic declaration admission, not an effect inference.
 
-Shared-source namespace imports remain subsequent migration work. An ordinary
-binding shadowing a core name cannot silently call the core implementation from
-a macro body. The legacy import adapter below remains until namespace migration.
+An ordinary binding shadowing a core name cannot silently call the core
+implementation from a macro body.
 
-### Legacy native macro import API
+### Shared source namespace imports
 
 ```clojure
-;; demo/macros.clj (or .cljc, using the native :clj reader feature)
+;; demo/macros.cljs (or .cljc, selecting the :cljs reader feature)
 (ns demo.macros)
 (defmacro twice [x]
   `(let [value# ~x] (js/Math.imul value# 2)))
 
 ;; A runtime .cljs source
-(ns demo.math (:require-macros [demo.macros :as m :refer [twice]]))
+(ns demo.math (:require [demo.macros :as m :refer [twice]]))
 (defn scale [x] (m/twice (twice x)))
 ```
 
@@ -1054,34 +1055,30 @@ node /tmp/macros.js
 # 12
 ```
 
-Each `:require-macros` library may be a bare symbol or a vector with one optional
-`:as`, `:refer [simple-names...]`, and `:rename {original local}`. Full imported namespace names
-also qualify macros. Refers must identify public macro Vars, not ordinary
-interpreter functions. Duplicate aliases/refers and aliases redirecting full
-macro namespace names are errors. `cljs.core`/`clojure.core` are reserved core
-macro qualifiers. Runtime and macro alias tables are separate: the same alias can
-name a runtime namespace for a value reference and a macro namespace for a call.
-A macro import does not load `.cljs` or make interpreter Vars into runtime globals.
+Each ordinary `:require` library may be a bare symbol or a vector with
+`:as`, `:refer [simple-names...]`, and `:rename {original local}`. Aliases and full
+imported namespace names qualify both values and macros. A referred or renamed
+macro retains its declaration identity, and a namespace can export macros beside
+ordinary runtime definitions. Macro bodies can require and call ordinary helpers
+from their own or another namespace; helpers initialize only when compilation
+actually demands their values. Source-declared macros have no application Var,
+function or initializer. Runtime value, `apply`, Var and assignment uses receive
+located phase errors.
 
-A runtime require may also use `:refer-macros [names]` or `:include-macros true`.
-Automatic inference follows a dependency's self-import, for example a shared
-`(ns demo.util #?(:cljs (:require-macros [demo.util])))`. A companion file alone
-does not enable inference. Runtime refers/renames can then identify public
-companion macros, retaining their original identity.
+The compiler's explicit roots prefer `.cljs` over `.cljc`; multiple distinct
+canonical matches at the winning extension are ambiguous. Both phases select
+`:cljs` and the usual `:default` branch before loading dependencies. Inactive
+`:clj` branches cannot add dependencies. Same-name `.clj` companions are never
+consulted, and no companion self-import or macro inference syntax is needed.
+Missing macros and helpers therefore report the selected source location rather
+than falling back to a native namespace.
 
-The compiler's explicit roots prefer `.clj` over `.cljc` macro sources; multiple
-distinct matches at the chosen extension are ambiguous. This compiler provider
-also serves transitive native macro dependencies. The native interpreter's
-independently configured `FileSourceProvider` keeps its existing ambiguity policy.
-Macro dependencies use the native interpreter's `ns`/`require` behavior. Each runtime namespace loads its macro imports immediately before its body is
-analyzed, after its runtime dependencies have been analyzed. Compile-time loading
-and macro effects therefore follow that dependency/source order. Macro
-files loaded by this legacy adapter execute in the native interpreter's subset.
-Native host callbacks are opt-in. This restriction applies only to that adapter;
-first-party core bootstrap and standalone source `defmacro` use JavaScript.
-A source macro declaration returns nil, and consuming it as an application
-function, Var or value is a phase error. The former runtime `cljs$lang$macro`
-shim and its callable runtime ABI are removed.
+Dependency namespaces are analyzed before their dependents. Their shared semantic
+IR supplies compile-time demand units and application emission. Ordinary helpers
+and declaration bundles retain the demand, generation and failure rules above;
+standalone source expressions run only during application initialization. Macro
+and application heaps keep separate roots, mutations and dispatch tables. A clean
+compilation starts fresh source-defined mutable state even with a reused host.
 
 Core expansion supports `let`, `fn`, `defn`, `defn-`, `defmacro`, `if-not`, `when`, `when-not`, `when-first`, `cond`, `condp`,
 `and`, `or`, `->`, `->>`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`,
@@ -1143,10 +1140,8 @@ and attached when the function is created.
 Collections, keywords, quoted forms, and shared semantic reader constructs may
 be passed as unevaluated macro data. Generated vectors, keywords and quoted
 symbols/lists/vectors/maps/sets execute; unsupported generated reader data still fails analysis. Auto-resolved keywords and qualified syntax-quote symbols use the
-runtime/macro alias view (macro aliases win), without installing interpreter
-aliases. `.cljs` reader conditionals are rejected, including inside macro calls;
-runtime `.cljc` branches have already been selected before macro lowering, while
-macro source `.cljc` selects `:clj`. Syntax quote resolves current runtime globals,
+shared namespace alias view. `.cljs` reader conditionals are rejected, including inside macro calls;
+`.cljc` branches select `:cljs`/`:default` before macro lowering in both phases. Syntax quote resolves current runtime globals,
 refers, renames, exclusions and macro imports through the compiler's namespace
 view without changing interpreter namespace aliases. `#=` is never enabled.
 
@@ -1156,13 +1151,12 @@ interpreter. Use `compile_with_macros`, `analyze_with_macros`,
 `compile_namespace_with_macros`, or `analyze_namespaces_with_macros` for an explicit
 `MacroHost`. Runtime global storage is always fresh per compilation, even with a
 reused host. Namespace compilation installs a file provider for its explicit
-roots. A reused host loads each macro namespace once; use
-`host.load_namespace("demo.macros", Reload::Namespace)` or `Reload::All` to observe
-source changes. Macro roots/effects persist only when the caller explicitly
-reuses that host. Expansions are never cached, so reloads and macro effects remain
-observable. A runtime caller namespace alone never marks same-named macro code
-as loaded.
+roots. Each clean compilation re-reads its required sources and creates fresh
+compile-time roots. Definition snapshots preserve already-expanded code inside
+that compilation; edits, import changes and conditional selection cannot reuse
+stale application IR from a previous compilation.
 
+The separate native embedding adapter remains available to explicit host callers.
 Embedders may use `host.context_mut()` to evaluate/register macro code or configure
 native limits/effects, then `set_imports(caller, Vec<MacroImport>)` to validate
 already-loaded imports. `host.register_macro(&NativeDefinition)` installs a host
@@ -1179,7 +1173,7 @@ The compiler's supported `&env` map follows the pinned CLJS analyzer:
 | `:locals` | Symbol-to-binding map for visible lexical names. Each record contains `:name`, `:form`, `:op :binding`, `:local :let/:arg/:fn`, and stable per-program `:light-cljs/id`. |
 | Binding details | Let/argument records have `:binding-form? true`; arguments have zero-based `:arg-id`; shadowed bindings appear under `:shadow`. Fn self bindings omit `:binding-form?`. |
 | `:context` | `:expr`, `:statement`, or `:return`. Fn bodies and value-position let bodies return; a multi-form value-position `do` also has a returning tail. |
-| `:ns` | `:name` caller symbol; separate `:requires`, `:require-macros`, and `:use-macros` maps. |
+| `:ns` | `:name` caller symbol and `:doc`; `:requires` maps ordinary required namespaces and aliases to their namespace identities; `:uses` maps referred and renamed macro names to their declaring namespaces. `:require-macros` and `:use-macros` remain empty compatibility descriptions, not accepted import syntax. |
 | `:line`, `:column` | One-based call-site location, also attached to `&form` metadata. |
 
 `*ns*` is dynamically bound to the caller during expansion and restored afterward,
@@ -1685,9 +1679,9 @@ effects already required by a source chunk remain observable.
 
 `for` remains lazy. `doseq` performs effects in order and returns nil. Both support
 nested generators, sequence/map destructuring, `:let`, `:when`, `:while`, and
-escaped per-iteration closures. Native macro expansions and core namespace aliases
-use the same compilation path. The compiler macro host preserves the native
-interpreter's own comprehension implementations.
+escaped per-iteration closures. First-party compiled macro expansions and core
+namespace aliases use the same compilation path. The separate native interpreter
+retains its comprehension implementations until evaluator consumer migration.
 
 The [sequence evidence and arity inventory](../tests/reference/compiler-sequences.md)
 distinguishes collection overloads from transducer constructors. These constructors

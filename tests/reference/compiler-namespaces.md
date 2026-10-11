@@ -7,6 +7,17 @@ The existing reference driver checks identity before/after compilation and
 observes `:optimizations :none`, `:static-fns false`, and
 `:def-emits-var false` while analyzing fixture namespaces, including CLJC files.
 
+## Namespace migration note — light-cljs-103
+
+The observations below describe the original ClojureScript dialect. Its complete
+`shared` program is preserved under `tests/fixtures/reference-namespaces/shared`.
+The active local fixture under `tests/fixtures/namespaces/shared` now merges
+same-name macro/runtime sources, imports macros through ordinary `:require`, and
+selects `:cljs` for both phases. `.clj` companion precedence, self-import inference,
+macro sugar and separate macro aliases remain historical reference evidence;
+legacy macro imports receive local migration diagnostics. Literal results,
+metadata observations and application initializer order remain acceptance checks.
+
 ## Source and assertion mapping
 
 The full relevant bodies were read from the pinned checkout. The sources below
@@ -30,8 +41,9 @@ JVM analyzer-dependent macros is outside this member.
 
 ## Observed behavior
 
-The independent `tests/fixtures/namespaces/shared` program runs through the API
-and both pinned compilers. It verifies selected `:cljs` branches, splicing,
+The original independent `shared` program, now retained under
+`tests/fixtures/reference-namespaces/shared`, ran through the API and both pinned
+compilers before namespace migration. It verifies selected `:cljs` branches, splicing,
 `:default`, ignored JVM-only branches/dependencies, `.cljs` over `.cljc`, `.clj`
 over `.cljc` macro companions, same-name self-import inference, explicit macro
 sugar, runtime/macro refers and renames, `:use`/`:use-macros`, excluded/renamed

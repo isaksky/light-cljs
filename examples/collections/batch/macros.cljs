@@ -1,6 +1,6 @@
 (ns batch.macros)
 
-;; Qualify emitted runtime operations explicitly: the macro executes in Clojure.
+;; Qualify emitted runtime operations explicitly in generated application forms.
 (defmacro append-item [m k v]
   `(let [m# ~m k# ~k]
      (cljs.core/assoc m# k# (cljs.core/conj (k# m#) ~v))))
