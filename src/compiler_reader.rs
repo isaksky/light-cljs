@@ -1247,7 +1247,7 @@ impl Lowerer<'_> {
             return Ok(self.symbol(text, span, Origin::Source));
         }
         let n = if rest {
-            0
+            -1
         } else if index.is_none() {
             1
         } else {
@@ -1269,7 +1269,10 @@ impl Lowerer<'_> {
             return Err(self.error(LowerErrorKind::InvalidAnonymousArgument, span));
         }
         let args = self.anonymous.as_mut().unwrap();
-        let value = if rest {
+        // The canonical reader registers %& and %-1 at the same index.
+        // Other nonpositive indices have names in the body, but never add
+        // positional parameter bindings.
+        let value = if n == -1 {
             args.rest
                 .get_or_insert_with(|| {
                     self.builder.symbol(Name::new(

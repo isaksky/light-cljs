@@ -596,3 +596,82 @@ fn runtime_reader_core_name_inventory_matches_the_source_reader_tables() {
         .flat_map(str::lines).filter_map(|line| line.split_once('\t').map(|(name, _)| name)).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(names, expected, "Regenerate runtime reader core names when pinned source tables change");
 }
+
+#[test]
+fn anonymous_nonpositive_bindings_execute_in_application_and_macro_phases() {
+    let original = "(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])";
+    let row = include_str!("fixtures/sci-outcomes.tsv")
+        .lines()
+        .find(|line| line.starts_with("sci-reader-anonymous-nonpositive\t"))
+        .unwrap();
+    assert_eq!(row.split('\t').nth(2), Some(original));
+    check(&format!("(pr-str {original})"), "[2 2]");
+    let root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
+    let js = light_cljs::compile_namespace("reader.nonpositive", &[root]).unwrap();
+    assert_eq!(run(&js), "[true [true 1] 0]\n");
+    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    assert_eq!(
+        e.string(e.evaluate_js(&js).unwrap()).unwrap(),
+        "[true [true 1] 0]"
+    );
+}
+
+#[test]
+fn anonymous_bindings_retain_source_and_expansion_provenance() {
+    use light_cljs::compiler_data::{DatumView, Form, Origin, Source};
+    let source = Source::new("anonymous.cljs", "#(%0 %-1 %& %-2 %2)");
+    let mut host = MacroHost::new();
+    let f = host.read_compiler_form(&source).unwrap().unwrap();
+    let parts = f.children();
+    assert_eq!(f.node().origin, Origin::AnonymousFunction);
+    assert_eq!(f.span().text(), source.text());
+    let params = parts[1].children();
+    let body = parts[2].children();
+    assert_eq!(params.len(), 4);
+    assert_eq!(body.len(), 5);
+    let symbol = |form: &Form| match form.data().inspect() {
+        DatumView::Symbol(name) => name,
+        other => panic!("expected symbol, got {other:?}"),
+    };
+    assert_eq!(symbol(&params[3]), symbol(&body[1]));
+    assert_eq!(symbol(&body[1]), symbol(&body[2]));
+    assert_eq!(symbol(&params[1]), symbol(&body[4]));
+    for (item, text) in body.iter().zip(["%0", "%-1", "%&", "%-2", "%2"]) {
+        assert_eq!(item.node().origin, Origin::AnonymousArgument);
+        assert_eq!(item.span().text(), text);
+        assert_eq!(item.span().source().id(), source.id());
+    }
+    for param in params {
+        assert_eq!(param.node().origin, Origin::AnonymousArgument);
+        assert_eq!(param.span().text(), source.text());
+    }
+    for (text, offending) in [
+        ("(#(%0) 1)", "%0"),
+        ("(#(%-2) 1)", "%-2"),
+        ("%0", "%0"),
+        ("%-1", "%-1"),
+        ("(defmacro pass [form] form) (pass #(%0))", "%0"),
+    ] {
+        let error = compile_with_macros(text, &mut host).unwrap_err();
+        let light_cljs::CompileError::Analysis(error) = error else {
+            panic!("{error}")
+        };
+        assert_eq!(&text[error.span.clone()], offending);
+        assert!(error.to_string().contains("nresolved"), "{error}");
+    }
+    assert!(
+        host.read_compiler_form(&Source::new("nested.cljs", "#(#(%-1))"))
+            .is_err()
+    );
+    assert!(
+        host.read_compiler_form(&Source::new("invalid.cljs", "#(%3/2)"))
+            .is_err()
+    );
+    let reused = host
+        .read_compiler_form(&Source::new("reuse.cljs", "#(%-1 %&)"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(reused.children()[1].children().len(), 2);
+    assert_ne!(symbol(&body[1]), symbol(&reused.children()[2].children()[0]));
+}

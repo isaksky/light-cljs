@@ -200,3 +200,17 @@ receipt has five covered rows with passed macro phase columns. See
 source/test hashes, observations and commands. The earlier unfiltered gate
 counts and SCI classifications remain the original historical receipt; this
 focused run does not establish a new full strict result.
+
+## Focused nonpositive anonymous reader reconciliation — light-cljs-146
+
+The exact `(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])`
+source now returns canonical `[2 2]` in Node, QuickJS and both pinned references.
+Its normal demanded macro test computes the complete twelve-shape contract via
+both quotation and runtime reading in application and macro phases. The ledger
+records an explicit canonical dialect difference while preserving the original
+SCI `[0 2]`, source/row/body hashes and every raw mismatch status. The focused
+receipt retains `strict_complete: false`. See the
+[reader audit](../compiler-anonymous-nonpositive.md) for full observations,
+phase hashes, verification and the six unchanged historical macro diagnostic
+accounting failures retained under light-cljs-125. This scoped reconciliation
+does not replace the earlier full-gate receipt or complete its remaining rows.

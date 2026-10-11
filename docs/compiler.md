@@ -334,7 +334,11 @@ The compiler expands `#()`, `%`, `%n`, `%&`, `@`, `#'`, metadata, namespaced map
 and syntax quote/unquote through its compiler-owned semantic reader boundary. Reader
 aliases include runtime and explicit macro aliases; macro aliases take precedence.
 Anonymous arguments have fresh identities, nested shorthand is rejected, and
-rest arguments are nil when empty. Syntax quote qualifies symbols and preserves
+rest arguments are nil when empty. `%-1` and `%&` share the same rest binding;
+`%0` and indices below `-1` retain reader symbols in the body without positional
+parameter bindings. Such unbound symbols remain visible in quoted reader data
+and are diagnosed at their original placeholder when analyzed as code.
+Syntax quote qualifies symbols and preserves
 unquote/splice evaluation, gensym identity and owned UTF-16. `#'` resolves global
 Vars even beneath local shadows; deref observes their current roots, and Vars
 are callable. Quote traverses the expanded data without executing it.

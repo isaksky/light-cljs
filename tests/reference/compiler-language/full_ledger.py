@@ -450,13 +450,30 @@ def columns(layers=None, status="missing"):
     return result
 
 
+def sci_execution_failed(report, evidence, failure_statuses):
+    """Only a verified exact canonical reconciliation can explain SCI mismatch.
+
+    Original observations and statuses remain intact. The full report already
+    requires both engines, both pins, exact hashes and the macro phase before
+    granting this explicit difference; every other execution failure still fails.
+    """
+    reconciled = {row["canonical_reconciliation"]["canonical_expected"]["id"]
+                  for row in report.get("assertions", [])
+                  if row.get("status") == "version-difference"
+                  and row.get("canonical_reconciliation", {}).get("status") == "verified"
+                  and row["canonical_reconciliation"].get("disposition") == "canonical-dialect-difference"}
+    return any(layer.get("status") in failure_statuses
+               and not (identity in reconciled and layer.get("status") == "mismatch")
+               for identity, layers in evidence.items() for layer in layers.values())
+
+
 def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
     phases = load_phase_witnesses(obligations)
     phase_evidence = phase_evidence or {}
-    from sci_execution import load as load_sci, digest as sci_digest, TEST_FILE, TEST_NAME
+    from sci_execution import load as load_sci, digest as sci_digest, canonical_contract, canonical_status, TEST_FILE, TEST_NAME
     sci_mappings = {item["obligation_id"]: item for item in load_sci()}
     sci_evidence = sci_evidence or {}
     selected = bool(features or identities)
@@ -479,6 +496,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         status = "unrelated" if row["disposition"] in {"internal", "dialect", "host"} else "missing"
         mapping = obligation_witnesses.get(row["id"])
         layers = {}
+        reconciliation = None
         if status == "missing" and mapping and not mapping.get("local_execution"):
             source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
                                for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
@@ -515,21 +533,42 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                            and local.get("test_file") == TEST_FILE and local.get("test_name") == TEST_NAME
                            and local.get("test_source_sha256") == sci_digest((ROOT / TEST_FILE).read_bytes())
                            and local.get("adapter_source_sha256") == sci_digest((ROOT / "tests/support/sci_execution_observation.js").read_bytes())
-                           and set(local.get("engines", {})) == {"Node", "QuickJS"}
-                           and all(engine.get("status") == "passed" for engine in local["engines"].values()))
+                           and set(local.get("engines", {})) == {"Node", "QuickJS"})
             exact_references = all(
-                layers.get(kind, {}).get("status") == "passed"
-                and layers[kind].get("source_sha256") == sci_mapping["reference_source_sha256"]
+                layers.get(kind, {}).get("source_sha256") == sci_mapping["reference_source_sha256"]
                 and layers[kind].get("original_source_sha256") == sci_mapping["original_source_sha256"]
                 and layers[kind].get("isolated") == sci_mapping["reference_isolated"]
                 and layers[kind].get("reference_identity") == kind + " " + (runner.RELEASE if kind == "release" else runner.REVISION)
                 and layers[kind].get("settings") == {"optimizations": "none", "static-fns": False, "def-emits-var": False}
                 for kind in ("release", "checkout"))
-            status = "covered" if exact_local and local.get("status") == "passed" and exact_references else "missing"
+            historical_pass = (local.get("status") == "passed"
+                               and all(engine.get("status") == "passed" for engine in local.get("engines", {}).values())
+                               and all(layers.get(kind, {}).get("status") == "passed" for kind in ("release", "checkout")))
+            status = "covered" if exact_local and historical_pass and exact_references else "missing"
+            contract = canonical_contract(sci_mapping)
+            if contract:
+                canonical_engines = {kind: canonical_status(contract, local.get("engines", {}).get(kind, {}), runner.same_json)
+                                     for kind in ("Node", "QuickJS")}
+                canonical_references = {kind: canonical_status(contract, layers.get(kind, {}), runner.same_json)
+                                        for kind in ("release", "checkout")}
+                phase = phase_evidence.get(row["id"], {})
+                phase_pass = (row["id"] in phases and phase.get("status") == "passed"
+                              and phase.get("test_source_sha256") == phases[row["id"]]["test_source_sha256"])
+                canonical_pass = (exact_local and local.get("status") in {"passed", "mismatch"}
+                                  and exact_references and phase_pass
+                                  and all(layers.get(kind, {}).get("stderr") == "" for kind in ("release", "checkout"))
+                                  and all(value == "passed" for value in (*canonical_engines.values(), *canonical_references.values())))
+                reconciliation = {**contract, "status": "verified" if canonical_pass else "missing",
+                                  "engines": canonical_engines, "references": canonical_references,
+                                  "quickjs_macro": "passed" if phase_pass else "not-run"}
+                # Canonical agreement is an explicit dialect difference from
+                # SCI, never a pass of the retained original [0 2] expectation.
+                status = "version-difference" if canonical_pass else "missing"
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
                      "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
+                     **({"canonical_reconciliation": reconciliation} if reconciliation else {}),
                      "completion_reason": "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
     counts = Counter(row["status"] for row in rows)
     sections = {}

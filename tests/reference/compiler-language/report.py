@@ -1173,7 +1173,7 @@ def main(argv=None):
     try:
         historical_inventory, historical_witnesses, historical_cases = load_contract()
         inventory, witnesses, cases = load_contract(args.scope) if args.scope == "intended-language" else (historical_inventory, historical_witnesses, historical_cases)
-        from full_ledger import expand_report, load as load_full
+        from full_ledger import expand_report, load as load_full, sci_execution_failed
         full_rows, obligations, _ = load_full() if args.scope == "intended-language" else ([], [], {})
         all_features = {row["feature"] for row in [*inventory.values(), *full_rows]} | {row["family"] for row in [*full_rows, *obligations]}
         if set(args.feature) - all_features or set(args.id) - (set(inventory) | {row["id"] for row in full_rows}):
@@ -1272,7 +1272,7 @@ def main(argv=None):
                      for layer in result_layers.values())
         failed |= any(layer.get("status") != "verified-boundary" for layers in boundary_evidence.values() for layer in layers.values())
         failed |= any(value.get("status") != "passed" for value in phase_evidence.values())
-        failed |= any(layer.get("status") in failure_statuses for layers in sci_evidence.values() for layer in layers.values())
+        failed |= sci_execution_failed(report, sci_evidence, failure_statuses)
         return 1 if failed or (args.strict and not report["strict_complete"]) else 0
     except (ValueError, KeyError, OSError) as error:
         print(f"coverage contract error: {error}", file=sys.stderr)

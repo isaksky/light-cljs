@@ -454,3 +454,67 @@ fn name_policy_preserves_local_and_global_shadowing() {
     assert_eq!(printed(&mut s, "(let [when (fn [x] x)] (when 42))"), "42");
     assert_eq!(printed(&mut s, "(def when (fn [x] x)) (when 42)"), "42");
 }
+
+#[test]
+fn contextual_anonymous_reader_data_and_failures_reuse_the_session() {
+    let mut s = EvalSession::new(EvalOptions::default()).unwrap();
+    assert_eq!(
+        printed(
+            &mut s,
+            "(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])"
+        ),
+        "[2 2]"
+    );
+    for (text, expected) in [
+        ("#(%0)", "[0 1 false]"),
+        ("#(%-1 %&)", "[2 2 true]"),
+        ("#(%-2 %-2)", "[0 2 true]"),
+        ("#(%2 %0 %-1 %&)", "[4 4 false]"),
+    ] {
+        let source = format!(
+            r##"(let [f (read-string {text:?}) body (nth f 2)] [(count (second f)) (count body) (= (first body) (second body))])"##
+        );
+        assert_eq!(printed(&mut s, &source), expected);
+        if text == "#(%2 %0 %-1 %&)" {
+            assert_eq!(
+                printed(
+                    &mut s,
+                    r##"(let [f (read-string "#(%2 %0 %-1 %&)")] (= (nth (nth f 2) 2) (last (nth f 2)) (last (second f))))"##
+                ),
+                "true"
+            );
+        }
+    }
+    assert_eq!(
+        printed(
+            &mut s,
+            r##"(let [f (read-string "#(quote [%0 %-1 %&])") body (second (nth f 2))] [(count (second f)) (= (second body) (nth body 2) (last (second f)))])"##
+        ),
+        "[2 true]"
+    );
+    assert_eq!(
+        printed(
+            &mut s,
+            r##"(let [f (read-string "#(`[%0 %-1 %&])")] (count (second f)))"##
+        ),
+        "2"
+    );
+    for bad in ["#(#())", "#(%3/2)", "#(%foo)"] {
+        assert_eq!(
+            printed(
+                &mut s,
+                &format!("(try (read-string {bad:?}) :failed (catch :default _ :caught))")
+            ),
+            ":caught"
+        );
+        assert_eq!(
+            printed(
+                &mut s,
+                r##"(let [f (read-string "#(%-1 %&)")] (= (last (second f)) (first (nth f 2)) (second (nth f 2))))"##
+            ),
+            "true"
+        );
+    }
+    assert!(s.eval_string("(#(%0) 1)").is_err());
+    assert_eq!(printed(&mut s, "(#(vector %-1 %&) 3 4)"), "[(3 4) (3 4)]");
+}

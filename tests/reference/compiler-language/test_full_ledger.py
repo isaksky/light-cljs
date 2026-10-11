@@ -16,6 +16,71 @@ import report
 
 
 class FullLedgerTests(unittest.TestCase):
+    def test_nonpositive_reconciliation_is_explicit_and_requires_complete_current_evidence(self):
+        import sci_execution as sci
+        mapping = next(row for row in sci.load() if row["sci_id"] == "sci-reader-anonymous-nonpositive")
+        target = next(row for row in report.jsonl(report.HERE / "obligations.jsonl") if row["id"] == mapping["obligation_id"])
+        contract = sci.canonical_contract(mapping)
+        local = {"status": "mismatch", "source_sha256": mapping["source_sha256"],
+                 "test_file": sci.TEST_FILE, "test_name": sci.TEST_NAME,
+                 "test_source_sha256": sci.digest((report.ROOT / sci.TEST_FILE).read_bytes()),
+                 "adapter_source_sha256": sci.digest((report.ROOT / "tests/support/sci_execution_observation.js").read_bytes()),
+                 "engines": {kind: {"status": "mismatch", "observed": copy.deepcopy(contract["canonical_expected"])} for kind in ("Node", "QuickJS")}}
+        layers = {"javascript": local, **{kind: {"status": "mismatch", "observed": copy.deepcopy(contract["canonical_expected"]),
+                  "stderr": "",
+                  "source_sha256": mapping["reference_source_sha256"], "original_source_sha256": mapping["original_source_sha256"],
+                  "isolated": mapping["reference_isolated"], "reference_identity": kind + " " + identity,
+                  "settings": {"optimizations": "none", "static-fns": False, "def-emits-var": False}}
+                  for kind, identity in (("release", report.RELEASE), ("checkout", report.REVISION))}}
+        historical = {"counts": {kind: 0 for kind in ("covered", "missing", "unrelated", "version-difference", "verified-rejection", "verified-warning")}, "strict_complete": False, "boundary_strict_complete": True}
+        phase = {target["id"]: {"status": "passed", "test_source_sha256": "current-phase"}}
+        def result(evidence, execution=phase):
+            with patch.object(full, "load", return_value=([], [target], {"counts": {}})), \
+                 patch.object(full, "load_obligation_witnesses", return_value={}), \
+                 patch.object(full, "load_phase_witnesses", return_value={target["id"]: {"test_source_sha256": "current-phase"}}), \
+                 patch.object(sci, "load", return_value=[mapping]):
+                return full.expand_report(historical, {}, {}, identities=(target["id"],), sci_evidence={mapping["id"]: evidence}, phase_evidence=execution)
+        observed = result(layers)
+        row = observed["assertions"][0]
+        self.assertEqual(row["status"], "version-difference")
+        self.assertEqual(row["canonical_reconciliation"]["disposition"], "canonical-dialect-difference")
+        self.assertEqual(row["canonical_reconciliation"]["status"], "verified")
+        self.assertEqual(row["canonical_reconciliation"]["historical_expected"], mapping["expected"])
+        self.assertEqual(row["body_sha256"], mapping["body_sha256"])
+        self.assertEqual(row["layers"], layers)
+        self.assertEqual(observed["counts"]["covered"], 0)
+        self.assertEqual(observed["counts"]["version-difference"], 1)
+        self.assertFalse(observed["strict_complete"])
+        failures = {"mismatch", "failed", "unavailable", "invalid-output", "timed-out"}
+        self.assertFalse(full.sci_execution_failed(observed, {mapping["id"]: layers}, failures))
+        other = {mapping["id"]: layers, "unreviewed": {"release": {"status": "mismatch"}}}
+        self.assertTrue(full.sci_execution_failed(observed, other, failures))
+        changed = copy.deepcopy(layers); changed["release"]["status"] = "failed"
+        self.assertTrue(full.sci_execution_failed(observed, {mapping["id"]: changed}, failures))
+        self.assertTrue(full.sci_execution_failed(result(layers, {}), {mapping["id"]: layers}, failures))
+        for kind in ("release", "checkout"):
+            for field, value in (("status", "not-run"), ("status", "rejected"), ("source_sha256", "stale"),
+                                 ("original_source_sha256", "stale"), ("reference_identity", kind + " stale"),
+                                 ("settings", {}), ("isolated", True), ("observed", mapping["expected"])):
+                changed = copy.deepcopy(layers); changed[kind][field] = value
+                self.assertEqual(result(changed)["assertions"][0]["status"], "missing")
+            for stderr in (None, "extra", ["extra"]):
+                changed = copy.deepcopy(layers); changed[kind]["stderr"] = stderr
+                self.assertEqual(result(changed)["assertions"][0]["status"], "missing")
+            changed = copy.deepcopy(layers); del changed[kind]["stderr"]
+            self.assertEqual(result(changed)["assertions"][0]["status"], "missing")
+        for kind in ("Node", "QuickJS"):
+            changed = copy.deepcopy(layers); del changed["javascript"]["engines"][kind]
+            self.assertEqual(result(changed)["assertions"][0]["status"], "missing")
+            changed = copy.deepcopy(layers); changed["javascript"]["engines"][kind]["observed"] = mapping["expected"]
+            self.assertEqual(result(changed)["assertions"][0]["status"], "missing")
+        for field in ("source_sha256", "test_name", "test_source_sha256", "adapter_source_sha256"):
+            changed = copy.deepcopy(layers); changed["javascript"][field] = "stale"
+            self.assertEqual(result(changed)["assertions"][0]["status"], "missing")
+        for execution in ({}, {target["id"]: {"status": "failed", "test_source_sha256": "current-phase"}},
+                          {target["id"]: {"status": "passed", "test_source_sha256": "stale"}}):
+            self.assertEqual(result(layers, execution)["assertions"][0]["status"], "missing")
+
     def test_sci_obligations_require_exact_sources_both_engines_and_both_pins(self):
         import sci_execution as sci
         mapping = sci.load()[0]

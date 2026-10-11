@@ -336,6 +336,16 @@ fn anonymous_arguments_use_contextual_boundaries() {
     // Reduction/type checking of ratio indices belongs to expansion.
     assert!(parse("#(%3/2)").is_ok());
     assert_eq!(parse("#(%2r10) #(%-1) %").unwrap().roots.len(), 3);
+    let source = "#(%0 %-1 %-2 %& %2)";
+    let tree = parse(source).unwrap();
+    check_tree(source, &tree);
+    for (id, text) in children(&tree, tree.roots[0])
+        .iter()
+        .zip(["%0", "%-1", "%-2", "%&", "%2"])
+    {
+        assert_eq!(&source[tree.nodes[id.0].span.clone()], text);
+        assert!(matches!(tree.nodes[id.0].kind, N::Argument { .. }));
+    }
     error("#(#())", E::NestedAnonymousFunction);
     error("#(%foo)", E::InvalidArgument);
     error("#(%1.2)", E::InvalidArgument);

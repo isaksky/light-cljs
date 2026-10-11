@@ -304,3 +304,14 @@ Final-tree SCI accounting verified all 2,475 retained dispositions (1,209 portab
 observations. Two `keys &env` rows retain the SCI flat-environment observation
 and their nonpassing status while freshly recording the added descriptive reader
 context key; no SCI expectation was replaced to declare those rows compatible.
+
+## Canonical nonpositive anonymous placeholders — light-cljs-146
+
+The [scoped anonymous reader audit](compiler-anonymous-nonpositive.md) records
+the twelve independently checked pinned CLJS shapes and the exact retained SCI
+source's canonical `[2 2]` result in both application engines and both pins.
+`%-1` now shares `%&`'s rest binding; `%0` and indices below `-1` remain
+unbound. Source quotation and runtime string reading execute the full shape
+contract in both application and demanded macro phases. Original SCI `[0 2]`
+remains an explicit historical dialect difference, with no whole-reader or
+whole-language completion claim.

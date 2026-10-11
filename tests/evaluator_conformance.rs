@@ -109,6 +109,70 @@ fn audit_explicit_library_import_adaptations() {
 // seven SCI fields verbatim, then status, evaluator source and observation.
 const ACCOUNTING: &str = include_str!("reference/sci/evaluator-dispositions.tsv");
 
+// A reviewed canonical reader difference, separate from the immutable original
+// SCI row and historical migration observation. Match the entire retained body,
+// including its source, expectation, effects/output and provenance rationale.
+const ANONYMOUS_NONPOSITIVE_BODY: &str = concat!(
+    "sci-reader-anonymous-nonpositive\tportable\t",
+    "(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])\t",
+    "(return (vector (int 0) (int 2)))\t(vector)\t(string u)\t(string u)\tportable\t",
+    "(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])\t",
+    "(return (vector (float 0000000000000000) (float 4000000000000000)))\t",
+    "(vector)\t(string u)\t(string u)\t",
+    "owner=light-cljs-114; kind=matching-observation; family=sci-reader; SCI observation agrees under the documented CLJS Number/character/finite-sequence projection; original source and provenance retained."
+);
+const ANONYMOUS_NONPOSITIVE_CANONICAL: &str = concat!(
+    "(return (vector (float 4000000000000000) (float 4000000000000000)))\t",
+    "(vector)\t(string u)\t(string u)"
+);
+
+fn canonical_anonymous_contract(row: &[&str]) -> Option<&'static str> {
+    (row.join("\t") == ANONYMOUS_NONPOSITIVE_BODY).then_some(ANONYMOUS_NONPOSITIVE_CANONICAL)
+}
+
+fn canonical_anonymous_reconciliation(row: &[&str], observed: &str) -> Option<&'static str> {
+    (canonical_anonymous_contract(row) == Some(observed)).then_some("canonical-dialect-difference")
+}
+
+#[test]
+fn canonical_anonymous_accounting_requires_exact_body_and_complete_observation() {
+    assert!(
+        ACCOUNTING
+            .lines()
+            .any(|line| line == ANONYMOUS_NONPOSITIVE_BODY)
+    );
+    let row: Vec<_> = ANONYMOUS_NONPOSITIVE_BODY.split('\t').collect();
+    assert_eq!(
+        canonical_anonymous_reconciliation(&row, ANONYMOUS_NONPOSITIVE_CANONICAL),
+        Some("canonical-dialect-difference")
+    );
+    assert_ne!(row[9..13].join("\t"), ANONYMOUS_NONPOSITIVE_CANONICAL);
+    for index in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+        let mut changed = row.clone();
+        changed[index] = "changed";
+        assert_eq!(
+            canonical_anonymous_reconciliation(&changed, ANONYMOUS_NONPOSITIVE_CANONICAL),
+            None,
+            "changed body column {index}"
+        );
+    }
+    let fields: Vec<_> = ANONYMOUS_NONPOSITIVE_CANONICAL.split('\t').collect();
+    for (index, value) in [
+        (0, row[9]),
+        (1, "(vector (int 1))"),
+        (2, "(string u0078)"),
+        (3, "(string u0078)"),
+    ] {
+        let mut changed = fields.clone();
+        changed[index] = value;
+        assert_eq!(
+            canonical_anonymous_reconciliation(&row, &changed.join("\t")),
+            None,
+            "changed observation column {index}"
+        );
+    }
+}
+
 #[test]
 fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
     let cases = protocol::cases(CORPUS).unwrap();
@@ -170,9 +234,21 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
             "missing explicit ownership/kind/family {}",
             case.id
         );
-        *counts.entry(status).or_default() += 1;
         let actual = evaluator::run(case.id, row[8], case.profile);
-        let expected = row[9..13].join("\t");
+        // Select the expected canonical contract from the immutable row alone.
+        // A regression back to SCI's [0 2] must fail this canonical comparison.
+        let canonical = canonical_anonymous_contract(&row);
+        let status = if canonical.is_some() {
+            "canonical-dialect-difference"
+        } else {
+            status
+        };
+        *counts.entry(status).or_default() += 1;
+        let expected = if let Some(expected) = canonical {
+            expected.to_owned()
+        } else {
+            row[9..13].join("\t")
+        };
         if actual
             .as_ref()
             .map(evaluator::Observation::fields)
@@ -251,7 +327,9 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
             "retained meaningful {family} observations cannot disappear from matching coverage"
         );
     }
-    println!("Evaluator accounting (gaps/retirements are not conformance passes): {counts:?}");
+    println!(
+        "Evaluator accounting (gaps/retirements/canonical differences are not SCI conformance passes): {counts:?}"
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

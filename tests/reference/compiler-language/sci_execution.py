@@ -216,6 +216,43 @@ def cases(catalog=None):
              "isolated": row["reference_isolated"]} for row in (catalog if catalog is not None else load())]
 
 
+def canonical_contract(mapping):
+    """Reviewed canonical difference; never rewrite a historical SCI expectation.
+
+    Both pinned ClojureScript readers register %-1 as the anonymous rest binding,
+    while %0 remains unbound. The original SCI reader recorded no bindings.
+    Source, row and disposition hashes bind this exception to one retained row.
+    Execution evidence is still required separately in every engine and pin.
+    """
+    if mapping["sci_id"] != "sci-reader-anonymous-nonpositive":
+        return None
+    identity = "sci-execution-sci-reader-anonymous-nonpositive"
+    historical = {"id": identity, "outcome": {"status": "returned", "value": {"$vector": [0, 2]}},
+                  "trace": [], "stdout": ""}
+    exact = {
+        "id": identity,
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-reader-anonymous-nonpositive",
+        "body_sha256": "33d1e03325ef8e5e8423d8c19d357432badd1c8d97d0925ec603939084132829",
+        "original_row_sha256": "2c9518261c4a0c1e82097eeb870ec72fac1446ed542fb185f6f6e24c08685575",
+        "original_source_sha256": "532f3962d6223d79ee44e8264bb6f910a06b4d6042cf8464bb274efa22152bc1",
+        "source_sha256": "532f3962d6223d79ee44e8264bb6f910a06b4d6042cf8464bb274efa22152bc1",
+        "reference_source_sha256": "dadf8c75b41197ffd30ba507fe14c5992dda5ee6dde3be4de51a8c91d85b1f7f",
+        "expected": historical,
+    }
+    if any(json.dumps(mapping.get(key), sort_keys=True) != json.dumps(value, sort_keys=True)
+           for key, value in exact.items()):
+        raise ValueError("Canonical SCI reconciliation detached from historical source/expectation")
+    return {"disposition": "canonical-dialect-difference", "owner": "light-cljs-146",
+            "reason": "Both pinned ClojureScript readers bind %-1 as rest and leave %0 unbound; original SCI [0 2] remains historical.",
+            "historical_expected": historical,
+            "canonical_expected": {**historical, "outcome": {"status": "returned", "value": {"$vector": [2, 2]}}}}
+
+
+def canonical_status(contract, evidence, same_json):
+    """Compare full fresh observations, preserving the original evidence status."""
+    return verify({"expected": contract["canonical_expected"]}, evidence, same_json)["status"]
+
+
 def verify(case, evidence, same_json):
     if evidence.get("status") not in {"passed", "mismatch", "completed"}:
         return {**evidence, "status": evidence.get("status", "not-run")}
@@ -313,7 +350,7 @@ def reference_cases(selected, kind, checkout, directory, timeout=180):
         for index, batch in enumerate(batches):
             path = directory / "execution" / f"node-{index}" / "stderr"
             if not path.is_file():
-                if any(verified[case["id"]]["status"] == "passed" for case in batch):
+                if any(verified[case["id"]]["status"] in {"passed", "mismatch"} for case in batch):
                     raise ValueError("missing canonical stderr observation")
                 continue
             current = None
@@ -336,9 +373,9 @@ def reference_cases(selected, kind, checkout, directory, timeout=180):
             for case in batch:
                 identity, layer = case["id"], verified[case["id"]]
                 emitted = extras.get(identity, []) + extras.get(None, [])
-                if emitted and layer["status"] == "passed":
+                if emitted and layer["status"] in {"passed", "mismatch"}:
                     layer.update(status="mismatch", detail="original SCI empty stderr contract differs", stderr=emitted)
-                elif layer["status"] == "passed":
+                elif layer["status"] in {"passed", "mismatch"}:
                     layer["stderr"] = ""
         results.update(verified)
     for case in selected:

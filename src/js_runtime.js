@@ -5305,7 +5305,7 @@
         try { body = collection(depth, ')', 'list'); args = anonymousArgs; } finally { anonymousArgs = null; }
         const parameters = [];
         for (let n = 1; n <= args.max; ++n) parameters.push(args.args.get(n) ?? c.gensym('p' + n + '__'));
-        if (args.args.has(0)) parameters.push(rt.symbol(null, '&'), args.args.get(0));
+        if (args.args.has(-1)) parameters.push(rt.symbol(null, '&'), args.args.get(-1));
         return rt.listFromArray([rt.symbol(null, 'fn*'), rt.vectorFromArray(parameters), body]);
       }
       if (opts.profile === 'code' && ch === '"') return c.rePattern(quoted(s, true));
@@ -5391,9 +5391,9 @@
       if (/[\])}'@`~]/.test(ch)) fail(s, 'Unsupported reader syntax');
       const text = token(s, opts.profile === 'code');
       if (opts.profile === 'code' && anonymousArgs !== null && text.startsWith('%')) {
-        const n = text === '%&' ? 0 : text === '%' ? 1 : /^%[1-9]\d*$/.test(text) ? Number(text.slice(1)) : -1;
-        if (n < 0 || n > MAX_NODES) fail(s, 'Invalid anonymous argument');
-        if (!anonymousArgs.args.has(n)) anonymousArgs.args.set(n, c.gensym(n ? 'p' + n + '__' : 'rest__'));
+        const n = text === '%&' ? -1 : text === '%' ? 1 : /^%(?:0|-[0-9]+|[1-9]\d*)$/.test(text) ? Number(text.slice(1)) : NaN;
+        if (!Number.isSafeInteger(n) || n > MAX_NODES) fail(s, 'Invalid anonymous argument');
+        if (!anonymousArgs.args.has(n)) anonymousArgs.args.set(n, c.gensym(n === -1 ? 'rest__' : 'p' + n + '__'));
         anonymousArgs.max = Math.max(anonymousArgs.max,n); return anonymousArgs.args.get(n);
       }
       if (opts.profile === 'code' && text.startsWith('::')) {
