@@ -214,3 +214,36 @@
         (list 'cljs.core/let [(merge m names) argument]
           (if (= 1 (count names)) (second (first names))
             (list 'cljs.core/some-vals names)))))))
+
+(defmacro macro-defmulti [name & declarations]
+  (let [doc (if (string? (first declarations)) (first declarations) nil)
+        declarations (if doc (next declarations) declarations)
+        attributes (if (map? (first declarations)) (first declarations) nil)
+        declarations (if attributes (next declarations) declarations)
+        dispatch (first declarations)
+        options (next declarations)]
+    (if (symbol? name) nil
+      (throw (ex-info "defmulti requires a symbol name" {})))
+    (if (seq declarations) nil
+      (throw (ex-info "defmulti requires a dispatch function" {})))
+    (if (even? (count options)) nil
+      (throw (ex-info "defmulti requires keyword/value option pairs" {})))
+    (let [options (apply hash-map options)
+          _ (reduce (fn [_ option]
+                      (if (contains? #{:default :hierarchy} option) nil
+                        (throw (ex-info "Unsupported defmulti option" {:option option}))))
+              nil (keys options))
+          metadata (merge (meta name) attributes (if doc {:doc doc} {}))
+          name (with-meta name metadata)
+          qualified (if (namespace name) (str name)
+                      (str (get-in &env [:ns :name]) "/" name))]
+      (list 'cljs.core/defonce name
+        (list 'new 'cljs.core/MultiFn (list 'quote (symbol qualified)) dispatch
+          (get options :default :default)
+          (get options :hierarchy (list 'cljs.core/get-global-hierarchy))
+          (list 'cljs.core/atom {}) (list 'cljs.core/atom {})
+          (list 'cljs.core/atom {}) (list 'cljs.core/atom nil))))))
+
+(defmacro macro-defmethod [multifn dispatch-value & fn-tail]
+  (list 'cljs.core/-add-method multifn dispatch-value
+    (cons 'cljs.core/fn fn-tail)))

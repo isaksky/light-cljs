@@ -55,9 +55,12 @@
       return true;
     }
   });
-  globalThis.__lightRegisterBundle = (names, code, indices, location) => {
+  globalThis.__lightRegisterBundle = (names, code, indices, location, once = false) => {
     const bundle = {order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
     bundles.push(bundle);
+    // Even a skipped defonce occupies its source frontier position. Rust's
+    // catalog counts every declaration, including repeated product names.
+    if (once && names.length && names.every(name => slots.has(name) && slots.get(name).unit !== null)) return;
     for (const name of names) slots.set(name, {unit: -1, bundle});
     for (const [protocol, selector, identity] of indices) {
       if (!extensions.has(protocol)) extensions.set(protocol, []);
@@ -69,7 +72,11 @@
     }
     __lightRuntimeForCompiler.setDeclarationDemand((protocol, value, typeName) => {
       const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
-      for (const {bundle, selector, superseded} of extensions.get(protocol) ?? []) {
+      const entries = typeof protocol === 'string' && protocol.startsWith('multifn:') && protocol !== 'multifn:*'
+        ? [...(extensions.get(protocol) ?? []), ...(extensions.get('multifn:*') ?? [])]
+            .sort((left, right) => left.bundle.order - right.bundle.order)
+        : extensions.get(protocol) ?? [];
+      for (const {bundle, selector, superseded} of entries) {
         if (bundle.order > frontier || superseded && frontier >= superseded) continue;
         if (selector === null || selector === '_' || selector === native || selector === '@' + typeName) forceBundle(bundle);
       }
@@ -119,6 +126,14 @@
   // Nested ordinary defs are executed expressions, so their initializer is eager.
   // Defonce nevertheless preserves any previously encountered source generation.
   globalThis.__lightDefineCompilerRoot = (name, initialize, once) => {
+    const bundle = installing.at(-1);
+    if (bundle?.names.includes(name)) {
+      if (once && bundle.products.has(name)) return null;
+      if (initialize === null) return undefined;
+      const value = initialize();
+      bundle.products.set(name, value);
+      return value;
+    }
     const old = slots.get(name);
     if (once && old && old.unit !== null) return null;
     if (once && overlays.has(name) && overlays.get(name) !== undefined) return null;

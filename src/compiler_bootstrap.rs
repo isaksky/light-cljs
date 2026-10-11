@@ -11,6 +11,8 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 const CORE: &str = include_str!("compiler_core_macros.cljs");
 const SEQUENCES: &str = include_str!("compiler_sequence_macros.cljs");
 const MACROS: &[(&str, &str)] = &[
+    ("defmulti", "defmulti"),
+    ("defmethod", "defmethod"),
     ("and", "and"),
     ("or", "or"),
     ("if-not", "if-not"),

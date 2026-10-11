@@ -1054,6 +1054,7 @@
   }
 
   function name(value) {
+    if (multiFns.has(value)) return name(value.name);
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.name;
     if (typeof value === "string") return value;
@@ -1070,6 +1071,7 @@
   }
 
   function namespace(value) {
+    if (multiFns.has(value)) return namespace(value.name);
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.namespace;
     throw new Error("Doesn't support namespace on this type");
@@ -1765,8 +1767,9 @@
   const IPending = function () {}, IDeref = function () {}, IAtom = function () {}, IReset = function () {}, ISwap = function () {}, IVolatile = function () {}, IWatchable = function () {};
   const Fn = function () {}, IList = function () {}, IFn = function () {}, ISeqable = function () {}, ISeq = function () {}, INext = function () {}, ICounted = function () {}, IIndexed = function () {}, ILookup = function () {}, ISequential = function () {}, IAssociative = function () {};
   const IReduce = function () {}, IKVReduce = function () {}, IVector = function () {}, IMap = function () {}, ICollection = function () {}, IEmptyableCollection = function () {}, ISet = function () {}, IStack = function () {}, IReversible = function () {}, IComparable = function () {}, IIterable = function () {};
+  const IMultiFn = function () {};
   const IEditableCollection = function () {}, ITransientCollection = function () {}, ITransientAssociative = function () {}, ITransientMap = function () {}, ITransientVector = function () {}, ITransientSet = function () {};
-  const coreProtocolNames = new Map([[IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
+  const coreProtocolNames = new Map([[IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
   const coreProtocolsByName = new Map([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
   IMeta.function = true; Fn.function = true; ICounted.null = true; IHash._ = true; IEquiv._ = true;
   // Metadata belongs to values, never structural equality or hash payloads.
@@ -1974,6 +1977,8 @@
     return builtinCoreImplementation(protocol, value);
   }
   function builtinCoreImplementation(protocol, value) {
+    if (protocol === IMultiFn) return multiFns.has(value);
+    if (protocol === IFn && multiFns.has(value)) return true;
     const transient = transients.get(value);
     if (protocol === IEditableCollection) return vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && mapKinds.get(value) !== "sorted-map" || sets.has(value);
     if (protocol === ITransientCollection) return !!transient;
@@ -2058,6 +2063,164 @@
     // Construction does not validate the initial state in ClojureScript.
     return new Atom(state, get(opts, keyword(null, "meta")), get(opts, keyword(null, "validator")), null);
   }
+  // Hierarchies are ordinary immutable language maps. The global reference,
+  // multimethods and caches belong to this runtime factory (one phase/session).
+  let globalHierarchy = null;
+  const multiFns = new WeakSet();
+  function makeHierarchy() {
+    if (arguments.length) return invalidArity(arguments.length);
+    return mapFromArray([keyword(null, "parents"), mapFromArray([]), keyword(null, "ancestors"), mapFromArray([]), keyword(null, "descendants"), mapFromArray([])]);
+  }
+  function getGlobalHierarchy() {
+    if (arguments.length) return invalidArity(arguments.length);
+    return globalHierarchy ??= atom(makeHierarchy());
+  }
+  function hierarchyPart(h, part) { return get(h, keyword(null, part)); }
+  function bases(value) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    if (value == null || value === false) return null;
+    const base = Object.getPrototypeOf(value);
+    return base == null ? null : listFromArray([base]);
+  }
+  function supers(value) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    const result = [];
+    for (let pending = bases(value); pending != null; pending = bases(first(pending))) result.push(first(pending));
+    return result.length ? setFromArray(result) : null;
+  }
+  function isa(h, child, parent) {
+    if (arguments.length === 2) return isa(deref(getGlobalHierarchy()), h, child);
+    if (arguments.length !== 3) return invalidArity(arguments.length);
+    if (equalPair(child, parent)) return true;
+    if (typeof parent === "function" && typeof child === "function" && child instanceof parent) return true;
+    const ancestors = hierarchyPart(h, "ancestors");
+    if (contains(get(ancestors, child), parent)) return true;
+    if (typeof child === "function") for (const base of toArray(supers(child))) if (contains(get(ancestors, base), parent)) return true;
+    const cv = vectors.get(child), pv = vectors.get(parent);
+    return !!(cv && pv && cv.length === pv.length && cv.every((v, i) => isa(h, v, pv[i])));
+  }
+  function hierarchyRel(part, h, tag, arity) {
+    if (arity === 1) { tag = h; h = deref(getGlobalHierarchy()); }
+    else if (arity !== 2) return invalidArity(arity);
+    let result = get(hierarchyPart(h, part), tag);
+    if (typeof tag === "function") {
+      if (part === "descendants") throw new Error("Can't get descendants of constructors");
+      const prototypes = toArray(part === "parents" ? bases(tag) : supers(tag));
+      const values = toArray(result).concat(prototypes);
+      if (part === "ancestors") for (const base of prototypes) values.push(...toArray(get(hierarchyPart(h, part), base)));
+      result = setFromArray(values);
+    }
+    return count(result) ? result : null;
+  }
+  function parents(h, tag) { return hierarchyRel("parents", h, tag, arguments.length); }
+  function ancestors(h, tag) { return hierarchyRel("ancestors", h, tag, arguments.length); }
+  function descendants(h, tag) { return hierarchyRel("descendants", h, tag, arguments.length); }
+  function derive(h, tag, parent) {
+    if (arguments.length === 2) {
+      parent = tag; tag = h;
+      if (!isIdent(parent) || !namespace(parent) || !(typeof tag === "function" || isIdent(tag) && namespace(tag))) throw new Error("Assert failed: qualified derive tags");
+      const ref = getGlobalHierarchy(); reset(ref, derive(deref(ref), tag, parent)); return null;
+    }
+    if (arguments.length !== 3) return invalidArity(arguments.length);
+    if (equalPair(tag, parent) || !(typeof tag === "function" || isIdent(tag)) || !isIdent(parent)) throw new Error("Assert failed: derive tags");
+    const p = hierarchyPart(h, "parents"), a = hierarchyPart(h, "ancestors"), d = hierarchyPart(h, "descendants");
+    if (contains(get(p, tag), parent)) return h;
+    if (contains(get(a, tag), parent)) throw new Error(print(tag, false) + "already has" + print(parent, false) + "as ancestor");
+    if (contains(get(a, parent), tag)) throw new Error("Cyclic derivation:" + print(parent, false) + "has" + print(tag, false) + "as ancestor");
+    function closure(table, source, sources, target, targets) {
+      let result = table;
+      for (const key of [source, ...toArray(get(sources, source))]) result = assoc(result, key, setFromArray([...toArray(get(targets, key)), target, ...toArray(get(targets, target))]));
+      return result;
+    }
+    return mapFromArray([keyword(null, "parents"), assoc(p, tag, conj(get(p, tag, setFromArray([])), parent)), keyword(null, "ancestors"), closure(a, tag, d, parent, a), keyword(null, "descendants"), closure(d, parent, a, tag, d)]);
+  }
+  function underive(h, tag, parent) {
+    if (arguments.length === 2) { const ref = getGlobalHierarchy(); reset(ref, underive(deref(ref), h, tag)); return null; }
+    if (arguments.length !== 3) return invalidArity(arguments.length);
+    const p = hierarchyPart(h, "parents");
+    if (!contains(get(p, tag), parent)) return h;
+    const remaining = disj(get(p, tag), parent), updated = count(remaining) ? assoc(p, tag, remaining) : dissoc(p, tag);
+    let result = makeHierarchy();
+    for (const entry of toArray(updated)) for (const ancestor of toArray(nth(entry, 1))) result = derive(result, nth(entry, 0), ancestor);
+    return result;
+  }
+  class MultiFn {
+    constructor(name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy) {
+      this.name = name; this.dispatch_fn = dispatchFn; this.default_dispatch_val = defaultDispatchVal;
+      this.hierarchy = hierarchy; this.method_table = methodTable; this.prefer_table = preferTable;
+      this.method_cache = methodCache; this.cached_hierarchy = cachedHierarchy;
+      multiFns.add(this);
+    }
+    call(_self, ...args) {
+      const dispatch = this.dispatch_fn.call(null, ...args), target = core.getMethod(this, dispatch);
+      if (!truth(target)) throw new Error("No method in multimethod '" + print(this.name, false) + "' for dispatch value: " + print(dispatch, false));
+      return target.call(null, ...args);
+    }
+    apply(_self, args) { return this.call(null, ...Array.from(args)); }
+  }
+  function demandMulti(mf) { if (declarationDemand) declarationDemand("multifn:" + print(mf.name, false), mf); }
+  function multiState(ref, value) {
+    // Journal compiler declaration table/cache writes for failed bundles and
+    // source-frontier rewinds; ordinary runtime mutations retain source order.
+    const transaction = declarationTransactions.at(-1);
+    if (transaction && atoms.has(ref)) {
+      const previous = ref.state;
+      transaction.push({undo: () => { ref.state = previous; }, redo: () => { ref.state = value; }, snapshot: () => { const saved = ref.state; return () => { ref.state = saved; }; }});
+    }
+    return reset(ref, value);
+  }
+  function resetMultiCache(mf) {
+    multiState(mf.method_cache, deref(mf.method_table));
+    return multiState(mf.cached_hierarchy, deref(mf.hierarchy));
+  }
+  function resetMulti(mf) {
+    demandMulti(mf);
+    multiState(mf.method_table, mapFromArray([])); multiState(mf.method_cache, mapFromArray([]));
+    multiState(mf.prefer_table, mapFromArray([])); multiState(mf.cached_hierarchy, null); return mf;
+  }
+  function addMethod(mf, dispatch, method) {
+    // Bundle installation must not demand itself or later method declarations.
+    if (!declarationTransactions.length) demandMulti(mf);
+    multiState(mf.method_table, assoc(deref(mf.method_table), dispatch, method)); resetMultiCache(mf); return mf;
+  }
+  function removeMethod(mf, dispatch) {
+    demandMulti(mf); multiState(mf.method_table, dissoc(deref(mf.method_table), dispatch)); resetMultiCache(mf); return mf;
+  }
+  function multiPrefers(mf, x, y) {
+    // The pinned CLJS prefers* loops do not return recursive matches: only the
+    // direct preference is effective, unlike Clojure's inherited preference.
+    return truth(get(get(deref(mf.prefer_table), x), y));
+  }
+  function preferMethod(mf, x, y) {
+    demandMulti(mf);
+    if (multiPrefers(mf, y, x)) throw new Error("Preference conflict in multimethod '" + print(mf.name, false) + "': " + print(y, false) + " is already preferred to " + print(x, false));
+    const table = deref(mf.prefer_table);
+    multiState(mf.prefer_table, assoc(table, x, conj(get(table, x, setFromArray([])), y)));
+    return resetMultiCache(mf);
+  }
+  function getMethod(mf, dispatch) {
+    demandMulti(mf);
+    for (;;) {
+      const h = deref(mf.hierarchy);
+      if (!equalPair(deref(mf.cached_hierarchy), h)) resetMultiCache(mf);
+      const cached = get(deref(mf.method_cache), dispatch);
+      if (truth(cached)) return cached;
+      let best = null;
+      const dominates = (x, y) => multiPrefers(mf, x, y) || isa(h, x, y);
+      for (const entry of toArray(deref(mf.method_table))) {
+        const key = nth(entry, 0);
+        if (!isa(h, dispatch, key)) continue;
+        const candidate = best === null || dominates(key, nth(best, 0)) ? entry : best;
+        if (!dominates(nth(candidate, 0), key)) throw new Error("Multiple methods in multimethod '" + print(mf.name, false) + "' match dispatch value: " + print(dispatch, false) + " -> " + print(key, false) + " and " + print(nth(candidate, 0), false) + ", and neither is preferred");
+        best = candidate;
+      }
+      const target = best === null ? get(deref(mf.method_table), mf.default_dispatch_val) : nth(best, 1);
+      if (!truth(target)) return null;
+      if (!equalPair(deref(mf.cached_hierarchy), deref(mf.hierarchy))) { resetMultiCache(mf); continue; }
+      multiState(mf.method_cache, assoc(deref(mf.method_cache), dispatch, target)); return target;
+    }
+  }
+
   function stateProtocol(value, key, args) {
     const method = builtin(value, key, args.length + 1);
     if (!method) throw new Error("No protocol method " + key + " defined for this value");
@@ -2457,7 +2620,7 @@
     const method = value[protocolSlot(key, arity)];
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
-  const protocolStores = [transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  const protocolStores = [multiFns, transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   function ownedProtocolValue(value) { return protocolStores.some(store => store.has(value)); }
   function builtin(value, key, arity) {
     const method = directMethod(value, key, arity);
@@ -3708,7 +3871,17 @@
     for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1]);
     return makeMap(entries, "hash-map");
   };
-  const core = {...builtinTypes, IChunk, IChunkedNext, IDrop,
+  const core = {...builtinTypes, IMultiFn, MultiFn, makeHierarchy, getGlobalHierarchy, isa, parents, ancestors, descendants, derive, underive, bases, supers,
+    removeAllMethods: coreMethod("IMultiFn/-reset", [1], resetMulti),
+    addMethod: coreMethod("IMultiFn/-add-method", [3], addMethod),
+    removeMethod: coreMethod("IMultiFn/-remove-method", [2], removeMethod),
+    preferMethod: coreMethod("IMultiFn/-prefer-method", [3], preferMethod),
+    getMethod: coreMethod("IMultiFn/-get-method", [2], getMethod),
+    methods: coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); }),
+    prefers: coreMethod("IMultiFn/-prefers", [1], mf => { demandMulti(mf); return deref(mf.prefer_table); }),
+    defaultDispatchVal: coreMethod("IMultiFn/-default-dispatch-val", [1], mf => mf.default_dispatch_val),
+    dispatchFn: coreMethod("IMultiFn/-dispatch-fn", [1], mf => mf.dispatch_fn),
+    IChunk, IChunkedNext, IDrop,
     IEditableCollection, ITransientCollection, ITransientAssociative, ITransientMap, ITransientVector, ITransientSet,
     transient, persistentBang, conjBang, assocBang, dissocBang, disjBang, popBang,
     asTransientProtocol: coreMethod("IEditableCollection/-as-transient", [1], asTransient),

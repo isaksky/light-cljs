@@ -1129,6 +1129,36 @@ terminal for the compilation heap, and reused hosts allocate fresh roots/tables.
 Application declarations still execute in source/dependency order in their own
 heap. See the [executing bundle evidence](../tests/reference/compiler-declaration-demand.md).
 
+Top-level `defmulti` and `defmethod` use the same declaration-bundle policy.
+`defmulti` preserves its existing value like `defonce`; docstrings, metadata,
+`:default`, and atom/Var/custom dereferenceable `:hierarchy` options are supported.
+Method-body and dispatch-function macros expand once at their declaration site.
+Direct declaration targets narrow demand to that multimethod;
+aliases and computed targets remain conservative candidates, like computed
+protocol extension targets. Matching declarations install in source order. Standalone
+`remove-method`, `prefer-method`, `derive`, and other mutations remain application
+effects unless executed by a demanded helper or macro.
+
+The canonical JavaScript runtime implements `MultiFn`, `IMultiFn` and its public
+method operations: `methods`, `get-method`, `prefers`, `prefer-method`,
+`remove-method`, `remove-all-methods`, `dispatch-fn`, and `default-dispatch-val`.
+Methods receive the original arguments, including `apply` and variadic calls.
+Keyword, arbitrary equal-value, hierarchy and recursive vector dispatch support
+default methods and explicit ambiguity/preference-conflict errors. Method and
+preference changes reset cached dispatch; changes to the dereferenced hierarchy
+invalidate prior answers. Both compilation and application runtimes own their
+hierarchies, method tables and caches independently. Declaration rollback and
+source-frontier changes include owned method/cache writes.
+
+`make-hierarchy`, `derive`, `underive`, `isa?`, `parents`, `ancestors`, and
+`descendants` support global and explicit immutable language hierarchies.
+`bases` and `supers` expose JavaScript prototypes; there is no JVM class hierarchy.
+As in the pinned CLJS implementations, preference matching uses effective direct
+preferences (their recursive `prefers*` loops discard inherited matches).
+See the [multimethod evidence](../tests/reference/compiler-multimethods.md) for
+complete upstream bodies, the explicit storage/syntax adapters, portable SCI
+comparisons, and phase/session contracts.
+
 `reify`, `specify!`, nested declarations and low-level `deftype*`/`defrecord*`
 inside executed code use ordinary canonical expression semantics. Arbitrary
 standalone expressions, including top-level `specify!`, are application effects
@@ -1363,7 +1393,8 @@ analysis as in the reference; receiver expressions returning nil fail at runtime
 This is the existing selected-scope gate. Its strict result does not establish
 full intended-language completion: the current inventory excludes, among other
 families, transients, transducers, sorted collections and multimethods. Transients
-and eager transducers now have separate executable audits; remaining obligations
+and eager transducers now have separate executable audits, as do
+[multimethods and hierarchies](../tests/reference/compiler-multimethods.md); remaining obligations
 stay visible in the full ledger. The
 [broader coverage contract](evaluator-migration.md#language-coverage-and-completion-boundaries)
 requires separate parsing, lowering, native, canonical JS, macro-execution and

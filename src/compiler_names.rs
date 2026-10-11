@@ -2,7 +2,9 @@
 pub fn core_macro(name: &str) -> bool {
     matches!(
         name,
-        "let"
+        "defmulti"
+            | "defmethod"
+            | "let"
             | "doto"
             | "js-obj"
             | "memfn"
@@ -56,7 +58,9 @@ pub fn is_definition_macro(namespace: &str, name: &str) -> bool {
     matches!(namespace, "cljs.core" | "clojure.core")
         && matches!(
             name,
-            "delay"
+            "defmulti"
+                | "defmethod"
+                | "delay"
                 | "lazy-seq"
                 | "defonce"
                 | "declare"

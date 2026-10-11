@@ -559,8 +559,9 @@ retains every runtime test/support file from the pinned checkout, independent
 public core/library names and arities, syntax, and SCI/API provenance. It exposes
 parse, analysis/lowering, removed native execution, canonical JavaScript,
 QuickJS macro eligibility, and meaningful execution evidence separately.
-Unexecuted sorted collection, multimethod, and other obligations have responsible
-Pellet links. Transients and eager transducers have separate executing audits. `--strict` currently fails
+Remaining obligations have responsible Pellet links. Transients, eager transducers,
+and [multimethods and hierarchies](tests/reference/compiler-multimethods.md) have
+separate executing audits. `--strict` currently fails
 for the full scope; parser acceptance and passing historical subsets cannot
 establish completion. `--scope historical-selected` reproduces the earlier
 18-file batch and its scoped execution gate.

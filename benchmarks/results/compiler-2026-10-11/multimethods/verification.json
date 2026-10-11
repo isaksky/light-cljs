@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "scope": "light-cljs-47 focused multimethod and hierarchy evidence",
+  "date": "2026-10-11",
+  "command": "python3 -B tests/reference/compiler-language/report.py --run --feature multimethods-hierarchies --timeout 60 --output /tmp/multimethod-ledger-frozen.json --artifacts /tmp/multimethod-ledger-artifacts-47-frozen",
+  "reproduction_note": "Use a fresh --artifacts directory or omit that option. This is an observation snapshot, never a cached completion claim.",
+  "references": {
+    "clojurescript_release": "1.12.134",
+    "clojurescript_checkout": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+    "sci_checkout": "5fe89056384418be50d232b4278344cb3a1a526b"
+  },
+  "compiler_binary": {
+    "path": "/Users/admin/src/light-cljs/target/debug/light-cljs",
+    "sha256": "f31eaa9e8be38d205216368f7023e63c30c7698af12dd94fa3c34b21c03a9bdd"
+  },
+  "full_report_sha256": "4684df1b5e1c39b4fea0eedc5fe8ffb8ae0822cb8af88103499e1920b1bda629",
+  "full_report_path": "/tmp/multimethod-ledger-frozen.json",
+  "selected_source_sites": {
+    "covered": 31
+  },
+  "complete_bodies": 5,
+  "assertions_in_complete_bodies": 33,
+  "public_api_arities": {
+    "covered": 16,
+    "missing": 11
+  },
+  "public_macro_phase": {
+    "passed": 27
+  },
+  "missing_ordinary_source_witnesses": [
+    "api::src/main/cljs/cljs/core.cljs::bases::arity-1",
+    "api::src/main/cljs/cljs/core.cljs::supers::arity-1",
+    "api::src/main/cljs/cljs/core.cljs::isa?::arity-2",
+    "api::src/main/cljs/cljs/core.cljs::parents::arity-2",
+    "api::src/main/cljs/cljs/core.cljs::ancestors::arity-2",
+    "api::src/main/cljs/cljs/core.cljs::descendants::arity-2",
+    "api::src/main/cljs/cljs/core.cljs::underive::arity-1",
+    "api::src/main/cljs/cljs/core.cljs::underive::arity-2",
+    "api::src/main/cljs/cljs/core.cljs::IMultiFn::arity-1",
+    "api::src/main/cljs/cljs/core.cljs::MultiFn::arity-1",
+    "api::src/main/cljs/cljs/core.cljs::get-method::arity-1"
+  ],
+  "portable_cases": {
+    "quickjs_and_node": 8,
+    "both_clojurescript_references": 8,
+    "pinned_sci": 5
+  },
+  "accounting_tests": {
+    "test_full_ledger.py": 11,
+    "test_report.py": 41,
+    "extract_inventory_check": "passed"
+  },
+  "full_language_strict_complete": false,
+  "fixture_sha256": {
+    "tests/compiler_multimethod_evidence.rs": "8b16e1c6a052b23d1de89c668eb52fbeb4a4507cdfae4919c9e79d2b97073b57",
+    "tests/compiler_multimethods.rs": "ff3eff85ff1e7d4bed431b04a20cf6c26386e3de9fcb1dd6b16fce3fd93470e3",
+    "tests/fixtures/compiler-multimethods.tsv": "02770e07e8678956dfa2135da38f30210ba4fe8b0f91fdd13359e1b156ac6078",
+    "tests/reference/multimethods_sci.clj": "986a3a5595f2797232467a7b36b6dee75642e1ddc2253da87b6aebe86d1df9be",
+    "tests/fixtures/compiler-multimethods/test-cljs-1144/cljs/core_test.cljs": "f1288406c9deff0d87eed2d445dc85332224c4fe00909066faa32a2236b21097",
+    "tests/fixtures/compiler-multimethods/test-cljs-3367-backward-conflict-prefers/cljs/core_test.cljs": "355e0a8bee81fa1403bd40bd720922abc682cbba8bc03e57a6e536576186f6c6",
+    "tests/fixtures/compiler-multimethods/test-hierarchy/cljs/core_test.cljs": "711f72473a4305cdc2e541c053d080fd34b499a7d169bc61759a327b01fbb333",
+    "tests/fixtures/compiler-multimethods/test-multimethods-1/cljs/core_test.cljs": "8a6915210445ea9593ada61691aff5e77a409334c6ff78dff0b3ed99ad5c50af",
+    "tests/fixtures/compiler-multimethods/test-multimethods-2/cljs/core_test.cljs": "f24b9e3cb5fe28abf22c62280cc65996ab88fadf95f009a2899afe0b4b5fef42"
+  }
+}

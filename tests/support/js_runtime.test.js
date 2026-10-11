@@ -1212,3 +1212,31 @@ console.log('persistent helper snapshots, metadata, map entries and traversal as
   assert.throws(() => c.conjBang(Object.create(Object.getPrototypeOf(t)),3), /ITransientCollection/);
 }
 console.log('transient ownership, persistence, protocol and lookup assertions passed');
+
+// Multimethod declaration rollback and source-frontier replay include table and
+// cache state; JavaScript host effects (the validator call) remain observable.
+{
+  const k = x => runtime.keyword(null, x), empty = () => c.hashMap();
+  const h = c.atom(c.derive(c.makeHierarchy(), k('child'), k('parent')));
+  const methods = c.atom(empty()), preferences = c.atom(empty()), cache = c.atom(empty()), cached = c.atom(null);
+  const mf = new c.MultiFn(runtime.symbol('test', 'multifn'), x => x, k('default'), h, methods, preferences, cache, cached);
+  c.addMethod(mf, k('parent'), () => 'old');
+  assert.equal(mf.call(null, k('child')), 'old');
+  const oldTable = c.deref(methods), oldCache = c.deref(cache);
+  assert.throws(() => runtime.declarationTransaction(() => {
+    c.addMethod(mf, k('parent'), () => 'discarded');
+    assert.equal(mf.call(null, k('child')), 'discarded');
+    throw new Error('bundle failure');
+  }), /bundle failure/);
+  assert.equal(c.deref(methods), oldTable);
+  assert.equal(c.deref(cache), oldCache);
+  assert.equal(mf.call(null, k('child')), 'old');
+  const install = runtime.declarationTransaction(() => c.addMethod(mf, k('parent'), () => 'new'), true);
+  assert.equal(mf.call(null, k('child')), 'new');
+  runtime.applyDeclarationPatches(install.patches, false);
+  assert.equal(mf.call(null, k('child')), 'old');
+  runtime.applyDeclarationPatches(install.patches, true);
+  assert.equal(mf.call(null, k('child')), 'new');
+  c.reset(h, c.makeHierarchy());
+  assert.equal(c.getMethod(mf, k('child')), null);
+}

@@ -54,6 +54,8 @@ enum Registration {
 struct Catalog {
     units: Vec<Rc<RefCell<Unit>>>,
     active: HashMap<String, bool>,
+    // Only active defmulti products have stable named demand keys.
+    multifn_targets: HashMap<String, String>,
     bindings: HashMap<String, (VarId, usize)>,
     stack: Vec<usize>,
     bootstrap: Option<Bootstrap>,
@@ -135,11 +137,15 @@ impl CompilationSession {
     pub fn extension_frontier(&self) -> usize {
         self.catalog.borrow().bundle_count
     }
+    pub fn multifn_target(&self, name: &str) -> Option<String> {
+        self.catalog.borrow().multifn_targets.get(name).cloned()
+    }
     pub fn register_bundle(
         &self,
         program: &Program,
         products: &[crate::analyzer::GlobalId],
         extensions: &[(String, Option<String>, String)],
+        once: bool,
         form: Form,
         snapshot: DefinitionSnapshot,
         host: MacroHost,
@@ -181,7 +187,7 @@ impl CompilationSession {
             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
         );
         let source = format!(
-            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {})",
+            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {once})",
             quoted(&location)
         );
         let bootstrap = {
@@ -190,7 +196,16 @@ impl CompilationSession {
             c.bundle_count += 1;
             for g in products {
                 let b = &program.globals[g.0];
-                c.active.insert(format!("{}/{}", b.namespace, b.name), true);
+                let name = format!("{}/{}", b.namespace, b.name);
+                if once && c.active.get(&name) == Some(&true) {
+                    continue;
+                }
+                if once {
+                    c.multifn_targets.insert(name.clone(), name.clone());
+                } else {
+                    c.multifn_targets.remove(&name);
+                }
+                c.active.insert(name, true);
             }
             c.bootstrap.clone()
         };
@@ -264,6 +279,7 @@ impl CompilationSession {
             if !(id.is_none() && c.active.contains_key(&name)
                 || once && c.active.get(&name).is_some_and(|defined| *defined))
             {
+                c.multifn_targets.remove(&name);
                 c.active.insert(name.clone(), id.is_some());
             }
             c.registrations

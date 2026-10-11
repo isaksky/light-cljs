@@ -31,6 +31,36 @@ pub struct NamedLiteral {
 /// The finite executable JavaScript core; independent of interpreter Vars.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CoreFnId {
+    MultiFn,
+    IMultiFn,
+    MakeHierarchy,
+    GetGlobalHierarchy,
+    Isa,
+    Derive,
+    Underive,
+    Parents,
+    Ancestors,
+    Descendants,
+    Bases,
+    Supers,
+    RemoveAllMethods,
+    ResetMultiFnProtocol,
+    AddMethod,
+    RemoveMethod,
+    RemoveMethodProtocol,
+    PreferMethod,
+    PreferMethodProtocol,
+    Methods,
+    MethodsProtocol,
+    GetMethod,
+    GetMethodProtocol,
+    Prefers,
+    PrefersProtocol,
+    DefaultDispatchVal,
+    DefaultDispatchValProtocol,
+    DispatchFn,
+    DispatchFnProtocol,
+
     EdnReadString,
     EdnRead,
     ReaderReadString,
@@ -605,6 +635,35 @@ pub enum CoreFnId {
 impl CoreFnId {
     pub(crate) fn resolve(name: &str) -> Option<Self> {
         Some(match name {
+            "MultiFn" => Self::MultiFn,
+            "IMultiFn" => Self::IMultiFn,
+            "make-hierarchy" => Self::MakeHierarchy,
+            "get-global-hierarchy" => Self::GetGlobalHierarchy,
+            "isa?" => Self::Isa,
+            "derive" => Self::Derive,
+            "underive" => Self::Underive,
+            "parents" => Self::Parents,
+            "ancestors" => Self::Ancestors,
+            "descendants" => Self::Descendants,
+            "bases" => Self::Bases,
+            "supers" => Self::Supers,
+            "remove-all-methods" => Self::RemoveAllMethods,
+            "-reset" => Self::ResetMultiFnProtocol,
+            "-add-method" => Self::AddMethod,
+            "remove-method" => Self::RemoveMethod,
+            "-remove-method" => Self::RemoveMethodProtocol,
+            "prefer-method" => Self::PreferMethod,
+            "-prefer-method" => Self::PreferMethodProtocol,
+            "methods" => Self::Methods,
+            "-methods" => Self::MethodsProtocol,
+            "get-method" => Self::GetMethod,
+            "-get-method" => Self::GetMethodProtocol,
+            "prefers" => Self::Prefers,
+            "-prefers" => Self::PrefersProtocol,
+            "default-dispatch-val" => Self::DefaultDispatchVal,
+            "-default-dispatch-val" => Self::DefaultDispatchValProtocol,
+            "dispatch-fn" => Self::DispatchFn,
+            "-dispatch-fn" => Self::DispatchFnProtocol,
             "compiler-edn-read-string" => Self::EdnReadString,
             "compiler-edn-read" => Self::EdnRead,
             "compiler-reader-read-string" => Self::ReaderReadString,
@@ -1283,6 +1342,35 @@ impl CoreFnId {
             Self::Eval => "eval",
             Self::Macroexpand => "macroexpand",
             Self::Macroexpand1 => "macroexpand1",
+            Self::MultiFn => "MultiFn",
+            Self::IMultiFn => "IMultiFn",
+            Self::MakeHierarchy => "makeHierarchy",
+            Self::GetGlobalHierarchy => "getGlobalHierarchy",
+            Self::Isa => "isa",
+            Self::Derive => "derive",
+            Self::Underive => "underive",
+            Self::Parents => "parents",
+            Self::Ancestors => "ancestors",
+            Self::Descendants => "descendants",
+            Self::Bases => "bases",
+            Self::Supers => "supers",
+            Self::RemoveAllMethods => "removeAllMethods",
+            Self::ResetMultiFnProtocol => "removeAllMethods",
+            Self::AddMethod => "addMethod",
+            Self::RemoveMethod => "removeMethod",
+            Self::RemoveMethodProtocol => "removeMethod",
+            Self::PreferMethod => "preferMethod",
+            Self::PreferMethodProtocol => "preferMethod",
+            Self::Methods => "methods",
+            Self::MethodsProtocol => "methods",
+            Self::GetMethod => "getMethod",
+            Self::GetMethodProtocol => "getMethod",
+            Self::Prefers => "prefers",
+            Self::PrefersProtocol => "prefers",
+            Self::DefaultDispatchVal => "defaultDispatchVal",
+            Self::DefaultDispatchValProtocol => "defaultDispatchVal",
+            Self::DispatchFn => "dispatchFn",
+            Self::DispatchFnProtocol => "dispatchFn",
             Self::Keyword => "keyword",
             Self::Symbol => "symbol",
             Self::Vector => "vector",
@@ -3583,6 +3671,23 @@ impl Analyzer<'_> {
                     .protocol_predicate_form(id, args, context, intrinsic == "implements?")
                     .map(Some);
             }
+            "defmulti" | "defmethod" => {
+                if let Some(expanded) = self.expand_macro(id, operator, context)? {
+                    let top_level = self.top_level;
+                    self.top_level = false;
+                    self.macro_depth += 1;
+                    let result = if top_level && self.macro_host.defers_source_units() {
+                        self.multimethod_declaration_stub(expanded, context, intrinsic == "defmulti")
+                    } else {
+                        self.form(expanded, context)
+                    };
+                    self.macro_depth -= 1;
+                    self.top_level = top_level;
+                    let expr = result?;
+                    return self.catalog_bundle(id, expr).map(Some);
+                }
+                Ok(None)
+            }
             "defprotocol" => {
                 let expr = self.defprotocol_form(id, args, context)?;
                 return self.catalog_bundle(id, expr).map(Some);
@@ -5363,6 +5468,37 @@ impl Analyzer<'_> {
         existing.extend(entries);
     }
 
+    // Source macro construction preserves the declaration's metadata, but its
+    // dispatch and method bodies are expanded only when the bundle is analyzed.
+    fn multimethod_declaration_stub(
+        &mut self,
+        expanded: NodeId,
+        context: ExprContext,
+        definition: bool,
+    ) -> Result<ExprId, AnalysisError> {
+        let NodeKind::Collection { children, .. } = self.syntax.nodes[expanded.0].kind.clone() else {
+            return Err(self.error(expanded, AnalysisErrorKind::InvalidForm("invalid multimethod expansion")));
+        };
+        let target = children[1];
+        if definition {
+            let expr = self.definition(expanded, &[target], ExprContext::Discard, false)?;
+            if let ExprKind::Def { once, .. } = &mut self.program.exprs[expr.0].kind {
+                *once = true;
+            }
+            self.program.exprs[expr.0].context = context;
+            Ok(expr)
+        } else {
+            let span = self.syntax.nodes[expanded.0].span.clone();
+            let target = if matches!(self.syntax.nodes[target.0].kind, NodeKind::Symbol) {
+                self.non_tail_form(target, ExprContext::Value)?
+            } else {
+                self.push(ExprKind::Nil, span.clone(), ExprContext::Value)
+            };
+            let callee = self.push(ExprKind::CoreFn(CoreFnId::AddMethod), span.clone(), ExprContext::Value);
+            Ok(self.push(ExprKind::Call { callee, args: vec![target] }, span, context))
+        }
+    }
+
     /// Only supported source-level top-level declarations are replayable bundles.
     /// Nested declarations, reify and specify! keep ordinary expression semantics.
     fn catalog_bundle(&mut self, id: NodeId, expr: ExprId) -> Result<ExprId, AnalysisError> {
@@ -5373,10 +5509,34 @@ impl Analyzer<'_> {
             return Ok(expr);
         };
         let mut products = Vec::new();
+        let mut once = false;
         let mut extensions = Vec::new();
         let mut work = vec![expr];
         while let Some(value) = work.pop() {
             match &self.program.exprs[value.0].kind {
+                ExprKind::Def { global, once: true, .. } => {
+                    products.push(*global);
+                    once = true;
+                }
+                ExprKind::Call { callee, args }
+                    if matches!(self.program.exprs[callee.0].kind, ExprKind::CoreFn(CoreFnId::AddMethod)) =>
+                {
+                    let target = args.first().and_then(|target| {
+                        if let ExprKind::Global(global) = self.program.exprs[target.0].kind {
+                            let binding = &self.program.globals[global.0];
+                            session.multifn_target(&format!("{}/{}", binding.namespace, binding.name))
+                        } else {
+                            None
+                        }
+                    });
+                    // Unknown and computed targets follow the conservative
+                    // null-selector policy used by computed extend-type.
+                    extensions.push((
+                        target.map_or_else(|| "multifn:*".into(), |name| format!("multifn:{name}")),
+                        None,
+                        format!("method@{}:{}", self.source_index, self.syntax.nodes[id.0].span.start),
+                    ));
+                }
                 ExprKind::DefProtocol {
                     global, methods, ..
                 } => {
@@ -5456,6 +5616,7 @@ impl Analyzer<'_> {
                 &self.program,
                 &products,
                 &extensions,
+                once,
                 form,
                 self.definition_snapshot(),
                 self.macro_host.macro_analysis_frame(),
@@ -5983,6 +6144,7 @@ impl Analyzer<'_> {
                         | "ITransientMap"
                         | "ITransientVector"
                         | "ITransientSet"
+                        | "IMultiFn"
 
                         | "IReversible"
                         | "IComparable"
@@ -6111,6 +6273,9 @@ impl Analyzer<'_> {
                 }
                 Err(protocol) => {
                     let arities = match (protocol.as_str(), spelling.as_str()) {
+                        ("IMultiFn", "-reset" | "-methods" | "-prefers" | "-default-dispatch-val" | "-dispatch-fn") => vec![1],
+                        ("IMultiFn", "-remove-method" | "-get-method") => vec![2],
+                        ("IMultiFn", "-add-method" | "-prefer-method") => vec![3],
                         ("IEncodeJS", "-clj->js" | "-key->js") => vec![1],
                         ("IEncodeClojure", "-js->clj") => vec![2],
                         ("IFn", "-invoke") => (1..=22).collect(),
