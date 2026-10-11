@@ -480,3 +480,100 @@ canonical initializations before its later record forms. Its undefined declared
 function is preserved. A canonical throw supplies neither a local execution
 pass nor an automatic source-program exclusion. The complete source gate and
 all remaining acceptance under light-cljs-125 remain unfinished.
+
+### Namespace shadow resolution repair — 2026-10-11
+
+`light-cljs-154` repairs the qualified call in both complete original
+`foo.ns-shadow-test` contexts. `quux` binds the lexical parameter `foo`, but
+`foo.ns-shadow-test/bar` names the namespace Var. Analysis formerly treated
+that qualified symbol as dotted access through `foo`. Dotted lexical property
+resolution now applies only to unqualified symbols, matching the qualified
+symbol branch before dotted access in the pinned upstream `resolve-var`.
+The required `baz` namespace, same-spelled global `baz` function, every original
+setup form, zero/one-argument methods, recursive call, and six original
+assertion sites remain intact.
+
+Both complete bodies pass ordinary Node/QuickJS execution and actual QuickJS
+macro computation in fresh and reused MacroHosts. Their two case records,
+six assertion witnesses, and complete body/phase mappings are now registered.
+The source-context catalog has seven supported contexts, eleven complete
+bodies, and twenty-three original sites. The complete top-level `let`/`defn`
+context stays unwitnessed under `light-cljs-155`; none of its source or
+expectations was changed. The full language gate remains unfinished.
+
+The independent collision fixture adds required namespace and alias names
+colliding with ordinary global functions and lexical functions, dotted aliases
+whose prefix is lexical, qualified sibling calls in independent namespaces,
+zero/one-argument recursive calls, ordered initialization and redefinition,
+and saved earlier function values. Both pinned ordinary references return
+`[3 7 1 7 7 17 [9 11 13 70 7 19 70] 90 [:before :after]]`.
+Local macro tests explicitly demand the earlier definitions before replacement,
+then verify the later definitions and separate application effects; a macro-only
+atom mutation cannot leak into either application engine. Unknown namespace and
+Var failures retain their source path and location, including an enclosing
+macro declaration location, and the same host subsequently compiles and
+executes the repaired source.
+
+Reproduce the focused semantic checks and oracles:
+
+```sh
+cargo test --locked --test compiler_namespace_shadowing --test compiler_residual_source_context --test namespaces --test compiler_namespace_completion --test compiler_macros --test execution --test compiler_residual_completion
+python3 -B tests/reference/compiler-residual-source-context.py --catalogs
+python3 -B tests/reference/compiler-residual-source-context.py --run --case cljs-shadow --output /tmp/light-cljs-154-cljs-shadow-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case foo-shadow --output /tmp/light-cljs-154-foo-shadow-reference-current
+python3 -B tests/reference/compiler-namespace-shadowing.py --output /tmp/light-cljs-154-shadow-contract-reference-final
+python3 -B tests/reference/compiler-language/extract_inventory.py --check
+node tests/support/js_runtime.test.js
+node tests/support/js_core_helpers.test.js
+```
+
+Both pins are freshly verified: release **1.12.134**, clean checkout
+**a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, `:optimizations :none`,
+`:static-fns false`, `:def-emits-var false`. Final ordinary reference receipts:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `/tmp/light-cljs-154-cljs-shadow-reference-current/evidence.json` | `839a9fc3a89e3ee528f0d2d13f8e354bb1493ac7ebff2dd78f2d199654ad3e4a` |
+| `/tmp/light-cljs-154-foo-shadow-reference-current/evidence.json` | `171ac78659005e535f8dcd021658f7dde5ac2878ae12a7bf662072a4303b7ca4` |
+| `/tmp/light-cljs-154-shadow-contract-reference-final/evidence.json` | `0e8bbe25449f5105e1a68d88c71991c49d86ac503970fac57fd2dbd0dc302854` |
+
+The focused seven-target Rust run passes **199 tests**, zero failures,
+**43 explicitly ignored reference-only tests**. The final additional alias
+and recursive fixture run passes both focused tests, and its final fresh
+reference receipt above includes the final exact source. Both direct Node
+runtime suites pass. Logs are `/tmp/light-cljs-154-regressions.log`,
+`/tmp/light-cljs-154-shadowing-final.log`, and `/tmp/light-cljs-154-js-*.log`.
+The inventory refresh changes only the analyzer source hash; generated
+obligations, original expectations and acceptance rules remain unchanged.
+
+The broader Python discovery attempt initially rejected that analyzer hash
+before regeneration, and the library receipt validator also rejects the older
+191 receipts' `compiler_source_sha256.src/analyzer.rs`. A read-only diagnostic
+using only the baseline HEAD analyzer hash verifies all 191 older receipts,
+confirming intentional current-source invalidation. That diagnostic is not
+fresh library execution or a current receipt pass. Fresh library replay and
+the comprehensive strict gate remain with the already live `light-cljs-125`;
+no stored receipt was relabeled or weakened to pass. Repository-wide
+`cargo fmt --check` reports extensive pre-existing formatting differences;
+only the edited Rust tests are formatted, and unrelated formatting is retained.
+
+The compiler resident smoke completes **423 checked samples** at nine samples
+and one iteration, retained in `/tmp/light-cljs-154-compiler-bench.csv`.
+The first full performance attempt at `/tmp/light-cljs-154-compiler-performance`
+correctly rejects a changed fixture during measurement; it is not a valid
+report. The frozen-source rerun uses the normal runner below. No before/after
+performance claim is made.
+
+```sh
+python3 benchmarks/run_compiler.py --output /tmp/light-cljs-154-compiler-performance-final --samples 9 --iterations 1
+```
+
+The frozen normal performance rerun succeeds at
+`/tmp/light-cljs-154-compiler-performance-final`: **180 fresh-process rows**,
+**423 resident rows**, **423 allocation rows**, and checked resident operation
+outputs, with exact source archive, binaries, emitted programs and hashes.
+The valid frozen report is separate from the discarded changed-source attempt.
+Final Python discovery runs **117 tests: 111 pass, six errors** from the
+intentionally stale library compiler-source receipts above, zero assertion
+failures. The refreshed inventory check and source-context catalog check pass.
+The final discovery log is `/tmp/light-cljs-154-ledger-tests-current.log`.

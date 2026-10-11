@@ -4374,7 +4374,10 @@ impl Analyzer<'_> {
                 method: member.strip_prefix('.').map(str::to_owned),
             });
         }
-        if let Some((root, fields)) = name.split_once('.')
+        // A slash-qualified symbol names a namespace Var before dotted access
+        // is considered. Its namespace may begin with a lexical binding's name.
+        if !name.contains('/')
+            && let Some((root, fields)) = name.split_once('.')
             && (self.lookup(root).is_some()
                 || self
                     .resolution

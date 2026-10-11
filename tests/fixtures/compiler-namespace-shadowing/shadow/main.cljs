@@ -1,0 +1,15 @@
+(ns shadow.main (:require baz [shadow.other :as a.b] [shadow.other :as sibling]))
+(def effects (atom []))
+(defn bar [] 1)
+(defn quux [shadow] (+ (shadow.main/bar) shadow))
+(defn baz ([] (baz 2)) ([x] (if (> x 2) (baz (dec x)) (quux x))))
+(defn sibling [] 17)
+(def saved bar)
+(def before (do (swap! effects conj :before) (baz)))
+(defn bar [] 5)
+(def after (do (swap! effects conj :after) (baz)))
+(defn run []
+  (pr-str [before after (saved) (baz) (baz 4) (sibling)
+   (let [baz (fn [] 9) a (fn [] 11) shadow (fn [] 13) sibling (fn [] 19)]
+     [(baz) (a) (shadow) (a.b/value) (shadow.main/baz) (sibling) (sibling/value)])
+   (baz/value) @effects]))

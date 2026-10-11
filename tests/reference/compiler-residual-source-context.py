@@ -130,7 +130,7 @@ def generate(catalogs=False):
                               'rationale': RATIONALE} for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope')
         case['complete_body_phase_mappings'] = [mapping for mapping in phases if mapping['reference_fixture_id'] == identity]
         cases.append(case)
-    pending = {PREFIX + 'cljs-shadow', PREFIX + 'foo-shadow', PREFIX + 'top-level'}
+    pending = {PREFIX + 'top-level'}
     fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Only executed supported contexts; unresolved complete sources remain in proposals.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows if row[0] not in pending)
     completion.persist(ROOT / FIXTURE, fixture)
     for row in phases:
