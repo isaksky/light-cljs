@@ -431,8 +431,18 @@ impl Drop for AnalysisGuard<'_> {
     }
 }
 
-struct FrontierGuard<'a> {
+pub(crate) struct FrontierGuard<'a> {
     engine: &'a dyn MacroEvaluator,
+}
+impl<'a> FrontierGuard<'a> {
+    pub(crate) fn bootstrap(engine: &'a dyn MacroEvaluator) -> Result<Self, String> {
+        // Used only after attaching a compilation with user declarations.
+        let value = engine
+            .evaluate_unit("rt => globalThis.__lightEnterCompilerFrontier(0)")
+            .map_err(|e| e.to_string())?;
+        engine.release(value).map_err(|e| e.to_string())?;
+        Ok(Self { engine })
+    }
 }
 impl Drop for FrontierGuard<'_> {
     fn drop(&mut self) {

@@ -206,8 +206,18 @@ impl MacroHost {
             definition: Some(declaration.definition),
             helpers: vec![],
         };
+        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+        // Core macros were defined before user declarations. Their ordinary
+        // collection operations must not demand the very extension whose body
+        // they are expanding, or observe later user protocol replacements.
+        // Keep source macros on their normal declaration frontier, and restore
+        // any installed extensions (including executed mutations) on return.
+        let _frontier = self.session_handle()
+            .filter(|session| session.extension_frontier() != 0)
+            .map(|_| crate::compilation_session::FrontierGuard::bootstrap(engine))
+            .transpose()?;
         let result = self.expand_javascript(
-            engine.unwrap_or(bootstrap.evaluator.as_ref()),
+            engine,
             declaration.function,
             call,
             env,

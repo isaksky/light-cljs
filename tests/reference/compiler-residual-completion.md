@@ -255,6 +255,49 @@ Its exact source and evidence are retained at
 this sequence/name change. light-cljs-152's core-macro declaration cycle and
 light-cljs-125's full-language gate remain unfinished with their original scope.
 
+## Core macros and collection extension demand
+
+On 2026-10-11 from starting HEAD `f4259e3`, light-cljs-152 runs compiler-owned
+core macro computations at their bootstrap declaration frontier. Collection
+operations used to build expansions no longer demand user extensions, including
+the declaration whose method is currently being expanded. The existing frontier
+guard restores installed user extensions and executed mutations afterward,
+including failure paths. Source macros keep normal user declaration demand;
+compile, root and bundle cycle detection are unchanged.
+
+`tests/fixtures/compiler_core_extension_demand.tsv` retains the original `and`
+source, including all three persistent collection extensions and saved receiver
+calls. With its `pr-str` wrapper, its SHA-256 is
+`d79da2669a225d77040f0de18af6438b232c45b604eed0cc1133c650588905fd`.
+Fresh/reused MacroHosts execute it in Node/QuickJS applications and as actual
+QuickJS macro computation. Separate tests cover ordered equality replacement,
+failed extension-demand recovery and a genuine computed-target declaration cycle.
+
+Reproduce the exact reference comparison and focused checks:
+
+```sh
+python3 -B tests/reference/compiler-core-extension-demand.py --output /tmp/light-cljs-152-reference-final
+cargo test --locked --test compiler_core_extension_demand
+```
+
+Both reference pins pass: release **1.12.134** and clean checkout
+**a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, with `:optimizations :none`,
+`:static-fns false`, `:def-emits-var false`. The receipt at
+`/tmp/light-cljs-152-reference-final/evidence.json` has SHA-256
+`bc58f3910f965b7a8af3d84ebf6bd9ec79d382df8b3b3d09ab5d0c8951bb9fe0`;
+its implementation/fixture/test hashes match the final files.
+
+The final library plus ten affected integration suites pass **163 tests**, zero
+failures and one explicitly ignored general reference-equality test. These cover
+macros/bootstrap, protocols/extensions, equality and collection/sequence Object
+methods. The focused two-pin comparison above was run separately. Both JavaScript
+runtime/helper suites pass. Logs use `/tmp/light-cljs-152-*`; the validated
+compiler benchmark report `/tmp/light-cljs-152-compiler-bench-final` uses nine
+samples and one iteration, a checked-output smoke run rather than a comparative
+performance claim. No runtime equality behavior or full-language evidence gate
+was changed. Atom dispatch remains owned by light-cljs-153 and full-language
+completion remains owned by light-cljs-125.
+
 ## Retained gaps and boundaries
 
 The complete integer-predicate table also passes both references and fails
