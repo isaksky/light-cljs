@@ -334,6 +334,22 @@ class DiagnosticTests(unittest.TestCase):
         case["diagnostic"].pop("split_rationale")
         with self.assertRaises(ValueError):report.validate_diagnostic(case, inventory, bodies)
 
+    def test_local_diagnostic_adaptation_is_hashed_and_never_replaces_reference_source(self):
+        inventory = {"assertion": {"disposition": "in-scope"}}
+        bodies = {"body": {"source_span": {"sha256": "body-sha"}, "assertions": ["assertion"]}}
+        case = copy.deepcopy(self.case)
+        probe = case["diagnostic"]["probes"][0]
+        original = probe["source"]
+        probe.update(local_source="(quote 1 2)", local_adaptation="Ordinary local source retains the exact invalid argument count.",
+                     local_source_sha256=report.hashlib.sha256(b"(quote 1 2)").hexdigest())
+        report.validate_diagnostic(case, inventory, bodies)
+        self.assertEqual(probe["source"], original)
+        for field, value in [("local_source_sha256", "stale"), ("local_adaptation", ""), ("local_source", "")]:
+            changed = copy.deepcopy(case)
+            changed["diagnostic"]["probes"][0][field] = value
+            with self.assertRaises(ValueError):
+                report.validate_diagnostic(changed, inventory, bodies)
+
     def test_contract_rejects_stale_partial_generic_or_permissive_diagnostic_mappings(self):
         inventory = {"assertion": {"disposition": "in-scope"}}
         bodies = {"body": {"source_span": {"sha256": "body-sha"}, "assertions": ["assertion"]}}

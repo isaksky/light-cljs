@@ -16,6 +16,39 @@ import report
 
 
 class FullLedgerTests(unittest.TestCase):
+    def test_sci_obligations_require_exact_sources_both_engines_and_both_pins(self):
+        import sci_execution as sci
+        mapping = sci.load()[0]
+        target = next(row for row in report.jsonl(report.HERE / "obligations.jsonl") if row["id"] == mapping["obligation_id"])
+        local = {"status": "passed", "source_sha256": mapping["source_sha256"],
+                 "test_file": sci.TEST_FILE, "test_name": sci.TEST_NAME,
+                 "test_source_sha256": sci.digest((report.ROOT / sci.TEST_FILE).read_bytes()),
+                 "adapter_source_sha256": sci.digest((report.ROOT / "tests/support/sci_execution_observation.js").read_bytes()),
+                 "engines": {kind: {"status": "passed"} for kind in ("Node", "QuickJS")}}
+        layers = {"javascript": local, **{kind: {"status": "passed", "source_sha256": mapping["reference_source_sha256"],
+                  "original_source_sha256": mapping["original_source_sha256"], "isolated": mapping["reference_isolated"], "reference_identity": kind + " " + identity,
+                  "settings": {"optimizations": "none", "static-fns": False, "def-emits-var": False}}
+                  for kind, identity in (("release", report.RELEASE), ("checkout", report.REVISION))}}
+        historical = {"counts": {kind: 0 for kind in ("covered", "missing", "unrelated", "version-difference", "verified-rejection", "verified-warning")}, "strict_complete": False, "boundary_strict_complete": True}
+        def status(evidence):
+            with patch.object(full, "load", return_value=([], [target], {"counts": {}})), \
+                 patch.object(full, "load_obligation_witnesses", return_value={}), patch.object(full, "load_phase_witnesses", return_value={}), \
+                 patch.object(sci, "load", return_value=[mapping]):
+                return full.expand_report(historical, {}, {}, sci_evidence={mapping["id"]: evidence})["assertions"][0]["status"]
+        self.assertEqual(status(layers), "covered")
+        for layer in ("javascript", "release", "checkout"):
+            for bad in ("not-run", "mismatch", "timed-out", "failed"):
+                changed = copy.deepcopy(layers); changed[layer]["status"] = bad
+                self.assertEqual(status(changed), "missing")
+            changed = copy.deepcopy(layers); changed[layer]["source_sha256"] = "stale"
+            self.assertEqual(status(changed), "missing")
+        changed = copy.deepcopy(layers); del changed["javascript"]["engines"]["QuickJS"]
+        self.assertEqual(status(changed), "missing")
+        changed = copy.deepcopy(layers); changed["checkout"]["reference_identity"] = "checkout stale"
+        self.assertEqual(status(changed), "missing")
+        changed = copy.deepcopy(layers); changed["checkout"]["isolated"] = not mapping["reference_isolated"]
+        self.assertEqual(status(changed), "missing")
+
     def test_pinned_tree_selection_has_no_selected_file_whitelist(self):
         tree = "src/test/cljs/cljs/new_core_test.cljs\nsrc/test/cljs/cljs/helpers.clj\nsrc/test/cljs/clojure/set_test.cljs\nsrc/test/cljs/cljs/reader_test.cljs\nsrc/main/cljs/ignored.cljs\n"
         with patch.object(full.subprocess, "check_output", return_value=tree):
@@ -170,12 +203,31 @@ class FullLedgerTests(unittest.TestCase):
         with patch.object(full, "load", return_value=([], [api], {"counts": {}})), \
              patch.object(full, "load_obligation_witnesses", return_value={"api": {"local_execution": test}}), \
              patch.object(full, "load_phase_witnesses", return_value={"api": test}):
-            for state, digest, expected in [("not-run", "current", False), ("failed", "current", False), ("passed", "stale", False), ("passed", "current", True)]:
+            for state, digest, expected in [("not-run", "current", False), ("failed", "current", False), ("passed", "stale", False), ("passed", "current", False)]:
                 result = full.expand_report(historical, {}, {}, phase_evidence={"api": {"status": state, "test_source_sha256": digest}})
                 self.assertEqual(result["strict_complete"], expected)
                 columns = result["assertions"][0]["columns"]
                 self.assertEqual(columns["execution_evidence"]["references"],
                                  {"release": {"status": "not-run"}, "checkout": {"status": "not-run"}})
+
+    def test_local_compatibility_operation_needs_both_pinned_oracles(self):
+        api = {"id": "api", "disposition": "intended", "reason": "public contract", "obligation_kind": "public-api", "source": "core.cljs", "name": "f", "source_span": {}, "family": "public-residual", "owner": "light-cljs-125"}
+        test = {"test_source_sha256": "current"}
+        mapping = {"local_execution": test, "reference_fixture_id": "oracle"}
+        historical = {"counts": {key: 0 for key in ("covered", "verified-rejection", "verified-warning", "missing", "version-difference", "unrelated")}, "strict_complete": False, "boundary_strict_complete": True}
+        phase = {"api": {"status": "passed", "test_source_sha256": "current"}}
+        with patch.object(full, "load", return_value=([], [api], {"counts": {}})), \
+             patch.object(full, "load_obligation_witnesses", return_value={"api": mapping}), \
+             patch.object(full, "load_phase_witnesses", return_value={"api": test}):
+            for reference in ("release", "checkout"):
+                for state in ("not-run", "failed", "mismatch", "timed-out", "passed"):
+                    layers = {kind: {"status": "passed"} for kind in ("release", "checkout")}
+                    layers[reference]["status"] = state
+                    result = full.expand_report(historical, {}, {"oracle": layers}, phase_evidence=phase)
+                    self.assertEqual(result["assertions"][0]["status"], "covered" if state == "passed" else "missing")
+            api["dialect_contract"] = "Explicit local source/phase contract"
+            mapping.pop("reference_fixture_id")
+            self.assertEqual(full.expand_report(historical, {}, {}, phase_evidence=phase)["assertions"][0]["status"], "covered")
 
     def test_arity_witness_rejects_hash_drift_unknown_arity_and_selected_body_subset(self):
         target = {"id": "api::map", "disposition": "intended", "body_sha256": "body", "signature": {"kind": "fixed", "minimum": 2}}

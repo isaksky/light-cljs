@@ -450,12 +450,15 @@ def columns(layers=None, status="missing"):
     return result
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
     phases = load_phase_witnesses(obligations)
     phase_evidence = phase_evidence or {}
+    from sci_execution import load as load_sci, digest as sci_digest, TEST_FILE, TEST_NAME
+    sci_mappings = {item["obligation_id"]: item for item in load_sci()}
+    sci_evidence = sci_evidence or {}
     selected = bool(features or identities)
     rows = []
     for row in assertions:
@@ -490,15 +493,43 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             observed = phase_evidence.get(row["id"], {})
             verified = (observed.get("status") == "passed" and
                         observed.get("test_source_sha256") == mapping["local_execution"]["test_source_sha256"])
-            status = "covered" if verified else "missing"
             layers = {"javascript": {"status": "passed" if verified else "not-run",
                                       "engines": ["Node", "QuickJS"]}}
+            oracle = mapping.get("reference_fixture_id")
+            if oracle:
+                oracle_layers = evidence.get(oracle, {})
+                layers.update({kind: oracle_layers.get(kind, {"status": "not-run"}) for kind in ("release", "checkout")})
+            # Application/macro tests cannot manufacture pinned compatibility.
+            # Only explicit source/phase dialect contracts may omit that oracle.
+            references = bool(oracle) and all(layers.get(kind, {}).get("status") == "passed" for kind in ("release", "checkout"))
+            status = "covered" if verified and (references or row.get("dialect_contract")) else "missing"
             # Exact local protocol/macro contracts provide local execution, not
             # pinned-reference observations. Never infer release/checkout runs.
+        sci_mapping = sci_mappings.get(row["id"])
+        if sci_mapping:
+            if row["body_sha256"] != sci_mapping["body_sha256"]:
+                raise ValueError("SCI execution mapping detached from original obligation")
+            layers = sci_evidence.get(sci_mapping["id"], {})
+            local = layers.get("javascript", {})
+            exact_local = (local.get("source_sha256") == sci_mapping["source_sha256"]
+                           and local.get("test_file") == TEST_FILE and local.get("test_name") == TEST_NAME
+                           and local.get("test_source_sha256") == sci_digest((ROOT / TEST_FILE).read_bytes())
+                           and local.get("adapter_source_sha256") == sci_digest((ROOT / "tests/support/sci_execution_observation.js").read_bytes())
+                           and set(local.get("engines", {})) == {"Node", "QuickJS"}
+                           and all(engine.get("status") == "passed" for engine in local["engines"].values()))
+            exact_references = all(
+                layers.get(kind, {}).get("status") == "passed"
+                and layers[kind].get("source_sha256") == sci_mapping["reference_source_sha256"]
+                and layers[kind].get("original_source_sha256") == sci_mapping["original_source_sha256"]
+                and layers[kind].get("isolated") == sci_mapping["reference_isolated"]
+                and layers[kind].get("reference_identity") == kind + " " + (runner.RELEASE if kind == "release" else runner.REVISION)
+                and layers[kind].get("settings") == {"optimizations": "none", "static-fns": False, "def-emits-var": False}
+                for kind in ("release", "checkout"))
+            status = "covered" if exact_local and local.get("status") == "passed" and exact_references else "missing"
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
-                     "status": status, "fixture_id": None, "layers": layers, "columns": observed_columns,
+                     "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
                      "completion_reason": "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
     counts = Counter(row["status"] for row in rows)
     sections = {}
@@ -527,6 +558,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
         if row["disposition"] == "in-scope":
             body_ids.setdefault(row["body_id"], []).append(row["id"])
     result = {}
+    reference_fixtures = None
     for line in (HERE / "obligation-witnesses.jsonl").read_text().splitlines():
         item = json.loads(line)
         target = targets.get(item.get("obligation_id"))
@@ -545,6 +577,14 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
             if (not phase or item["local_execution"] != {key: phase[key] for key in
                     ("test_file", "test_name", "test_source_sha256")} or item.get("assertion_ids")):
                 raise ValueError("Local obligation witness needs its exact application/macro execution test")
+            if item.get("reference_fixture_id"):
+                import report as runner
+                if reference_fixtures is None:
+                    reference_fixtures = runner.fixtures("intended-language")
+                oracle = reference_fixtures.get(item["reference_fixture_id"])
+                if (not oracle or item.get("reference_source_sha256") != inv.digest(oracle["source"].encode())
+                        or item.get("reference_contract_sha256") != inv.digest(json.dumps(oracle["expected"], sort_keys=True).encode())):
+                    raise ValueError("Local operation oracle detached from exact source/literal expectation")
             result[target["id"]] = item
             continue
         ids = item.get("assertion_ids", [])

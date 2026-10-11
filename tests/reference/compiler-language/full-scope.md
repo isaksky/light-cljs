@@ -6,8 +6,8 @@ mapping remains missing. This ledger is accounting evidence, not a parallel task
 queue. Pellets owns implementation work and the report identifies its owners.
 
 The [final gate receipt](final-gate.md) preserves fresh execution results,
-confirmed public protocol/constructor/source-metadata omissions and their live
-owners, together with the explicit dialect and ecosystem boundaries. Language
+confirmed source/phase omissions and their live owners, together with the
+explicit dialect and ecosystem boundaries. Language
 completion remains incomplete; the receipt does not replace the full strict gate.
 
 ```sh
@@ -106,6 +106,61 @@ Full upstream bodies mixing sequence,
 eduction and flatten remain subject to their assigned families; passing focused
 sequence tests does not complete those mixed bodies.
 
+Local application/macro contracts without an original upstream assertion body
+must also name a literal pinned oracle when canonical compatibility is intended.
+Their `reference_fixture_id`, complete source hash and expectation hash are
+validated independently. Both reference observations must pass; a named local
+test alone cannot manufacture pinned compatibility. An explicit local dialect
+contract may omit those references, while retaining its source/phase evidence.
+
+## Complete body and SCI execution adapters
+
+`../compiler-library-bodies.py` reproduces 24 complete promised set/string/walk
+test bodies, their setup dependencies, namespace entry files and retained
+assertion mappings. The local test executes each complete workflow as an
+application and an intermediate macro computation on Node and QuickJS. The
+ordinary report executes the original canonical namespace adapters on both
+pins. The walk metadata body records every failed assertion ID before returning,
+so the release's two metadata differences cannot hide its later paths.
+
+`../compiler-core-gate.py` retains 22 complete upstream core workflows and six
+independent literal contracts. `../compiler-core-gate-mappings.py` reproduces
+reviewed direct-call/arity receipts, ordinary and phase mappings, and the six
+literal oracles. Quoted/data/discarded forms and ambiguous threaded arities are
+not inferred as calls. Whole-body local assertions and both checked references
+remain required; these generated receipts are not execution evidence.
+
+`sci-execution-catalog.jsonl` preserves 1,174 unchanged portable SCI source rows,
+their original expectations, corpus/disposition row hashes and source hashes.
+`sci_execution.py` executes exact sources with Node and QuickJS, and both checked
+canonical pins through the normal reference harness. It retains raw observations
+alongside the existing Number/character/finite list-versus-sequence comparison
+projection. Ordered trace, stdout, negative zero, container kind and namespace
+distinctions remain observable. The canonical-only streaming print prefix
+faithfully supplies the original SCI output profile; source bytes remain an exact
+suffix. Three `Box`/`Empty` cases run in isolated reference processes to prevent
+canonical prelude mutations from contaminating later cases. Original library,
+reader, namespace and other profile setup requiring further adapters remains
+missing rather than being discarded.
+
+The full unfiltered `--run` invokes the exact named SCI driver and both pins,
+requiring current helper/test hashes, both local engine passes, exact reference
+source/setup identity, compiler settings and isolation. Historical dispositions,
+successful observation capture, zero-test Cargo runs and reference availability
+are never sufficient. Source rows with canonical differences or required hosted
+services remain nonpassing until explicit source-specific reconciliation. The
+ignored `compiler_sci_service_probes` audit captures application/macro failures
+for diagnosis and supplies no coverage pass.
+
+Reproduce adapters without executing them:
+
+```sh
+python3 -B tests/reference/compiler-library-bodies.py
+python3 -B tests/reference/compiler-core-gate.py
+python3 -B tests/reference/compiler-core-gate-mappings.py
+python3 -B tests/reference/compiler-language/sci_execution.py
+```
+
 A full-scope selection cannot claim completion when `--feature` or `--id` selects
 a subset, even if every selected witness passes. Independently sourced API/arity,
 syntax, local API/SCI and assertion-free module obligations still remain required.
@@ -124,7 +179,7 @@ covers all 445 intended utility-owned obligations (408 source sites, 22 public
 arities and fifteen local APIs), with both pinned references. Original external
 test.check properties and macro-module import integration remain intended under
 light-cljs-125; the confirmed source-visible *unchecked-arrays* configuration gap
-has the focused live owner light-cljs-132. These exact ownership reconciliations
+was completed by light-cljs-132. These exact ownership reconciliations
 preserve original bodies, hashes, expectations and required dispositions.
 
 ## Ownership and boundaries

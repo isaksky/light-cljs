@@ -182,6 +182,17 @@ fn compiled_results() -> String {
 }
 
 fn compiled_cases(cases: &[Case]) -> String {
+    // Every independent case embeds its own runtime factory. Bound Node's
+    // source input as the runtime/corpus grows, retaining original case order
+    // and namespace indices rather than hitting V8's single-string limit.
+    let mut output = String::new();
+    for (batch, cases) in cases.chunks(32).enumerate() {
+        output.push_str(&compiled_batch(cases, batch * 32));
+    }
+    output
+}
+
+fn compiled_batch(cases: &[Case], first_index: usize) -> String {
     let mut script = String::from(
         "globalThis.lightRuntimeRegistry = [];\n\
          globalThis.lightInspectValue = value => {\n\
@@ -196,7 +207,7 @@ fn compiled_cases(cases: &[Case]) -> String {
     for (index, case) in cases.iter().enumerate() {
         // Match the reference namespace exactly, retaining the original source
         // separately as metadata. Aliased core is virtual in both compilers.
-        let namespace = format!("semantic.case{index}");
+        let namespace = format!("semantic.case{}", first_index + index);
         let source = format!(
             "(ns {namespace} (:require [cljs.core :as c]))\n(fn* [observe] {})",
             case.source

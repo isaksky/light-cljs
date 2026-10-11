@@ -1398,7 +1398,7 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "e88db40afd7c1fd9389ab484ea19be77df5ec9f663ff410c54fa75fbe8735966",
+  "generator_sha256": "8054b42de04ba384e0905096c1624686fcc284fa7caf0d1029c9bc91c9873c38",
   "obligations_sha256": "b4255ca0e97320ad30d604b8db22289acbc43017a5cd77d47458d8374d5c145d",
   "api_sources": [
     {
@@ -1440,7 +1440,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "c1502668ff8cee06a8ad5034c491e09c2df8d2798641ee386416ac420b52ba86"
+      "sha256": "f99aedd64cf10b71e6f3fe7ac40acfbb210f60d94ae5f5a10b5843ce66d0e5bf"
     },
     {
       "path": "src/core_var_metadata.tsv",

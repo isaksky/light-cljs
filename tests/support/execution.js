@@ -136,18 +136,24 @@
       else if (typeof callback === "function") callback();
       return true;
     };
-    let returned = false, value, error;
+    let returned = false, value, error, observation;
     try {
-      value = programs[index](observe);
-      returned = true;
-    } catch (thrown) {
-      error = thrown;
+      try {
+        value = programs[index](observe);
+        returned = true;
+      } catch (thrown) {
+        error = thrown;
+      }
+      // Finite lazy values can print while the observation bridge realizes
+      // them. Keep those effects in this case's capture, including trace values.
+      const outcome = returned ? { status: "returned", value: encode(value) }
+        : { status: "threw", error: failure(error) };
+      const encodedTrace = encode(trace);
+      observation = { id, outcome, trace: encodedTrace, stdout: Buffer.concat(stdout).toString("utf8") };
     } finally {
       process.stdout.write = write;
     }
-    const outcome = returned ? { status: "returned", value: encode(value) }
-      : { status: "threw", error: failure(error) };
-    write.call(process.stdout, JSON.stringify({ id, outcome, trace: encode(trace), stdout: Buffer.concat(stdout).toString("utf8") }) + "\n");
+    write.call(process.stdout, JSON.stringify(observation) + "\n");
     process.stderr.write(`CASE END ${JSON.stringify({ id })}\n`);
   }
 })();

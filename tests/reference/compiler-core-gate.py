@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Bounded core gate from complete, already mapped upstream adapter programs.
+
+This script generates evidence bindings, never execution passes or catalog writes.
+Original EPL-1.0 source notices are retained in the pinned research checkout.
+"""
+from pathlib import Path
+import argparse
+import hashlib
+import json
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = ROOT / 'tests/reference/compiler-language'
+sys.path.insert(0, str(HERE))
+import extract_inventory as inv
+import report
+
+GROUPS = {
+    'numeric': ['primitives_test.cljs::test-arithmetic',
+                'primitives_test.cljs::test-equiv', 'primitives_test.cljs::test-bit-operations'],
+    'collections': ['collections_test.cljs::test-map-operations',
+                    'collections_test.cljs::test-sets', 'core_test.cljs::test-in-operations',
+                    'core_test.cljs::test-contains?'],
+    'state': ['core_test.cljs::test-atoms-and-volatile', 'core_test.cljs::test-delay',
+              'core_test.cljs::swap-vals-returns-old-value', 'core_test.cljs::deref-swap-arities',
+              'core_test.cljs::deref-reset-returns-old-value'],
+    'control': ['primitives_test.cljs::test-case', 'primitives_test.cljs::test-list-comprehensions',
+                'core_test.cljs::some->test', 'core_test.cljs::some->>test',
+                'core_test.cljs::cond->test', 'core_test.cljs::cond->>test',
+                'core_test.cljs::as->test', 'core_test.cljs::threading-loop-recur'],
+    'exceptions': ['primitives_test.cljs::test-try-catch',
+                   'core_test.cljs::test-data-conveying-exceptions'],
+}
+
+# Independent literal expectations supplement upstream direct-call arities.
+# Saved functions prevent macro-only source expansion from replacing runtime
+# higher-order call checks. Both entire expressions run in both compiler phases.
+LITERALS = {
+    'numeric': [
+        ('saved-arithmetic', '[(+) (+ 1) (+ 1 2) (+ 1 2 3) (*) (* 2) (* 2 3) (* 2 3 4) (- 3) (- 3 2) (- 6 2 1) (/ 2) (/ 6 2) (/ 12 2 3) (let [a + m * s - d /] [(a) (a 1) (a 1 2) (a 1 2 3) (m) (m 2) (m 2 3) (m 2 3 4) (s 3) (s 3 2) (s 6 2 1) (d 2) (d 6 2) (d 12 2 3)])]', '[0 1 3 6 1 2 6 24 -3 1 3 0.5 3 2 [0 1 3 6 1 2 6 24 -3 1 3 0.5 3 2]]'),
+        ('numeric-boundaries', '[(inc -1) (dec 1) (quot -7 3) (rem -7 3) (mod -7 3) (max 3) (max 1 3) (max 1 3 2) (min 3) (min 1 3) (min 3 1 2) (zero? 0) (pos? 1) (neg? -1) (even? 4) (odd? -3)]', '[0 0 -2 -1 2 3 3 3 3 1 1 true true true true true]'),
+    ],
+    'collections': [
+        ('saved-collections', '(let [c conj a assoc d dissoc g get] [(c nil) (c [] 1) (c [] 1 2) (a nil :a 1) (a {} :a 1 :b 2) (d {:a 1}) (d {:a 1} :a) (d {:a 1 :b 2} :a :b) (g {:a nil} :a :missing) (g {} :a :missing) (count (list)) (vector) (hash-map) (hash-set)])', '[nil [1] [1 2] {:a 1} {:a 1, :b 2} {:a 1} {} {} nil :missing 0 [] {} #{}]'),
+    ],
+    'state': [
+        ('watch-effects', '(let [a (atom 0) events (atom [])] (add-watch a :w (fn [k r old new] (swap! events conj [k (identical? r a) old new]))) (swap! a + 2) (remove-watch a :w) (reset! a 9) [@a @events (compare-and-set! a 9 10) @a])', '[9 [[:w true 0 2]] true 10]'),
+    ],
+    'control': [
+        ('short-circuit-effects', '(let [events (atom []) f (fn [x] (swap! events conj x) x)] [(and (f false) (f :skipped)) (or (f nil) (f :chosen) (f :skipped)) (if-let [x (f 2)] (inc x) 0) (when-let [x (f 3)] (dec x)) @events])', '[false :chosen 3 2 [false nil :chosen 2 3]]'),
+    ],
+    'exceptions': [
+        ('exception-cause-finally', '(let [events (atom []) cause (ex-info "cause" {:cause true}) error (ex-info "outer" {:n 2} cause)] [(try (throw error) (catch ExceptionInfo e [(ex-message e) (ex-data e) (identical? cause (ex-cause e))]) (finally (swap! events conj :finally))) @events])', '[["outer" {:n 2} true] [:finally]]'),
+    ],
+}
+
+# Reviewed names used as direct calls in these exact workflows. No unbound names,
+# private storage/host helpers, quoted data or textual occurrences become arities.
+NAMES = set('''+ - * / = not= < <= > >= inc dec max min quot rem mod zero? pos? neg?
+even? odd? number? integer? int bit-xor bit-and bit-or bit-and-not bit-clear bit-set
+bit-flip bit-test bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right
+apply not boolean true? false? nil? some? identical? compare
+get assoc dissoc contains? find conj disj count list vector hash-map array-map hash-set
+set vec nth first rest next empty empty? peek pop subvec keys vals merge merge-with
+select-keys get-in assoc-in update-in update reduce reduce-kv reduced deref
+atom swap! reset! compare-and-set! get-validator set-validator! volatile! vswap! vreset!
+swap-vals! reset-vals! add-watch remove-watch meta with-meta realized? force delay
+ex-info ex-data ex-message ex-cause instance? str pr-str
+and or if-let when-let when when-not cond case for doseq dotimes some-> some->>
+cond-> cond->> as-> -> ->>'''.split())
+THREADS = {'->', '->>', 'some->', 'some->>', 'cond->', 'cond->>', 'as->'}
+TESTS = {group: 'core_' + group + '_applications_and_macros_execute' for group in GROUPS}
+FIXTURE = ROOT / 'tests/fixtures/compiler-core-gate.tsv'
+TEST_FILE = 'tests/compiler_core_gate.rs'
+
+
+def digest(value):
+    return hashlib.sha256(value.encode() if isinstance(value, str) else value).hexdigest()
+
+
+def read(name):
+    return [json.loads(line) for line in (HERE / name).read_text().splitlines() if line]
+
+
+def fixture_rows():
+    inventory, witnesses, cases = report.load_contract('intended-language')
+    bodies = {row['id']: row for row in read('full-bodies.jsonl')}
+    rows = []
+    for group, names in GROUPS.items():
+        for name in names:
+            body = bodies[name]
+            ids = [identity for identity in body['assertions']
+                   if inventory[identity]['disposition'] == 'in-scope']
+            assert ids and all(identity in witnesses for identity in ids), name
+            case_ids = list(dict.fromkeys(witnesses[identity]['fixture_id'] for identity in ids))
+            selected = []
+            for identity in case_ids:
+                case = cases[identity]
+                assert case['expected'] == {'id': identity,
+                    'outcome': {'status': 'returned', 'value': True}, 'trace': [], 'stdout': ''}, identity
+                assert 'source_root' not in case and 'compile_difference' not in case, identity
+                # Complete adapter sources are nested without rewriting their
+                # helper/setup/effect/expectation expressions or case ordering.
+                assert '\n' not in case['source'] and '\t' not in case['source']
+                selected.append(case)
+            source = '(do ' + ' '.join('(assert (do ' + c['source'] + '))' for c in selected) + ' true)'
+            provenance = {'body_id': name, 'body_sha256': body['source_span']['sha256'],
+                'assertion_ids': ids,
+                'cases': [{'id': c['id'], 'source_sha256': digest(c['source']),
+                           'expected': c['expected']} for c in selected]}
+            rows.append([group, name, source, 'true', json.dumps(provenance, separators=(',', ':'))])
+        for name, source, expected in LITERALS[group]:
+            rows.append([group, 'literal::' + name, source, expected,
+                         json.dumps({'literal': name, 'source_sha256': digest(source)}, separators=(',', ':'))])
+    return rows
+
+
+def calls(source):
+    """Exact direct arities; skip data, discarded forms and threaded call shapes."""
+    result = {}
+    def walk(node):
+        if node.kind in {'quote', 'syntax-quote', 'discard', 'var'}:
+            return
+        head = inv.head(node)
+        if head.startswith('cljs.core/'):
+            head = head[len('cljs.core/'):]
+        if head == 'quote':
+            return
+        if head in NAMES and node.kind == 'list':
+            result.setdefault(head, set()).add(len(node.children) - 1)
+        if head in THREADS:
+            # Their public macro arity is exact, but nested calls receive
+            # implicit arguments and cannot be assigned their raw list length.
+            return
+        for child in node.children:
+            walk(child)
+    for node in inv.Reader(source).all():
+        walk(node)
+    return result
+
+
+def execution_mappings(*, include_existing=False):
+    """Return new ordinary, phase bindings and exact reviewed call receipts.
+
+    The caller integrates these only after executing the named cohort tests.
+    An ordinary assertion mapping includes EVERY in-scope site of its complete
+    original body; literal-only additions bind exact local execution instead.
+    """
+    rows = fixture_rows()
+    bodies = {r['id']: r for r in read('full-bodies.jsonl')}
+    obligations = read('obligations.jsonl')
+    already = set() if include_existing else {r['obligation_id'] for r in read('obligation-witnesses.jsonl')}
+    phases = set() if include_existing else {r['obligation_id'] for r in read('phase-witnesses.jsonl')}
+    test_hash = digest((ROOT / TEST_FILE).read_bytes())
+    support = {str(FIXTURE.relative_to(ROOT)): digest(FIXTURE.read_bytes())}
+    candidates = []
+    for group, identity, source, expected, provenance in rows:
+        original = bodies[identity]['source_span']['text'] if identity in bodies else source
+        direct = calls(original)
+        adapter_calls = calls(source)
+        # A name/arity must remain an actual call in both original and adapter.
+        direct = {name: arities & adapter_calls.get(name, set()) for name, arities in direct.items()}
+        if identity == 'literal::saved-collections':
+            # These reviewed bindings use saved runtime functions. They witness
+            # their public runtime declarations, not source macro declarations.
+            direct.update({'conj': {1, 2, 3}, 'assoc': {3, 5}, 'dissoc': {1, 2, 3}, 'get': {3}})
+        candidates.append((group, identity, direct, json.loads(provenance)))
+    direct_rows, phase_rows, receipts = [], [], []
+    for obligation in obligations:
+        if obligation['disposition'] != 'intended' or obligation['name'] not in NAMES:
+            continue
+        if obligation['obligation_kind'] not in {'public-api', 'local-api', 'local-metadata'}:
+            continue
+        if obligation['obligation_kind'] == 'public-api' and not obligation['source'].endswith(('cljs/core.cljs', 'cljs/core.cljc')):
+            continue
+        signature = obligation.get('signature')
+        if signature and signature['kind'] not in {'fixed', 'variadic'}:
+            continue
+        found = None
+        for group, identity, names, provenance in candidates:
+            arities = names.get(obligation['name'], set())
+            if signature:
+                arities = {n for n in arities if n == signature['minimum']} if signature['kind'] == 'fixed' else {
+                    n for n in arities if n > signature['minimum']}
+            if arities:
+                found = group, identity, arities, provenance
+                break
+        if not found:
+            continue
+        group, identity, arities, provenance = found
+        rationale = ('The complete ' + identity + ' workflow executes ' + obligation['name']
+            + ' at reviewed direct call arities ' + str(sorted(arities))
+            + '. The whole original adapter suite and literal contract run independently in '
+            'QuickJS and Node applications and as a compiler-executed macro, preserving '
+            'all setup, branch/loop/effect paths, original source hashes and literal expectations. '
+            'Quoted/data/discarded/thread-injected calls are not inferred as arity evidence.')
+        if identity == 'literal::saved-collections':
+            rationale += (' Reviewed let bindings c=conj, a=assoc, d=dissoc and g=get '
+                          'are invoked as saved runtime functions at those exact argument counts.')
+        if obligation['obligation_kind'] in {'local-api', 'local-metadata'}:
+            rationale += (' This local catalog row is an advertised operation cross-check only. '
+                          'Operation execution establishes no complete metadata-value coverage.')
+        common = {'obligation_id': obligation['id'], 'body_sha256': obligation['body_sha256'],
+                  'rationale': rationale}
+        if signature:
+            common['signature_sha256'] = digest(json.dumps(signature, sort_keys=True))
+        execution = {'test_file': TEST_FILE, 'test_name': TESTS[group], 'test_source_sha256': test_hash}
+        phase = {**common, **execution, 'support_source_sha256': support}
+        if obligation['id'] not in phases:
+            phase_rows.append(phase)
+        if obligation['id'] not in already:
+            if identity in bodies:
+                direct_rows.append({**common, 'assertion_ids': provenance['assertion_ids']})
+            elif obligation['id'] not in phases:
+                direct_rows.append({**common, 'assertion_ids': [], 'local_execution': execution})
+        receipts.append({'obligation_id': obligation['id'], 'cohort': group,
+                         'source_body': identity, 'direct_arities': sorted(arities),
+                         'complete_body_provenance': provenance})
+    return direct_rows, phase_rows, receipts
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--write', action='store_true', help='write only the owned TSV fixture')
+    parser.add_argument('--mappings', type=Path, help='save unexecuted catalog candidates and call receipts')
+    args = parser.parse_args()
+    rows = fixture_rows()
+    expected = ('# Complete existing adapter sources; upstream excerpts are EPL-1.0.\n'
+                '# cohort\tbody/literal ID\tcomplete source\tliteral pr-str expectation\tprovenance JSON\n'
+                + ''.join('\t'.join(row) + '\n' for row in rows))
+    if args.write:
+        FIXTURE.write_text(expected)
+    else:
+        assert FIXTURE.read_text() == expected, 'Core gate source/body/hash/expectation drift'
+    if args.mappings:
+        ordinary, phase, receipts = execution_mappings()
+        args.mappings.write_text(json.dumps({'ordinary': ordinary, 'phase': phase,
+                                             'reviewed_calls': receipts}, indent=2))
+    print(f'{len(GROUPS)} bounded cohorts; {sum(len(v) for v in GROUPS.values())} complete upstream bodies; {len(rows)} workflows reproduce')
+
+
+if __name__ == '__main__':
+    main()

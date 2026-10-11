@@ -5233,6 +5233,21 @@ impl Analyzer<'_> {
             .definition_name
             .replace(self.program.globals[global.0].name.clone());
         let initializer = args.get(if args.len() == 3 { 2 } else { 1 }).copied();
+        // Deferred initializers are analyzed as independent source units. Their
+        // fresh depth cannot make a declaration in this value position legal.
+        if let Some(init) = initializer
+            && let NodeKind::Collection { kind: CollectionKind::List, children } =
+                &self.syntax.nodes[init.0].kind
+            && let Some(&operator) = children.first()
+            && matches!(self.spelling(operator), "ns" | "ns*")
+        {
+            return Err(self.error(
+                operator,
+                AnalysisErrorKind::InvalidForm(
+                    "Namespace declarations must appear at the top-level.",
+                ),
+            ));
+        }
         if initializer.is_some() {
             self.program.globals[global.0].type_descriptor = false;
         }

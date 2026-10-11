@@ -246,6 +246,10 @@ fn namespace_private_access_and_reserved_alias_have_structured_locations() {
 fn nested_namespace_operations_report_context_and_require_can_be_shadowed() {
     for (source, expected) in [
         (
+            "(def foo (ns foo.core (:require [clojure.set :as set])))",
+            "Namespace declarations must appear at the top-level.",
+        ),
+        (
             "(fn [] (ns nested))",
             "Namespace declarations must appear at the top-level.",
         ),
@@ -259,7 +263,7 @@ fn nested_namespace_operations_report_context_and_require_can_be_shadowed() {
         ),
     ] {
         let error = analyze(source, &parse(source).unwrap()).unwrap_err();
-        assert!(format!("{error}").contains(expected));
+        assert!(format!("{error}").contains(expected), "{source}: {error}");
     }
     assert!(messages("(let [require (fn [x] x)] (require 1))").is_empty());
 }

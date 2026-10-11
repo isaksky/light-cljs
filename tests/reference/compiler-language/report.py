@@ -116,6 +116,14 @@ def validate_diagnostic(case, inventory, bodies):
         if probe["mode"] == "ns" and (not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9-]*(?:\.[a-zA-Z][a-zA-Z0-9-]*)*", probe.get("entry", ""))
                                         or not probe["source"].startswith("(ns " + probe["entry"] + " ")):
             raise ValueError(f"namespace diagnostic needs its original declared entry: {case['id']}")
+        if "local_source" in probe:
+            local_source = probe["local_source"]
+            if (not isinstance(local_source, str) or not local_source.strip()
+                    or any(char in local_source for char in "\r\n\t")
+                    or not probe.get("local_adaptation", "").strip()
+                    or probe.get("local_source_sha256") != hashlib.sha256(local_source.encode()).hexdigest()
+                    or (probe["mode"] == "ns" and not local_source.startswith("(ns " + probe["entry"] + " "))):
+                raise ValueError(f"diagnostic local adaptation needs hashed source, original entry and rationale: {case['id']}")
         for layer in ("local", "release", "checkout"):
             contract = probe.get(layer, {})
             keys = {"category", "detail"} if layer == "local" else {"category", "detail", "warnings", "exception_class"}
@@ -388,6 +396,9 @@ def load_contract(scope="historical-selected"):
         previous = reference_contracts.setdefault(witness["fixture_id"], contract)
         if not same_json(previous, contract):
             raise ValueError(f"inconsistent reference expectations for shared fixture: {witness['fixture_id']}")
+    if scope == "intended-language":
+        linked_cases.update(item["reference_fixture_id"] for item in jsonl(HERE / "obligation-witnesses.jsonl")
+                            if item.get("local_execution") and item.get("reference_fixture_id") in cases)
     if linked_cases != set(cases):
         raise ValueError(f"unmapped fixtures: {sorted(set(cases) - linked_cases)}")
     for case in cases.values():
@@ -545,9 +556,10 @@ def local_diagnostic(case, binary, directory, timeout):
     readers = {"lexer": [], "parser": []}
     for probe in case["diagnostic"]["probes"]:
         failure = None
+        local_source = probe.get("local_source", probe["source"])
         for layer, flags in (("lexer", []), ("parser", ["--parse"])):
             run = invoke([binary, *flags, "-"], directory / probe["id"] / layer,
-                         source=probe["source"], timeout=timeout)
+                         source=local_source, timeout=timeout)
             status = "accepted" if run["status"] == "completed" else (
                 "mismatch" if run["status"] == "failed" else run["status"])
             readers[layer].append(result(status, id=probe["id"]))
@@ -561,14 +573,14 @@ def local_diagnostic(case, binary, directory, timeout):
             source_root = directory / probe["id"] / "source"
             path = source_root / (probe["entry"].replace(".", "/").replace("-", "_") + ".cljs")
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(probe["source"], encoding="utf-8")
+            path.write_text(local_source, encoding="utf-8")
             run = invoke([binary, "--compile", "--entry", probe["entry"], "--source-root", str(source_root)],
                          directory / probe["id"] / "namespace", timeout=timeout)
             prefix = "light-cljs: " + re.escape(str(path.resolve())) + ":"
             category = "namespace-error"
         else:
             run = invoke([binary, "--analyze", "-"], directory / probe["id"] / "analyzer",
-                         source=probe["source"], timeout=timeout)
+                         source=local_source, timeout=timeout)
             prefix = "light-cljs: "
             category = "analysis-error"
         message = re.fullmatch(prefix + r"[0-9]+:[0-9]+: (.+) \(bytes [0-9]+\.\.[0-9]+\)\n",
@@ -672,7 +684,7 @@ def reference_cases(cases, kind, checkout, directory, timeout):
     return results
 
 
-def checked_analysis(cases, kind, checkout, directory, timeout, *, exception_classes=False, warning_settings=False):
+def checked_analysis(cases, kind, checkout, directory, timeout, *, exception_classes=False, warning_settings=False, driver=None):
     """Use the identity/options-checked boundary oracle, retaining ordered rows."""
     directory.mkdir(parents=True, exist_ok=True)
     input_path = directory / "cases.tsv"
@@ -683,7 +695,7 @@ def checked_analysis(cases, kind, checkout, directory, timeout, *, exception_cla
                   else "{:local/root " + json.dumps(str(checkout)) + "}")
     command = [os.environ.get("CLOJURE", "clojure"), "-Srepro", "-Sdeps",
                "{:paths [] :deps {org.clojure/clojurescript " + dependency + "}}",
-               "-M", "tests/reference/compiler-language/diagnostics.clj" if exception_classes else "tests/reference/execution.clj", kind, identity,
+               "-M", driver or ("tests/reference/compiler-language/diagnostics.clj" if exception_classes else "tests/reference/execution.clj"), kind, identity,
                "-" if kind == "release" else str(checkout), str(directory), "analysis", str(input_path)]
     if warning_settings:
         settings_path = directory / "warning-settings.edn"
@@ -1175,6 +1187,7 @@ def main(argv=None):
         evidence = {}
         boundary_evidence = {}
         phase_evidence = {}
+        sci_evidence = {}
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1216,10 +1229,26 @@ def main(argv=None):
         if args.run and args.scope == "intended-language":
             from full_ledger import run_phase_witnesses
             phase_evidence = run_phase_witnesses(obligations, artifacts / "macro-phase", args.timeout)
+            # SCI rows are independent source obligations. Execute the original
+            # portable cohort through both local engines and checked pins; a
+            # historical evaluator disposition never supplies a present pass.
+            if not args.feature and not args.id:
+                import sci_execution
+                sci_cases = sci_execution.cases()
+                sci_evidence = {case["id"]: {} for case in sci_cases}
+                local = sci_execution.local_cases(sci_cases, artifacts / "sci" / "local", max(180, args.reference_timeout))
+                for identity, observed in local.items():
+                    sci_evidence[identity]["javascript"] = observed
+                for kind in ("release", "checkout"):
+                    if args.reference in (kind, "both"):
+                        observed = sci_execution.reference_cases(sci_cases, kind, args.checkout.resolve(), artifacts / "sci" / kind, args.reference_timeout)
+                        for identity, layer in observed.items():
+                            sci_evidence[identity][kind] = layer
+                (artifacts / "sci" / "evidence.json").write_text(json.dumps(sci_evidence, indent=2) + "\n")
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
-            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence)
+            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence)
         if artifacts:
             report["artifacts"] = str(artifacts)
             report["compiler_binary"] = binary_identity
@@ -1243,6 +1272,7 @@ def main(argv=None):
                      for layer in result_layers.values())
         failed |= any(layer.get("status") != "verified-boundary" for layers in boundary_evidence.values() for layer in layers.values())
         failed |= any(value.get("status") != "passed" for value in phase_evidence.values())
+        failed |= any(layer.get("status") in failure_statuses for layers in sci_evidence.values() for layer in layers.values())
         return 1 if failed or (args.strict and not report["strict_complete"]) else 0
     except (ValueError, KeyError, OSError) as error:
         print(f"coverage contract error: {error}", file=sys.stderr)
