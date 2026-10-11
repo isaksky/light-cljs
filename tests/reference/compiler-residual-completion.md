@@ -191,6 +191,70 @@ collection-dispatch control uses the equivalent `if` guard. These are separate
 from the seven unchanged upstream assertions and were not implemented here.
 The full light-cljs-125 language gate remains incomplete and unchanged.
 
+## Existing sequence and name Object equiv dispatch
+
+On 2026-10-11 from starting HEAD `320307f`, light-cljs-151 routes the existing
+sequence, Keyword, Symbol, and LazySeq Object `.equiv` methods through the
+actual receiver's `IEquiv` implementation. The LazySeq public prototype has its
+own method and is checked independently of the shared sequence prototype.
+Default sequence comparison traverses contents even for identical receivers,
+including nonreflexive `NaN` elements; language `=` retains its identity shortcut.
+Hashing and key membership retain their existing implementations.
+
+`compiler_sequence_object_equiv.tsv` preserves the exact List reproduction plus
+18 supplemental contracts. They cover default equal/unequal and empty values,
+metadata copies, hashes, key membership, saved methods captured before extension,
+borrowed receivers/reify equality, and overridden equality on List, EmptyList,
+Cons, IndexedSeq, ChunkedSeq, ChunkedCons, LazySeq, Repeat, PersistentQueue,
+NodeSeq, PersistentTreeMapSeq, IntegerRange, Range, Keyword, and Symbol.
+Every contract executes as a Node/QuickJS application and as an independent
+QuickJS macro computation consumed by both application engines. Separate tests
+verify failure/recovery in reused application sessions and macro hosts.
+
+The exact full non-lite upstream Object equiv body and all seven assertions
+remain unchanged, with original body SHA-256
+`9d52796012fca3fe4fdf4adc8d3672db5d68e9b0ce110c54fa2e41e061df0ca2`
+and adapted source SHA-256
+`18ab06bef880d002aaa5584b75724664bc0cd0aacd0bf61894e6bcc3aee08d40`.
+The reference script retains the full original body, exact source, provenance,
+and source/test/runtime hashes. It never replaces `.equiv` with `=`.
+
+Reproduce the comparison and focused execution:
+
+```sh
+python3 -B tests/reference/compiler-sequence-object-equiv.py --output /tmp/light-cljs-151-reference-final-receipt
+cargo test --locked --test compiler_sequence_object_equiv --test compiler_object_equiv -- --nocapture
+```
+
+Both references pass all 20 cases, with verified release **1.12.134**, clean
+checkout **a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, and
+`:optimizations :none`, `:static-fns false`, `:def-emits-var false`.
+The final reference receipt is
+`/tmp/light-cljs-151-reference-final-receipt/evidence.json`, SHA-256
+`757ea37f221de0981b3cac4a1e36c8225eefc4d177407f33c59d063c72fddf37`.
+Its recorded source hashes match the final runtime and fixtures.
+
+The final library plus 18 affected integration suites pass **211 tests**, zero
+failures, with one explicitly ignored general reference-equality test; the
+focused reference comparison above was executed separately. These suites cover
+Object/equality, sequences/deferred values, interop, protocols/extensions,
+public constructors, types/records/reify, macros/bootstrap and session reuse.
+Both JavaScript runtime/helper suites pass. Logs are retained under
+`/tmp/light-cljs-151-*`. The validated compiler performance smoke report at
+`/tmp/light-cljs-151-compiler-bench-final` uses nine samples and one iteration;
+this is a checked-output smoke run, not a before/after performance claim.
+The earlier attempt was rejected by the runner because test source changed
+during its snapshot and is not accepted as verification.
+
+A separate independently reproduced Atom Object dispatch defect has live owner
+light-cljs-153 after duplicate searches: both pins return `[false true]` for an
+Atom extension rejecting itself, while local QuickJS returns `[true true]`.
+Its exact source and evidence are retained at
+`/tmp/light-cljs-151-atom-equiv-probe/evidence.json` and
+`/tmp/light-cljs-151-atom-equiv-local.log`. Atom behavior is not implemented in
+this sequence/name change. light-cljs-152's core-macro declaration cycle and
+light-cljs-125's full-language gate remain unfinished with their original scope.
+
 ## Retained gaps and boundaries
 
 The complete integer-predicate table also passes both references and fails

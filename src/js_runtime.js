@@ -54,7 +54,7 @@
   function builtinValue(name, base) { return Object.create(builtinType(name, base).prototype); }
   const reducedPrototype = Object.freeze({});
   const sequencePrototype = Object.freeze({
-    equiv(other) { return equalPair(this, other); },
+    equiv(other) { return objectEquiv(this, other); },
     toString() { return print(this, true); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
@@ -67,7 +67,7 @@
   const outOfBounds = () => { throw new Error("Index out of bounds"); };
 
   const keywordPrototype = Object.freeze({
-    equiv(other) { return equalPair(this, other); },
+    equiv(other) { return objectEquiv(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     call(_self, collection, notFound) {
       if (!keywords.has(this)) throw new Error("Expected keyword");
@@ -85,7 +85,7 @@
   });
 
   const symbolPrototype = Object.freeze({
-    equiv(other) { return equalPair(this, other); },
+    equiv(other) { return objectEquiv(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     call(_self, collection, notFound) {
       if (!symbols.has(this)) throw new Error("Expected symbol");
@@ -1702,9 +1702,11 @@
     const equiv = builtin(value, "IEquiv/-equiv", 2);
     if (equiv) return equiv.call(value, value, other);
     if (maps.has(value)) return !predicates.isRecord(other) && equivMap(value, other);
-    // The collection protocol compares contents even for the same receiver
-    // (for example, a vector containing NaN is not equivalent to itself).
-    return sets.has(value) || vectors.has(value)
+    // Sequence/collection protocols compare contents even for the same receiver
+    // (for example, a list containing NaN is not equivalent to itself). Cycle
+    // and Iterate retain their default identity equality.
+    return sets.has(value) || keywords.has(value) || symbols.has(value) ||
+      (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind))
       ? structuralEqualPair(value, other) : equalPair(value, other);
   }
   function equalPair(left, right) {
@@ -4846,7 +4848,7 @@
   });
   Object.defineProperties(builtinTypes.LazySeq.prototype, Object.getOwnPropertyDescriptors({
     sval() { return deferredValue(lazyValues.get(this), true); },
-    equiv(other) { return equalPair(this, other); },
+    equiv(other) { return objectEquiv(this, other); },
     indexOf(item, start = 0) {
       const length = count(this);
       for (let i = start < 0 ? Math.max(0, length + start) : start; i < length; i++) if (equalPair(nth(this, i), item)) return i;
