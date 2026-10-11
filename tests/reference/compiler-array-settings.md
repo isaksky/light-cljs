@@ -105,3 +105,31 @@ The final original-module oracle receipts are
 The pinned metadata generator also exposed existing drift in other mapped core
 Vars; the current change preserves only this setting's exact declaration row.
 That separate reconciliation has live owner `light-cljs-135`.
+
+## Named-function reader context reconciliation, 2026-10-11
+
+At starting HEAD `b56b318`, the named-function environment test still expected
+the seven keys from before light-cljs-134 added `:light-cljs/reader-context`.
+The exact focused reproduction failed the key-set observation in all six
+rows. Light-cljs-137 includes the reader key in that exact assertion and retains
+all default/enabled/reset `defn` and self-named `fn` observations, return context,
+argument IDs and lexical-self binding records.
+
+Every expansion also checks exactly `:refers`, `:excludes` and `:bindings` in
+the finite reader map, empty refers/exclusions for this source, a vector of
+string declaration names with exact membership and count at that definition,
+and the caller namespace used by runtime auto-resolution and syntax quote
+during macro execution. Later declarations and argument/self locals cannot
+appear in an earlier declaration snapshot. This is an independent local
+compiler contract; the original upstream bodies, setup, SCI observations and
+nonpassing SCI dispositions remain intact. Only the complete suite hashes in
+the existing public/metadata source and phase witnesses were refreshed.
+
+`cargo test --locked --test compiler_array_settings --test compiler_macros
+--test compiler_reader --test provenance` passed all **130** tests, including
+QuickJS and Node application observations; the receipt is
+`/tmp/light-cljs-137-regressions.log`. The array provenance generator/checker,
+its two report tests, source inventory checker, fourteen full-ledger tests,
+`rustfmt --edition 2024 --check tests/compiler_array_settings.rs` and
+`git diff --check` also passed. This test-only change makes no new performance
+claim or upstream-conformance claim.
