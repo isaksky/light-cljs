@@ -114,6 +114,13 @@ def ownership(name="", category="", path="", words=()):
                 return family, owner
     for family, owner, names in NAME_FAMILIES:
         if set(words) & names:
+            # Metadata assertions reached through another public subsystem
+            # remain obligations of that subsystem, not hash-family omissions.
+            if family == "hash-equality":
+                enclosing = {"eval_test.cljs": ("printing-reflection", "light-cljs-124"),
+                             "reader_test.cljs": ("reader", "light-cljs-9")}
+                if Path(path).name in enclosing:
+                    return enclosing[Path(path).name]
             return family, owner
     basename = Path(path).name
     if basename in {"hashing_test.cljs", "hash_map_test.cljs", "hash_set_test.cljs", "set_equiv_test.cljs"}:
@@ -277,11 +284,29 @@ def local_registration():
             for match in re.compile(r'"([^"\n]+)"\s*=>').finditer(text, start, end)}
 
 
+# Exact implementation-storage probes; public metadata paths in these bodies
+# remain required and execute through the complete equality fixture.
+PRIVATE_EQUALITY_ASSERTIONS = {
+    "hash_map_test.cljs::test-cljs-1888::assertion-005": "(is (instance? NodeSeq node-seq))",
+    "hash_map_test.cljs::test-cljs-1888::assertion-010": "(is (instance? ArrayNodeSeq array-node-seq))",
+}
+
+
 def generate():
     paths = source_paths()
     generated, manifest = inv.inventory(files=paths, full_scope=True)
     assertions = [json.loads(line) for line in generated["inventory.jsonl"].splitlines()]
     for row in assertions:
+        if row["id"] in PRIVATE_EQUALITY_ASSERTIONS:
+            if row["assertion"]["text"] != PRIVATE_EQUALITY_ASSERTIONS[row["id"]]:
+                raise ValueError("Private equality exclusion source drift")
+            row.update(disposition="unrelated", category="upstream-internals", status="unrelated",
+                       reason="Exact private hash-trie sequence storage class identity; complete public sequence metadata behavior executes in compiler-equality.tsv.")
+        if row["body_id"] == "analyzer_tests.clj::test-namespace-metadata":
+            if row["body_sha256"] != "1eb396cb35c7a51a58a59c1568c3bef46ccaa16f0675f35b98f0cf6374abc1d7":
+                raise ValueError("Analyzer namespace metadata exclusion source drift")
+            row.update(disposition="unrelated", category="upstream-internals", status="unrelated",
+                       reason="Pinned JVM analyzer *cljs-ns* binding and AST :name metadata representation; upstream analyzer state/AST shape is outside the adopted compiler API. Runtime namespace/Var/value metadata remains independently required.")
         words = inv.symbols(inv.Reader(row["assertion"]["text"]).all()[0])
         family, owner = ownership(category=row["category"], path=row["source"], words=words)
         row.update(obligation_kind="source-assertion", family=family, owner=owner,
@@ -397,7 +422,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         status = "unrelated" if row["disposition"] in {"internal", "dialect", "host"} else "missing"
         mapping = obligation_witnesses.get(row["id"])
         layers = {}
-        if status == "missing" and mapping:
+        if status == "missing" and mapping and not mapping.get("local_execution"):
             source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
                                for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
             status = "covered" if source_statuses and all(value == "covered" for value in source_statuses) else "missing"
@@ -407,6 +432,15 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             observed = [evidence.get(witnesses[identity]["fixture_id"], {}) for identity in mapping["assertion_ids"]]
             layers = {layer: {"status": "passed" if all(value.get(layer, {}).get("status") == "passed" for value in observed) else "not-run"}
                       for layer in runner.SEMANTIC_LAYERS}
+        if mapping and mapping.get("local_execution"):
+            observed = phase_evidence.get(row["id"], {})
+            verified = (observed.get("status") == "passed" and
+                        observed.get("test_source_sha256") == mapping["local_execution"]["test_source_sha256"])
+            status = "covered" if verified else "missing"
+            layers = {"javascript": {"status": "passed" if verified else "not-run",
+                                      "engines": ["Node", "QuickJS"]}}
+            # Exact local protocol/macro contracts provide local execution, not
+            # pinned-reference observations. Never infer release/checkout runs.
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
@@ -449,6 +483,16 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
         signature = target.get("signature")
         if signature and (signature["kind"] == "unresolved" or item.get("signature_sha256") != inv.digest(json.dumps(signature, sort_keys=True).encode())):
             raise ValueError("Public witness needs the exact resolved source arity")
+        if item.get("local_execution"):
+            # Local public protocol contracts need direct execution evidence when
+            # upstream has no corresponding test body. Reuse the exact hashed,
+            # named phase test, which must also execute both application engines.
+            phase = load_phase_witnesses(obligations).get(target["id"])
+            if (not phase or item["local_execution"] != {key: phase[key] for key in
+                    ("test_file", "test_name", "test_source_sha256")} or item.get("assertion_ids")):
+                raise ValueError("Local obligation witness needs its exact application/macro execution test")
+            result[target["id"]] = item
+            continue
         ids = item.get("assertion_ids", [])
         if not ids or len(ids) != len(set(ids)) or any(identity not in sources or identity not in witnesses for identity in ids):
             raise ValueError("Public witness needs complete source assertion execution mappings")

@@ -588,6 +588,15 @@ pub enum CoreFnId {
     Into,
     IsVar,
     Hash,
+    HashOrderedColl,
+    HashUnorderedColl,
+    HashDouble,
+    HashString,
+    IntRotateLeft,
+    Imul,
+    INamed,
+    NameProtocol,
+    NamespaceProtocol,
     VarClass,
     Test,
     Print,
@@ -1195,6 +1204,16 @@ impl CoreFnId {
             "into" => Self::Into,
             "var?" => Self::IsVar,
             "hash" => Self::Hash,
+            "hash-ordered-coll" => Self::HashOrderedColl,
+            "hash-unordered-coll" => Self::HashUnorderedColl,
+            "hash-double" => Self::HashDouble,
+            "hash-string" => Self::HashString,
+            "int-rotate-left" => Self::IntRotateLeft,
+            "imul" => Self::Imul,
+            "INamed" => Self::INamed,
+            "-name" => Self::NameProtocol,
+            "-namespace" => Self::NamespaceProtocol,
+
             "Var" | "->Var" => Self::VarClass,
             "test" => Self::Test,
             "print" => Self::Print,
@@ -1882,6 +1901,16 @@ impl CoreFnId {
             Self::Into => "into",
             Self::IsVar => "isVar",
             Self::Hash => "hash",
+            Self::HashOrderedColl => "hashOrderedColl",
+            Self::HashUnorderedColl => "hashUnorderedColl",
+            Self::HashDouble => "hashDouble",
+            Self::HashString => "stringHash",
+            Self::IntRotateLeft => "rotateLeft",
+            Self::Imul => "imul",
+            Self::INamed => "INamed",
+            Self::NameProtocol => "nameProtocol",
+            Self::NamespaceProtocol => "namespaceProtocol",
+
             Self::VarClass => "Var",
             Self::Test => "test",
             Self::Print => "printCore",
@@ -6175,6 +6204,7 @@ impl Analyzer<'_> {
                         | "IIterable"
                         | "IHash"
                         | "IEquiv"
+                        | "INamed"
                         | "Object"
                 ) {
                     protocol = Some(Err(builtin.to_owned()));
@@ -6334,6 +6364,7 @@ impl Analyzer<'_> {
                         | ("IReversible", "-rseq")
                         | ("IIterable", "-iterator")
                         | ("IHash", "-hash")
+                        | ("INamed", "-name" | "-namespace")
                         | ("IPending", "-realized?")
                         | ("IDeref", "-deref")
                         | ("IMeta", "-meta")

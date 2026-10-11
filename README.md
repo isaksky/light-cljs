@@ -286,6 +286,15 @@ termination consume only the requested inputs. The [deferred-value audit](tests/
 records 27 upstream assertions, 23 independent reference probes, deep traversal
 and GC checks.
 
+Compiled `hash`, `hash-ordered-coll` and `hash-unordered-coll` use the public
+ClojureScript Number/Murmur3 contract for canonical values. Equal collection
+representations remain interchangeable keys, collisions retain the saved key,
+and `INamed`/`-name`/`-namespace` dispatch to user types. Signed zeros share a
+normalized zero hash; NaN remains unequal to itself. Foreign objects and regexes
+use identity, and record equality remains nominal. The
+[equality audit](tests/reference/compiler-equality.md) records complete upstream
+workflows and application/macro observations in Node and QuickJS.
+
 Compiled `meta`, `with-meta` and `vary-meta` preserve metadata independently of
 structural equality and hashing. Collection updates, seq tails, lazy sequence
 coercion, function/IFn wrappers, reify and records follow their CLJS metadata

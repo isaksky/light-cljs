@@ -3,7 +3,7 @@
   "upstream": "https://github.com/clojure/clojurescript",
   "revision": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
   "extractor_sha256": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
-  "inventory_sha256": "ca874ffd744f19d888ab41e0e022265e1013e43ee4f75b8fd4c249fa587b2121",
+  "inventory_sha256": "bac6f8595ee6263ff8a6ce96ee9280a8cb8c1167ac75adb3ef0f010383cb6368",
   "bodies_sha256": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156",
   "counting_unit": "Source assertion sites; each are argument row is a separate assertion. Dynamic loop/helper invocations are retained in complete bodies, not multiplied or claimed executed.",
   "recognized_assertion_macros": [
@@ -21,8 +21,8 @@
     "assertions": 4728,
     "active_assertions": 4686,
     "by_status": {
-      "missing": 3815,
-      "unrelated": 913
+      "missing": 3805,
+      "unrelated": 923
     },
     "by_kind": {
       "are-row": 809,
@@ -31,22 +31,22 @@
       "property": 5
     },
     "by_category": {
-      "source-language": 3443,
+      "source-language": 3434,
       "inactive-upstream": 42,
       "ecosystem": 486,
-      "transducers": 105,
+      "transducers": 104,
       "sorted-collections": 121,
       "transient-collections": 63,
       "lite-profile": 33,
       "multimethods-hierarchies": 31,
       "library": 49,
       "tap-delivery": 3,
-      "upstream-internals": 347,
+      "upstream-internals": 357,
       "reference-harness": 5
     },
     "obligations": 4846,
     "public_api_arities": 1327,
-    "intended_assertions": 3815
+    "intended_assertions": 3805
   },
   "features": [],
   "zero_assertion_tests": [
@@ -1398,8 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "8a9291f167a34b2eb6d148f5851408a95ae25afbc1a7a16fbb256c7f5b8be70b",
-  "obligations_sha256": "fba11c22b93f7e0cd916d9ff66543c746408401e57b793a79430a48407e47043",
+  "generator_sha256": "e891256495a4c155fab48c23a5b94012e753b6daeb46af08c0e0d73b840084d5",
+  "obligations_sha256": "c294ead45a57d74dadc30eadf0121c50b9596fc3d7a66a0eac279be8d7d7fb59",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,7 +1440,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "f36954ed3605f5b9a4478baeb33ca33b52f767a7a544fa3b50b2807882de9128"
+      "sha256": "f2c0805d6847cc11e9f8d7c404e0bf1c1500f336050923fcd4234f4ec07b9771"
     },
     {
       "path": "src/core_var_metadata.tsv",
@@ -1473,15 +1473,15 @@
     "public-residual": 7231,
     "utilities": 439,
     "lazy-sequences": 270,
-    "transducers": 488,
-    "hash-equality": 188,
-    "printing-reflection": 197,
+    "transducers": 487,
+    "hash-equality": 186,
+    "printing-reflection": 199,
     "sorted-collections": 188,
     "transient-collections": 105,
     "multimethods-hierarchies": 58,
     "regex": 46,
     "library": 273,
-    "reader": 79,
+    "reader": 80,
     "tap-delivery": 3,
     "sequence-transform": 5,
     "eduction": 4

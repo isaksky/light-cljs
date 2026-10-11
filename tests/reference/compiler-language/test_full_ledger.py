@@ -89,7 +89,12 @@ class FullLedgerTests(unittest.TestCase):
             current = complete[identity]
             for key in ("assertion", "body_id", "body_sha256", "context"):
                 self.assertEqual(old[key], current[key])
-            if old["category"] in full.PROMOTED and old["active"]:
+            if identity in full.PRIVATE_EQUALITY_ASSERTIONS:
+                self.assertEqual(current["assertion"]["text"], full.PRIVATE_EQUALITY_ASSERTIONS[identity])
+                self.assertEqual(current["disposition"], "unrelated")
+                self.assertEqual(current["category"], "upstream-internals")
+                self.assertNotIn(identity, all_witnesses)
+            elif old["category"] in full.PROMOTED and old["active"]:
                 self.assertEqual(current["disposition"], "in-scope")
         self.assertTrue(all(r["owner"].startswith("light-cljs-") for r in rows + obligations))
         self.assertEqual(manifest["columns"], list(full.COLUMNS))
@@ -139,6 +144,25 @@ class FullLedgerTests(unittest.TestCase):
             result = full.expand_report(historical, {"a": {"fixture_id": "fixture"}}, evidence,
                                         phase_evidence={"api": {"status": "passed", "test_source_sha256": "stale"}})
             self.assertFalse(result["strict_complete"])
+
+    def test_metadata_consumers_keep_their_public_subsystem_owner(self):
+        for filename, owner in [("eval_test.cljs", "light-cljs-124"), ("reader_test.cljs", "light-cljs-9")]:
+            self.assertEqual(full.ownership(path=filename, words={"meta"})[1], owner)
+        self.assertEqual(full.ownership(path="metadata_test.cljc", words={"meta"})[1], "light-cljs-120")
+
+    def test_local_execution_witness_cannot_pass_without_current_named_execution(self):
+        api = {"id": "api", "disposition": "intended", "reason": "public contract", "obligation_kind": "public-api", "source": "core.cljs", "name": "f", "source_span": {}, "family": "hash-equality", "owner": "light-cljs-120"}
+        test = {"test_file": "tests/compiler_equality.rs", "test_name": "example", "test_source_sha256": "current"}
+        historical = {"counts": {key: 0 for key in ("covered", "verified-rejection", "verified-warning", "missing", "version-difference", "unrelated")}, "strict_complete": True, "boundary_strict_complete": True}
+        with patch.object(full, "load", return_value=([], [api], {"counts": {}})), \
+             patch.object(full, "load_obligation_witnesses", return_value={"api": {"local_execution": test}}), \
+             patch.object(full, "load_phase_witnesses", return_value={"api": test}):
+            for state, digest, expected in [("not-run", "current", False), ("failed", "current", False), ("passed", "stale", False), ("passed", "current", True)]:
+                result = full.expand_report(historical, {}, {}, phase_evidence={"api": {"status": state, "test_source_sha256": digest}})
+                self.assertEqual(result["strict_complete"], expected)
+                columns = result["assertions"][0]["columns"]
+                self.assertEqual(columns["execution_evidence"]["references"],
+                                 {"release": {"status": "not-run"}, "checkout": {"status": "not-run"}})
 
     def test_arity_witness_rejects_hash_drift_unknown_arity_and_selected_body_subset(self):
         target = {"id": "api::map", "disposition": "intended", "body_sha256": "body", "signature": {"kind": "fixed", "minimum": 2}}

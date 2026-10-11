@@ -35,7 +35,7 @@
   const builtinTypes = {};
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
-      const Type = name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
+      const Type = name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
       Type.prototype = Object.create(base);
       Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
       builtinTypes[name] = Type;
@@ -1058,6 +1058,8 @@
 
   function name(value) {
     if (multiFns.has(value)) return name(value.name);
+    const method = implementsProtocol(INamed, value) ? builtin(value, "INamed/-name", 1) : null;
+    if (method) return method.call(value, value);
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.name;
     if (typeof value === "string") return value;
@@ -1075,6 +1077,8 @@
 
   function namespace(value) {
     if (multiFns.has(value)) return namespace(value.name);
+    const method = implementsProtocol(INamed, value) ? builtin(value, "INamed/-namespace", 1) : null;
+    if (method) return method.call(value, value);
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.namespace;
     throw new Error("Doesn't support namespace on this type");
@@ -1474,52 +1478,94 @@
   const identityHashes = new WeakMap();
   let identityCounter = 0;
   function stringHash(value) {
+    if (value == null) return 0;
     let result = 0;
-    for (let i = 0; i < value.length; i++) result = (Math.imul(result, 31) + value.charCodeAt(i)) | 0;
+    for (let i = 0; i < value.length; i++) result = Math.imul(result, 31) + value.charCodeAt(i);
     return result;
   }
 
-  // Internal hash contract is equality consistency, not CLJS hash integers.
+  // ClojureScript's public Murmur3 collection/name hashes. Number hashes
+  // follow the JavaScript Number profile, including signed zero and nonfinite values.
+  function rotateLeft(value, distance) { return (value << distance) | (value >>> (32 - distance)); }
+  function mixK1(value) { return Math.imul(rotateLeft(Math.imul(value, 0xcc9e2d51), 15), 0x1b873593); }
+  function mixH1(hash, value) { return (Math.imul(rotateLeft(hash ^ value, 13), 5) + 0xe6546b64) | 0; }
+  function fmix(hash, length) {
+    hash ^= length;
+    hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
+    hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35);
+    return hash ^ (hash >>> 16);
+  }
+  function hashInt(value) { return value === 0 ? 0 : fmix(mixH1(0, mixK1(value)), 4); }
+  function hashChars(value) {
+    let h = 0, i = 1;
+    for (; i < value.length; i += 2) h = mixH1(h, mixK1(value.charCodeAt(i - 1) | (value.charCodeAt(i) << 16)));
+    if (value.length & 1) h ^= mixK1(value.charCodeAt(value.length - 1));
+    return fmix(h, value.length * 2);
+  }
+  function hashNamed(value) {
+    const seed = hashChars(value.name);
+    return seed ^ (stringHash(value.namespace) + 0x9e3779b9 + (seed << 6) + (seed >> 2));
+  }
+  function hashDouble(value) {
+    const buffer = new ArrayBuffer(8), view = new DataView(buffer);
+    // Upstream reads native little-endian Float64 bytes as big-endian int32s.
+    view.setFloat64(0, value, true);
+    return view.getInt32(0) ^ view.getInt32(4);
+  }
+  function mixCollectionHash(basis, count) { return fmix(mixH1(0, mixK1(basis)), count); }
+  function hashOrderedColl(value) {
+    let result = 1, n = 0;
+    for (let current = seq(value); current !== null; current = next(current), n++)
+      result = (Math.imul(result, 31) + hash(first(current))) | 0;
+    return mixCollectionHash(result, n);
+  }
+  function hashUnorderedColl(value) {
+    let result = 0, n = 0;
+    for (let current = seq(value); current !== null; current = next(current), n++)
+      result = (result + hash(first(current))) | 0;
+    return mixCollectionHash(result, n);
+  }
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
     const method = implementsProtocol(IHash, value) ? builtin(value, "IHash/-hash", 1) : null;
     if (method) return method.call(value, value) | 0;
     if (typeof value === "boolean") return value ? 1231 : 1237;
-    if (typeof value === "number") return stringHash(String(value));
-    if (typeof value === "string") return stringHash(value);
-    if (value instanceof Date) return stringHash(String(value.valueOf()));
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return value === Infinity ? 2146435072 : value === -Infinity ? -1048576 : 2146959360;
+      return Number.isSafeInteger(value) ? (Math.floor(value) % 2147483647) | 0 : hashDouble(value);
+    }
+    if (typeof value === "string") return hashInt(stringHash(value));
+    if (value instanceof Date) return value.valueOf() | 0;
     if (uuids.has(value)) {
-      if (!uuidHashes.has(value)) uuidHashes.set(value, stringHash(uuids.get(value)));
+      if (!uuidHashes.has(value)) uuidHashes.set(value, hash(uuids.get(value)));
       return uuidHashes.get(value);
     }
     if (vars.has(value)) return hash(vars.get(value).symbol);
     const named = keywords.get(value) || symbols.get(value);
-    if (named) return stringHash((keywords.has(value) ? ":" : "'") + named.spelling);
+    if (named) return (hashNamed(named) + (keywords.has(value) ? 0x9e3779b9 : 0)) | 0;
     const entries = maps.get(value);
     if (entries) {
       let result = 0;
-      for (const entry of entries) result = (result + (entry.hash ^ hash(entry.value))) | 0;
-      return result;
+      for (const entry of entries) result = (result + mixCollectionHash((Math.imul(31, 31 + entry.hash) + hash(entry.value)) | 0, 2)) | 0;
+      return mixCollectionHash(result, entries.length);
     }
     const members = sets.get(value);
     if (members) {
       let result = 0;
       for (const entry of members) result = (result + entry.hash) | 0;
-      return result;
+      return mixCollectionHash(result, members.length);
     }
     if (sequential(value)) {
       const lazy = lazyValues.get(value);
       if (lazy?.hash != null) return lazy.hash;
-      let result = 1;
-      for (let current = seq(value); current !== null; current = next(current))
-        result = (Math.imul(result, 31) + hash(first(current))) | 0;
+      const result = hashOrderedColl(value);
       if (lazy) lazy.hash = result;
       return result;
     }
     const nativeHash = builtin(value, "IHash/-hash", 1);
     if (nativeHash) return nativeHash.call(value, value) | 0;
-    if (typeof value === "symbol" || typeof value === "bigint") return stringHash(String(value));
+    if (typeof value === "symbol" || typeof value === "bigint") return hash(String(value));
     if (!identityHashes.has(value)) identityHashes.set(value, ++identityCounter);
     return identityHashes.get(value);
   }
@@ -1768,13 +1814,14 @@
   const IMapEntry = function () {}, IFind = function () {}, ISorted = function () {}, IChunkedSeq = function () {};
   const IEncodeJS = function () {}, IEncodeClojure = function () {};
   const IRecord = function () {}, ICloneable = function () {}, IPrintWithWriter = function () {}, IWriter = function () {};
+  const INamed = function () {};
   const IMeta = function () {}, IWithMeta = function () {}, IHash = function () {}, IEquiv = function () {};
   const IPending = function () {}, IDeref = function () {}, IAtom = function () {}, IReset = function () {}, ISwap = function () {}, IVolatile = function () {}, IWatchable = function () {};
   const Fn = function () {}, IList = function () {}, IFn = function () {}, ISeqable = function () {}, ISeq = function () {}, INext = function () {}, ICounted = function () {}, IIndexed = function () {}, ILookup = function () {}, ISequential = function () {}, IAssociative = function () {};
   const IReduce = function () {}, IKVReduce = function () {}, IVector = function () {}, IMap = function () {}, ICollection = function () {}, IEmptyableCollection = function () {}, ISet = function () {}, IStack = function () {}, IReversible = function () {}, IComparable = function () {}, IIterable = function () {};
   const IMultiFn = function () {};
   const IEditableCollection = function () {}, ITransientCollection = function () {}, ITransientAssociative = function () {}, ITransientMap = function () {}, ITransientVector = function () {}, ITransientSet = function () {};
-  const coreProtocolNames = new Map([[IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
+  const coreProtocolNames = new Map([[INamed, "INamed"], [IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
   const coreProtocolsByName = new Map([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
   IMeta.function = true; Fn.function = true; ICounted.null = true; IHash._ = true; IEquiv._ = true;
   // Metadata belongs to values, never structural equality or hash payloads.
@@ -2089,6 +2136,7 @@
     return builtinCoreImplementation(protocol, value);
   }
   function builtinCoreImplementation(protocol, value) {
+    if (protocol === INamed) return keywords.has(value) || symbols.has(value) || multiFns.has(value);
     if (protocol === IMultiFn) return multiFns.has(value);
     if (protocol === IFn && multiFns.has(value)) return true;
     const transient = transients.get(value);
@@ -2488,8 +2536,12 @@
   const uuidPrototype = Object.freeze({toString() { return uuids.get(this); }});
   function uuid(text) {
     if (typeof text !== "string") throw new Error("UUID expects a string");
+    return uuidValue(text.toLowerCase());
+  }
+  function uuidValue(text, cachedHash = null) {
     const value = builtinValue("UUID", uuidPrototype);
-    uuids.set(value, text.toLowerCase());
+    uuids.set(value, text);
+    if (cachedHash != null) uuidHashes.set(value, cachedHash);
     Object.defineProperty(value, "__hash", {get() { return uuidHashes.get(this) ?? null; }});
     return value;
   }
@@ -4044,7 +4096,8 @@
     peekProtocol: coreMethod("IStack/-peek", [1], peek), popProtocol: coreMethod("IStack/-pop", [1], pop),
     rseqProtocol: coreMethod("IReversible/-rseq", [1], rseq), compareProtocol: coreMethod("IComparable/-compare", [2], compareKeys),
     iteratorProtocol: coreMethod("IIterable/-iterator", [1], iterator),
-    compare: compareKeys, IHash, IEquiv, hashProtocol: coreMethod("IHash/-hash", [1], hash), equivProtocol: coreMethod("IEquiv/-equiv", [2], equalPair), type: value => value == null ? null : value.constructor,
+    hashOrderedColl, hashUnorderedColl, hashDouble, stringHash, rotateLeft, imul: Math.imul,
+    compare: compareKeys, INamed, nameProtocol: coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); }), namespaceProtocol: coreMethod("INamed/-namespace", [1], namespace), IHash, IEquiv, hashProtocol: coreMethod("IHash/-hash", [1], hash), equivProtocol: coreMethod("IEquiv/-equiv", [2], equalPair), type: value => value == null ? null : value.constructor,
     Fn, IList, IFn, ISeqable, ISeq, INext, ICounted, IIndexed, ILookup, ISequential, IAssociative, seqProtocol, firstProtocol, restProtocol, nextProtocol, countProtocol, nthProtocol, lookupProtocol, containsProtocol,
     protocolSentinel, IMeta, IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, clone, prWriter, write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol, empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, str, uuid,
     identical: (a, b) => a === b, isUuid: value => uuids.has(value), isInst: value => value instanceof Date,

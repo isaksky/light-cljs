@@ -263,7 +263,17 @@ def load_contract(scope="historical-selected"):
     cases = fixtures(scope)
     witness_rows = jsonl(HERE / "witnesses.jsonl")
     if scope == "intended-language":
+        from full_ledger import PRIVATE_EQUALITY_ASSERTIONS
+        # Preserve historical evidence, while the intended ledger explicitly
+        # excludes only the pinned private storage identity probes.
+        excluded = set(PRIVATE_EQUALITY_ASSERTIONS) | {
+            f"analyzer_tests.clj::test-namespace-metadata::assertion-{i:03}" for i in range(1, 9)}
+        removed_cases = {w["fixture_id"] for w in witness_rows if w["assertion_id"] in excluded}
+        witness_rows = [w for w in witness_rows if w["assertion_id"] not in excluded]
         witness_rows.extend(jsonl(HERE / "full-witnesses.jsonl"))
+        linked = {w["fixture_id"] for w in witness_rows}
+        for identity in removed_cases - linked:
+            cases.pop(identity, None)
     witnesses = unique(witness_rows, "assertion_id", "witness")
     if not inventory or not bodies or not cases:
         raise ValueError("empty inventory, body catalog, or fixture set")

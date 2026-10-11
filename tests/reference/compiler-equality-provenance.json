@@ -1,0 +1,182 @@
+[
+  {
+    "id": "cljs-equality-hashing-test-test-hash-null",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-hash-null",
+    "sha256": "a062f25b606f502a7b504cf65e12ed0591ba1aa1917a648a24193cc51c86cbbc",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-clj-118",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-clj-118",
+    "sha256": "aa4cfc2ac911ff89c263f036e691cb9a7987b54555d8524a98d3c49268f484e4",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-962-empty-literal-hashes",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-962-empty-literal-hashes",
+    "sha256": "9de3447f81c8faf37ca7960f83e10ffd25e3af90b235fb02d0d795fe306605fc",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-uuid-compile-and-runtime-hash",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-uuid-compile-and-runtime-hash",
+    "sha256": "88135276d361f2ca3f902959ae4a3f3c8c7ab746fe40552d5d6174af15526143",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-cljs-1524",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-cljs-1524",
+    "sha256": "0deb50c855174a6617ba92c30c5e0dee2e54a579a648067512c02062a1faf3c7",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-nil-hashing-cljs-1649",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-nil-hashing-cljs-1649",
+    "sha256": "820bd7ad28a668803ba14b3adb9bee8d79c9f8e1aab046681415662b359ad9e2",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-cljs-1779",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-cljs-1779",
+    "sha256": "7b132c169d1b64afd1ca31aa8f2533f7616f75bb9def9784182db74c508f2b90",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-mumur-support",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-mumur-support",
+    "sha256": "6daf7afc4e30b71b897145dc3bc415976a03c08e07116931ba4ae963b08a14ba",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-cljs-1818",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-cljs-1818",
+    "sha256": "e542c88d8863c2519a512fa0eaf8248347ff8562907f029324458e053f3e45dd",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-cljs-3410",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-cljs-3410",
+    "sha256": "023139d8aba74fcc5b17d4c133b85b330a2459f3411b93bf5d849f41b2cee0df",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hashing-test-test-cljs-3290",
+    "source": "research/clojurescript/src/test/cljs/cljs/hashing_test.cljs",
+    "body": "test-cljs-3290",
+    "sha256": "6224c294b3119bdaed52d5fd49c4e83e6c35394a71b34fe8713199b04a359265",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-hash-map-test-test-cljs-1765",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_map_test.cljs",
+    "body": "test-cljs-1765",
+    "sha256": "7560c8961e2ae8d7d8d5dfcfcc9c57926bafcfd5243f23232de01e662164f490",
+    "setup_sha256": [
+      "17f606273b6d78af0670d822a842d36875063b97dd97f06f4b048ff725cc6a42",
+      "caea887090beb5dbd0c9edffdb1ea20ee53ffa4915383a4a01e5b4581f5554c7"
+    ]
+  },
+  {
+    "id": "cljs-equality-hash-map-test-test-cljs-1817",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_map_test.cljs",
+    "body": "test-cljs-1817",
+    "sha256": "2d7063f49b28b0c273a38f1b8c2814f9cecec728f870729f822386bb096fd609",
+    "setup_sha256": [
+      "17f606273b6d78af0670d822a842d36875063b97dd97f06f4b048ff725cc6a42",
+      "caea887090beb5dbd0c9edffdb1ea20ee53ffa4915383a4a01e5b4581f5554c7"
+    ]
+  },
+  {
+    "id": "cljs-equality-hash-map-test-test-array-map-with-duplicate-keys",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_map_test.cljs",
+    "body": "test-array-map-with-duplicate-keys",
+    "sha256": "4ffce47938cc2a49dbd634fb0c4d1c61194658c3472990b679f769e65c194e9e",
+    "setup_sha256": [
+      "17f606273b6d78af0670d822a842d36875063b97dd97f06f4b048ff725cc6a42",
+      "caea887090beb5dbd0c9edffdb1ea20ee53ffa4915383a4a01e5b4581f5554c7"
+    ]
+  },
+  {
+    "id": "cljs-equality-hash-map-test-test-cljs-1976",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_map_test.cljs",
+    "body": "test-cljs-1976",
+    "sha256": "7a1908a4b5de9f86aa5200261d633eb0987764e38333f09cc637c3f7a103a6bb",
+    "setup_sha256": [
+      "17f606273b6d78af0670d822a842d36875063b97dd97f06f4b048ff725cc6a42",
+      "caea887090beb5dbd0c9edffdb1ea20ee53ffa4915383a4a01e5b4581f5554c7"
+    ]
+  },
+  {
+    "id": "cljs-equality-hash-map-test-test-cljs-2496",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_map_test.cljs",
+    "body": "test-cljs-2496",
+    "sha256": "39cac687d818ea6c6dc1977d617d275ba2eacda87c3b5e67714604fdaddd7398",
+    "setup_sha256": [
+      "17f606273b6d78af0670d822a842d36875063b97dd97f06f4b048ff725cc6a42",
+      "caea887090beb5dbd0c9edffdb1ea20ee53ffa4915383a4a01e5b4581f5554c7"
+    ]
+  },
+  {
+    "id": "cljs-equality-hash-map-test-test-cljs-1888",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_map_test.cljs",
+    "body": "test-cljs-1888",
+    "sha256": "5139447d0dda6a2053b656cb92e93cf1a40374f0f83f1483232c2448ab837d36",
+    "setup_sha256": [
+      "17f606273b6d78af0670d822a842d36875063b97dd97f06f4b048ff725cc6a42",
+      "caea887090beb5dbd0c9edffdb1ea20ee53ffa4915383a4a01e5b4581f5554c7"
+    ]
+  },
+  {
+    "id": "cljs-equality-hash-set-test-test-hash-set-with-duplicate-keys",
+    "source": "research/clojurescript/src/test/cljs/cljs/hash_set_test.cljs",
+    "body": "test-hash-set-with-duplicate-keys",
+    "sha256": "1953b8163be95f7dcdda70c4c0e46ea74081f671ac11c41a9c8c888c538949b5",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-set-equiv-test-test-set-equality",
+    "source": "research/clojurescript/src/test/cljs/cljs/set_equiv_test.cljs",
+    "body": "test-set-equality",
+    "sha256": "27f7e4b22a211f9b2e9f30cfbc5d8604883e4135dd73d031d6829b8fa007eee7",
+    "setup_sha256": []
+  },
+  {
+    "id": "cljs-equality-metadata-test-metadata-tests",
+    "source": "research/clojurescript/src/test/cljs/cljs/metadata_test.cljc",
+    "body": "metadata-tests",
+    "sha256": "ccfec04a9de21bcf9d4780c92b2cd27be79e3a46c7a60f57a4c1a9f6ba6f222f",
+    "setup_sha256": [
+      "a9e31b740f75c5a2bfce966626b20fd411e405ce1f4c5e89e098a014685f779b",
+      "cd9705a879d4358455529c8845490c7a7905147a2ecfd71628c9795b02f862e9",
+      "c122282997c661bdf76d0d02ab4d97d2e05c2e66d7922e5a2e4e4cbae0669c63"
+    ]
+  },
+  {
+    "id": "cljs-equality-map-entry-test-all-map-entry-tests",
+    "source": "research/clojurescript/src/test/cljs/cljs/map_entry_test.cljs",
+    "body": "all-map-entry-tests",
+    "sha256": "41c0223ff986c19b3dc0f207fd4986c920cccf320118e56c118be54d686a97d5",
+    "setup_sha256": [
+      "594a3b9f777c95a741d9ed46cbef50110db044904ae22b9c527b6efc348047d7"
+    ]
+  },
+  {
+    "id": "cljs-equality-var-test-cljs-3411",
+    "source": "research/clojurescript/src/test/cljs/cljs/var_test.cljs",
+    "body": "cljs-3411",
+    "sha256": "699fef457c92af58c2ac120f0ea0e6635ed923fb18d53172e20e2924d97f6b8b",
+    "setup_sha256": [
+      "32b31bc283d1a6c88a33eb0fc542a5399e76efcc3f514d8d5ef7ab74df6663db"
+    ]
+  }
+]

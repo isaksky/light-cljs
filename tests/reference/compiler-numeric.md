@@ -195,8 +195,9 @@ Positive/negative zero compare equal and hash equally. NaN remains non-reflexive
 an inserted NaN key cannot be looked up with NaN, and a hash-set containing two
 NaNs has two members. Both saved-constructor key probes and the complete numeric
 corpus match release **1.12.134** and checkout
-`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. Runtime hash integers are internal;
-these checks require equality consistency, not upstream hash-number identity.
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. These historical numeric checks require equality consistency. The later
+[equality audit](compiler-equality.md) pins public Number/Murmur3 hash values
+against the release oracle, with signed zero normalized to positive zero.
 
 The only production adjustment needed was wide radix literal conversion:
 nondecimal integers exceeding u128 previously accumulated f64 rounding per
