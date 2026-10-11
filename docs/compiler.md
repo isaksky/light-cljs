@@ -747,7 +747,17 @@ and retains metadata. Compiled macros execute these same helpers and can export
 persistent expansion forms. The [transducer audit](../tests/reference/compiler-transducers.md)
 records exact reference and local verification; native exact-number and
 JVM-specific constructor differences are superseded by CLJS Number semantics.
-`sequence` transducer arities and `eduction` remain separately assigned.
+`sequence` supports coercion, one-source transduction and variadic multi-source
+transduction. Construction applies the transform without pulling inputs; each
+returned sequence memoizes output chunks and keeps independent reducer state.
+Demand fills at most 32 outputs per chunk and probes one extra transformed output
+for lookahead, including source effects. Zero-output steps continue pulling;
+many-output steps buffer their emissions; completion runs once on exhaustion or
+Reduced termination and can emit more values. Multi-source input stops at the
+shortest source, probing inputs from left to right. All calls use the same
+canonical IFn/IIterable dispatch and shared runtime during macro expansion.
+See the [lazy transduction audit](../tests/reference/compiler-sequence-transducers.md).
+`eduction` remains separately assigned.
 Reader and language support add
 `apply`, recurrence, multiple/variadic functions and Vars; `@` uses the shared
 reference and `IDeref` dispatch described above.
@@ -1789,7 +1799,8 @@ removed.
 The [sequence evidence and arity inventory](../tests/reference/compiler-sequences.md)
 distinguishes collection overloads from transducer constructors. Eager transducer constructors are implemented by the
 [canonical transduction contract](../tests/reference/compiler-transducers.md);
-`sequence` transducer arities and `eduction` have separate lazy output contracts.
+The [lazy transduction contract](../tests/reference/compiler-sequence-transducers.md)
+implements `sequence` transducer arities; `eduction` remains a separate family.
 
 ### Public compiler warnings
 

@@ -270,7 +270,10 @@ arity inventory. Canonical eager transduction supports `completing`, `transduce`
 partition, cat/mapcat, interpose, replace, dedupe/distinct, random-sample and
 halt-when constructors. The [transducer audit](tests/reference/compiler-transducers.md)
 records reduction order, state, completion and pinned reference comparisons.
-`sequence` transducer arities and `eduction` remain separately assigned.
+Transducing `sequence` supports one or multiple input collections with memoized,
+chunked lazy output and completion emission in both application and macro phases.
+The [lazy transduction audit](tests/reference/compiler-sequence-transducers.md)
+records exact demand traces and all public arities. `eduction` remains separately assigned.
 
 Compiled `delay`, `force`, `delay?`, `realized?` and `lazy-seq` preserve deferred
 execution, retry throwing thunks, and memoize successful values. Lazy metadata

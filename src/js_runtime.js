@@ -639,9 +639,18 @@
     return result;
   }
   class SeqIter {
-    constructor(value) { this.value = seq(value); }
-    hasNext() { return this.value !== null; }
-    next() { const item = first(this.value); this.value = next(this.value); return item; }
+    constructor(value) { this.value = value; this.started = false; this.consumed = false; }
+    hasNext() {
+      if (!this.started) { this.value = seq(this.value); this.started = true; }
+      else if (this.consumed) this.value = next(this.value);
+      this.consumed = false;
+      return this.value !== null;
+    }
+    next() {
+      if (!this.hasNext()) throw new Error("No such element");
+      this.consumed = true;
+      return first(this.value);
+    }
     remove() { throw new Error("Unsupported operation"); }
   }
   class RangedIterator extends SeqIter {}
@@ -2322,7 +2331,63 @@
     });
   }
   const concat = callable(2, {0: () => lazySequence(() => null), 1: x => lazySequence(() => x), 2: concatTwo}, (x, y, more) => concatMany(concatTwo(x, y), more));
-  function sequence(value) { return predicates.isSeq(value) ? value : seq(value) ?? emptyList; }
+  function sequenceIterator(value) {
+    if (satisfies(IIterable, value)) return core.iteratorProtocol(value);
+    if (value == null || predicates.isSeqable(value)) return new SeqIter(value);
+    throw new Error("Cannot create iterator from " + str(value));
+  }
+  function transformedIterator(xform, sources) {
+    let buffer = [], offset = 0, ready = false, item, completed = false;
+    const sink = function (acc, value) {
+      switch (arguments.length) {
+        case 0: return null;
+        case 1: return acc;
+        case 2: buffer.push(value); return acc;
+        default: return invalidArity(arguments.length);
+      }
+    };
+    const xf = xform.call(null, sink);
+    return {
+      hasNext() {
+        if (ready) return true;
+        while (offset === buffer.length) {
+          buffer = []; offset = 0;
+          if (completed) return false;
+          // MultiIterator probes sources from left to right and stops at the
+          // shortest. Request next values only after every probe succeeds.
+          if (sources.every(source => source.hasNext())) {
+            const result = sources.length === 1
+              ? xf.call(null, null, sources[0].next())
+              : xf.call(null, null, ...sources.map(source => source.next()));
+            if (!isReduced(result)) continue;
+          }
+          xf.call(null, null);
+          completed = true;
+        }
+        item = buffer[offset]; buffer[offset++] = null; ready = true;
+        return true;
+      },
+      next() {
+        if (!this.hasNext()) throw new Error("No such element");
+        const value = item; item = null; ready = false;
+        return value;
+      }
+    };
+  }
+  function chunkIteratorSequence(iter) {
+    return lazySequence(() => {
+      if (!iter.hasNext()) return null;
+      const values = [];
+      // The CLJS condition probes the iterator BEFORE checking the chunk
+      // size, caching one extra output for the following chunk.
+      while (iter.hasNext() && values.length < 32) values.push(iter.next());
+      return chunkCons(arrayChunk(values), chunkIteratorSequence(iter));
+    });
+  }
+  const sequence = callable(2, {
+    1: value => predicates.isSeq(value) ? value : seq(value) ?? emptyList,
+    2: (xform, value) => chunkIteratorSequence(transformedIterator(xform, [sequenceIterator(value)]))
+  }, (xform, value, more) => chunkIteratorSequence(transformedIterator(xform, [value, ...toArray(more)].map(sequenceIterator))));
   function fnRest(args, start) {
     return args.length > start ? view(Object.freeze(Array.prototype.slice.call(args, start)), 0, true) : null;
   }

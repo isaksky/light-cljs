@@ -86,8 +86,12 @@ and requires Cargo's one-test/one-pass/zero-ignored outcome. Zero tests, failure
 timeouts, unavailable tools or stale source cannot establish macro eligibility.
 No phase witnesses are inferred from test names or existing implementation.
 Public API completion requires both ordinary operation evidence and this phase
-evidence. The phase catalog now binds all 27 transient public name/arity rows to the
-canonical macro contract; a binding alone still supplies no passing observation.
+evidence. The phase catalog binds all 27 transient public name/arity rows and the three
+`sequence` arities to their canonical macro contracts; a binding alone still
+supplies no passing observation. The complete `test-cljs-2028` body supplies an
+additional transducing-sequence witness. Full upstream bodies mixing sequence,
+eduction and flatten remain subject to their assigned families; passing focused
+sequence tests does not complete those mixed bodies.
 
 A full-scope selection cannot claim completion when `--feature` or `--id` selects
 a subset, even if every selected witness passes. Independently sourced API/arity,
