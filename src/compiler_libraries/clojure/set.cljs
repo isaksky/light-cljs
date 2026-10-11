@@ -20,7 +20,7 @@
     (throw (js/Error. "expected map or nil"))))
 (defn- selected-keys [m ks]
   (require-map m)
-  (reduce (fn [result k] (if-let [entry (find m k)] (conj result entry) result))
+  (reduce (fn [result k] (if-let [entry (find m k)] (assoc result k (val entry)) result))
     (with-meta {} (meta m)) ks))
 
 (defn- bubble-max-key [k coll]
@@ -89,7 +89,7 @@
 (defn- project-impl
   "Returns a rel of the elements of xrel with only the keys in ks"
   [xrel ks]
-    (with-meta (set (map #(selected-keys % ks) xrel)) (meta xrel)))
+    (set (map #(selected-keys % ks) xrel)))
 
 (defn- rename-keys-impl
   "Returns the map with the keys in kmap renamed to the vals in kmap"

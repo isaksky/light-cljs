@@ -2614,8 +2614,12 @@ metadata. Union uses the larger set and intersection the smaller set; two-input
 ties use the first, variadic ties select the last tied largest/smallest input,
 matching Clojure 1.12.4. Projection retains each row’s metadata and original equal key representatives,
 using the same select-keys operation as core. Project retains relation metadata; index/join return
-fresh results without relation metadata. Map/set iteration order and ambiguous
-key-collision order are unspecified. `rename`, `map-invert`, sorted sets and
+fresh results without relation metadata. This paragraph records the retired native
+profile. The current compiler library adopts canonical ClojureScript projection:
+relation metadata is discarded, row metadata is retained, and requested equivalent
+keys are stored. The original SCI expectations remain separately unresolved; see
+[projection evidence](../tests/reference/compiler-set-project-verification.json).
+Map/set iteration order and ambiguous key-collision order are unspecified. `rename`, `map-invert`, sorted sets and
 custom collection implementations are outside this exported surface.
 
 The walk surface is `walk`, `prewalk`, `postwalk`, `prewalk-replace`,

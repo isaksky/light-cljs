@@ -1,0 +1,4291 @@
+{
+  "results": {
+    "allocations": {
+      "bench.macro-main/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 9201.0,
+          "median": 9201.0,
+          "min": 9201.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2178.0,
+          "median": 2178.0,
+          "min": 2178.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 15996880.0,
+          "median": 15996880.0,
+          "min": 15996880.0,
+          "samples": 9
+        }
+      },
+      "bench.macro-main/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 9214.0,
+          "median": 9214.0,
+          "min": 9214.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2178.0,
+          "median": 2178.0,
+          "min": 2178.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 15996972.0,
+          "median": 15996972.0,
+          "min": 15996972.0,
+          "samples": 9
+        }
+      },
+      "bench.macro/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 8520.0,
+          "median": 8520.0,
+          "min": 8520.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2007.0,
+          "median": 2007.0,
+          "min": 2007.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 16304672.0,
+          "median": 16304672.0,
+          "min": 16304672.0,
+          "samples": 9
+        }
+      },
+      "bench.macro/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 8518.0,
+          "median": 8518.0,
+          "min": 8518.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2007.0,
+          "median": 2007.0,
+          "min": 2007.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 16303803.0,
+          "median": 16303803.0,
+          "min": 16303803.0,
+          "samples": 9
+        }
+      },
+      "bench.main/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 693.0,
+          "median": 693.0,
+          "min": 693.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 210.0,
+          "median": 210.0,
+          "min": 210.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1417555.0,
+          "median": 1417555.0,
+          "min": 1417555.0,
+          "samples": 9
+        }
+      },
+      "bench.main/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 695.0,
+          "median": 695.0,
+          "min": 695.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 210.0,
+          "median": 210.0,
+          "min": 210.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1416485.0,
+          "median": 1416485.0,
+          "min": 1416485.0,
+          "samples": 9
+        }
+      },
+      "bench.single/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 615.0,
+          "median": 615.0,
+          "min": 615.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 195.0,
+          "median": 195.0,
+          "min": 195.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1413896.0,
+          "median": 1413896.0,
+          "min": 1413896.0,
+          "samples": 9
+        }
+      },
+      "bench.single/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 607.0,
+          "median": 607.0,
+          "min": 607.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 195.0,
+          "median": 195.0,
+          "min": 195.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1412620.0,
+          "median": 1412620.0,
+          "min": 1412620.0,
+          "samples": 9
+        }
+      },
+      "collections/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 339.0,
+          "median": 339.0,
+          "min": 339.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 109.0,
+          "median": 109.0,
+          "min": 109.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 31156.0,
+          "median": 31156.0,
+          "min": 31156.0,
+          "samples": 9
+        }
+      },
+      "collections/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 138.0,
+          "median": 138.0,
+          "min": 138.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 25.0,
+          "median": 25.0,
+          "min": 25.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1359393.0,
+          "median": 1359393.0,
+          "min": 1359393.0,
+          "samples": 9
+        }
+      },
+      "collections/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 20.0,
+          "median": 20.0,
+          "min": 20.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 5.0,
+          "median": 5.0,
+          "min": 5.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 6624.0,
+          "median": 6624.0,
+          "min": 6624.0,
+          "samples": 9
+        }
+      },
+      "collections/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 497.0,
+          "median": 497.0,
+          "min": 497.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 139.0,
+          "median": 139.0,
+          "min": 139.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1397173.0,
+          "median": 1397173.0,
+          "min": 1397173.0,
+          "samples": 9
+        }
+      },
+      "combined/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 494.0,
+          "median": 494.0,
+          "min": 494.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 163.0,
+          "median": 163.0,
+          "min": 163.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 52675.0,
+          "median": 52675.0,
+          "min": 52675.0,
+          "samples": 9
+        }
+      },
+      "combined/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 97.0,
+          "median": 97.0,
+          "min": 97.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 37.0,
+          "median": 37.0,
+          "min": 37.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1352050.0,
+          "median": 1352050.0,
+          "min": 1352050.0,
+          "samples": 9
+        }
+      },
+      "combined/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 12.0,
+          "median": 12.0,
+          "min": 12.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 4.0,
+          "median": 4.0,
+          "min": 4.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 3072.0,
+          "median": 3072.0,
+          "min": 3072.0,
+          "samples": 9
+        }
+      },
+      "combined/total-resident": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 603.0,
+          "median": 603.0,
+          "min": 603.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 204.0,
+          "median": 204.0,
+          "min": 204.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1407797.0,
+          "median": 1407797.0,
+          "min": 1407797.0,
+          "samples": 9
+        }
+      },
+      "empty/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 12.0,
+          "median": 12.0,
+          "min": 12.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1849.0,
+          "median": 1849.0,
+          "min": 1849.0,
+          "samples": 9
+        }
+      },
+      "empty/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 13.0,
+          "median": 13.0,
+          "min": 13.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 992.0,
+          "median": 992.0,
+          "min": 992.0,
+          "samples": 9
+        }
+      },
+      "empty/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "empty/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 25.0,
+          "median": 25.0,
+          "min": 25.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2.0,
+          "median": 2.0,
+          "min": 2.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 2841.0,
+          "median": 2841.0,
+          "min": 2841.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 23.0,
+          "median": 23.0,
+          "min": 23.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 4.0,
+          "median": 4.0,
+          "min": 4.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 3361.0,
+          "median": 3361.0,
+          "min": 3361.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 29.0,
+          "median": 29.0,
+          "min": 29.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 13.0,
+          "median": 13.0,
+          "min": 13.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1343579.0,
+          "median": 1343579.0,
+          "min": 1343579.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 3.0,
+          "median": 3.0,
+          "min": 3.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 256.0,
+          "median": 256.0,
+          "min": 256.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 55.0,
+          "median": 55.0,
+          "min": 55.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 17.0,
+          "median": 17.0,
+          "min": 17.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1347196.0,
+          "median": 1347196.0,
+          "min": 1347196.0,
+          "samples": 9
+        }
+      },
+      "integer/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 16.0,
+          "median": 16.0,
+          "min": 16.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1881.0,
+          "median": 1881.0,
+          "min": 1881.0,
+          "samples": 9
+        }
+      },
+      "integer/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 18.0,
+          "median": 18.0,
+          "min": 18.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1300.0,
+          "median": 1300.0,
+          "min": 1300.0,
+          "samples": 9
+        }
+      },
+      "integer/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 2.0,
+          "median": 2.0,
+          "min": 2.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 224.0,
+          "median": 224.0,
+          "min": 224.0,
+          "samples": 9
+        }
+      },
+      "integer/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 36.0,
+          "median": 36.0,
+          "min": 36.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2.0,
+          "median": 2.0,
+          "min": 2.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 3405.0,
+          "median": 3405.0,
+          "min": 3405.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 53.0,
+          "median": 53.0,
+          "min": 53.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 16.0,
+          "median": 16.0,
+          "min": 16.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 4177.0,
+          "median": 4177.0,
+          "min": 4177.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 36.0,
+          "median": 36.0,
+          "min": 36.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 6.0,
+          "median": 6.0,
+          "min": 6.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 2296.0,
+          "median": 2296.0,
+          "min": 2296.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 4.0,
+          "median": 4.0,
+          "min": 4.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 672.0,
+          "median": 672.0,
+          "min": 672.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 93.0,
+          "median": 93.0,
+          "min": 93.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 23.0,
+          "median": 23.0,
+          "min": 23.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 7145.0,
+          "median": 7145.0,
+          "min": 7145.0,
+          "samples": 9
+        }
+      },
+      "macro/analyze-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 8143.0,
+          "median": 8143.0,
+          "min": 8143.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1922.0,
+          "median": 1922.0,
+          "min": 1922.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 14466068.0,
+          "median": 14466068.0,
+          "min": 14466068.0,
+          "samples": 9
+        }
+      },
+      "macro/analyze-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 8139.0,
+          "median": 8139.0,
+          "min": 8139.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1922.0,
+          "median": 1922.0,
+          "min": 1922.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 14465704.0,
+          "median": 14465704.0,
+          "min": 14465704.0,
+          "samples": 9
+        }
+      },
+      "macro/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 34.0,
+          "median": 34.0,
+          "min": 34.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 16.0,
+          "median": 16.0,
+          "min": 16.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1344000.0,
+          "median": 1344000.0,
+          "min": 1344000.0,
+          "samples": 9
+        }
+      },
+      "macro/host-setup": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 3.0,
+          "median": 3.0,
+          "min": 3.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 224.0,
+          "median": 224.0,
+          "min": 224.0,
+          "samples": 9
+        }
+      },
+      "macro/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 5.0,
+          "median": 5.0,
+          "min": 5.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2.0,
+          "median": 2.0,
+          "min": 2.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1472.0,
+          "median": 1472.0,
+          "min": 1472.0,
+          "samples": 9
+        }
+      },
+      "macro/total-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 8182.0,
+          "median": 8182.0,
+          "min": 8182.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1940.0,
+          "median": 1940.0,
+          "min": 1940.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 15811540.0,
+          "median": 15811540.0,
+          "min": 15811540.0,
+          "samples": 9
+        }
+      },
+      "macro/total-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 8178.0,
+          "median": 8178.0,
+          "min": 8178.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 1940.0,
+          "median": 1940.0,
+          "min": 1940.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 15811176.0,
+          "median": 15811176.0,
+          "min": 15811176.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 129.0,
+          "median": 129.0,
+          "min": 129.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 30.0,
+          "median": 30.0,
+          "min": 30.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 9881.0,
+          "median": 9881.0,
+          "min": 9881.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 86.0,
+          "median": 86.0,
+          "min": 86.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 6.0,
+          "median": 6.0,
+          "min": 6.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 7242.0,
+          "median": 7242.0,
+          "min": 7242.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 11.0,
+          "median": 11.0,
+          "min": 11.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 3.0,
+          "median": 3.0,
+          "min": 3.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 3200.0,
+          "median": 3200.0,
+          "min": 3200.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 226.0,
+          "median": 226.0,
+          "min": 226.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 39.0,
+          "median": 39.0,
+          "min": 39.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 20323.0,
+          "median": 20323.0,
+          "min": 20323.0,
+          "samples": 9
+        }
+      },
+      "single/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 485.0,
+          "median": 485.0,
+          "min": 485.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 164.0,
+          "median": 164.0,
+          "min": 164.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 54575.0,
+          "median": 54575.0,
+          "min": 54575.0,
+          "samples": 9
+        }
+      },
+      "single/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 82.0,
+          "median": 82.0,
+          "min": 82.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 27.0,
+          "median": 27.0,
+          "min": 27.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1351102.0,
+          "median": 1351102.0,
+          "min": 1351102.0,
+          "samples": 9
+        }
+      },
+      "single/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 7.0,
+          "median": 7.0,
+          "min": 7.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 2.0,
+          "median": 2.0,
+          "min": 2.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1552.0,
+          "median": 1552.0,
+          "min": 1552.0,
+          "samples": 9
+        }
+      },
+      "single/total-resident": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 574.0,
+          "median": 574.0,
+          "min": 574.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 193.0,
+          "median": 193.0,
+          "min": 193.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 1407229.0,
+          "median": 1407229.0,
+          "min": 1407229.0,
+          "samples": 9
+        }
+      }
+    },
+    "fresh-process": {
+      "current/bench.macro-main/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 956749.0,
+          "max": 250076750.0,
+          "median": 246900541.0,
+          "min": 244593292.0,
+          "samples": 9
+        }
+      },
+      "current/bench.macro-main/node-through-result": {
+        "elapsed_ns": {
+          "mad": 1130541.0,
+          "max": 67733667.0,
+          "median": 64831583.0,
+          "min": 63242708.0,
+          "samples": 9
+        }
+      },
+      "current/bench.macro/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 1588208.0,
+          "max": 250501709.0,
+          "median": 247549083.0,
+          "min": 244597750.0,
+          "samples": 9
+        }
+      },
+      "current/bench.macro/node-through-result": {
+        "elapsed_ns": {
+          "mad": 982125.0,
+          "max": 67850500.0,
+          "median": 66138125.0,
+          "min": 63757417.0,
+          "samples": 9
+        }
+      },
+      "current/bench.main/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 173458.0,
+          "max": 4682583.0,
+          "median": 4354000.0,
+          "min": 4128625.0,
+          "samples": 9
+        }
+      },
+      "current/bench.main/node-through-result": {
+        "elapsed_ns": {
+          "mad": 1134625.0,
+          "max": 67495875.0,
+          "median": 64789417.0,
+          "min": 62338875.0,
+          "samples": 9
+        }
+      },
+      "current/bench.single/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 81750.0,
+          "max": 4418667.0,
+          "median": 4214958.0,
+          "min": 4099875.0,
+          "samples": 9
+        }
+      },
+      "current/bench.single/node-through-result": {
+        "elapsed_ns": {
+          "mad": 854792.0,
+          "max": 67480000.0,
+          "median": 63553625.0,
+          "min": 62577291.0,
+          "samples": 9
+        }
+      },
+      "current/collections/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 143959.0,
+          "max": 4363042.0,
+          "median": 3910625.0,
+          "min": 3574041.0,
+          "samples": 9
+        }
+      },
+      "current/collections/node-through-result": {
+        "elapsed_ns": {
+          "mad": 634792.0,
+          "max": 71184000.0,
+          "median": 64869292.0,
+          "min": 64234500.0,
+          "samples": 9
+        }
+      },
+      "current/empty/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 83083.0,
+          "max": 3398833.0,
+          "median": 2997166.0,
+          "min": 2914083.0,
+          "samples": 9
+        }
+      },
+      "current/empty/node-through-result": {
+        "elapsed_ns": {
+          "mad": 1549541.0,
+          "max": 56116250.0,
+          "median": 53169000.0,
+          "min": 51008458.0,
+          "samples": 9
+        }
+      },
+      "current/expanded-macro/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 134958.0,
+          "max": 5880250.0,
+          "median": 3752209.0,
+          "min": 3555375.0,
+          "samples": 9
+        }
+      },
+      "current/expanded-macro/node-through-result": {
+        "elapsed_ns": {
+          "mad": 1151542.0,
+          "max": 67089583.0,
+          "median": 63767667.0,
+          "min": 62407792.0,
+          "samples": 9
+        }
+      },
+      "current/integer/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 42083.0,
+          "max": 3196083.0,
+          "median": 3010458.0,
+          "min": 2771250.0,
+          "samples": 9
+        }
+      },
+      "current/integer/node-through-result": {
+        "elapsed_ns": {
+          "mad": 556875.0,
+          "max": 54094958.0,
+          "median": 51950750.0,
+          "min": 50823417.0,
+          "samples": 9
+        }
+      },
+      "current/js-nested-method/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 63709.0,
+          "max": 3190875.0,
+          "median": 3078458.0,
+          "min": 2765292.0,
+          "samples": 9
+        }
+      },
+      "current/js-nested-method/node-through-result": {
+        "elapsed_ns": {
+          "mad": 1034416.0,
+          "max": 53908500.0,
+          "median": 52351167.0,
+          "min": 50960542.0,
+          "samples": 9
+        }
+      },
+      "current/nested-closure/cli-to-output": {
+        "elapsed_ns": {
+          "mad": 172499.0,
+          "max": 3527000.0,
+          "median": 3073084.0,
+          "min": 2770667.0,
+          "samples": 9
+        }
+      },
+      "current/nested-closure/node-through-result": {
+        "elapsed_ns": {
+          "mad": 522999.0,
+          "max": 53897292.0,
+          "median": 52050667.0,
+          "min": 51228417.0,
+          "samples": 9
+        }
+      }
+    },
+    "operations": {
+      "calls/keyword/4096": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 1292.0,
+          "median": 1209.0,
+          "min": 1167.0,
+          "samples": 9
+        }
+      },
+      "calls/keyword/512": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 1333.0,
+          "median": 1292.0,
+          "min": 1250.0,
+          "samples": 9
+        }
+      },
+      "calls/keyword/64": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 1584.0,
+          "median": 1458.0,
+          "min": 1375.0,
+          "samples": 9
+        }
+      },
+      "calls/keyword/8": {
+        "elapsed_ns": {
+          "mad": 458.0,
+          "max": 11125.0,
+          "median": 4333.0,
+          "min": 3333.0,
+          "samples": 9
+        }
+      },
+      "calls/map-collision/4096": {
+        "elapsed_ns": {
+          "mad": 13541.0,
+          "max": 695125.0,
+          "median": 616667.0,
+          "min": 601750.0,
+          "samples": 9
+        }
+      },
+      "calls/map-collision/512": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 73792.0,
+          "median": 72958.0,
+          "min": 72791.0,
+          "samples": 9
+        }
+      },
+      "calls/map-collision/64": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 10417.0,
+          "median": 9459.0,
+          "min": 9375.0,
+          "samples": 9
+        }
+      },
+      "calls/map-collision/8": {
+        "elapsed_ns": {
+          "mad": 249.0,
+          "max": 25500.0,
+          "median": 2458.0,
+          "min": 2208.0,
+          "samples": 9
+        }
+      },
+      "calls/map-structural/4096": {
+        "elapsed_ns": {
+          "mad": 5458.0,
+          "max": 132333.0,
+          "median": 107750.0,
+          "min": 102292.0,
+          "samples": 9
+        }
+      },
+      "calls/map-structural/512": {
+        "elapsed_ns": {
+          "mad": 208.0,
+          "max": 24459.0,
+          "median": 23958.0,
+          "min": 23417.0,
+          "samples": 9
+        }
+      },
+      "calls/map-structural/64": {
+        "elapsed_ns": {
+          "mad": 84.0,
+          "max": 14958.0,
+          "median": 14708.0,
+          "min": 14542.0,
+          "samples": 9
+        }
+      },
+      "calls/map-structural/8": {
+        "elapsed_ns": {
+          "mad": 1792.0,
+          "max": 22458.0,
+          "median": 16958.0,
+          "min": 15041.0,
+          "samples": 9
+        }
+      },
+      "calls/saved-core-nth/4096": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 875.0,
+          "median": 792.0,
+          "min": 791.0,
+          "samples": 9
+        }
+      },
+      "calls/saved-core-nth/512": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 875.0,
+          "median": 834.0,
+          "min": 833.0,
+          "samples": 9
+        }
+      },
+      "calls/saved-core-nth/64": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 1000.0,
+          "median": 916.0,
+          "min": 875.0,
+          "samples": 9
+        }
+      },
+      "calls/saved-core-nth/8": {
+        "elapsed_ns": {
+          "mad": 291.0,
+          "max": 10208.0,
+          "median": 1708.0,
+          "min": 1416.0,
+          "samples": 9
+        }
+      },
+      "calls/set-collision/4096": {
+        "elapsed_ns": {
+          "mad": 4375.0,
+          "max": 623500.0,
+          "median": 600625.0,
+          "min": 596250.0,
+          "samples": 9
+        }
+      },
+      "calls/set-collision/512": {
+        "elapsed_ns": {
+          "mad": 124.0,
+          "max": 92625.0,
+          "median": 73542.0,
+          "min": 73417.0,
+          "samples": 9
+        }
+      },
+      "calls/set-collision/64": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 24209.0,
+          "median": 9750.0,
+          "min": 9667.0,
+          "samples": 9
+        }
+      },
+      "calls/set-collision/8": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 3334.0,
+          "median": 2166.0,
+          "min": 2125.0,
+          "samples": 9
+        }
+      },
+      "calls/set-structural/4096": {
+        "elapsed_ns": {
+          "mad": 2542.0,
+          "max": 117917.0,
+          "median": 101084.0,
+          "min": 97292.0,
+          "samples": 9
+        }
+      },
+      "calls/set-structural/512": {
+        "elapsed_ns": {
+          "mad": 334.0,
+          "max": 24167.0,
+          "median": 23667.0,
+          "min": 23292.0,
+          "samples": 9
+        }
+      },
+      "calls/set-structural/64": {
+        "elapsed_ns": {
+          "mad": 167.0,
+          "max": 15292.0,
+          "median": 14750.0,
+          "min": 14417.0,
+          "samples": 9
+        }
+      },
+      "calls/set-structural/8": {
+        "elapsed_ns": {
+          "mad": 751.0,
+          "max": 19541.0,
+          "median": 15084.0,
+          "min": 14250.0,
+          "samples": 9
+        }
+      },
+      "calls/vector/4096": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 125.0,
+          "median": 125.0,
+          "min": 84.0,
+          "samples": 9
+        }
+      },
+      "calls/vector/512": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 166.0,
+          "median": 125.0,
+          "min": 83.0,
+          "samples": 9
+        }
+      },
+      "calls/vector/64": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 167.0,
+          "median": 125.0,
+          "min": 83.0,
+          "samples": 9
+        }
+      },
+      "calls/vector/8": {
+        "elapsed_ns": {
+          "mad": 124.0,
+          "max": 2209.0,
+          "median": 333.0,
+          "min": 208.0,
+          "samples": 9
+        }
+      },
+      "fold/compiled-js-interop/1000": {
+        "elapsed_ns": {
+          "mad": 250.0,
+          "max": 20833.0,
+          "median": 15125.0,
+          "min": 14834.0,
+          "samples": 9
+        }
+      },
+      "fold/core-reduce-add/1000": {
+        "elapsed_ns": {
+          "mad": 2792.0,
+          "max": 79333.0,
+          "median": 59375.0,
+          "min": 44750.0,
+          "samples": 9
+        }
+      },
+      "list/prepend-retained/4096": {
+        "elapsed_ns": {
+          "mad": 541.0,
+          "max": 10083.0,
+          "median": 6584.0,
+          "min": 4958.0,
+          "samples": 9
+        }
+      },
+      "list/prepend-retained/512": {
+        "elapsed_ns": {
+          "mad": 417.0,
+          "max": 11750.0,
+          "median": 4417.0,
+          "min": 3875.0,
+          "samples": 9
+        }
+      },
+      "list/prepend-retained/64": {
+        "elapsed_ns": {
+          "mad": 625.0,
+          "max": 8042.0,
+          "median": 4542.0,
+          "min": 3917.0,
+          "samples": 9
+        }
+      },
+      "list/prepend-retained/8": {
+        "elapsed_ns": {
+          "mad": 875.0,
+          "max": 9959.0,
+          "median": 8625.0,
+          "min": 7209.0,
+          "samples": 9
+        }
+      },
+      "list/traverse/4096": {
+        "elapsed_ns": {
+          "mad": 150667.0,
+          "max": 11587375.0,
+          "median": 11058417.0,
+          "min": 10789750.0,
+          "samples": 9
+        }
+      },
+      "list/traverse/512": {
+        "elapsed_ns": {
+          "mad": 34000.0,
+          "max": 1465167.0,
+          "median": 1390208.0,
+          "min": 1343792.0,
+          "samples": 9
+        }
+      },
+      "list/traverse/64": {
+        "elapsed_ns": {
+          "mad": 5082.0,
+          "max": 349541.0,
+          "median": 203709.0,
+          "min": 188666.0,
+          "samples": 9
+        }
+      },
+      "list/traverse/8": {
+        "elapsed_ns": {
+          "mad": 3001.0,
+          "max": 89792.0,
+          "median": 29917.0,
+          "min": 26916.0,
+          "samples": 9
+        }
+      },
+      "map/collision/assoc-retained/4096": {
+        "elapsed_ns": {
+          "mad": 6834.0,
+          "max": 720375.0,
+          "median": 612834.0,
+          "min": 606000.0,
+          "samples": 9
+        }
+      },
+      "map/collision/assoc-retained/512": {
+        "elapsed_ns": {
+          "mad": 1541.0,
+          "max": 84667.0,
+          "median": 79541.0,
+          "min": 77417.0,
+          "samples": 9
+        }
+      },
+      "map/collision/assoc-retained/64": {
+        "elapsed_ns": {
+          "mad": 209.0,
+          "max": 26750.0,
+          "median": 13292.0,
+          "min": 12875.0,
+          "samples": 9
+        }
+      },
+      "map/collision/assoc-retained/8": {
+        "elapsed_ns": {
+          "mad": 791.0,
+          "max": 7833.0,
+          "median": 6792.0,
+          "min": 5625.0,
+          "samples": 9
+        }
+      },
+      "map/collision/construct/4096": {
+        "elapsed_ns": {
+          "mad": 963501.0,
+          "max": 1100264459.0,
+          "median": 1090694167.0,
+          "min": 1088990042.0,
+          "samples": 9
+        }
+      },
+      "map/collision/construct/512": {
+        "elapsed_ns": {
+          "mad": 247459.0,
+          "max": 16438583.0,
+          "median": 16087667.0,
+          "min": 15043000.0,
+          "samples": 9
+        }
+      },
+      "map/collision/construct/64": {
+        "elapsed_ns": {
+          "mad": 20875.0,
+          "max": 566500.0,
+          "median": 280500.0,
+          "min": 256375.0,
+          "samples": 9
+        }
+      },
+      "map/collision/construct/8": {
+        "elapsed_ns": {
+          "mad": 5417.0,
+          "max": 34875.0,
+          "median": 24250.0,
+          "min": 15291.0,
+          "samples": 9
+        }
+      },
+      "map/collision/dissoc-retained/4096": {
+        "elapsed_ns": {
+          "mad": 24791.0,
+          "max": 664083.0,
+          "median": 639292.0,
+          "min": 607667.0,
+          "samples": 9
+        }
+      },
+      "map/collision/dissoc-retained/512": {
+        "elapsed_ns": {
+          "mad": 708.0,
+          "max": 81083.0,
+          "median": 78750.0,
+          "min": 77584.0,
+          "samples": 9
+        }
+      },
+      "map/collision/dissoc-retained/64": {
+        "elapsed_ns": {
+          "mad": 167.0,
+          "max": 13917.0,
+          "median": 12958.0,
+          "min": 12750.0,
+          "samples": 9
+        }
+      },
+      "map/collision/dissoc-retained/8": {
+        "elapsed_ns": {
+          "mad": 500.0,
+          "max": 13166.0,
+          "median": 6083.0,
+          "min": 5583.0,
+          "samples": 9
+        }
+      },
+      "map/collision/lookup-last/4096": {
+        "elapsed_ns": {
+          "mad": 12875.0,
+          "max": 686167.0,
+          "median": 619166.0,
+          "min": 602417.0,
+          "samples": 9
+        }
+      },
+      "map/collision/lookup-last/512": {
+        "elapsed_ns": {
+          "mad": 1083.0,
+          "max": 80625.0,
+          "median": 73583.0,
+          "min": 69542.0,
+          "samples": 9
+        }
+      },
+      "map/collision/lookup-last/64": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 9542.0,
+          "median": 9458.0,
+          "min": 9458.0,
+          "samples": 9
+        }
+      },
+      "map/collision/lookup-last/8": {
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 7125.0,
+          "median": 3917.0,
+          "min": 3792.0,
+          "samples": 9
+        }
+      },
+      "map/collision/miss/4096": {
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 87292.0,
+          "median": 87125.0,
+          "min": 86792.0,
+          "samples": 9
+        }
+      },
+      "map/collision/miss/512": {
+        "elapsed_ns": {
+          "mad": 1083.0,
+          "max": 15750.0,
+          "median": 14083.0,
+          "min": 12750.0,
+          "samples": 9
+        }
+      },
+      "map/collision/miss/64": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 2667.0,
+          "median": 2625.0,
+          "min": 2583.0,
+          "samples": 9
+        }
+      },
+      "map/collision/miss/8": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 2084.0,
+          "median": 1917.0,
+          "min": 1875.0,
+          "samples": 9
+        }
+      },
+      "map/structural/assoc-retained/4096": {
+        "elapsed_ns": {
+          "mad": 2625.0,
+          "max": 163000.0,
+          "median": 140125.0,
+          "min": 134792.0,
+          "samples": 9
+        }
+      },
+      "map/structural/assoc-retained/512": {
+        "elapsed_ns": {
+          "mad": 626.0,
+          "max": 49500.0,
+          "median": 31084.0,
+          "min": 30375.0,
+          "samples": 9
+        }
+      },
+      "map/structural/assoc-retained/64": {
+        "elapsed_ns": {
+          "mad": 625.0,
+          "max": 31000.0,
+          "median": 18458.0,
+          "min": 17375.0,
+          "samples": 9
+        }
+      },
+      "map/structural/assoc-retained/8": {
+        "elapsed_ns": {
+          "mad": 3624.0,
+          "max": 56000.0,
+          "median": 42416.0,
+          "min": 35000.0,
+          "samples": 9
+        }
+      },
+      "map/structural/construct/4096": {
+        "elapsed_ns": {
+          "mad": 244667.0,
+          "max": 78808625.0,
+          "median": 77921375.0,
+          "min": 77234250.0,
+          "samples": 9
+        }
+      },
+      "map/structural/construct/512": {
+        "elapsed_ns": {
+          "mad": 56417.0,
+          "max": 4777834.0,
+          "median": 4583167.0,
+          "min": 4477875.0,
+          "samples": 9
+        }
+      },
+      "map/structural/construct/64": {
+        "elapsed_ns": {
+          "mad": 54376.0,
+          "max": 760417.0,
+          "median": 564167.0,
+          "min": 492833.0,
+          "samples": 9
+        }
+      },
+      "map/structural/construct/8": {
+        "elapsed_ns": {
+          "mad": 5251.0,
+          "max": 162667.0,
+          "median": 136334.0,
+          "min": 120417.0,
+          "samples": 9
+        }
+      },
+      "map/structural/dissoc-retained/4096": {
+        "elapsed_ns": {
+          "mad": 7875.0,
+          "max": 165333.0,
+          "median": 138125.0,
+          "min": 130125.0,
+          "samples": 9
+        }
+      },
+      "map/structural/dissoc-retained/512": {
+        "elapsed_ns": {
+          "mad": 500.0,
+          "max": 32958.0,
+          "median": 32041.0,
+          "min": 31541.0,
+          "samples": 9
+        }
+      },
+      "map/structural/dissoc-retained/64": {
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 18000.0,
+          "median": 17542.0,
+          "min": 17292.0,
+          "samples": 9
+        }
+      },
+      "map/structural/dissoc-retained/8": {
+        "elapsed_ns": {
+          "mad": 5666.0,
+          "max": 43917.0,
+          "median": 35334.0,
+          "min": 28500.0,
+          "samples": 9
+        }
+      },
+      "map/structural/lookup-last/4096": {
+        "elapsed_ns": {
+          "mad": 4333.0,
+          "max": 127125.0,
+          "median": 116833.0,
+          "min": 102958.0,
+          "samples": 9
+        }
+      },
+      "map/structural/lookup-last/512": {
+        "elapsed_ns": {
+          "mad": 84.0,
+          "max": 24792.0,
+          "median": 24167.0,
+          "min": 23917.0,
+          "samples": 9
+        }
+      },
+      "map/structural/lookup-last/64": {
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 14708.0,
+          "median": 14458.0,
+          "min": 14250.0,
+          "samples": 9
+        }
+      },
+      "map/structural/lookup-last/8": {
+        "elapsed_ns": {
+          "mad": 3458.0,
+          "max": 43250.0,
+          "median": 34375.0,
+          "min": 30125.0,
+          "samples": 9
+        }
+      },
+      "map/structural/miss/4096": {
+        "elapsed_ns": {
+          "mad": 1251.0,
+          "max": 109459.0,
+          "median": 88334.0,
+          "min": 87083.0,
+          "samples": 9
+        }
+      },
+      "map/structural/miss/512": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 12042.0,
+          "median": 11917.0,
+          "min": 11833.0,
+          "samples": 9
+        }
+      },
+      "map/structural/miss/64": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 2583.0,
+          "median": 2459.0,
+          "min": 2458.0,
+          "samples": 9
+        }
+      },
+      "map/structural/miss/8": {
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 3125.0,
+          "median": 2667.0,
+          "min": 2458.0,
+          "samples": 9
+        }
+      },
+      "nested/lookup/4096": {
+        "elapsed_ns": {
+          "mad": 834.0,
+          "max": 34083.0,
+          "median": 24792.0,
+          "min": 23875.0,
+          "samples": 9
+        }
+      },
+      "nested/lookup/512": {
+        "elapsed_ns": {
+          "mad": 458.0,
+          "max": 25125.0,
+          "median": 24542.0,
+          "min": 23916.0,
+          "samples": 9
+        }
+      },
+      "nested/lookup/64": {
+        "elapsed_ns": {
+          "mad": 499.0,
+          "max": 24458.0,
+          "median": 23708.0,
+          "min": 23208.0,
+          "samples": 9
+        }
+      },
+      "nested/lookup/8": {
+        "elapsed_ns": {
+          "mad": 1374.0,
+          "max": 38042.0,
+          "median": 27541.0,
+          "min": 26167.0,
+          "samples": 9
+        }
+      },
+      "nested/update-retained/4096": {
+        "elapsed_ns": {
+          "mad": 3667.0,
+          "max": 70625.0,
+          "median": 54708.0,
+          "min": 50084.0,
+          "samples": 9
+        }
+      },
+      "nested/update-retained/512": {
+        "elapsed_ns": {
+          "mad": 1208.0,
+          "max": 62875.0,
+          "median": 60792.0,
+          "min": 59583.0,
+          "samples": 9
+        }
+      },
+      "nested/update-retained/64": {
+        "elapsed_ns": {
+          "mad": 750.0,
+          "max": 208666.0,
+          "median": 48875.0,
+          "min": 47416.0,
+          "samples": 9
+        }
+      },
+      "nested/update-retained/8": {
+        "elapsed_ns": {
+          "mad": 2958.0,
+          "max": 74917.0,
+          "median": 63583.0,
+          "min": 58125.0,
+          "samples": 9
+        }
+      },
+      "set/collision/conj-retained/4096": {
+        "elapsed_ns": {
+          "mad": 791.0,
+          "max": 137833.0,
+          "median": 119250.0,
+          "min": 118459.0,
+          "samples": 9
+        }
+      },
+      "set/collision/conj-retained/512": {
+        "elapsed_ns": {
+          "mad": 541.0,
+          "max": 23792.0,
+          "median": 19166.0,
+          "min": 17916.0,
+          "samples": 9
+        }
+      },
+      "set/collision/conj-retained/64": {
+        "elapsed_ns": {
+          "mad": 167.0,
+          "max": 15667.0,
+          "median": 5417.0,
+          "min": 5208.0,
+          "samples": 9
+        }
+      },
+      "set/collision/conj-retained/8": {
+        "elapsed_ns": {
+          "mad": 250.0,
+          "max": 14125.0,
+          "median": 4500.0,
+          "min": 4167.0,
+          "samples": 9
+        }
+      },
+      "set/collision/construct/4096": {
+        "elapsed_ns": {
+          "mad": 1939792.0,
+          "max": 1099865792.0,
+          "median": 1094220875.0,
+          "min": 1091449792.0,
+          "samples": 9
+        }
+      },
+      "set/collision/construct/512": {
+        "elapsed_ns": {
+          "mad": 134500.0,
+          "max": 16986792.0,
+          "median": 16457750.0,
+          "min": 16026833.0,
+          "samples": 9
+        }
+      },
+      "set/collision/construct/64": {
+        "elapsed_ns": {
+          "mad": 12000.0,
+          "max": 327917.0,
+          "median": 300833.0,
+          "min": 277417.0,
+          "samples": 9
+        }
+      },
+      "set/collision/construct/8": {
+        "elapsed_ns": {
+          "mad": 2500.0,
+          "max": 24916.0,
+          "median": 18000.0,
+          "min": 15375.0,
+          "samples": 9
+        }
+      },
+      "set/collision/disj-retained/4096": {
+        "elapsed_ns": {
+          "mad": 19375.0,
+          "max": 704583.0,
+          "median": 636333.0,
+          "min": 609333.0,
+          "samples": 9
+        }
+      },
+      "set/collision/disj-retained/512": {
+        "elapsed_ns": {
+          "mad": 459.0,
+          "max": 85333.0,
+          "median": 77584.0,
+          "min": 77000.0,
+          "samples": 9
+        }
+      },
+      "set/collision/disj-retained/64": {
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 12667.0,
+          "median": 12375.0,
+          "min": 12166.0,
+          "samples": 9
+        }
+      },
+      "set/collision/disj-retained/8": {
+        "elapsed_ns": {
+          "mad": 208.0,
+          "max": 13458.0,
+          "median": 5625.0,
+          "min": 5334.0,
+          "samples": 9
+        }
+      },
+      "set/collision/lookup-last/4096": {
+        "elapsed_ns": {
+          "mad": 5292.0,
+          "max": 620583.0,
+          "median": 599792.0,
+          "min": 591708.0,
+          "samples": 9
+        }
+      },
+      "set/collision/lookup-last/512": {
+        "elapsed_ns": {
+          "mad": 4167.0,
+          "max": 88958.0,
+          "median": 80750.0,
+          "min": 75667.0,
+          "samples": 9
+        }
+      },
+      "set/collision/lookup-last/64": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 10334.0,
+          "median": 10208.0,
+          "min": 10166.0,
+          "samples": 9
+        }
+      },
+      "set/collision/lookup-last/8": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 4459.0,
+          "median": 3375.0,
+          "min": 3250.0,
+          "samples": 9
+        }
+      },
+      "set/collision/miss/4096": {
+        "elapsed_ns": {
+          "mad": 4917.0,
+          "max": 114250.0,
+          "median": 93375.0,
+          "min": 87291.0,
+          "samples": 9
+        }
+      },
+      "set/collision/miss/512": {
+        "elapsed_ns": {
+          "mad": 1042.0,
+          "max": 16042.0,
+          "median": 14167.0,
+          "min": 12541.0,
+          "samples": 9
+        }
+      },
+      "set/collision/miss/64": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 2709.0,
+          "median": 2666.0,
+          "min": 2625.0,
+          "samples": 9
+        }
+      },
+      "set/collision/miss/8": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 7875.0,
+          "median": 1916.0,
+          "min": 1875.0,
+          "samples": 9
+        }
+      },
+      "set/structural/conj-retained/4096": {
+        "elapsed_ns": {
+          "mad": 3583.0,
+          "max": 150875.0,
+          "median": 141375.0,
+          "min": 131583.0,
+          "samples": 9
+        }
+      },
+      "set/structural/conj-retained/512": {
+        "elapsed_ns": {
+          "mad": 291.0,
+          "max": 33917.0,
+          "median": 25375.0,
+          "min": 24875.0,
+          "samples": 9
+        }
+      },
+      "set/structural/conj-retained/64": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 12958.0,
+          "median": 12333.0,
+          "min": 12208.0,
+          "samples": 9
+        }
+      },
+      "set/structural/conj-retained/8": {
+        "elapsed_ns": {
+          "mad": 875.0,
+          "max": 30250.0,
+          "median": 14416.0,
+          "min": 12667.0,
+          "samples": 9
+        }
+      },
+      "set/structural/construct/4096": {
+        "elapsed_ns": {
+          "mad": 381291.0,
+          "max": 79384667.0,
+          "median": 78106833.0,
+          "min": 77062584.0,
+          "samples": 9
+        }
+      },
+      "set/structural/construct/512": {
+        "elapsed_ns": {
+          "mad": 50000.0,
+          "max": 4610250.0,
+          "median": 4500875.0,
+          "min": 4372667.0,
+          "samples": 9
+        }
+      },
+      "set/structural/construct/64": {
+        "elapsed_ns": {
+          "mad": 19584.0,
+          "max": 748750.0,
+          "median": 478541.0,
+          "min": 439833.0,
+          "samples": 9
+        }
+      },
+      "set/structural/construct/8": {
+        "elapsed_ns": {
+          "mad": 3167.0,
+          "max": 175042.0,
+          "median": 79584.0,
+          "min": 76417.0,
+          "samples": 9
+        }
+      },
+      "set/structural/disj-retained/4096": {
+        "elapsed_ns": {
+          "mad": 3000.0,
+          "max": 147375.0,
+          "median": 135250.0,
+          "min": 132250.0,
+          "samples": 9
+        }
+      },
+      "set/structural/disj-retained/512": {
+        "elapsed_ns": {
+          "mad": 791.0,
+          "max": 376292.0,
+          "median": 32541.0,
+          "min": 31375.0,
+          "samples": 9
+        }
+      },
+      "set/structural/disj-retained/64": {
+        "elapsed_ns": {
+          "mad": 167.0,
+          "max": 18875.0,
+          "median": 18209.0,
+          "min": 17875.0,
+          "samples": 9
+        }
+      },
+      "set/structural/disj-retained/8": {
+        "elapsed_ns": {
+          "mad": 2459.0,
+          "max": 157167.0,
+          "median": 23167.0,
+          "min": 20167.0,
+          "samples": 9
+        }
+      },
+      "set/structural/lookup-last/4096": {
+        "elapsed_ns": {
+          "mad": 5166.0,
+          "max": 142958.0,
+          "median": 114292.0,
+          "min": 98625.0,
+          "samples": 9
+        }
+      },
+      "set/structural/lookup-last/512": {
+        "elapsed_ns": {
+          "mad": 209.0,
+          "max": 24750.0,
+          "median": 24208.0,
+          "min": 23875.0,
+          "samples": 9
+        }
+      },
+      "set/structural/lookup-last/64": {
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 14833.0,
+          "median": 14292.0,
+          "min": 14208.0,
+          "samples": 9
+        }
+      },
+      "set/structural/lookup-last/8": {
+        "elapsed_ns": {
+          "mad": 4833.0,
+          "max": 42417.0,
+          "median": 36833.0,
+          "min": 31084.0,
+          "samples": 9
+        }
+      },
+      "set/structural/miss/4096": {
+        "elapsed_ns": {
+          "mad": 584.0,
+          "max": 87625.0,
+          "median": 86000.0,
+          "min": 85166.0,
+          "samples": 9
+        }
+      },
+      "set/structural/miss/512": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 12292.0,
+          "median": 12250.0,
+          "min": 12208.0,
+          "samples": 9
+        }
+      },
+      "set/structural/miss/64": {
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 2584.0,
+          "median": 2541.0,
+          "min": 2458.0,
+          "samples": 9
+        }
+      },
+      "set/structural/miss/8": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 2958.0,
+          "median": 2625.0,
+          "min": 2541.0,
+          "samples": 9
+        }
+      },
+      "vector/assoc-retained/4096": {
+        "elapsed_ns": {
+          "mad": 583.0,
+          "max": 98625.0,
+          "median": 95083.0,
+          "min": 94500.0,
+          "samples": 9
+        }
+      },
+      "vector/assoc-retained/512": {
+        "elapsed_ns": {
+          "mad": 792.0,
+          "max": 24500.0,
+          "median": 13459.0,
+          "min": 12667.0,
+          "samples": 9
+        }
+      },
+      "vector/assoc-retained/64": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 4584.0,
+          "median": 4375.0,
+          "min": 4208.0,
+          "samples": 9
+        }
+      },
+      "vector/assoc-retained/8": {
+        "elapsed_ns": {
+          "mad": 417.0,
+          "max": 14792.0,
+          "median": 6167.0,
+          "min": 5583.0,
+          "samples": 9
+        }
+      },
+      "vector/conj-retained/4096": {
+        "elapsed_ns": {
+          "mad": 166.0,
+          "max": 7000.0,
+          "median": 5209.0,
+          "min": 4833.0,
+          "samples": 9
+        }
+      },
+      "vector/conj-retained/512": {
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 3458.0,
+          "median": 2167.0,
+          "min": 2083.0,
+          "samples": 9
+        }
+      },
+      "vector/conj-retained/64": {
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 3042.0,
+          "median": 2417.0,
+          "min": 2333.0,
+          "samples": 9
+        }
+      },
+      "vector/conj-retained/8": {
+        "elapsed_ns": {
+          "mad": 958.0,
+          "max": 12958.0,
+          "median": 6167.0,
+          "min": 5000.0,
+          "samples": 9
+        }
+      },
+      "vector/construct/4096": {
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 5583.0,
+          "median": 4500.0,
+          "min": 4333.0,
+          "samples": 9
+        }
+      },
+      "vector/construct/512": {
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 5084.0,
+          "median": 1416.0,
+          "min": 1291.0,
+          "samples": 9
+        }
+      },
+      "vector/construct/64": {
+        "elapsed_ns": {
+          "mad": 166.0,
+          "max": 11458.0,
+          "median": 1458.0,
+          "min": 1250.0,
+          "samples": 9
+        }
+      },
+      "vector/construct/8": {
+        "elapsed_ns": {
+          "mad": 1208.0,
+          "max": 9250.0,
+          "median": 4500.0,
+          "min": 3250.0,
+          "samples": 9
+        }
+      },
+      "vector/nth/4096": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 834.0,
+          "median": 792.0,
+          "min": 791.0,
+          "samples": 9
+        }
+      },
+      "vector/nth/512": {
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 792.0,
+          "median": 750.0,
+          "min": 750.0,
+          "samples": 9
+        }
+      },
+      "vector/nth/64": {
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 1000.0,
+          "median": 958.0,
+          "min": 917.0,
+          "samples": 9
+        }
+      },
+      "vector/nth/8": {
+        "elapsed_ns": {
+          "mad": 126.0,
+          "max": 4625.0,
+          "median": 2334.0,
+          "min": 2208.0,
+          "samples": 9
+        }
+      }
+    },
+    "resident": {
+      "bench.macro-main/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 270000.0,
+          "max": 24875416.0,
+          "median": 24090500.0,
+          "min": 23706333.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.macro-main/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 214666.0,
+          "max": 24956542.0,
+          "median": 24319750.0,
+          "min": 23983667.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.macro/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 93250.0,
+          "max": 24536125.0,
+          "median": 23979208.0,
+          "min": 23708792.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.macro/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 325375.0,
+          "max": 24765792.0,
+          "median": 24188459.0,
+          "min": 23493833.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.main/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 7541.0,
+          "max": 124958.0,
+          "median": 113250.0,
+          "min": 104000.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.main/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 3666.0,
+          "max": 128208.0,
+          "median": 124542.0,
+          "min": 112167.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.single/filesystem-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 3542.0,
+          "max": 92708.0,
+          "median": 81500.0,
+          "min": 77958.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "bench.single/filesystem-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 11751.0,
+          "max": 110209.0,
+          "median": 98458.0,
+          "min": 83500.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "collections/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 22584.0,
+          "median": 21708.0,
+          "min": 21542.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "collections/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 166.0,
+          "max": 24292.0,
+          "median": 20416.0,
+          "min": 20208.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "collections/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 209.0,
+          "max": 3417.0,
+          "median": 2875.0,
+          "min": 2334.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "collections/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 457.0,
+          "max": 49000.0,
+          "median": 42791.0,
+          "min": 42334.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "combined/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 1541.0,
+          "max": 49250.0,
+          "median": 45375.0,
+          "min": 38500.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "combined/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 1333.0,
+          "max": 33917.0,
+          "median": 21833.0,
+          "min": 20500.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "combined/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 1959.0,
+          "median": 1750.0,
+          "min": 1625.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "combined/total-resident": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 3459.0,
+          "max": 74792.0,
+          "median": 60167.0,
+          "min": 56708.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "empty/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 916.0,
+          "median": 750.0,
+          "min": 708.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "empty/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 791.0,
+          "median": 750.0,
+          "min": 708.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "empty/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 83.0,
+          "median": 42.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "empty/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 1917.0,
+          "median": 1583.0,
+          "min": 1500.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 0.0,
+          "max": 1667.0,
+          "median": 1375.0,
+          "min": 1375.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 208.0,
+          "max": 13292.0,
+          "median": 12875.0,
+          "min": 12583.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 333.0,
+          "median": 250.0,
+          "min": 208.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "expanded-macro/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 250.0,
+          "max": 14709.0,
+          "median": 14292.0,
+          "min": 13917.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "integer/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 1000.0,
+          "median": 917.0,
+          "min": 916.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "integer/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 1375.0,
+          "median": 1084.0,
+          "min": 1041.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "integer/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 500.0,
+          "median": 167.0,
+          "min": 125.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "integer/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 2917.0,
+          "median": 2208.0,
+          "min": 2125.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 4125.0,
+          "median": 3625.0,
+          "min": 3500.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 2542.0,
+          "median": 2292.0,
+          "min": 2209.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 1.0,
+          "max": 584.0,
+          "median": 417.0,
+          "min": 375.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "js-nested-method/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 7042.0,
+          "median": 6500.0,
+          "min": 6333.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/analyze-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 327542.0,
+          "max": 24904375.0,
+          "median": 24007083.0,
+          "min": 23679541.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/analyze-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 156793.0,
+          "max": 24950542.0,
+          "median": 23743459.0,
+          "min": 23257917.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 417.0,
+          "max": 14333.0,
+          "median": 12542.0,
+          "min": 12125.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/host-setup": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 208.0,
+          "median": 166.0,
+          "min": 125.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 126.0,
+          "max": 1125.0,
+          "median": 833.0,
+          "min": 583.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/total-fresh-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 152501.0,
+          "max": 24264833.0,
+          "median": 23678042.0,
+          "min": 23509125.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "macro/total-reused-host": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 103291.0,
+          "max": 23989166.0,
+          "median": 23885875.0,
+          "min": 23317958.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 209.0,
+          "max": 9667.0,
+          "median": 8875.0,
+          "min": 8459.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 42.0,
+          "max": 5875.0,
+          "median": 5083.0,
+          "min": 5000.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 83.0,
+          "max": 1625.0,
+          "median": 1333.0,
+          "min": 1250.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "nested-closure/total": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 459.0,
+          "max": 16667.0,
+          "median": 15375.0,
+          "min": 13833.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "single/analyze": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 375.0,
+          "max": 36333.0,
+          "median": 34708.0,
+          "min": 34042.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "single/emit": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 125.0,
+          "max": 16792.0,
+          "median": 16250.0,
+          "min": 16125.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "single/parse": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 41.0,
+          "max": 1042.0,
+          "median": 959.0,
+          "min": 875.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      },
+      "single/total-resident": {
+        "allocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "elapsed_ns": {
+          "mad": 708.0,
+          "max": 56708.0,
+          "median": 53583.0,
+          "min": 52250.0,
+          "samples": 9
+        },
+        "reallocations": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        },
+        "requested_bytes": {
+          "mad": 0.0,
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "samples": 9
+        }
+      }
+    }
+  },
+  "units": "nanoseconds, allocation calls and requested bytes per iteration; no instrumented timing"
+}

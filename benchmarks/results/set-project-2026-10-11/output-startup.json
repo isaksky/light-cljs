@@ -1,0 +1,169 @@
+{
+  "measured_at": "2026-10-11T21:50:10.487625+00:00",
+  "node": "v24.18.0",
+  "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "binary_sha256": "a3d78c1ec87ed09a2be2abfee12365d429488aa8975cd8cdd8827af5c8307ae2",
+  "runtime_sha256": "bb8140c402301188da25c452db4b9b4e3a07c1443fa694724b7354aab9ffba2b",
+  "method": "Nine fresh Node processes; vm.Script parse, namespace initialization, and integrated run timed separately. Process launch, source reads, and result encoding excluded. Complete value/effects/stdout checked on every sample. OS caches/scheduling uncontrolled; these are Node measurements, not browser measurements.",
+  "program": "integrated.main",
+  "source_root": "tests/fixtures/namespaces/integrated",
+  "fixture_sha256": {
+    "expected.json": "24de2e5b0eb8c4348f9ed510096a8f619e6356aec4ae1602710ec3f193b93dd5",
+    "integrated/macros.cljs": "c4b69c66bbf91f4467a177c5f4c4a4f221e82e2611ff646c238d6d3aba0e4fb5",
+    "integrated/main.cljs": "948eba6b88a39c892c80a0dd9ebd85d0a6dd3631f39b6558fee396afeded823b",
+    "integrated/shared.cljc": "09b3a9cb7c4f34afdd61b6ddbd35e14b913df66929b36018db40bfca0da39eeb"
+  },
+  "harness_sha256": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+  "sha256": "2e8ee254d59d30c4985ed485855a6fb84f4f3620d80764c431030003bc1689b1",
+  "bytes": 346575,
+  "gzip_bytes": 82502,
+  "runtime_bytes": 335198,
+  "runtime_gzip_bytes": 80012,
+  "small_programs": [
+    {
+      "name": "primitive",
+      "source": "42",
+      "value": 42,
+      "bytes": 88,
+      "gzip_bytes": 93,
+      "runtime_preludes": 0,
+      "sha256": "cefb7c7e86a17fe9c8fa416ae5202f7f63f914f3ac51a4c0cf4a95b214b5c774"
+    },
+    {
+      "name": "core-call",
+      "source": "(+ 1 2)",
+      "value": 3,
+      "bytes": 335551,
+      "gzip_bytes": 80122,
+      "runtime_preludes": 1,
+      "sha256": "bd92438628cc79f56efdf45fa707d9bb153ce43aaba224835dae912c84ed56a3"
+    }
+  ],
+  "samples": [
+    {
+      "parse_ms": 4.482749999999996,
+      "initialize_ms": 3.1397090000000034,
+      "execute_ms": 7.756749999999997,
+      "total_ms": 15.379208999999996
+    },
+    {
+      "parse_ms": 4.281458999999998,
+      "initialize_ms": 3.0267079999999993,
+      "execute_ms": 7.608249999999998,
+      "total_ms": 14.916416999999996
+    },
+    {
+      "parse_ms": 4.231041000000005,
+      "initialize_ms": 3.245584000000001,
+      "execute_ms": 7.379957999999995,
+      "total_ms": 14.856583
+    },
+    {
+      "parse_ms": 4.762667,
+      "initialize_ms": 3.210165999999994,
+      "execute_ms": 7.322667000000003,
+      "total_ms": 15.295499999999997
+    },
+    {
+      "parse_ms": 4.270916,
+      "initialize_ms": 3.1037919999999986,
+      "execute_ms": 7.9459170000000015,
+      "total_ms": 15.320625
+    },
+    {
+      "parse_ms": 4.4758330000000015,
+      "initialize_ms": 3.094542000000004,
+      "execute_ms": 7.445749999999997,
+      "total_ms": 15.016125000000002
+    },
+    {
+      "parse_ms": 4.381750000000004,
+      "initialize_ms": 3.1403339999999957,
+      "execute_ms": 7.485624999999999,
+      "total_ms": 15.007708999999998
+    },
+    {
+      "parse_ms": 4.402000000000001,
+      "initialize_ms": 3.0569579999999945,
+      "execute_ms": 7.430875,
+      "total_ms": 14.889832999999996
+    },
+    {
+      "parse_ms": 4.1810410000000005,
+      "initialize_ms": 2.9733340000000013,
+      "execute_ms": 7.458207999999999,
+      "total_ms": 14.612583
+    }
+  ],
+  "median_ms": {
+    "parse_ms": 4.381750000000004,
+    "initialize_ms": 3.1037919999999986,
+    "execute_ms": 7.458207999999999,
+    "total_ms": 15.007708999999998
+  },
+  "expected": {
+    "id": "integrated-language",
+    "outcome": {
+      "status": "returned",
+      "value": {
+        "$vector": [
+          "javascript",
+          20,
+          22,
+          5000050000,
+          18,
+          true,
+          "shared",
+          "callback",
+          3,
+          2,
+          6,
+          {
+            "$vector": []
+          },
+          {
+            "$vector": [
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "$vector": [
+              1,
+              2,
+              3
+            ]
+          },
+          10,
+          true,
+          {
+            "$vector": [
+              {
+                "$vector": [
+                  0,
+                  10
+                ]
+              }
+            ]
+          },
+          99,
+          1
+        ]
+      }
+    },
+    "trace": [
+      {
+        "$vector": [
+          0,
+          10
+        ]
+      },
+      "macro",
+      "throw",
+      "integrated failure"
+    ],
+    "stdout": "integrated\ncleanup\n"
+  }
+}

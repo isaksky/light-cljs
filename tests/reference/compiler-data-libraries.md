@@ -9,10 +9,12 @@ collection traversal callback is used.
 
 `tests/compiler_data_libraries.rs` migrates all 117 native `sci-data-*` set/walk
 fixture cases from `tests/fixtures/sci-outcomes.tsv`, retaining IDs, original
-values, ordered `observe` effects, collection predicates, all 16 error bodies and
+source/expectation records, ordered `observe` effects, collection predicates, all 16 error bodies and
 empty output checks.
 Only the two top-level require fixtures become ordinary namespace requires, and
-`catch Exception` becomes `catch js/Error`. The result vector is checked in
+`catch Exception` becomes `catch js/Error`. Two projection expectations adopt
+canonical literals in this migration test, with the original conflicts retained
+separately as described below. The result vector is checked in
 QuickJS and Node. Additional independent tests cover all public APIs, malformed
 map entries, short-circuit callback failures, record identity/fields, metadata,
 opaque values, macro helper imports, callback reentry, fuel and cancellation.
@@ -51,8 +53,16 @@ node -e 'require("./reference.js"); console.log(JSON.stringify(globalThis.lightP
 
 Set and walk functions preserve supported native arity errors, including saved
 function and apply calls. Set functions validate the existing set/map domains including nil and preserve
-zero-arity failures for intersection/difference. Projection retains row metadata
-and stored equivalent key representatives, as the native fixtures require.
+zero-arity failures for intersection/difference. Projection retains row metadata,
+drops relation metadata and stores requested equivalent keys, matching both
+canonical ClojureScript pins. Historical SCI expectations for relation metadata
+and key representatives stay verbatim and unresolved; the native migration test
+checks these two adopted canonical literals separately. See
+[projection evidence](compiler-set-project-verification.json).
+The existing checked `project` arity/map domain remains a separate local
+contract. Both canonical pins tolerate the malformed saved/apply calls in
+`project-invalid-profile`; their literal results are recorded independently.
+Those differences grant no canonical parity or original-SCI passing credit.
 Natural join retains the indexed path for uniform schemas. Heterogeneous rows
 join on each pair's shared keys: otherwise arbitrary first-row order changes the
 answer. This preserves native fixture `sci-data-set-join-5`; a separate pinned

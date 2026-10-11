@@ -403,9 +403,9 @@ JavaScript runtime. These library functions use compiler collection protocols;
 collection traversal never calls Rust interpreter callbacks.
 
 `clojure.string` includes all 20 public functions, with UTF-16 text and JavaScript
-regular expressions. Set relations retain metadata and original equivalent key
-representatives when projecting rows. Walks preserve metadata, map entries and
-records, visit callbacks in order and share bounded iterative traversal state
+regular expressions. Set projection drops relation metadata, retains row metadata
+and uses the requested equivalent keys, matching canonical `select-keys`. Walks
+preserve metadata, map entries and records, visit callbacks in order and share bounded iterative traversal state
 through callback reentry. Their [data-library evidence](../tests/reference/compiler-data-libraries.md)
 and [string evidence](../tests/reference/compiler-strings.md) identify native
 migration cases, full pinned test bodies and explicit host/version differences.

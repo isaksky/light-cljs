@@ -1371,6 +1371,120 @@
       "evidence_path": "/tmp/light-cljs-160-evidence-final/evidence.json",
       "evidence_sha256": "be8653c8728d9c6232b1e53623f6a45c26e9bfef5181ac8d869e197fc526117a",
       "canonical_public_contract_evidence": "tests/reference/compiler-string-join-verification.json"
+    },
+    "sci-data-set-project-meta": {
+      "owner": "light-cljs-161",
+      "starting_head": "a11818a4525a993fcb32dea71b1bbca49882e398",
+      "canonical_status": "passed",
+      "original_expectation_status": "unresolved",
+      "adopted_profile_conflict": "Both required CLJS pins and local application/macro phases use nil relation metadata and requested equivalent key metadata. Original SCI relation/key metadata expectations stay unchanged and unresolved; no original-SCI passing credit follows.",
+      "original_source_sha256": "b2eb2fd6e27c86dd70dc23b8c05bc08964fc1cf1da50ca18a110d0a3d2c25bb4",
+      "source": "(meta (clojure.set/project (with-meta #{ {:a 1 :b 2} } {:m true}) [:a]))",
+      "original_expectation": {
+        "id": "sci-execution-sci-data-set-project-meta",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$map": [
+              [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "m",
+                    "spelling": "m"
+                  }
+                },
+                true
+              ]
+            ],
+            "count": 1
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_observation": {
+        "id": "sci-execution-sci-data-set-project-meta",
+        "outcome": {
+          "status": "returned",
+          "value": null
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "local_library_source_sha256": {
+        "clojure.set": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+        "clojure.string": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+        "clojure.walk": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+        "clojure.edn": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9"
+      },
+      "evidence_path": "/tmp/light-cljs-161-evidence-final/evidence.json",
+      "evidence_sha256": "9ff8a88dd75e67162c54c8a6633787dcfd65ae1113d4d05885e24960b71ede30",
+      "canonical_public_contract_evidence": "tests/reference/compiler-set-project-verification.json"
+    },
+    "sci-data-set-project-key-representative": {
+      "owner": "light-cljs-161",
+      "starting_head": "a11818a4525a993fcb32dea71b1bbca49882e398",
+      "canonical_status": "passed",
+      "original_expectation_status": "unresolved",
+      "adopted_profile_conflict": "Both required CLJS pins and local application/macro phases use nil relation metadata and requested equivalent key metadata. Original SCI relation/key metadata expectations stay unchanged and unresolved; no original-SCI passing credit follows.",
+      "original_source_sha256": "bba2ddc999476591902a2018a0d35040ad18fa2fb4dfa01825b0556533c88319",
+      "source": "(let [old (with-meta (symbol \"a\") {:old true}) new (with-meta (symbol \"a\") {:new true})] (meta (first (keys (first (clojure.set/project #{{old 1}} [new]))))))",
+      "original_expectation": {
+        "id": "sci-execution-sci-data-set-project-key-representative",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$map": [
+              [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "old",
+                    "spelling": "old"
+                  }
+                },
+                true
+              ]
+            ],
+            "count": 1
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_observation": {
+        "id": "sci-execution-sci-data-set-project-key-representative",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$map": [
+              [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "new",
+                    "spelling": "new"
+                  }
+                },
+                true
+              ]
+            ],
+            "count": 1
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "local_library_source_sha256": {
+        "clojure.set": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+        "clojure.string": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+        "clojure.walk": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+        "clojure.edn": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9"
+      },
+      "evidence_path": "/tmp/light-cljs-161-evidence-final/evidence.json",
+      "evidence_sha256": "9ff8a88dd75e67162c54c8a6633787dcfd65ae1113d4d05885e24960b71ede30",
+      "canonical_public_contract_evidence": "tests/reference/compiler-set-project-verification.json"
     }
   }
 }
