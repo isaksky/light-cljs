@@ -104,6 +104,14 @@ call. Engine interrupts and Rust `ExecutionControl::poll` share fuel/deadline/
 cancellation. Long Rust callbacks must poll cooperatively. A clone of the control
 can cancel from another thread without accessing the engine.
 
+QuickJS's bundled regex matching VM polls this handler during backtracking;
+bounded pathological matching tests verify budget, deadline and cross-thread
+cancellation. This is cooperative interruption, not a hard latency guarantee
+for every builtin: pattern compilation and string copying can run until their
+next poll or return. The host checks controls again after return. Emitted Node
+applications use their embedding's resource controls. See the
+[regex phase and resource evidence](../tests/reference/compiler-regex.md).
+
 Allocation accounting wraps the upstream `RustAllocator` with a small documented
 unsafe boundary. It rejects over-budget allocation before allocation and marks
 the terminal state even if JavaScript catches the resulting exception. This is

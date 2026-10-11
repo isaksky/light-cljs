@@ -303,7 +303,10 @@ Vars even beneath local shadows; deref observes their current roots, and Vars
 are callable. Quote traverses the expanded data without executing it.
 
 Regex literals construct JavaScript RegExp values; `regexp?`, `re-pattern`,
-`re-find`, `re-matches` and lazy `re-seq` use the JavaScript regex engine. `#inst`
+`re-find`, `re-matches` and lazy `re-seq` use the JavaScript regex engine in both
+application and macro phases. Source/flags, captures, UTF-16 and invalid patterns
+have [pinned execution evidence](../tests/reference/compiler-regex.md). The
+obsolete native Rust-engine proposal is superseded by this canonical path. `#inst`
 validates Gregorian timestamps and constructs Dates; `#uuid` validates and
 canonicalizes UUID literals. Dates and UUIDs compare by value, and separate
 literals preserve distinct object identities. `#js` vectors/maps construct host
