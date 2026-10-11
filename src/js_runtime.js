@@ -2578,7 +2578,7 @@
   function resetMeta(value, metadata) { value.meta = metadata; return metadata; }
   function alterMeta(value, fn, ...args) { return resetMeta(value, apply(fn, value.meta, args)); }
   class Atom {
-    equiv(other) { return this === other; }
+    equiv(other) { return objectEquiv(this, other); }
     constructor(state, meta, validator, watches) {
       this.state = state; this.meta = meta; this.validator = validator; this.watches = watches;
       atoms.set(this, this);
