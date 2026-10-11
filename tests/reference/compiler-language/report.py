@@ -1234,7 +1234,7 @@ def main(argv=None):
             # historical evaluator disposition never supplies a present pass.
             if not args.feature and not args.id:
                 import sci_execution
-                sci_cases = sci_execution.cases()
+                sci_cases = sci_execution.cases(sci_execution.load_all())
                 sci_evidence = {case["id"]: {} for case in sci_cases}
                 local = sci_execution.local_cases(sci_cases, artifacts / "sci" / "local", max(180, args.reference_timeout))
                 for identity, observed in local.items():

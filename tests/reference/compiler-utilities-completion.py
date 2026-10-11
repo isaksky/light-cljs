@@ -253,6 +253,10 @@ def execution_mappings():
         phase.append({**common, **execution})
     assert len(direct) == 39, len(direct)
     assert sum(row['obligation_id'].startswith('api::') for row in direct) == 22
+    # Retain exact pinned-source/literal links installed by the surface overlay.
+    import runpy
+    attach = runpy.run_path(str(ROOT / 'tests/reference/compiler-surface-gate-links.py'))['attach_reference']
+    direct = [attach(row) for row in direct]
     return direct, phase
 
 

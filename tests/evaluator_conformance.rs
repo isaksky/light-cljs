@@ -173,6 +173,55 @@ fn canonical_anonymous_accounting_requires_exact_body_and_complete_observation()
     }
 }
 
+// Diagnostic migration receipts preserve the entire historical row. They are
+// still nonpassing gaps; revised compiler attribution cannot count as parity.
+const QUOTED_MACRO_DIAGNOSTICS: &str =
+    include_str!("reference/sci/quoted-macro-diagnostic-reconciliation.tsv");
+
+fn current_quoted_macro_diagnostic(row: &[&str]) -> Option<String> {
+    QUOTED_MACRO_DIAGNOSTICS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .find_map(|line| {
+            let receipt: Vec<_> = line.split('\t').collect();
+            assert_eq!(receipt.len(), 19, "complete diagnostic reconciliation");
+            (receipt[..14] == *row).then(|| receipt[14..18].join("\t"))
+        })
+}
+
+#[test]
+fn quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies() {
+    let rows: Vec<_> = QUOTED_MACRO_DIAGNOSTICS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .collect();
+    assert_eq!(rows.len(), 6);
+    let mut ids = HashSet::new();
+    for receipt in rows {
+        let fields: Vec<_> = receipt.split('\t').collect();
+        assert_eq!(fields.len(), 19);
+        assert!(ids.insert(fields[0]));
+        let original = fields[..14].join("\t");
+        assert!(ACCOUNTING.lines().any(|line| line == original));
+        assert_eq!(fields[7], "gap");
+        assert_eq!(fields[2], fields[8], "no source adaptation");
+        assert!(fields[14].starts_with("(diagnostic (string u"));
+        assert_eq!(fields[10..13], fields[15..18], "effects/output retained");
+        assert_ne!(fields[9], fields[14], "current attribution is distinct");
+        assert!(fields[18].contains("never a SCI conformance or intended-language pass"));
+        let row = &fields[..14];
+        assert_eq!(
+            current_quoted_macro_diagnostic(row),
+            Some(fields[14..18].join("\t"))
+        );
+        for column in 0..14 {
+            let mut changed = row.to_vec();
+            changed[column] = "changed";
+            assert_eq!(current_quoted_macro_diagnostic(&changed), None);
+        }
+    }
+}
+
 #[test]
 fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
     let cases = protocol::cases(CORPUS).unwrap();
@@ -246,6 +295,8 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
         *counts.entry(status).or_default() += 1;
         let expected = if let Some(expected) = canonical {
             expected.to_owned()
+        } else if let Some(current) = current_quoted_macro_diagnostic(&row) {
+            current
         } else {
             row[9..13].join("\t")
         };

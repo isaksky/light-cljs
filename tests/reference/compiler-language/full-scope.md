@@ -291,3 +291,20 @@ strict ledger is still incomplete. The per-family reader audit and full-source
 regeneration contract are in `../compiler-reader.md`. The independently reproduced
 runtime string-reader namespace/alias gap has focused live owner light-cljs-134;
 source parser/NamespaceView success is not a runtime reader pass.
+
+## Supplemental full-gate adapter recovery — 2026-10-11
+
+The full runner integrates 120 additional complete SCI sources with explicit
+structural JVM catch-selector adaptations. Original SCI expectations, byte spans
+and fixture setup are retained in `sci-context-catalog.jsonl`; two nonagreeing
+host-input sources remain missing. Fifty additional original declaration/source
+contexts have independent supplemental receipts and are not implicitly included
+in those 120 mappings. Their reference differences and unresolved original
+contracts remain nonpassing. The full gate also adds complete residual source
+bodies and exact literal-oracle links for previously mapped public operations.
+
+Every current source, signature, local test and support hash remains checked.
+Independent generators compare only their owned rows and preserve unrelated
+rows when regenerating shared catalogs. Registration never supplies a semantic
+pass. The [recovery receipt](final-gate.md) records focused observations, outside
+boundary bases, remaining canonical owners and the still-incomplete full gate.

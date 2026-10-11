@@ -42,6 +42,66 @@ class SCIExecutionTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "stale or incomplete"):
                         sci.load()
 
+    def test_catch_adapter_changes_only_structural_selectors_and_records_utf8_spans(self):
+        source = ('; (catch Exception e :comment)\n'
+                  '["é (catch Exception e :text)" \'(catch Throwable e :data) '
+                  '(quote (catch Exception e :data)) #_(catch Exception e :discard) '
+                  '(try (throw 1) (catch Exception e (try e (catch Throwable x x))))]')
+        adapted, edits = sci.catch_adapter(source)
+        self.assertEqual(len(edits), 2)
+        self.assertIn('"é (catch Exception e :text)"', adapted)
+        self.assertIn("'(catch Throwable e :data)", adapted)
+        self.assertIn('#_(catch Exception e :discard)', adapted)
+        reconstructed = source.encode()
+        for edit in reversed(edits):
+            start, end = edit["utf8_byte_start"], edit["utf8_byte_end"]
+            self.assertEqual(source.encode()[start:end].decode(), edit["original"])
+            reconstructed = reconstructed[:start] + edit["replacement"].encode() + reconstructed[end:]
+        self.assertEqual(reconstructed.decode(), adapted)
+
+    def test_context_cohort_retains_complete_original_source_and_expectation(self):
+        corpus = sci.rows(sci.CORPUS)
+        initial = {row["sci_id"] for row in self.catalog}
+        catalog = sci.load_context()
+        self.assertGreaterEqual(len(catalog), 100)
+        self.assertFalse(initial & {row["sci_id"] for row in catalog})
+        for row, case in zip(catalog, sci.cases(catalog)):
+            original = corpus[row["sci_id"]][1]
+            self.assertEqual(row["original_source"], original[2])
+            self.assertEqual(row["expected"], sci.expected(original))
+            self.assertEqual(row["source"], row["fixture_prefix"] + sci.catch_adapter(original[2])[0])
+            self.assertEqual(row["source_sha256"], sci.digest(case["source"]))
+            self.assertEqual(case["original_source_sha256"], sci.digest(original[2]))
+            self.assertTrue(case["isolated"])
+        fixtures = [row for row in catalog if row["fixture_prefix"]]
+        self.assertEqual([row["sci_id"] for row in fixtures], ["sci-record-method-exception"])
+        self.assertEqual(fixtures[0]["fixture_prefix"], "(def observe observe) ")
+        changed = copy.deepcopy(catalog)
+        changed[0]["original_source"] = "(identity :replacement)"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in changed))
+            with mock.patch.object(sci, "CONTEXT_CATALOG", path):
+                with self.assertRaisesRegex(ValueError, "stale or incomplete"):
+                    sci.load_context()
+
+    def test_context_plan_accounts_for_every_unregistered_row_without_granting_coverage(self):
+        plan = sci.context_plan()
+        initial = {row["sci_id"] for row in self.catalog}
+        retained = sci.rows(sci.DISPOSITIONS)
+        self.assertEqual({row["sci_id"] for row in plan}, set(retained) - initial)
+        self.assertEqual(len(plan), len(retained) - len(initial))
+        for row in plan:
+            self.assertEqual(row["execution_status"], "not-run")
+            self.assertTrue(row["requirement"])
+            self.assertEqual(row["body_sha256"], sci.digest(retained[row["sci_id"]][0]))
+        fields = retained["sci-exception-catch-finally"][1]
+        self.assertIsNone(sci.context_exclusion(fields))
+        changed = fields[:]; changed[8] = "1"
+        self.assertIsNotNone(sci.context_exclusion(changed))
+        changed = fields[:]; changed[7] = "gap"
+        self.assertIsNotNone(sci.context_exclusion(changed))
+
     def test_canonical_nonpositive_contract_retains_exact_historical_expectation(self):
         mapping = next(row for row in self.catalog if row["sci_id"] == "sci-reader-anonymous-nonpositive")
         original = copy.deepcopy(mapping)

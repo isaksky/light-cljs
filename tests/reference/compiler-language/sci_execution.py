@@ -26,6 +26,7 @@ import subprocess
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 CATALOG = HERE / "sci-execution-catalog.jsonl"
+CONTEXT_CATALOG = HERE / "sci-context-catalog.jsonl"
 CORPUS = ROOT / "tests/fixtures/sci-outcomes.tsv"
 DISPOSITIONS = ROOT / "tests/reference/sci/evaluator-dispositions.tsv"
 TEST_FILE = "tests/compiler_sci_execution.rs"
@@ -209,9 +210,148 @@ def load():
     return catalog
 
 
+def catch_adapter(source):
+    """Adapt actual catch selectors, preserving strings, quoted data and setup.
+
+    The retained evaluator uses this JVM-to-CLJS selector adaptation already.
+    Structural spans make the adaptation auditable without globally rewriting
+    names, comments, reader input strings or inert quoted forms.
+    """
+    from extract_inventory import Reader
+    edits = []
+    selectors = {"Exception", "Throwable", "clojure.lang.ExceptionInfo"}
+
+    def visit(node):
+        if node.kind in {"quote", "syntax-quote", "discard", "var"}:
+            return
+        if node.kind == "list" and node.children:
+            head = node.children[0].token
+            if head in {"quote", "comment"}:
+                return
+            if head == "catch" and len(node.children) >= 3:
+                selector = node.children[1]
+                if selector.kind == "atom" and selector.token in selectors:
+                    edits.append((selector.start, selector.end, selector.token))
+        for child in node.children:
+            visit(child)
+
+    for node in Reader(source).all():
+        visit(node)
+    adapted = source
+    for start, end, _ in reversed(edits):
+        adapted = adapted[:start] + ":default" + adapted[end:]
+    return adapted, [{"utf8_byte_start": len(source[:start].encode()),
+                      "utf8_byte_end": len(source[:end].encode()),
+                      "original": token, "replacement": ":default"}
+                     for start, end, token in edits]
+
+
+def context_exclusion(fields):
+    """Eligibility is source accounting, never a semantic pass or retirement."""
+    if fields[7] != "adapted":
+        return "No retained matching adapted observation; requires independent canonical reconciliation."
+    if fields[1] != "portable":
+        return "Fixture profile needs explicit reader, loader or host setup."
+    if fields[6] != "(string u)":
+        return "Original stderr needs a captured stderr oracle."
+    if any(name in fields[2] for name in ("clojure.string/", "clojure.set/", "clojure.walk/", "clojure.edn/", "#t/", "#x/")):
+        return "Library or tagged-reader source needs explicit import/reader setup."
+    if "::" in fields[2] or re.search(r"\((?:ns|in-ns|require|refer|use|alias|resolve|ns-resolve|all-ns|find-ns|the-ns)\b", fields[2]):
+        return "Namespace source needs complete namespace/file context."
+    try:
+        adapted, edits = catch_adapter(fields[2])
+        if not edits or adapted != fields[8]:
+            return "Retained adaptation is not solely structural JVM catch selectors."
+        expected(fields[:7])
+    except (ValueError, IndexError) as error:
+        return "Original observation/source needs another adapter: " + str(error)
+    return None
+
+
+def generated_context_catalog():
+    """Separate supplemental cohort; never changes the original catalog."""
+    originals = rows(CORPUS)
+    result = []
+    for identity, (line, fields) in rows(DISPOSITIONS).items():
+        original_line, original = originals[identity]
+        if fields[:7] != original:
+            raise ValueError(f"SCI disposition changed original columns: {identity}")
+        if context_exclusion(fields):
+            continue
+        adapted, edits = catch_adapter(original[2])
+        # SCI's fixture installs user/observe as a namespace host function.
+        # A named record method resolves namespace Vars, not the run wrapper's
+        # lexical callback. Supply that original fixture binding explicitly.
+        fixture_prefix = "(def observe observe) " if identity == "sci-record-method-exception" else ""
+        source = fixture_prefix + adapted
+        result.append({"id": "sci-execution-" + identity, "sci_id": identity,
+            "obligation_id": f"local::tests/reference/sci/evaluator-dispositions.tsv::{identity}",
+            "body_sha256": digest(line), "original_row_sha256": digest(original_line),
+            "original_source": original[2], "original_source_sha256": digest(original[2]),
+            "source": source, "source_sha256": digest(source),
+            "reference_source_sha256": digest(REFERENCE_SETUP + source),
+            "reference_setup": REFERENCE_SETUP, "reference_isolated": True,
+            "profile": original[1],
+            "adaptation": {"kind": "retained-jvm-catch-selectors", "edits": edits,
+                "basis": "Replace only executed JVM catch selector symbols by CLJS :default, as retained in the evaluator disposition. Full bodies, protected operations, handlers, effects and original expectations remain required."},
+            "fixture_prefix": fixture_prefix,
+            "fixture_basis": "Named record method receives the original namespace-global observe host callback." if fixture_prefix else "Lexical observe is sufficient for this complete body.",
+            "setup": "Full expression body with lexical observe and captured output streams; canonical printing prefix as in the original cohort. Fresh Node process/QuickJS heap per source; no library, namespace, reader or host profile setup is inferred.",
+            "dialect": "Explicit retained catch-selector adapter; " + PROJECTION,
+            "expected": expected(original)})
+    return result
+
+
+def load_context():
+    catalog = [json.loads(line) for line in CONTEXT_CATALOG.read_text().splitlines() if line]
+    if catalog != generated_context_catalog():
+        raise ValueError("SCI context catalog is stale or incomplete for its declared cohort")
+    return catalog
+
+
+def load_all():
+    """Both disjoint registered source cohorts; registration claims no pass."""
+    catalog = load() + load_context()
+    identities = [row["obligation_id"] for row in catalog]
+    if len(set(identities)) != len(identities):
+        raise ValueError("Duplicate original SCI obligation across execution cohorts")
+    return catalog
+
+
+def context_plan():
+    """Retain every unregistered row and its concrete evidence requirement."""
+    registered = {row["sci_id"] for row in load()}
+    candidates = {row["sci_id"] for row in generated_context_catalog()}
+    result = []
+    for identity, (line, fields) in rows(DISPOSITIONS).items():
+        if identity in registered:
+            continue
+        requirement = context_exclusion(fields)
+        if identity in candidates:
+            requirement = "Execute full source and original result/effect/output contract in both local engines and both pinned references."
+        elif fields[1] != "portable":
+            requirement = f"Preserve complete {fields[1]} fixture setup; bind supplied modules/readers/host callbacks with owned source provenance before execution."
+        elif fields[7] == "retired":
+            requirement = "Retained dialect/result-domain boundary needs an executing canonical contract; preserve the exact historical expectation and retained basis."
+        elif wire(fields[3])[0] != "return":
+            requirement = "Original structured failure needs a source-specific canonical diagnostic/effect adapter; a rejection or serialization failure is not equivalent execution evidence."
+        elif "Namespace" in str(requirement) or re.search(r"\((?:ns|in-ns|require|refer|use|alias|resolve|ns-resolve|all-ns|find-ns|the-ns)\b", fields[2]) or "::" in fields[2]:
+            requirement = "Preserve complete namespace/file/declaration/alias context in a source-specific program adapter; do not rename returned source identities implicitly."
+        elif any(name in fields[2] for name in ("clojure.string/", "clojure.set/", "clojure.walk/", "clojure.edn/", "#t/", "#x/")):
+            requirement = "Preserve explicit library/tagged-reader fixture setup and full original source body before both-engine/reference execution."
+        result.append({"sci_id": identity, "body_sha256": digest(line),
+            "original_source_sha256": digest(fields[2]), "profile": fields[1],
+            "retained_disposition": fields[7], "retained_reason": fields[13],
+            "adapter": "retained-jvm-catch-selectors" if identity in candidates else None,
+            "requirement": requirement,
+            "execution_status": "not-run"})
+    return result
+
+
 def cases(catalog=None):
     originals = rows(CORPUS)
-    return [{"id": row["id"], "source": originals[row["sci_id"]][1][2],
+    return [{"id": row["id"], "source": row.get("source", originals[row["sci_id"]][1][2]),
+             "original_source_sha256": row["original_source_sha256"],
              "expected": row["expected"], "native_stdout": None,
              "isolated": row["reference_isolated"]} for row in (catalog if catalog is not None else load())]
 
@@ -380,7 +520,7 @@ def reference_cases(selected, kind, checkout, directory, timeout=180):
         results.update(verified)
     for case in selected:
         results[case["id"]]["source_sha256"] = digest(case["source"])
-        results[case["id"]]["original_source_sha256"] = digest(originals[case["id"]]["source"])
+        results[case["id"]]["original_source_sha256"] = originals[case["id"]].get("original_source_sha256", digest(originals[case["id"]]["source"]))
         results[case["id"]]["isolated"] = case.get("isolated", False)
     return results
 
@@ -388,6 +528,9 @@ def reference_cases(selected, kind, checkout, directory, timeout=180):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write-catalog", action="store_true")
+    parser.add_argument("--write-context-catalog", action="store_true")
+    parser.add_argument("--context", action="store_true", help="select the supplemental retained catch-selector cohort")
+    parser.add_argument("--plan-context", type=Path, help="write accounting for every row outside the initial cohort; never execution evidence")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--ids", help="comma-separated original SCI ids")
     parser.add_argument("--local", action="store_true")
@@ -396,7 +539,11 @@ def main():
     args = parser.parse_args()
     if args.write_catalog:
         CATALOG.write_text("".join(json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n" for row in generated_catalog()))
-    catalog = load()
+    if args.write_context_catalog:
+        CONTEXT_CATALOG.write_text("".join(json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n" for row in generated_context_catalog()))
+    if args.plan_context:
+        args.plan_context.write_text("".join(json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n" for row in context_plan()))
+    catalog = load_context() if args.context else load()
     selected = cases(catalog)
     if args.ids:
         identities = set(args.ids.split(","))
@@ -421,7 +568,7 @@ def main():
             for identity, layer in observed.items():
                 evidence[identity][kind] = layer
             print(kind, dict(Counter(layer["status"] for layer in observed.values())), flush=True)
-    output = {"catalog_sha256": digest(CATALOG.read_bytes()), "cohort_count": len(catalog),
+    output = {"catalog_sha256": digest((CONTEXT_CATALOG if args.context else CATALOG).read_bytes()), "cohort": "context" if args.context else "initial", "cohort_count": len(catalog),
               "selected_count": len(selected), "evidence": evidence}
     (args.output / "evidence.json").write_text(json.dumps(output, ensure_ascii=True, indent=2) + "\n")
 

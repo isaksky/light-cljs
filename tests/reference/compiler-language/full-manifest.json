@@ -3,7 +3,7 @@
   "upstream": "https://github.com/clojure/clojurescript",
   "revision": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
   "extractor_sha256": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
-  "inventory_sha256": "9b924268762541e2cbbfeaf13fd6c8eb64657dcc01844a6baff031f6a0962a58",
+  "inventory_sha256": "7276092e37a2e4aa260b5d293e9819f62e194a7714e3d3c4db4e2dd7e4e7ef53",
   "bodies_sha256": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156",
   "counting_unit": "Source assertion sites; each are argument row is a separate assertion. Dynamic loop/helper invocations are retained in complete bodies, not multiplied or claimed executed.",
   "recognized_assertion_macros": [
@@ -21,8 +21,8 @@
     "assertions": 4728,
     "active_assertions": 4686,
     "by_status": {
-      "missing": 3805,
-      "unrelated": 923
+      "missing": 3803,
+      "unrelated": 925
     },
     "by_kind": {
       "are-row": 809,
@@ -36,8 +36,8 @@
       "ecosystem": 486,
       "transducers": 104,
       "sorted-collections": 121,
-      "transient-collections": 63,
-      "lite-profile": 33,
+      "transient-collections": 61,
+      "lite-profile": 35,
       "multimethods-hierarchies": 31,
       "library": 49,
       "tap-delivery": 3,
@@ -46,7 +46,7 @@
     },
     "obligations": 5262,
     "public_api_arities": 1327,
-    "intended_assertions": 3805
+    "intended_assertions": 3803
   },
   "features": [],
   "zero_assertion_tests": [
@@ -1398,8 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "51c16adf83882ca70d1fcdd57a1241e0922408f949210b2886eb862ac15c2e0a",
-  "obligations_sha256": "b4255ca0e97320ad30d604b8db22289acbc43017a5cd77d47458d8374d5c145d",
+  "generator_sha256": "818d325beafc5b0a9d7f546db18e3843afb8875f36574777a2abd489100a660a",
+  "obligations_sha256": "d5551d42e25a6d922ef7bc1143bf23e4f58d29225e8798b6cba500aded0d8a28",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",

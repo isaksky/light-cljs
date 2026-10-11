@@ -34,6 +34,11 @@ for target in read('obligations.jsonl'):
     obligations.append({**common, 'local_execution': execution, 'assertion_ids': []})
     phases.append({**common, **execution, 'support_source_sha256': supports})
 assert len(obligations) == 4, len(obligations)
+
+# Preserve reviewed exact pinned-reference oracles when reproducing this family's bindings.
+import runpy
+attach_reference = runpy.run_path(str(ROOT / 'tests/reference/compiler-public-gate-links.py'))['attach_reference']
+obligations = [attach_reference(row) for row in obligations]
 for filename, expected in [('obligation-witnesses.jsonl', obligations), ('phase-witnesses.jsonl', phases)]:
     identities = {r['obligation_id'] for r in expected}
     path = LEDGER/filename

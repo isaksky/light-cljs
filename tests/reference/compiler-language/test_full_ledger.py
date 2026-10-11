@@ -38,7 +38,7 @@ class FullLedgerTests(unittest.TestCase):
             with patch.object(full, "load", return_value=([], [target], {"counts": {}})), \
                  patch.object(full, "load_obligation_witnesses", return_value={}), \
                  patch.object(full, "load_phase_witnesses", return_value={target["id"]: {"test_source_sha256": "current-phase"}}), \
-                 patch.object(sci, "load", return_value=[mapping]):
+                 patch.object(sci, "load_all", return_value=[mapping]):
                 return full.expand_report(historical, {}, {}, identities=(target["id"],), sci_evidence={mapping["id"]: evidence}, phase_evidence=execution)
         observed = result(layers)
         row = observed["assertions"][0]
@@ -98,7 +98,7 @@ class FullLedgerTests(unittest.TestCase):
         def status(evidence):
             with patch.object(full, "load", return_value=([], [target], {"counts": {}})), \
                  patch.object(full, "load_obligation_witnesses", return_value={}), patch.object(full, "load_phase_witnesses", return_value={}), \
-                 patch.object(sci, "load", return_value=[mapping]):
+                 patch.object(sci, "load_all", return_value=[mapping]):
                 return full.expand_report(historical, {}, {}, sci_evidence={mapping["id"]: evidence})["assertions"][0]["status"]
         self.assertEqual(status(layers), "covered")
         for layer in ("javascript", "release", "checkout"):
@@ -192,11 +192,32 @@ class FullLedgerTests(unittest.TestCase):
                 self.assertEqual(current["disposition"], "unrelated")
                 self.assertEqual(current["category"], "upstream-internals")
                 self.assertNotIn(identity, all_witnesses)
+            elif identity in full.OPTIONAL_LITE_ASSERTIONS:
+                self.assertEqual(current["assertion"]["text"], full.OPTIONAL_LITE_ASSERTIONS[identity])
+                self.assertEqual(current["disposition"], "unrelated")
+                self.assertEqual(current["category"], "lite-profile")
+                self.assertNotIn(identity, all_witnesses)
             elif old["category"] in full.PROMOTED and old["active"]:
                 self.assertEqual(current["disposition"], "in-scope")
         self.assertTrue(all(r["owner"].startswith("light-cljs-") for r in rows + obligations))
         self.assertEqual(manifest["columns"], list(full.COLUMNS))
         self.assertTrue(all(r["status"] == "static-registration-only" for r in full.local_registration().values()))
+
+    def test_reviewed_ecosystem_boundaries_keep_standard_operations_required(self):
+        rows, obligations, _ = full.load()
+        lite = [row for row in rows if row["id"] in full.OPTIONAL_LITE_ASSERTIONS]
+        self.assertEqual(len(lite), 2)
+        self.assertTrue(all(row["category"] == "lite-profile" for row in lite))
+        transient = [row for row in obligations if row["name"] == "transient" and row["obligation_kind"] == "public-api"]
+        self.assertTrue(transient)
+        self.assertTrue(all(row["disposition"] == "intended" for row in transient))
+        outside = [row for row in obligations if row["id"] in {
+            "body::analyzer_tests.clj::test-cljs-2101", "body::analyzer_tests.clj::test-refer-global"}]
+        self.assertEqual(len(outside), 2)
+        self.assertTrue(all(row["disposition"] == "host" and "upstream analyzer API" in row["reason"] for row in outside))
+        aliases = [row for row in obligations if row["source"].endswith("clojure_alias_test.cljs")]
+        self.assertTrue(aliases)
+        self.assertTrue(all(row["disposition"] == "host" for row in aliases))
 
     def test_utility_residual_harness_and_compiler_settings_remain_required(self):
         rows, obligations, _ = full.load()

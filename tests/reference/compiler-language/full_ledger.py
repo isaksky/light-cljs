@@ -23,6 +23,7 @@ FILE_BOUNDARIES = {
     "async_await_test.cljs": ("ecosystem", "Async/await library parity is outside the adopted synchronous dialect milestone."),
     "proxy_test.cljs": ("ecosystem", "Proxy library parity is outside the adopted synchronous dialect milestone."),
     "npm_deps_test.cljs": ("ecosystem", "npm acquisition/bundling is an explicitly excluded build integration."),
+    "clojure_alias_test.cljs": ("ecosystem", "Standalone clojure.test/cljs.spec library alias compatibility is outside the promised namespaces; ordinary namespace aliases/renames and core predicates retain independent executing contracts."),
     "lite_collections_test.cljs": ("lite-profile", "Optional upstream lite collection representations are outside the default profile."),
     "pprint_test.cljs": ("ecosystem", "Standalone cljs.pprint namespace parity is outside the promised standard libraries."),
     "reducers_test.cljs": ("ecosystem", "Standalone reducers namespace parity is outside the promised standard libraries."),
@@ -299,6 +300,17 @@ PRIVATE_EQUALITY_ASSERTIONS = {
 }
 
 
+# Optional lite storage tests remain excluded even when their original final
+# assertion contains a standard transient call. Public transients over ordinary
+# persistent collections retain independent intended body/arity/phase obligations.
+OPTIONAL_LITE_ASSERTIONS = {
+    "collections_test.cljs::test-obj-map::assertion-013":
+        "(is (= (transient (obj-map :a 1 :b 2))\n         (obj-map :a 1 :b 2)))",
+    "collections_test.cljs::test-hash-map-lite::assertion-013":
+        "(is (= (transient (hash-map-lite :a 1 :b 2))\n         (hash-map-lite :a 1 :b 2)))",
+}
+
+
 # Exact residual harness/configuration bodies remain intended and unexecuted.
 # Public parsing and checked-array operation contracts have separate execution.
 UTILITY_RESIDUAL_BODIES = {
@@ -349,6 +361,11 @@ def generate():
                 raise ValueError("Private equality exclusion source drift")
             row.update(disposition="unrelated", category="upstream-internals", status="unrelated",
                        reason="Exact private hash-trie sequence storage class identity; complete public sequence metadata behavior executes in compiler-equality.tsv.")
+        if row["id"] in OPTIONAL_LITE_ASSERTIONS:
+            if row["assertion"]["text"] != OPTIONAL_LITE_ASSERTIONS[row["id"]]:
+                raise ValueError("Optional lite source exclusion drift")
+            row.update(disposition="unrelated", category="lite-profile", status="unrelated",
+                       reason="Exact optional obj-map/hash-map-lite representation contract; this final source assertion follows the excluded complete lite body. Public ordinary persistent/transient collections remain independently required.")
         if row["body_id"] == "analyzer_tests.clj::test-namespace-metadata":
             if row["body_sha256"] != "1eb396cb35c7a51a58a59c1568c3bef46ccaa16f0675f35b98f0cf6374abc1d7":
                 raise ValueError("Analyzer namespace metadata exclusion source drift")
@@ -376,6 +393,14 @@ def generate():
             continue
         family, owner = ownership(path=body["source"])
         boundary, category, reason = disposition_for(body["source"], "source-language", "Not an active upstream test: reader-discarded.", "reader-discarded" if body["source_span"]["text"].startswith("#_") else None)
+        # These assertion-free JVM harness callers inspect/drive the upstream
+        # analyzer API itself. Quoted language sources elsewhere in that file
+        # remain independently selected and keep their existing witnesses.
+        if body["id"] in {"analyzer_tests.clj::test-cljs-2101", "analyzer_tests.clj::test-refer-global"}:
+            exact = {"analyzer_tests.clj::test-cljs-2101": "c36fcfc8e73f3c64d759150fee64c1a46cc9a9fbda4950aa6a742489904e2296", "analyzer_tests.clj::test-refer-global": "c86b3725b575fb529b8bd079dda0a78888a47618a28569013c84e223213f32ee"}
+            if body["source_span"]["sha256"] != exact[body["id"]]:
+                raise ValueError("JVM assertion-free analyzer boundary source drift")
+            boundary, category, reason = "unrelated", "upstream-internals", "Exact JVM cljs.analyzer compiler environment/analyze-form-seq or parsed AST :renames contract; upstream analyzer API and representation are outside the adopted compiler API. Local quoted-source/Var/namespace/rename behavior remains independently required."
         obligations.append({"id": "body::" + body["id"], "obligation_kind": "assertion-free-test-body", "name": body["name"],
                             "source": body["source"], "body_id": body["id"], "body_sha256": body["source_span"]["sha256"],
                             "source_span": body["source_span"], "disposition": "intended" if boundary == "in-scope" else "host",
@@ -473,7 +498,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
     phases = load_phase_witnesses(obligations)
     phase_evidence = phase_evidence or {}
-    from sci_execution import load as load_sci, digest as sci_digest, canonical_contract, canonical_status, TEST_FILE, TEST_NAME
+    from sci_execution import load_all as load_sci, digest as sci_digest, canonical_contract, canonical_status, TEST_FILE, TEST_NAME
     sci_mappings = {item["obligation_id"]: item for item in load_sci()}
     sci_evidence = sci_evidence or {}
     selected = bool(features or identities)
