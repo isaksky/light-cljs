@@ -54,6 +54,11 @@ The local `CoreFnId` table and `core_var_metadata.tsv` are independently hashed
 cross-checks. Public rows include a static-registration hint or `unmapped`, which
 establishes no supported arity or execution. Local metadata, supported API tables,
 and original/migrated SCI fixture rows retain their own exact source/hash identity.
+The six two-column entries in `tests/reference/sci/runtime.tsv` retain the capture
+format, revision, JVM runtime and capture options as internal provenance records.
+They contain no executable source or expected outcome; they are never semantic
+passes. Executable fourteen-column SCI fixture rows retain their independent
+intended obligations and full original observations.
 Retired numeric/native owner APIs and JVM-dependent SCI observations retain their
 reasoned dialect dispositions. Historical SCI/metadata values never supply a
 current execution pass.

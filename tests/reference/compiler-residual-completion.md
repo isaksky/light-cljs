@@ -980,14 +980,11 @@ The initial reference attempt that supplied every configuration entry failed
 with `Var$Unbound` because unused custom handlers require their own JVM companion
 namespaces. That failed receipt is retained separately and is not a pass.
 
-The ordinary CLI has no compiler-data-reader installation argument. Therefore
-`tagged-source` is retained in **`embedding-source-cases`**, with its required
-capability, complete-body mapping and proposed original assertion witness. It
-is absent from generic `full-cases.jsonl`/`full-witnesses.jsonl` proposals until
-a faithful hosted report adapter is integrated. Its source site remains intended;
-a Rust test or reference receipt alone cannot grant ordinary report credit.
-The remaining ordinary proposal comprises 16 contexts, 30 complete-body mappings
-and 50 nonduplicated original assertion witnesses.
+The ordinary CLI has no compiler-data-reader installation argument. The source
+report now uses the explicit configured-reader adapter described below. The
+reviewed `embedding-source-cases` row remains durable provenance; its exact
+case and sole assertion witness are registered in the full catalogs. Ordinary
+CLI `UnknownTag` remains an independent capability boundary.
 
 The record-literal reconciliation now includes an independent companion
 control. Both checked pins pass the unchanged `Foo` setup and all five original
@@ -1093,3 +1090,95 @@ records passing public-operation and phase loaders for all three proposed IDs,
 including current test/support hashes and exact source/literal oracle matching.
 These are structural integrity checks; the semantic executions remain the
 full-source receipts above.
+
+
+## Twelve original assertions through four audited source embeddings
+
+`compiler-residual-source-context.py --write --catalogs` now registers the
+configured `cljs/tag` assertion, all six original import assertions, all three
+original `goog/isArrayLike` assertions and both original `Error->map`
+assertions. Historical witnesses remain byte-identical. These registrations add
+exactly twelve original source assertions; they add no public API/body/program
+phase mappings. All five record literal sites and fourteen self-host eval sites
+remain intended and pending.
+
+`hosted_source_dispatch.py` validates the exact profile before the report can
+execute any of these four cases. The report routes them through the standalone
+Rust audits and retains eight raw observations per profile: fresh/reused
+application/actual `MacroHost` execution in Node and QuickJS. Every frame must
+match literal true, empty trace and empty stdout. Compiler/producer/source,
+build, execution binary, original body/assertion, reader configuration and real
+dependency hashes are checked in the current invocation. The report never reads
+a stored receipt to grant source credit. Missing profiles, source/dependency or
+expected-value drift, partial/reordered witnesses and missing raw frames fail
+closed; a known profile cannot fall through to generic CLI execution.
+
+The configured tag profile retains the exact `#cljs/tag` source and original
+reader configuration. Its compiler embedding installs identity before reading.
+The generic CLI still rejects that tag without the configured capability.
+
+The import profile uses the thirteen genuine transitive Closure dependency
+files independently obtained from both checked builds and matched to the Maven
+source archive. Long, Integer, Vec2 and Vec3 retain their genuine constructors,
+methods and original six assertions. No fake constructor or reduced input is
+supplied, and Closure build-system parity is not claimed.
+
+The goog profile preserves the full original `test-cljs-1677` let and three
+call spellings. Its compiled provider delegates to real pinned
+`js/goog.isArrayLike`; real Closure base initialization executes before the
+application and inside the actual macro. The earlier bare foreign-function root
+macro rejection and failed/corrected loader controls remain separate evidence.
+No default goog namespace capability is inferred.
+
+The REPL profile retains both complete original TypeError/ExceptionInfo bodies,
+original expected type symbols and exact original `Error->map` definition and
+docstring. That function delegates to real core `Throwable->map`. Both checked
+references execute canonical upstream `cljs.repl`; the local dependency slice
+establishes this function only, without claiming the entire REPL namespace or
+its unused spec/documentation/macro dependencies.
+
+Standalone review receipts remain immutable at
+`/tmp/light-cljs-125-configured-source-adapter-final/evidence.json`,
+`/tmp/light-cljs-125-hosted-import-adapter-v1/evidence.json` and
+`/tmp/light-cljs-125-hosted-namespace-adapter-v1/evidence.json`. The exact source
+and dependency integration review is retained at
+`/tmp/light-cljs-125-hosted-namespace-adapter-integration-review.json`.
+
+Focused guards:
+
+```sh
+python3 -B -m unittest discover -s tests/reference/compiler-language -p test_configured_source_context.py -v
+python3 -B -m unittest discover -s tests/reference/compiler-language -p test_hosted_import_source_context.py -v
+python3 -B -m unittest discover -s tests/reference/compiler-language -p test_hosted_namespace_source_context.py -v
+python3 -B -m unittest discover -s tests/reference/compiler-language -p test_hosted_source_dispatch.py -v
+```
+
+Fresh standalone artifacts can be reproduced with the three corresponding
+helper scripts and a new `--output` directory. The ordinary report runs these
+adapters when their original assertion IDs are selected, retaining the full
+current raw evidence under `hosted-source` in its fresh artifact directory.
+
+
+Current ordinary report integration verification:
+`/tmp/light-cljs-125-hosted-report-integrated-v1/report.json`, SHA-256
+`53375c010c99b02d0acb461d338ce364b293f2bcccb99211c75bf506d26d691c`,
+was produced by selecting all twelve original hosted assertion IDs with
+`--run --reference both --timeout 180 --reference-timeout 300` and a fresh
+artifact directory. The invocation exited zero and marks exactly those twelve
+original assertions covered. Each of the four profiles retains eight current
+raw observations and both checked reference results. The required API selection
+also executes its ordinary witness cases and boundary checks. Its overall
+900 covered / 3,909 missing / 466 unrelated count is a focused report including
+all independent API obligations, not a full completion claim.
+
+The separate generative audit remains unregistered. Both complete original
+parse bodies pass each canonical pin and independent real-provider Node
+controls. Its first actual QuickJS application frame returns true with exactly
+100,000 callbacks for each body; the subsequent macro frame rejects the draft
+outer binding form before execution. The eight required frames are incomplete,
+so no source credit is granted. Exact dependency bundles, failures, the unused
+corrected wrapper, raw observation and diagnostic patch are preserved under
+`/tmp/light-cljs-125-generative-audit-v1`; `handoff-final.json` records normal
+process completion with exit 101. The unreferenced
+`tests/compiler_hosted_generative_source_context.rs` is diagnostic work and
+must remain outside the verified hosted-source integration commit.

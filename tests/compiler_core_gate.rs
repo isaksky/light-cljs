@@ -97,12 +97,12 @@ fn core_numeric_applications_and_macros_execute() {
 
 #[test]
 fn core_collections_applications_and_macros_execute() {
-    cohort("collections", 28);
+    cohort("collections", 40);
 }
 
 #[test]
 fn core_state_applications_and_macros_execute() {
-    cohort("state", 9);
+    cohort("state", 13);
 }
 
 #[test]

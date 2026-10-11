@@ -272,12 +272,16 @@ def local_inventory():
             family, owner = ownership(name.rsplit("/", 1)[-1])
             fields = line.split("\t")
             migration = sci_dispositions.get(name)
+            runtime_metadata = path == "tests/reference/sci/runtime.tsv" and name in {
+                "format", "revision", "clojure", "java", "java-vendor", "options"}
+            if runtime_metadata and len(fields) != 2:
+                raise ValueError("SCI runtime provenance metadata changed into an executable row")
             retired = "sci/" in path and migration is not None and migration[7] == "retired"
             native_boundary = name.startswith("light-cljs.types/") or name.startswith("clojure.core/java.lang.") or name == "clojure.core/Throwable." or ("supported-apis" in path and fields[2] == "native-only" and name in {"clojure.core/bigint", "clojure.core/biginteger", "clojure.core/bigdec", "clojure.core/ratio?", "clojure.core/rational?"})
             rows.append({"id": f"local::{path}::{name}", "obligation_kind": "local-api" if "supported-apis" in path or "metadata" in path else "sci-case",
                          "name": name, "source": path, "line": number, "body_id": f"{path}::{name}", "body_sha256": inv.digest(line.encode()),
-                         "source_span": {"text": line, "sha256": inv.digest(line.encode())}, "disposition": "internal" if name == "clojure.core/lazy-seq*" else "dialect" if retired or native_boundary else "intended",
-                         "reason": "Retired native macroexpansion helper; public lazy-seq remains an independent source/arity/phase obligation." if name == "clojure.core/lazy-seq*" else migration[-1] if retired else "Native-only owner/type or exact numeric extension is intentionally retired by the adopted JavaScript dialect." if native_boundary else "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+                         "source_span": {"text": line, "sha256": inv.digest(line.encode())}, "disposition": "internal" if runtime_metadata or name == "clojure.core/lazy-seq*" else "dialect" if retired or native_boundary else "intended",
+                         "reason": "SCI capture provenance metadata (format, revision, JVM runtime or capture options), retained verbatim; this two-column artifact contains no executable source or semantic expectation." if runtime_metadata else "Retired native macroexpansion helper; public lazy-seq remains an independent source/arity/phase obligation." if name == "clojure.core/lazy-seq*" else migration[-1] if retired else "Native-only owner/type or exact numeric extension is intentionally retired by the adopted JavaScript dialect." if native_boundary else "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
                          "family": family, "owner": owner})
     return rows, files
 
@@ -497,12 +501,36 @@ def sci_execution_failed(report, evidence, failure_statuses):
                       if row.get("status") == "version-difference"
                       and row.get("library_context_reconciliation", {}).get("reconciliation") == "verified-pinned-version-difference"
                       and row["library_context_reconciliation"].get("original_expectation_status") == "unresolved")
+    reconciled.update(row["library_dialect_reconciliation"]["id"]
+                      for row in report.get("assertions", [])
+                      if row.get("status") == "version-difference"
+                      and row.get("library_dialect_reconciliation", {}).get("reconciliation") in {
+                          "verified-canonical-sci-difference", "verified-adopted-strict-edn-dialect-difference"}
+                      and row["library_dialect_reconciliation"].get("original_expectation_status") == "unresolved"
+                      and row["library_dialect_reconciliation"].get("actual_macro_contract_status") == "passed"
+                      and row["library_dialect_reconciliation"].get("checked_pin_contract_status") == {"release": "passed", "checkout": "passed"}
+                      and row.get("columns", {}).get("quickjs_macro", {}).get("status") == "passed"
+                      and row.get("layers") == evidence.get(row["library_dialect_reconciliation"]["id"]))
     return any(layer.get("status") in failure_statuses
                and not (identity in reconciled and layer.get("status") == "mismatch")
                for identity, layers in evidence.items() for layer in layers.values())
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None):
+def verified_library_dialects(document, current_evidence):
+    """A sidecar must reproduce its current full-source and actual phase proof."""
+    if document is None:
+        return {}, None
+    import sci_library_reconciliation as audit
+    verified = audit.reconcile(document["local_evidence"], document["full_evidence"])
+    if not audit.same(document.get("reconciliations"), verified["reconciliations"]):
+        raise ValueError("Library dialect sidecar changed its verified original-source proof")
+    for row in verified["reconciliations"]:
+        if not audit.same(row["layers"], current_evidence.get(row["id"])):
+            raise ValueError("Library dialect proof detached from this report's fresh execution")
+    return {row["obligation_id"]: row for row in verified["reconciliations"]}, document["local_evidence"]
+
+
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -520,6 +548,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
     expression_mappings = expression_rows(load_sci(), list(source_context_mappings.values()))
     sci_mappings = {item["obligation_id"]: item for item in library_expression_rows(expression_mappings, list(library_context_mappings.values()))}
     sci_evidence = sci_evidence or {}
+    library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
     selected = bool(features or identities)
     rows = []
     for row in assertions:
@@ -543,6 +572,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         reconciliation = None
         source_reconciliation = None
         library_reconciliation = None
+        library_dialect = None
         if status == "missing" and mapping and not mapping.get("local_execution"):
             source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
                                for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
@@ -626,14 +656,28 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             library_reconciliation = {"id": library_context_mapping["id"],
                                       **library_context_evidence(library_context_mapping, layers)}
             status = library_reconciliation["status"]
+            library_dialect = library_dialects.get(row["id"])
+            if library_dialect:
+                if library_reconciliation["reconciliation"] != "original-contract-unresolved":
+                    raise ValueError("Library dialect credit would overwrite original SCI evidence")
+                status = "version-difference"
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
+        if library_dialect:
+            import sci_library_reconciliation as audit
+            observed_columns["quickjs_macro"] = {
+                "status": "passed", "test_file": audit.DRIVER, "test_name": audit.TEST,
+                "test_source_sha256": inv.digest((ROOT / audit.DRIVER).read_bytes()),
+                "actual_phase": "macro", "hosts": ["fresh", "reused"], "engines": ["QuickJS", "Node"],
+                "frames": [frame for frame in library_phase_document["frames"]
+                           if frame["id"] == library_dialect["id"] and frame["phase"] == "macro"]}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
                      "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
                      **({"canonical_reconciliation": reconciliation} if reconciliation else {}),
                      **({"source_context_reconciliation": source_reconciliation} if source_reconciliation else {}),
                      **({"library_context_reconciliation": library_reconciliation} if library_reconciliation else {}),
-                     "completion_reason": "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
+                     **({"library_dialect_reconciliation": library_dialect} if library_dialect else {}),
+                     "completion_reason": "Exact source-specific canonical/strict-EDN difference verified in both pins and both application/macro phases; original SCI expectation remains unresolved." if library_dialect else "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
     counts = Counter(row["status"] for row in rows)
     sections = {}
     for row in rows:

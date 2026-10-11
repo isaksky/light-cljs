@@ -16,6 +16,56 @@ import report
 
 
 class FullLedgerTests(unittest.TestCase):
+    def test_sci_capture_metadata_retains_source_without_inventing_semantic_cases(self):
+        rows, _ = full.local_inventory()
+        metadata = [row for row in rows if row["source"] == "tests/reference/sci/runtime.tsv"]
+        self.assertEqual([row["name"] for row in metadata],
+                         ["format", "revision", "clojure", "java", "java-vendor", "options"])
+        originals = (report.ROOT / "tests/reference/sci/runtime.tsv").read_text().splitlines()
+        self.assertEqual([row["source_span"]["text"] for row in metadata], originals)
+        self.assertTrue(all(row["disposition"] == "internal" for row in metadata))
+        cases = [row for row in rows if row["source"] == "tests/reference/sci/evaluator-dispositions.tsv"]
+        self.assertTrue(any(row["disposition"] == "intended" for row in cases))
+        self.assertTrue(all(row["source_span"]["text"].count("\t") == 13 for row in cases))
+
+    def test_library_dialect_sidecar_revalidates_actual_proof_and_current_layers(self):
+        import sci_library_reconciliation as audit
+        record = {"id": "exact-library", "obligation_id": "exact-obligation",
+                  "layers": {"release": {"status": "mismatch"}}}
+        sidecar = {"local_evidence": {"actual": "raw"}, "full_evidence": {"pins": "raw"},
+                   "reconciliations": [record]}
+        with patch.object(audit, "reconcile", return_value={"reconciliations": [record]}) as verify:
+            rows, local = full.verified_library_dialects(sidecar, {record["id"]: record["layers"]})
+            verify.assert_called_once_with(sidecar["local_evidence"], sidecar["full_evidence"])
+            self.assertEqual(rows, {record["obligation_id"]: record})
+            self.assertEqual(local, sidecar["local_evidence"])
+            with self.assertRaises(ValueError):
+                full.verified_library_dialects(sidecar, {record["id"]: {"release": {"status": "failed"}}})
+            changed = copy.deepcopy(sidecar)
+            changed["reconciliations"][0]["layers"] = {}
+            with self.assertRaises(ValueError):
+                full.verified_library_dialects(changed, {record["id"]: record["layers"]})
+        self.assertEqual(full.verified_library_dialects(None, {}), ({}, None))
+
+    def test_library_dialect_exception_never_hides_failure_or_unexecuted_macro(self):
+        layers = {"javascript": {"status": "mismatch"}, "release": {"status": "mismatch"},
+                  "checkout": {"status": "mismatch"}}
+        receipt = {"id": "exact-library", "reconciliation": "verified-canonical-sci-difference",
+                   "original_expectation_status": "unresolved", "actual_macro_contract_status": "passed",
+                   "checked_pin_contract_status": {"release": "passed", "checkout": "passed"}}
+        row = {"status": "version-difference", "library_dialect_reconciliation": receipt,
+               "layers": layers, "columns": {"quickjs_macro": {"status": "passed"}}}
+        failures = {"mismatch", "failed", "timed-out", "unverified"}
+        self.assertFalse(full.sci_execution_failed({"assertions": [row]}, {receipt["id"]: layers}, failures))
+        for changed in (dict(row, status="missing"), dict(row, columns={}),
+                        dict(row, library_dialect_reconciliation=dict(receipt, original_expectation_status="passed"))):
+            self.assertTrue(full.sci_execution_failed({"assertions": [changed]}, {receipt["id"]: layers}, failures))
+        for kind in layers:
+            changed = copy.deepcopy(layers); changed[kind]["status"] = "failed"
+            self.assertTrue(full.sci_execution_failed({"assertions": [row]}, {receipt["id"]: changed}, failures))
+        self.assertTrue(full.sci_execution_failed({"assertions": [row]},
+                        {receipt["id"]: layers, "unreviewed": {"release": {"status": "mismatch"}}}, failures))
+
     def test_nonpositive_reconciliation_is_explicit_and_requires_complete_current_evidence(self):
         import sci_execution as sci
         mapping = next(row for row in sci.load() if row["sci_id"] == "sci-reader-anonymous-nonpositive")

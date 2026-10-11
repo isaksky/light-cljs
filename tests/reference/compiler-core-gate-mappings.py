@@ -5,6 +5,7 @@ Catalog entries establish identity, never execution. The full report executes
 both checked pins for unchanged literal semantics and exact phase tests.
 """
 from pathlib import Path
+import argparse
 import importlib.util
 import json
 import sys
@@ -14,6 +15,13 @@ spec = importlib.util.spec_from_file_location('core_gate', ROOT / 'tests/referen
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 PREFIX = 'cljs-core-gate-literal-'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--write', action='store_true', help='coordinate replacement of owned rows in shared tables')
+parser.add_argument('--write-owned', action='store_true', help='write only core-gate-call-receipts.jsonl')
+parser.add_argument('--export-owned', type=Path, help='export owned mapping/case rows for coordinated integration')
+args = parser.parse_args()
+if args.write and args.write_owned: parser.error('choose --write or --write-owned')
+if args.export_owned: args.export_owned.mkdir(parents=True, exist_ok=True)
 ordinary, phases, receipts = gate.execution_mappings(include_existing=True)
 by_receipt = {r['obligation_id']: r for r in receipts}
 cases = []
@@ -51,10 +59,13 @@ for filename, generated, key in [('obligation-witnesses.jsonl',ordinary,'obligat
     result.extend(replacements.values())
     text=''.join(json.dumps(r,separators=(',',':'))+'\n'for r in result)
     path=HERE/filename
-    if '--write'in sys.argv:path.write_text(text)
-    else:assert path.read_text()==text, filename+' reviewed core mappings drift'
+    if args.write:path.write_text(text)
+    elif args.export_owned:
+        (args.export_owned/filename).write_text(''.join(json.dumps(r,separators=(',',':'))+'\n' for r in result if owned(r)))
+    elif not args.write_owned:assert path.read_text()==text, filename+' reviewed core mappings drift'
 text=''.join(json.dumps(r,separators=(',',':'))+'\n'for r in receipts)
 path=HERE/'core-gate-call-receipts.jsonl'
-if '--write'in sys.argv:path.write_text(text)
-else:assert path.read_text()==text
+if args.write or args.write_owned:path.write_text(text)
+elif not args.export_owned:assert path.read_text()==text
+if args.export_owned:(args.export_owned/'core-gate-call-receipts.jsonl').write_text(text)
 print(f'{len(receipts)} reviewed operation receipts and {len(cases)} literal pinned oracles reproduce')

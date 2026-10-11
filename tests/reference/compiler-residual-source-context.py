@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tests/reference/compiler-language'))
 import extract_inventory as inv
 import report
+import hosted_source_dispatch as hosted
 spec = importlib.util.spec_from_file_location('completion', ROOT / 'tests/reference/compiler-residual-completion.py')
 completion = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(completion)
@@ -117,7 +118,7 @@ def generate(catalogs=False):
     rows, cases, witnesses, phases = [], [], [], []
     existing_sites = {row['assertion_id'] for name in ('witnesses.jsonl', 'full-witnesses.jsonl')
                       for row in residual.read(name)
-                      if not row['fixture_id'].startswith(PREFIX)}
+                      if not row['fixture_id'].startswith(PREFIX) and row['fixture_id'] not in hosted.PROFILES}
     for label, path, selected, namespace, reference_namespace in SPECS:
         original = pinned(path)
         original_bodies = [body for body in bodies if body['source'] == path]
@@ -285,8 +286,20 @@ def generate(catalogs=False):
     for case in cases:
         if case['id'] in embedding:
             case['proposed_original_assertion_witnesses'] = [row for row in witnesses if row['fixture_id'] == case['id']]
-    proposal = {'full-cases.jsonl': [case for case in cases if case['id'] not in pending | embedding],
-                'full-witnesses.jsonl': [row for row in witnesses if row['fixture_id'] not in pending | embedding],
+            case.update(hosted.register(case))
+            case['local_execution_boundary'] = 'Exact configured-reader profile is executed by hosted_source_dispatch with eight current raw application/actual-MacroHost fresh/reused Node/QuickJS frames. Generic CLI UnknownTag remains a separate boundary.'
+    hosted_cases = hosted.ordinary_profiles()
+    for case in hosted_cases:
+        for origin in case['complete_original_provenance']:
+            body = next(row for row in bodies if row['id'] == origin['body_id'])
+            assert body['source_span']['sha256'] == origin['source_sha256']
+            sites = [row for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope']
+            assert not any(row['id'] in existing_sites for row in sites)
+            witnesses.extend({'assertion_id': row['id'], 'assertion_sha256': row['assertion']['sha256'],
+                              'fixture_id': case['id'], 'rationale': case['reference_adaptation']} for row in sites)
+    cases.extend(hosted_cases)
+    proposal = {'full-cases.jsonl': [case for case in cases if case['id'] not in pending],
+                'full-witnesses.jsonl': [row for row in witnesses if row['fixture_id'] not in pending],
                 'complete-body-phase-mappings': [row for row in phases if row['reference_fixture_id'] not in pending | embedding],
                 'unwitnessed-source-cases': [case for case in cases if case['id'] in pending],
                 'embedding-source-cases': [case for case in cases if case['id'] in embedding]}
@@ -298,13 +311,13 @@ def generate(catalogs=False):
     completion.persist(ROOT / 'tests/reference/compiler-residual-source-context-proposals.json', json.dumps(proposal, indent=2) + '\n')
     if catalogs:
         for name, field in [('full-cases.jsonl', 'id'), ('full-witnesses.jsonl', 'fixture_id')]:
-            residual.update_owned(name, lambda row: row.get(field, '').startswith(PREFIX), proposal[name])
+            residual.update_owned(name, lambda row: row.get(field, '').startswith(PREFIX) or row.get(field) in hosted.PROFILES, proposal[name])
         reconcile_exists(cases)
         reconcile_edn_read(cases)
         for name in ('obligation-witnesses.jsonl', 'phase-witnesses.jsonl'):
             targets = {row['obligation_id'] for row in proposal[name]}
             residual.update_owned(name, lambda row: row['obligation_id'] in targets, proposal[name])
-    print(f'{len(proposal["full-cases.jsonl"])} supported contexts, {len(proposal["complete-body-phase-mappings"])} complete bodies, {len(proposal["full-witnesses.jsonl"])} original sites proposed; {len(embedding)} proven embedding contexts need hosted report integration; {len(pending)} complete sources remain unwitnessed', flush=True)
+    print(f'{len(proposal["full-cases.jsonl"])} supported contexts, {len(proposal["complete-body-phase-mappings"])} complete bodies, {len(proposal["full-witnesses.jsonl"])} original sites proposed; {len(hosted.PROFILES)} explicit hosted profiles registered; {len(pending)} complete sources remain unwitnessed', flush=True)
     return cases
 
 

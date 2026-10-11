@@ -837,6 +837,82 @@
       ]
     },
     {
+      "id": "cljs-residual-source-context-tagged-source",
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns cljs.tagged-literals-test (:require [cljs.reader :as reader]))\n\n(defn run [] (do (do (assert (= #cljs/tag [1 2 3] [1 2 3])) true)))\n",
+      "source_root": "tests/fixtures/compiler-residual-source-context/tagged-source",
+      "reference_source_root": "tests/fixtures/compiler-residual-source-context-reference/tagged-source",
+      "entry": "cljs.tagged-literals-test",
+      "export": "run",
+      "reference_files_sha256": {
+        "cljs/tagged_literals_test.cljs": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
+        "data_readers.cljc": "2f353c072cbe6cdc4683e4447e4e10472cdc7f8ffafe1116c06856b589346b57"
+      },
+      "reference_adaptation": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation.",
+      "module_source": "src/test/cljs/cljs/tagged_literals_test.cljs",
+      "module_sha256": "8776d67a34a9a492b9c72975c6203bd863b2330a23ec73cd7edee4ded03d7cf8",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal",
+          "source_sha256": "e44f87cf162a70c7deba9146fac8bf6db796ee6be1770dc54f6d955ea495fed3"
+        }
+      ],
+      "namespace_source_sha256": "76c08f2f3300cb83908efb55d3d313625c4931770974e627a01b4a574a2bcb2d",
+      "original_data_reader_configuration": {
+        "source": "src/test/cljs/data_readers.cljc",
+        "sha256": "344170f2e2b2b00dd8e21d4450f33b951eb48c9da62ef4857e175282a1f7f9d9",
+        "text": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n{cljs/tag clojure.core/identity\n cljs/inc clojure.core/inc\n cljs/union clojure.set/union\n test/custom-identity data-readers-test.core/custom-identity\n test/custom-form #?(:cljs data-readers-test.core/custom-form-cljs :clj clojure.core/identity)}\n",
+        "adapter": "Install the exact original cljs/tag=clojure.core/identity entry through the public compiler-data-reader registry before reading each fresh/reused phase source. Reference data_readers.cljc selects this exact original entry; the entire original map is retained here as provenance. Unused custom handlers require separate companion namespaces and are not supplied or claimed."
+      },
+      "expected": {
+        "id": "cljs-residual-source-context-tagged-source",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "complete_body_phase_mappings": [
+        {
+          "body_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal",
+          "body_sha256": "e44f87cf162a70c7deba9146fac8bf6db796ee6be1770dc54f6d955ea495fed3",
+          "reference_fixture_id": "cljs-residual-source-context-tagged-source",
+          "reference_source_sha256": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
+          "reference_contract_sha256": "069bddf77efb460c33bd9117e20b32dcd006abd1d5d7025cfd868f26fc620de7",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation.",
+          "local_execution": {
+            "test_file": "tests/compiler_residual_source_context.rs",
+            "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
+            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+          },
+          "support_source_sha256": {
+            "tests/fixtures/compiler-residual-source-context/tagged-source/cljs/tagged_literals_test.cljs": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
+            "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
+          }
+        }
+      ],
+      "compiler_data_readers": [
+        {
+          "tag": "cljs/tag",
+          "operation": "identity"
+        }
+      ],
+      "local_execution_boundary": "Exact configured-reader profile is executed by hosted_source_dispatch with eight current raw application/actual-MacroHost fresh/reused Node/QuickJS frames. Generic CLI UnknownTag remains a separate boundary.",
+      "proposed_original_assertion_witnesses": [
+        {
+          "assertion_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal::assertion-001",
+          "assertion_sha256": "b3736cb88cceca8fc292d000bc3387d263755608c7d5ea923ed77bfe6ef5a44a",
+          "fixture_id": "cljs-residual-source-context-tagged-source",
+          "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation."
+        }
+      ],
+      "hosted_source_adapter": {
+        "profile": "configured-reader-identity-v1",
+        "schema_version": 1
+      }
+    },
+    {
       "id": "cljs-residual-source-context-edn-stream",
       "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns clojure.edn-test (:require [clojure.edn :as edn] [cljs.reader :as reader] [cljs.reader :as reader-types]))\n(defn- test-reader []\n  (reader-types/string-push-back-reader \"[1 2 3]\"))\n(defn run [] (do (do (do (assert (= (edn/read (test-reader))\n         (reader/read (test-reader)))) (assert (= (edn/read {} (test-reader))\n           (reader/read {} (test-reader)))) (assert (= (edn/read (test-reader) false \"EOF\" {})\n           (reader/read (test-reader) false \"EOF\" {})))) true)))\n",
       "source_root": "tests/fixtures/compiler-residual-source-context/edn-stream",
@@ -1252,6 +1328,153 @@
           }
         }
       ]
+    },
+    {
+      "id": "cljs-hosted-original-import-context",
+      "entry": "cljs.import-test",
+      "export": "run",
+      "source": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n(ns cljs.import-test (:import goog.math.Long\n           [goog.math Vec2 Vec3]\n           [goog.math Integer]))\n\n(defn run [] (do\n  (assert (fn? Long))\n  (assert (.equals (Long. 4 6) (.add (Long. 1 2) (Long. 3 4))))\n  (assert (= \"12\" (str (Long.fromInt 12))))\n  (assert (not (nil? (Vec2. 1 2))))\n  (assert (not (nil? (Vec3. 1 2 3))))\n  (assert (.equals (Integer.fromString \"10\") (goog.math.Integer.fromString \"10\")))\n  true))\n",
+      "expected": {
+        "id": "cljs-hosted-original-import-context",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "hosted_import_profile": "genuine-closure-20250515-f04e4c0e-original-import-six",
+      "original_module_sha256": "194d7c04722e6a8a4ea750cc4b70144d37628a0ded6111750f55d97964669f94",
+      "original_body_sha256": "3fa2d1eb9c79510bc82847a301a967b9ed0d5c2c520ae29d165a9b19570ec812",
+      "original_assertion_sha256": [
+        "1b41e2632479e37c063a83a3f70320c2b3eb9804a1bd7492672c4211ac409efe",
+        "30686a7139385d9a40f0f35f93f0bd4d14f9d45646578517999306f3f13c5ccd",
+        "29405a91ea115e6f1edbeccc338eea230387abe692e59559a12d1525aea3095a",
+        "a433fa4fcfd412860b3032de691584fece24efcd5c983960f8d255d65e306e3a",
+        "227150a7b4c606caad7249c48e4726b76801930a513ae2951a405ce462ea2866",
+        "6645b72e0264b7d823d65dbbaf38c9691ff005da3dcf62c06890c92403787294"
+      ],
+      "closure_dependency_sha256": {
+        "base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+        "deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+        "debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+        "dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+        "asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+        "reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+        "math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+        "math/math.js": "43eff984882740275ba9277d1eb613ae84f28cae028dd3ddc499646b631da47a",
+        "math/coordinate.js": "80eb59b3766531eaf58f952300a60abe4c2adec842c36336c01b5623e1bf33f1",
+        "math/vec2.js": "b9eb5c3dfd8115916f1f1411393866dce8b8e79afe5a3098f828a06c2a11b46d",
+        "math/coordinate3.js": "ef5de4467663a36432e71b3bc968b6a34b86a1638cd1d9dd87fb1fce7e3b9582",
+        "math/vec3.js": "d2c026a351f6e83431064b867cd5c6e315d8202662110e8ffbb1c130e0418fb3",
+        "math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a"
+      },
+      "reference_adaptation": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert.",
+      "module_source": "src/test/cljs/cljs/import_test.cljs",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/cljs/import_test.cljs::test-import",
+          "source_sha256": "3fa2d1eb9c79510bc82847a301a967b9ed0d5c2c520ae29d165a9b19570ec812"
+        }
+      ],
+      "hosted_source_adapter": {
+        "profile": "original-import-real-closure-v1",
+        "schema_version": 1
+      }
+    },
+    {
+      "id": "cljs-hosted-original-goog-context",
+      "entry": "cljs.ns-test",
+      "export": "run",
+      "source": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n(ns cljs.ns-test (:require [goog :as goog-alias]))\n\n(defn run [] (do (do (let [array-like #js {:length 3}]\n    (assert (.isArrayLike js/goog array-like))\n    (assert (goog/isArrayLike array-like))\n    (assert (goog-alias/isArrayLike array-like))) true) true))\n",
+      "expected": {
+        "id": "cljs-hosted-original-goog-context",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "hosted_namespace_profile": "goog",
+      "original_module_sha256": "21243db745474306fdfb034dd99b4ba5cee1a858493e4e8182fc2542968d1f1b",
+      "original_complete_body_sha256": {
+        "src/test/cljs/cljs/ns_test.cljs::test-cljs-1677": "af46c1e105d03a7bdd7dc8d2bb87a5c6c45bf8e734c7804c3c134d0ad87636a6"
+      },
+      "original_assertion_sha256": [
+        "a7264a70b914301ab012b1e36bd704dbb9ee44d29af96cfa6729717932b2e442",
+        "37cca58e0729d6b3a923beb915fff2c2df95bf9712e59abb0451b7a58ff88740",
+        "b16086f8a2171537b5847a0903bbdaed866334a62f3d46095649496e74783013"
+      ],
+      "provider_path": "goog.cljs",
+      "provider_source": "(ns goog)\n(defn isArrayLike [x] (js/goog.isArrayLike x))\n",
+      "provider_source_sha256": "841b39e2d568bb869e306b6b5b8cbc70152eca072bad7af9407f10d7336dfe16",
+      "dependency_source_sha256": {
+        "goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc"
+      },
+      "reference_adaptation": "Complete original goog body uses a compiled delegation to genuine pinned Closure isArrayLike. Real base initialization is explicit in both phases. No default goog namespace or foreign-function-root parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert.",
+      "module_source": "src/test/cljs/cljs/ns_test.cljs",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/cljs/ns_test.cljs::test-cljs-1677",
+          "source_sha256": "af46c1e105d03a7bdd7dc8d2bb87a5c6c45bf8e734c7804c3c134d0ad87636a6"
+        }
+      ],
+      "hosted_source_adapter": {
+        "profile": "original-goog-real-delegation-v1",
+        "schema_version": 1
+      }
+    },
+    {
+      "id": "cljs-hosted-original-repl-context",
+      "entry": "cljs.repl-test",
+      "export": "run",
+      "source": ";   Copyright (c) Rich Hickey. All rights reserved.\n;   The use and distribution terms for this software are covered by the\n;   Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;   which can be found in the file epl-v10.html at the root of this distribution.\n;   By using this software in any fashion, you are agreeing to be bound by\n;   the terms of this license.\n;   You must not remove this notice, or any other, from this software.\n\n(ns cljs.repl-test (:require [cljs.repl]))\n\n(defn run [] (do (do (let [m (cljs.repl/Error->map (js/TypeError.))]\n    (assert (= 'js/TypeError (get-in m [:via 0 :type])))) true) (do (let [m (cljs.repl/Error->map (ex-info \"\" {}))]\n    (assert (= 'cljs.core/ExceptionInfo (get-in m [:via 0 :type])))) true) true))\n",
+      "expected": {
+        "id": "cljs-hosted-original-repl-context",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "native_stdout": null,
+      "hosted_namespace_profile": "repl",
+      "original_module_sha256": "1bb588aa598ab3b5d9cf1d4367e87af1c352d0c65eeb20a07c1c5359446d05b3",
+      "original_complete_body_sha256": {
+        "src/test/cljs/cljs/repl_test.cljs::test-cljs-3017": "1cc0a036141bae786f333b70e3ffb2eaad297f1c806e306b8aaafa57e773bb31",
+        "src/test/cljs/cljs/repl_test.cljs::test-cljs-3019": "f1baa0acdf9a01935cacb63095e2ac0af6f165c06cac57dbc2ee9cfa082dffea"
+      },
+      "original_assertion_sha256": [
+        "c8b205a66f2efe129abe84f3cf4f04ff79e0ebaa70aa8d8385dba9d867850ac3",
+        "499c2d7d887288d3fee0f63a58bdfed6888a940e2ed15346f31bc1a5418d5606"
+      ],
+      "provider_path": "cljs/repl.cljs",
+      "provider_source": "(ns cljs.repl)\n(defn Error->map\n  \"Constructs a data representation for a Error with keys:\n    :cause - root cause message\n    :phase - error phase\n    :via - cause chain, with cause keys:\n             :type - exception class symbol\n             :message - exception message\n             :data - ex-data\n             :at - top stack element\n    :trace - root cause stack elements\"\n  [o]\n  (Throwable->map o))\n",
+      "provider_source_sha256": "482b472d9ac598097e909d77ecf787dd1abe06b03728d55f6d3aea7985490749",
+      "dependency_source_sha256": {
+        "src/main/cljs/cljs/repl.cljs": "69a5ec0a352a9b05dc9617d38d466d190d2d526501688e08ad247a08a965e49d",
+        "Error->map": "1f215cafe3ea242fccf28eba27dceececc62fdc1c4e63950748c71157d775e44"
+      },
+      "reference_adaptation": "Both complete original REPL bodies use the exact original Error->map source function and core Throwable->map dependency. Both references execute canonical cljs.repl. No entire cljs.repl namespace compatibility. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert.",
+      "module_source": "src/test/cljs/cljs/repl_test.cljs",
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/cljs/repl_test.cljs::test-cljs-3017",
+          "source_sha256": "1cc0a036141bae786f333b70e3ffb2eaad297f1c806e306b8aaafa57e773bb31"
+        },
+        {
+          "body_id": "src/test/cljs/cljs/repl_test.cljs::test-cljs-3019",
+          "source_sha256": "f1baa0acdf9a01935cacb63095e2ac0af6f165c06cac57dbc2ee9cfa082dffea"
+        }
+      ],
+      "hosted_source_adapter": {
+        "profile": "original-repl-error-map-v1",
+        "schema_version": 1
+      }
     }
   ],
   "full-witnesses.jsonl": [
@@ -1538,6 +1761,12 @@
       "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. Original runtime-reader aliases are preserved. The exact three used handlers from the unchanged full data_readers.cljc configuration are installed through the public registry independently inside each phase; no compiled source tag or unrelated custom test handler is claimed. All four original read-string inputs and results stay unchanged."
     },
     {
+      "assertion_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal::assertion-001",
+      "assertion_sha256": "b3736cb88cceca8fc292d000bc3387d263755608c7d5ea923ed77bfe6ef5a44a",
+      "fixture_id": "cljs-residual-source-context-tagged-source",
+      "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation."
+    },
+    {
       "assertion_id": "src/test/cljs/clojure/edn_test.cljs::test-read::assertion-001",
       "assertion_sha256": "5bd145e3d69e508b9702a3aba61a21ef27aa442b28b7e49d85520e06c4332cfa",
       "fixture_id": "cljs-residual-source-context-edn-stream",
@@ -1554,6 +1783,72 @@
       "assertion_sha256": "7ca0aad2b8b011567dcc50d02ead3b8fc56cf117336e28dec57a78363e4df3b4",
       "fixture_id": "cljs-residual-source-context-edn-stream",
       "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original test-reader helper and all three stream read assertions remain unchanged. Its reader-types alias selects the existing first-party cljs.reader/string-push-back-reader constructor locally; pinned references retain cljs.tools.reader.reader-types/string-push-back-reader. Both provide a real mutable pushback stream consumed by the unchanged edn/read and reader/read calls at one, two and four arguments. This explicit constructor namespace adaptation establishes the promised EDN stream operations, not general cljs.tools.reader compatibility; no stream implementation or read-string replacement is supplied by the fixture."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/import_test.cljs::test-import::assertion-001",
+      "assertion_sha256": "1b41e2632479e37c063a83a3f70320c2b3eb9804a1bd7492672c4211ac409efe",
+      "fixture_id": "cljs-hosted-original-import-context",
+      "rationale": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/import_test.cljs::test-import::assertion-002",
+      "assertion_sha256": "30686a7139385d9a40f0f35f93f0bd4d14f9d45646578517999306f3f13c5ccd",
+      "fixture_id": "cljs-hosted-original-import-context",
+      "rationale": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/import_test.cljs::test-import::assertion-003",
+      "assertion_sha256": "29405a91ea115e6f1edbeccc338eea230387abe692e59559a12d1525aea3095a",
+      "fixture_id": "cljs-hosted-original-import-context",
+      "rationale": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/import_test.cljs::test-import::assertion-004",
+      "assertion_sha256": "a433fa4fcfd412860b3032de691584fece24efcd5c983960f8d255d65e306e3a",
+      "fixture_id": "cljs-hosted-original-import-context",
+      "rationale": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/import_test.cljs::test-import::assertion-005",
+      "assertion_sha256": "227150a7b4c606caad7249c48e4726b76801930a513ae2951a405ce462ea2866",
+      "fixture_id": "cljs-hosted-original-import-context",
+      "rationale": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/import_test.cljs::test-import::assertion-006",
+      "assertion_sha256": "6645b72e0264b7d823d65dbbaf38c9691ff005da3dcf62c06890c92403787294",
+      "fixture_id": "cljs-hosted-original-import-context",
+      "rationale": "Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/ns_test.cljs::test-cljs-1677::assertion-001",
+      "assertion_sha256": "a7264a70b914301ab012b1e36bd704dbb9ee44d29af96cfa6729717932b2e442",
+      "fixture_id": "cljs-hosted-original-goog-context",
+      "rationale": "Complete original goog body uses a compiled delegation to genuine pinned Closure isArrayLike. Real base initialization is explicit in both phases. No default goog namespace or foreign-function-root parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/ns_test.cljs::test-cljs-1677::assertion-002",
+      "assertion_sha256": "37cca58e0729d6b3a923beb915fff2c2df95bf9712e59abb0451b7a58ff88740",
+      "fixture_id": "cljs-hosted-original-goog-context",
+      "rationale": "Complete original goog body uses a compiled delegation to genuine pinned Closure isArrayLike. Real base initialization is explicit in both phases. No default goog namespace or foreign-function-root parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/ns_test.cljs::test-cljs-1677::assertion-003",
+      "assertion_sha256": "b16086f8a2171537b5847a0903bbdaed866334a62f3d46095649496e74783013",
+      "fixture_id": "cljs-hosted-original-goog-context",
+      "rationale": "Complete original goog body uses a compiled delegation to genuine pinned Closure isArrayLike. Real base initialization is explicit in both phases. No default goog namespace or foreign-function-root parity. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/repl_test.cljs::test-cljs-3017::assertion-001",
+      "assertion_sha256": "c8b205a66f2efe129abe84f3cf4f04ff79e0ebaa70aa8d8385dba9d867850ac3",
+      "fixture_id": "cljs-hosted-original-repl-context",
+      "rationale": "Both complete original REPL bodies use the exact original Error->map source function and core Throwable->map dependency. Both references execute canonical cljs.repl. No entire cljs.repl namespace compatibility. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/cljs/repl_test.cljs::test-cljs-3019::assertion-001",
+      "assertion_sha256": "499c2d7d887288d3fee0f63a58bdfed6888a940e2ed15346f31bc1a5418d5606",
+      "fixture_id": "cljs-hosted-original-repl-context",
+      "rationale": "Both complete original REPL bodies use the exact original Error->map source function and core Throwable->map dependency. Both references execute canonical cljs.repl. No entire cljs.repl namespace compatibility. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
     }
   ],
   "complete-body-phase-mappings": [
@@ -2315,7 +2610,7 @@
           "operation": "identity"
         }
       ],
-      "local_execution_boundary": "The public compiler embedding installs the original reader operation before source reading. The ordinary CLI cannot install this capability; generic report integration requires an explicit hosted compiler adapter. The Rust suite executes all phases/engines, but CLI compilation is not claimed.",
+      "local_execution_boundary": "Exact configured-reader profile is executed by hosted_source_dispatch with eight current raw application/actual-MacroHost fresh/reused Node/QuickJS frames. Generic CLI UnknownTag remains a separate boundary.",
       "proposed_original_assertion_witnesses": [
         {
           "assertion_id": "src/test/cljs/cljs/tagged_literals_test.cljs::test-identity-custom-literal::assertion-001",
@@ -2323,7 +2618,11 @@
           "fixture_id": "cljs-residual-source-context-tagged-source",
           "rationale": "Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility. The complete original identity-custom-literal body retains its exact #cljs/tag source form and vector expectation. The local compiler embedding installs the original configuration entry cljs/tag=identity through register_compiler_data_reader in each fresh/reused MacroHost before source reading; references select the exact original cljs/tag entry in data_readers.cljc, retaining the full map as provenance. Unused custom reader entries and their separate JVM companions are omitted from this independent context. This is the explicit promised compiler-reader capability, not a fabricated tag replacement, runtime register-tag-parser substitute or JVM companion implementation."
         }
-      ]
+      ],
+      "hosted_source_adapter": {
+        "profile": "configured-reader-identity-v1",
+        "schema_version": 1
+      }
     }
   ],
   "obligation-witnesses.jsonl": [

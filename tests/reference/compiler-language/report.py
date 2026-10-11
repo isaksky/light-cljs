@@ -330,6 +330,8 @@ def load_contract(scope="historical-selected"):
     linked_cases = set()
     reference_contracts = {}
     for case in cases.values():
+        import hosted_source_dispatch
+        hosted_source_dispatch.validate_case(case)
         if "nodejs_rt" in case and (case["nodejs_rt"] is not False or "source_root" not in case):
             raise ValueError(f"invalid explicit Node bootstrap setting: {case['id']}")
         validate_reference_source(case)
@@ -401,6 +403,8 @@ def load_contract(scope="historical-selected"):
                             if item.get("local_execution") and item.get("reference_fixture_id") in cases)
     if linked_cases != set(cases):
         raise ValueError(f"unmapped fixtures: {sorted(set(cases) - linked_cases)}")
+    for case in cases.values():
+        hosted_source_dispatch.validate_witnesses(case, witnesses, inventory)
     for case in cases.values():
         if "diagnostic" in case and any(witnesses.get(identity, {}).get("fixture_id") != case["id"]
                                        for identity in case["diagnostic"]["assertion_ids"]):
@@ -494,6 +498,9 @@ def same_json(left, right):
 
 
 def local_layers(case, binary, directory, timeout, *, warning_mode=False):
+    import hosted_source_dispatch
+    if hosted_source_dispatch.validate_case(case):
+        raise ValueError('reviewed hosted source requires actual embedding dispatch; generic CLI is not evidence')
     if "warning" in case:
         return local_warning(case, binary, directory, timeout)
     if "diagnostic" in case:
@@ -1188,6 +1195,7 @@ def main(argv=None):
         boundary_evidence = {}
         phase_evidence = {}
         sci_evidence = {}
+        library_dialect_evidence = None
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1210,17 +1218,23 @@ def main(argv=None):
             else:
                 binary = str((args.binary or ROOT / "target/debug/light-cljs").resolve())
             binary_identity = {"path": binary, "sha256": hashlib.sha256(Path(binary).read_bytes()).hexdigest()}
-            for case in selected_cases:
+            import hosted_source_dispatch
+            hosted_cases = [case for case in selected_cases if hosted_source_dispatch.validate_case(case)]
+            ordinary_cases = [case for case in selected_cases if case not in hosted_cases]
+            if hosted_cases:
+                evidence.update(hosted_source_dispatch.execute(hosted_cases, artifacts / 'hosted-source',
+                                max(240, args.reference_timeout), args.reference, args.checkout.resolve()))
+            for case in ordinary_cases:
                 evidence[case["id"]] = local_layers(case, binary, artifacts / "local" / case["id"], args.timeout)
             for kind in ("release", "checkout"):
-                if args.reference not in (kind, "both") or not selected_cases:
+                if args.reference not in (kind, "both") or not ordinary_cases:
                     continue
                 expected = {identity: case["expected"] for identity, case in cases.items() if "expected" in case}
                 for witness in witnesses.values():
                     if witness.get("version_difference"):
                         expected[witness["fixture_id"]] = witness["version_difference"][kind]
                 reference_inputs = [case if "diagnostic" in case or "warning" in case else {**case, "expected": expected[case["id"]]}
-                                    for case in selected_cases]
+                                    for case in ordinary_cases]
                 for identity, observed in reference_cases(reference_inputs, kind, args.checkout.resolve(),
                                                            artifacts / kind, args.reference_timeout).items():
                     evidence[identity][kind] = observed
@@ -1277,13 +1291,23 @@ def main(argv=None):
                 if set(sci_evidence) & set(library_evidence):
                     raise ValueError("SCI expression/source/library-context execution identities overlap")
                 sci_evidence.update(library_evidence)
-                (artifacts / "sci-library-context" / "evidence.json").write_text(json.dumps({
+                library_document = {
                     "catalog_sha256": sci_execution.digest(sci_library_context.CATALOG.read_bytes()),
-                    "evidence": library_evidence}, indent=2) + "\n")
+                    "evidence": library_evidence}
+                (artifacts / "sci-library-context" / "evidence.json").write_text(json.dumps(library_document, indent=2) + "\n")
+                if len(library_rows) == 191 and args.reference == 'both' and all(
+                        set(library_evidence[row['id']]) == {'javascript','release','checkout'} for row in library_rows):
+                    import sci_library_reconciliation
+                    local = sci_library_reconciliation.run_local(artifacts / 'sci-library-reconciliation')
+                    sidecar = sci_library_reconciliation.reconcile(local, library_document)
+                    sidecar['local_evidence'] = local
+                    sidecar['full_evidence'] = library_document
+                    (artifacts / 'sci-library-reconciliation' / 'evidence.json').write_text(json.dumps(sidecar, indent=2) + '\n')
+                    library_dialect_evidence = sidecar
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
-            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence)
+            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence)
         if artifacts:
             report["artifacts"] = str(artifacts)
             report["compiler_binary"] = binary_identity
