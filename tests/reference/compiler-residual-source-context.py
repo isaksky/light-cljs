@@ -191,7 +191,7 @@ def generate(catalogs=False):
                               'rationale': adaptation} for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope')
         case['complete_body_phase_mappings'] = [mapping for mapping in phases if mapping['reference_fixture_id'] == identity]
         cases.append(case)
-    pending = {PREFIX + 'ns-exists'}
+    pending = set()
     fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Complete original namespace contexts executed in both phases; unresolved source retained in proposals.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows if row[0] not in pending)
     completion.persist(ROOT / FIXTURE, fixture)
     for row in phases:
@@ -208,8 +208,38 @@ def generate(catalogs=False):
     if catalogs:
         for name, field in [('full-cases.jsonl', 'id'), ('full-witnesses.jsonl', 'fixture_id')]:
             residual.update_owned(name, lambda row: row.get(field, '').startswith(PREFIX), proposal[name])
+        reconcile_exists(cases)
     print(f'{len(proposal["full-cases.jsonl"])} supported contexts, {len(proposal["complete-body-phase-mappings"])} complete bodies, {len(proposal["full-witnesses.jsonl"])} original sites proposed; {len(pending)} complete sources remain unwitnessed', flush=True)
     return cases
+
+
+def reconcile_exists(cases):
+    """Bind only the executed exists? arity and its unchanged original body."""
+    target = next(row for row in residual.read('obligations.jsonl')
+                  if row['id'] == 'api::src/main/clojure/cljs/core.cljc::exists?::arity-1')
+    case = next(row for row in cases if row['id'] == PREFIX + 'ns-exists')
+    assert target['signature'] == {'kind': 'fixed', 'minimum': 1, 'parameters': ['x']}
+    rationale = ('The complete original test-cljs-2292 body retains both false/true exists? assertions '
+                 'and its namespace rename/exclude/alias/use setup. The one-argument public operation '
+                 'runs through the complete namespace driver in fresh/reused actual macros and '
+                 'Node/QuickJS applications. Both identity-checked pinned references execute the '
+                 'same complete original source contract. Additional macro-demand tests retain '
+                 'undefined versus nil/false, missing/declared roots, conditional products, lexical '
+                 'shadowing, nested ECMAScript paths, exactly-once effects, source visibility, '
+                 'phase isolation and genuine located initializer/cycle failures.')
+    common = {'obligation_id': target['id'], 'body_sha256': target['body_sha256'],
+              'signature_sha256': inv.digest(json.dumps(target['signature'], sort_keys=True).encode()),
+              'rationale': rationale}
+    execution = {'test_file': TEST, 'test_name': TEST_NAME,
+                 'test_source_sha256': inv.digest((ROOT / TEST).read_bytes())}
+    phase = {**common, **execution, 'support_source_sha256':
+             case['complete_body_phase_mappings'][0]['support_source_sha256']}
+    operation = {**common, 'assertion_ids': [], 'local_execution': execution,
+                 'reference_fixture_id': case['id'],
+                 'reference_source_sha256': inv.digest(case['source'].encode()),
+                 'reference_contract_sha256': inv.digest(json.dumps(case['expected'], sort_keys=True).encode())}
+    for name, row in [('obligation-witnesses.jsonl', operation), ('phase-witnesses.jsonl', phase)]:
+        residual.update_owned(name, lambda item: item['obligation_id'] == target['id'], [row])
 
 
 def audit_local(cases, output):

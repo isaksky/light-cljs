@@ -146,6 +146,27 @@
     }
   });
   globalThis.__lightHasCompilerRoot = name => overlays.has(name) || slots.has(name);
+  // typeof must not read the demand proxy for an unavailable definition. An
+  // existing root still needs its value: undefined is absent, nil/false exist.
+  function rootExists(name, slot) {
+    if (!slot || slot.unit === null) return false;
+    if (slot.bundle?.group) {
+      const bundle = slot.bundle;
+      if (bundle.state !== 'initializing') forceBundle(bundle);
+      if (bundle.products.has(name)) return bundle.products.get(name) !== undefined;
+      const previous = bundle.previous.get(name);
+      if (previous) return rootExists(name, previous);
+      if (bundle.state !== 'initializing') return false;
+      // A forward read inside its own executing group is a genuine cycle.
+    }
+    return forceSlot(name, slot) !== undefined;
+  }
+  globalThis.__lightCompilerRootExists = name => {
+    if (overlays.has(name)) return overlays.get(name) !== undefined;
+    const owner = installing.at(-1);
+    return rootExists(name, owner?.group && owner.names.includes(name)
+      ? {unit: -1, bundle: owner} : slots.get(name));
+  };
   globalThis.__lightRegisterUnit = (name, unit, once, location) => {
     const old = slots.get(name);
     if (unit === null && old || once && old && old.unit !== null && !old.bundle?.group) return;

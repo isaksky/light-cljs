@@ -2952,6 +2952,71 @@ mod top_level_definition_groups {
     }
 
     #[test]
+    fn exists_observes_unavailable_roots_values_and_conditional_products() {
+        let mut host = MacroHost::new();
+        for _ in 0..2 {
+            checked(r#"
+              (def trace (atom []))
+              (declare unavailable)
+              (def value (do (swap! trace conj :value) 42))
+              (def nil-value nil) (def false-value false) (def undefined-value js/undefined)
+              (def ^:dynamic bound js/undefined)
+              (if false (def omitted 1) nil)
+              (let [] (def installed 7) (def own-check (exists? installed)))
+              (def old 9) (if false (def old 10) nil)
+              (defn probe [demand]
+                (assert (= (if demand [] [:value]) @trace))
+                (assert (not (exists? unavailable)))
+                (assert (not (exists? unknown)))
+                (assert (not (exists? made.up/unknown)))
+                (assert (not (exists? omitted)))
+                (assert (exists? cljs.core/mapv))
+                (assert (exists? cljs.user/value))
+                (assert (exists? value))
+                (assert (= [:value] @trace))
+                (assert (exists? nil-value)) (assert (exists? false-value))
+                (assert (not (exists? undefined-value)))
+                (assert (exists? installed)) (assert own-check) (assert (exists? old))
+                (assert (not (exists? bound)))
+                (binding [bound false] (assert (exists? bound)))
+                (assert (not (exists? bound)))
+                (let [unavailable nil value js/undefined]
+                  (assert (exists? unavailable)) (assert (not (exists? value))))
+                (assert (not (exists? js/noSuchGlobal.child)))
+                (assert (exists? js/Math.imul))
+                (let [o #js {:nested #js {:x false}}]
+                  (assert (exists? (.-x (.-nested (do (swap! trace conj :nested) o)))))
+                  (assert (not (exists? (.-missing o)))))
+                (assert (exists? (do (swap! trace conj :expression) false)))
+                (assert (not (exists? (do (swap! trace conj :missing) js/undefined))))
+                (assert (= [:value :nested :expression :missing] @trace)) true)
+              (defmacro m [] (probe true))
+              (and (m) (= [:value] @trace) (probe false))
+            "#, &mut host);
+        }
+    }
+
+    #[test]
+    fn exists_preserves_initializer_errors_cycles_visibility_and_reuse() {
+        let mut host = MacroHost::new();
+        for (source, expected) in [
+            ("(declare absent) (defmacro m [] absent) (m)", "unavailable definition: cljs.user/absent"),
+            ("(def broken (throw (js/Error. \"exists-failure\"))) (defmacro m [] (exists? broken)) (m)", "exists-failure"),
+            ("(declare a b) (def a b) (def b a) (defmacro m [] (exists? a)) (m)", "root initialization cycle: cljs.user/a -> cljs.user/b -> cljs.user/a"),
+            ("(let [] (def x (exists? y)) (def y 1)) (defmacro m [] x) (m)", "bundle initialization cycle"),
+            ("(defmacro m [] (exists? future)) (assert (not (m))) (def future 1) (defmacro after [] (exists? future)) (assert (after)) true", ""),
+        ] {
+            if expected.is_empty() {
+                checked(source, &mut host);
+            } else {
+                let error = compile_with_macros(source, &mut host).unwrap_err().to_string();
+                assert!(error.contains(expected) && error.contains("1:"), "{error}");
+            }
+            checked("(defmacro clean [] (not (exists? absent))) (clean)", &mut host);
+        }
+    }
+
+    #[test]
     fn complete_owners_preserve_captures_order_once_and_phase_roots() {
         let mut host = MacroHost::new();
         for _ in 0..2 {

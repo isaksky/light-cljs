@@ -62,6 +62,13 @@ an ordinary helper initializer during macro compilation. Dereferencing or callin
 an ordinary Var demands its root. Source macro Vars expose `:macro` metadata;
 consuming their root reports the phase error.
 
+`exists?` observes unavailable, renamed or excluded ordinary bindings safely
+during macro execution. An existing root initializes lazily once to distinguish
+JavaScript `undefined` from existing `nil`/`false` values; initializer errors and
+real dependency cycles still propagate. Lexical bindings and dynamic overlays
+retain their current values. `resolve` separately observes Var identity without
+demanding its value. See [complete source and phase evidence](../tests/reference/compiler-exists.md).
+
 `Namespace`, `create-ns`, `find-ns`, `ns-name`, `the-ns` and `all-ns` use explicit
 session identities. Emitted units register their source namespaces, including
 namespaces without definitions. Creating an existing named namespace reuses its

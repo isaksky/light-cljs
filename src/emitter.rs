@@ -1559,8 +1559,12 @@ impl Emitter<'_> {
                 } else {
                     *value
                 };
-                if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) && self.compiler_binding(value) {
-                    self.output.push_str("globalThis.__lightHasCompilerRoot(");
+                if self.compiler_binding(value) {
+                    self.output.push_str(if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
+                        "globalThis.__lightHasCompilerRoot("
+                    } else {
+                        "globalThis.__lightCompilerRootExists("
+                    });
                     self.binding_name(value);
                     self.output.push(')');
                     return;
