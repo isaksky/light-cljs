@@ -146,9 +146,8 @@
         (list 'if (list 'cljs.core/< name limit)
           (cons 'do (concat body (list (list 'recur (list 'cljs.core/inc name))))) nil)))))
 (defmacro macro-vswap! [vol f & args]
-  (let [v (gensym "volatile")]
-    (list 'let* [v vol]
-      (list 'cljs.core/vreset! v (list* f (list 'cljs.core/deref v) args)))))
+  ;; The pinned CLJS macro evaluates vol again after f, for the old value.
+  (list 'cljs.core/-vreset! vol (list* f (list 'cljs.core/-deref vol) args)))
 
 (defmacro macro-doto [x & forms]
   (let [target (gensym "target")]

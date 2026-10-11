@@ -31,6 +31,36 @@ Runtime semantics were read from `src/main/cljs/cljs/core.cljs`: `IDeref`,
 The supporting `update` function executes the original custom state test's
 collection transformation, rather than replacing it with a different operation.
 
+### Compiled bootstrap target-order repair (2026-10-10)
+
+The first-party compiled `macro-vswap!` now emits the pinned protocol calls
+`(-vreset! vol (f (-deref vol) args...))`. Both checkout
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` and the Maven 1.12.134 macro source
+repeat `vol`: the reset target is evaluated first, then `f`, then the dereference
+target, then the arguments. Saving `vol` in a generated `let*` had changed this
+order and selected the wrong old value when the target expression changed.
+
+The native-disabled `compiler_bootstrap.rs` regression uses successive targets
+with initial values 1 and 10 and an effectful function expression. It asserts
+`[17 17 10 2 1 [:target :fn :target 3 4]]`: the first target receives the update,
+the second supplies the old value, the target runs twice and the function runs
+once. Before the repair it produced `[8 8 10 1 1 [:target :fn 3 4]]`.
+The retained `state-volatile-order` ledger remains unchanged.
+
+Focused verification with `LIGHT_CLJS_DISABLE_NATIVE_EVAL=1`:
+
+- `cargo test --locked --test compiler_bootstrap --quiet`: **12 passed**.
+- `cargo test --locked --lib compiler_bootstrap::tests --quiet`: **4 passed**.
+- `cargo test --locked --test execution tiny_programs_execute_with_expected_values_and_effects --quiet`:
+  **1 passed**, covering all **1,698** retained outcomes, traces and stdout.
+- With `LIGHT_CLJS_REFERENCE=both`, the explicit checkout path/revision and
+  `--ignored --exact --nocapture`,
+  `compiled_state_matches_pinned_values_effects_and_stdout`: **41 state cases
+  matched each pinned reference**, including target order and custom protocols.
+- `rustfmt --edition 2024 --check tests/compiler_bootstrap.rs` and
+  `git diff --check`: passed. The repository-wide `cargo fmt --all -- --check`
+  still reports pre-existing differences outside the changed files.
+
 The original task called compare-and-set identity-based. **Both pinned CLJS
 runtimes instead use structural `=`**, explicitly in `compare-and-set!`.
 `state-compare-structural` proves equal but distinct vectors compare-and-set

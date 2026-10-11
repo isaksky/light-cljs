@@ -120,7 +120,7 @@ fn case_and_condp_preserve_grouping_defaults_and_predicate_results() {
 }
 
 #[test]
-fn iteration_and_volatile_macros_evaluate_inputs_once() {
+fn iteration_and_volatile_macros_preserve_input_evaluation_counts() {
     assert_eq!(
         result(
             r#"
@@ -131,10 +131,30 @@ fn iteration_and_volatile_macros_evaluate_inputs_once() {
         (vswap! (do (swap! calls conj :volatile) value) + 4)
         [@calls @value])"#
         ),
-        "[[:limit 0 1 2 :volatile] 6]"
+        "[[:limit 0 1 2 :volatile :volatile] 6]"
     );
     invalid("(dotimes (i 2) i)", "vector");
     invalid("(dotimes [i 2 j 3] i)", "exactly two");
+}
+
+#[test]
+fn volatile_swap_rechecks_target_after_evaluating_the_function() {
+    assert_eq!(
+        result(
+            r#"
+      (let [calls (atom []) v (volatile! 1) w (volatile! 10)
+            targets (atom 0) functions (atom 0)
+            target (fn []
+                     (swap! calls conj :target)
+                     (if (= 1 (swap! targets inc)) v w))]
+        [(vswap! (target)
+           (do (swap! calls conj :fn) (swap! functions inc) +)
+           (do (swap! calls conj 3) 3)
+           (do (swap! calls conj 4) 4))
+         @v @w @targets @functions @calls])"#
+        ),
+        "[17 17 10 2 1 [:target :fn :target 3 4]]"
+    );
 }
 
 #[test]
