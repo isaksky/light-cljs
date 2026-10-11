@@ -106,6 +106,12 @@ a subset, even if every selected witness passes. Independently sourced API/arity
 syntax, local API/SCI and assertion-free module obligations still remain required.
 Historical focused gates retain their earlier explicitly named scope.
 
+The [sequence completion audit](../compiler-sequence-completion.md) adds 35 complete
+sequence/iterator/lazy workflows, 63 new source witnesses, and 32 hashed direct
+application/macro declaration mappings. All 16 public rows assigned to the sequence
+family execute through those mappings; mixed reader and assertion-free invocation
+module obligations retain their separate evidence boundaries.
+
 ## Ownership and boundaries
 
 | Family | Responsible Pellet |

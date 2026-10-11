@@ -35,7 +35,7 @@
   const builtinTypes = {};
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
-      const Type = name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
+      const Type = name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "ChunkBuffer" ? ChunkBuffer : name === "ArrayChunk" ? arrayChunk : name === "ChunkedCons" ? ChunkedCons : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
       Type.prototype = Object.create(base);
       Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
       builtinTypes[name] = Type;
@@ -45,6 +45,7 @@
   function builtinValue(name, base) { return Object.create(builtinType(name, base).prototype); }
   const reducedPrototype = Object.freeze({});
   const sequencePrototype = Object.freeze({
+    equiv(other) { return equalPair(this, other); },
     toString() { return print(this, true); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
@@ -216,14 +217,15 @@
     throw new Error(String(value) + " is not ISeqable");
   }
 
+  // CLJS reprobes a nil tail; only successful nonempty tails are memoized.
   function iteratorSeq(iterator) {
     const item = iterator.next();
     if (item.done) return null;
     return installMethods({}, [["ISeqable", 0, null], ["ISeq", 0, null],
       ["ISeqable/-seq", 1, function () { return this; }],
       ["ISeq/-first", 1, () => item.value],
-      ["ISeq/-rest", 1, (() => { let tail = missing; return () => {
-        if (tail === missing) tail = iteratorSeq(iterator);
+      ["ISeq/-rest", 1, (() => { let tail = null; return () => {
+        if (tail === null) tail = iteratorSeq(iterator);
         return tail;
       }; })()]]);
   }
@@ -653,7 +655,7 @@
       this.consumed = true;
       return first(this.value);
     }
-    remove() { throw new Error("Unsupported operation"); }
+    remove() { return new Error("Unsupported operation"); }
   }
   class RangedIterator extends SeqIter {}
   function iterator(value) {
@@ -728,6 +730,12 @@
   }
 
   const mapPrototype = Object.freeze({
+    has(key) { return contains(this, key); },
+    get(key, notFound = null) { return get(this, key, notFound); },
+    keys() { return es6Iterator(keys(this)); },
+    values() { return es6Iterator(vals(this)); },
+    entries() { return es6EntriesIterator(this); },
+    [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return print(this, true); },
     call(_self, key, notFound) {
@@ -803,6 +811,11 @@
   }
 
   const setPrototype = Object.freeze({
+    has(key) { return contains(this, key); },
+    keys() { return es6Iterator(this); },
+    values() { return es6Iterator(this); },
+    entries() { return es6EntriesIterator(this, true); },
+    [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return print(this, true); },
     call(_self, key, notFound) {
@@ -983,6 +996,7 @@
   function popBang(value) { return core.popBangProtocol(value); }
 
   const vectorPrototype = Object.freeze({
+    [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return print(this, true); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
@@ -1557,10 +1571,10 @@
       return mixCollectionHash(result, members.length);
     }
     if (sequential(value)) {
-      const lazy = lazyValues.get(value);
-      if (lazy?.hash != null) return lazy.hash;
+      const cached = lazyValues.get(value) ?? cells.get(value)?.chunkedState;
+      if (cached?.hash != null) return cached.hash;
       const result = hashOrderedColl(value);
-      if (lazy) lazy.hash = result;
+      if (cached) cached.hash = result;
       return result;
     }
     const nativeHash = builtin(value, "IHash/-hash", 1);
@@ -2136,6 +2150,7 @@
     return builtinCoreImplementation(protocol, value);
   }
   function builtinCoreImplementation(protocol, value) {
+    if (cells.get(value)?.kind === "chunked-cons" && [IReduce, IIterable, IStack].includes(protocol)) return false;
     if (protocol === INamed) return keywords.has(value) || symbols.has(value) || multiFns.has(value);
     if (protocol === IMultiFn) return multiFns.has(value);
     if (protocol === IFn && multiFns.has(value)) return true;
@@ -2152,7 +2167,7 @@
     if (protocol === IList) return ["list", "cons"].includes(cells.get(value)?.kind);
     if (protocol === IFn) return !!ifnMethods(value) || isIdent(value) || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
     if (protocol === IChunk) return chunks.has(value);
-    if (protocol === IChunkedNext) return ["range"].includes(cells.get(value)?.kind) || ["chunked", "chunked-cons"].includes(views.get(value)?.kind);
+    if (protocol === IChunkedNext) return ["range", "chunked-cons"].includes(cells.get(value)?.kind) || views.get(value)?.kind === "chunked";
     if (protocol === IDrop) return mapKinds.get(value) === "array-map" || cells.get(value)?.integer === true || cells.get(value)?.kind === "repeat" || vectors.has(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind);
     if (protocol === IReduce) return chunks.has(value) && !chunks.get(value).integer || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue");
     if (protocol === IKVReduce) return vectors.has(value) || maps.has(value);
@@ -2160,7 +2175,7 @@
     if (protocol === IMapEntry) return mapEntries.has(value);
     if (protocol === IFind) return vectors.has(value) || (maps.has(value) && !recordTypes.has(value));
     if (protocol === ISorted) return sortedComparators.has(value);
-    if (protocol === IChunkedSeq) return cells.get(value)?.kind === "range" || ["chunked", "chunked-cons"].includes(views.get(value)?.kind);
+    if (protocol === IChunkedSeq) return ["range", "chunked-cons"].includes(cells.get(value)?.kind) || views.get(value)?.kind === "chunked";
     if (protocol === ICloneable) return cloneablePayload(value);
     if (protocol === IVector) return vectors.has(value);
     if (protocol === IMap) return maps.has(value);
@@ -2506,6 +2521,10 @@
     else if (lazyValues.has(value)) {
       result = new LazySeq(metadata, () => seq(value), null, lazyValues.get(value).hash);
     }
+    else if (cells.get(value)?.kind === "chunked-cons") {
+      const c = cells.get(value);
+      result = new ChunkedCons(c.chunk, c.more, metadata, c.hash);
+    }
     else if (cells.get(value)?.kind === "iterate") {
       const c = cells.get(value), state = c.state;
       result = iterateNode(c.fn, c.previous, state.value, state.realized, state.following);
@@ -2659,10 +2678,38 @@
       return remaining == null ? null : concatMany(first(remaining), next(remaining));
     });
   }
+  function treeSeq(branch, children, root) {
+    const walk = node => lazySequence(() => cons(node,
+      truth(branch.call(null, node)) ? mapcat(walk, children.call(null, node)) : null));
+    return walk(root);
+  }
+  function flatten(value) { return filter(x => !predicates.isSequential(x), rest(treeSeq(predicates.isSequential, seq, value))); }
   const concat = callable(2, {0: () => lazySequence(() => null), 1: x => lazySequence(() => x), 2: concatTwo}, (x, y, more) => concatMany(concatTwo(x, y), more));
+  function es6Iterator(value) {
+    let current = seq(value);
+    return {next() {
+      if (current === null) return {value: null, done: true};
+      const value = first(current);
+      current = next(current);
+      return {value, done: false};
+    }};
+  }
+  function es6EntriesIterator(value, setEntries = false) {
+    const iterator = es6Iterator(value);
+    return {next() {
+      const item = iterator.next();
+      if (!item.done) item.value = setEntries ? [item.value, item.value] : [nth(item.value, 0), nth(item.value, 1)];
+      return item;
+    }};
+  }
   function sequenceIterator(value) {
     if (satisfies(IIterable, value)) return core.iteratorProtocol(value);
-    if (value == null || predicates.isSeqable(value)) return new SeqIter(value);
+    if (value == null) return {hasNext() { return false; }, next() { return new Error("No such element"); }, remove() { return new Error("Unsupported operation"); }};
+    if (typeof value === "string" || Array.isArray(value)) {
+      let index = 0;
+      return {hasNext() { return index < value.length; }, next() { return typeof value === "string" ? value.charAt(index++) : value[index++]; }, remove() { return new Error("Unsupported operation"); }};
+    }
+    if (predicates.isSeqable(value)) return new SeqIter(value);
     throw new Error("Cannot create iterator from " + str(value));
   }
   function transformedIterator(xform, sources) {
@@ -3118,7 +3165,12 @@
   function iterate(fn, seed) { return iterateNode(fn, null, seed, true); }
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
   const chunks = new WeakMap(), chunkBuffers = new WeakMap();
-  function chunkBuffer(capacity) { const value = builtinValue("ChunkBuffer", Object.prototype); chunkBuffers.set(value, {array: new Array(capacity), end: 0}); return value; }
+  function ChunkBuffer(array, end) {
+    const value = builtinValue("ChunkBuffer", Object.prototype);
+    chunkBuffers.set(value, {array, end});
+    return value;
+  }
+  function chunkBuffer(capacity) { return new ChunkBuffer(new Array(capacity), 0); }
   function chunkAppend(buffer, item) { const state = chunkBuffers.get(buffer); state.array[state.end] = item; return ++state.end; }
   function chunk(buffer) { const state = chunkBuffers.get(buffer), value = arrayChunk(state.array, 0, state.end); state.array = null; return value; }
   function arrayChunk(array, offset = 0, end = array.length) {
@@ -3141,6 +3193,7 @@
   }
   function ownedChunkFirst(value) {
     const cell = cells.get(value);
+    if (cell?.kind === "chunked-cons") return cell.chunk;
     if (cell?.kind === "range") {
       if (cell.integer) {
         const chunk = arrayChunk([], 0, Math.min(32, cell.count));
@@ -3150,7 +3203,7 @@
       return forceRangeChunk(cell).chunk;
     }
     const slice = views.get(value);
-    const end = slice.kind === "chunked-cons" ? slice.storage.length : Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
+    const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return arrayChunk(slice.storage, slice.offset, end);
   }
   const rangeChunks = new WeakMap();
@@ -3166,17 +3219,23 @@
   }
   function ownedChunkRest(value) {
     const cell = cells.get(value);
+    if (cell?.kind === "chunked-cons") return cell.more ?? emptyList;
     if (cell?.kind === "range") return cell.integer ? (cell.count <= 32 ? emptyList : rangeNode(cell.head + 32 * cell.step, cell.end, cell.step, true)) : forceRangeChunk(cell).tail;
     const slice = views.get(value);
-    const end = slice.kind === "chunked-cons" ? slice.storage.length : Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
+    const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return end < slice.storage.length ? view(slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
   }
-  function chunkCons(chunk, tail) {
-    const size = count(chunk);
-    if (!size) return tail;
-    const values = Array.from({length: size}, (_, i) => nth(chunk, i));
-    return view(Object.freeze(values), 0, false, "chunked-cons", tail);
+  function ChunkedCons(chunk, more, metadata, cachedHash) {
+    const value = builtinValue("ChunkedCons", sequencePrototype);
+    const chunkedState = {hash: cachedHash};
+    cells.set(value, Object.freeze({kind: "chunked-cons", chunk, more, chunkedState,
+      get hash() { return chunkedState.hash; },
+      get head() { return nth(chunk, 0); },
+      get tail() { return count(chunk) > 1 ? new ChunkedCons(core.dropFirstProtocol(chunk), more, null, null) : more ?? emptyList; }}));
+    metadataValues.set(value, metadata);
+    return value;
   }
+  function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : new ChunkedCons(chunk, tail, null, null); }
   function dropOwned(value, n) {
     if (value == null) return null;
     if (maps.has(value)) return dropOwned(seq(value), n);
@@ -3936,7 +3995,7 @@
   for (const [names, base] of [
     [["PersistentVector", "Subvec", "MapEntry"], vectorPrototype],
     [["PersistentArrayMap", "PersistentHashMap", "PersistentTreeMap"], mapPrototype],
-    [["PersistentHashSet", "PersistentTreeSet"], setPrototype], [["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "LazySeq", "PersistentQueue", "Repeat", "Cycle", "Iterate", "Range", "IntegerRange", "NodeSeq", "PersistentTreeMapSeq"], sequencePrototype],
+    [["PersistentHashSet", "PersistentTreeSet"], setPrototype], [["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "ChunkedCons", "LazySeq", "PersistentQueue", "Repeat", "Cycle", "Iterate", "Range", "IntegerRange", "NodeSeq", "PersistentTreeMapSeq"], sequencePrototype],
     [["Keyword"], keywordPrototype], [["Symbol"], symbolPrototype], [["Reduced"], reducedPrototype], [["UUID"], uuidPrototype]
   ]) for (const name of names) builtinType(name, base);
   Object.defineProperty(builtinTypes.PersistentTreeMap.prototype, "comp", {get() { return sortedComparators.get(this); }});
@@ -3980,10 +4039,7 @@
     set coll(value) { eductions.get(this).coll = value; },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
-    [Symbol.iterator]() {
-      const iter = core.iteratorProtocol(this);
-      return {next() { return iter.hasNext() ? {value: iter.next(), done: false} : {done: true}; }};
-    }
+    [Symbol.iterator]() { return es6Iterator(this); }
   }));
   for (const name of ["TransientVector", "TransientArrayMap", "TransientHashMap", "TransientHashSet"]) builtinType(name, transientPrototype);
   Object.defineProperty(builtinTypes.Subvec.prototype, "v", {get() { return subvecSources.get(this); }});
@@ -4009,13 +4065,7 @@
       for (let i = start < 0 ? length + start : Math.min(length - 1, start); i >= 0; i--) if (equalPair(nth(this, i), item)) return i;
       return -1;
     },
-    [Symbol.iterator]() {
-      let value = this, started = false;
-      return {next() {
-        value = started ? next(value) : seq(value); started = true;
-        return value == null ? {done: true} : {value: first(value), done: false};
-      }};
-    }
+    [Symbol.iterator]() { return es6Iterator(this); }
   }));
   for (const name of ["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "Repeat", "Range", "IntegerRange"]) {
     Object.defineProperties(builtinTypes[name].prototype, Object.getOwnPropertyDescriptors({
@@ -4023,9 +4073,26 @@
       lastIndexOf: builtinTypes.LazySeq.prototype.lastIndexOf
     }));
   }
-  for (const name of ["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "Range", "IntegerRange"]) {
+  for (const name of ["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "ChunkedCons", "NodeSeq", "PersistentTreeMapSeq", "PersistentQueue", "Range", "IntegerRange"]) {
     builtinTypes[name].prototype[Symbol.iterator] = builtinTypes.LazySeq.prototype[Symbol.iterator];
   }
+  builtinType("ChunkBuffer", Object.prototype);
+  builtinType("ArrayChunk", Object.prototype);
+  for (const [name, store, fields] of [
+    ["ChunkBuffer", chunkBuffers, {buf: "array", end: "end"}],
+    ["ArrayChunk", chunks, {arr: "array", off: "offset", end: "end"}]
+  ]) for (const [field, key] of Object.entries(fields)) Object.defineProperty(builtinTypes[name].prototype, field, {
+    configurable: true, get() { return store.get(this)[key]; }, set(value) { store.get(this)[key] = value; }
+  });
+  Object.defineProperties(builtinTypes.ChunkBuffer.prototype, Object.getOwnPropertyDescriptors({
+    add(value) { return chunkAppend(this, value); },
+    chunk() { return chunk(this); }
+  }));
+  for (const [field, key] of Object.entries({chunk: "chunk", more: "more", __hash: "hash"})) Object.defineProperty(builtinTypes.ChunkedCons.prototype, field, {
+    configurable: true, get() { return cells.get(this)[key]; },
+    set: field === "__hash" ? function (value) { cells.get(this).chunkedState.hash = value; } : undefined
+  });
+  Object.defineProperty(builtinTypes.ChunkedCons.prototype, "meta", {get() { return meta(this); }});
   const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk));
   builtinTypes.PersistentQueue.EMPTY = queueFromArray([]);
   builtinTypes.PersistentVector.EMPTY = vector();
@@ -4058,11 +4125,11 @@
     dissocBangProtocol: coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!")),
     disjoinBangProtocol: coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!")),
     popBangProtocol: coreMethod("ITransientVector/-pop!", [1], popTransient),
-    chunkedNextProtocol: coreMethod("IChunkedNext/-chunked-next", [1], value => seq(ownedChunkRest(value))),
+    chunkedNextProtocol: coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value))),
     dropProtocol: coreMethod("IDrop/-drop", [2], dropOwned),
     dropFirstProtocol: coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; }),
-    chunkFirst, chunkRest, chunkNext, chunkCons, arrayChunk,
-    chunkBuffer, chunkAppend, chunk,
+    chunkFirst, chunkRest, chunkNext, chunkCons, ChunkedCons, arrayChunk,
+    chunkBuffer, ChunkBuffer, chunkAppend, chunk,
     second: x => first(next(x)), ffirst: x => first(first(x)), nfirst: x => next(first(x)), fnext: x => first(next(x)), nnext: x => next(next(x)),
     reverse: x => reduce((s, value) => conj(s, value), emptyList, x),
     some: (pred, coll) => { for (let s = seq(coll); s !== null; s = next(s)) { const value = pred.call(null, first(s)); if (truth(value)) return value; } return null; },
@@ -4107,7 +4174,7 @@
     commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
     println, prn, pr, newline, prnStr, printStr, printlnStr, taggedLiteral, isTaggedLiteral: value => value instanceof TaggedLiteral,
     splitVAt, partitionV, partitionVAll, shuffle, jsIterable, iteration, cljToJs, jsToClj, keyToJs, IEncodeJS, IEncodeClojure,
-    munge, mungeStr, demunge, es6Iterator: value => value[Symbol.iterator](), es6IteratorSeq: iteratorSeq,
+    munge, mungeStr, demunge, treeSeq, flatten, iter: sequenceIterator, es6Iterator, es6IteratorSeq: iteratorSeq,
     encodeJsProtocol: coreMethod("IEncodeJS/-clj->js", [1], value => value),
     encodeKeyProtocol: coreMethod("IEncodeJS/-key->js", [1], value => value),
     encodeClojureProtocol: coreMethod("IEncodeClojure/-js->clj", [2], value => value),

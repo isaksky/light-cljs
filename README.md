@@ -265,7 +265,11 @@ and vector chunks preserve observable realization, while reduced results stop
 before requesting the next input. Saved helpers and namespace aliases use the
 same runtime. The [sequence audit](tests/reference/compiler-sequences.md) records
 314 imported assertions, 56 independent differential probes, and the complete
-arity inventory. Canonical eager transduction supports `completing`, `transduce`,
+arity inventory. `tree-seq`, `flatten`, public chunk constructors and seq/ES6
+iterator conversion also share canonical realization and callback contracts.
+The [sequence completion audit](tests/reference/compiler-sequence-completion.md)
+records 35 complete upstream workflows and both-phase execution evidence.
+Canonical eager transduction supports `completing`, `transduce`,
 `ensure-reduced`, transforming `into`, and the standard map/filter/keep, bounded,
 partition, cat/mapcat, interpose, replace, dedupe/distinct, random-sample and
 halt-when constructors. The [transducer audit](tests/reference/compiler-transducers.md)

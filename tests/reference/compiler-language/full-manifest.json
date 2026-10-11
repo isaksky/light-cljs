@@ -1399,7 +1399,7 @@
   ],
   "scope": "intended-language",
   "generator_sha256": "e891256495a4c155fab48c23a5b94012e753b6daeb46af08c0e0d73b840084d5",
-  "obligations_sha256": "c294ead45a57d74dadc30eadf0121c50b9596fc3d7a66a0eac279be8d7d7fb59",
+  "obligations_sha256": "1625d3e812398f79207a6f1862ba4cfb1953a3718868ab4549d2a6fc0783f987",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,7 +1440,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "f2c0805d6847cc11e9f8d7c404e0bf1c1500f336050923fcd4234f4ec07b9771"
+      "sha256": "ae4666a15b8a02148a7575a41b33b6fb535dafa0bc8c09e327f99e756607cfff"
     },
     {
       "path": "src/core_var_metadata.tsv",
