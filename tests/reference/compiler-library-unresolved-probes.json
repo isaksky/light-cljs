@@ -1313,10 +1313,64 @@
       }
     }
   },
-  "comparison_domains": "Raw passed local statuses compare to original SCI expectations. Canonical local outcomes mismatch both independently verified pin literals. This artifact grants no full-ledger passing credit.",
+  "comparison_domains": "The retained probe receipts below are historical. Current scoped resolutions record canonical repairs separately. Original SCI expectations stay verbatim and unresolved whenever they disagree with the adopted canonical profile; canonical agreement grants no original-SCI passing credit.",
   "owners": {
     "sci-string-join-values": "light-cljs-160",
     "sci-data-set-project-meta": "light-cljs-161",
     "sci-data-set-project-key-representative": "light-cljs-161"
+  },
+  "scoped_resolutions": {
+    "sci-string-join-values": {
+      "owner": "light-cljs-160",
+      "starting_head": "751182586f606248e8befd3463ba517e40d2388c",
+      "canonical_status": "passed",
+      "original_expectation_status": "unresolved",
+      "adopted_profile_conflict": "Original SCI expects 12 for nil separator; both required pins and local application/macro phases return 1null2. Canonical library/public-arity evidence does not grant original SCI agreement.",
+      "original_source_sha256": "64b01ee8f8afdf832c6752818d313704c1a3c43ba5b970636627b215a9e602d7",
+      "source": "[(clojure.string/join [nil false \"x\" \\a]) (clojure.string/join \",\" [nil 1 :x]) (clojure.string/join nil [1 2]) (clojure.string/join \\- [1 2]) (clojure.string/join :x [1 2])]",
+      "original_expectation": {
+        "id": "sci-execution-sci-string-join-values",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "falsexa",
+              ",1,:x",
+              "12",
+              "1-2",
+              "1:x2"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_observation": {
+        "id": "sci-execution-sci-string-join-values",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "falsexa",
+              ",1,:x",
+              "1null2",
+              "1-2",
+              "1:x2"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "local_library_source_sha256": {
+        "clojure.string": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+        "clojure.set": "d9f544eaa9095e7bf3257e78ce33f3095ada9b504ca480a5a92127323a8ad757",
+        "clojure.walk": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+        "clojure.edn": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9"
+      },
+      "evidence_path": "/tmp/light-cljs-160-evidence-final/evidence.json",
+      "evidence_sha256": "be8653c8728d9c6232b1e53623f6a45c26e9bfef5181ac8d869e197fc526117a",
+      "canonical_public_contract_evidence": "tests/reference/compiler-string-join-verification.json"
+    }
   }
 }

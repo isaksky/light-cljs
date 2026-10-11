@@ -113,6 +113,11 @@ fn adapted_source(id: &str, source: &str) -> String {
 // verified against both pinned CLJS references; native outcomes stay separate.
 const OVERRIDES: &[(&str, &str, &str)] = &[
     (
+        "sci-string-join-values",
+        r#"[:returned ["falsexa" ",1,:x" "1null2" "1-2" "1:x2"]]"#,
+        "Canonical StringBuffer separator conversion; original SCI nil-separator expectation remains historical",
+    ),
+    (
         "sci-string-str-scalars",
         r#"[:returned "truefalse12-30.5:xn/x ok"]"#,
         "JS ratio/character representation",
@@ -346,7 +351,7 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     );
     assert_eq!(ids.len(), 131);
     assert_eq!(printing_bodies, 58);
-    assert_eq!(OVERRIDES.len(), 21);
+    assert_eq!(OVERRIDES.len(), 22);
     for (id, _, reason) in OVERRIDES {
         assert!(
             ids.iter().any(|(native_id, _)| native_id == id),

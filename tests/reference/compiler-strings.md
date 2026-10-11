@@ -43,7 +43,27 @@ Positive split limits retain the untouched suffix; negative limits retain
 trailing empties. Unbounded regex split preserves JavaScript capture fields.
 
 Join prints elements with compiler core `str`, including nil as an empty string,
-false as `false`, and collections using their printed representation. Escape
+false as `false`, and collections using their printed representation. Separators
+follow the pinned `StringBuffer.append` conversion, `String(separator)`: nil
+becomes `"null"` between elements, false becomes `"false"`, and keywords keep
+their colon. Empty/single-element collections never convert the separator.
+Each element prints before `next` realizes the following sequence element, then
+the separator converts before that element prints.
+
+`tests/compiler_string_join.rs` executes a dedicated public one/two-arity
+contract, exact UTF-16 strings and conversion/effect/arity controls in Node and
+QuickJS applications and fresh/reused actual MacroHost expansions. Its complete
+five-call SCI source is byte-for-byte identical to `sci-string-join-values`.
+Both required reference pins independently execute the same original source
+and the full canonical contract via `tests/reference/compiler-string-join.py`.
+The original SCI expectation `"12"` for `(join nil [1 2])` remains historical and
+explicitly unresolved against the adopted canonical result `"1null2"`;
+`compiler_string_fixtures.rs` records that conversion as a named override.
+Public source/arity/phase bindings use the dedicated contract, while the complete
+upstream string API body still executes unchanged. This canonical agreement
+does not grant passing credit to the conflicting original SCI obligation.
+
+Escape
 replaces every non-nil result, including false and zero, as specified by the
 upstream docstring. The native interpreter currently treats false like nil in
 escape; compiler behavior deliberately follows the documented ClojureScript

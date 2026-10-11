@@ -59,10 +59,14 @@
   "Joins the str of each element of coll, with an optional separator."
   ([coll] (join "" coll))
   ([separator coll]
-   (loop [remaining (seq coll) result "" first? true]
+   (loop [remaining (seq coll) result ""]
      (if remaining
-       (recur (next remaining)
-         (str result (if first? "" separator) (first remaining)) false)
+       (let [result (str result (first remaining))
+             remaining (next remaining)]
+         ;; StringBuffer appends separators directly, after realizing next.
+         ;; In particular, nil separates elements with "null", not "".
+         (recur remaining
+           (if remaining (js* "~{} + String(~{})" result separator) result)))
        result))))
 
 (defn upper-case "Converts string to all upper-case." [s] (.toUpperCase s))
