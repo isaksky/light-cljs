@@ -66,7 +66,6 @@ macro-fn	expr	(	fn	 [] 1)	accepted	now supported native macro expansion	accepted
 macro-cljs-core-let	expr	(	cljs.core/let	 [x 1] x)	accepted	now supported native macro expansion	accepted	accepted
 macro-when	expr	(	when	 true 1)	accepted	now supported native macro expansion	accepted	accepted
 macro-defn	expr	(	defn	 f [] 1)	accepted	now supported native macro expansion	accepted	accepted
-macro-defmacro	expr	(	defmacro	 m [] 1)	accepted	public source supported	accepted	accepted
 special-loopstar	expr	(	loop*	 [x 1] x)	accepted	-	accepted	accepted
 special-letfnstar	expr	(	letfn*	 [f (fn* [] 1)] (f))	accepted	-	accepted	accepted
 special-recur	expr	(fn* [] (	recur	))	accepted	-	accepted	accepted
@@ -168,8 +167,8 @@ exception-double-finally	expr	(try (finally) 	(finally 1)	)	invalid-form	duplica
 exception-catch-after-finally	expr	(try (finally) 	(catch :default e)	)	invalid-form	invalid catch clause	analysis-error	analysis-error
 exception-recur-throw	expr	(loop* [] (throw 	(recur)	))	invalid-form	Can't recur here	analysis-error	analysis-error
 exception-recur-class	expr	(loop* [] (try (catch 	(recur)	 e)))	invalid-form	Can't recur here	analysis-error	analysis-error
-control-case-duplicate	expr		(case 1 1 :a 1 :b)		macro-expansion	duplicate case	analysis-error	analysis-error
-control-case-group-duplicate	expr		(case 1 (1 2) :a 2 :b)		macro-expansion	duplicate case	analysis-error	analysis-error
+control-case-duplicate	expr	(case 1 1 :a 	1	 :b)	macro-expansion	duplicate case	analysis-error	analysis-error
+control-case-group-duplicate	expr	(case 1 (1 2) :a 	2	 :b)	macro-expansion	duplicate case	analysis-error	analysis-error
 control-case-vector-duplicate	expr	(case [1] [1] :a 	[1]	 :b)	macro-expansion	duplicate case	analysis-error	analysis-error
 control-case-selector	expr	(case* 	1	 [[1]] [2] 3)	invalid-form	switch on a symbol	analysis-error	analysis-error
 control-case-group	expr	(let* [x 1] (case* x [	1	] [2] 3))	invalid-form	constant groups	analysis-error	analysis-error
@@ -195,3 +194,6 @@ extension-expression-target	statement	(extend-type 	(type 1)	 ICounted (-count [
 extension-ifn-ungrouped	statement	(do (deftype T []) (extend-type T IFn 	(-invoke [_] 1)	))	invalid-form	IFn extension signatures must be grouped	analysis-error	analysis-error
 extension-invalid-params	statement	(do (defprotocol P (f [x])) (extend-type number P 	(f 1 2)	))	macro-expansion	function requires method lists	analysis-error	analysis-error
 reader-set-duplicate-form	expr	#{(identity 1) 	(identity 1)	}	invalid-form	duplicate set member	reader-error	reader-error
+# Compiled-JS macro transition: canonical Number values merge 1 and 1.0;
+# native JVM-backed reference macro readers retain their distinct reader types.
+control-case-numeric-reader	expr	(case 1 1 1 	1.0	 2)	macro-expansion	duplicate case	accepted	accepted

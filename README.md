@@ -20,8 +20,8 @@ Macros will live in `.cljs`/`.cljc` and use ordinary `:require`.
 
 The [synchronous evaluator](docs/evaluator.md) now executes compiler units with
 one canonical runtime per session, bounded host controls and owned value IDs.
-**Consumer migration is still in progress.** Compiler macros currently run
-in the native Rust interpreter through `.clj`/`.cljc` macro imports, and scripts,
+**Consumer migration is still in progress.** Core compiler macros run as
+compiler-emitted JavaScript in QuickJS. Legacy `.clj`/`.cljc` macro imports, scripts,
 the REPL and embedding APIs still use native evaluation. The existing commands
 and API examples below describe that current checkout. See the
 [evaluator migration design](docs/evaluator-migration.md) for the accepted phase
@@ -149,10 +149,13 @@ calls and exceptions. Their scope is synchronous; later Promise callbacks see
 restored globals. Explicit boolean hints retain CLJS's JavaScript truth behavior.
 Vars preserve live dereference/invocation, symbol equality/hash, metadata and
 function test callbacks. See the [definitions audit](tests/reference/compiler-definitions.md).
-In the current implementation, runtime `.cljs` `defmacro` creates the upstream runtime function with hidden
-`&form`/`&env` parameters and macro metadata. Native compile-time macro execution
-uses an explicit `.clj`/`.cljc` macro namespace. The adopted migration replaces
-this with compile-time-only bindings and diagnostics for runtime macro use.
+Core macros bootstrap from first-party `.cljs` sources through this compiler and
+execute in a fresh QuickJS heap. `defmacro` is a compiler declaration with hidden
+`&form`/`&env` arguments; it produces nil and no application function. Standalone
+macro bodies can use canonical core functions and ECMAScript intrinsics. Ordinary
+helper demand and shared namespace loading are subsequent migration stages;
+legacy explicit `.clj`/`.cljc` macro imports remain an isolated adapter until then.
+Runtime use of a declared macro is a phase error.
 
 ```rust
 use light_cljs::{analyze, emit_js, parse};

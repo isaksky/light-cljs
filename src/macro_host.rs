@@ -35,9 +35,9 @@ impl Default for MacroLimits {
     }
 }
 
-/// A reusable native interpreter for compiler macros. Default compilation owns a
-/// fresh host; explicitly reusing one retains macro Vars and namespace load state.
-/// No runtime compiler globals or JavaScript capabilities enter this context.
+/// Macro configuration and compiler metadata. Each clean compilation owns a fresh
+/// QuickJS bootstrap session. Explicit legacy native imports remain isolated until
+/// light-cljs-115; reusing this host never reuses JavaScript macro roots.
 #[derive(Default)]
 pub struct MacroHost {
     context: Option<Context>,
@@ -52,9 +52,10 @@ pub struct MacroHost {
     /// Configuration only: JS roots belong to each fresh compilation session.
     pub evaluator_options: crate::evaluator::EvaluatorOptions,
     assertions_disabled: bool,
-    interop_macros_loaded: bool,
-    sequence_macros_loaded: bool,
-    runtime_defmacro_loaded: bool,
+    pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
+    pub(crate) bootstrap_seed: bool,
+    pub(crate) javascript_macros: HashMap<String, crate::compiler_bootstrap::CompiledMacro>,
+    native_disabled: bool,
     expansions: usize,
     generated_nodes: usize,
 }
@@ -152,7 +153,12 @@ impl MacroHost {
         !self.assertions_disabled
     }
     /// Interpreter effects, limits and source providers are explicit embedding APIs.
+    /// Explicit migration seam: reject every attempt to initialize native evaluation.
+    pub fn disable_native_evaluation(&mut self) {
+        self.native_disabled = true;
+    }
     pub fn context_mut(&mut self) -> &mut Context {
+        assert!(!self.native_disabled, "native evaluation is disabled");
         let assertions = self.assertions_enabled();
         self.context.get_or_insert_with(|| {
             let mut context = Context::new();
@@ -330,6 +336,10 @@ impl MacroHost {
         self.renames.insert(caller.to_owned(), renames);
     }
     pub(crate) fn begin_compilation(&mut self) {
+        if !self.bootstrap_seed {
+            self.bootstrap = None;
+            self.javascript_macros.clear();
+        }
         self.expansions = 0;
         self.generated_nodes = 0;
         self.runtime_vars.clear();
@@ -374,6 +384,24 @@ impl MacroHost {
             .map(|(_, name)| name.into())
     }
 
+    pub(crate) fn has_macro(&mut self, namespace: &str, name: &str) -> Result<bool, String> {
+        if matches!(namespace, "cljs.core" | "clojure.core") {
+            return Ok(core_macro(name));
+        }
+        Ok(self.find_macro(namespace, name)?.is_some())
+    }
+    pub(crate) fn resolves_macro(
+        &mut self,
+        caller: &str,
+        operator: &str,
+        shadow_core: bool,
+    ) -> Result<bool, String> {
+        match self.macro_name(caller, operator, shadow_core) {
+            Some((namespace, name)) => self.has_macro(&namespace, &name),
+            None => Ok(false),
+        }
+    }
+
     pub(crate) fn find_macro(
         &mut self,
         namespace: &str,
@@ -387,160 +415,14 @@ impl MacroHost {
         } else {
             namespace
         };
-        if namespace == "clojure.core" && name == "defmacro" && !self.runtime_defmacro_loaded {
-            let c = self.context_mut();
-            let ns_var = c
-                .find_interned_var(&Name::new(None, "clojure.core"), &Name::new(None, "*ns*"))
-                .map_err(|e| e.to_string())?
-                .unwrap();
-            let ns = c.find_namespace(&Name::new(None, "clojure.core")).unwrap();
-            let _guard = c
-                .bind_vars(&[(ns_var.var_id().unwrap(), ns)])
-                .map_err(|e| e.to_string())?;
-            // Runtime CLJS defmacro adds the compiler arguments to every method;
-            // it does not register this runtime function in the native macro host.
-            c.eval_string(r#"
-              (defmacro compiler-runtime-defmacro [name & args]
-                (let [doc (when (string? (first args)) (first args))
-                      args (if doc (next args) args)
-                      attributes (if (map? (first args)) (first args) {})
-                      fdecl (if (map? (first args)) (next args) args)
-                      fdecl (if (vector? (first fdecl)) (list fdecl) fdecl)
-                      arglists (list 'quote (apply list (map first (filter seq? fdecl))))
-                      attributes (if (contains? attributes :arglists) attributes
-                                   (assoc attributes :arglists arglists))
-                      macro-name (with-meta name (assoc (meta name) :macro true))
-                      methods (map (fn [method]
-                                     (if (map? method) method
-                                       (cons (vec (cons '&form (cons '&env (first method)))) (next method)))) fdecl)
-                      declaration (concat (list macro-name) (when doc (list doc)) (list attributes) methods)
-                      result (gensym "macro-result")]
-                  (list 'cljs.core/let [result (cons 'cljs.core/defn declaration)]
-                    (list 'set! (list '. name '-cljs$lang$macro) true) result)))
-            "#).map_err(|e| e.to_string())?;
-            self.runtime_defmacro_loaded = true;
+        // Core macros execute compiler-emitted JavaScript. This resolver is
+        // exclusively the legacy source/native embedding adapter (light-cljs-115).
+        if namespace == "clojure.core" {
+            return Ok(None);
         }
-        if namespace == "clojure.core"
-            && matches!(
-                name,
-                "memfn" | "amap" | "areduce" | ".." | "js-obj" | "doto"
-            )
-            && !self.interop_macros_loaded
-        {
-            let c = self.context_mut();
-            let ns = c
-                .find_namespace(&Name::new(None, "clojure.core"))
-                .expect("core namespace");
-            let ns_var = c
-                .find_interned_var(&Name::new(None, "clojure.core"), &Name::new(None, "*ns*"))
-                .map_err(|e| e.to_string())?
-                .expect("core ns Var");
-            let _guard = c
-                .bind_vars(&[(ns_var.var_id().unwrap(), ns)])
-                .map_err(|e| e.to_string())?;
-            c.eval_string(r#"
-              (defmacro doto [x & forms]
-                (let [target (gensym "target")]
-                  (list* 'let [target x]
-                    (concat
-                      (map (fn [form]
-                             (if (seq? form)
-                               (list* (first form) target (next form))
-                               (list form target))) forms)
-                      [target]))))
-              (defmacro js-obj [& entries]
-                (let [raw-pairs (map vec (partition 2 entries))
-                      ;; JVM small maps retain insertion order; the native
-                      ;; interpreter's hash-map iteration must not reorder js-keys.
-                      pairs (if (<= (count raw-pairs) 8)
-                              (reduce (fn [pairs pair]
-                                (if (some #(= (first %) (first pair)) pairs)
-                                  (mapv #(if (= (first %) (first pair)) pair %) pairs)
-                                  (conj pairs pair))) [] raw-pairs)
-                              (into {} raw-pairs))
-                      strings (filter (fn [p] (string? (first p))) pairs)
-                      symbols (filter (fn [p] (symbol? (first p))) pairs)
-                      expressions (filter (fn [p] (not (or (string? (first p)) (symbol? (first p))))) pairs)
-                      bound (mapv (fn [p] [(gensym "key") (first p) (second p)]) expressions)
-                      obj (gensym "object")]
-                  (list* 'let
-                    (vec (concat (mapcat (fn [p] [(first p) (second p)]) bound)
-                           [obj (cons 'js* (cons
-                             (str "({" (apply str (interpose "," (repeat (count strings) "~{}:~{}"))) "})")
-                             (mapcat identity strings)))]))
-                    (concat
-                      (map (fn [p] (list 'cljs.core/unchecked-set obj (first p) (second p))) symbols)
-                      (map (fn [p] (list 'cljs.core/unchecked-set obj (first p) (nth p 2))) bound)
-                      [obj]))))
-              (defmacro memfn [name & args]
-                (let [target (gensym "target")]
-                  (list 'fn (vec (cons target args)) (list '. target (cons name args)))))
-              (defmacro amap [a idx ret expr]
-                (let [arr (gensym "array") len (gensym "length")]
-                  (list 'let [arr a len (list 'cljs.core/alength arr) ret (list 'cljs.core/aclone arr)]
-                    (list 'loop [idx 0]
-                      (list 'if (list 'cljs.core/< idx len)
-                        (list 'do (list 'cljs.core/aset ret idx expr) (list 'recur (list 'cljs.core/inc idx))) ret)))))
-              (defmacro areduce [a idx ret init expr]
-                (let [arr (gensym "array") len (gensym "length")]
-                  (list 'let [arr a len (list 'cljs.core/alength arr)]
-                    (list 'loop [idx 0 ret init]
-                      (list 'if (list 'cljs.core/< idx len)
-                        (list 'recur (list 'cljs.core/inc idx) expr) ret)))))
-              (defmacro .. [x form & more]
-                (let [next (list '. x form)]
-                  (if (seq more) (cons 'clojure.core/.. (cons next more)) next)))
-            "#).map_err(|e| e.to_string())?;
-            self.interop_macros_loaded = true;
+        if self.native_disabled {
+            return Err("native macro evaluation is disabled".into());
         }
-        if namespace == "clojure.core"
-            && matches!(name, "for" | "doseq" | "lazy-cat" | "selector")
-            && !self.sequence_macros_loaded
-        {
-            let c = self.context_mut();
-            let ns_var = c
-                .find_interned_var(&Name::new(None, "clojure.core"), &Name::new(None, "*ns*"))
-                .map_err(|e| e.to_string())?
-                .unwrap();
-            let ns = c.find_namespace(&Name::new(None, "clojure.core")).unwrap();
-            let _guard = c
-                .bind_vars(&[(ns_var.var_id().unwrap(), ns)])
-                .map_err(|e| e.to_string())?;
-            c.eval_string(include_str!("compiler_sequence_macros.clj"))
-                .map_err(|e| e.to_string())?;
-            c.eval_string(
-                "(defmacro lazy-cat [& colls] (cons 'cljs.core/concat (map (fn [coll] (list 'cljs.core/lazy-seq coll)) colls)))",
-            ).map_err(|e| e.to_string())?;
-            // Same directive selection and result contract as checkout
-            // cljs.core/selector-impl, using the compiler destructuring path.
-            c.eval_string(r#"
-              (defmacro selector [m]
-                (when-not (map? m)
-                  (throw (ex-info "expected a map" {})))
-                (let [dirs [:select :excess :missing :all]
-                      names (into {} (map (fn [dir] [dir (gensym)]) (filter m dirs)))]
-                  (when (empty? names)
-                    (throw (ex-info "form must contain at least one of :select :excess :missing :all" {})))
-                  (let [argument (gensym "map")]
-                    (list 'cljs.core/fn (gensym "selector") [argument]
-                      (list 'cljs.core/let [(merge m names) argument]
-                        (if (= 1 (count names))
-                          (second (first names))
-                          (list 'cljs.core/some-vals names)))))))
-            "#).map_err(|e| e.to_string())?;
-            self.sequence_macros_loaded = true;
-        }
-        let name = if namespace == "clojure.core" && name == "defmacro" {
-            "compiler-runtime-defmacro"
-        } else if namespace == "clojure.core" && matches!(name, "for" | "doseq") {
-            if name == "for" {
-                "sequence-for"
-            } else {
-                "sequence-doseq"
-            }
-        } else {
-            name
-        };
         let c = self.context_mut();
         let var = c
             .find_interned_var(&Name::new(None, namespace), &Name::new(None, name))

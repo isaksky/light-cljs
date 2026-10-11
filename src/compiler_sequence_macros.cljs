@@ -7,8 +7,8 @@
 ;   You must not remove this notice, or any other, from this software.
 
 ; Adapted from ClojureScript a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e.
-; Native macro host only; emits compiled JavaScript sequence operations.
-(clojure.core/defmacro sequence-for [seq-exprs body-expr]
+; First-party compiler bootstrap; compiled by light-cljs and executed in QuickJS.
+(defmacro sequence-for [seq-exprs body-expr]
   (assert (and (vector? seq-exprs) (even? (count seq-exprs))) "for requires an even binding vector")
   (let [groups (reduce (fn [groups [k v]]
                         (if (keyword? k)
@@ -37,7 +37,7 @@
                                    :else (throw (ex-info (str "Invalid 'for' keyword " k) {}))))
                 chunk-body (reduce wrap-chunk chunk-base (reduce conj () mods))]
             ;; Build child expansions before quoting the containing loop. This
-            ;; keeps native macro evaluation depth independent of emitted depth.
+            ;; keeps bootstrap macro evaluation depth independent of emitted depth.
             (if more
               `(fn ~iter [~s]
                  (lazy-seq (loop [~s ~s] (when-first [~bind ~s] ~normal))))
@@ -51,7 +51,7 @@
                            (if (boolean
                                  (loop [~i 0]
                                    (if (< ~i size#)
-                                     (let [~bind (-nth c# ~i)] ~chunk-body)
+                                     (let [~bind (cljs.core/-nth c# ~i)] ~chunk-body)
                                      true)))
                              (clojure.core/chunk-cons (clojure.core/chunk ~b)
                                (~iter (clojure.core/chunk-rest ~s)))
@@ -60,7 +60,7 @@
         expansion (emit-bind groups)]
     `(let [iter# ~expansion] (iter# ~(second seq-exprs)))))
 
-(clojure.core/defmacro sequence-doseq
+(defmacro sequence-doseq
   "Repeatedly executes body (presumably for side-effects) with
   bindings and filtering as provided by \"for\".  Does not retain
   the head of the sequence. Returns nil."
@@ -101,7 +101,7 @@
                                                 ~countsym 0
                                                 ~isym     0]
                                            (if (boolean (< ~isym ~countsym))
-                                             (let [~k (-nth ~chunksym ~isym)]
+                                             (let [~k (cljs.core/-nth ~chunksym ~isym)]
                                                ~subform-chunk
                                                ~@(clojure.core/when needrec [recform-chunk]))
                                              (when-let [~seqsym (seq ~seqsym)]

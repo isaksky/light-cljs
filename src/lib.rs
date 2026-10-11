@@ -351,3 +351,5 @@ impl Iterator for Tokenizer<'_> {
 }
 
 impl FusedIterator for Tokenizer<'_> {}
+
+mod compiler_bootstrap;

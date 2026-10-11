@@ -686,7 +686,6 @@ control-case-no-match	(try (case :x :y 1) (catch js/Error e (= "No matching clau
 control-case-collision	(= [1 2 3] [(case "Aa" "Aa" 1 "BB" 2 3) (case "BB" "Aa" 1 "BB" 2 3) (case "C#" "Aa" 1 "BB" 2 3)])	{"status":"returned","value":true}	[]	""
 control-case-equality	(= [1 2 3 4 5] [(case (list :a :b) [:a :b] 1 0) (case {:a 1 :b 2} {:b 2 :a 1} 2 0) (case #{1 2} #{2 1} 3 0) (case false false 4 0) (case nil nil 5 0)])	{"status":"returned","value":true}	[]	""
 control-case-symbols	(= [1 2 3] [(case (quote foo) foo 1 0) (case (quote bar) (foo bar) 2 0) (case :foo foo 0 :foo 3)])	{"status":"returned","value":true}	[]	""
-control-case-numeric-reader	(= [1 1] [(case 1 1 1 1.0 2) (case 1.0 1 1 1.0 2)])	{"status":"returned","value":true}	[]	""
 control-case-constant-composite	(let [x 1] (= 2 (case [1] [x] 2 0)))	{"status":"returned","value":true}	[]	""
 control-casestar	(let [x 2] (= [3 nil] [(case* x [[1 2] [3]] [3 4] 5) (case* x [[3]] [4])]))	{"status":"returned","value":true}	[]	""
 control-case-recur	(= 0 (loop [n 1000] (case n 0 0 (recur (dec n)))))	{"status":"returned","value":true}	[]	""

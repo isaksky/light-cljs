@@ -1294,7 +1294,26 @@
       if (category.includes("limit")) terminal ??= message;
       throw new Error(message);
     };
-    function decode(d) {
+    function decode(root) {
+      // Bootstrap syntax quotations can be deep. Traverse descriptors explicitly
+      // so the documented form depth budget does not consume the engine stack.
+      const values = new Map(), pending = [[root, false]];
+      while (pending.length) {
+        const [d, ready] = pending.pop();
+        if (ready) { values.set(d, decodeNode(d, values)); continue; }
+        pending.push([d, true]);
+        const [kind, , metadata, a] = d;
+        if (metadata != null) pending.push([metadata, false]);
+        if (["list", "vector", "map", "set"].includes(kind)) {
+          for (let i = a.length - 1; i >= 0; --i) pending.push([a[i], false]);
+        } else if (["regex", "instant", "uuid", "queue", "js-array", "js-object"].includes(kind)) {
+          pending.push([a, false]);
+        }
+      }
+      return values.get(root);
+    }
+    function decodeNode(d, values) {
+      const decode = child => values.get(child);
       const [kind, id, metadata, a, b] = d;
       let value;
       switch (kind) {
@@ -2850,12 +2869,15 @@
   }
   // Match the CLJS constructor: preserve the supplied message/data/cause values
   // and Error identity, including when callers construct ExceptionInfo directly.
+  const exceptionMessages = new WeakMap();
+  const compilerExceptionMessage = value => exceptionMessages.get(value);
   function ExceptionInfo(message, data, cause) {
     const error = new Error(message);
     const target = this == null ? globalThis : Object(this);
     target.message = message;
     target.data = data;
     target.cause = cause;
+    if (typeof message === "string") exceptionMessages.set(target, message);
     for (const key of ["name", "description", "number", "fileName", "lineNumber", "columnNumber", "stack"])
       target[key] = error[key];
     return target;
@@ -3287,5 +3309,5 @@
     checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,
     constantly, complement, comp, partial, juxt, fnil});
   const compilerForms = compilerFormBridge();
-  return Object.freeze({compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

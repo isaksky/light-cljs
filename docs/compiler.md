@@ -926,7 +926,20 @@ bundles, bootstrap, structured forms, reentrancy and cleanup. These are required
 future behaviors, not features of the current API below. Legacy macro import
 clauses and `.clj` macro loading will receive migration diagnostics or be removed.
 
-### Current native macro API
+### Compiled core bootstrap
+
+Core macro algorithms are first-party `.cljs` declarations compiled by the Rust
+analyzer/emitter and executed in QuickJS. A fresh heap is created for each clean
+compilation; only immutable emitted unit strings are reused in memory. Pure
+binding/destructuring, syntax quote, declarations and namespace reflection remain
+compiler services. `MacroHost::disable_native_evaluation()` checks this boundary.
+
+Standalone source `defmacro` bodies execute in that session, can call canonical
+core operations and ECMAScript intrinsics, and produce no application binding.
+Ordinary helper demand and shared-source namespace imports remain subsequent
+migration work. The legacy import adapter below is retained until those changes.
+
+### Legacy native macro import API
 
 ```clojure
 ;; demo/macros.clj (or .cljc, using the native :clj reader feature)
@@ -969,13 +982,12 @@ independently configured `FileSourceProvider` keeps its existing ambiguity polic
 Macro dependencies use the native interpreter's `ns`/`require` behavior. Each runtime namespace loads its macro imports immediately before its body is
 analyzed, after its runtime dependencies have been analyzed. Compile-time loading
 and macro effects therefore follow that dependency/source order. Macro
-files execute entirely in Rust using the native interpreter's documented subset;
-no Java classes, JS execution, or implicit filesystem/network/process functions
-are available. Native host callbacks are opt-in. `defmacro` in runtime `.cljs` emits a runtime
-function with leading `&form`/`&env` parameters, macro Var metadata, and the
-`cljs$lang$macro` property. Its public `:arglists` metadata omits those hidden
-parameters. It remains a runtime function; native compilation-time
-macro execution uses an explicit `.clj`/`.cljc` macro namespace.
+files loaded by this legacy adapter execute in the native interpreter's subset.
+Native host callbacks are opt-in. This restriction applies only to that adapter;
+first-party core bootstrap and standalone source `defmacro` use JavaScript.
+A source macro declaration returns nil, and consuming it as an application
+function, Var or value is a phase error. The former runtime `cljs$lang$macro`
+shim and its callable runtime ABI are removed.
 
 Core expansion supports `let`, `fn`, `defn`, `defn-`, `defmacro`, `if-not`, `when`, `when-not`, `when-first`, `cond`, `condp`,
 `and`, `or`, `->`, `->>`, `as->`, `cond->`, `cond->>`, `some->`, `some->>`,
@@ -1006,9 +1018,9 @@ also honor that dynamic Var. It is a compilation setting, not an emitted
 runtime toggle. The default CLI and convenience compilation functions enable it.
 `cljs.core` aliases and referred/renamed macros retain their resolved core identity.
 
-`case` checks duplicate reader constants before JavaScript numeric lowering;
-integer and floating reader constants can remain distinct while matching the
-same emitted number. Keyword-only no-match errors use the keyword's full name
+`case` checks duplicate constants after compiled macro conversion. JavaScript
+Number treats integer and floating spellings such as `1` and `1.0` as the same
+constant; that pair is rejected. Keyword-only no-match errors use the keyword's full name
 without its colon (or the empty string for a non-keyword selector), matching the
 upstream optimization. Grouped branches expand once. Public `case*` requires a
 symbol selector, vectors of test groups and branches, and number/string or
@@ -1087,7 +1099,10 @@ anchors and observed distinctions from SCI's environment.
 
 Default `MacroLimits` allow 1,024 expansions and 100,000 generated form nodes per
 compilation, with 64 nested macro expansions (also the hard cap). Generated
-runtime analysis has a 128-frame nesting bound. Native macro calls/load operations
+runtime analysis has a 128-frame nesting bound. `evaluator_options` configures
+QuickJS memory, stack, timeout and shared polling bounds. Failures discard the
+JavaScript bootstrap session; the next clean compilation creates a new one.
+Native macro calls/load operations
 also obey interpreter limits; the default host uses 1,000,000 fuel units and
 2,000,000 allocation units per interpreter operation. Embedders may lower these
 limits or supply cancellation/poll callbacks through the context. Failures are

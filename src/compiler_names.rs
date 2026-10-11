@@ -16,6 +16,7 @@ pub fn core_macro(name: &str) -> bool {
             | "if-not"
             | "when"
             | "when-not"
+            | "comment"
             | "cond"
             | "assert"
             | "condp"

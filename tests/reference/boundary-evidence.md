@@ -286,3 +286,25 @@ boundary checks the second form byte span and validates before macro projection.
 `ns-import` is now accepted by namespace header loading; its reference warning
 classification is unchanged because the synthetic boundary has no loaded Closure
 constructor declaration. These are separate source diagnostics, not runtime passes.
+
+## Compiled-JavaScript macro numeric transition (2026-10-10)
+
+`control-case-numeric-reader` moved from the execution-outcome table to the
+analysis-boundary table when core macros began executing as compiled JavaScript.
+The macro argument contract now uses canonical JavaScript `Number` values:
+`1` and `1.0` are the same value and are rejected as duplicate `case` constants.
+The previously recorded JVM-backed release and checkout behavior accepted these
+reader-distinct constants and lowered both selectors to the first JavaScript
+branch. Those reference classifications remain `accepted`; the local rejection
+is an intentional compiled-macro boundary difference, not a claim of upstream
+parity or a new reference run. Native-interpreter SCI numeric fixtures retain
+their separate native reader contract.
+
+The former `macro-defmacro` row assumed acceptance even under an unselected
+runtime `if`. Source macro declarations are now restricted to top level and
+return nil without an application Var or function. The context-dependent contract
+is tested directly in `compiler_bootstrap.rs` and
+`compiler_boundary_completion.rs`; the historical upstream runtime-ABI
+observations remain in `compiler-language/boundary-support.jsonl` for the later
+consumer conformance reconciliation. Duplicate scalar `case` diagnostics now
+retain the offending input literal's span through the structured bridge.

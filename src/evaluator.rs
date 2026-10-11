@@ -163,7 +163,14 @@ impl Evaluator {
                 bridgeVersion: bridge.version,
                 checkBridge: bridge.check,
                 evaluate: source => save((0, eval)(source)(rt)),
-                call: (id, ids) => save(Reflect.apply(get(id), null, ids.map(get))),
+                call: (id, ids) => {{
+                  try {{ return save(Reflect.apply(get(id), null, ids.map(get))); }}
+                  catch (error) {{
+                    const message = rt.compilerExceptionMessage(error);
+                    if (message !== undefined) throw new Error(message);
+                    throw error;
+                  }}
+                }},
                 number: id => {{ const v = get(id); if (typeof v !== 'number') throw new TypeError('Expected Number'); return v; }},
                 string: id => {{ const v = get(id); if (typeof v !== 'string') throw new TypeError('Expected string'); return v; }},
                 print: id => rt.core.prStr(get(id)),
@@ -183,6 +190,17 @@ impl Evaluator {
     ) -> Result<T, EvalError> {
         self.control.poll()?;
         let result = self.context.as_ref().unwrap().with(|ctx| {
+            // rquickjs refreshes this only with its parallel feature. Our synchronous
+            // compiler enters from different Rust analysis depths; budget JS stack
+            // from this outer boundary, not the runtime constructor's stack frame.
+            // The context is live under Context::with; no pointer is retained and
+            // nested callbacks do not call enter or reset this outer stack budget.
+            unsafe {
+                rquickjs::qjs::JS_UpdateStackTop(rquickjs::qjs::JS_GetRuntime(
+                    ctx.as_raw().as_ptr(),
+                ));
+            }
+
             let operation = f(ctx.clone());
             let operation = operation.and_then(|value| {
                 ctx.eval::<(), _>("__lightEvaluator.checkBridge()")?;

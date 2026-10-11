@@ -80,27 +80,34 @@ fn unknown_namespace_warning_mode_keeps_actual_host_namespace_values() {
     );
     run(source, true);
 }
+// The old runtime-defmacro ABI is retired by compiled bootstrap. Source macros
+// are now compiler declarations; this intentionally differs from the old oracle.
 #[test]
-fn inline_defmacro_is_a_runtime_function_with_hidden_args_metadata_and_macro_marker() {
+fn inline_defmacro_is_a_compile_time_function_with_hidden_form_and_environment() {
     run(
-        r#"(do (defmacro sample "sample documentation" {:custom 7} [x] [&form &env x])
-      (and (= [:form {:locals 1} 9] (sample :form {:locals 1} 9))
-           (true? (.-cljs$lang$macro sample)) (:macro (meta #'sample))
-           (= 7 (:custom (meta #'sample))) (= "sample documentation" (:doc (meta #'sample)))
-           (= '([x]) (:arglists (meta #'sample)))))"#,
+        r#"(do (defmacro sample [x] (list 'quote [(:context &env) &form x]))
+      (= [:expr '(sample 9) 9] (sample 9)))"#,
         false,
+    );
+    assert!(
+        compile("(defmacro sample [] 1) sample")
+            .unwrap_err()
+            .to_string()
+            .contains("compile-time macro")
     );
 }
 #[test]
-fn inline_defmacro_multiple_and_variadic_methods_apply_and_receiver_are_real() {
+fn inline_defmacro_multiple_and_variadic_methods_execute_during_compilation() {
     run(
-        r#"(do (defmacro boundaryMethods ([x] [&form &env x]) ([x y & more] [&form &env x y more]))
-      (defmacro receiver [x] (this-as self [self &form &env x]))
-      (let [host (js-obj) values (.call receiver host :f :e 7)]
-        (and (= [:f :e 1] (boundaryMethods :f :e 1))
-             (= [:f :e 1 2 '(3 4)] (apply boundaryMethods :f :e [1 2 3 4]))
-             (identical? host (first values)) (= [:f :e 7] (vec (rest values))))))"#,
+        r#"(do (defmacro methods ([x] x) ([x y & more] (last more)))
+      (= [1 4] [(methods 1) (methods 1 2 3 4)]))"#,
         false,
+    );
+    assert!(
+        compile("(defmacro methods [x] x) (apply methods [1])")
+            .unwrap_err()
+            .to_string()
+            .contains("compile-time macro")
     );
 }
 #[test]
@@ -164,21 +171,10 @@ fn dotted_host_var_metadata_reports_both_test_reference_resolutions() {
 }
 
 #[test]
-fn inline_macro_dispatch_exposes_actual_js_abi_and_user_arity_errors() {
-    run(
-        r#"(do
-      (defmacro fixedMacro ([x] x) ([x y] y))
-      (defmacro variMacro [x & xs] xs)
-      (defmacro mixedMacro ([x] x) ([x y & xs] xs))
-      (and (= "Invalid arity: 0" (try (fixedMacro :f :e) (catch :default e (.-message e))))
-           (= "Invalid arity: -2" (try (apply fixedMacro []) (catch :default e (.-message e))))
-           (= [1 4 1 3 1 4] [(.-length fixedMacro) (.-cljs$lang$maxFixedArity fixedMacro)
-                              (.-length variMacro) (.-cljs$lang$maxFixedArity variMacro)
-                              (.-length mixedMacro) (.-cljs$lang$maxFixedArity mixedMacro)])
-           (= 4 (.-length (.-cljs$core$IFn$_invoke$arity$4 fixedMacro)))
-           (= 1 (fixedMacro :f :e 1)) (= 2 (apply fixedMacro [:f :e 1 2]))
-           (= '(2 3) (apply variMacro [:f :e 1 2 3]))
-           (= '([x] [x y & xs]) (:arglists (meta #'mixedMacro)))))"#,
-        false,
-    );
+fn inline_macro_arity_errors_are_compile_time_diagnostics() {
+    let error = compile("(defmacro fixed ([x] x) ([x y] y)) (fixed)")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("arity"), "{error}");
+    assert!(error.contains("definition"), "{error}");
 }

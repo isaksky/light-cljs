@@ -48,7 +48,7 @@ pub fn compile(source: &str) -> Result<String, CompileError> {
     Ok(emit_js(&program))
 }
 
-/// Compile using an explicitly configured native macro context.
+/// Compile using explicit macro configuration and a fresh JavaScript session.
 pub fn compile_with_macros(source: &str, macros: &mut MacroHost) -> Result<String, CompileError> {
     let syntax = parse(source).map_err(CompileError::Parse)?;
     let program = analyze_with_macros(source, &syntax, macros).map_err(CompileError::Analysis)?;
@@ -1102,10 +1102,9 @@ pub fn compile_namespace_with_macro_warnings(
                             format!("duplicate macro refer: {local}"),
                         ));
                     }
-                    if macros
-                        .find_macro(&import.namespace, original)
+                    if !macros
+                        .has_macro(&import.namespace, original)
                         .map_err(|m| error(spec.span.clone(), m))?
-                        .is_none()
                         && !crate::compiler_names::is_definition_macro(&import.namespace, original)
                     {
                         return Err(error(
@@ -1153,9 +1152,8 @@ pub fn compile_namespace_with_macro_warnings(
                 if (matches!(namespace.as_str(), "cljs.core" | "clojure.core")
                     || imports.iter().any(|i| &i.namespace == namespace))
                     && macros
-                        .find_macro(namespace, original)
+                        .has_macro(namespace, original)
                         .map_err(|m| error(header_span.clone(), m))?
-                        .is_some()
                 {
                     if !macro_names.insert(local.clone()) {
                         return Err(error(

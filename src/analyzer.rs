@@ -2051,6 +2051,7 @@ struct Analyzer<'a> {
     warnings: &'a mut Vec<AnalysisWarning>,
     resolving_var: bool,
     definition_name: Option<String>,
+    top_level: bool,
 }
 
 fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxTree>, Vec<NodeId>) {
@@ -2152,6 +2153,24 @@ pub fn analyze_compiler_form(form: &Form) -> Result<Program, AnalysisError> {
     )
 }
 
+pub(crate) fn analyze_compiler_form_with_host(
+    form: &Form,
+    host: &mut MacroHost,
+) -> Result<Program, AnalysisError> {
+    let syntax = SyntaxTree {
+        nodes: vec![],
+        roots: vec![],
+    };
+    analyze_input(
+        form.span().source().text(),
+        &syntax,
+        host,
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        Some(form),
+    )
+}
+
 fn analyze_input(
     source: &str,
     syntax: &SyntaxTree,
@@ -2191,6 +2210,7 @@ fn analyze_input(
         warnings,
         resolving_var: false,
         definition_name: None,
+        top_level: true,
     };
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
@@ -2281,6 +2301,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             warnings,
             resolving_var: false,
             definition_name: None,
+            top_level: true,
         };
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
             let runtime = if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
@@ -2294,7 +2315,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             };
             let mac = analyzer
                 .macro_host
-                .resolve(input.name, local, true)
+                .resolves_macro(input.name, local, true)
                 .map_err(|message| {
                     (
                         source_index,
@@ -2303,8 +2324,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
                             span: input.syntax.nodes[input.syntax.roots[0].0].span.clone(),
                         },
                     )
-                })?
-                .is_some();
+                })?;
             if !runtime && !mac {
                 return Err((
                     source_index,
@@ -2791,7 +2811,22 @@ impl Analyzer<'_> {
             ));
         }
         self.analysis_depth += 1;
+        let previous_top_level = self.top_level;
+        let allows_declarations = match &self.syntax.nodes[id.0].kind {
+            NodeKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } => children.first().is_some_and(|id| {
+                matches!(
+                    self.spelling(*id),
+                    "do" | "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
+                )
+            }),
+            _ => false,
+        };
+        self.top_level &= allows_declarations;
         let result = self.form_inner(id, context);
+        self.top_level = previous_top_level;
         self.analysis_depth -= 1;
         result
     }
@@ -3065,6 +3100,34 @@ impl Analyzer<'_> {
                     }));
             if !shadowed && self.lookup(&operator_name).is_none() {
                 match intrinsic {
+                    "defmacro" => {
+                        if !self.top_level {
+                            return Err(self.error(
+                                id,
+                                AnalysisErrorKind::InvalidForm(
+                                    "defmacro declarations must appear at top level",
+                                ),
+                            ));
+                        }
+                        let form = self.compiler_read_form(id).map_err(|e| {
+                            self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string()))
+                        })?;
+                        if self.macro_host.bootstrap_seed {
+                            let lowered = crate::compiler_bootstrap::lower_declaration(&form)
+                                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?
+                                .1;
+                            let node = self.import_form(&lowered)?;
+                            return self.form(node, context);
+                        }
+                        self.macro_host
+                            .register_javascript_macro(self.namespace, &form)
+                            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+                        return Ok(self.push(
+                            ExprKind::Nil,
+                            self.syntax.nodes[id.0].span.clone(),
+                            context,
+                        ));
+                    }
                     "delay" | "lazy-seq" => {
                         return self.deferred_form(id, args, context, intrinsic == "delay");
                     }
@@ -3352,6 +3415,14 @@ impl Analyzer<'_> {
         }
         if let Some(local) = self.lookup(name) {
             return Ok(ExprKind::Local(local));
+        }
+        if self.macro_host.has_javascript_macro(self.namespace, name) {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::InvalidForm(
+                    "compile-time macro cannot be consumed as a runtime value",
+                ),
+            ));
         }
         if let Some(name) = name.strip_prefix("cljs.core.")
             && let Some(function) = CoreFnId::resolve(name)
@@ -6224,12 +6295,52 @@ impl Analyzer<'_> {
                 .iter()
                 .any(|(local, _, _)| local == &name);
         let target = core_alias.as_deref().unwrap_or(&name);
+        if self.macro_host.has_javascript_macro(self.namespace, target) {
+            if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
+                return Err(error(
+                    "compiler macro expansion depth limit exceeded".into(),
+                ));
+            }
+            let form = self
+                .compiler_read_form(call)
+                .map_err(|e| error(e.to_string()))?;
+            let locals = self
+                .env
+                .scopes
+                .iter()
+                .flat_map(|s| s.iter())
+                .map(|id| {
+                    let (kind, argument) =
+                        self.local_kinds.get(id).copied().unwrap_or(("let", None));
+                    (self.program.locals[id.0].name.clone(), id.0, kind, argument)
+                })
+                .collect::<Vec<_>>();
+            let location = crate::LineIndex::new(self.source)
+                .line_column(self.syntax.nodes[call.0].span.start)
+                .unwrap();
+            let env = self
+                .macro_host
+                .compiler_environment(
+                    self.namespace,
+                    context,
+                    &locals,
+                    self.aliases,
+                    self.requires,
+                    location,
+                )
+                .map_err(error)?;
+            let result = self
+                .macro_host
+                .expand_source_javascript(self.namespace, target, &form, &env)
+                .map_err(error)?;
+            return self.import_form(&result).map(Some);
+        }
         let core_name = self
             .macro_host
             .macro_name(self.namespace, target, shadow_core)
             .filter(|(ns, _)| matches!(ns.as_str(), "cljs.core" | "clojure.core"))
             .map(|(_, name)| name);
-        if let Some(core_name) = core_name.filter(|name| {
+        if let Some(core_name) = core_name.as_ref().filter(|name| {
             matches!(
                 name.as_str(),
                 "let"
@@ -6238,6 +6349,7 @@ impl Analyzer<'_> {
                     | "letfn"
                     | "defn"
                     | "defn-"
+                    | "assert"
                     | "ns-publics"
                     | "ns-interns"
                     | "ns-imports"
@@ -6256,12 +6368,53 @@ impl Analyzer<'_> {
                 .macro_host
                 .expand_compiler_seed(
                     &form,
-                    &crate::compiler_data::Name::new(Some("cljs.core"), &core_name),
+                    &crate::compiler_data::Name::new(Some("cljs.core"), core_name),
                 )
                 .map_err(error)?
             {
                 return self.import_form(&expanded).map(Some);
             }
+        }
+        if let Some(core_name) = core_name {
+            if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
+                return Err(error(
+                    "compiler macro expansion depth limit exceeded".into(),
+                ));
+            }
+            self.check_compiler_sets(call)?;
+            let form = self
+                .compiler_read_form(call)
+                .map_err(|e| error(e.to_string()))?;
+            let locals = self
+                .env
+                .scopes
+                .iter()
+                .flat_map(|s| s.iter())
+                .map(|id| {
+                    let (kind, argument) =
+                        self.local_kinds.get(id).copied().unwrap_or(("let", None));
+                    (self.program.locals[id.0].name.clone(), id.0, kind, argument)
+                })
+                .collect::<Vec<_>>();
+            let location = crate::LineIndex::new(self.source)
+                .line_column(self.syntax.nodes[call.0].span.start)
+                .unwrap();
+            let environment = self
+                .macro_host
+                .compiler_environment(
+                    self.namespace,
+                    context,
+                    &locals,
+                    self.aliases,
+                    self.requires,
+                    location,
+                )
+                .map_err(error)?;
+            let expanded = self
+                .macro_host
+                .expand_core_javascript(&core_name, &form, &environment)
+                .map_err(error)?;
+            return self.import_form(&expanded).map(Some);
         }
         let Some(var) = self
             .macro_host
