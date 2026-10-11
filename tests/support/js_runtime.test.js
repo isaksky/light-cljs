@@ -553,8 +553,13 @@ assert.equal(c.equal(c.reduced(1), c.reduced(1)), false);
 assert.equal(c.equal(marker, marker), true);
 assert.equal(c.deref(c.reduced(host)), host);
 assert.equal(Object.isFrozen(host), false);
+// The public Reduced val slot is live, just like direct positional construction.
 marker.val = 9;
-assert.equal(c.deref(marker), v);
+assert.equal(c.deref(marker), 9);
+marker.val = v;
+const forgedReduced = Object.create(Object.getPrototypeOf(marker));
+assert.throws(() => { forgedReduced.val = 9; }, /Expected Reduced/);
+assert.equal(c.isReduced(forgedReduced), false);
 for (const value of [null, undefined, 0, {}, c.vector(), c.list()]) throwsError(() => c.deref(value));
 for (const collection of [null, undefined, c.vector(), c.list(), c.hashMap(), c.hashSet(), '', c.seq(c.vector())]) {
   assert.equal(c.reduce(null, marker, collection), marker);
@@ -1240,3 +1245,13 @@ console.log('transient ownership, persistence, protocol and lookup assertions pa
   c.reset(h, c.makeHierarchy());
   assert.equal(c.getMethod(mf, k('child')), null);
 }
+
+// Public field accessors preserve brands even when host objects copy prototypes.
+for (const [Type, fields] of [[c.Symbol, ['name', '_hash', '_meta']], [c.Cons, ['first', '__hash', 'meta']]]) {
+  for (const field of fields) {
+    const forged = Object.create(Type.prototype);
+    assert.throws(() => { forged[field] = 9; }, /Expected public core value/);
+    assert.equal(runtime.inspect(forged), null);
+  }
+}
+console.log('public constructor fields preserve canonical payload brands');

@@ -18,6 +18,7 @@
   const cells = new WeakMap();
   const views = new WeakMap();
   const reducedValues = new WeakMap();
+  const constructorHashes = new WeakMap();
   const metadataValues = new WeakMap();
   const uuids = new WeakMap();
   const uuidHashes = new WeakMap();
@@ -35,7 +36,7 @@
   const builtinTypes = {};
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
-      const Type = name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "ChunkBuffer" ? ChunkBuffer : name === "ArrayChunk" ? arrayChunk : name === "ChunkedCons" ? ChunkedCons : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
+      const Type = name === "Cons" ? Cons : name === "Symbol" ? SymbolValue : name === "Reduced" ? Reduced : name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "ChunkBuffer" ? ChunkBuffer : name === "ArrayChunk" ? arrayChunk : name === "ChunkedCons" ? ChunkedCons : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
       Type.prototype = Object.create(base);
       Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
       builtinTypes[name] = Type;
@@ -75,6 +76,7 @@
   });
 
   const symbolPrototype = Object.freeze({
+    equiv(other) { return equalPair(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     call(_self, collection, notFound) {
       if (!symbols.has(this)) throw new Error("Expected symbol");
@@ -90,6 +92,31 @@
       return value.spelling;
     }
   });
+
+  // Positional constructors retain the supplied slots; unlike cons/symbol they
+  // do not normalize a tail or derive the printed spelling from name/namespace.
+  function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
+    if (arguments.length !== 5) return invalidArity(arguments.length);
+    const value = builtinValue("Symbol", symbolPrototype);
+    symbols.set(value, Object.freeze({namespace, name, spelling}));
+    constructorHashes.set(value, cachedHash);
+    metadataValues.set(value, metadata);
+    return value;
+  }
+
+  function Cons(metadata, head, tail, cachedHash) {
+    if (arguments.length !== 4) return invalidArity(arguments.length);
+    const value = builtinValue("Cons", sequencePrototype);
+    cells.set(value, Object.freeze({kind: "cons", head, tail}));
+    constructorHashes.set(value, cachedHash);
+    metadataValues.set(value, metadata);
+    return value;
+  }
+
+  function Reduced(value) {
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    return reduced(value);
+  }
 
   function symbol(namespace, name) {
     const value = builtinValue("Symbol", symbolPrototype);
@@ -1595,7 +1622,16 @@
     }
     if (vars.has(value)) return hash(vars.get(value).symbol);
     const named = keywords.get(value) || symbols.get(value);
-    if (named) return (hashNamed(named) + (keywords.has(value) ? 0x9e3779b9 : 0)) | 0;
+    if (named) {
+      if (symbols.has(value)) {
+        const cached = constructorHashes.get(value);
+        if (cached != null) return cached | 0;
+        const result = hashNamed(named) | 0;
+        constructorHashes.set(value, result);
+        return result;
+      }
+      return (hashNamed(named) + (keywords.has(value) ? 0x9e3779b9 : 0)) | 0;
+    }
     const entries = maps.get(value);
     if (entries) {
       let result = 0;
@@ -1609,6 +1645,13 @@
       return mixCollectionHash(result, members.length);
     }
     if (sequential(value)) {
+      if (cells.get(value)?.kind === "cons") {
+        const cached = constructorHashes.get(value);
+        if (cached != null) return cached | 0;
+        const result = hashOrderedColl(value);
+        constructorHashes.set(value, result);
+        return result;
+      }
       const cached = lazyValues.get(value) ?? cells.get(value)?.chunkedState;
       if (cached?.hash != null) return cached.hash;
       const result = hashOrderedColl(value);
@@ -2590,7 +2633,7 @@
       maps.set(result, maps.get(value)); mapKinds.set(result, mapKinds.get(value));
     }
     else {
-      const stores = [symbols, vectors, maps, mapKinds, setKinds, sortedComparators, sets, cells, views, queues, lazyValues, vars, subvecSources];
+      const stores = [constructorHashes, symbols, vectors, maps, mapKinds, setKinds, sortedComparators, sets, cells, views, queues, lazyValues, vars, subvecSources];
       if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       result = Object.create(Object.getPrototypeOf(value));
       for (const store of [...stores, protocolImplementations, typeFields, recordTypes]) if (store.has(value)) store.set(result, store.get(value));
@@ -4305,7 +4348,7 @@
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
     const result = Object.create(Object.getPrototypeOf(value));
-    for (const store of [...protocolStores, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
+    for (const store of [...protocolStores, constructorHashes, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
   });
@@ -4316,6 +4359,39 @@
     [["PersistentHashSet", "PersistentTreeSet"], setPrototype], [["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "ChunkedCons", "LazySeq", "PersistentQueue", "Repeat", "Cycle", "Iterate", "Range", "IntegerRange", "NodeSeq", "PersistentTreeMapSeq"], sequencePrototype],
     [["Keyword"], keywordPrototype], [["Symbol"], symbolPrototype], [["Reduced"], reducedPrototype], [["UUID"], uuidPrototype]
   ]) for (const name of names) builtinType(name, base);
+  for (const [Type, store, fields] of [
+    [builtinTypes.Symbol, symbols, {ns: "namespace", name: "name", str: "spelling"}],
+    [builtinTypes.Cons, cells, {first: "head", rest: "tail"}]
+  ]) for (const [field, key] of Object.entries(fields)) Object.defineProperty(Type.prototype, field, {
+    get() { return store.get(this)[key]; },
+    set(value) {
+      if (!store.has(this)) throw new Error("Expected public core value");
+      store.set(this, Object.freeze({...store.get(this), [key]: value}));
+    }
+  });
+  for (const [Type, field] of [[builtinTypes.Symbol, "_hash"], [builtinTypes.Cons, "__hash"]])
+    Object.defineProperty(Type.prototype, field, {
+      get() { return constructorHashes.has(this) ? constructorHashes.get(this) : null; },
+      set(value) {
+        if (!(Type === builtinTypes.Symbol ? symbols.has(this) : cells.get(this)?.kind === "cons"))
+          throw new Error("Expected public core value");
+        constructorHashes.set(this, value);
+      }
+    });
+  for (const [Type, field] of [[builtinTypes.Symbol, "_meta"], [builtinTypes.Cons, "meta"]])
+    Object.defineProperty(Type.prototype, field, {
+      get() { return metadataValues.has(this) ? metadataValues.get(this) : null; }, set(value) {
+        if (!(Type === builtinTypes.Symbol ? symbols.has(this) : cells.get(this)?.kind === "cons"))
+          throw new Error("Expected public core value");
+        metadataValues.set(this, value);
+      }
+    });
+  Object.defineProperty(builtinTypes.Reduced.prototype, "val", {
+    get() { return reducedValues.get(this); }, set(value) {
+      if (!reducedValues.has(this)) throw new Error("Expected Reduced");
+      reducedValues.set(this, value);
+    }
+  });
   Object.defineProperty(builtinTypes.PersistentTreeMap.prototype, "comp", {get() { return sortedComparators.get(this); }});
   builtinType("Delay", Object.prototype);
   builtinType("Eduction", Object.prototype);

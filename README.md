@@ -377,8 +377,16 @@ sources use the same supported language features. See the
 and the
 [executable core contract](docs/compiler.md) for exact limits and testing.
 The [full language gate receipt](tests/reference/compiler-language/final-gate.md)
-records remaining public constructor and Var source-metadata gaps;
+records remaining public construction and Var source-metadata work;
 whole-language completion remains incomplete.
+
+Public `Cons`, `Reduced`, and `Symbol` positional constructors and their
+`->Cons`, `->Reduced`, and `->Symbol` factories initialize canonical runtime
+values in applications and macro computations. They retain explicit tails,
+printed symbol spelling, metadata, and cached hashes. Saved and applied factories
+use the same contracts. See the [construction evidence](tests/reference/compiler-public-constructors.md);
+remaining public collection constructors and factories are owned by
+light-cljs-141 and light-cljs-142.
 
 Public `Inst`, `IDerefWithTimeout`, `IUUID`, and `ASeq` protocols support
 user types, reify, extensions, and saved methods in applications and macro

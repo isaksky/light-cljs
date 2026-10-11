@@ -3,7 +3,7 @@
   "upstream": "https://github.com/clojure/clojurescript",
   "revision": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
   "extractor_sha256": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
-  "inventory_sha256": "b30f34850064c75712384fb65eae3241277aa4f4b6db94a3d2dd62d0ca21e4e7",
+  "inventory_sha256": "9b924268762541e2cbbfeaf13fd6c8eb64657dcc01844a6baff031f6a0962a58",
   "bodies_sha256": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156",
   "counting_unit": "Source assertion sites; each are argument row is a separate assertion. Dynamic loop/helper invocations are retained in complete bodies, not multiplied or claimed executed.",
   "recognized_assertion_macros": [
@@ -44,7 +44,7 @@
       "upstream-internals": 357,
       "reference-harness": 5
     },
-    "obligations": 5225,
+    "obligations": 5228,
     "public_api_arities": 1327,
     "intended_assertions": 3805
   },
@@ -1398,8 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "520c9965d9b5a47593064b92603e743401d0005883fa6105beab6ff9137aae0d",
-  "obligations_sha256": "e9413498dc9fcc7481b9d830bc559fb37dc086f8738eeae7202e07ffcc1906ca",
+  "generator_sha256": "e644453d3f345a835cdfa16cbe484feeca24ef324a62dc9cef4771d4a66ab511",
+  "obligations_sha256": "9fb0b545e8750b4c2515f88b45536a0bf827d0e8f78809ce15bc45f8294bd658",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,11 +1440,11 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "b6c4f903cb647c05f4138b83c7768a10f91156a5c81d89ce82636ad0c9d413b2"
+      "sha256": "647fdf3356818a957ebd7b3e92800c6d690260f013ee93f500f2061a174cdbca"
     },
     {
       "path": "src/core_var_metadata.tsv",
-      "sha256": "3e201fdd3a145fd4064a0718c457e615f1ff46ca9390f15f69d8c31011ae688b"
+      "sha256": "280bbaf3959cb94922823abfe6e3bce39d173a5ebf9e5d0c13fdd57c7d50c051"
     },
     {
       "path": "tests/reference/sci/runtime.tsv",
@@ -1470,21 +1470,24 @@
     "execution_evidence"
   ],
   "families": {
-    "public-residual": 7471,
+    "public-residual": 7399,
     "array-compiler-settings": 4,
     "utilities": 449,
-    "lazy-sequences": 284,
+    "lazy-sequences": 282,
     "transducers": 502,
-    "hash-equality": 195,
+    "hash-equality": 194,
     "printing-reflection": 212,
     "sorted-collections": 202,
     "transient-collections": 126,
+    "public-collection-construction": 46,
     "multimethods-hierarchies": 77,
+    "public-construction": 21,
     "regex": 46,
     "library": 273,
-    "reader": 82,
+    "reader": 80,
     "tap-delivery": 3,
     "public-protocols": 18,
+    "public-construction-factories": 13,
     "sequence-transform": 5,
     "eduction": 4
   }

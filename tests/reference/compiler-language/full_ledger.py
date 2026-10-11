@@ -42,6 +42,9 @@ OWNERS = {
 }
 NAME_FAMILIES = (
     ("public-protocols", "light-cljs-138", set("Inst inst-ms* inst-ms inst? IUUID uuid? IDerefWithTimeout -deref-with-timeout ASeq".split())),
+    ("public-construction", "light-cljs-139", set("Cons ->Cons Reduced ->Reduced Symbol ->Symbol".split())),
+    ("public-collection-construction", "light-cljs-141", set("List ->List EmptyList ->EmptyList Keyword ->Keyword Cycle ->Cycle Repeat ->Repeat Iterate ->Iterate PersistentVector ->PersistentVector Subvec ->Subvec ChunkedSeq ->ChunkedSeq PersistentQueue ->PersistentQueue PersistentArrayMap ->PersistentArrayMap PersistentHashMap ->PersistentHashMap PersistentHashSet ->PersistentHashSet".split())),
+    ("public-construction-factories", "light-cljs-142", set("->IndexedSeq ->UUID ->Range ->IntegerRange ->PersistentTreeMap ->PersistentTreeSet ->PersistentTreeMapSeq ->Eduction ->MultiFn ->SeqIter ->RangedIterator ->Namespace ->TaggedLiteral".split())),
     ("transient-collections", "light-cljs-117", set("transient persistent! conj! assoc! dissoc! pop! disj! IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet".split())),
     ("sorted-collections", "light-cljs-119", set("sorted-map sorted-map-by sorted-set sorted-set-by subseq rsubseq ISorted -sorted-seq -sorted-seq-from -entry-key -comparator comparator".split())),
     ("multimethods-hierarchies", "light-cljs-47", set("defmulti defmethod IMultiFn MultiFn remove-all-methods remove-method prefer-method methods get-method prefers dispatch-fn default-dispatch-val make-hierarchy isa? parents ancestors descendants derive underive bases supers".split())),
