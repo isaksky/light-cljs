@@ -301,7 +301,12 @@ and vector chunks preserve observable realization, while reduced results stop
 before requesting the next input. Saved helpers and namespace aliases use the
 same runtime. The [sequence audit](tests/reference/compiler-sequences.md) records
 314 imported assertions, 56 independent differential probes, and the complete
-arity inventory; transducer constructors remain separately scoped.
+arity inventory. Canonical eager transduction supports `completing`, `transduce`,
+`ensure-reduced`, transforming `into`, and the standard map/filter/keep, bounded,
+partition, cat/mapcat, interpose, replace, dedupe/distinct, random-sample and
+halt-when constructors. The [transducer audit](tests/reference/compiler-transducers.md)
+records reduction order, state, completion and pinned reference comparisons.
+`sequence` transducer arities and `eduction` remain separately assigned.
 
 Compiled `delay`, `force`, `delay?`, `realized?` and `lazy-seq` preserve deferred
 execution, retry throwing thunks, and memoize successful values. Lazy metadata
@@ -324,8 +329,7 @@ and synchronous `try` support recurrence control flow. The
 [recurrence audit](tests/reference/compiler-recur.md) records exact reference
 comparisons; the [record audit](tests/reference/compiler-records.md) adds the
 original Search1–Search4 record wrappers. `reduce-kv` supports owned
-maps/vectors, custom `IKVReduce` receivers, and reducible map-entry sequences;
-transducers remain separate.
+maps/vectors, custom `IKVReduce` receivers, and reducible map-entry sequences.
 Compiled user protocols support marker and overloaded declarations, method Var
 metadata, namespace aliases, saved method functions and public CLJS dispatch slots.
 Dispatch checks metadata implementations first when opted in, then direct methods,
@@ -580,7 +584,7 @@ Execution defaults to both Maven 1.12.134 and the pinned research checkout.
 These counts describe the inventoried feature sections, not the whole intended
 language or upstream suite. The selected inventory still excludes standard
 features including transients, transducers, sorted collections and multimethods;
-those are assigned language gaps in the
+those are assigned language obligations with separate implementation evidence in the
 [migration and coverage roadmap](docs/evaluator-migration.md#language-coverage-and-completion-boundaries),
 not permanent exclusions or passing assertions.
 

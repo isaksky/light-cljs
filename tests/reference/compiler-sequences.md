@@ -10,10 +10,10 @@ Java 25.0.2, Node v24.18.0. No version difference occurred in this selection.
 
 Numbers count public function arguments. Collection overloads below are
 implemented as ordinary callable values, including saved values and `apply`.
-The constructor column records distinct transducer APIs: they are **not
-implemented or counted as sequence coverage**. Calling these constructor arities
-reports an explicit unsupported-transducer error instead of treating a missing
-collection as nil.
+The constructor column records distinct transducer APIs. They are now
+implemented and verified separately by the [eager transducer audit](compiler-transducers.md);
+the historical counts in this sequence audit cover collection overloads only.
+The former constructor-rejection check now verifies callable constructors.
 
 | API | Implemented arities | Separate transducer constructor |
 | --- | --- | --- |

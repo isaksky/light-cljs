@@ -69,15 +69,15 @@ fn nested_modifiers_keep_per_iteration_captures_and_stop_at_each_level() {
 }
 
 #[test]
-fn namespaces_aliases_and_native_macro_output_use_compiled_comprehensions() {
+fn namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions() {
     let root = std::env::temp_dir().join(format!("light-cljs-sequences-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     fs::write(
-        root.join("macros.clj"),
+        root.join("macros.cljs"),
         "(ns macros) (defmacro squares [xs] (list 'cljs.core/for ['x xs] (list '* 'x 'x)))",
     )
     .unwrap();
-    fs::write(root.join("main.cljs"), "(ns main (:require [cljs.core :as c]) (:require-macros [macros :as m])) (let [s (m/squares (c/range 4)) n (atom 0) f c/map-indexed] (c/doseq [x s] (swap! n + x)) (js/console.log @n (c/pr-str (f vector s)) (c/pr-str (c/for [x [1 2]] (inc x)))))").unwrap();
+    fs::write(root.join("main.cljs"), "(ns main (:require [cljs.core :as c] [macros :as m])) (let [s (m/squares (c/range 4)) n (atom 0) f c/map-indexed] (c/doseq [x s] (swap! n + x)) (js/console.log @n (c/pr-str (f vector s)) (c/pr-str (c/for [x [1 2]] (inc x)))))").unwrap();
     let javascript = compile_namespace("main", std::slice::from_ref(&root)).unwrap();
     let output = Command::new("node")
         .args(["-e", &javascript])
@@ -93,7 +93,7 @@ fn namespaces_aliases_and_native_macro_output_use_compiled_comprehensions() {
 }
 
 #[test]
-fn malformed_comprehensions_and_transducer_constructors_are_not_silent_empty_sequences() {
+fn malformed_comprehensions_are_rejected_and_transducer_constructors_are_callable() {
     for source in [
         "(for (x [1]) x)",
         "(for [x] x)",
@@ -104,7 +104,7 @@ fn malformed_comprehensions_and_transducer_constructors_are_not_silent_empty_seq
     }
     assert_eq!(
         node(
-            "(to-array (map (fn [f] (try (f identity) false (catch js/Error e (boolean (re-find #\"transducer constructor\" (.-message e)))))) [map map-indexed mapcat filter remove keep keep-indexed take drop take-while drop-while partition-all partition-by interpose take-nth]))"
+            "(to-array (concat (map (fn [f] (fn? (f identity))) [map map-indexed mapcat filter remove keep keep-indexed take-while drop-while partition-by]) (map (fn [f] (fn? (f 2))) [take drop take-nth partition-all]) [(fn? (interpose :sep))]))"
         ),
         "[true,true,true,true,true,true,true,true,true,true,true,true,true,true,true]\n"
     );

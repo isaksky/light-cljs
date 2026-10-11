@@ -284,6 +284,7 @@
   }
 
   function isReduced(value) { return reducedValues.has(value); }
+  function ensureReduced(value) { return isReduced(value) ? value : reduced(value); }
   function unreduced(value) { return isReduced(value) ? reducedValues.get(value) : value; }
   function deref(value) { return derefProtocol(value); }
   function derefProtocol(value) {
@@ -513,6 +514,103 @@
       }
     }
     return initialized ? result : rf.call(null);
+  }
+
+  // Reducers and transforms use the same .call ABI as emitted functions and
+  // custom IFn values. State is allocated when a transform receives its reducer.
+  function reducingFunction(rf, step, complete = result => rf.call(null, result)) {
+    return function (result, input) {
+      switch (arguments.length) {
+        case 0: return rf.call(null);
+        case 1: return complete(result);
+        case 2: return step(result, input);
+        default: return invalidArity(arguments.length);
+      }
+    };
+  }
+  function transform(factory) {
+    return function (rf) {
+      return factory(rf);
+    };
+  }
+  function completing(rf, cf) {
+    if (arguments.length === 1) cf = result => result;
+    else if (arguments.length !== 2) return invalidArity(arguments.length);
+    return reducingFunction(rf, (result, input) => rf.call(null, result, input), result => cf.call(null, result));
+  }
+  function transduce(xf, rf, init, coll) {
+    if (arguments.length === 3) { coll = init; init = rf.call(null); }
+    else if (arguments.length !== 4) return invalidArity(arguments.length);
+    const transformed = xf.call(null, rf);
+    return transformed.call(null, reduce(transformed, init, coll));
+  }
+  function indexedTransform(fn, keepOnly, indexed) {
+    return transform(rf => {
+      let index = -1;
+      return reducingFunction(rf, (result, input) => {
+        const value = indexed ? fn.call(null, ++index, input) : fn.call(null, input);
+        return keepOnly && value == null ? result : rf.call(null, result, value);
+      });
+    });
+  }
+  function bufferedTransform(group) {
+    return transform(rf => {
+      const none = keyword("cljs.core", "none");
+      let buffer = [], prior = none;
+      const flush = result => {
+        const value = vectorFromArray(buffer); buffer = [];
+        return rf.call(null, result, value);
+      };
+      return reducingFunction(rf, (result, input) => {
+        if (group.kind === "count") {
+          buffer.push(input);
+          return buffer.length === group.n ? flush(result) : result;
+        }
+        const previous = prior, key = group.fn.call(null, input); prior = key;
+        if (predicates.keywordIdentical(previous, none) || equalPair(previous, key)) { buffer.push(input); return result; }
+        const ret = flush(result);
+        if (!isReduced(ret)) buffer.push(input);
+        return ret;
+      }, result => {
+        // Clear before invoking the downstream step, including reentry/failure.
+        if (buffer.length) result = unreduced(flush(result));
+        return rf.call(null, result);
+      });
+    });
+  }
+  function haltWhen(pred, retf) {
+    if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
+    const halt = keyword("cljs.core", "halt");
+    return transform(rf => reducingFunction(rf, (result, input) =>
+      truth(pred.call(null, input))
+        ? reduced(hashMap(halt, truth(retf) ? retf.call(null, rf.call(null, result), input) : input))
+        : rf.call(null, result, input),
+      result => predicates.isMap(result) && contains(result, halt) ? get(result, halt) : rf.call(null, result)));
+  }
+  function dedupe(coll) {
+    if (arguments.length === 0) return transform(rf => {
+      let prior = keyword("cljs.core", "none");
+      return reducingFunction(rf, (result, input) => {
+        const previous = prior; prior = input;
+        return equalPair(previous, input) ? result : rf.call(null, result, input);
+      });
+    });
+    if (arguments.length !== 1) return invalidArity(arguments.length);
+    // Collection overload stays lazy; sequence's transducer overload is separate.
+    const step = (values, prior) => lazySequence(() => {
+      for (let s = seq(values); s !== null; s = seq(rest(s))) {
+        const value = first(s);
+        if (!equalPair(prior, value)) return cons(value, step(rest(s), value));
+      }
+      return null;
+    });
+    return step(coll, keyword("cljs.core", "none"));
+  }
+  function randomSample(prob, coll) {
+    const pred = () => core.rand.call(null) < prob;
+    if (arguments.length === 1) return filter(pred);
+    if (arguments.length === 2) return filter(pred, coll);
+    return invalidArity(arguments.length);
   }
 
   function reduceKv(rf, init, collection) {
@@ -1057,8 +1155,9 @@
     }));
   }
   function replace(substitutions, coll) {
-    collectionArity("replace", arguments.length);
     const replaceOne = value => { const entry = find(substitutions, value); return entry == null ? value : nth(entry, 1); };
+    if (arguments.length === 1) return mapSeq(replaceOne);
+    collectionArity("replace", arguments.length);
     if (predicates.isVector(coll)) {
       let result = coll;
       for (let i = 0, size = count(coll); i < size; i++) {
@@ -1070,7 +1169,14 @@
     return mapSeq(replaceOne, coll);
   }
   function distinct(coll) {
-    if (arguments.length === 0) throw new Error("distinct transducer constructor is not supported");
+    if (arguments.length === 0) return transform(rf => {
+      let seen = makeSet([]);
+      return reducingFunction(rf, (result, input) => {
+        if (contains(seen, input)) return result;
+        seen = conj(seen, input);
+        return rf.call(null, result, input);
+      });
+    });
     if (arguments.length !== 1) return invalidArity(arguments.length);
     const step = (values, seen) => lazySequence(() => {
       for (let s = seq(values); s !== null; s = seq(rest(s))) {
@@ -2530,23 +2636,43 @@
     if (typeof value !== "number") throw new Error("Assert failed: (number? n)");
   }
   function collectionArity(name, args) {
-    if (args === 1) throw new Error(name + " transducer constructor is not implemented");
     if (args !== 2) return invalidArity(args);
   }
   function take(n, coll) {
-    collectionArity("take", arguments.length); numberArgument(n);
+    if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
+    numberArgument(n);
+    if (arguments.length === 1) return transform(rf => {
+      let remaining = n;
+      return reducingFunction(rf, (result, input) => {
+        const prior = remaining; remaining--;
+        const ret = prior > 0 ? rf.call(null, result, input) : result;
+        return remaining > 0 ? ret : ensureReduced(ret);
+      });
+    });
+    collectionArity("take", arguments.length);
     return lazySequence(() => {
       const s = n > 0 ? seq(coll) : null;
       return s === null ? null : cons(first(s), take(n - 1, rest(s)));
     });
   }
   function drop(n, coll) {
-    collectionArity("drop", arguments.length); numberArgument(n);
+    if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
+    numberArgument(n);
+    if (arguments.length === 1) return transform(rf => {
+      let remaining = n;
+      return reducingFunction(rf, (result, input) => { const prior = remaining; remaining--; return prior > 0 ? result : rf.call(null, result, input); });
+    });
+    collectionArity("drop", arguments.length);
     if (implementsProtocol(IDrop, coll)) return (n > 0 ? core.dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
   function mapSeq(fn, ...colls) {
-    if (!colls.length) return collectionArity("map", arguments.length);
+    if (arguments.length === 0) return lazySequence(() => null);
+    if (arguments.length === 1) return transform(rf => callable(2, {
+      0: () => rf.call(null), 1: result => rf.call(null, result),
+      2: (result, input) => rf.call(null, result, fn.call(null, input))
+    }, (result, input, inputs) => rf.call(null, result, apply(fn, input, inputs))));
+    if (!colls.length) return invalidArity(arguments.length);
     // The variadic branch maps a lazy sequence of argument tuples and uses
     // apply. This preserves bounded rest arguments and host receiver behavior.
     if (colls.length > 3) return mapSeq(args => apply(fn, args), mapManySteps(listFromArray(colls)));
@@ -2584,10 +2710,11 @@
       return null;
     });
   }
-  function mapIndexed(fn, coll) { collectionArity("map-indexed", arguments.length); return indexedSequence(fn, coll, 0, false); }
-  function keepIndexed(fn, coll) { collectionArity("keep-indexed", arguments.length); return indexedSequence(fn, coll, 0, true); }
-  function keep(fn, coll) { collectionArity("keep", arguments.length); return indexedSequence(fn, coll, 0, true, false); }
+  function mapIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, false, true); collectionArity("map-indexed", arguments.length); return indexedSequence(fn, coll, 0, false); }
+  function keepIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, true); collectionArity("keep-indexed", arguments.length); return indexedSequence(fn, coll, 0, true); }
+  function keep(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, false); collectionArity("keep", arguments.length); return indexedSequence(fn, coll, 0, true, false); }
   function filter(pred, coll) {
+    if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : result));
     collectionArity("filter", arguments.length);
     return lazySequence(() => {
       const s = seq(coll);
@@ -2605,12 +2732,20 @@
       return null;
     });
   }
-  function remove(pred, coll) { collectionArity("remove", arguments.length); return filter(complement(pred), coll); }
+  function remove(pred, coll) { if (arguments.length === 1) return filter(complement(pred)); collectionArity("remove", arguments.length); return filter(complement(pred), coll); }
   function takeWhile(pred, coll) {
+    if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : reduced(result)));
     collectionArity("take-while", arguments.length);
     return lazySequence(() => { const s = seq(coll); return s !== null && truth(pred.call(null, first(s))) ? cons(first(s), takeWhile(pred, rest(s))) : null; });
   }
   function dropWhile(pred, coll) {
+    if (arguments.length === 1) return transform(rf => {
+      let dropping = true;
+      return reducingFunction(rf, (result, input) => {
+        if (dropping && truth(pred.call(null, input))) return result;
+        dropping = false; return rf.call(null, result, input);
+      });
+    });
     collectionArity("drop-while", arguments.length);
     return lazySequence(() => { let s = seq(coll); while (s !== null && truth(pred.call(null, first(s)))) s = seq(rest(s)); return s; });
   }
@@ -2621,7 +2756,13 @@
   }
   function replicate(n, value) { return take(n, repeat(value)); }
   function takeNth(n, coll) {
-    collectionArity("take-nth", arguments.length); numberArgument(n);
+    if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
+    numberArgument(n);
+    if (arguments.length === 1) return transform(rf => {
+      let index = -1;
+      return reducingFunction(rf, (result, input) => ++index % n === 0 ? rf.call(null, result, input) : result);
+    });
+    collectionArity("take-nth", arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(first(s), takeNth(n, drop(n, s))); });
   }
   function dropLast(n, coll) { if (arguments.length === 1) { coll = n; n = 1; } else if (arguments.length !== 2) return invalidArity(arguments.length); return mapSeq((x, _) => x, coll, drop(n, coll)); }
@@ -2640,7 +2781,7 @@
     });
   }
   function partitionVAll(n, step, coll) {
-    if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return collectionArity("partitionv-all", 1); else if (arguments.length !== 3) return invalidArity(arguments.length);
+    if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return partitionAll(n); else if (arguments.length !== 3) return invalidArity(arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(vec(take(n, coll)), partitionVAll(n, step, drop(step, s))); });
   }
   function shuffle(coll) {
@@ -2681,10 +2822,11 @@
     });
   }
   function partitionAll(n, step, coll) {
-    if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return collectionArity("partition-all", 1); else if (arguments.length !== 3) return invalidArity(arguments.length);
+    if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return bufferedTransform({kind: "count", n}); else if (arguments.length !== 3) return invalidArity(arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(take(n, s), partitionAll(n, step, drop(step, s))); });
   }
   function partitionBy(fn, coll) {
+    if (arguments.length === 1) return bufferedTransform({kind: "key", fn});
     collectionArity("partition-by", arguments.length);
     return lazySequence(() => {
       const s = seq(coll); if (s === null) return null;
@@ -2704,7 +2846,18 @@
       return result;
     });
   }
-  function interpose(sep, coll) { collectionArity("interpose", arguments.length); return drop(1, interleave(repeat(sep), coll)); }
+  function interpose(sep, coll) {
+    if (arguments.length === 1) return transform(rf => {
+      let started = false;
+      return reducingFunction(rf, (result, input) => {
+        if (started) { result = rf.call(null, result, sep); if (isReduced(result)) return result; }
+        else started = true;
+        return rf.call(null, result, input);
+      });
+    });
+    collectionArity("interpose", arguments.length);
+    return drop(1, interleave(repeat(sep), coll));
+  }
   function dorun(n, coll) {
     if (arguments.length === 1) { coll = n; n = Infinity; } else if (arguments.length !== 2) return invalidArity(arguments.length);
     while (seq(coll) !== null && n > 0) { coll = next(coll); n--; }
@@ -2716,15 +2869,16 @@
   function mapv(fn, ...colls) { return into(vector(), mapSeq(fn, ...colls)); }
   function filterv(fn, coll) { return reduce((v, x) => truth(fn.call(null, x)) ? conj(v, x) : v, vector(), coll); }
   function cat(rf) {
-    return function (result, input) {
-      if (arguments.length === 0) return rf.call(null);
-      if (arguments.length === 1) return rf.call(null, result);
-      // Preserve a reduced marker across the nested reduction and avoid
-      // realizing another input after the downstream reducer terminates.
-      return reduce((acc, value) => { const next = rf.call(null, acc, value); return isReduced(next) ? reduced(next) : next; }, result, input);
-    };
+    return reducingFunction(rf, (result, input) => reduce((acc, value) => {
+      const ret = rf.call(null, acc, value);
+      return isReduced(ret) ? reduced(ret) : ret;
+    }, result, input));
   }
-  function mapcat(fn, ...colls) { if (!colls.length) return collectionArity("mapcat", arguments.length); return apply(concat, mapSeq(fn, ...colls)); }
+  function mapcat(fn, ...colls) {
+    if (arguments.length === 1) return comp(mapSeq(fn), cat);
+    if (!colls.length) return invalidArity(arguments.length);
+    return apply(concat, mapSeq(fn, ...colls));
+  }
   function rangeNode(start, end, step, integer, suppliedCount) {
     const rangeCount = arguments.length >= 5 ? suppliedCount : Math.ceil((end - start) / step);
     const value = builtinValue(integer ? "IntegerRange" : "Range", sequencePrototype);
@@ -3320,7 +3474,7 @@
     invokeProtocol: coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args)),...numeric, ...predicates, keyword: keywordCore, symbol: symbolCore, vector, list,
     gensym, macroexpand, macroexpand1,
     hashMap, arrayMap, sortedMap, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
-    reduce, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
+    reduce, completing, transduce, ensureReduced, haltWhen, dedupe, randomSample, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
     Atom, atomFactory, Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol, resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch, notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
     IPending, realized, force, isDelay: value => delays.has(value), nthrest, nthnext,
     IDeref, IAtom, IReset, ISwap, IVolatile, IWatchable,

@@ -687,10 +687,34 @@ entry/member storage once; vectors/lists/seq views need O(1) traversal state.
 Temporary storage stays local and private brands use weak maps. Runtime execution
 uses host resources/GC and the existing test subprocess timeout; the current
 native macro host has separate fuel/cancellation limits. `reduce-kv` dispatches
-`IKVReduce` and supports owned maps and vectors. Transducers, `transduce` and
-`completing` remain gaps in the canonical JavaScript path, assigned to
-`light-cljs-118`; their existing native behavior must be preserved through the
-[evaluator migration](evaluator-migration.md#language-coverage-and-completion-boundaries).
+`IKVReduce` and supports owned maps and vectors. `transduce` supports both
+three- and four-argument forms; `completing` adds completion to a step function,
+and `ensure-reduced` preserves an existing Reduced marker. Without an explicit
+initial value, `transduce` calls the original reducer's zero-argument form before
+applying the transform. Reduction removes one Reduced layer, then invokes the
+transformed reducer's completion once. Throwing initialization, transforms,
+source realization or steps prevent subsequent completion. Engine cancellation
+remains terminal for the session.
+
+Transducer constructors include `map`, `map-indexed`, `keep`, `keep-indexed`,
+`filter`, `remove`, `take`, `drop`, `take-while`, `drop-while`, `take-nth`,
+`partition-all`, `partitionv-all`, `partition-by`, `cat`, `mapcat`, `interpose`,
+`replace`, `dedupe`, `distinct`, `random-sample` and `halt-when`. Their state is
+fresh each time a constructor receives a reducer. Reducer initialization forwards
+to the downstream reducer without resetting existing state. Buffered partitions
+clear before emitting, including during completion and reentry; completion
+unwraps one marker from a final partial partition before forwarding. `cat`
+preserves downstream Reduced layers through each nested reduction and stops
+before realizing another inner item. `halt-when` preserves the upstream public
+`::cljs.core/halt` return convention and optional completed-result callback.
+
+All reducers, mapping functions and source reductions use the ordinary canonical
+IFn/IReduce ABI in JavaScript. Transforming `into` uses persistent destinations
+and retains metadata. Compiled macros execute these same helpers and can export
+persistent expansion forms. The [transducer audit](../tests/reference/compiler-transducers.md)
+records exact reference and local verification; native exact-number and
+JVM-specific constructor differences are superseded by CLJS Number semantics.
+`sequence` transducer arities and `eduction` remain separately assigned.
 Reader and language support add
 `apply`, recurrence, multiple/variadic functions and Vars; `@` uses the shared
 reference and `IDeref` dispatch described above.
@@ -1721,9 +1745,9 @@ namespace aliases use the same compilation path. The separate native interpreter
 retains its comprehension implementations until evaluator consumer migration.
 
 The [sequence evidence and arity inventory](../tests/reference/compiler-sequences.md)
-distinguishes collection overloads from transducer constructors. These constructors
-are explicitly unsupported by this sequence member; they do not silently produce
-an empty sequence when a collection argument is omitted.
+distinguishes collection overloads from transducer constructors. Eager transducer constructors are implemented by the
+[canonical transduction contract](../tests/reference/compiler-transducers.md);
+`sequence` transducer arities and `eduction` have separate lazy output contracts.
 
 ### Public compiler warnings
 
