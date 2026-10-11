@@ -144,7 +144,6 @@ const ASSERTION_MACROS: &str = r#"
 fn complete_pinned_checkout_destructuring_bodies() {
     use light_cljs::{MacroHost, compile_with_macros};
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     for (name, body) in CHECKOUT_BODIES {
         // Keep every complete upstream body unchanged; first-party assertion
         // macros are now compiled source declarations in the same namespace.

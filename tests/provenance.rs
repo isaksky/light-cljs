@@ -203,11 +203,6 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     include_str!("analyzer.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown analyzer test: {id}"
                 ),
-                "tests/interpreter_embedding.rs" => assert!(
-                    include_str!("interpreter_embedding.rs")
-                        .contains(&format!("#[test]\nfn {id}()")),
-                    "unknown embedding test: {id}"
-                ),
                 "tests/eval_cli.rs" => assert!(
                     include_str!("eval_cli.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown native CLI test: {id}"

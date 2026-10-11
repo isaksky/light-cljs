@@ -104,7 +104,7 @@ def main():
     parser.add_argument("--checkout", type=Path, required=True,
                         help=f"Clean SCI source checkout at {REVISION}; no release fallback")
     parser.add_argument("--fixtures", type=Path, default=FIXTURES, help="Existing sci-outcomes-v1 corpus, including exported seed/reduction replay files")
-    parser.add_argument("--native", action="store_true", help="After exact SCI comparison, execute native integration suites with the same timeout and crash enforcement")
+    parser.add_argument("--evaluator", action="store_true", help="After exact SCI comparison, execute canonical evaluator integration suites with the same timeout and crash enforcement")
     parser.add_argument("--write", action="store_true", help="Update committed fixtures and runtime.tsv after all cases succeed")
     parser.add_argument("--timeout", type=float, default=180, help="Positive JVM process timeout in seconds (default 180)")
     args = parser.parse_args()
@@ -114,8 +114,8 @@ def main():
     print(f"SCI reference artifacts: {artifacts}", flush=True)
     checkout = checked_checkout(args.checkout, artifacts)
     fixture_path = args.fixtures.resolve(strict=True)
-    if args.native and fixture_path != FIXTURES:
-        parser.error("--native uses the committed corpus; use LIGHT_CLJS_NATIVE_REPLAY for custom files")
+    if args.evaluator and fixture_path != FIXTURES:
+        parser.error("--evaluator uses the committed corpus; run custom files as oracle-only comparisons")
     original = fixture_path.read_text()
     rows = fixture_rows(original)
     # An empty cwd plus -Srepro prevents project/user aliases from replacing the oracle.
@@ -146,14 +146,13 @@ def main():
             if expected != result:
                 raise RuntimeError(f"SCI mismatch for {expected[0]} ({expected[2]}):\nexpected {expected[3:]}\nactual {result[3:]}")
         print(f"Matched all {len(rows)} SCI reference cases; runtime/options in {metadata_path}")
-    if args.native:
-        targets = sorted(path.stem for path in (ROOT / "tests").glob("interpreter_*.rs"))
-        targets += ["native_cli", "native_examples", "sci_reference", "provenance"]
+    if args.evaluator:
+        targets = ["evaluator_conformance", "eval_sessions", "eval_cli", "sci_reference", "provenance"]
         command = ["cargo", "test", "--locked"]
         for target in targets:
             command.extend(["--test", target])
-        native_output = checked_process(command, ROOT, artifacts / "native", args.timeout)
-        print(native_output, end="")
+        evaluator_output = checked_process(command, ROOT, artifacts / "evaluator", args.timeout)
+        print(evaluator_output, end="")
 
 
 if __name__ == "__main__":

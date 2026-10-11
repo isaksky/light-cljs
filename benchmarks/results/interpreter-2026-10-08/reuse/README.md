@@ -1,3 +1,8 @@
+> **Archived native measurement.** The interpreter, benchmark harnesses and runner
+> scripts have been removed. Commands and implementation claims below describe
+> the historical revision recorded here, not the current checkout. See
+> [the archive contract](../../../interpreter.md).
+
 # Bounded reuse and scalar-root comparison
 
 Compared with the immutable [known-good native baseline](../README.md), using

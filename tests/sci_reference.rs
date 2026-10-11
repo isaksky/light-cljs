@@ -165,7 +165,7 @@ fn pinned_sci_reference_matches_committed_outcomes() {
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args([
                 "tests/reference/sci/regenerate.py",
-                "--native",
+                "--evaluator",
                 "--checkout",
             ])
             .arg(checkout)

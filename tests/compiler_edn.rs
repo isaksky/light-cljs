@@ -11,7 +11,6 @@ mod protocol;
 
 fn program(source: &str) -> light_cljs::Program {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|e| panic!("{source}: {e}"))
 }
@@ -40,7 +39,6 @@ fn both(source: &str, expected: &str) {
     );
     fs::write(dir.join("main.cljs"), &source).unwrap();
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let js =
         light_cljs::compile_namespace_with_macros("main", std::slice::from_ref(&dir), &mut host)
             .unwrap_or_else(|e| panic!("{source}: {e}"));

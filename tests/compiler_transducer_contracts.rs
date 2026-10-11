@@ -6,7 +6,6 @@ use std::process::Command;
 
 fn program(source: &str) -> light_cljs::Program {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap()
 }
 fn both(source: &str, expected: &str) {

@@ -936,7 +936,6 @@ fn recurrence_targets_are_distinct_and_macro_generated_spans_remain_at_the_call(
     assert_eq!(p.recur_targets[targets[0].0].params.len(), 1);
     assert_eq!(p.recur_targets[targets[1].0].params.len(), 0);
     let mut host = light_cljs::MacroHost::new();
-    host.disable_native_evaluation();
     let source = "(defmacro again [] '(recur)) ; λ\n(again)";
     let CompileError::Analysis(error) =
         light_cljs::compile_with_macros(source, &mut host).unwrap_err()

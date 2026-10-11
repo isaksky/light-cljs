@@ -154,7 +154,6 @@ impl EvalSession {
     pub fn new(options: EvalOptions) -> Result<Self, EvalDiagnostic> {
         let engine = Evaluator::interactive(options.engine.clone())?;
         let mut host = crate::MacroHost::new();
-        host.disable_native_evaluation();
         host.limits = options.compiler.clone();
         host.evaluator_options = options.engine.clone();
         host.interactive_control = Some(engine.control());

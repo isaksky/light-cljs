@@ -1,9 +1,8 @@
 //! Resident phases; raw output is consumed by benchmarks/run_compiler.py.
 use light_cljs::{
-    ApplicationOptions, MacroHost, MacroImport, NamespaceInput, Program, SyntaxTree, analyze,
+    ApplicationOptions, MacroHost, NamespaceInput, Program, SyntaxTree, analyze,
     analyze_namespaces, analyze_with_macros, compile, compile_namespace,
-    compile_namespace_with_macros, compile_with_macros, emit_js, interpreter::Name, parse,
-    prepare_application,
+    compile_namespace_with_macros, compile_with_macros, emit_js, parse, prepare_application,
 };
 #[cfg(not(feature = "count-allocations"))]
 use std::time::Instant;
@@ -24,25 +23,13 @@ mod allocations;
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
 const COLLECTION: &str = include_str!("../benchmarks/fixtures/compiler/collections/value.cljs");
-const MACRO: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/macros.clj");
-const MACRO_CALL: &str = "(m/data)";
+const MACRO_CALL: &str = "(defmacro data [] '[1 2 3]) (data)";
 const DATA: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/data.cljs");
 const MAIN: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/main.cljs");
 const SINGLE: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/single.cljs");
 
 fn host() -> MacroHost {
-    let mut host = MacroHost::new();
-    host.context_mut().eval_string(MACRO).unwrap();
-    host.set_imports(
-        "cljs.user",
-        vec![MacroImport {
-            namespace: "bench.macros".into(),
-            alias: Some("m".into()),
-            refers: vec![],
-        }],
-    )
-    .unwrap();
-    host
+    MacroHost::new()
 }
 
 fn batch(name: &str, phase: &str, samples: usize, iterations: usize, mut f: impl FnMut() -> usize) {
@@ -153,7 +140,7 @@ fn namespace_program(trees: &[SyntaxTree], combined: bool) -> Program {
     }
 }
 
-// This focused path does not enter the transitional native macro benchmarks.
+// This focused path measures primitives separately from macro and application setup.
 fn application_node(js: &str) -> Vec<u8> {
     let mut child = Command::new(env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .args([
@@ -323,7 +310,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tree = parse(MACRO_CALL).unwrap();
     let mut reused = host();
     let expected = compile("[1 2 3]")?;
-    assert_eq!(compile_with_macros(MACRO_CALL, &mut reused)?, expected);
+    assert_eq!(
+        application_node(&compile_with_macros(MACRO_CALL, &mut reused)?),
+        application_node(&expected),
+    );
     batch("macro", "parse", samples, iterations, || {
         let t = parse(black_box(MACRO_CALL)).unwrap();
         black_box(&t);
@@ -371,21 +361,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
         );
     }
-    // Isolate the public expansion call: prepared owned form, resolved Var and
-    // nil environment (this macro does not inspect &env). Excludes compiler
-    // import/lowering, lookup, source parsing, host construction and macro load.
-    let c = reused.context_mut();
-    let src = c.source("macro-call.cljs", MACRO_CALL);
-    let form = c.reader(&src)?.read_form()?.unwrap();
-    let var = c
-        .find_interned_var(&Name::new(None, "bench.macros"), &Name::new(None, "data"))?
-        .unwrap();
-    let env = c.nil();
-    batch("macro", "expand-resolved", samples, iterations, || {
-        let expanded = c.expand_macro_call(&form, &var, &env).unwrap();
-        black_box(&expanded);
-        expanded.nodes().len()
-    });
     let root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/fixtures/compiler/collections");
     for (name, entry, sources) in [

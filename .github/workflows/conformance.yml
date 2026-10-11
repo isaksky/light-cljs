@@ -20,7 +20,7 @@ jobs:
           node-version: '24.18.0'
       - run: cargo check --locked --all-features
       - run: cargo test --locked
-      - name: Require migrated consumers without native evaluation
+      - name: Require canonical consumers with interpreter absent
         if: ${{ !cancelled() }}
         run: python3 -B tests/reference/evaluator-migration/gate.py --artifacts /tmp/light-cljs-evaluator-gate
       - name: Preserve evaluator gate diagnostics

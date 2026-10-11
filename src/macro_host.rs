@@ -1,14 +1,9 @@
-//! Compiler-owned macro requests and configuration. The transitional native
-//! adapter remains until light-cljs-115; JavaScript expansion uses owned forms.
+//! Compiler-owned macro requests and configuration. JavaScript expansion uses owned forms.
 use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::ExprContext;
 use crate::compiler_data::{Form, Name};
 use crate::compiler_names::{core_macro, is_definition_macro};
-use crate::interpreter::{
-    BindingGuard, Context, Form as NativeForm, NativeDefinition, Reload, ResourceLimits,
-    RootedValue, ValueView,
-};
 
 /// Compiler import metadata. Filesystem imports share ordinary runtime aliases.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -18,7 +13,7 @@ pub struct MacroImport {
     pub refers: Vec<String>,
 }
 
-/// Per-compilation expansion bounds, in addition to interpreter resource limits.
+/// Per-compilation expansion bounds, in addition to evaluator resource limits.
 #[derive(Clone, Copy, Debug)]
 pub struct MacroLimits {
     pub expansions: usize,
@@ -42,14 +37,11 @@ pub(crate) enum SourceBindingKind {
 }
 
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
-/// QuickJS bootstrap session. Explicit legacy native imports remain isolated until
-/// light-cljs-115; reusing this host never reuses JavaScript macro roots.
+/// QuickJS bootstrap session; reusing this host never reuses JavaScript macro roots.
 #[derive(Default)]
 pub struct MacroHost {
     compiler_data_readers: std::rc::Rc<std::cell::RefCell<CompilerDataReaders>>,
-    context: Option<Context>,
     imports: HashMap<String, Vec<MacroImport>>,
-    native_namespaces: HashSet<String>,
     renames: HashMap<String, Vec<(String, String, String)>>,
     namespace_symbols: HashMap<String, crate::compiler_data::Datum>,
     namespace_docs: HashMap<String, crate::compiler_data::Datum>,
@@ -66,7 +58,6 @@ pub struct MacroHost {
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros: HashMap<String, crate::compiler_bootstrap::CompiledMacro>,
     pub(crate) source_bindings: HashMap<String, SourceBindingKind>,
-    native_disabled: bool,
     pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
@@ -84,7 +75,6 @@ struct CompilerDataReaders {
 
 impl MacroHost {
     /// Allocate a fresh synchronous heap for a clean compilation.
-    /// The legacy native macro adapter is removed by light-cljs-115.
     pub fn new_evaluator(
         &self,
     ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
@@ -176,44 +166,15 @@ impl MacroHost {
     /// assertions omit both condition and message, including function pre/post checks.
     pub fn set_assertions(&mut self, enabled: bool) {
         self.assertions_disabled = !enabled;
-        if let Some(context) = &mut self.context {
-            context.compiler_assertions(enabled);
-        }
     }
     pub fn assertions_enabled(&self) -> bool {
         !self.assertions_disabled
     }
-    /// Interpreter effects, limits and source providers are explicit embedding APIs.
-    /// Explicit migration seam: reject every attempt to initialize native evaluation.
-    pub fn disable_native_evaluation(&mut self) {
-        self.native_disabled = true;
-    }
-    pub fn context_mut(&mut self) -> &mut Context {
-        assert!(!self.native_disabled, "native evaluation is disabled");
-        let assertions = self.assertions_enabled();
-        self.context.get_or_insert_with(|| {
-            let mut context = Context::new();
-            context.initialize_compiler_host();
-            context.compiler_assertions(assertions);
-            context.set_resource_limits(ResourceLimits {
-                fuel: Some(1_000_000),
-                allocation: Some(2_000_000),
-                ..ResourceLimits::default()
-            });
-            context
-        })
-    }
     /// Read immutable compiler-owned data without initializing an evaluator.
-    /// Explicit native data-reader callbacks use the temporary adapter.
     pub fn read_compiler_form(
         &mut self,
         source: &crate::compiler_data::Source,
     ) -> Result<Option<Form>, crate::compiler_data::ReadError> {
-        if let Some(context) = &self.context {
-            if context.has_custom_data_readers() {
-                return crate::native_form_adapter::read_form(context, source);
-            }
-        }
         let mut parser = crate::Parser::new(source.text()).retaining_discards();
         let root = parser
             .read_form()
@@ -354,41 +315,6 @@ impl MacroHost {
         view: &crate::compiler_reader::NamespaceView,
         discards: &[crate::NodeId],
     ) -> Result<Form, crate::compiler_data::ReadError> {
-        if let Some(context) = &self.context {
-            if context.has_custom_data_readers() {
-                let aliases = view
-                    .aliases
-                    .iter()
-                    .map(|(a, n)| {
-                        (
-                            String::from_utf16_lossy(a.name()),
-                            String::from_utf16_lossy(n.name()),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let globals = view
-                    .refers
-                    .iter()
-                    .map(|(a, n)| {
-                        (
-                            String::from_utf16_lossy(a.name()),
-                            String::from_utf16_lossy(n.namespace().unwrap()),
-                            String::from_utf16_lossy(n.name()),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                return crate::native_form_adapter::lower_form(
-                    context,
-                    &view.namespace,
-                    source,
-                    tree,
-                    root,
-                    &aliases,
-                    discards,
-                    &globals,
-                );
-            }
-        }
         let reader = |tag: &Name,
                       value: &crate::compiler_data::Datum,
                       location: &crate::compiler_data::SourceSpan| {
@@ -418,43 +344,8 @@ impl MacroHost {
             Some(&reader),
         )
     }
-    pub fn register_macro(&mut self, definition: &'static NativeDefinition) -> RootedValue {
-        self.native_namespaces
-            .insert(definition.metadata.namespace.to_owned());
-        self.context_mut().register_macro(definition)
-    }
-    /// Load `.clj`/`.cljc` through the interpreter's explicitly supplied provider.
-    /// Reload observes updated Var roots; expanded compiler forms are never cached.
-    pub fn load_namespace(&mut self, namespace: &str, reload: Reload) -> Result<(), String> {
-        if matches!(namespace, "cljs.core" | "clojure.core")
-            || (reload == Reload::None && self.native_namespaces.contains(namespace))
-        {
-            return Ok(());
-        }
-        let c = self.context_mut();
-        let require = c
-            .find_interned_var(
-                &Name::new(None, "clojure.core"),
-                &Name::new(None, "require"),
-            )
-            .map_err(|e| e.to_string())?
-            .expect("core require");
-        let mut args = vec![c.symbol(Name::new(None, namespace))];
-        if reload != Reload::None {
-            args.push(c.keyword(Name::new(
-                None,
-                if reload == Reload::All {
-                    "reload-all"
-                } else {
-                    "reload"
-                },
-            )));
-        }
-        c.invoke(&require, &args).map_err(|e| e.to_string())?;
-        Ok(())
-    }
     /// Configure imports without loading or evaluating code. Filesystem compilation
-    /// registers source dependencies first; embedders may pre-register native macros.
+    /// registers source dependencies first.
     pub(crate) fn set_interactive_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
         let current = self.imports.entry(caller.to_owned()).or_default();
         for import in imports {
@@ -552,17 +443,14 @@ impl MacroHost {
             bootstrap_seed: true,
             javascript_macros: self.javascript_macros.clone(),
             source_bindings: self.source_bindings.clone(),
-            native_disabled: true,
             session_ref: self.session_handle().map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
             ..Self::default()
         }
     }
-    // Temporary native import adapter, removed with light-cljs-115. Such hosts
-    // retain their existing eager analysis; JS source macros never use it.
     pub(crate) fn defers_source_units(&self) -> bool {
-        !self.bootstrap_seed && self.context.is_none() && self.native_namespaces.is_empty()
+        !self.bootstrap_seed
     }
     pub(crate) fn session_handle(&self) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
         self.session.clone().or_else(|| self.session_ref.upgrade())
@@ -701,10 +589,7 @@ impl MacroHost {
         if self.javascript_macros.contains_key(&format!("{namespace}/{name}")) {
             return Ok(!self.source_binding_private(namespace, name));
         }
-        if self.context.is_none() {
-            return Ok(false);
-        }
-        Ok(self.find_macro(namespace, name)?.is_some())
+        Ok(false)
     }
     pub(crate) fn resolves_macro(
         &mut self,
@@ -718,46 +603,6 @@ impl MacroHost {
         }
     }
 
-    pub(crate) fn find_macro(
-        &mut self,
-        namespace: &str,
-        name: &str,
-    ) -> Result<Option<RootedValue>, String> {
-        let namespace = if matches!(namespace, "cljs.core" | "clojure.core") {
-            if !core_macro(name) {
-                return Ok(None);
-            }
-            "clojure.core"
-        } else {
-            namespace
-        };
-        // Core macros execute compiler-emitted JavaScript. This resolver is
-        // exclusively the legacy source/native embedding adapter (light-cljs-115).
-        if namespace == "clojure.core" {
-            return Ok(None);
-        }
-        if self.context.is_none() {
-            return Ok(None);
-        }
-        if self.native_disabled {
-            return Err("native macro evaluation is disabled".into());
-        }
-        let c = self.context_mut();
-        let var = c
-            .find_interned_var(&Name::new(None, namespace), &Name::new(None, name))
-            .map_err(|e| e.to_string())?;
-        let Some(var) = var else { return Ok(None) };
-        let Some(meta) = var.metadata() else {
-            return Ok(None);
-        };
-        let truth = |key| {
-            meta.get(&c.keyword(Name::new(None, key)))
-                .ok()
-                .flatten()
-                .is_some_and(|v| !matches!(v.inspect(), ValueView::Nil | ValueView::Boolean(false)))
-        };
-        Ok((truth("macro") && !truth("private")).then_some(var))
-    }
     pub(crate) fn macro_name(
         &self,
         caller: &str,
@@ -793,27 +638,11 @@ impl MacroHost {
                 })
         }
     }
-    pub(crate) fn resolve(
-        &mut self,
-        caller: &str,
-        operator: &str,
-        shadow_core: bool,
-    ) -> Result<Option<RootedValue>, String> {
-        match self.macro_name(caller, operator, shadow_core) {
-            Some((namespace, name)) => self.find_macro(&namespace, &name),
-            None => Ok(None),
-        }
-    }
     pub(crate) fn expand_compiler_seed(
         &mut self,
         form: &Form,
         name: &Name,
     ) -> Result<Option<Form>, String> {
-        let started = self
-            .context
-            .as_ref()
-            .is_some_and(Context::compiler_diagnostics_enabled)
-            .then(std::time::Instant::now);
         let builder = crate::compiler_data::DataBuilder;
         let extended = crate::compiler_destructuring::expand(&builder, form, &name)?;
         let parts = form.data().elements()?;
@@ -863,56 +692,6 @@ impl MacroHost {
             if self.generated_nodes.get() > self.limits.generated_nodes {
                 return Err("compiler macro generated-node limit exceeded".into());
             }
-        }
-        if let (Some(started), Some(expanded), Some(context)) =
-            (started, &expanded, &mut self.context)
-        {
-            context.record_compiler_expansion(
-                Name::from_utf16(Some(Name::new(None, "clojure.core").name()), name.name()),
-                expanded.nodes().len(),
-                started.elapsed(),
-            );
-        }
-        Ok(expanded)
-    }
-    pub(crate) fn expand(
-        &mut self,
-        form: &Form,
-        var: &RootedValue,
-        env: &RootedValue,
-    ) -> Result<Form, String> {
-        if let ValueView::Var(name) = var.inspect() {
-            if name.namespace() == Some(Name::new(None, "clojure.core").name()) {
-                let name = Name::from_utf16(Some(Name::new(None, "cljs.core").name()), name.name());
-                if let Some(expanded) = self.expand_compiler_seed(form, &name)? {
-                    return Ok(expanded);
-                }
-            }
-        }
-        let (native, sources) =
-            crate::native_form_adapter::native_form_with_sources(self.context_mut(), form)?;
-        let expanded = self.expand_native(&native, var, env)?;
-        crate::native_form_adapter::own_form_with_sources(&expanded, sources)
-    }
-    // Temporary native execution seam; deleted with native_form_adapter by
-    // light-cljs-115 after macro bootstrap/source execution migration.
-    fn expand_native(
-        &mut self,
-        form: &NativeForm,
-        var: &RootedValue,
-        env: &RootedValue,
-    ) -> Result<NativeForm, String> {
-        if self.expansions.get() >= self.limits.expansions {
-            return Err("compiler macro expansion limit exceeded".into());
-        }
-        self.expansions.set(self.expansions.get() + 1);
-        let expanded = self
-            .context_mut()
-            .expand_macro_call(form, var, env)
-            .map_err(|e| e.to_string())?;
-        self.generated_nodes.set(self.generated_nodes.get().saturating_add(expanded.nodes().len()));
-        if self.generated_nodes.get() > self.limits.generated_nodes {
-            return Err("compiler macro generated-node limit exceeded".into());
         }
         Ok(expanded)
     }
@@ -978,18 +757,6 @@ impl MacroHost {
         };
         run().map(Some).map_err(|e| e.to_string())
     }
-    pub(crate) fn bind_namespace(&mut self, namespace: &str) -> Result<BindingGuard, String> {
-        let c = self.context_mut();
-        let ns = c
-            .compiler_namespace(Name::new(None, namespace))
-            .map_err(|e| e.to_string())?;
-        let var = c
-            .find_interned_var(&Name::new(None, "clojure.core"), &Name::new(None, "*ns*"))
-            .map_err(|e| e.to_string())?
-            .expect("core *ns*");
-        c.bind_vars(&[(var.var_id().unwrap(), ns)])
-            .map_err(|e| e.to_string())
-    }
     pub(crate) fn reader_refers(&self, namespace: &str) -> Vec<(String, String, String)> {
         let mut names = self
             .imports
@@ -1026,19 +793,6 @@ impl MacroHost {
             }
         }
         aliases
-    }
-    pub(crate) fn environment(
-        &mut self,
-        namespace: &str,
-        context: ExprContext,
-        locals: &[(String, usize, &'static str, Option<usize>)],
-        aliases: &[(String, String)],
-        requires: &[String],
-        location: (usize, usize),
-    ) -> Result<RootedValue, String> {
-        let data =
-            self.compiler_environment(namespace, context, locals, aliases, requires, location)?;
-        crate::native_form_adapter::native_datum(self.context_mut(), &data)
     }
     pub fn compiler_environment(
         &self,
@@ -1167,57 +921,10 @@ impl MacroHost {
 }
 
 #[cfg(test)]
-mod compiler_owned_origin_tests {
-    use super::*;
-    use crate::compiler_data::{DiagnosticLocation, Origin, Source};
-    #[test]
-    fn nested_expansion_preserves_origins_sources_and_metadata_after_host_drop() {
-        let mut host = MacroHost::new();
-        host.context_mut().eval_string("(ns macros) (defmacro outer [x] (list 'macros/inner x)) (defmacro inner [x] (list 'vector &form x))").unwrap();
-        let source = Source::new("nested.cljs", "\n(macros/outer ^:kept [1])");
-        let call = host.read_compiler_form(&source).unwrap().unwrap();
-        let outer = host
-            .context_mut()
-            .resolve_var(&Name::new(Some("macros"), "outer"))
-            .unwrap()
-            .unwrap();
-        let inner = host
-            .context_mut()
-            .resolve_var(&Name::new(Some("macros"), "inner"))
-            .unwrap()
-            .unwrap();
-        let env = host.context_mut().nil();
-        let first = host.expand(&call, &outer, &env).unwrap();
-        let second = host.expand(&first, &inner, &env).unwrap();
-        drop(env);
-        drop(outer);
-        drop(inner);
-        drop(call);
-        drop(first);
-        drop(host);
-        let children = second.children();
-        assert_eq!(
-            second.node().origin,
-            Origin::MacroExpansion(std::rc::Rc::new(Name::new(Some("macros"), "inner")))
-        );
-        assert_eq!(
-            children[1].node().origin,
-            Origin::MacroExpansion(std::rc::Rc::new(Name::new(Some("macros"), "outer")))
-        );
-        assert_eq!(second.span().source().id(), source.id());
-        let location = DiagnosticLocation::from_span(&second.span());
-        assert_eq!((location.line, location.column), (2, 1));
-        assert!(children[2].metadata().is_some());
-        drop(source);
-        assert_eq!(second.span().source().name(), "nested.cljs");
-    }
-}
-
-#[cfg(test)]
 mod compiler_pure_tests {
     use super::*;
     #[test]
-    fn reader_seed_declarations_and_metadata_never_initialize_native_context() {
+    fn reader_seed_declarations_and_metadata_use_owned_forms() {
         let mut host = MacroHost::new();
         for text in [
             "(let [{:keys [x] :or {x 4}} {}] (assert (= x 4)) x)",
@@ -1231,7 +938,6 @@ mod compiler_pure_tests {
             "`[+ unknown ~(+ 1 2) ~@[3]]",
         ] {
             crate::compile_with_macros(text, &mut host).unwrap_or_else(|e| panic!("{text}: {e}"));
-            assert!(host.context.is_none(), "{text} initialized native context");
         }
         host.set_imports(
             "cljs.user",
@@ -1243,10 +949,8 @@ mod compiler_pure_tests {
         )
         .unwrap();
         crate::compile_with_macros("(c/let [x 3] x)", &mut host).unwrap();
-        assert!(host.context.is_none());
         let source = crate::compiler_data::Source::new("reader.cljs", "^:kept #:x{:z [1] :a 2}");
         let form = host.read_compiler_form(&source).unwrap().unwrap();
-        assert!(host.context.is_none());
         assert_eq!(form.children()[0].span().text(), ":z");
         assert!(form.metadata().is_some());
     }
@@ -1276,7 +980,6 @@ mod compiler_default_reader_tests {
             match form.data().kind() { DatumKind::Integer(n) => *n as f64, DatumKind::Double(n) => *n, _ => panic!("expected number") }
         }
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         host.register_compiler_default_data_reader("(fn [tag value] [(str tag) value])").unwrap();
         host.register_compiler_data_reader(Name::new(None, "named"), "(fn [value] (+ value 1))").unwrap();
         let read = |host: &mut MacroHost, text: &str| host.read_compiler_form(&Source::new("reader.cljs",text)).unwrap().unwrap();
@@ -1286,7 +989,6 @@ mod compiler_default_reader_tests {
         assert_eq!(number(&children[1]),7.0);
         assert_eq!(number(&read(&mut host,"#named 7")),8.0);
         assert!(matches!(read(&mut host,"#inst \"2020-01-01\"").data().kind(), DatumKind::CompilerLiteral { .. }));
-        assert!(host.context.is_none());
         host.begin_compilation();
         assert!(host.compiler_data_readers.borrow().default_function.is_none());
         assert_eq!(read(&mut host,"#unknown 9").children().len(),2);

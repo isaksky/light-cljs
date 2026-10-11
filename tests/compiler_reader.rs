@@ -90,7 +90,6 @@ fn reader_values() {
 #[test]
 fn macro_values_keep_semantic_types() {
     let mut h = MacroHost::new();
-    h.disable_native_evaluation();
     let source = r#"(defmacro same [x] x) (defmacro value [] [#inst "2000" #uuid "1-1-1-1-1" #"a"])
         (= [(inst? (nth (value) 0)) (uuid? (nth (value) 1)) (regexp? (nth (value) 2)) (same (#(+ % %2) 1 2))] [true true true 3])"#;
     assert_eq!(run(&compile_with_macros(source, &mut h).unwrap()), "true\n");
@@ -117,7 +116,6 @@ fn invalid_reader_syntax_stays_located() {
 fn configured_readers_run_once_and_keep_effect_order_including_discards() {
     use light_cljs::compiler_data::Name;
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     // Reader functions own counters in the fresh canonical JS compilation heap.
     // Discarded and untaken forms are still read in source order; host reuse
     // preserves reader configuration and creates fresh mutable reader roots.
@@ -192,7 +190,6 @@ fn compiler_forms_and_ir_survive_host_teardown_without_native_roots() {
     let input = String::from(r#"^:kept {:z [#js [1] "\ud800"] :a #uuid "1-1-1-1-1"}"#);
     let source = Source::new("owned.cljs", input.clone());
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let form = host.read_compiler_form(&source).unwrap().unwrap();
     assert_eq!(form.span().source().id(), source.id());
     // Owned compiler forms outlive the entire host without native roots.

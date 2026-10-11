@@ -1,13 +1,11 @@
 # Evaluator migration execution gate
 
 This gate verifies the settled compiler-emitted JavaScript evaluator contract.
-It is separate from parser acceptance, the historical native interpreter tests,
-and whole-language completion. An old native evaluation entrypoint raises an
-assertion whenever `LIGHT_CLJS_DISABLE_NATIVE_EVAL` is present. The fence covers
-the free evaluator, source/string/form/analyzed evaluation, function invocation
-and explicit native invocation. It is temporary instrumentation removed together
-with the legacy adapter under light-cljs-115. The child-process regression proves
-the fence is active without mutating the concurrent test process's environment.
+The Rust interpreter and its native adapter are physically absent. The gate first
+checks that their source, support adapter, test targets and benchmarks have not
+returned, then checks all targets with all features. Historical native results
+cannot contribute to canonical coverage. Whole-language completion remains a
+separate reference-backed requirement.
 
 Run from the repository root:
 
@@ -29,15 +27,9 @@ three named pinned comparisons, never all ignored tests implicitly.
 
 The gate discovers every `compiler_*` and `eval*` integration target, including
 newly added suites, plus analyzer/boundary/CLI/execution/namespace/provenance and
-SCI corpus checks. The sole excluded compiler target is
-`compiler_native_adapter`: its three native callback ABI, native timing counter,
-and dynamic native namespace-object identity tests retain historical API
-contracts until deletion. Their portable source/form/environment/scope
-counterparts execute in `compiler_macros`. Ordinary full Cargo tests continue to
-exercise that temporary adapter. No native execution is permitted in the gate.
-The selected compiler/bootstrap/application/evaluator unit modules also run with
-the fence, including cold source regeneration (bypassing the immutable bootstrap
-artifact cache), cancellation during demand/bundle installation and clean reuse.
+SCI corpus checks. There are no native adapter exclusions. Selected
+compiler/bootstrap/application/evaluator unit modules also execute, including
+cold source regeneration, demand/bundle cancellation and clean reuse.
 
 ## Required case ownership and execution evidence
 
@@ -57,7 +49,7 @@ executing replacement. It does not infer passing from a closed Pellet.
 | Compile-only root elimination, shared runtime helpers, required effects/order/throws, optimizer equivalence | 111 | `compiler_optimization`, `application::tests`, namespace and macro suites |
 | Lifetime/foreign handles/cycles/callback captures, sticky cancellation/limits and recovery | 106, 112 | `evaluator`, `eval_sessions`, bootstrap cancellation tests; native GC/internal counters have these replacement lifetime/limit regressions before retirement |
 | Embedding forms/analyze/evaluate/invoke/eval/macroexpand, loading/state/IO/libraries/transducers | 112, 118, 123 | `eval_sessions`, `evaluator_conformance`, library/reader/transducer suites |
-| Script/text/stdin/REPL/history/errors/reset/explicit controls | 113 | `eval_cli`, `eval_examples`, `cli`; subprocesses inherit the fence |
+| Script/text/stdin/REPL/history/errors/reset/explicit controls | 113 | `eval_cli`, `eval_examples`, `cli`; all use the canonical evaluator |
 | Canonical operations in QuickJS/Node and direct runtime assertions | 106, 114 | `evaluator`, `compiler_core_helpers` (bounded applied partial/juxt constructors in both phases), direct `js_runtime.test.js` and `js_core_helpers.test.js` |
 
 ## Historical expectations and remaining language work

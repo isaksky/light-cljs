@@ -1,49 +1,15 @@
-> Historical native API compatibility record. Production `--eval` and `--repl`
-> now use compiler-emitted JavaScript in `EvalSession`; see [evaluation](evaluation.md).
-> The remaining native library is a temporary adapter until light-cljs-115.
-> Exact native arithmetic, class descriptors, JVM facilities, GC/fork contracts
-> and native resource units described below are retired for evaluation commands.
+# Archived native interpreter compatibility profile
 
-# Native interpreter compatibility profile
-
-**Historical compatibility reference; production evaluation has migrated.**
-The adopted [evaluator architecture](evaluator-migration.md) uses this Rust
-compiler's emitted JavaScript in rquickjs for macros and retained evaluation,
-script, REPL and embedding consumers. The production consumers are implemented in `EvalSession`;
-the APIs and commands below still describe the checkout.
-
-Compiler-owned forms, names, reader transforms, namespace views and source
-metadata must be extracted before interpreter deletion. Supported CLJS behavior
-must move to the canonical JS path. Native exact-number, shared-owner fork/GC
-and native-only descriptor contracts are explicitly retired or mapped to new
-APIs; they are not requirements for a permanent native fallback. See
-[consumer migration](evaluator-migration.md#interpreter-extraction-and-consumer-migration)
-and the separate evaluator/language completion criteria.
-
-The native interpreter is a separate execution path for a portable Clojure
-subset. Its `interpreter` module currently provides **owned scalar and immutable collection values, metadata, structural equality
-and hashing, source spans, executable constants, and explicit garbage collection**.
-It also provides **incremental semantic reading, owned forms, and native
-evaluation of literals, collections, quote, if, do, sequential `let*`, native calls,
-checked arithmetic and predicates, lexical closures, named/multiple/variadic
-`fn*`, mutually recursive `letfn*`, stack-safe `loop*`/function `recur`,
-namespace/Var identities, definitions, dynamic bindings, scoped root redefinitions,
-Var metadata mutation and namespace introspection, single-threaded atoms,
-validators/watches and volatiles, portable exceptions,
-collection core functions, callable data, finite traversal, reductions and eager
-higher-order helpers, user/native macros and macroexpand APIs, ordinary destructuring,
-let/loop/fn/defn/defn-/letfn, function pre/post conditions, short-circuit/conditional/threading
-macros, assertions and constant-data case dispatch, memoized delays/lazy sequences,
-core lazy producers/transformations, bounded/unbounded materialization, lazy `for`,
-effectful `doseq`, `dotimes` and `while`, contextual reader conditionals,
-auto-resolved keywords, namespaced maps, explicit host data readers and host-owned I/O**. Explicit Rust callbacks can be registered;
-production script/REPL commands now compile JavaScript and execute it in embedded QuickJS.
-The exact supported API inventory and executable exclusions appear in the
-[conformance coverage](../tests/reference/sci/README.md#integrated-native-conformance) section.
-Every committed SCI row is executed by the integrated native suite; declared
-differences have separate exact native assertions. The
-existing ClojureScript compiler and its JavaScript semantics remain supported
-under [their own contract](compiler.md).
+> **Historical archive: the native interpreter has been physically removed.**
+> Every API, command, source path, test and implementation statement below describes
+> the retired native checkout, not the current library. Native-only harnesses and
+> runner scripts are no longer available. Archived commands require the historical
+> revision recorded with their evidence. They are not supported migration options.
+> Use [compiler-backed evaluation](evaluation.md), the [compiler reference](compiler.md)
+> and the [migration contract](evaluator-migration.md) for the current implementation.
+> Exact integer/ratio arithmetic, native class descriptors, JVM catches, shared-owner
+> forks, collector internals and native resource units are retired. This archive
+> establishes no canonical JavaScript coverage or whole-language completion.
 
 This profile records the historical `rust-sci` baseline from group context
 revision **1**, and JVM SCI

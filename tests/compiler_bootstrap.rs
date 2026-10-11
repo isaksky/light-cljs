@@ -4,7 +4,6 @@ use light_cljs::{MacroHost, analyze_with_macros, compile_with_macros, parse};
 
 fn result(source: &str) -> String {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let syntax = parse(source).unwrap();
     let program = analyze_with_macros(source, &syntax, &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
@@ -17,7 +16,6 @@ fn result(source: &str) -> String {
 
 fn invalid(source: &str, message: &str) {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let error = compile_with_macros(source, &mut host)
         .unwrap_err()
         .to_string();
@@ -210,7 +208,6 @@ fn source_declarations_are_compile_time_only_and_can_use_ecmascript() {
 #[test]
 fn bootstrap_failure_and_expansion_limits_leave_reused_host_clean() {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     host.evaluator_options.poll_budget = 0;
     assert!(compile_with_macros("(when true 7)", &mut host).is_err());
     host.evaluator_options = EvaluatorOptions::default();

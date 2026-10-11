@@ -7,16 +7,14 @@ distributions, allocation counts and an unchanged primitive baseline.
 The later [language integration measurement](compiler.md#language-integration-october-10-2026)
 records expanded runtime size and validated parse/initialize/execute timings.
 
-Native runtime measurements, source-attributed diagnostics and the reproducible
-saved-binary comparison driver are documented in [interpreter.md](interpreter.md).
-They measure the current native implementation and remain historical baselines
-for the adopted [rquickjs evaluator migration](../docs/evaluator-migration.md).
-They are not rquickjs measurements or an engine-selection prerequisite. Migration
-implementation will retain useful startup, lifetime and regression checks while
-retiring obsolete native-only harnesses.
-The [transducer pipeline measurements](interpreter.md#equivalent-native-transducer-pipelines)
-include a dedicated harness, paired full-value validation and a reproducible
-`run_interpreter_transducers.py` report runner.
+Archived native runtime measurements are documented in [interpreter.md](interpreter.md).
+The interpreter, its benchmark harnesses and four Python runner scripts have been
+removed. Retained results and fixtures describe historical native semantics and
+are not current evaluator coverage or performance claims.
+Use [evaluator measurements](../docs/evaluator.md#verification-and-measurements)
+for the compiler-backed QuickJS path. Run
+`cargo bench --locked --bench evaluator -- --iterations 20` for validated fresh,
+reused and bounded-loop/reset/recovery scenarios.
 
 Measured October 7, 2026. These numbers measure raw tokenization, including
 comment tokens and reader prefixes. They exclude literal decoding/validation,

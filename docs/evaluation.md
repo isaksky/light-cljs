@@ -91,10 +91,11 @@ No input/output capability is connected implicitly.
 
 ## Native API migration map
 
-The `interpreter` module is a temporary legacy adapter until **light-cljs-115**.
-The CLI uses this session for scripts and the REPL. It is never a fallback for
-unsupported emitted code. Legacy interpreter tests retain historical native
-behavior until the dedicated suite migration/removal steps.
+The `interpreter` module and `native_form_adapter` have been removed, along with
+their native-only tests and benchmark harnesses. No feature flag restores them.
+The CLI and embedding API use compiler-backed sessions; unsupported emitted code
+reports an error without a native fallback. The table below maps retired API names
+to the current surface; the left column is not available in this checkout.
 
 | Legacy API or contract | Supported replacement or retirement |
 | --- | --- |
@@ -104,6 +105,8 @@ behavior until the dedicated suite migration/removal steps.
 | `analyze_form`, `eval_analyzed`, `AnalyzedForm` counters | `analyze`/`evaluate`; native expression/local counters retired |
 | `invoke`, `invoke_native`, `register_native`, `native_function`, `NativeDefinition` | `invoke`, configured `HostFunction`/`HostCall` and `HostArity` |
 | Native macro callbacks | Source `defmacro`; macroexpand services use the compiler |
+| `MacroHost::context_mut`, `register_macro`, `load_namespace`/native `Reload` | Source `defmacro` and ordinary `:require`; `compile_namespace_with_macros` reloads source definitions into fresh roots on every clean compilation |
+| Native reader callback registration | `MacroHost::register_compiler_data_reader`/`register_compiler_default_data_reader`, or session data-reader options; handlers execute compiled source functions |
 | `RootedValue`, `ValueView`, scalar/collection constructors | Session `ValueId`, typed accessors and compiler `Datum`; no native heap types |
 | `fork`, shared owner families, reset/reuse stats, collector tracing APIs | `fresh_session`/`reset`; native owner/GC/reuse counters retired |
 | `SourceProvider`, filesystem roots and load state | Compiler-owned provider requests and explicit host implementation; `ns`/`require` load once per session |

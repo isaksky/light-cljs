@@ -54,7 +54,6 @@ fn macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive() {
       (defmacro expanded [] (count (optimizer-only-helper)))
       (expanded)"#;
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
     let off = prepare_application(
         &program,

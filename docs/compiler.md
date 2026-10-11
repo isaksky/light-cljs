@@ -4,8 +4,8 @@ This reference describes the **current implementation**. Macros and demanded
 ordinary helpers execute JavaScript emitted by this compiler through rquickjs.
 Production evaluation consumers use the [compiler-backed session API](evaluation.md).
 The [migration gate](../tests/reference/evaluator-migration/README.md) rejects every
-legacy native execution entrypoint while checking the supported compiler/evaluation
-paths. Explicit legacy embedding adapters await physical removal under light-cljs-115.
+native interpreter dependencies while checking the supported compiler/evaluation
+paths. The native interpreter and legacy embedding adapters have been removed.
 
 The compiler supports small programs with lexical closures, mutable globals,
 source namespaces, and JavaScript interop. The two-namespace example
@@ -59,12 +59,12 @@ Reading, seed expansion and namespace/core metadata inspection need neither a
 native Context nor a JavaScript runtime. `source_provider` owns the load request,
 input and error contracts separately from eager native loading.
 
-`native_form_adapter` remains only for explicitly selected legacy host callbacks.
 Production macros use the structured compiler/QuickJS form bridge; configured
-compiler readers execute canonical JavaScript functions over immutable data. Filesystem compiler imports use the same `.cljs`/`.cljc` namespace
-loader for both phases and never read `.clj` companions. Native public source/form
-APIs remain available until `light-cljs-115` deletes the adapter and native
-compatibility storage. The evaluator boundary executes compiled macro/helper units.
+compiler readers execute canonical JavaScript functions over immutable data.
+Filesystem compiler imports use the same `.cljs`/`.cljc` namespace loader for both
+phases and never read `.clj` companions. `native_form_adapter`, the native public
+source/form APIs and native compatibility storage have been removed. The evaluator
+boundary executes compiled macro/helper units.
 Compile-time emission uses the same semantic IR and canonical runtime operations;
 it may add deferred-root access and bypass optional application optimization.
 See [session ownership and reentrancy](evaluator-migration.md#sessions-ownership-and-reentrancy).
@@ -329,8 +329,8 @@ objects and cycles are rejected at the original tag span. Handler closures keep
 state within a compilation and reset before the next compilation. Unknown tags
 fail without dynamic class, filesystem or namespace lookup. Reader handlers run
 once in source order, including discarded forms and unselected runtime branches.
-The legacy `context_mut().register_data_reader` adapter remains available during
-native migration; ordinary compiler/library execution needs no interpreter API.
+The legacy `context_mut().register_data_reader` adapter has been removed;
+use the compiler reader registration API above or session source data readers.
 Compiler-only opaque values keep regex/Date/UUID/JavaScript literals intact
 through macro expansion; they are never printed and reparsed. Source/argument
 payloads retain their original spans. Reader evaluation (`#=`) stays disabled.
@@ -454,9 +454,8 @@ vectors. `nth` requires a numeric index even for nil: `(nth nil "0")` fails,
 `(nth nil 0)` yields nil, and `(nth nil 0 :missing)` yields the default.
 False, nil and undefined stored in collections remain present values. This original collection milestone is extended by the runtime protocols and deferred-value support documented below.
 The reader supplies `apply`, `vec`, `concat`, one-argument `sequence` and
-two-argument `into` for its expanded forms. The native
-interpreter has a separate target and stricter call/index rules; its support is
-not evidence for generated JavaScript.
+two-argument `into` for its expanded forms. Historical native interpreter
+call/index behavior is not evidence for generated JavaScript.
 
 Quote traverses the source syntax or macro-owned semantic data directly into
 owned `Symbol`, `List`, `Vector`, `Map`, `Set` and scalar expressions. No interpreter is started
@@ -711,8 +710,7 @@ remain source data for diagnostics and duplicate checks; wide radix integers
 round once at execution, consistently across the reader/form bridge and emitter.
 Non-integral ratio source literals remain rejected; ordinary division produces
 fractional Numbers. No Rust exact/ratio arithmetic profile serves JS macros.
-The remaining native embedding adapter is transitional and is retired by
-`light-cljs-115`. The [numeric phase audit](../tests/reference/compiler-numeric.md#compile-time-and-application-number-semantics)
+The native embedding adapter has been removed. The [numeric phase audit](../tests/reference/compiler-numeric.md#compile-time-and-application-number-semantics)
 records the shared bodies, pinned key behavior and verification limits.
 
 Traversal is iterative, uses direct immutable storage offsets and allocates no
@@ -1042,7 +1040,7 @@ Core macro algorithms are first-party `.cljs` declarations compiled by the Rust
 analyzer/emitter and executed in QuickJS. A fresh heap is created for each clean
 compilation; only immutable emitted unit strings are reused in memory. Pure
 binding/destructuring, syntax quote, declarations and namespace reflection remain
-compiler services. `MacroHost::disable_native_evaluation()` checks this boundary.
+compiler services. No native execution API or fallback remains.
 
 Same-file source `defmacro` bodies in `.cljs` and selected `:cljs` branches of
 `.cljc` execute compiler-emitted functions in that session. They can call
@@ -1198,7 +1196,7 @@ Assertions are enabled by default. Call `MacroHost::set_assertions(false)` befor
 `compile_with_macros` or `compile_namespace_with_macros` to omit assertion
 conditions and messages entirely, including unresolved forms and pre/post checks.
 The setting persists on a reused host, can be enabled again, and is reflected in
-the macro interpreter's dynamic `clojure.core/*assert*` Var so source macros can
+the compile-time runtime's dynamic `clojure.core/*assert*` Var so source macros can
 choose whether to generate checks. Macro-side `assert` and explicit `macroexpand`
 also honor that dynamic Var. It is a compilation setting, not an emitted
 runtime toggle. The default CLI and convenience compilation functions enable it.
@@ -1226,9 +1224,8 @@ Extended map directives `:keys!`, `:syms!`, `:strs!`, `:select`, `:all`,
 `:missing`, `:excess`, and `:defaults` preserve their checkout binding,
 evaluation-order and failure behavior. `selector` uses the same compiler macro
 bridge. Release differences are executed and retained explicitly in the
-[destructuring audit](../tests/reference/compiler-destructuring-completion.md). The full native macro runtime is not exposed to emitted programs.
-The finite sequential/named-value core does not expose the interpreter's full collection
-or arithmetic runtime. Metadata/docstrings consumed by
+[destructuring audit](../tests/reference/compiler-destructuring-completion.md). Macro and application execution share canonical runtime operations.
+Metadata/docstrings consumed by
 macros remain available during expansion; runtime function metadata is evaluated
 and attached when the function is created.
 
@@ -1238,11 +1235,11 @@ symbols/lists/vectors/maps/sets execute; unsupported generated reader data still
 shared namespace alias view. `.cljs` reader conditionals are rejected, including inside macro calls;
 `.cljc` branches select `:cljs`/`:default` before macro lowering in both phases. Syntax quote resolves current runtime globals,
 refers, renames, exclusions and macro imports through the compiler's namespace
-view without changing interpreter namespace aliases. `#=` is never enabled.
+view. `#=` is never enabled.
 
 `compile`, `analyze`, and `compile_namespace` create fresh isolated macro hosts.
-The host is initialized lazily, so primitive programs do not initialize an
-interpreter. Use `compile_with_macros`, `analyze_with_macros`,
+The host is initialized lazily, so primitive programs do not initialize a
+macro execution heap. Use `compile_with_macros`, `analyze_with_macros`,
 `compile_namespace_with_macros`, or `analyze_namespaces_with_macros` for an explicit
 `MacroHost`. Runtime global storage is always fresh per compilation, even with a
 reused host. Namespace compilation installs a file provider for its explicit
@@ -1254,10 +1251,10 @@ stale application IR from a previous compilation.
 Source macros are ordinary `.cljs`/`.cljc` declarations imported through
 `:require`. Embedding functions and reader capabilities use
 [`EvalOptions` and `EvalSession`](evaluation.md). `context_mut`, `register_macro`,
-`NativeDefinition`, native import setup and native macro timing APIs are historical
-adapter contracts awaiting removal under light-cljs-115; they are excluded from
-the production migration gate. Their dedicated adapter tests retain the old ABI
-observations separately.
+`NativeDefinition`, native import setup and native macro timing APIs have been
+removed. Source `defmacro` replaces callback macros; session host functions and
+source data readers replace native embedding callbacks. Historical ABI
+observations do not describe current APIs.
 
 The compiler's supported `&env` map follows the pinned CLJS analyzer:
 
@@ -1767,8 +1764,8 @@ effects already required by a source chunk remain observable.
 `for` remains lazy. `doseq` performs effects in order and returns nil. Both support
 nested generators, sequence/map destructuring, `:let`, `:when`, `:while`, and
 escaped per-iteration closures. First-party compiled macro expansions and core
-namespace aliases use the same compilation path. The separate native interpreter
-retains its comprehension implementations until evaluator consumer migration.
+namespace aliases use the same compilation path. The native interpreter has been
+removed.
 
 The [sequence evidence and arity inventory](../tests/reference/compiler-sequences.md)
 distinguishes collection overloads from transducer constructors. Eager transducer constructors are implemented by the

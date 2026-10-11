@@ -23,33 +23,9 @@ name = "parser"
 harness = false
 
 [[bench]]
-name = "interpreter_gc"
-harness = false
-
-[[bench]]
-name = "interpreter"
-harness = false
-
-[[bench]]
-name = "interpreter_reuse"
-harness = false
-
-[[bench]]
-name = "interpreter_transducers"
-harness = false
-
-[[bench]]
-name = "interpreter_protocols"
-harness = false
-
-[[bench]]
-name = "interpreter_records"
-harness = false
-
-[[bench]]
-name = "interpreter_types"
-harness = false
-
-[[bench]]
 name = "compiler"
+harness = false
+
+[[bench]]
+name = "evaluator"
 harness = false

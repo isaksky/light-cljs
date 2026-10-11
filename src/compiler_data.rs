@@ -94,7 +94,7 @@ pub struct FormNode {
     pub origin: Origin,
 }
 
-/// Compact source identity independent of every interpreter owner/generation.
+/// Compact source identity independent of evaluator owner generations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct SourceId(u64);
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
@@ -211,7 +211,7 @@ impl fmt::Debug for Datum {
         self.kind().fmt(f)
     }
 }
-/// Shallow inspection of compiler data, independently of native ValueView.
+/// Shallow inspection of immutable compiler data.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DatumView {
     Nil,

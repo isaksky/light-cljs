@@ -1,5 +1,11 @@
 # Compiler collection costs — October 9, 2026
 
+> Measurements below describe their recorded revisions. Native macro phases,
+> `Context` APIs and native-disable environment variables are historical only:
+> the interpreter and its harnesses have been removed. The current compiler
+> runner uses compiled macros; its phase set omits native `expand-resolved`.
+> Current evaluator measurements are described in [the evaluator contract](../docs/evaluator.md#verification-and-measurements).
+
 The later [language integration measurement](#language-integration-october-10-2026)
 records the expanded compiler/runtime snapshot separately from these collection
 baseline results.
@@ -378,7 +384,7 @@ The native-disabled execution gate and its completed local evidence are
 recorded in [the migration verification](../tests/reference/evaluator-migration/verification.md).
 Historical native macro/collector timings above remain historical; production
 macros and evaluation consumers execute compiler-emitted JavaScript in QuickJS.
-The native bench targets remain for physical retirement under light-cljs-115.
+The native bench targets and runner scripts were physically removed under light-cljs-115.
 The initial gate/test migration left the canonical runtime unchanged. The
 resumed verification also repairs the retained applied-constructor lazy-tail
 contract; its refreshed measurements appear below.

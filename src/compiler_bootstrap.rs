@@ -96,7 +96,6 @@ fn install(unit: &str, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), 
     let values = e.evaluate_unit(unit).map_err(|e| e.to_string())?;
     // Registry access is compiler-emitted code too, sharing canonical get.
     let mut seed = MacroHost::new();
-    seed.disable_native_evaluation();
     let getter = e
         .evaluate_unit(&compile("(fn* [m k] (get m k))", &mut seed)?)
         .map_err(|e| e.to_string())?;
@@ -143,7 +142,6 @@ fn build(options: crate::evaluator::EvaluatorOptions, cache: bool, interactive: 
         functions: HashMap::new(),
     };
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     host.bootstrap_seed = true;
     let core = match &cached {
         Some(units) => units[0].clone(),
@@ -439,7 +437,6 @@ mod tests {
     #[test]
     fn cancelled_demand_discards_roots_before_reusing_host() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         crate::compile_with_macros(
             "(def hits (atom 0)) (defn h [] (swap! hits inc) (js/cancelDemand 0)) (defmacro m [] (h))",
             &mut host,
@@ -472,7 +469,6 @@ mod tests {
     #[test]
     fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         crate::compile_with_macros("(defmacro ready [] 42)", &mut host).unwrap();
         let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
         let value = evaluator.evaluate_unit(r#"rt => {
@@ -509,7 +505,6 @@ mod tests {
     #[test]
     fn cancelled_extension_bundle_rolls_back_before_reusing_host() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         crate::compile_with_macros(
             r#"(defprotocol P (f [x]))
                (def target (js/cancelTarget 0))
@@ -546,7 +541,6 @@ mod tests {
         let mut outputs = Vec::new();
         for collect in [false, true] {
             let mut host = MacroHost::new();
-            host.disable_native_evaluation();
             host.bootstrap_seed = true;
             let evaluator = Rc::new(Evaluator::new(Default::default()).unwrap());
             evaluator.install_gc_callback("bootstrapCollect").unwrap();

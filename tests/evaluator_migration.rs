@@ -4,7 +4,6 @@ use light_cljs::{MacroHost, analyze_with_macros, emit_js, parse};
 use std::{cell::RefCell, process::Command, rc::Rc};
 
 fn both(host: &mut MacroHost, source: &str, expected: &str, effects: &[&str]) {
-    host.disable_native_evaluation();
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
     let trace = Rc::new(RefCell::new(Vec::new()));
     let sink = trace.clone();
@@ -80,54 +79,5 @@ fn quoted_js_macro_literals_retain_explicit_descriptors() {
         "(defmacro m [] '(let [out #js []] out)) (alength (m))",
         "0",
         &[],
-    );
-}
-
-#[test]
-fn legacy_entrypoints_are_fenced_in_a_child_process() {
-    let output = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "legacy_execution_fence_probe", "--nocapture"])
-        .env("LIGHT_CLJS_DISABLE_NATIVE_EVAL", "1")
-        .env("LIGHT_CLJS_NATIVE_FENCE_PROBE", "1")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn legacy_execution_fence_probe() {
-    // The parent test always executes this branch in an isolated process: no
-    // mutation of process-global environment in the concurrent test harness.
-    if std::env::var_os("LIGHT_CLJS_NATIVE_FENCE_PROBE").is_none() {
-        return;
-    }
-    use light_cljs::interpreter::{Context, builtin_definitions};
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-    let mut c = Context::new();
-    let source = c.source("fenced.clj", "42");
-    let form = c.reader(&source).unwrap().read_form().unwrap().unwrap();
-    let analyzed = c.analyze_form(&form).unwrap();
-    let nil = c.nil();
-    assert!(
-        catch_unwind(AssertUnwindSafe(|| {
-            light_cljs::interpreter::eval_string("42").unwrap();
-        }))
-        .is_err()
-    );
-    assert!(catch_unwind(AssertUnwindSafe(|| c.eval_string("42"))).is_err());
-    assert!(catch_unwind(AssertUnwindSafe(|| c.eval_source(&source))).is_err());
-    assert!(catch_unwind(AssertUnwindSafe(|| c.eval_form(&form))).is_err());
-    assert!(catch_unwind(AssertUnwindSafe(|| c.eval_analyzed(&analyzed))).is_err());
-    assert!(catch_unwind(AssertUnwindSafe(|| c.invoke(&nil, &[]))).is_err());
-    assert!(
-        catch_unwind(AssertUnwindSafe(
-            || c.invoke_native(&builtin_definitions()[0], &[])
-        ))
-        .is_err()
     );
 }

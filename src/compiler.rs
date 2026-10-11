@@ -855,9 +855,8 @@ pub fn compile_namespace(
     compile_namespace_with_macros(entry, source_roots, &mut macros)
 }
 
-/// Reuse an explicit macro host. Sources are loaded once per host; callers use
-/// `MacroHost::load_namespace` with `Reload` to invalidate macro namespace code.
-/// This installs a filesystem source provider restricted to the supplied roots.
+/// Reuse explicit macro configuration with fresh source definitions and evaluator
+/// roots for each compilation. Source loading is restricted to the supplied roots.
 pub fn compile_namespace_with_macros(
     entry: &str,
     source_roots: &[PathBuf],

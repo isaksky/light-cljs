@@ -134,7 +134,7 @@ pub(crate) fn select_cljs(
 
 // Compiler semantic reader. Construction uses owned data only, never evaluation.
 use crate::compiler_data::{
-    CompilerLiteralKind, DataBuilder, Datum, DatumView as ValueView, Form, FormId, FormKind,
+    CompilerLiteralKind, DataBuilder, Datum, DatumView, Form, FormId, FormKind,
     FormNode, Name, Origin, ReadError, Source, SourceSpan,
 };
 use crate::parser::{Node, NumberKind, PrefixKind, SymbolicValue};
@@ -607,8 +607,8 @@ impl Lowerer<'_> {
         for pair in children.as_chunks::<2>().0.iter() {
             let key = pair[0];
             let (raw, keyword) = match self.values[key.0].inspect() {
-                ValueView::Symbol(name) => (Some(name), false),
-                ValueView::Keyword(name) => (Some(name), true),
+                DatumView::Symbol(name) => (Some(name), false),
+                DatumView::Keyword(name) => (Some(name), true),
                 _ => (None, false),
             };
             let key = if let Some(raw) = raw {
@@ -705,7 +705,7 @@ impl Lowerer<'_> {
             {
                 let value = self.values[data.0].clone();
                 let kind = match (tag_name.as_str(), value.inspect()) {
-                    ("inst", ValueView::String(ref text)) => {
+                    ("inst", DatumView::String(ref text)) => {
                         let text = String::from_utf16(text).map_err(|_| {
                             self.error(
                                 LowerErrorKind::InvalidCompilerLiteral(
@@ -727,7 +727,7 @@ impl Lowerer<'_> {
                             Origin::Source,
                         ));
                     }
-                    ("uuid", ValueView::String(ref text)) => {
+                    ("uuid", DatumView::String(ref text)) => {
                         let text = String::from_utf16(text).map_err(|_| {
                             self.error(
                                 LowerErrorKind::InvalidCompilerLiteral(
@@ -753,14 +753,14 @@ impl Lowerer<'_> {
                             Origin::Source,
                         ));
                     }
-                    ("js", ValueView::Vector(_)) => K::JsArray,
-                    ("js", ValueView::Map(_)) => {
+                    ("js", DatumView::Vector(_)) => K::JsArray,
+                    ("js", DatumView::Map(_)) => {
                         for (key, _) in value
                             .entries()
                             .map_err(|e| self.collection_error(e, span.clone()))?
                         {
-                            if !matches!(key.inspect(), ValueView::String(_))
-                                && !matches!(key.inspect(), ValueView::Keyword(ref n) if n.namespace().is_none())
+                            if !matches!(key.inspect(), DatumView::String(_))
+                                && !matches!(key.inspect(), DatumView::Keyword(ref n) if n.namespace().is_none())
                             {
                                 return Err(self.error(
                                     LowerErrorKind::InvalidCompilerLiteral(
@@ -772,7 +772,7 @@ impl Lowerer<'_> {
                         }
                         K::JsObject
                     }
-                    ("queue", ValueView::Vector(_)) => {
+                    ("queue", DatumView::Vector(_)) => {
                         let empty = self.symbol(
                             "cljs.core.PersistentQueue.EMPTY",
                             span.clone(),
@@ -827,7 +827,7 @@ impl Lowerer<'_> {
         } else {
             "unquote"
         };
-        (matches!(self.values[head.0].inspect(), ValueView::Symbol(n) if n == Name::new(Some("clojure.core"), name)))
+        (matches!(self.values[head.0].inspect(), DatumView::Symbol(n) if n == Name::new(Some("clojure.core"), name)))
             .then(|| children.get(1).copied())
     }
     fn quote_operand(&mut self, operand: Option<FormId>, span: Range<usize>) -> FormId {
@@ -843,7 +843,7 @@ impl Lowerer<'_> {
             self.quote_operand(operand, span.clone())
         } else if self.unquote(id, true).is_some() {
             return Err(self.error(LowerErrorKind::InvalidSplice, span));
-        } else if let ValueView::Symbol(mut name) = self.values[id.0].inspect() {
+        } else if let DatumView::Symbol(mut name) = self.values[id.0].inspect() {
             let special = [
                 "&",
                 ".",
@@ -902,7 +902,7 @@ impl Lowerer<'_> {
             self.quote_call("quote", vec![symbol], span.clone())?
         } else if matches!(
             self.values[id.0].inspect(),
-            ValueView::CompilerLiteral(CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject)
+            DatumView::CompilerLiteral(CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject)
         ) {
             // A #js literal is atomic syntax-quote data. Quote it explicitly so
             // emission preserves the descriptor instead of constructing a host value.
@@ -966,7 +966,7 @@ impl Lowerer<'_> {
             let has_user_metadata = entries.iter().any(|(key, _)| {
                 !["line", "column", "end-line", "end-column"]
                     .iter()
-                    .any(|name| key.inspect() == ValueView::Keyword(Name::new(None, name)))
+                    .any(|name| key.inspect() == DatumView::Keyword(Name::new(None, name)))
             });
             if has_user_metadata {
                 let metadata = if matches!(
@@ -984,7 +984,7 @@ impl Lowerer<'_> {
                     for (key, value) in [("line", line), ("column", column)] {
                         if entries
                             .iter()
-                            .any(|(k, _)| k.inspect() == ValueView::Keyword(Name::new(None, key)))
+                            .any(|(k, _)| k.inspect() == DatumView::Keyword(Name::new(None, key)))
                         {
                             continue;
                         }
@@ -1074,7 +1074,7 @@ impl Lowerer<'_> {
     ) -> Result<FormId, ReadError> {
         let meta_span = self.spans[metadata.0].bytes();
         let metadata = match self.values[metadata.0].inspect() {
-            ValueView::Keyword(_) => {
+            DatumView::Keyword(_) => {
                 let value = self.scalar(
                     self.builder.boolean(true),
                     meta_span.clone(),
@@ -1087,7 +1087,7 @@ impl Lowerer<'_> {
                     Origin::Metadata,
                 )?
             }
-            ValueView::Symbol(_) | ValueView::String(_) => {
+            DatumView::Symbol(_) | DatumView::String(_) => {
                 let tag = self.scalar(
                     self.builder.keyword(Name::new(None, "tag")),
                     meta_span.clone(),
@@ -1100,7 +1100,7 @@ impl Lowerer<'_> {
                     Origin::Metadata,
                 )?
             }
-            ValueView::Map(_) => metadata,
+            DatumView::Map(_) => metadata,
             _ => return Err(self.error(LowerErrorKind::InvalidMetadata, meta_span)),
         };
         let metadata = if let Some(previous) = self.nodes[target.0].metadata {

@@ -1,3 +1,8 @@
+> **Archived native measurement.** The interpreter, benchmark harnesses and runner
+> scripts have been removed. Commands and implementation claims below describe
+> the historical revision recorded here, not the current checkout. See
+> [the archive contract](../../../interpreter.md).
+
 # Native protocol and immutable record costs, October 9, 2026
 
 All seven resident dispatch programs returned **499500** from 1000 prebuilt values. These measurements separate ordinary saved function calls, construction, analyzed reduction, definition work, reclamation and fresh native processes. Records and reify do not have an assumed performance advantage. No production code or dependency changed for this report.

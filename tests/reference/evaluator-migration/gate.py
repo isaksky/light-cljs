@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Execute the named migration scope with legacy native execution fenced.
+"""Execute canonical evaluator coverage with the native interpreter absent.
 
-This is an execution gate, not a whole-language completion report. Historical
-native adapter suites and parser acceptance are separate. Every subprocess must
-succeed; ignored oracle/performance tests remain reported by the Rust harness.
+An execution gate, not a whole-language completion report. SCI gaps and retired
+cases remain explicit; historical native passes cannot establish current coverage.
 """
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -26,7 +26,7 @@ def main():
         parser.error("--reference requires --checkout for the exact pinned source")
     artifacts = args.artifacts or Path(tempfile.mkdtemp(prefix="light-cljs-evaluator-gate-"))
     artifacts.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, LIGHT_CLJS_DISABLE_NATIVE_EVAL="1", PYTHONDONTWRITEBYTECODE="1")
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     results = []
 
     def run(label, command):
@@ -35,19 +35,32 @@ def main():
         with log.open("w") as stream:
             result = subprocess.run(command, cwd=ROOT, env=env, stdout=stream, stderr=subprocess.STDOUT)
         results.append({"label": label, "command": list(map(str, command)), "exit_code": result.returncode, "log": str(log)})
-        (artifacts / "results.json").write_text(json.dumps({"native_execution_disabled": True, "rust_min_stack_override": env.get("RUST_MIN_STACK"), "scope": "named migration suites only", "checks": results}, indent=2) + "\n")
+        (artifacts / "results.json").write_text(json.dumps({"native_interpreter_present": False, "rust_min_stack_override": env.get("RUST_MIN_STACK"), "scope": "named migration suites only", "checks": results}, indent=2) + "\n")
         if result.returncode:
             print(log.read_text()[-18000:])
             raise SystemExit(f"{label} failed; retained diagnostics: {artifacts}")
 
+    forbidden = [ROOT / "src/interpreter.rs", ROOT / "src/interpreter",
+                 ROOT / "src/native_form_adapter.rs", ROOT / "tests/support/sci_native.rs",
+                 ROOT / "tests/compiler_native_adapter.rs", ROOT / "benches/support/interpreter_outcomes.rs"]
+    forbidden += list((ROOT / "tests").glob("interpreter_*.rs"))
+    forbidden += list((ROOT / "benches").glob("interpreter*.rs"))
+    present = [str(path.relative_to(ROOT)) for path in forbidden if path.exists()]
+    if present:
+        raise SystemExit(f"Retired interpreter artifacts remain: {present}")
+    clj_resources = list((ROOT / "src").rglob("*.clj"))
+    if clj_resources:
+        raise SystemExit(f"Retired JVM macro resources remain: {clj_resources}")
+    for directory in ["src", "tests", "benches", "examples"]:
+        for path in (ROOT / directory).rglob("*.rs"):
+            if re.search(r"(?:crate|light_cljs)::interpreter\b|\bmod\s+interpreter\s*[;{]|native_form_adapter|disable_native_evaluation|\b(?:NativeForm|RootedValue|ValueView|NativeDefinition)\b", path.read_text()):
+                raise SystemExit(f"Retired evaluator dependency: {path.relative_to(ROOT)}")
     run("tools", ["python3", "-c", "import platform,subprocess; print(platform.platform()); [subprocess.run(c,check=True) for c in [['rustc','--version'],['node','--version']]]"])
     run("default-build", ["cargo", "check", "--locked"])
-    run("all-feature-build", ["cargo", "check", "--locked", "--all-features"])
-    # Discover every current compiler/evaluation integration suite. New suites
-    # enter automatically; only the explicitly historical adapter API tests
-    # have their own excluded target until the physical-removal step.
+    run("all-feature-build", ["cargo", "check", "--locked", "--all-features", "--all-targets"])
+    # All compiler/evaluator consumers are canonical, with no adapter exclusions.
     targets = sorted(p.stem for p in (ROOT / "tests").glob("*.rs") if
-                     p.stem.startswith(("compiler_", "eval")) and p.stem != "compiler_native_adapter")
+                     p.stem.startswith(("compiler_", "eval")))
     targets += ["analyzer", "boundaries", "cli", "execution", "namespaces", "provenance", "sci_reference"]
     command = ["cargo", "test", "--locked", "--no-fail-fast"]
     for target in targets:

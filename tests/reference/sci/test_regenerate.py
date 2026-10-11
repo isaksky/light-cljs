@@ -106,6 +106,18 @@ class ReferenceContract(unittest.TestCase):
                                      "--fixtures", str(fixture)], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_launcher_only_offers_canonical_evaluator_backend(self):
+        import subprocess
+        help_result = subprocess.run([sys.executable, str(reference.__file__), "--help"],
+                                     capture_output=True, text=True, check=True)
+        self.assertIn("--evaluator", help_result.stdout)
+        self.assertNotIn("--native", help_result.stdout)
+        rejected = subprocess.run([sys.executable, str(reference.__file__),
+                                   "--checkout", "/unused", "--native"],
+                                  capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("unrecognized arguments: --native", rejected.stderr)
+
     def test_fixture_input_and_edn_paths_are_strict(self):
         for invalid in ["", "sci-a\tportable\t1", "# comments only\n"]:
             with self.assertRaises(RuntimeError):

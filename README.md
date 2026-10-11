@@ -11,7 +11,7 @@ Tokens never allocate text; syntax leaves keep byte spans wherever possible.
 
 ## Adopted evaluator architecture
 
-The project is moving to **rquickjs execution of JavaScript emitted by this Rust
+The project uses **rquickjs execution of JavaScript emitted by this Rust
 compiler**, including macro bodies and ordinary helpers. Rust keeps reading,
 resolution, analysis, semantic IR, optimization and emission. Macro and application
 execution share canonical runtime operations and JavaScript Number semantics,
@@ -34,9 +34,9 @@ semantics, interpreter extraction, consumer migration and completion criteria.
 Pellets holds the implementation queue; evaluator migration and full intended
 language completion are separate milestones.
 The [migration execution gate](tests/reference/evaluator-migration/README.md) runs
-compiler, evaluation, CLI and runtime checks with every legacy native execution
-entrypoint disabled. Physical removal of the temporary native adapter is the next
-migration step; the gate does not claim complete ClojureScript support.
+compiler, evaluation, CLI and runtime checks. The native interpreter, temporary
+adapters, native-only tests and benchmark harnesses have been physically removed.
+This removal does not claim complete ClojureScript support.
 
 ## Evaluate ClojureScript and use a REPL
 
@@ -75,9 +75,9 @@ retired; language extension forms use canonical CLJS runtime behavior.
 The [command contract](docs/evaluation.md#script-and-repl-commands) describes
 IO, histories and controls. The [compiled examples](examples/native) retain the
 historical directory name and cover data processing, macros, lazy pipelines,
-state and exceptions. The temporary native library/tests remain until their
-separate removal step; [interpreter documentation](docs/interpreter.md) is a
-historical compatibility record, not the command contract.
+state and exceptions. [Interpreter documentation](docs/interpreter.md) preserves
+the retired implementation as historical evidence; its APIs and commands are
+unavailable in this checkout.
 
 ## Execute small programs
 
@@ -529,7 +529,7 @@ values and observable effects; it may download the pinned Maven dependencies.
 
 The [compiler language assertion inventory](tests/reference/compiler-language/evidence.md)
 reports compiled source-language behavior separately from successful parser
-and native-interpreter tests. It preserves complete upstream bodies and original
+and historical native-interpreter results. It preserves complete upstream bodies and original
 expectations; diagnostics and version differences have separate dispositions. The
 [integration evidence](tests/reference/compiler-language-completion.md) covers the
 combined source program, deterministic interactions and completion checks. Python 3.10+ runs its accounting tests with `cargo test --test compiler_language`.

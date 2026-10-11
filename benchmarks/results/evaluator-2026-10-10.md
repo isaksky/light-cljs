@@ -16,8 +16,8 @@ Commands and observed results:
 
 The startup loop creates a new heap each time, rather than timing a warm engine.
 This initial baseline has no pre-existing evaluator for a before/after claim.
-Binary size includes the still-present transitional compiler/native macro adapter;
-consumer migration/removal will change it. Repeat the same commands on the same
+This historical binary size included the transitional compiler/native macro
+adapter, which has since been removed; it is not the current binary size. Repeat the same commands on the same
 machine/profile for regression comparisons. Timing is reported, not asserted.
 
 Verification in this implementation:

@@ -1,2 +1,2 @@
-(ns bench.macro (:require-macros [bench.macros :as m]))
+(ns bench.macro (:require [bench.macros :as m]))
 (reduce + 0 (m/data))

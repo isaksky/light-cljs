@@ -1,8 +1,10 @@
-> Historical native measurements. The three drivers including fresh native CLI
-> scenarios now report retirement explicitly: current `--eval` executes compiled
-> JavaScript and cannot be compared as a native interpreter process. Retained
-> results/source snapshots remain unchanged. For the current evaluator use the
-> [startup measurement](../docs/evaluator.md#verification-and-measurements).
+> **Historical archive: the native interpreter and benchmark harnesses are removed.**
+> All commands, APIs, source paths and reproduction instructions below refer to
+> historical revisions, not this checkout. The `run_interpreter.py`,
+> `run_interpreter_transducers.py`, `run_interpreter_types.py` and
+> `compare_interpreter_reuse.py` drivers have been deleted. Retained measurements
+> and fixtures preserve their original semantics and do not establish canonical
+> JavaScript coverage. Use [current evaluator measurements](../docs/evaluator.md#verification-and-measurements).
 
 # Native interpreter regression measurements
 

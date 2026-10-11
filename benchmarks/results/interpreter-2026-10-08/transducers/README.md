@@ -1,3 +1,8 @@
+> **Archived native measurement.** The interpreter, benchmark harnesses and runner
+> scripts have been removed. Commands and implementation claims below describe
+> the historical revision recorded here, not the current checkout. See
+> [the archive contract](../../../interpreter.md).
+
 # Native transducer measurements, October 8–9, 2026
 
 Nine same-binary pairs validated full equal outputs, including vector partition

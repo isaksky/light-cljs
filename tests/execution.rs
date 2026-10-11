@@ -1537,7 +1537,6 @@ fn collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_sta
         );
     }
     let mut host = light_cljs::MacroHost::new();
-    host.disable_native_evaluation();
     let mut outputs = Vec::new();
     for _ in 0..2 {
         let js = light_cljs::compile_namespace_with_macros(

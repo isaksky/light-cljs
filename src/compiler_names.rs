@@ -51,8 +51,7 @@ pub fn core_macro(name: &str) -> bool {
     )
 }
 
-// These forms are lowered directly by the runtime analyzer; the native host's
-// similarly named forms have interpreter-specific semantics.
+// These forms are lowered directly by the compiler analyzer.
 pub fn is_definition_macro(namespace: &str, name: &str) -> bool {
     matches!(namespace, "cljs.core" | "clojure.core")
         && matches!(

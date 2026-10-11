@@ -122,8 +122,7 @@ fn compile_with_macros(
 fn host(source: &str, refers: &[&str]) -> SourceMacros {
     let sources = Sources::new();
     sources.write("macros.cljs", source);
-    let mut host = MacroHost::new();
-    host.disable_native_evaluation();
+    let host = MacroHost::new();
     SourceMacros {
         sources,
         host,
@@ -403,7 +402,6 @@ fn compiled_source_macros_preserve_form_env_and_caller_owned_syntax() {
     let syntax = parse(source).unwrap();
     let original = syntax.clone();
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let program = analyze_with_macros(source, &syntax, &mut host).unwrap();
     assert_eq!(syntax, original, "analysis must not mutate caller-owned syntax");
     assert_eq!(result(&emit_js(&program)), "17\n");
@@ -835,7 +833,6 @@ fn generated_qualified_operations_keep_core_identity_under_lexical_and_global_sh
 fn collection_macro_compilation_obeys_shared_limits_and_recovers_with_the_same_host() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/collections");
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     host.evaluator_options.poll_budget = 0;
     let error = compile_namespace_with_macros("batch.main", std::slice::from_ref(&root), &mut host)
         .unwrap_err();
@@ -1158,7 +1155,6 @@ mod javascript_form_bridge {
         .unwrap();
         let call = read("(macros/identity)");
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         let mut count = 0;
         for row in include_str!("fixtures/execution-outcomes.tsv").lines() {
             if !row.starts_with("numeric-") {
@@ -1227,7 +1223,6 @@ mod javascript_form_bridge {
         for (body, expected) in cases {
             let source = format!("(defmacro capture [] (list 'quote {body})) [(capture) {body}]");
             let mut host = MacroHost::new();
-            host.disable_native_evaluation();
             let syntax = parse(&source).unwrap();
             let p = analyze_with_macros(&source, &syntax, &mut host).unwrap();
             let expected = format!("[{expected} {expected}]");
@@ -1264,7 +1259,6 @@ mod javascript_form_bridge {
             assert!(error.contains(part), "missing {part:?}: {error}");
         }
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         assert!(compile_with_macros("(defmacro bad [] (even? 1.5)) (bad)", &mut host).is_err());
         assert!(compile_with_macros("(defmacro good [] (/ 1 2)) (good)", &mut host).is_ok());
     }
@@ -1279,7 +1273,6 @@ mod javascript_form_bridge {
              (js/isNaN (literal ##NaN)) (infinite? (literal ##Inf))
              (infinite? (literal ##-Inf)) (inspect 1)]"#;
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         let p = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -1787,9 +1780,7 @@ mod same_file_javascript_macros {
     use super::*;
 
     fn javascript_host() -> MacroHost {
-        let mut host = MacroHost::new();
-        host.disable_native_evaluation();
-        host
+        MacroHost::new()
     }
 
     #[test]
@@ -2068,7 +2059,6 @@ mod reentrant_deferred_units {
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut host = MacroHost::new();
-            host.disable_native_evaluation();
             send.send(result(&compile_with_macros(&source, &mut host).unwrap()))
                 .unwrap();
         });
@@ -2159,7 +2149,6 @@ mod reentrant_deferred_units {
             "(ns app (:require [owner] [dep.b :as d])) (js/console.log (owner/answer) d/value)",
         );
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         assert_eq!(
             execute(&sources.compile_host("app", &mut host).unwrap()),
             "42 100\n"
@@ -2200,7 +2189,6 @@ mod reentrant_deferred_units {
     #[test]
     fn nested_execution_limit_is_terminal_and_a_clean_host_can_be_reused() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         host.evaluator_options.timeout = std::time::Duration::from_millis(300);
         let error = compile_with_macros(
             "(defn h [] (loop [] (recur))) (defmacro m [] (h)) (m)",
@@ -2224,7 +2212,6 @@ mod reentrant_deferred_units {
     #[test]
     fn failed_nested_analysis_execution_and_conversion_do_not_poison_reused_host() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         for source in [
             "(defn h [] missing) (defmacro m [] (h)) (m)",
             "(defmacro broken [] (throw (js/Error. \"nested\"))) (defn h [] (broken)) (defmacro m [] (h)) (m)",
@@ -2251,9 +2238,7 @@ mod ordinary_helper_demand {
     use super::*;
 
     fn clean_host() -> MacroHost {
-        let mut host = MacroHost::new();
-        host.disable_native_evaluation();
-        host
+        MacroHost::new()
     }
     fn checked(source: &str) -> String {
         result(&compile_with_macros(source, &mut clean_host()).unwrap())
@@ -2479,7 +2464,6 @@ mod declaration_bundle_demand {
     use super::*;
     fn checked(source: &str) -> String {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         result(&compile_with_macros(source, &mut host).unwrap())
     }
     #[test]
@@ -2529,7 +2513,6 @@ mod declaration_bundle_demand {
     #[test]
     fn computed_targets_are_protocol_specific_and_initialized_once() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         let js = compile_with_macros(
             r#"
           (def hits (atom 0))
@@ -2573,7 +2556,6 @@ mod declaration_bundle_demand {
     #[test]
     fn failed_bundle_is_sticky_and_fresh_compilation_repairs_it() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         let js = compile_with_macros(
             r#"
           (def hits (atom 0)) (defprotocol P (f [x]))
@@ -2595,7 +2577,6 @@ mod declaration_bundle_demand {
     #[test]
     fn bundle_cycles_report_paths_and_declaration_products_support_redefinition() {
         let mut host = MacroHost::new();
-        host.disable_native_evaluation();
         let error = compile_with_macros(
             r#"
           (defprotocol P (f [x])) (declare target)
@@ -2627,7 +2608,6 @@ mod declaration_bundle_demand {
 #[test]
 fn deferred_declaration_methods_expand_once_at_the_definition_site() {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let js = compile_with_macros(
         r#"
       (def hits (atom 0))
@@ -2646,7 +2626,6 @@ fn deferred_declaration_methods_expand_once_at_the_definition_site() {
 #[test]
 fn failed_extension_generation_can_be_replaced_without_repeating_host_effects() {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let js = compile_with_macros(
         r#"
       (def hits (atom 0)) (defprotocol P (f [x]))
@@ -2665,7 +2644,6 @@ fn failed_extension_generation_can_be_replaced_without_repeating_host_effects() 
 #[test]
 fn delayed_macro_expansion_excludes_future_extensions_even_after_new_dispatch_is_ready() {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let js = compile_with_macros(
         r#"
       (defprotocol P (f [x]))
@@ -2685,7 +2663,6 @@ fn delayed_macro_expansion_excludes_future_extensions_even_after_new_dispatch_is
 #[test]
 fn core_extension_queries_and_saved_protocol_methods_demand_visible_candidates() {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let js = compile_with_macros(
         r#"
       (def hits (atom 0)) (defprotocol P (f [x])) (deftype T [])
@@ -2704,7 +2681,6 @@ fn core_extension_queries_and_saved_protocol_methods_demand_visible_candidates()
 #[test]
 fn restoring_a_dispatch_frontier_preserves_executed_helper_mutation() {
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     let js = compile_with_macros(r#"
       (defprotocol P (f [x])) (extend-type string P (f [_] 1))
       (defmacro snapshot [] (f "s")) (def earlier (snapshot))
@@ -2721,11 +2697,9 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
     s.write("tools.cljc", "(ns tools) #?(:cljs (def factor 2) :clj (def factor jvm-only-placeholder)) (defn twice [x] (* factor x)) (defmacro doubled [x] (twice x))");
     s.write("app.cljs", "(ns app (:require [tools :as t :refer [doubled]])) [(doubled 21) (t/doubled 21) (t/twice 21)]");
     let mut h = MacroHost::new();
-    h.disable_native_evaluation();
     let inspect = |js: &str| execute(&format!("const value = {js}; console.log(String(value));"));
     for _ in 0..2 {
         for host in [&mut h, &mut MacroHost::new()] {
-            host.disable_native_evaluation();
             let js = s.compile_host("app", host).unwrap();
             assert_eq!(inspect(&js), "[42 42 42]\n");
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -2742,11 +2716,11 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
 #[test]
 fn ordinary_requires_share_transitive_helpers_preserve_effects_privacy_and_shadowing() {
     let s = Sources::new();
+    let mut h = MacroHost::new();
     s.write("leaf.cljc", "(ns leaf) #?(:cljs (def factor 2) :clj (require 'jvm.missing)) (def hits (atom 0)) (swap! hits inc) (defn twice [x] (* factor x)) (js/console.log \"leaf\")");
     s.write("left.cljs", "(ns left (:require [leaf :as l])) (defn higher [f x] (apply f [x])) (defn helper [x] (higher l/twice x)) (defmacro doubled [x] (helper x)) (js/console.log \"left\")");
     s.write("right.cljs", "(ns right (:require [leaf :as l])) (defn ^:private secret [x] (l/twice x)) (defmacro exposed [x] (secret x)) (js/console.log \"right\")");
     s.write("app.cljs", "(ns app (:refer-clojure :exclude [when]) (:require [left :as l :refer [doubled] :rename {doubled when}] [right :as r] [leaf :as leaf])) (js/console.log (when 21) (l/doubled 21) (r/exposed 21) (let [when (fn [x] x)] (when 7)) @leaf/hits)");
-    let mut h = MacroHost::new(); h.disable_native_evaluation();
     for _ in 0..2 { assert_eq!(execute(&s.compile_host("app", &mut h).unwrap()), "leaf\nleft\nright\n42 42 42 7 1\n"); }
     s.write("app.cljs", "(ns app (:require [right :refer [secret]])) 0");
     let e = s.compile_host("app", &mut h).unwrap_err();
@@ -2773,11 +2747,11 @@ fn required_unrelated_initializers_run_only_in_application_and_failure_is_not_sw
 #[test]
 fn macro_source_selection_splices_discards_conflicts_and_recovery_are_current() {
     let s = Sources::new();
+    let mut h = MacroHost::new();
     s.write("leaf.cljs", "(ns leaf) (defn helper [x] (+ x 2))");
     s.write("tools.clj", "invalid ignored companion");
     s.write("tools.cljc", "(ns tools #?@(:cljs [(:require [leaf :as h])] :clj [(:require missing.jvm)])) #_#?(:clj #unknown/tag nil :cljs nil) (do #?@(:cljs [(defmacro value [x] (h/helper x))] :clj [(defmacro value [] jvm-only)]))");
     s.write("app.cljc", "(ns app #?(:cljs (:require [tools :refer [value]]) :clj (:require missing.jvm))) #?(:default (value 40) :cljs 99)");
-    let mut h = MacroHost::new(); h.disable_native_evaluation();
     assert_eq!(result(&s.compile_host("app", &mut h).unwrap()), "42\n");
     s.write("leaf.cljs", "(ns leaf) (defn helper [x] (+ x 3))");
     assert_eq!(result(&s.compile_host("app", &mut h).unwrap()), "43\n");
@@ -2821,8 +2795,8 @@ fn macro_source_selection_splices_discards_conflicts_and_recovery_are_current() 
 #[test]
 fn imported_macro_values_and_private_macros_remain_phase_errors() {
     let s = Sources::new();
+    let mut h = MacroHost::new();
     s.write("tools.cljs", "(ns tools) (defmacro ^:private secret [] 42) (defmacro public [] (secret))");
-    let mut h = MacroHost::new(); h.disable_native_evaluation();
     for expression in ["secret", "(t/secret)", "public", "t/public", "(apply public [])", "#'public", "(resolve 'public)"] {
         s.write("app.cljs", &format!("(ns app (:require [tools :as t :refer [public]])) {expression}"));
         let e = s.compile_host("app", &mut h).unwrap_err();

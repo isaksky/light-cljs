@@ -4,7 +4,7 @@ This is a migration execution gate and an explicit unresolved-gap report, not
 whole-language completion or permission to remove supported behavior.
 `tests/evaluator_conformance.rs` enumerates all **2,475** original rows of
 `tests/fixtures/sci-outcomes.tsv`. It executes each disposition through a fresh
-`EvalSession`, whose compiler host disables native evaluation. The adapter uses
+`EvalSession`, with no native interpreter or adapter in the build. The adapter uses
 immutable `Datum` for host observations and finite result export; it imports no
 native interpreter types. Results, ordered `observe` effects, stdout and stderr
 are compared separately, including completed effects before failure.
@@ -48,8 +48,7 @@ orphans/duplicates/stale observations, and verifies every case still has its
 existing origin in `tests/reference/fixture-origins.tsv`. The original upstream
 pin, test anchor, adaptation rationale and independent-source attribution remain
 there. This manifest is additional local execution evidence; it makes no new
-claim of deriving Rust implementation from SCI. The historical oracle file and
-SCI launcher are unchanged.
+claim of deriving Rust implementation from SCI. The historical oracle file is unchanged; the SCI launcher uses `--evaluator` for canonical execution.
 
 Import adaptations use the ordinary first-party compiler loader for
 `clojure.string`, `clojure.set`, `clojure.walk` and `clojure.edn`; SCI had

@@ -9,14 +9,13 @@ embedding, scripts and the REPL now execute compiler-emitted JavaScript in Quick
 Immutable compiler reading, structured forms, declaration bundles, ordinary
 `.cljs`/`.cljc` imports and effect-preserving application preparation are implemented.
 The [execution gate](../tests/reference/evaluator-migration/README.md) tests this
-contract with every old native execution entrypoint disabled. The final local
-full Cargo run and both default-stack fenced gate modes passed, including the
-retained applied `partial`/`juxt` finite-demand behavior; see the
-[exact evidence and remaining gaps](../tests/reference/evaluator-migration/verification.md#final-resumed-verification).
-The temporary native library, its API-specific tests and historical benchmarks
-remain for physical
-removal under light-cljs-115; the gate does not authorize their retention as a
-fallback or claim whole-language completion.
+contract. The prior gate ran with every native execution entrypoint disabled;
+its [historical evidence and remaining gaps](../tests/reference/evaluator-migration/verification.md#final-resumed-verification)
+remain recorded separately. The native interpreter, temporary adapters, native-only
+tests and benchmark harnesses have now been physically removed under light-cljs-115.
+Retained historical measurements and oracle observations do not provide a fallback
+or claim whole-language completion. The [post-removal verification](../tests/reference/evaluator-migration/verification.md#physical-removal-verification--october-11-2026)
+passed the complete execution gate and default/all-feature builds.
 
 The [compiler reference](compiler.md) and [evaluation API](evaluation.md) describe
 the supported production paths. The [native interpreter reference](interpreter.md)
@@ -181,8 +180,8 @@ Only immutable emitted unit strings are cached in memory by the running compiler
 binary. There is no disk artifact or engine bytecode cache. Each clean compilation
 installs the units in a fresh runtime with independent functions, gensyms and
 roots. The regeneration test bypasses that cache and executes both freshly emitted
-units, including collection during bootstrap. `disable_native_evaluation()` is an
-explicit host seam used by the core family suite.
+units, including collection during bootstrap. The former
+`disable_native_evaluation()` test seam was removed with the native implementation.
 
 A standalone source `defmacro` is now a compile-time declaration returning nil;
 its body can call core operations and ECMAScript intrinsics. Same-file `.cljs`
@@ -199,8 +198,8 @@ generation snapshots, failure recovery and shared limits are exercised by
 identity/resolve, root generations/failures/defonce and exact overlay restoration
 are now exercised by `ordinary_helper_demand`; [validation evidence](../tests/reference/compiler-helper-demand.md)
 records commands and phase-isolation witnesses. Declaration bundles and ordinary source imports are now implemented and exercised
-by their demand/import suites. Only explicit legacy embedding APIs retain native
-adapters until light-cljs-115; production sources cannot load `.clj` companions.
+by their demand/import suites. Legacy embedding APIs and native adapters have been
+removed; production sources cannot load `.clj` companions.
 
 Same-file macro validation on 2026-10-10 passed
 `cargo test --test compiler_bootstrap --test compiler_macros --test compiler_boundary_completion`
@@ -326,9 +325,9 @@ helper a runtime root, but eliminating it must not erase application effects.
 
 | Current responsibility | Endpoint |
 | --- | --- |
-| Forms, names, ordered children, metadata, source spans/origins, syntax quote and namespace views | Immutable forms/data/provenance are extracted in `compiler_data`; analyzer/IR use them without native roots. `compiler_reader` and immutable `NamespaceView` now provide semantic reading, syntax construction and resolution snapshots. Pure compiler seed transforms provide destructuring; core/namespace metadata and assertion formatting use owned data. `source_provider` supplies engine-neutral request/input/error types. `native_form_adapter` remains only for macro execution conversion and explicitly configured native custom reader callbacks; `light-cljs-115` deletes the adapter and native compatibility storage. |
+| Forms, names, ordered children, metadata, source spans/origins, syntax quote and namespace views | Immutable forms/data/provenance are extracted in `compiler_data`; analyzer/IR use them without native roots. `compiler_reader` and immutable `NamespaceView` now provide semantic reading, syntax construction and resolution snapshots. Pure compiler seed transforms provide destructuring; core/namespace metadata and assertion formatting use owned data. `source_provider` supplies engine-neutral request/input/error types. `native_form_adapter` and native compatibility storage have been removed; compiled macro conversion uses the structured form bridge and reader callbacks use source functions. |
 | Macro algorithms, ordinary helpers, core/runtime collections, Vars/state and dispatch | Compiler-emitted JS using the canonical runtime and phase-local roots. |
-| Native evaluation stack, exact numeric tower, native heap/GC/reuse and eager namespace evaluation | Remove after replacements and extraction pass. Do not preserve a fallback. |
+| Native evaluation stack, exact numeric tower, native heap/GC/reuse and eager namespace evaluation | Removed; there is no fallback. |
 | Public eval/source/form/invoke/macroexpand and embedding options/callbacks/readers/IO | Engine-neutral compiler-plus-QuickJS APIs, with explicit ownership and capabilities. |
 | `--eval`, scripts and `--repl` | Retain product functions through the new evaluator, including incremental input, history and error recovery; migrate source files and documented limit controls. |
 | Tests, examples, reference adapters, CI and benchmarks | Port supported semantics, retain labeled historical evidence, replace lifetime/limit tests and delete obsolete native-only machinery. |
@@ -402,9 +401,11 @@ visible; parsing a checkout is never execution coverage. Use pinned upstream
 semantic checks where compatibility is intended and dedicated local assertions
 for this dialect's macro, import and phase rules.
 
-### Core bootstrap verification (light-cljs-108)
+### Historical core bootstrap verification (light-cljs-108)
 
-Executed locally with the native-disabled host seam and literal QuickJS results:
+The following results describe the pre-removal revision, including the now-removed
+native-disabled test seam and old test names. They are retained as historical
+evidence, not commands or current test counts. Literal QuickJS results were checked:
 
 - `cargo test --lib compiler_bootstrap`: 1 regeneration/GC test passed.
 - `cargo test --test compiler_bootstrap --test compiler_macros --test compiler_destructuring_completion`: 76 tests passed.

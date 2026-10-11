@@ -250,7 +250,6 @@ fn wide_radix_literals_round_once_in_applications_and_macro_arguments() {
                 "application: {source}"
             );
             let mut host = MacroHost::new();
-            host.disable_native_evaluation();
             let macro_source = format!("(defmacro literal [x] x) (literal {source})");
             let p = light_cljs::analyze_with_macros(
                 &macro_source,
@@ -312,7 +311,6 @@ fn quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps() {
         ),
     ];
     let mut host = MacroHost::new();
-    host.disable_native_evaluation();
     for _ in 0..2 {
         for (source, expected) in cases {
             let p = light_cljs::analyze_with_macros(source, &parse(source).unwrap(), &mut host)

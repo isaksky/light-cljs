@@ -19,10 +19,10 @@ Canonical `gensym` has a session-local counter. `setMacroexpandServices` explici
 installs `macroexpand`/`macroexpand1` hooks; missing services fail on use.
 
 `MacroHost::evaluator_options` contains reusable configuration;
-`MacroHost::new_evaluator()` creates a fresh heap. The transitional native macro
-adapter still exists until light-cljs-115; CLI scripts and the REPL now use `EvalSession`. Public `EvalSession` embedding uses compiler-emitted JavaScript. Creating this
-session does not execute source macro bodies through the old adapter, and engine
-failure never falls back to native evaluation. `Evaluator::active(ctx)` borrows the
+`MacroHost::new_evaluator()` creates a fresh heap. CLI scripts, the REPL and public
+`EvalSession` embedding use compiler-emitted JavaScript. The native interpreter
+and its adapters have been removed; engine failure never falls back to native
+evaluation. `Evaluator::active(ctx)` borrows the
 already-entered context for nested compilation, without reacquiring its runtime
 lock. `install_unit_service` installs a reentrant `Fn` receiving that context and
 an owned request ID. It catches panics, preserves owned failure diagnostics, and
@@ -70,8 +70,7 @@ the hidden `&form`/`&env` ABI followed by call arguments. `compiler_environment`
 builds bounded lexical IDs/names/kinds/arguments, shadow records, context,
 namespace/import information and line/column using compiler data alone. Source
 macro registration and the default core bootstrap both execute compiler-emitted
-JavaScript. The native adapter is only an explicit historical embedding surface
-until light-cljs-115. The migration gate rejects its execution entrypoints.
+JavaScript. The native interpreter and adapter APIs no longer exist.
 
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;
@@ -124,6 +123,13 @@ records and interop against direct expected values in QuickJS and Node. It also
 checks cross-session/released IDs, explicit capabilities, cancellation in caught
 Rust callbacks, caught infinite work/allocation failure, panic containment,
 cycles, fresh roots and repeatable live engine allocation counts.
+
+`cargo bench --locked --bench evaluator -- --iterations 20` reports validated
+fresh-session, reused-session and bounded-loop/reset/recovery costs as total
+nanoseconds and iteration counts. Use `--iterations 1` for a smoke run. The
+reused phase retains one application heap; the recovery phase validates a terminal
+poll limit followed by reset and successful evaluation. These are current
+compiler-backed measurements, not comparable native collector/fuel units.
 
 `cargo test --locked --release --test evaluator startup_measurement -- --ignored --nocapture`
 is a focused cold-session startup/heap measurement; it is deliberately not a

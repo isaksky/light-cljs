@@ -1,4 +1,6 @@
-# Migration gate verification — October 10, 2026
+# Historical pre-removal migration gate verification — October 10, 2026
+
+This file preserves pre-removal evidence; it is not a post-removal validation report.
 
 **The light-cljs-114 execution gate is complete.** The final default-stack full
 Cargo run and both native-disabled gate modes passed after the four prerequisite
@@ -204,3 +206,71 @@ helper elimination remains 4,176 bytes. The
 [benchmark record](../../../benchmarks/compiler.md#final-resumed-application-measurement)
 retains raw samples and medians. No native-GC, allocation, persistent QuickJS or
 reliable before/after timing claim is made.
+
+
+## Physical-removal verification — October 11, 2026
+
+Starting commit: `b0a95e9`. The native interpreter, analyzed executable units,
+stack machine, exact-number runtime, heap/GC/fork machinery, eager namespace
+loader, native macro callbacks and form adapter are physically removed. Compiler
+forms, source/provenance, syntax quote, metadata registries and pure declaration
+transforms remain compiler-owned. `MacroHost` has no native context or fallback;
+the obsolete analyzer branch and native evaluation-disable seam are removed.
+The CLI was already using `EvalSession`; there was no remaining native CLI module.
+
+The gate now rejects retired source/modules, native value types/imports, adapter
+APIs, native test/benchmark targets and `src/**/*.clj`. Its final strengthened
+source audit also covers embedding examples and passed independently after the
+execution run. Compiler source loading selects `.cljs`/`.cljc` only; upstream
+`.clj` reference oracles remain outside production loading. `cargo tree --locked
+-e normal` retains only the pinned rquickjs direct dependency and its engine
+support dependencies; no native evaluator feature or dependency remains.
+
+The removed native-specific suites and benchmark binaries are not skipped
+required tests. Supported semantics, ownership, cold bootstrap, source lifetimes,
+failure/cancellation/reuse, CLI and embedding run in the retained canonical suites.
+SCI's 2,475 original observations and evaluator dispositions are unchanged: 1,488
+portable/adapted matches, 902 explicit gaps and 85 retired dialect contracts.
+Historical native inventories and measurements are clearly archived and excluded
+from current coverage. `--evaluator` replaces the SCI launcher's `--native` switch.
+The compiler benchmark's macro fixtures now use `.cljs` and ordinary `:require`.
+
+All final commands below exited **0**, on macOS 15.7.3 ARM64 with Rust 1.99.0,
+Node 24.18.0, Python 3.14.6, Clojure CLI 1.12.4.1618 and Java 25.0.2.
+`RUST_MIN_STACK` was unset. No native fence/environment override was needed.
+
+| Command | Result |
+| --- | --- |
+| `cargo test --locked --no-fail-fast` | 489 passed, 0 failed, 51 explicitly ignored; includes library, binary, integration and doc-test targets |
+| `cargo check --locked --all-features` | Passed |
+| `cargo build --locked --all-features` | Passed; production binary/library linked without interpreter source |
+| `python3 -B tests/reference/evaluator-migration/gate.py --reference --checkout research/clojurescript --artifacts /tmp/light-cljs-115-gate` | All 19 command stages passed: default check; all-feature/all-target check; 37 consumer targets (430 passed, 49 ignored); seven focused unit scopes; both Node runtime suites; accounting; pinned inventory and comparisons |
+| `cargo run --locked --quiet --example embedding` | Callback invocation/error recovery, retained state and owned-form evaluation passed; final values 2 and 3 |
+| `cargo run --locked --quiet --example evaluator` | Printed 42 |
+| `cargo bench --locked --bench evaluator -- --iterations 1` | All three validated fresh/reuse/terminal-limit/reset scenarios passed |
+| `cargo bench --locked --bench compiler -- --samples 9 --iterations 1` | 423 validated samples; source macros and filesystem macro namespaces run without adapters |
+| `python3 -B benchmarks/run_compiler.py --help` | Passed after removing dependencies on retired runner scripts; helper import/hash/statistics assertions also passed |
+| `git diff --check` | Passed |
+
+The gate's Python accounting suites passed 58 compiler-language tests and seven
+SCI launcher tests (one optional oracle transport job skipped). Inventory hashes
+matched 3,237 assertions / 696 bodies. The gate executed 58 helper, 56 sequence
+and 316 eager-transducer observations against **each** of Maven CLJS 1.12.134 and
+checkout `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`: 430 observations per reference.
+The 19-stage manifest and complete logs remain in `/tmp/light-cljs-115-gate`;
+full-suite and benchmark logs use `/tmp/light-cljs-115-*.log` on this host.
+Benchmark invocations are smoke verification, not statistically supported
+before/after performance claims.
+
+Unexecuted checks remain explicit: opt-in oracles outside the three gate
+comparisons, a fresh full JVM SCI regeneration, platform/CI runs, and dedicated
+external leak instrumentation were not run. Existing lifecycle/foreign-value,
+collection, repeated terminal failure and recovery regressions passed. No
+native-dependent required test is ignored to achieve this result.
+
+`light-cljs-48` and `light-cljs-66` were already closed with explicit superseded,
+**not implemented**, dispositions; those dispositions are preserved. The evaluator
+migration is complete. This does not close `light-cljs-125` or turn remaining
+language gaps into passing semantics. Public API replacements and retired numeric,
+descriptor, owner/fork/GC and resource-unit semantics are documented in
+[the evaluation API](../../../docs/evaluation.md#native-api-migration-map).

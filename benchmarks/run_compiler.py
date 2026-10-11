@@ -14,13 +14,28 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
 
-from run_interpreter import ROOT, distribution, save_json, sha
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def save_json(path, data):
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def distribution(values):
+    median = statistics.median(values)
+    return {"samples": len(values), "median": median, "min": min(values), "max": max(values),
+            "mad": statistics.median(abs(value - median) for value in values)}
 
 FIXTURES = ROOT / 'benchmarks/fixtures/compiler/collections'
 PRIMITIVES = ['integer', 'nested-closure', 'js-nested-method']
@@ -110,7 +125,7 @@ def main():
     node = os.environ.get('NODE', 'node')
     paths = sorted({p for folder in ['src','benches','tests','benchmarks/fixtures','benchmarks/support']
                     for p in (ROOT / folder).rglob('*') if p.is_file()} |
-                   {ROOT / p for p in ['Cargo.toml','Cargo.lock','benchmarks/run_compiler.py','benchmarks/run_interpreter.py']})
+                   {ROOT / p for p in ['Cargo.toml','Cargo.lock','benchmarks/run_compiler.py']})
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in paths}
     with tarfile.open(out / 'sources.tar.gz', 'w:gz') as archive:
         for path in paths:

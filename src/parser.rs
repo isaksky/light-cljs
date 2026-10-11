@@ -260,12 +260,6 @@ impl<'src> Parser<'src> {
         parser
     }
 
-    // An embedding reader can share its remaining traversal budget with syntax
-    // lookahead. This only tightens the established parser bound.
-    pub(crate) fn limit_nesting(&mut self, limit: usize) {
-        self.nesting_limit = self.nesting_limit.min(limit);
-    }
-
     pub(crate) fn position(&self) -> usize {
         self.lookahead
             .as_ref()
