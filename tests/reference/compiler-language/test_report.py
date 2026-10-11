@@ -552,6 +552,55 @@ class SupplementalBoundaryTests(unittest.TestCase):
             mutate(next(case for case in changed if case["id"] == identity))
             with self.assertRaises(ValueError):self.contract_with(changed)
 
+    def test_macro_phase_difference_preserves_reference_hashes_and_needs_both_phase_proofs(self):
+        case = self.by_id["macro-defmacro"]
+        self.assertEqual(case["kind"], "intentional-difference")
+        self.assertEqual(case["source"], "(defmacro m [] 1)")
+        self.assertEqual(case["source_sha256"], "e20d17315c3f9c14e5bb05f2956be9ce618660d49254ccddfbba8c0425482082")
+        self.assertEqual([proof["source_sha256"] for proof in case["reference_runtime"]], [
+            "6c958a7b0fa93e84f93f2aa7bef93f4ba1b035024fee765266db0c5ff7ce43af",
+            "fa55e075c1c7cf662ec5f098c6bf46d1606d97daca4620fac6591670f48f36eb",
+            "0c4e379d1d2cd04c36803865586788ef26c6962fb8fb72643b78a61dfd47b046"])
+        for mutate in (
+            lambda case: case.pop("local_runtime"),
+            lambda case: case.pop("reference_runtime"),
+            lambda case: case["reference_runtime"].pop(),
+            lambda case: case["local_probes"].pop(),
+            lambda case: case["local_probes"][0].update(source_sha256="stale"),
+            lambda case: case["local_probes"][0].update(local={"category": "accepted", "warning_trace": []}),
+            lambda case: case.update(kind="public-runtime", runtime=case["reference_runtime"]),
+        ):
+            changed = copy.deepcopy(self.cases)
+            mutate(next(case for case in changed if case["id"] == "macro-defmacro"))
+            with self.assertRaises(ValueError):self.contract_with(changed)
+
+    def test_macro_phase_runner_executes_only_the_declared_phase_and_detects_either_failure(self):
+        case = self.by_id["macro-defmacro"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for failure in (None, "local-runtime", "local-phase", "release", "checkout"):
+                def local(probe, *_args):
+                    if probe is case:return report.result("verified-warning")
+                    return report.result("mismatch" if failure == "local-phase" else "verified-rejection")
+                def local_runtime(proof, *_args, **_kwargs):
+                    self.assertEqual(proof["id"], "boundary-defmacro-compile-time-expansion")
+                    return {"javascript": report.result("mismatch" if failure == "local-runtime" else "passed")}
+                def analyzed(probes, kind, *_args, **_kwargs):
+                    self.assertEqual([probe["id"] for probe in probes], ["macro-defmacro"])
+                    return {case["id"]: report.result("completed", observed=case[kind])}
+                def reference_runtime(proofs, kind, *_args):
+                    self.assertEqual([proof["id"] for proof in proofs], [proof["id"] for proof in case["reference_runtime"]])
+                    return {proof["id"]: report.result("mismatch" if failure == kind else "passed") for proof in proofs}
+                with patch.object(report, "local_boundary_probe", side_effect=local), \
+                     patch.object(report, "local_layers", side_effect=local_runtime) as local_execution, \
+                     patch.object(report, "checked_analysis", side_effect=analyzed), \
+                     patch.object(report, "reference_cases", side_effect=reference_runtime) as reference_execution:
+                    evidence = report.run_boundary_support([case], "compiler", root, root, 1, 1, "both")
+                self.assertEqual(local_execution.call_count, 1)
+                self.assertEqual(reference_execution.call_count, 2)
+                self.assertEqual(report.boundary_support_status(case, evidence[case["id"]]),
+                                 "verified-intentional-difference" if failure is None else "mismatch")
+
     def test_supplemental_checks_never_inflate_source_counts_or_pass_when_unexecuted(self):
         inventory, witnesses, _ = report.load_contract()
         before = report.assemble(inventory, witnesses, {})

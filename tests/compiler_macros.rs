@@ -1765,3 +1765,257 @@ mod javascript_form_bridge {
         assert_eq!(hits.load(Ordering::Relaxed), 0);
     }
 }
+
+mod same_file_javascript_macros {
+    use super::*;
+
+    fn javascript_host() -> MacroHost {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        host
+    }
+
+    #[test]
+    fn compile_and_analyze_emit_expand_hygienically_without_runtime_macro_roots() {
+        let source = r#"
+          (defmacro twice [x] `(let [v# ~x] (+ v# v#)))
+          (def calls (atom 0))
+          (let [v 100 answer (twice (do (swap! calls inc) 21))]
+            (and (= 42 answer) (= 1 @calls) (= 100 v)))"#;
+        let mut host = javascript_host();
+        assert_eq!(
+            result(&compile_with_macros(source, &mut host).unwrap()),
+            "true\n"
+        );
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+        assert!(
+            program
+                .globals
+                .iter()
+                .all(|binding| binding.name != "twice")
+        );
+        assert_eq!(result(&emit_js(&program)), "true\n");
+        assert_eq!(
+            result(&compile("(defmacro twice [x] `(+ ~x ~x)) (twice 21)").unwrap()),
+            "42\n"
+        );
+        assert_eq!(
+            result(&compile("(defmacro empty [] 42)").unwrap()),
+            "null\n"
+        );
+    }
+
+    #[test]
+    fn fixed_multiple_variadic_and_destructured_methods_use_hidden_abi() {
+        let source = r#"
+          (defmacro ^:private fixed "macro docs" {:marker 7} [[a b] {:keys [c]}]
+            `(+ ~a ~b ~c))
+          (defmacro methods ([x] x) ([x y & more] (last more)))
+          (defmacro inspect []
+            (let [m (get (:light-cljs/macros &env) 'cljs.user/fixed)]
+              (list 'quote [(:doc m) (:marker m) (:private m) (:macro m)
+                           (:arglists m) (:light-cljs/generation m)])))
+          (and (= 42 (fixed [10 20] {:c 12}))
+               (= [1 4] [(methods 1) (methods 1 2 3 4)])
+               (= ["macro docs" 7 true true '([[a b] {:keys [c]}]) 1] (inspect)))"#;
+        assert_eq!(
+            result(&compile_with_macros(source, &mut javascript_host()).unwrap()),
+            "true\n"
+        );
+        for invocation in ["(fixed)", "(fixed 1 2)", "(fixed 1 2 3 4)"] {
+            let source = format!("(defmacro fixed ([x] x) ([x y z] z))\n{invocation}");
+            let error = compile(&source).unwrap_err().to_string();
+            assert!(
+                error.contains("arity") && error.contains("definition"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_order_preserves_expansions_and_macro_definition_generations() {
+        let source = r#"
+          (defmacro inner [] 1)
+          (defmacro outer [] (inner))
+          (defn before [] (inner))
+          (defmacro inner [] 2)
+          (defmacro nested [] '(inner))
+          (= [1 1 2 2] [(before) (outer) (inner) (nested)])"#;
+        assert_eq!(
+            result(&compile_with_macros(source, &mut javascript_host()).unwrap()),
+            "true\n"
+        );
+        for source in [
+            "(future-macro) (defmacro future-macro [] 1)",
+            "(if false (future-macro) 1) (defmacro future-macro [] 1)",
+            "(defmacro early [] (future-macro)) (defmacro future-macro [] 1)",
+        ] {
+            assert!(compile(source).is_err(), "accepted forward macro: {source}");
+        }
+    }
+
+    #[test]
+    fn generated_declarations_and_top_level_do_interleave_in_source_order() {
+        let source = r#"
+          (defmacro install []
+            '(do (defmacro answer [] 42) (def result (answer))))
+          (do (install) (= [42 42] [result (answer)]))"#;
+        assert_eq!(
+            result(&compile_with_macros(source, &mut javascript_host()).unwrap()),
+            "true\n"
+        );
+        assert_eq!(
+            result(
+                &compile(
+                    "(defmacro install [x] '(defmacro generated [] 42)) (-> 1 install) (generated)"
+                )
+                .unwrap()
+            ),
+            "42\n"
+        );
+        for source in [
+            "(if true (defmacro illegal [] 1) nil)",
+            "(if false nil (defmacro illegal [] 1))",
+            "(let [x 1] (defmacro illegal [] x))",
+            "(fn [] (defmacro illegal [] 1))",
+            "(defmacro install [] '(defmacro illegal [] 1)) (if true (install) nil)",
+        ] {
+            let error =
+                analyze_with_macros(source, &parse(source).unwrap(), &mut javascript_host())
+                    .unwrap_err();
+            assert!(error.to_string().contains("top level"), "{source}: {error}");
+            assert!(error.span.start < source.len());
+        }
+    }
+
+    #[test]
+    fn macro_and_value_binding_conflicts_include_declare_and_generated_definitions() {
+        for source in [
+            "(def m 1) (defmacro m [] 2)",
+            "(declare m) (defmacro m [] 2)",
+            "(def m) (defmacro m [] 2)",
+            "(defmacro m [] 2) (def m 1)",
+            "(defmacro m [] 2) (declare m)",
+            "(defmacro m [] 2) (defn m [] 1)",
+            "(defmacro m [] 2) (defmacro define [] '(def m 1)) (define)",
+        ] {
+            let error =
+                analyze_with_macros(source, &parse(source).unwrap(), &mut javascript_host())
+                    .unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("binding cljs.user/m") && message.contains("distinct names"),
+                "{source}: {message}"
+            );
+            assert!(error.span.start < source.len());
+        }
+        assert_eq!(
+            result(&compile("(declare value) (def value 42) value").unwrap()),
+            "42\n"
+        );
+        // A visible ordinary binding must not silently fall back to the core
+        // function/macro with the same spelling while helper demand is pending.
+        for name in ["+", "when"] {
+            let source = format!("(def {name} (fn [& xs] 99)) (defmacro m [] ({name} 1 2)) (m)");
+            let error = compile(&source).unwrap_err().to_string();
+            assert!(
+                error.contains("ordinary helper") && error.contains("macro compilation"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_calls_shadow_unqualified_macros_but_phase_misuses_are_located() {
+        assert_eq!(
+            result(
+                &compile(
+                    r#"
+          (defmacro answer [] 42)
+          (let [answer (fn [] 7)]
+            (= [7 42] [(answer) (cljs.user/answer)]))"#
+                )
+                .unwrap()
+            ),
+            "true\n"
+        );
+        for use_form in [
+            "m",
+            "(apply m [])",
+            "(var m)",
+            "#'m",
+            "(resolve 'm)",
+            "@m",
+            "@#'m",
+            "(set! m 1)",
+        ] {
+            let source = format!("(defmacro m [] 42)\n{use_form}");
+            let error =
+                analyze_with_macros(&source, &parse(&source).unwrap(), &mut javascript_host())
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains("invoke it directly in source"),
+                "{use_form}: {error}"
+            );
+            assert!(
+                error.span.start >= source.find('\n').unwrap(),
+                "{use_form}: {:?}",
+                error.span
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_and_cljc_macros_use_definition_site_names_and_selected_branch() {
+        let sources = Sources::new();
+        sources.write(
+            "local/macros.cljc",
+            r#"
+          (ns local.macros)
+          #?(:clj (defmacro ignored [] jvm-only)
+             :cljs (defmacro ^:private inner [x] `(+ ~x 2)))
+          (defmacro outer [x] (inner x))
+          (defmacro nested [x] `(inner ~x))
+          (let [inner (fn [x] 0)]
+            (js/console.log (= [42 42 42] [(outer 40) (nested 40) (local.macros/inner 40)])))"#,
+        );
+        assert_eq!(
+            execute(
+                &sources
+                    .compile_host("local.macros", &mut javascript_host())
+                    .unwrap()
+            ),
+            "true\n"
+        );
+    }
+
+    #[test]
+    fn reused_host_refreshes_source_macros_and_preserves_configuration() {
+        let mut host = javascript_host();
+        host.set_assertions(false);
+        host.limits.expansions = 64;
+        host.evaluator_options.memory_limit = 64 * 1024 * 1024;
+        let source = "(defmacro answer [] (assert false) 42) (answer)";
+        for _ in 0..2 {
+            assert_eq!(
+                result(&compile_with_macros(source, &mut host).unwrap()),
+                "42\n"
+            );
+            assert!(!host.assertions_enabled());
+            assert_eq!(host.limits.expansions, 64);
+            assert_eq!(host.evaluator_options.memory_limit, 64 * 1024 * 1024);
+        }
+        assert!(compile_with_macros("(answer)", &mut host).is_err());
+        host.set_assertions(true);
+        assert!(
+            compile_with_macros(source, &mut host)
+                .unwrap_err()
+                .to_string()
+                .contains("Assert failed")
+        );
+        assert_eq!(
+            result(&compile_with_macros("(defmacro answer [] 7) (answer)", &mut host).unwrap()),
+            "7\n"
+        );
+    }
+}

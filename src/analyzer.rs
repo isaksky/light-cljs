@@ -2101,7 +2101,7 @@ pub fn analyze(source: &str, syntax: &SyntaxTree) -> Result<Program, AnalysisErr
     analyze_with_macros(source, syntax, &mut MacroHost::new())
 }
 
-/// Analyze with an explicitly supplied native macro host and import configuration.
+/// Analyze with an explicitly supplied macro host and import configuration.
 pub fn analyze_with_macros(
     source: &str,
     syntax: &SyntaxTree,
@@ -2132,7 +2132,7 @@ pub fn analyze_with_macro_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
-    analyze_input(source, syntax, macro_host, options, warnings, None)
+    analyze_input(source, syntax, macro_host, options, warnings, None, None)
 }
 
 /// Start a standalone compilation from an immutable compiler form. Generated
@@ -2150,24 +2150,29 @@ pub fn analyze_compiler_form(form: &Form) -> Result<Program, AnalysisError> {
         AnalysisOptions::default(),
         &mut Vec::new(),
         Some(form),
+        None,
     )
 }
 
-pub(crate) fn analyze_compiler_form_with_host(
+pub(crate) fn analyze_macro_function(
     form: &Form,
     host: &mut MacroHost,
+    namespace: &str,
+    aliases: &[(String, String)],
+    requires: &[String],
+    resolution: NamespaceResolution,
 ) -> Result<Program, AnalysisError> {
-    let syntax = SyntaxTree {
-        nodes: vec![],
-        roots: vec![],
-    };
     analyze_input(
         form.span().source().text(),
-        &syntax,
+        &SyntaxTree {
+            nodes: vec![],
+            roots: vec![],
+        },
         host,
         AnalysisOptions::default(),
         &mut Vec::new(),
         Some(form),
+        Some((namespace, aliases, requires, resolution)),
     )
 }
 
@@ -2178,10 +2183,15 @@ fn analyze_input(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
     owned_form: Option<&Form>,
+    definition_view: Option<(&str, &[(String, String)], &[String], NamespaceResolution)>,
 ) -> Result<Program, AnalysisError> {
-    macro_host.begin_compilation();
+    if definition_view.is_none() {
+        macro_host.begin_compilation();
+    }
     let (syntax, discards) = compiler_syntax(source, syntax);
     let mut roots = syntax.roots.clone();
+    let (namespace, aliases, requires, resolution) =
+        definition_view.unwrap_or(("cljs.user", &[], &[], NamespaceResolution::default()));
     let mut analyzer = Analyzer {
         source,
         syntax,
@@ -2201,11 +2211,11 @@ fn analyze_input(
         env: Environment::default(),
         recur_target: None,
         globals: HashMap::new(),
-        namespace: "cljs.user",
-        aliases: &[],
-        requires: &[],
+        namespace,
+        aliases,
+        requires,
         source_index: 0,
-        resolution: NamespaceResolution::default(),
+        resolution,
         options,
         warnings,
         resolving_var: false,
@@ -2817,10 +2827,27 @@ impl Analyzer<'_> {
                 kind: CollectionKind::List,
                 children,
             } => children.first().is_some_and(|id| {
+                let name = self.spelling(*id);
                 matches!(
-                    self.spelling(*id),
+                    name,
                     "do" | "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
-                )
+                ) || (self.lookup(name).is_none()
+                    && (self.macro_host.has_javascript_macro(self.namespace, name)
+                        || self
+                            .macro_host
+                            .macro_name(
+                                self.namespace,
+                                name,
+                                self.globals
+                                    .get(&(self.namespace.into(), name.into()))
+                                    .is_some_and(|g| self.program.globals[g.0].declared)
+                                    || self
+                                        .resolution
+                                        .excludes
+                                        .iter()
+                                        .any(|excluded| excluded == name),
+                            )
+                            .is_some()))
             }),
             _ => false,
         };
@@ -3090,9 +3117,12 @@ impl Analyzer<'_> {
             };
             let shadowed = !operator_name.contains('/')
                 && (self
-                    .globals
-                    .get(&(self.namespace.into(), operator_name.clone()))
-                    .is_some_and(|g| self.program.globals[g.0].declared)
+                    .macro_host
+                    .has_source_value(self.namespace, &operator_name)
+                    || self
+                        .globals
+                        .get(&(self.namespace.into(), operator_name.clone()))
+                        .is_some_and(|g| self.program.globals[g.0].declared)
                     || (imported_intrinsic.is_none()
                         && self.resolution.excludes.contains(&operator_name))
                     || self.resolution.refers.iter().any(|(name, _, _)| {
@@ -3120,7 +3150,13 @@ impl Analyzer<'_> {
                             return self.form(node, context);
                         }
                         self.macro_host
-                            .register_javascript_macro(self.namespace, &form)
+                            .register_javascript_macro(
+                                self.namespace,
+                                &form,
+                                self.aliases,
+                                self.requires,
+                                self.resolution.clone(),
+                            )
                             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
                         return Ok(self.push(
                             ExprKind::Nil,
@@ -3416,11 +3452,26 @@ impl Analyzer<'_> {
         if let Some(local) = self.lookup(name) {
             return Ok(ExprKind::Local(local));
         }
+        if self.macro_host.bootstrap_seed
+            && self.macro_host.has_source_value(self.namespace, name)
+            && !self
+                .globals
+                .get(&(self.namespace.into(), name.into()))
+                .is_some_and(|g| self.program.globals[g.0].declared)
+        {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::Unsupported(format!(
+                    "ordinary helper {}/{name} is not available during macro compilation",
+                    self.namespace
+                )),
+            ));
+        }
         if self.macro_host.has_javascript_macro(self.namespace, name) {
             return Err(self.error(
                 id,
                 AnalysisErrorKind::InvalidForm(
-                    "compile-time macro cannot be consumed as a runtime value",
+                    "compile-time macro cannot be consumed as a runtime value; invoke it directly in source so the compiler expands it",
                 ),
             ));
         }
@@ -4304,11 +4355,13 @@ impl Analyzer<'_> {
             }
         }
         self.program.globals[global.0].metadata = Some(metadata);
-        self.macro_host.register_runtime_var(
-            self.namespace,
-            &self.program.globals[global.0].name,
-            self.metadata_is(args[0], "private", "true"),
-        );
+        self.macro_host
+            .register_runtime_var(
+                self.namespace,
+                &self.program.globals[global.0].name,
+                self.metadata_is(args[0], "private", "true"),
+            )
+            .map_err(|e| self.error(args[0], AnalysisErrorKind::MacroExpansion(e)))?;
         // Registration precedes initializer/test analysis, so both see the live global.
         let previous_definition = self
             .definition_name
@@ -4826,11 +4879,13 @@ impl Analyzer<'_> {
 
     fn declare_global(&mut self, node: NodeId) -> Result<GlobalId, AnalysisError> {
         let name = self.binding_name(node)?.to_owned();
-        self.macro_host.register_runtime_var(
-            self.namespace,
-            &name,
-            self.metadata_is(node, "private", "true"),
-        );
+        self.macro_host
+            .register_runtime_var(
+                self.namespace,
+                &name,
+                self.metadata_is(node, "private", "true"),
+            )
+            .map_err(|e| self.error(node, AnalysisErrorKind::MacroExpansion(e)))?;
         let key = (self.namespace.to_owned(), name.clone());
         if let Some(&global) = self.globals.get(&key) {
             self.program.globals[global.0].declared = true;
@@ -6284,10 +6339,11 @@ impl Analyzer<'_> {
                 .find(|(local, namespace, _)| local == &name && namespace == "cljs.core")
                 .map(|(_, _, member)| format!("cljs.core/{member}"))
         };
-        let shadow_core = self
-            .globals
-            .get(&(self.namespace.into(), name.clone()))
-            .is_some_and(|g| self.program.globals[g.0].declared)
+        let shadow_core = self.macro_host.has_source_value(self.namespace, &name)
+            || self
+                .globals
+                .get(&(self.namespace.into(), name.clone()))
+                .is_some_and(|g| self.program.globals[g.0].declared)
             || self.resolution.excludes.contains(&name)
             || self
                 .resolution
@@ -6564,6 +6620,10 @@ impl Analyzer<'_> {
                 .filter(|g| g.namespace == self.namespace)
                 .map(|g| (g.name.clone(), g.namespace.clone(), g.name.clone())),
         );
+        bindings.extend(self.macro_host.javascript_macros.keys().filter_map(|key| {
+            let (namespace, name) = key.split_once('/')?;
+            (namespace == self.namespace).then(|| (name.into(), namespace.into(), name.into()))
+        }));
         bindings
     }
 

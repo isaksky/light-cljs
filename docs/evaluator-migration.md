@@ -178,10 +178,26 @@ units, including collection during bootstrap. `disable_native_evaluation()` is a
 explicit host seam used by the core family suite.
 
 A standalone source `defmacro` is now a compile-time declaration returning nil;
-its body can call core operations and ECMAScript intrinsics. The complete
-source-order catalog, ordinary helper demand, source imports, metadata services
-and nested-analysis contract remain assigned to light-cljs-101/109/102/103.
+its body can call core operations and ECMAScript intrinsics. Same-file `.cljs`
+and `.cljc` declarations, generated/top-level `do` interleaving, source-ordered
+macro generations, binding-kind conflicts, declaration metadata and runtime
+phase errors are implemented and exercised by `same_file_javascript_macros`
+in `tests/compiler_macros.rs`. Source macro analysis carries definition-site
+namespace/resolution snapshots and preserves host assertions and expansion
+budgets. Ordinary helper demand, source imports and nested-analysis reentry
+remain assigned to light-cljs-109/102/103.
 Legacy imported native source macros remain explicit adapters until those stages.
+
+Same-file macro validation on 2026-10-10 passed
+`cargo test --test compiler_bootstrap --test compiler_macros --test compiler_boundary_completion`
+(88 tests, including the eight direct same-file execution/diagnostic tests) and
+`python3 -m unittest discover -s tests/reference/compiler-language -p test_report.py`
+(39 tests). `git diff --check` passed. The focused
+[macro boundary verification](../tests/reference/compiler-language/boundary-support.md#same-file-macro-verification-2026-10-10)
+passed local compilation/execution and both pinned upstream references while
+retaining the deliberate runtime ABI difference. The full project suite and
+complete compiler-language reference report were not run for this scoped change.
+
 Numeric values crossing the compiled macro boundary use JavaScript Number:
 `case` tests `1` and `1.0` are consequently duplicate constants. Compiler-owned special forms, reader
 transforms, namespace snapshots and declaration lowering remain in Rust.

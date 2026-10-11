@@ -35,6 +35,12 @@ impl Default for MacroLimits {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SourceBindingKind {
+    Value,
+    Macro,
+}
+
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
 /// QuickJS bootstrap session. Explicit legacy native imports remain isolated until
 /// light-cljs-115; reusing this host never reuses JavaScript macro roots.
@@ -55,9 +61,10 @@ pub struct MacroHost {
     pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros: HashMap<String, crate::compiler_bootstrap::CompiledMacro>,
+    pub(crate) source_bindings: HashMap<String, SourceBindingKind>,
     native_disabled: bool,
-    expansions: usize,
-    generated_nodes: usize,
+    pub(crate) expansions: usize,
+    pub(crate) generated_nodes: usize,
 }
 
 impl MacroHost {
@@ -335,21 +342,72 @@ impl MacroHost {
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
         self.renames.insert(caller.to_owned(), renames);
     }
+    pub(crate) fn macro_analysis_frame(&self) -> Self {
+        Self {
+            imports: self.imports.clone(),
+            renames: self.renames.clone(),
+            namespace_symbols: self.namespace_symbols.clone(),
+            namespace_docs: self.namespace_docs.clone(),
+            runtime_vars: self.runtime_vars.clone(),
+            namespace_imports: self.namespace_imports.clone(),
+            limits: self.limits,
+            evaluator_options: self.evaluator_options.clone(),
+            assertions_disabled: self.assertions_disabled,
+            bootstrap: self.bootstrap.clone(),
+            bootstrap_seed: true,
+            javascript_macros: self.javascript_macros.clone(),
+            source_bindings: self.source_bindings.clone(),
+            native_disabled: true,
+            expansions: self.expansions,
+            generated_nodes: self.generated_nodes,
+            ..Self::default()
+        }
+    }
+    pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
+        self.source_bindings.get(&format!("{namespace}/{name}")) == Some(&SourceBindingKind::Value)
+    }
     pub(crate) fn begin_compilation(&mut self) {
         if !self.bootstrap_seed {
             self.bootstrap = None;
             self.javascript_macros.clear();
+            self.source_bindings.clear();
         }
         self.expansions = 0;
         self.generated_nodes = 0;
         self.runtime_vars.clear();
         self.namespace_imports.clear();
     }
-    pub(crate) fn register_runtime_var(&mut self, namespace: &str, name: &str, private: bool) {
+    pub(crate) fn register_source_binding(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        kind: SourceBindingKind,
+    ) -> Result<(), String> {
+        let key = format!("{namespace}/{name}");
+        if self
+            .source_bindings
+            .get(&key)
+            .is_some_and(|previous| *previous != kind)
+        {
+            return Err(format!(
+                "binding {key} cannot change between an ordinary Var and a compile-time macro; use distinct names for the two phases"
+            ));
+        }
+        self.source_bindings.insert(key, kind);
+        Ok(())
+    }
+    pub(crate) fn register_runtime_var(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        private: bool,
+    ) -> Result<(), String> {
+        self.register_source_binding(namespace, name, SourceBindingKind::Value)?;
         self.runtime_vars
             .entry(namespace.to_owned())
             .or_default()
             .insert(name.to_owned(), private);
+        Ok(())
     }
     pub(crate) fn set_namespace_imports(
         &mut self,
@@ -786,6 +844,25 @@ impl MacroHost {
             runtime.extend(import_names.iter().cloned());
             c.map(&[
                 (key("locals"), local_map),
+                // Descriptive compiler bindings only: no runtime Var or callable
+                // macro value crosses this metadata service.
+                (
+                    c.keyword(Name::new(Some("light-cljs"), "macros")),
+                    c.map(&{
+                        let mut declarations = self.javascript_macros.iter().collect::<Vec<_>>();
+                        declarations.sort_by(|a, b| a.0.cmp(b.0));
+                        declarations
+                            .into_iter()
+                            .map(|(name, declaration)| {
+                                let (ns, local) = name.split_once('/').unwrap();
+                                (
+                                    c.symbol(Name::new(Some(ns), local)),
+                                    declaration.metadata.clone().unwrap_or_else(|| c.nil()),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })?,
+                ),
                 (
                     key("context"),
                     key(match context {

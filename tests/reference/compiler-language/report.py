@@ -866,15 +866,32 @@ def boundary_support_contract():
         raise ValueError("supplemental boundary catalog must retain all 27 audited rows")
     runtime_ids = set()
     for identity, case in cases.items():
-        original = matrix[identity]
+        original = matrix.get(identity)
+        # Source macro declarations are no longer a rejected-source test. Keep
+        # their exact legacy provenance after retiring that rejection row.
+        if original is None and identity == "macro-defmacro" and case.get("kind") == "intentional-difference":
+            original = {"source": "(defmacro m [] 1)", "mode": "expr"}
+        if original is None:
+            raise ValueError(f"supplemental boundary has no retained original source: {identity}")
         if (case.get("source") != original["source"] or case.get("mode") != original["mode"]
                 or case.get("source_sha256") != hashlib.sha256(original["source"].encode()).hexdigest()
                 or not case.get("rationale", "").strip()):
             raise ValueError(f"supplemental boundary detached from original source: {identity}")
         kind = case.get("kind")
-        if kind not in {"public-runtime", "warning-api", "reader-api", "primitive-permissiveness", "version-difference"}:
+        if kind not in {"public-runtime", "warning-api", "reader-api", "primitive-permissiveness", "version-difference", "intentional-difference"}:
             raise ValueError(f"invalid supplemental disposition: {identity}")
-        probes = [case, *case.get("public_equivalents", []), *case.get("supplemental_probes", [])]
+        local_probes = case.get("local_probes", [])
+        if kind == "intentional-difference":
+            if (identity != "macro-defmacro" or case.get("runtime")
+                    or [probe["id"] for probe in local_probes] != ["boundary-defmacro-phase-value", "boundary-defmacro-phase-apply", "boundary-defmacro-phase-var"]
+                    or [proof["id"] for proof in case.get("local_runtime", [])] != ["boundary-defmacro-compile-time-expansion"]
+                    or [proof["id"] for proof in case.get("reference_runtime", [])] != [
+                        "boundary-defmacro-metadata-hidden-args", "boundary-defmacro-methods-apply-receiver",
+                        "boundary-defmacro-dispatch-abi"]):
+                raise ValueError(f"macro phase difference needs separate local and retained reference proofs: {identity}")
+        elif any(case.get(key) for key in ("local_probes", "local_runtime", "reference_runtime")):
+            raise ValueError(f"separate phase proofs require an intentional difference: {identity}")
+        probes = [case, *case.get("public_equivalents", []), *case.get("supplemental_probes", []), *local_probes]
         if kind in {"primitive-permissiveness", "version-difference"} and case.get("local", {}).get("category") != "analysis-error":
             raise ValueError(f"boundary difference requires the actual local rejection: {identity}")
         if kind == "primitive-permissiveness":
@@ -893,7 +910,7 @@ def boundary_support_contract():
         if kind in {"primitive-permissiveness", "version-difference"} and case.get("runtime"):
             raise ValueError(f"primitive/version diagnostics cannot masquerade as runtime passes: {identity}")
         for probe in probes:
-            if probe in case.get("supplemental_probes", []) and (
+            if (probe in case.get("supplemental_probes", []) or probe in local_probes) and (
                     probe.get("source_sha256") != hashlib.sha256(probe["source"].encode()).hexdigest()
                     or not probe.get("rationale", "").strip()):
                 raise ValueError(f"supplemental diagnostic needs hashed source and rationale: {identity}")
@@ -910,6 +927,10 @@ def boundary_support_contract():
                     raise ValueError(f"supplemental rejection needs exact reason: {identity}")
             elif set(local) != {"category", "warning_trace"} or local["category"] != "accepted" or not valid_warning_trace(local["warning_trace"]):
                 raise ValueError(f"supplemental support requires compilation and precise warnings: {identity}")
+            if probe in local_probes:
+                if not reject or any(layer in probe for layer in ("release", "checkout")):
+                    raise ValueError(f"local phase proof requires an independent rejection: {identity}")
+                continue
             for layer in ("release", "checkout"):
                 ref = probe.get(layer, {})
                 if (set(ref) != {"category", "warnings", "detail", "warning_trace"}
@@ -936,7 +957,7 @@ def boundary_support_contract():
                 for name, source in probe["local_files"].items():
                     if Path(name).is_absolute() or ".." in Path(name).parts or not name.endswith((".cljs", ".cljc", ".clj")) or not source.strip():
                         raise ValueError(f"invalid supplemental namespace file: {identity}")
-        for runtime in case.get("runtime", []):
+        for runtime in [*case.get("runtime", []), *case.get("local_runtime", []), *case.get("reference_runtime", [])]:
             if (runtime["id"] in runtime_ids or runtime.get("native_stdout", "missing") is not None
                     or not runtime.get("source", "").strip() or not runtime.get("rationale", "").strip()
                     or runtime.get("source_sha256") != hashlib.sha256(runtime["source"].encode()).hexdigest()
@@ -975,14 +996,14 @@ def boundary_support_status(case, evidence):
 
 def run_boundary_support(cases, binary, checkout, directory, timeout, reference_timeout, references):
     evidence = {case["id"]: {} for case in cases}
-    runtime = [value for case in cases for value in case.get("runtime", [])]
+    runtime = [value for case in cases for value in [*case.get("runtime", []), *case.get("reference_runtime", [])]]
     for case in cases:
         checks = []
-        for probe in [case, *case.get("public_equivalents", []), *case.get("supplemental_probes", [])]:
+        for probe in [case, *case.get("public_equivalents", []), *case.get("supplemental_probes", []), *case.get("local_probes", [])]:
             value = local_boundary_probe(probe, binary, directory / "local" / probe["id"], timeout)
             expected = "verified-rejection" if probe["local"]["category"] == "analysis-error" else "verified-warning"
             checks.append({**value, "status": "verified-boundary" if value["status"] == expected else value["status"], "id": probe["id"]})
-        for proof in case.get("runtime", []):
+        for proof in [*case.get("runtime", []), *case.get("local_runtime", [])]:
             value = local_layers(proof, binary, directory / "local-runtime" / proof["id"], timeout,
                                  warning_mode=proof.get("local_warning_mode", False))["javascript"]
             checks.append({**value, "status": "verified-boundary" if value["status"] == "passed" else value["status"], "id": proof["id"], "execution": True})
@@ -998,7 +1019,7 @@ def run_boundary_support(cases, binary, checkout, directory, timeout, reference_
             for probe in [case, *case.get("public_equivalents", []), *case.get("supplemental_probes", [])]:
                 value = analyzed[probe["id"]]
                 checks.append({**value, "id": probe["id"], "status": ("verified-boundary" if same_json(value["observed"], probe[kind]) else "mismatch") if value["status"] == "completed" else value["status"]})
-            for proof in case.get("runtime", []):
+            for proof in [*case.get("runtime", []), *case.get("reference_runtime", [])]:
                 value = executed[proof["id"]]
                 checks.append({**value, "id": proof["id"], "execution": True, "status": "verified-boundary" if value["status"] == "passed" else value["status"]})
             evidence[case["id"]][kind] = aggregate_probes(checks, "verified-boundary")

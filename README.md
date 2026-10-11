@@ -155,7 +155,12 @@ execute in a fresh QuickJS heap. `defmacro` is a compiler declaration with hidde
 macro bodies can use canonical core functions and ECMAScript intrinsics. Ordinary
 helper demand and shared namespace loading are subsequent migration stages;
 legacy explicit `.clj`/`.cljc` macro imports remain an isolated adapter until then.
-Runtime use of a declared macro is a phase error.
+Declarations follow source order at top level, inside top-level `do`, and in
+macro-generated declarations. Same-name macro redefinitions preserve earlier
+expanded code; macro/value kind conflicts and runtime use of a declared macro
+are located phase errors. Local functions shadow unqualified macro calls.
+See the [compiler macro contract](docs/compiler.md)
+for the remaining separate helper/import migration stages.
 
 ```rust
 use light_cljs::{analyze, emit_js, parse};

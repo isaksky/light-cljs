@@ -122,6 +122,8 @@ fn install(unit: &str, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), 
             CompiledMacro {
                 function,
                 definition,
+                metadata: None,
+                generation: 0,
             },
         );
     }
@@ -210,6 +212,8 @@ impl MacroHost {
 pub(crate) struct CompiledMacro {
     function: ValueId,
     definition: crate::compiler_data::SourceSpan,
+    pub(crate) metadata: Option<Datum>,
+    generation: usize,
 }
 
 /// Declaration seed: add the hidden ABI parameters without evaluating a macro.
@@ -283,21 +287,71 @@ impl MacroHost {
         &mut self,
         namespace: &str,
         form: &Form,
+        aliases: &[(String, String)],
+        requires: &[String],
+        resolution: crate::analyzer::NamespaceResolution,
     ) -> Result<(), String> {
         let (name, _, function) = lower_declaration(form)?;
+        // The declaration seed computes docs, user arglists and merged name,
+        // leading and trailing metadata without executing any source body.
+        let c = DataBuilder;
+        let mut declaration_args = vec![c.nil(), c.nil()];
+        declaration_args.extend(form.data().elements()?.into_iter().skip(1));
+        let descriptor = crate::compiler_binding_macros::defn_macro(&mut { c }, &declaration_args)?;
+        let mut metadata = descriptor.elements()?[1].metadata().unwrap_or(c.map(&[])?);
+        metadata = c.assoc(
+            &metadata,
+            &c.keyword(Name::new(None, "macro")),
+            &c.boolean(true),
+        )?;
+        if let Some(arglists) = metadata.get(&c.keyword(Name::new(None, "arglists")))?
+            && let crate::compiler_data::DatumView::List(_) = arglists.inspect()
+        {
+            let quoted = arglists.elements()?;
+            if quoted.len() == 2
+                && matches!(quoted[0].inspect(), crate::compiler_data::DatumView::Symbol(ref name) if name.namespace().is_none() && name.name() == "quote".encode_utf16().collect::<Vec<_>>())
+            {
+                metadata = c.assoc(
+                    &metadata,
+                    &c.keyword(Name::new(None, "arglists")),
+                    &quoted[1],
+                )?;
+            }
+        }
+        let generation = self
+            .javascript_macros
+            .get(&format!("{namespace}/{name}"))
+            .map_or(1, |previous| previous.generation + 1);
+        for (key, value) in [
+            (Name::new(None, "name"), c.symbol(Name::new(None, &name))),
+            (Name::new(None, "ns"), c.symbol(Name::new(None, namespace))),
+            (
+                Name::new(Some("light-cljs"), "generation"),
+                c.integer(generation as i64),
+            ),
+        ] {
+            metadata = c.assoc(&metadata, &c.keyword(key), &value)?;
+        }
+        self.register_source_binding(
+            namespace,
+            &name,
+            crate::macro_host::SourceBindingKind::Macro,
+        )?;
         if self.bootstrap.is_none() {
             self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
-        // Isolated analysis frame. The full deferred helper/catalog contract is
-        // introduced by light-cljs-101/109, rather than consulting native roots.
-        let mut frame = MacroHost::new();
-        frame.disable_native_evaluation();
-        frame.bootstrap_seed = true;
-        frame.bootstrap = Some(bootstrap.clone());
-        frame.javascript_macros = self.javascript_macros.clone();
-        let program = crate::analyzer::analyze_compiler_form_with_host(&function, &mut frame)
-            .map_err(|e| e.to_string())?;
+        // Each declaration is analyzed against the visible macro generation and
+        // definition namespace. Its expanded code is immutable after installation.
+        // Ordinary helper demand/reentry remains light-cljs-102/109.
+        let mut frame = self.macro_analysis_frame();
+        let program = crate::analyzer::analyze_macro_function(
+            &function, &mut frame, namespace, aliases, requires, resolution,
+        )
+        .map_err(|e| e.to_string());
+        self.expansions = frame.expansions;
+        self.generated_nodes = frame.generated_nodes;
+        let program = program?;
         let function = bootstrap
             .evaluator
             .evaluate(&program)
@@ -307,6 +361,8 @@ impl MacroHost {
             CompiledMacro {
                 function,
                 definition: form.span(),
+                metadata: Some(metadata),
+                generation,
             },
         );
         Ok(())
