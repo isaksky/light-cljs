@@ -24,6 +24,7 @@
   const atoms = new WeakMap(), volatiles = new WeakMap();
   const queues = new WeakMap();
   const lazyValues = new WeakMap(), delays = new WeakMap();
+  const eductions = new WeakMap();
   const ifnValues = new WeakMap();
   const metaFunctions = new WeakMap();
   const typeNames = new WeakMap();
@@ -33,7 +34,7 @@
   const builtinTypes = {};
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
-      const Type = name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
+      const Type = name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "IndexedSeq" ? function (array, index, metadata) { return withMeta(view(array, index, true), metadata); } : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" || name === "IntegerRange" ? function (metadata, start, end, step, suppliedCount) { return withMeta(rangeNode(start, end, step, name === "IntegerRange", suppliedCount), metadata); } : function () {};
       Type.prototype = Object.create(base);
       Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
       builtinTypes[name] = Type;
@@ -2388,6 +2389,17 @@
     1: value => predicates.isSeq(value) ? value : seq(value) ?? emptyList,
     2: (xform, value) => chunkIteratorSequence(transformedIterator(xform, [sequenceIterator(value)]))
   }, (xform, value, more) => chunkIteratorSequence(transformedIterator(xform, [value, ...toArray(more)].map(sequenceIterator))));
+  function Eduction(xform, coll) {
+    // Retain only the view's inputs; each protocol call owns its traversal state.
+    // This is not a collection payload with structural equality or metadata.
+    const value = builtinValue("Eduction", Object.prototype);
+    eductions.set(value, {xform, coll});
+    return value;
+  }
+  const eduction = callable(0, {}, args => {
+    const values = toArray(args);
+    return new Eduction(comp(...values.slice(0, -1)), values.length ? values.at(-1) : null);
+  });
   function fnRest(args, start) {
     return args.length > start ? view(Object.freeze(Array.prototype.slice.call(args, start)), 0, true) : null;
   }
@@ -3352,7 +3364,7 @@
     } finally { core.printReadably = saved; }
   }
   function print(value, readable) {
-    const collection = sequential(value) || queues.has(value) || maps.has(value) || sets.has(value) || Array.isArray(value);
+    const collection = sequential(value) || eductions.has(value) || queues.has(value) || maps.has(value) || sets.has(value) || Array.isArray(value);
     if (collection && core.printLevel != null) {
       const saved = core.printLevel;
       if (saved <= 0) return "#";
@@ -3600,6 +3612,50 @@
     [["Keyword"], keywordPrototype], [["Symbol"], symbolPrototype], [["Reduced"], reducedPrototype], [["UUID"], uuidPrototype]
   ]) for (const name of names) builtinType(name, base);
   builtinType("Delay", Object.prototype);
+  builtinType("Eduction", Object.prototype);
+  installMethods(builtinTypes.Eduction.prototype, [
+    ["ISequential", 0, null], ["IIterable", 0, null], ["ISeqable", 0, null], ["IReduce", 0, null], ["IPrintWithWriter", 0, null],
+    ["IIterable/-iterator", 1, value => {
+      const {xform, coll} = eductions.get(value);
+      return transformedIterator(xform, [sequenceIterator(coll)]);
+    }],
+    ["ISeqable/-seq", 1, value => {
+      const {xform, coll} = eductions.get(value);
+      return seq(sequence(xform, coll));
+    }],
+    ["IReduce/-reduce", 2, (value, rf) => {
+      const {xform, coll} = eductions.get(value);
+      // Inner completion flushes buffers without completing the outer reducer.
+      return transduce(xform, completing(rf), coll);
+    }],
+    ["IReduce/-reduce", 3, (value, rf, init) => {
+      const {xform, coll} = eductions.get(value);
+      return transduce(xform, completing(rf), init, coll);
+    }],
+    ["IPrintWithWriter/-pr-writer", 3, (value, writer, options) => {
+      const readable = truth(options == null ? core.printReadably : get(options, keyword(null, "readably")));
+      write(writer, "(");
+      let current = seq(value), remaining = core.printLength, separator = "";
+      while (current != null && (remaining == null || remaining > 0)) {
+        write(writer, separator + print(first(current), readable)); separator = " ";
+        current = next(current); if (remaining != null) remaining--;
+      }
+      if (current != null) write(writer, separator + "...");
+      write(writer, ")"); return null;
+    }]
+  ]);
+  Object.defineProperties(builtinTypes.Eduction.prototype, Object.getOwnPropertyDescriptors({
+    get xform() { return eductions.get(this).xform; },
+    set xform(value) { eductions.get(this).xform = value; },
+    get coll() { return eductions.get(this).coll; },
+    set coll(value) { eductions.get(this).coll = value; },
+    indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
+    lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
+    [Symbol.iterator]() {
+      const iter = core.iteratorProtocol(this);
+      return {next() { return iter.hasNext() ? {value: iter.next(), done: false} : {done: true}; }};
+    }
+  }));
   for (const name of ["TransientVector", "TransientArrayMap", "TransientHashMap", "TransientHashSet"]) builtinType(name, transientPrototype);
   Object.defineProperty(builtinTypes.Subvec.prototype, "v", {get() { return subvecSources.get(this); }});
   for (const [Type, store, fields] of [
@@ -3719,7 +3775,7 @@
     ExceptionInfo, exInfo, exData, exMessage, exCause, throwableToMap,
     isInstance: (type, value) => value instanceof type,
     rePattern, reSeq, reFind: (re, text) => reMatch(re, text, false), reMatches: (re, text) => reMatch(re, text, true),
-    isRegex: value => value instanceof RegExp, vec, concat, sequence, apply, applyTo, into,
+    isRegex: value => value instanceof RegExp, vec, concat, sequence, eduction, apply, applyTo, into,
     cons: (head, tail) => cons(head, tail), listStar, iterate, take, range, toArray, mapSeq,
     arraySeq: function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(array, start, true) : null; },
     array: (...args) => args,

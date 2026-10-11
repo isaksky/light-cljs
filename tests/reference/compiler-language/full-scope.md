@@ -87,9 +87,12 @@ timeouts, unavailable tools or stale source cannot establish macro eligibility.
 No phase witnesses are inferred from test names or existing implementation.
 Public API completion requires both ordinary operation evidence and this phase
 evidence. The phase catalog binds all 27 transient public name/arity rows and the three
-`sequence` arities to their canonical macro contracts; a binding alone still
-supplies no passing observation. The complete `test-cljs-2028` body supplies an
-additional transducing-sequence witness. Full upstream bodies mixing sequence,
+`sequence` arities, plus `Eduction` and `eduction`, to their canonical macro
+contracts; a binding alone still supplies no passing observation. The complete `test-cljs-2028` body supplies an
+additional transducing-sequence witness. The complete `test-cljs-1209` body retains
+its original `my-conj` setup and binds eduction reduction. Its independent audit
+measures repeat effects, interleaving and completion against both references.
+Full upstream bodies mixing sequence,
 eduction and flatten remain subject to their assigned families; passing focused
 sequence tests does not complete those mixed bodies.
 

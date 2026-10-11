@@ -44,7 +44,7 @@
       "upstream-internals": 347,
       "reference-harness": 5
     },
-    "obligations": 4844,
+    "obligations": 4846,
     "public_api_arities": 1327,
     "intended_assertions": 3815
   },
@@ -1399,7 +1399,7 @@
   ],
   "scope": "intended-language",
   "generator_sha256": "8a9291f167a34b2eb6d148f5851408a95ae25afbc1a7a16fbb256c7f5b8be70b",
-  "obligations_sha256": "6cd5a91aba8f4c72e42b85208f94dbb5dfd03ef2f42ffa4b87c94194292d36f7",
+  "obligations_sha256": "13da612503298c2316eb1d737b7f404a83a5b93721b632d62e2a34302d344603",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,11 +1440,11 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "52a9d832b3ff4750d6114f1680de11e7022ba70ce3ca5db3773c77d553eccb6a"
+      "sha256": "05c93b62ad6ec66ca2950b8345e39489abc3a2677796f7ba6be9fdac4b7fa598"
     },
     {
       "path": "src/core_var_metadata.tsv",
-      "sha256": "a89be6588d7b5e7923db631737e2337bc47aff55833e2aef4c358697bcbeff3c"
+      "sha256": "fd1b8c0fd178d4055a3ef0ceedcb513a46a4ef34c148354a3db2c16afe25bbe7"
     },
     {
       "path": "tests/reference/sci/runtime.tsv",
@@ -1484,6 +1484,6 @@
     "reader": 79,
     "tap-delivery": 3,
     "sequence-transform": 5,
-    "eduction": 2
+    "eduction": 4
   }
 }

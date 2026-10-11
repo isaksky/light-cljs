@@ -455,6 +455,8 @@ pub enum CoreFnId {
     Vec,
     Concat,
     Sequence,
+    Eduction,
+    EductionType,
     Apply,
     ArraySeq,
 
@@ -1022,6 +1024,8 @@ impl CoreFnId {
             "vec" => Self::Vec,
             "concat" => Self::Concat,
             "sequence" => Self::Sequence,
+            "eduction" => Self::Eduction,
+            "Eduction" => Self::EductionType,
             "apply" => Self::Apply,
             "array-seq" => Self::ArraySeq,
 
@@ -1670,6 +1674,8 @@ impl CoreFnId {
             Self::Vec => "vec",
             Self::Concat => "concat",
             Self::Sequence => "sequence",
+            Self::Eduction => "eduction",
+            Self::EductionType => "Eduction",
             Self::Apply => "apply",
             Self::ArraySeq => "arraySeq",
 

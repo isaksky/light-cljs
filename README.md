@@ -273,7 +273,11 @@ records reduction order, state, completion and pinned reference comparisons.
 Transducing `sequence` supports one or multiple input collections with memoized,
 chunked lazy output and completion emission in both application and macro phases.
 The [lazy transduction audit](tests/reference/compiler-sequence-transducers.md)
-records exact demand traces and all public arities. `eduction` remains separately assigned.
+records exact demand traces and all public arities. Repeatable `eduction` views
+reapply transforms with fresh state for each reduction or traversal, including
+independent iterators, buffered completion and finite prefixes of infinite sources.
+The [eduction audit](tests/reference/compiler-eductions.md) records public constructor,
+protocol, metadata, completion and shared macro/application evidence.
 
 Compiled `delay`, `force`, `delay?`, `realized?` and `lazy-seq` preserve deferred
 execution, retry throwing thunks, and memoize successful values. Lazy metadata
