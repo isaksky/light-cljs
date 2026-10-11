@@ -26,12 +26,20 @@ class LibraryLedgerTests(unittest.TestCase):
         agreed = sum(record['reconciliation'] == 'original-source-agreement' for record in records)
         self.assertEqual(static['counts']['missing'], len(rows))
         self.assertEqual(fresh['counts']['covered'], agreed)
-        self.assertEqual(fresh['counts']['missing'], len(rows) - agreed)
-        self.assertEqual(fresh['counts']['version-difference'], 0)
+        self.assertEqual(fresh['counts']['missing'], len(rows) - agreed - 6)
+        self.assertEqual(fresh['counts']['version-difference'], 6)
         self.assertFalse(fresh['strict_complete'])
         self.assertTrue(all(row['columns']['quickjs_macro']['status'] == 'not-run' for row in fresh['assertions']))
         self.assertTrue(full_ledger.sci_execution_failed(fresh, evidence, {'mismatch', 'failed', 'invalid-output'}))
+        differences = [row for row in fresh['assertions'] if row['status'] == 'version-difference']
+        difference_evidence = {row['library_context_reconciliation']['id']:
+                               evidence[row['library_context_reconciliation']['id']] for row in differences}
+        self.assertFalse(full_ledger.sci_execution_failed({'assertions': differences}, difference_evidence,
+                                                         {'mismatch', 'failed', 'invalid-output'}))
+        changed = [dict(row, status='missing') for row in differences]
+        self.assertTrue(full_ledger.sci_execution_failed({'assertions': changed}, difference_evidence,
+                                                        {'mismatch', 'failed', 'invalid-output'}))
         self.assertTrue(all(row['library_context_reconciliation']['original_expectation_status'] == 'unresolved'
-                            for row in fresh['assertions'] if row['status'] == 'missing'))
+                            for row in fresh['assertions'] if row['status'] in {'missing', 'version-difference'}))
 
 if __name__ == '__main__': unittest.main()

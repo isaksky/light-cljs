@@ -5,6 +5,7 @@ Copyright (c) Rich Hickey. Eclipse Public License 1.0; retain original notices.
 from pathlib import Path
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,15 @@ SPECS = [
  ('macro-source', 'src/test/cljs/cljs/macro_test.cljs', ['test-macros', 'test-cljs-2852', 'test-cljs-3027', 'test-cljs-3413'],
   '(ns cljs.macro-test (:refer-clojure :exclude [==]) (:require [cljs.macro-test.macros :refer [== sm-cljs-3027]] [cljs.macro-test.cljs2852] [single-seg-macros]))',
   '(ns cljs.macro-test (:refer-clojure :exclude [==]) (:require-macros [cljs.macro-test.macros :refer [== sm-cljs-3027]] [cljs.macro-test.cljs2852] [single-seg-macros]))'),
+ ('ns-test', 'src/test/cljs/cljs/ns_test.cljs', ['test-ns', 'test-cljs-1508', 'test-cljs-3399'],
+  '(ns cljs.ns-test (:refer-clojure :exclude [+ for] :rename {mapv core-mapv}) (:require [cljs.core :as lang :refer [when when-let] :rename {when always when-let always-let}] [cljs.ns-test.foo :refer [baz]] [clojure.set :as s :refer [intersection] :rename {intersection itsc}] [fake.ns :as-alias fake]) (:use [cljs.ns-test.bar :only [quux]]))',
+  '(ns cljs.ns-test (:refer-clojure :exclude [+ for] :rename {mapv core-mapv}) (:require-macros [clojure.core :as lang :refer [when when-let] :rename {when always when-let always-let}]) (:require [cljs.ns-test.foo :refer [baz]] [clojure.set :as s :refer [intersection] :rename {intersection itsc}] [fake.ns :as-alias fake]) (:use [cljs.ns-test.bar :only [quux]]))'),
+ ('ns-exists', 'src/test/cljs/cljs/ns_test.cljs', ['test-cljs-2292'],
+  '(ns cljs.ns-test (:refer-clojure :exclude [+ for] :rename {mapv core-mapv}) (:require [cljs.core :as lang :refer [when when-let] :rename {when always when-let always-let}] [cljs.ns-test.foo :refer [baz]] [clojure.set :as s :refer [intersection] :rename {intersection itsc}] [fake.ns :as-alias fake]) (:use [cljs.ns-test.bar :only [quux]]))',
+  '(ns cljs.ns-test (:refer-clojure :exclude [+ for] :rename {mapv core-mapv}) (:require-macros [clojure.core :as lang :refer [when when-let] :rename {when always when-let always-let}]) (:require [cljs.ns-test.foo :refer [baz]] [clojure.set :as s :refer [intersection] :rename {intersection itsc}] [fake.ns :as-alias fake]) (:use [cljs.ns-test.bar :only [quux]]))'),
+ ('static', 'src/test/cljs/static/core_test.cljs', ['foo-test'], '(ns static.core-test)', None),
+ ('tagged-runtime', 'src/test/cljs/cljs/tagged_literals_test.cljs', ['test-runtime-reader'],
+  '(ns cljs.tagged-literals-test (:require [cljs.reader :as reader] [clojure.set :as set]))', None),
 ]
 RATIONALE = ('Complete original body, every relevant original setup form, namespace identity, aliases, literal expectations and effects retained. cljs.test harness imports are removed only after is/deftest become executing assertions; reader-only cljs.test alias uses an empty local namespace marker, while references use the actual library. Original source-macro .clj modules are byte-identical as local .cljs modules and remain .clj for the reference JVM macro compiler; local ordinary require and canonical require-macros differ explicitly, with the original use-macros :only becoming the equivalent refer import. Unused macro_test macro imports are omitted only for its independent js-keys body, which calls none of them. These contexts establish these complete bodies, not general cljs.test or unchanged .clj companion compatibility.')
 
@@ -51,6 +61,34 @@ def pinned(path):
     data = subprocess.check_output(['git', '-C', str(ROOT / 'research/clojurescript'), 'show', inv.REVISION + ':' + path])
     assert (ROOT / 'research/clojurescript' / path).read_bytes() == data
     return data.decode()
+
+
+def namespace_assertions(text, node):
+    """Keep aliases and evaluate original cljs.test assertion messages eagerly.
+
+    test-cljs-3399 nests a second is in the first is's message. Both original
+    sites must execute even when the first condition is true. Binding names
+    are reserved here and are absent from every original selected source.
+    """
+    assert 'source-context-value__' not in text and 'source-context-message__' not in text
+    head = inv.short_head(node)
+    if head == 'deftest':
+        return '(do ' + ' '.join(namespace_assertions(text, child) for child in node.children[2:]) + ' true)'
+    if head == 'testing':
+        return '(do ' + ' '.join(namespace_assertions(text, child) for child in node.children[2:]) + ')'
+    if head == 'is':
+        forms = [namespace_assertions(text, child) for child in node.children[1:]]
+        assert 1 <= len(forms) <= 2
+        if len(forms) == 1:
+            return '(assert ' + forms[0] + ')'
+        return '(let [source-context-value__ ' + forms[0] + ' source-context-message__ ' + forms[1] + '] (assert source-context-value__ source-context-message__))'
+    if not node.children:
+        return text[node.start:node.end]
+    parts, offset = [], node.start
+    for child in node.children:
+        parts.extend([re.sub(r';[^\n]*', '', text[offset:child.start]), namespace_assertions(text, child)])
+        offset = child.end
+    return ''.join(parts) + re.sub(r';[^\n]*', '', text[offset:node.end])
 
 
 def generate(catalogs=False):
@@ -70,9 +108,20 @@ def generate(catalogs=False):
             assert inv.digest(text.encode()) == body['source_span']['sha256']
             span = body['source_span']
             assert original.encode()[span['start_byte']:span['end_byte']].decode() == text
-            forms.append(residual.adapt(text, inv.Reader(text).all()[0]))
+            adapt = namespace_assertions if label.startswith('ns-') else residual.adapt
+            forms.append(adapt(text, inv.Reader(text).all()[0]))
             origins.append({'body_id': body['id'], 'source_sha256': span['sha256']})
         expression = '(do ' + ' '.join(forms[len(setup):]) + ')'
+        configuration = None
+        if label == 'tagged-runtime':
+            # Upstream cljs.reader/add-data-readers initializes these handlers
+            # from this exact configuration. The complete original map is
+            # retained as provenance; only this body's three used handlers
+            # need public registry installation in the explicit embedding.
+            config = pinned('src/test/cljs/data_readers.cljc')
+            configuration = {'source': 'src/test/cljs/data_readers.cljc', 'sha256': inv.digest(config.encode()), 'text': config,
+                             'adapter': 'Install the three exact original cljs/tag=identity, cljs/inc=inc and cljs/union=clojure.set/union handlers through the public reader registry in each independently executed phase. Unused custom test handlers are not claimed.'}
+            expression = '(do (reader/register-tag-parser! (quote cljs/tag) identity) (reader/register-tag-parser! (quote cljs/inc) inc) (reader/register-tag-parser! (quote cljs/union) set/union) ' + expression + ')'
         name_node = inv.Reader(namespace).all()[0].children[1]
         entry = namespace[name_node.start:name_node.end]
         relpath = entry.replace('.', '/').replace('-', '_') + '.cljs'
@@ -103,6 +152,11 @@ def generate(catalogs=False):
             # The test observes only qualified symbols. No test function or
             # test macro is called from this reader context marker.
             dependencies['cljs/test.cljs'] = completion.NOTICE + '(ns cljs.test)\n'
+        if label in ('ns-test', 'ns-exists'):
+            # Complete already-proven foo support retains baz/kw/qkw and its
+            # alias-only context. Its test driver is declared but not invoked.
+            dependencies['cljs/ns_test/foo.cljs'] = (ROOT / BASE / 'ns-foo/cljs/ns_test/foo.cljs').read_text()
+            dependencies['cljs/ns_test/bar.cljs'] = pinned('src/test/cljs/cljs/ns_test/bar.cljs')
         for relative, text in dependencies.items():
             completion.persist(ROOT / source_root / relative, text)
             support[source_root + '/' + relative] = inv.digest(text.encode())
@@ -110,12 +164,19 @@ def generate(catalogs=False):
                 completion.persist(ROOT / reference_root / relative, text)
                 reference_files[relative] = inv.digest(text.encode())
         identity = PREFIX + label
+        adaptation = RATIONALE
+        if label in ('ns-test', 'ns-exists'):
+            adaptation += (' Original clojure.core JVM macro namespace aliases use the corresponding cljs.core source macro namespace locally; canonical references retain clojure.core require-macros. All observed alias/refer/rename/exclude/as-alias/use clauses and the complete original + definition remain. Unused goog/cljs.analyzer imports are omitted only because these selected bodies call neither; the separate goog body remains unwitnessed. Original assertion messages evaluate eagerly, including the nested original is site in test-cljs-3399. The complete already-proven ns-test.foo helper and byte-identical ns-test.bar dependency retain their original declarations.')
+        if label == 'tagged-runtime':
+            adaptation += (' Original runtime-reader aliases are preserved. The exact three used handlers from the unchanged full data_readers.cljc configuration are installed through the public registry independently inside each phase; no compiled source tag or unrelated custom test handler is claimed. All four original read-string inputs and results stay unchanged.')
         provenance = {'module_source': path, 'module_sha256': inv.digest(original.encode()), 'complete_original_provenance': origins,
                       'namespace_source_sha256': next(body['source_span']['sha256'] for body in original_bodies if body['form'] == 'ns')}
+        if configuration:
+            provenance['original_data_reader_configuration'] = configuration
         rows.append([identity, entry, source_root, relpath, json.dumps(provenance, separators=(',', ':'))])
         case = {'id': identity, 'source': program, 'source_root': source_root, 'reference_source_root': reference_root,
                 'entry': entry, 'export': 'run', 'reference_files_sha256': reference_files,
-                'reference_adaptation': RATIONALE, **provenance,
+                'reference_adaptation': adaptation, **provenance,
                 'expected': {'id': identity, 'outcome': {'status': 'returned', 'value': True}, 'trace': [], 'stdout': ''}, 'native_stdout': None}
         local = {'test_file': TEST, 'test_name': TEST_NAME, 'test_source_sha256': inv.digest((ROOT / TEST).read_bytes()),
                  'support_source_sha256': support}
@@ -123,26 +184,31 @@ def generate(catalogs=False):
             mapping = {'body_id': body['id'], 'body_sha256': body['source_span']['sha256'], 'reference_fixture_id': identity,
                        'reference_source_sha256': inv.digest(program.encode()),
                        'reference_contract_sha256': inv.digest(json.dumps(case['expected'], sort_keys=True).encode()),
-                       'rationale': RATIONALE, 'local_execution': {k:local[k] for k in ('test_file', 'test_name', 'test_source_sha256')},
+                       'rationale': adaptation, 'local_execution': {k:local[k] for k in ('test_file', 'test_name', 'test_source_sha256')},
                        'support_source_sha256': support}
             phases.append(mapping)
             witnesses.extend({'assertion_id': row['id'], 'assertion_sha256': row['assertion']['sha256'], 'fixture_id': identity,
-                              'rationale': RATIONALE} for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope')
+                              'rationale': adaptation} for row in inventory if row['body_id'] == body['id'] and row['disposition'] == 'in-scope')
         case['complete_body_phase_mappings'] = [mapping for mapping in phases if mapping['reference_fixture_id'] == identity]
         cases.append(case)
-    fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Complete original namespace contexts executed in both phases.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows)
+    pending = {PREFIX + 'ns-exists'}
+    fixture = '# Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n# Complete original namespace contexts executed in both phases; unresolved source retained in proposals.\n# id\tentry\tsource root\tentry path\tcomplete original provenance\n' + ''.join('\t'.join(row) + '\n' for row in rows if row[0] not in pending)
     completion.persist(ROOT / FIXTURE, fixture)
     for row in phases:
         row['support_source_sha256'][FIXTURE] = inv.digest(fixture.encode())
-    proposal = {'full-cases.jsonl': cases,
-                'full-witnesses.jsonl': witnesses,
-                'complete-body-phase-mappings': phases,
-                'unwitnessed-source-cases': []}
+    for case in cases:
+        if case['id'] in pending:
+            case['unwitnessed_reason'] = 'The complete original renamed-core exists? body passes ordinary execution and both pins; actual macro forces the unavailable excluded mapv definition. No pass or boundary exclusion is claimed.'
+            case['proposed_complete_body_phase_mappings'] = case.pop('complete_body_phase_mappings')
+    proposal = {'full-cases.jsonl': [case for case in cases if case['id'] not in pending],
+                'full-witnesses.jsonl': [row for row in witnesses if row['fixture_id'] not in pending],
+                'complete-body-phase-mappings': [row for row in phases if row['reference_fixture_id'] not in pending],
+                'unwitnessed-source-cases': [case for case in cases if case['id'] in pending]}
     completion.persist(ROOT / 'tests/reference/compiler-residual-source-context-proposals.json', json.dumps(proposal, indent=2) + '\n')
     if catalogs:
         for name, field in [('full-cases.jsonl', 'id'), ('full-witnesses.jsonl', 'fixture_id')]:
             residual.update_owned(name, lambda row: row.get(field, '').startswith(PREFIX), proposal[name])
-    print(f'{len(cases)} supported contexts, {len(phases)} complete bodies, {len(witnesses)} original sites proposed; 0 complete sources remain unwitnessed', flush=True)
+    print(f'{len(proposal["full-cases.jsonl"])} supported contexts, {len(proposal["complete-body-phase-mappings"])} complete bodies, {len(proposal["full-witnesses.jsonl"])} original sites proposed; {len(pending)} complete sources remain unwitnessed', flush=True)
     return cases
 
 

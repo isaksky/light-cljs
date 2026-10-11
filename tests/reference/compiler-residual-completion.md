@@ -686,3 +686,98 @@ before fingerprint regeneration also reported local-surface drift and is not
 credited as the final result. Final log:
 `/tmp/light-cljs-155-ledger-tests-final.log`. Source-context catalog validation,
 static inventory `--check`, and `git diff --check` pass.
+
+## Namespace and runtime reader continuation, 2026-10-11
+
+Starting from clean HEAD `95abbfd`, the source-context generator retains five
+additional complete original bodies and **20 original assertion sites**. The
+three namespace bodies `test-ns`, `test-cljs-1508`, and `test-cljs-3399` retain
+fifteen sites, the reserved JavaScript keyword namespace `static.core-test`
+retains its one original site, and the complete tagged runtime reader body
+retains all four original inputs and assertions. Generation verifies each
+complete source span and setup against the original pinned checkout. Public
+API/arity eligibility is not inferred from these source witnesses.
+
+The namespace source keeps its original `+` definition, core excludes and
+`mapv` rename, set alias/refer/rename, referred `baz`, `:use` of `quux`, and
+`fake.ns` `:as-alias` context. The local source macro namespace uses `cljs.core`
+for the original `clojure.core` JVM macro aliases; the reference header retains
+`clojure.core` `:require-macros`. The complete already-proven `ns-test.foo`
+support module retains `baz`, `kw`, and quoted `qkw`; `ns-test.bar` remains
+byte-identical. Only unused `goog`/`cljs.analyzer` imports and the adapted
+`cljs.test` harness imports are omitted. The separate `goog/isArrayLike` body
+is not selected or covered.
+
+`test-cljs-3399` has a second original `is` inside the outer assertion's
+message. The adapter evaluates the outer condition, then its complete message,
+then performs the outer assertion. Both original sites therefore execute on
+the successful path. Using an ordinary lazy assertion message would skip that
+second site; this adapter does not do so. Alias spellings remain unchanged
+through these bodies, including `s/union` and `lang/for`.
+
+The tagged runtime body uses the three exact handlers from the unchanged full
+`data_readers.cljc` map: `cljs/tag` maps to identity, `cljs/inc` to inc, and
+`cljs/union` to set union. Its provenance retains that entire original map and
+hash. The explicit embedding installs these handlers through the public reader
+registry independently in each execution phase, then executes every original
+`read-string` input and assertion. The separate compiled source-tag body and
+unused custom test handlers receive no witness from this runtime body.
+
+The focused Rust test passed all eleven context fixtures in **14.83 s**, zero
+failures or ignored tests. Each executes in Node and QuickJS applications and
+inside actual QuickJS macros, with fresh and reused MacroHosts. Log:
+`/tmp/light-cljs-125-remaining-reader-namespace-local.log`. All three new context
+fixtures independently pass both release **1.12.134** and checkout
+**a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e**, with checked `:optimizations :none`,
+`:static-fns false`, and `:def-emits-var false`:
+
+- `/tmp/light-cljs-125-remaining-ns-test-reference-final/evidence.json`, SHA-256
+  `2874cf949d4e1912ba1144eceeaa5b7c0f40a1adda73bd8c001925b177003eeb`.
+- `/tmp/light-cljs-125-static-namespace-reference/evidence.json`, SHA-256
+  `27bf39de6e5113bc638c96d25c9ab5726b1cfb96a283975344e36653370c3e26`.
+- `/tmp/light-cljs-125-tagged-runtime-reference/evidence.json`, SHA-256
+  `49c43269d9052da8aed98c6502082e56e992ee57db97b9662a0c80e1344f3311`.
+
+The supported proposal now contains eleven context cases, seventeen complete
+bodies and forty-five original sites, including the earlier proved bodies.
+No shared catalog writes were performed by this source adapter continuation;
+registration remains coordinated by the main owner. Reproduce the new proofs:
+
+```sh
+python3 -B tests/reference/compiler-residual-source-context.py
+python3 -B tests/reference/compiler-residual-source-context.py --run --case ns-test --output /tmp/light-cljs-125-ns-test-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case static --output /tmp/light-cljs-125-static-reference-current
+python3 -B tests/reference/compiler-residual-source-context.py --run --case tagged-runtime --output /tmp/light-cljs-125-tagged-runtime-reference-current
+cargo test --locked --test compiler_residual_source_context -- --nocapture
+```
+
+### Exact renamed-core existence gap
+
+The complete original `test-cljs-2292` remains an independent uncovered source
+probe. Its header keeps the original core `mapv` to `core-mapv` rename, all
+relevant original namespace imports, and complete original setup. The actual
+body checks that `(exists? mapv)` is false while `(exists? core-mapv)` is true.
+Both reference pins and both ordinary local engines pass both assertions.
+Actual QuickJS macro compilation fails while forcing the unavailable
+`cljs.ns-test/mapv` definition. This source is absent from the passing TSV and
+catalog proposals; both original sites remain in `unwitnessed-source-cases`.
+It is not renamed, guarded or given a boundary exclusion.
+
+Original module SHA-256:
+`21243db745474306fdfb034dd99b4ba5cee1a858493e4e8182fc2542968d1f1b`.
+Original complete body SHA-256:
+`419c0dbcddcffa2538e2b17d086a14040f6fba4e97d1e7df910966b6e189dcc4`.
+Complete adapted ordinary program SHA-256:
+`62f941cd8dcba802c664c068ee0d6c1901bb98f62485edd533e4f4e9569b02d3`.
+The exact sources, emitted JavaScript, Node/QuickJS observations and located
+macro error are retained under `/tmp/light-cljs-125-ns-exists-source-local`.
+Its receipt SHA-256 is
+`0f66142dd08f122ae60897687dab6b06a7a58639676ff7423efd73d993e165b5`.
+The independent both-pin receipt is
+`/tmp/light-cljs-125-ns-exists-source-reference/evidence.json`, SHA-256
+`d01e5277083afae0fad1872b5180e41ee5e09d72cf0a5d0fb564419ae3b78c9e`.
+The main owner received these exact sources and receipts for focused ownership.
+
+No production implementation, queue or Git state was changed. The existing
+cancellation/limits work was not investigated or executed. The full language
+gate remains incomplete; this continuation does not rerun or claim that gate.

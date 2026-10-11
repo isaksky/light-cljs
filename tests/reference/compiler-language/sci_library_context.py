@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded complete SCI string/set/walk/EDN import cohort, with untouched originals."""
 from __future__ import annotations
-import argparse, collections, json, os
+import argparse, collections, json, os, zipfile
 from pathlib import Path
 import sci_execution as sci
 from extract_inventory import Reader, head
@@ -13,6 +13,40 @@ TEST = 'retained_library_sources_execute_in_node_and_quickjs'
 ORACLE = 'tests/reference/compiler-language/sci_library_context.clj'
 INSPECTOR = 'tests/reference/compiler-language/sci_library_inspection.cljs'
 LIBRARIES = ('clojure.string', 'clojure.set', 'clojure.walk', 'clojure.edn')
+VERSION_DIFFERENCE_IDS = (
+    'sci-data-walk-walk-list-meta', 'sci-data-walk-walk-seq-meta',
+    'sci-data-walk-prewalk-list-meta', 'sci-data-walk-prewalk-seq-meta',
+    'sci-data-walk-postwalk-list-meta', 'sci-data-walk-postwalk-seq-meta',
+)
+WALK_SOURCE_HASHES = {
+    'release': '79859e8103b3a5c0ea6b8be5ed3bab7f6b2c17569f6770182f77480aec4e5234',
+    'checkout': '52d33a5c841ce959eb2cb10aacb76b2d1bf06e93ef3ae8d30a05dc69ceb34378',
+}
+
+
+def reference_walk_source(kind):
+    if kind == 'release':
+        release = sci.report_module().RELEASE
+        jar = Path.home() / '.m2/repository/org/clojure/clojurescript' / release / ('clojurescript-' + release + '.jar')
+        with zipfile.ZipFile(jar) as archive:
+            return sci.digest(archive.read('clojure/walk.cljs'))
+    if kind == 'checkout':
+        return sci.digest((sci.ROOT / 'research/clojurescript/src/main/cljs/clojure/walk.cljs').read_bytes())
+    raise ValueError('Unknown pinned library reference kind')
+
+
+def version_contract(identity):
+    if identity not in VERSION_DIFFERENCE_IDS:
+        return None
+    case_id = 'sci-execution-' + identity
+    metadata = {'$map': [[{'$keyword': {'namespace': None, 'name': 'm', 'spelling': 'm'}},
+                          {'$keyword': {'namespace': None, 'name': 'ok', 'spelling': 'ok'}}]], 'count': 1}
+    def returned(value):
+        return {'id': case_id, 'outcome': {'status': 'returned', 'value': value}, 'trace': [], 'stdout': ''}
+    return {'release': returned(None), 'checkout': returned(metadata), 'matching_pin': 'checkout',
+            'source_basis': {'file': 'clojure/walk.cljs', 'source_sha256': WALK_SOURCE_HASHES,
+                'reason': 'The release walk list/seq branches rebuild without metadata; the checked checkout wraps both rebuilt forms in with-meta using the original metadata. prewalk and postwalk recurse through those branches.'}}
+
 # Original 16 retain reference namespace identities; append complete self-contained
 # fixtures in corpus order. Reflection, stream and record setup remain unexecuted.
 IDS = (
@@ -274,7 +308,12 @@ def generated_catalog():
             raise ValueError('Original SCI library fixture changed: ' + identity)
         adapted, edits = sci.catch_adapter(original[2])
         declarations, runtime = split_declarations(adapted)
+        canonical_contract = version_contract(identity)
+        if canonical_contract is not None and sci.expected(original) != canonical_contract['checkout']:
+            raise ValueError('Reviewed original walk metadata expectation changed: ' + identity)
         rows.append({'id': 'sci-execution-' + identity, 'sci_id': identity,
+            'classification': 'pinned-version-difference' if canonical_contract else 'original-library-contract',
+            'canonical_contract': canonical_contract,
             'obligation_id': 'local::tests/reference/sci/evaluator-dispositions.tsv::' + identity,
             'source': original[2], 'source_sha256': sci.digest(original[2]),
             'original_source_sha256': sci.digest(original[2]), 'original_row_sha256': sci.digest(raw),
@@ -388,14 +427,18 @@ def reference_cases(rows, kind, directory, timeout=240):
     checkout = sci.ROOT / 'research/clojurescript'
     dependency = '{:mvn/version "' + identity + '"}' if kind == 'release' else '{:local/root ' + json.dumps(str(checkout)) + '}'
     command = [os.environ.get('CLOJURE', 'clojure'), '-Srepro', '-Sdeps', '{:paths [] :deps {org.clojure/clojurescript ' + dependency + '}}', '-M', ORACLE, kind, identity, '-' if kind == 'release' else str(checkout), str(directory.resolve()), str(input_path.resolve())]
+    walk_source_hash = reference_walk_source(kind)
     built = runner.invoke(command, directory / 'build', timeout=timeout)
-    if built['status'] != 'completed' or 'REFERENCE IDENTITY ' + kind + ' ' + identity not in built.get('stdout', '') or 'REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}' not in built.get('stdout', ''):
+    if (built['status'] != 'completed' or 'REFERENCE IDENTITY ' + kind + ' ' + identity not in built.get('stdout', '') or
+            'REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}' not in built.get('stdout', '') or
+            reference_walk_source(kind) != walk_source_hash or walk_source_hash != WALK_SOURCE_HASHES[kind]):
         return {row['id']: {'status': built['status'] if built['status'] != 'completed' else 'invalid-reference', 'detail': built} for row in rows}
     results = {}
     for index, row in enumerate(rows):
         script = 'process.chdir(' + json.dumps(str(directory.resolve())) + ');\nrequire(' + json.dumps(str((directory / 'reference.js').resolve())) + ');\n' + 'globalThis.lightCases = [lightCases[' + str(index) + ']];\nglobalThis.lightCaseMetadata = [lightCaseMetadata[' + str(index) + ']];\n' + (sci.ROOT / 'tests/support/execution.js').read_text()
         ran = runner.invoke([os.environ.get('NODE', 'node'), '-'], directory / row['id'], source=script, timeout=timeout)
         provenance = {'reference_identity': kind + ' ' + identity, 'settings': {'optimizations': 'none', 'static-fns': False, 'def-emits-var': False},
+            'walk_source_sha256': walk_source_hash,
             'library_context_adapter_sha256': adapter_hash(),
             'reference_build_stdout': built['stdout'], 'reference_build_stderr': built['stderr'],
             'source_sha256': row['source_sha256'], 'adapted_source_sha256': row['adapted_source_sha256'],

@@ -531,3 +531,108 @@ semantic comparison or acceptance criterion changed. Fresh 191-row literal
 receipt replay, inventory checks, generators and diff checks passed afterward.
 The corrected test and the earlier stale sixteen-receipt failures remain
 recorded as failed attempts, rather than being hidden by a pass claim.
+
+
+## Independent full-ledger evidence refresh — October 11, 2026
+
+From frozen production HEAD `95abbfdefedbdc09268a30ffd891e137f5743fc7`, this
+continuation changes the semantic harness, source adapters and receipts only.
+No production implementation is claimed. The public core gate now retains
+**50 workflows**, comprising **22 complete original upstream bodies** and
+**28 independently specified literal workflows**. Six new workflows exercise
+sequence consumers/producers and nested updates/name operations, in ordinary
+and `clojure.core/` qualified call forms. Ordered atom effects prove actual lazy
+factory consumption and reduce-kv callbacks; expected values are literal and
+were written independently of local outputs. Their executing call heads add
+**292 reviewed public-operation receipts**, for **760 total**, and six exact
+both-pin oracle links, for **27 total**. Registration supplies no semantic pass.
+
+All six Rust core cohort tests pass local Node/QuickJS applications and actual
+macro computation. Both required compilers pass the six new exact fixtures at
+the checked settings. The independent seven-case reference document also
+retains the separate failing-local `prim-seq` probe:
+`/tmp/light-cljs-125-core-independent-reference/evidence.json`, SHA-256
+`f5a43cb23cf938f75a93d41c60e4e55a264c885ea4cf7b5fe4b1fb62dde105cf`.
+The original authored consumer workflows that included `prim-seq`, exact
+six-result probe, literal expectations and located compiler failures remain in
+`../compiler-core-unresolved-probes.json`. The passing consumer workflows
+retain their other operation paths. No original upstream body was shortened.
+Public `prim-seq` arities one/two are still intended and missing, with focused
+ordinary owner **light-cljs-157**; compile rejection precedes runtime execution.
+
+The new complete source contexts add **20 original assertion sites across
+five complete bodies**. In total, **11 supported contexts retain 17 complete
+bodies and 45 original sites**. One executing Rust test checks both local
+engines and both phases with fresh and reused macro hosts, and passes. Exact
+original namespace clauses/helpers, eager nested assertion messages, the
+static namespace, and three complete runtime tagged-reader handlers retain
+both-pin source proofs. The original renamed-core `exists?` body remains
+separately uncovered: applications and both pins return true, but macro demand
+forces an unavailable excluded Var. Its complete original program and failure
+receipts remain in the source proposals; focused owner **light-cljs-158**
+precedes the broad evidence owner. The source adaptation and exact receipts are
+in `../compiler-residual-completion.md`.
+
+All **191 original SCI library sources** were executed again in both local
+engines and both pinned compilers after production hashes changed; complete
+prior records, including nested historical failures, remain verbatim in each
+new active receipt. There are **163 original four-way agreements**, **six exact
+verified walk release/checkout differences**, and **22 unresolved original
+contracts**. The six classifications require actual distinct literal pin
+observations, checked walk source hashes and both local engines matching the
+same reviewed checkout observation. Their original SCI expectations remain
+unresolved. Other mismatches remain missing and still fail execution accounting.
+The fresh document is
+`/tmp/light-cljs-125-sci-library-context-191-95abbfd/evidence.json`, SHA-256
+`dc1a2971ae9fee862c4812f3ebf7edc50da8a240a1fee71ddaf94db65fb0b2f6`.
+The [library evidence](sci-library-context-evidence.md) records exact source
+basis, replay commands, mutation checks and current hash bindings. These runtime
+contracts grant no macro-phase evidence.
+
+The complete zero-missing `--run --strict` acceptance remains unfinished.
+Independent static accounting still retains all **9,990 rows**: **zero covered,
+8,605 missing and 1,385 outside**. Static registration and stored receipt history
+grant no semantic credit. A projection of only this fresh library audit retains
+all other execution and phase columns as unexecuted and remains incomplete;
+it is not a comprehensive gate invocation. This partial fresh projection reports
+**163 covered, 8,436 missing, six version differences and 1,385 outside**, with
+`strict_complete: false`; its artifact is
+`/tmp/light-cljs-125-independent-library-projection.json`. No unchanged incomplete
+full run is presented as progress.
+
+The separate **light-cljs-156** asynchronous cancellation repair is an external
+limitation: automatic approval review rejected that action twice, citing
+possible cybersecurity risk. This continuation did not retry or delegate that
+repair, investigate the native crash, or run its cancellation/limits suites.
+That unresolved acceptance prevents completion of the broad Pellet even after
+independent evidence work. This evidence is saved coherently and 125 is released
+with its original requirements intact.
+
+
+Verification on the frozen production checkout passes the six core Rust tests
+and the one complete source-context Rust test (all local phases/engines and
+fresh/reused hosts), all 14 focused library adapter/receipt tests, the integrated
+library ledger test, and exact fresh receipt replay. Core workflow reproduction,
+all 760 reviewed mappings, source-context catalog reproduction, inventory
+regeneration and whitespace checks pass. Independent read-only review found no
+expectation weakening, false `prim-seq` credit, or broad mismatch exemption.
+Scoped Rust 2024 formatting passes for both edited tests. Repository-wide
+formatting fails in 29 files, each independently verified byte-identical to
+baseline HEAD; no unrelated formatting rewrite is included. No new production
+performance claim is made by these harness/evidence changes.
+
+
+Expanding the reviewed call-name set also qualifies the existing collection
+workflow's `map` call. That exact changed existing fixture passes both pins
+independently at current settings, with literal expectations unchanged:
+`/tmp/light-cljs-125-qualified-existing-reference/evidence.json`, SHA-256
+`b83851b60444a66cf8bf2247792f6609cd9df22b4c31e6e8e04b8401bd885a70`.
+
+
+Final full Python discovery passes **119 tests**, zero failures/errors, in
+587.734 seconds, including the full-report strict incomplete accounting and all
+adapter/hash/pin/history mutation cases. Log:
+`/tmp/light-cljs-125-independent-python.log`. The focused Rust command passes
+**seven tests**, zero failures/ignored, with log
+`/tmp/light-cljs-125-independent-focused.log`. All production files remain
+byte-identical to frozen HEAD; no cancellation/limits suite was run.

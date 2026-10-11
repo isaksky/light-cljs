@@ -40,13 +40,13 @@ failure on two Unicode fixtures without changing sources, values or contracts.
 python3 -B tests/reference/compiler-language/sci_library_context.py \
   --write-catalog --plan tests/reference/compiler-language/sci-library-context-plan.jsonl \
   --local --references --timeout 240 \
-  --output /tmp/light-cljs-125-sci-library-context-191-current
+  --output /tmp/light-cljs-125-sci-library-context-191-95abbfd
 python3 -B tests/reference/compiler-language/sci_library_context_receipts.py \
-  --write-evidence /tmp/light-cljs-125-sci-library-context-191-current/evidence.json
+  --write-evidence /tmp/light-cljs-125-sci-library-context-191-95abbfd/evidence.json
 python3 -B tests/reference/compiler-language/test_sci_library_context.py
 python3 -B tests/reference/compiler-language/test_sci_library_ledger.py
 python3 -B tests/reference/compiler-language/sci_library_context_receipts.py \
-  --evidence /tmp/light-cljs-125-sci-library-context-191-current/evidence.json
+  --evidence /tmp/light-cljs-125-sci-library-context-191-95abbfd/evidence.json
 ```
 
 The manifest-bound fresh run completed all 191 originals in both local engines
@@ -59,12 +59,15 @@ and both independently checked pinned compilers:
 | Maven ClojureScript 1.12.134 | 163 | 28 |
 | Checkout `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` | 169 | 22 |
 
-There are **163 four-way original agreements** and **28 unresolved original
-contracts**. Every active layer is a complete execution observation; no
+There are **163 four-way original agreements**, **six verified pinned version
+differences**, and **22 other unresolved original contracts**. The six version
+differences retain unresolved SCI expectations; they do not become original
+agreements. Every active layer is a complete execution observation; no
 compilation rejection, missing engine or harness failure is promoted to a
 pass. All eight local original differences also differ in both pinned
 compilers; this cohort found no case where both pins meet the original
-expectation and both local engines fail it. The unresolved contracts comprise
+expectation and both local engines fail it. The 28 contracts that differ from
+at least one original expectation comprise
 nine string cases, two set metadata cases, six walk metadata cases and eleven
 EDN cases. All original result, callback and printing contracts remain intact.
 
@@ -76,7 +79,10 @@ adapter bind current evidence. Compiler/adapter changes during a batch reject
 that entire batch. Both ClojureScript identities and `:optimizations :none`,
 `:static-fns false`, `:def-emits-var false` are checked. The receipt validator's
 current hash binds active records, and its writer retains each complete earlier
-record as history. The original sixteen therefore retain both the earlier
+record as history. This refresh actually executed every layer after production
+source hashes changed; it did not rewrite hashes on historical observations.
+All 191 prior records remain verbatim in `prior_evidence`. The original sixteen
+therefore retain both the earlier
 successful active evidence and their nested initial shallow-bridge harness
 failures. Historical failures grant no passing credit.
 
@@ -89,11 +95,27 @@ expectation status stays unresolved. This is a source-specific canonical
 contract difference requiring explicit reconciliation, with no broad EDN
 retirement or inferred missing production feature.
 
-The six release/checkout differences concern `clojure.walk` list/sequence
-metadata preservation in walk, prewalk and postwalk. They remain missing under
-the complete original four-way agreement rule. All other original differences
-also remain missing; compiler agreement with each other cannot replace the
-retained SCI expectation. No new production implementation is claimed here.
+The only explicitly reconciled release/checkout differences are
+`sci-data-walk-walk-list-meta`, `sci-data-walk-walk-seq-meta`,
+`sci-data-walk-prewalk-list-meta`, `sci-data-walk-prewalk-seq-meta`,
+`sci-data-walk-postwalk-list-meta`, and `sci-data-walk-postwalk-seq-meta`.
+The release rebuilds list/seq forms without metadata; the checked checkout
+wraps both rebuilt forms in `with-meta` using the original metadata. Prewalk
+and postwalk recurse through those branches. The actual release
+`clojure/walk.cljs` JAR entry hashes to
+`79859e8103b3a5c0ea6b8be5ed3bab7f6b2c17569f6770182f77480aec4e5234`;
+the checkout source hashes to
+`52d33a5c841ce959eb2cb10aacb76b2d1bf06e93ef3ae8d30a05dc69ceb34378`.
+Each of the six must retain its literal original `{:m :ok}` expectation,
+execute a release observation of `nil` and a distinct checkout observation of
+`{:m :ok}`, and execute both local engines with the same checkout observation.
+All three observations also require empty callbacks and stdout. Source hashes,
+raw frames, pin identities and settings are verified against current inputs.
+Missing, identical or changed pin observations cannot get this classification.
+Their report status is `version-difference`, reconciliation is
+`verified-pinned-version-difference`, and original expectation status remains
+`unresolved`. The other 22 differences remain missing; no automatic version
+classification applies to them. No new production implementation is claimed here.
 Runtime execution and the inspection fixture do not grant public macro
 eligibility.
 
@@ -105,15 +127,19 @@ expressions remain present. The full report executes the 191 library fixtures
 fresh through this specialized adapter and merges exact identities. The ledger
 uses `full_report_evidence` to verify both local engines, both checked pins,
 all current hashes, literal observations, complete frame identities and build
-settings. Only original four-way agreements become covered. Any nonagreement,
-incomplete engine, missing pin or stale proof remains missing; the library
-adapter never automatically excuses a version difference. Stored receipts are
+settings. Only original four-way agreements become covered. The exact six
+reviewed walk contracts can become verified version differences through
+`version_contract` and `full_report_evidence`; their SCI expectations remain
+unresolved. Any other nonagreement, incomplete engine, missing pin, modified
+canonical contract or stale proof remains missing. Stored receipts are
 replay artifacts and grant no report coverage. Macro-phase coverage remains
 `not-run` for these runtime contracts.
 
-Twelve focused adapter/receipt tests cover immutable complete sources and
+Fourteen focused adapter/receipt tests cover immutable complete sources and
 expectations, bounded planning, preserved discard callbacks and prior history,
 strict Unicode framing, timeouts, compiler drift, exact specialization,
-provenance mutations, and missing-engine/mismatch promotion attempts. The
-separate full-ledger test checks static missing status, fresh agreement-only
-coverage, unresolved contracts, absent phase credit, and a failing gate exit.
+provenance mutations, missing-engine/mismatch promotion attempts, the six
+literal version contracts, and rejection of automatic reconciliation for other
+library differences. The separate full-ledger test checks static missing
+status, fresh agreement coverage, exact reviewed version differences,
+unresolved SCI contracts, absent phase credit, and a failing gate exit.

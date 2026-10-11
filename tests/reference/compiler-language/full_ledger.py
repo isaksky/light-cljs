@@ -492,6 +492,11 @@ def sci_execution_failed(report, evidence, failure_statuses):
                       if row.get("status") == "version-difference"
                       and row.get("source_context_reconciliation", {}).get("reconciliation") == "verified-pinned-version-difference"
                       and row["source_context_reconciliation"].get("original_expectation_status") == "unresolved")
+    reconciled.update(row["library_context_reconciliation"]["id"]
+                      for row in report.get("assertions", [])
+                      if row.get("status") == "version-difference"
+                      and row.get("library_context_reconciliation", {}).get("reconciliation") == "verified-pinned-version-difference"
+                      and row["library_context_reconciliation"].get("original_expectation_status") == "unresolved")
     return any(layer.get("status") in failure_statuses
                and not (identity in reconciled and layer.get("status") == "mismatch")
                for identity, layers in evidence.items() for layer in layers.values())

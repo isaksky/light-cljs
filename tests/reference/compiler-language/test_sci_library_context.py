@@ -41,7 +41,7 @@ class LibraryContextTests(unittest.TestCase):
             self.assertEqual(row['layers'][kind]['status'], 'mismatch')
             self.assertEqual(row['layers'][kind]['observed']['outcome']['status'], 'threw')
         self.assertEqual(row['original_expectation_status'], 'unresolved')
-        self.assertEqual(sum('prior_evidence' in row for row in rows), 16)
+        self.assertEqual(sum('prior_evidence' in row for row in rows), 191)
         self.assertEqual(row['source_binding']['expected']['trace'], [1])
         self.assertEqual(row['layers']['javascript']['engines']['Node']['observed']['trace'], [1])
         self.assertIn('prior_evidence', row['prior_evidence'])
@@ -55,6 +55,7 @@ class LibraryContextTests(unittest.TestCase):
                           ('checkout', 'namespace'), ('checkout', 'reference_identity'),
                           ('javascript', 'library_context_adapter_sha256'), ('checkout', 'library_context_adapter_sha256'),
                           ('javascript', 'compiler_source_sha256'),
+                          ('release', 'walk_source_sha256'), ('checkout', 'walk_source_sha256'),
                           ('release', 'raw_stdout'), ('checkout', 'raw_stderr'),
                           ('release', 'reference_build_stdout'), ('checkout', 'reference_build_stderr')):
             changed = copy.deepcopy(original)
@@ -145,8 +146,60 @@ class LibraryContextTests(unittest.TestCase):
         for row, record in zip(rows, stored):
             if record['reconciliation'] != 'original-source-agreement':
                 result = receipts.full_report_evidence(row, record['layers'])
-                self.assertEqual(result['status'], 'missing')
+                self.assertEqual(result['status'], 'version-difference' if record['reconciliation'] == 'verified-pinned-version-difference' else 'missing')
                 self.assertEqual(result['original_expectation_status'], 'unresolved')
+
+    def test_only_six_reviewed_walk_sources_reconcile_literal_pin_differences(self):
+        catalog = context.load()
+        stored = receipts.load()
+        selected = [(row, record) for row, record in zip(catalog, stored)
+                    if row['classification'] == 'pinned-version-difference']
+        self.assertEqual({row['sci_id'] for row, _ in selected}, set(context.VERSION_DIFFERENCE_IDS))
+        self.assertEqual(len(selected), 6)
+        for row, record in selected:
+            self.assertEqual(record['reconciliation'], 'verified-pinned-version-difference')
+            self.assertEqual(record['original_expectation_status'], 'unresolved')
+            self.assertEqual(row['expected'], sci.expected(sci.rows(sci.CORPUS)[row['sci_id']][1]))
+            contract = row['canonical_contract']
+            for kind in ('release', 'checkout'):
+                self.assertEqual(record['layers'][kind]['observed'], contract[kind])
+                self.assertEqual(record['layers'][kind]['walk_source_sha256'], context.WALK_SOURCE_HASHES[kind])
+            self.assertNotEqual(contract['release'], contract['checkout'])
+            for engine in record['layers']['javascript']['engines'].values():
+                self.assertEqual(engine['observed'], contract['checkout'])
+            for failure in ('changed', FileNotFoundError('missing reviewed source')):
+                options = {'side_effect': failure} if isinstance(failure, Exception) else {'return_value': failure}
+                with mock.patch.object(context, 'reference_walk_source', **options):
+                    self.assertEqual(receipts.full_report_evidence(row, record['layers'])['status'], 'missing')
+            for mutation in ('missing-pin', 'same-pins', 'one-local-pin', 'neither-local-pin', 'pin-hash', 'classification', 'contract'):
+                changed_row, layers = copy.deepcopy(row), copy.deepcopy(record['layers'])
+                if mutation == 'missing-pin': del layers['release']
+                elif mutation == 'same-pins':
+                    layers['release']['observed'] = copy.deepcopy(contract['checkout'])
+                    layers['release']['raw_stdout'] = json.dumps(contract['checkout']) + '\n'
+                    layers['release']['status'] = 'passed'
+                elif mutation in ('one-local-pin', 'neither-local-pin'):
+                    names = ('Node',) if mutation == 'one-local-pin' else ('Node', 'QuickJS')
+                    for name in names:
+                        engine = layers['javascript']['engines'][name]
+                        changed = copy.deepcopy(contract['release'])
+                        if mutation == 'neither-local-pin': changed['outcome']['value'] = 9
+                        engine.update(observed=changed, raw_output=json.dumps(changed), status='mismatch')
+                    layers['javascript']['status'] = 'mismatch'
+                elif mutation == 'pin-hash': layers['checkout']['walk_source_sha256'] = 'changed'
+                elif mutation == 'classification': changed_row['classification'] = 'original-library-contract'
+                else: changed_row['canonical_contract']['matching_pin'] = 'release'
+                result = receipts.full_report_evidence(changed_row, layers)
+                self.assertEqual(result['status'], 'missing', mutation)
+                self.assertEqual(result['original_expectation_status'], 'unresolved')
+
+    def test_other_unresolved_libraries_cannot_get_automatic_version_classification(self):
+        row = next(row for row in context.load() if row['sci_id'] == 'sci-data-edn-tag-discard')
+        record = next(record for record in receipts.load() if record['id'] == row['id'])
+        changed = copy.deepcopy(row)
+        changed['classification'] = 'pinned-version-difference'
+        changed['canonical_contract'] = context.version_contract(context.VERSION_DIFFERENCE_IDS[0])
+        self.assertEqual(receipts.full_report_evidence(changed, record['layers'])['status'], 'missing')
 
     def test_unresolved_reference_cannot_be_promoted_or_lost_in_fresh_receipts(self):
         rows = receipts.load()

@@ -38,7 +38,10 @@ def classification(row, layers):
         raise ValueError('Local library aggregate status changed')
     for kind, pin in (('release', runner.RELEASE), ('checkout', runner.REVISION)):
         layer = layers[kind]
+        if context.reference_walk_source(kind) != context.WALK_SOURCE_HASHES[kind]:
+            raise ValueError('Pinned walk source changed after reviewed execution')
         exact = {'source_sha256': row['source_sha256'], 'adapted_source_sha256': row['adapted_source_sha256'],
+            'walk_source_sha256': context.WALK_SOURCE_HASHES[kind],
             'library_context_adapter_sha256': context.adapter_hash(),
             'reference_identity': kind + ' ' + pin,
             'settings': {'optimizations': 'none', 'static-fns': False, 'def-emits-var': False},
@@ -64,17 +67,38 @@ def classification(row, layers):
         status = sci.verify(row, {'status': 'completed', 'observed': layer.get('observed')}, runner.same_json)['status']
         if status not in {'passed', 'mismatch'} or layer.get('status') != status:
             raise ValueError('Invalid reference library observation/comparison')
-    return 'original-source-agreement' if all(layers[kind]['status'] == 'passed' for kind in layers) else 'original-contract-unresolved'
+    reviewed_contract = context.version_contract(row['sci_id'])
+    if reviewed_contract is not None and row.get('classification') != 'pinned-version-difference':
+        raise ValueError('Reviewed library version classification changed')
+    if row.get('classification') == 'pinned-version-difference':
+        contract = reviewed_contract
+        if (contract is None or not runner.same_json(row.get('canonical_contract'), contract) or
+                not runner.same_json(row['expected'], contract['checkout'])):
+            raise ValueError('Unreviewed library pinned-version classification')
+        if not all(runner.same_json(layers[kind]['observed'], contract[kind]) for kind in ('release', 'checkout')):
+            raise ValueError('Library version difference changed literal pinned contracts')
+        if runner.same_json(layers['release']['observed'], layers['checkout']['observed']):
+            raise ValueError('Library version difference lacks distinct executed pinned contracts')
+        matching_pin = contract['matching_pin']
+        if not all(runner.same_json(engine['observed'], layers[matching_pin]['observed'])
+                   for engine in local['engines'].values()):
+            raise ValueError('Both local library engines must match the same reviewed pin')
+        return 'verified-pinned-version-difference'
+    if all(layers[kind]['status'] == 'passed' for kind in layers):
+        return 'original-source-agreement'
+    return 'original-contract-unresolved'
 
 
 def full_report_evidence(row, layers):
     """Check fresh layers only; stored receipts never grant report coverage."""
     try:
         reconciliation = classification(row, layers)
-    except (ValueError, KeyError, TypeError, AttributeError) as error:
+    except (ValueError, KeyError, TypeError, AttributeError, OSError, context.zipfile.BadZipFile) as error:
         return {'status': 'missing', 'reconciliation': 'unverified',
                 'original_expectation_status': 'unresolved', 'reason': str(error)}
-    status = 'covered' if reconciliation == 'original-source-agreement' else 'missing'
+    status = {'original-source-agreement': 'covered',
+              'verified-pinned-version-difference': 'version-difference',
+              'original-contract-unresolved': 'missing'}[reconciliation]
     return {'status': status, 'reconciliation': reconciliation,
             'original_expectation_status': 'passed' if status == 'covered' else 'unresolved',
             'reason': 'Fresh complete original-library Node/QuickJS and checked pinned reference observations verified.'}
