@@ -617,3 +617,12 @@ Canonical sorted maps and sets support custom comparators, immutable updates,
 lookup, reduction, reverse traversal, `ISorted`, `subseq`, and `rsubseq` in both
 application and macro execution. The [sorted collection audit](tests/reference/compiler-sorted-collections.md)
 retains full upstream bodies and pinned-reference evidence.
+
+Core parsing and data utilities execute in the canonical runtime shared by
+applications and macros: `parse-long`, `parse-double`, `parse-uuid`,
+`parse-boolean`, `rand-int`, `rand-nth`, `js-symbol?`, `special-symbol?`,
+`subs`, `clone`, `to-array-2d`, and the one/two-argument `int-array`,
+`long-array`, `double-array`, and `object-array` constructors. These constructors
+make ordinary arrays without numeric coercion. See the
+[utility execution audit](tests/reference/compiler-utilities-completion-evidence.md)
+for exact upstream source, Number/UTF-16 behavior and remaining harness obligations.

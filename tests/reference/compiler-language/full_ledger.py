@@ -100,6 +100,8 @@ def disposition_for(path, category, reason, inactive):
 
 
 def ownership(name="", category="", path="", words=()):
+    if name == "*unchecked-arrays*":
+        return "array-compiler-settings", "light-cljs-132"
     if category in OWNERS:
         return category, OWNERS[category]
     if path.startswith(("src/main/cljs/clojure/", "src/main/cljs/cljs/reader")):
@@ -292,6 +294,46 @@ PRIVATE_EQUALITY_ASSERTIONS = {
 }
 
 
+# Exact residual harness/configuration bodies remain intended and unexecuted.
+# Public parsing and checked-array operation contracts have separate execution.
+UTILITY_RESIDUAL_BODIES = {
+    'src/test/cljs/cljs/parse_test.cljs::test-gen-parse-long': (
+        '0e9212db349f5d12c7ec780ac9267d3bc4673ec883692a594731331d5c11c332',
+        'light-cljs-125', 'public-residual',
+        'Complete external test.check quick-check/large-integer/for-all* harness integration '
+        'remains required; the original 100000-case property body is retained unchanged and is '
+        'not represented by the independent seeded core parser roundtrip test.'
+    ),
+    'src/test/cljs/cljs/parse_test.cljs::test-gen-parse-double': (
+        'a0821f73f14a68067f674d6138d1935d05632a4bc3d02f8099550c090e766146',
+        'light-cljs-125', 'public-residual',
+        'Complete external test.check quick-check/double/for-all* harness integration remains '
+        'required; the original 100000-case property body is retained unchanged and is not '
+        'represented by the independent seeded core parser roundtrip test.'
+    ),
+    'src/test/cljs/cljs/array_access_test.cljs::cljs-2861-test': (
+        '4ef042570cc1e5086b875e3b82bbeb8fea3b6b8cac21cfe4740506732f3e5ccf',
+        'light-cljs-132', 'array-compiler-settings',
+        'Source-visible *unchecked-arrays* compiler intrinsic/configuration evidence is owned by '
+        'light-cljs-132; the canonical compiler currently rejects the default-setting source '
+        'probe as unresolved.'
+    ),
+    'src/test/cljs/cljs/array_access_test.cljs::unchecked-arrays-file-scope-test': (
+        'c7bb1a8f16225152068efba94312c554975b198e386cd5a9195a2fa31bd19163',
+        'light-cljs-132', 'array-compiler-settings',
+        'Complete alpha/beta/helper source-file compiler-setting isolation workflow is owned by '
+        'light-cljs-132; no substituted false literal or dropped module setup supplies evidence.'
+    ),
+    'src/test/cljs/clojure/string_test.cljs::test-cljs-2300': (
+        'fa0afa9f22feeca58f9fef2c712d5703b9b39f9ffd1729c7789e497ae9cc08f7',
+        'light-cljs-125', 'public-residual',
+        'Complete external test.check defspec/for-all/fmap/vector/choose harness integration for '
+        'clojure.string/capitalize remains required; its original property contains subs but is '
+        'not a missing core substring API, and remains an intended full-body obligation.'
+    ),
+}
+
+
 def generate():
     paths = source_paths()
     generated, manifest = inv.inventory(files=paths, full_scope=True)
@@ -309,6 +351,11 @@ def generate():
                        reason="Pinned JVM analyzer *cljs-ns* binding and AST :name metadata representation; upstream analyzer state/AST shape is outside the adopted compiler API. Runtime namespace/Var/value metadata remains independently required.")
         words = inv.symbols(inv.Reader(row["assertion"]["text"]).all()[0])
         family, owner = ownership(category=row["category"], path=row["source"], words=words)
+        if row["body_id"] in UTILITY_RESIDUAL_BODIES:
+            digest, owner, family, reason = UTILITY_RESIDUAL_BODIES[row["body_id"]]
+            if row["body_sha256"] != digest:
+                raise ValueError("Utility residual source drift")
+            row["reason"] = reason
         row.update(obligation_kind="source-assertion", family=family, owner=owner,
                    historical_scope=row["source"] in inv.FILES,
                    dialect_contract="Local macro/import/phase contracts differ intentionally; unchanged .clj companions do not establish the local contract." if Path(row["source"]).name in {"macro_test.cljs", "import_test.cljs", "clojure_alias_test.cljs"} else None)
@@ -334,6 +381,8 @@ def generate():
             continue
         source = inv.Source(entry["path"], pinned(entry["path"]))
         family, owner = ownership(path=source.path)
+        if source.path == "src/test/cljs/cljs/array_access_test.cljc":
+            family, owner = "public-residual", "light-cljs-125"
         boundary, category, reason = disposition_for(source.path, "source-language", "", None)
         obligations.append({"id": "program::" + source.path, "obligation_kind": "source-program", "name": Path(source.path).stem,
                             "source": source.path, "body_id": "program::" + source.path, "body_sha256": inv.digest(source.data),

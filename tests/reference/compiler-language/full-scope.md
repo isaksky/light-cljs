@@ -112,6 +112,16 @@ application/macro declaration mappings. All 16 public rows assigned to the seque
 family execute through those mappings; mixed reader and assertion-free invocation
 module obligations retain their separate evidence boundaries.
 
+The [utility execution audit](../compiler-utilities-completion-evidence.md) retains
+41 complete upstream workflows with 611 original assertion sites, 408 new source
+witnesses and 37 ordinary/macro declaration mappings. Its family execution report
+covers all 445 intended utility-owned obligations (408 source sites, 22 public
+arities and fifteen local APIs), with both pinned references. Original external
+test.check properties and macro-module import integration remain intended under
+light-cljs-125; the confirmed source-visible *unchecked-arrays* configuration gap
+has the focused live owner light-cljs-132. These exact ownership reconciliations
+preserve original bodies, hashes, expectations and required dispositions.
+
 ## Ownership and boundaries
 
 | Family | Responsible Pellet |

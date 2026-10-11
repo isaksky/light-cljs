@@ -157,6 +157,19 @@ pub enum CoreFnId {
     EveryPred,
     Memoize,
     Rand,
+    RandInt,
+    RandNth,
+    ParseLong,
+    ParseDouble,
+    ParseUuid,
+    ParseBoolean,
+    IsJsSymbol,
+    IsSpecialSymbol,
+    ToArray2d,
+    IntArray,
+    LongArray,
+    DoubleArray,
+    ObjectArray,
     GroupBy,
     Frequencies,
     Trampoline,
@@ -777,6 +790,19 @@ impl CoreFnId {
             "every-pred" => Self::EveryPred,
             "memoize" => Self::Memoize,
             "rand" => Self::Rand,
+            "rand-int" => Self::RandInt,
+            "rand-nth" => Self::RandNth,
+            "parse-long" => Self::ParseLong,
+            "parse-double" => Self::ParseDouble,
+            "parse-uuid" => Self::ParseUuid,
+            "parse-boolean" => Self::ParseBoolean,
+            "js-symbol?" => Self::IsJsSymbol,
+            "special-symbol?" => Self::IsSpecialSymbol,
+            "to-array-2d" => Self::ToArray2d,
+            "int-array" => Self::IntArray,
+            "long-array" => Self::LongArray,
+            "double-array" => Self::DoubleArray,
+            "object-array" => Self::ObjectArray,
             "group-by" => Self::GroupBy,
             "frequencies" => Self::Frequencies,
             "trampoline" => Self::Trampoline,
@@ -994,7 +1020,8 @@ impl CoreFnId {
             "ICloneable" => Self::ICloneable,
             "IPrintWithWriter" => Self::IPrintWithWriter,
             "IWriter" => Self::IWriter,
-            "clone" | "-clone" => Self::Clone,
+            "clone" => Self::Clone,
+            "-clone" => Self::Clone,
             "-pr-writer" => Self::PrWriter,
             "-write" => Self::Write,
             "-flush" => Self::FlushWriter,
@@ -1479,6 +1506,19 @@ impl CoreFnId {
             Self::EveryPred => "everyPred",
             Self::Memoize => "memoize",
             Self::Rand => "rand",
+            Self::RandInt => "randInt",
+            Self::RandNth => "randNth",
+            Self::ParseLong => "parseLong",
+            Self::ParseDouble => "parseDouble",
+            Self::ParseUuid => "parseUuid",
+            Self::ParseBoolean => "parseBoolean",
+            Self::IsJsSymbol => "isJsSymbol",
+            Self::IsSpecialSymbol => "isSpecialSymbol",
+            Self::ToArray2d => "toArray2d",
+            Self::IntArray => "intArray",
+            Self::LongArray => "longArray",
+            Self::DoubleArray => "doubleArray",
+            Self::ObjectArray => "objectArray",
             Self::GroupBy => "groupBy",
             Self::Frequencies => "frequencies",
             Self::Trampoline => "trampoline",
@@ -5056,12 +5096,20 @@ impl Analyzer<'_> {
                 }
             }
             ExprKind::CoreFn(core) => {
-                let canonical = include_str!("core_var_metadata.tsv")
-                    .lines()
-                    .find_map(|row| {
-                        let (n, meta) = row.split_once('\t')?;
-                        (CoreFnId::resolve(n) == Some(*core)).then_some((n, meta))
-                    });
+                // Aliases can share a runtime operation while retaining their
+                // own public Var name, documentation and source arity metadata.
+                let requested = name.rsplit('/').next().unwrap();
+                let entries = || {
+                    include_str!("core_var_metadata.tsv")
+                        .lines()
+                        .filter_map(|row| {
+                            let (n, meta) = row.split_once('\t')?;
+                            (CoreFnId::resolve(n) == Some(*core)).then_some((n, meta))
+                        })
+                };
+                let canonical = entries()
+                    .find(|(n, _)| *n == requested)
+                    .or_else(|| entries().next());
                 let (name, metadata) = if let Some((n, metadata)) = canonical {
                     (n.to_owned(), Some(self.data_source(metadata)?))
                 } else {

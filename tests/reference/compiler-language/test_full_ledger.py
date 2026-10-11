@@ -100,6 +100,19 @@ class FullLedgerTests(unittest.TestCase):
         self.assertEqual(manifest["columns"], list(full.COLUMNS))
         self.assertTrue(all(r["status"] == "static-registration-only" for r in full.local_registration().values()))
 
+    def test_utility_residual_harness_and_compiler_settings_remain_required(self):
+        rows, obligations, _ = full.load()
+        for body, (digest, owner, family, reason) in full.UTILITY_RESIDUAL_BODIES.items():
+            selected = [row for row in rows if row["body_id"] == body]
+            self.assertTrue(selected, body)
+            for row in selected:
+                self.assertEqual(row["disposition"], "in-scope")
+                self.assertEqual(row["body_sha256"], digest)
+                self.assertEqual((row["owner"], row["family"]), (owner, family))
+                self.assertEqual(row["reason"], reason)
+        setting = next(row for row in obligations if row["name"] == "*unchecked-arrays*")
+        self.assertEqual((setting["disposition"], setting["owner"]), ("intended", "light-cljs-132"))
+
     def test_all_six_columns_and_no_parser_or_registration_semantic_credit(self):
         columns = full.columns({"parser": {"status": "accepted"}, "evaluation": {"status": "passed"}})
         self.assertEqual(set(columns), set(full.COLUMNS))

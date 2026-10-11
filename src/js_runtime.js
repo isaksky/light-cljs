@@ -1396,6 +1396,40 @@
     if (arguments.length === 1) return Math.random() * n;
     return invalidArity(arguments.length);
   }
+  // Public core utilities follow the pinned core.cljs Number/UTF-16 contracts.
+  function randInt(n) { return Math.floor(Math.random() * n); }
+  function randNth(coll) { return nth(coll, randInt(count(coll))); }
+  function isJsSymbol(value) {
+    return typeof value === "symbol" || (typeof Symbol !== "undefined" && value instanceof Symbol);
+  }
+  const specialSymbols = new Set("if def fn* do let* loop* letfn* throw try catch finally recur new set! ns deftype* defrecord* . js* & quote case* var ns*".split(" "));
+  function isSpecialSymbol(value) {
+    const data = symbols.get(value);
+    return !!data && data.namespace === null && specialSymbols.has(data.name);
+  }
+  function parsingString(value) {
+    if (typeof value !== "string") throw new Error("Expected string, got: " + (value == null ? "nil" : Array.isArray(value) ? "array" : typeof value));
+    return value;
+  }
+  function parseLong(value) {
+    const s = parsingString(value);
+    if (/^[+-]?\d+$/.exec(s)?.[0] !== s) return null;
+    const n = parseInt(s, 10);
+    return n <= Number.MAX_SAFE_INTEGER && n >= Number.MIN_SAFE_INTEGER ? n : null;
+  }
+  function parseDouble(value) {
+    const s = parsingString(value);
+    if (/^[\x00-\x20]*[+-]?NaN[\x00-\x20]*$/.test(s)) return NaN;
+    return /^[\x00-\x20]*[+-]?(Infinity|((\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)[dDfF]?)[\x00-\x20]*$/.test(s) ? parseFloat(s) : null;
+  }
+  function parseUuid(value) {
+    const s = parsingString(value);
+    return s.length === 36 && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s) ? uuid(s) : null;
+  }
+  function parseBoolean(value) {
+    const s = parsingString(value);
+    return s === "true" ? true : s === "false" ? false : null;
+  }
   function groupBy(fn, coll) {
     return reduce((result, value) => {
       const key = fn.call(null, value);
@@ -3899,6 +3933,29 @@
     for (let i = 0; i < result.length; i++) result[i] = array[i];
     return result;
   }
+  function toArray2d(coll) {
+    const result = new Array(count(coll));
+    let i = 0;
+    for (let s = seq(coll); s !== null; s = next(s)) result[i++] = toArray(first(s));
+    return result;
+  }
+  function typedArray(size, init) {
+    if (arguments.length === 1) return typeof size === "number" ? typedArray(size, null) : intoArray(size);
+    if (arguments.length !== 2) return invalidArity(arguments.length);
+    const result = makeArray(size);
+    if (predicates.isSeq(init)) {
+      // The upstream loop advances after each store, even after the last slot.
+      let s = seq(init);
+      for (let i = 0; s !== null && i < size; i++, s = next(s)) result[i] = first(s);
+    } else {
+      for (let i = 0; i < size; i++) result[i] = init;
+    }
+    return result;
+  }
+  function intArray(...args) { return typedArray(...args); }
+  function longArray(...args) { return typedArray(...args); }
+  function doubleArray(...args) { return typedArray(...args); }
+  function objectArray(...args) { return typedArray(...args); }
   function intoArray(type, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     return toArray(arguments.length === 1 ? type : coll);
@@ -4169,7 +4226,7 @@
     protocolSentinel, IMeta, IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, clone, prWriter, write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol, empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, str, uuid,
     identical: (a, b) => a === b, isUuid: value => uuids.has(value), isInst: value => value instanceof Date,
     printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct, isDistinct, sort, sortBy,
-    someFn, everyPred, memoize, rand, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
+    someFn, everyPred, memoize, rand, randInt, randNth, parseLong, parseDouble, parseUuid, parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
     replOne: null, replTwo: null, replThree: null, replError: null, sourceFile: null,
     commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
     println, prn, pr, newline, prnStr, printStr, printlnStr, taggedLiteral, isTaggedLiteral: value => value instanceof TaggedLiteral,
@@ -4186,7 +4243,7 @@
     cons: (head, tail) => cons(head, tail), listStar, iterate, take, range, toArray, mapSeq,
     arraySeq: function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(array, start, true) : null; },
     array: (...args) => args,
-    aget, aset, alength: array => array.length, aclone, makeArray, intoArray,
+    aget, aset, alength: array => array.length, aclone, makeArray, intoArray, toArray2d, intArray, longArray, doubleArray, objectArray,
     jsObj, jsKeys, jsInvoke, jsDelete, jsIn: (key, object) => key in object,
     uncheckedGet: (object, key) => object[key], uncheckedSet: jsSet,
     checkedAget: aget, checkedAset: aset, checkedAgetStrict, checkedAsetStrict,

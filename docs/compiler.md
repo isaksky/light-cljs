@@ -1383,6 +1383,31 @@ getter effects between computed indices. Private checked-array helpers retain
 value/error modes used by the upstream array-access tests. `js-obj` retains its
 macro's computed-key/literal/symbol grouping and duplicate-key behavior.
 `#js` keeps array holes and ordinary object-literal prototype-key behavior.
+
+`to-array-2d` converts ragged seqable rows to ordinary JavaScript arrays.
+`int-array`, `long-array`, `double-array`, and `object-array` support size/seq and
+size/initializer arities, without coercing elements. A numeric size alone fills
+slots with nil. A seq initializer copies at most the requested count and leaves
+unfilled slots as holes; other initializers repeat the original value, including
+persistent vectors and host arrays. The upstream loop sequences an initializer
+even at size zero and advances after the final stored element. Saved constructors
+and `apply` preserve the same overload and demand behavior.
+
+Core `subs` uses JavaScript substring coercion, swapped/clamped bounds and UTF-16
+indices. Parsing functions require primitive strings and throw on other types.
+`parse-long` accepts complete signed decimal digits within the safe-integer range.
+`parse-double` accepts the pinned decimal/exponent/suffix/ASCII whitespace grammar,
+NaN and infinities; both preserve parsed negative zero. Invalid strings return nil.
+`parse-uuid` validates the complete 36-character hexadecimal UUID spelling before
+constructing the lowercase UUID; `parse-boolean` accepts exactly true/false strings.
+`rand` supports zero/one arguments; `rand-int` floors Math.random times its bound,
+and `rand-nth` indexes the collection using that result. Math.random can be supplied
+by the JavaScript host; no identical PRNG stream across engines is promised.
+`js-symbol?` recognizes primitive and boxed ECMAScript Symbols; `special-symbol?`
+checks the pinned unqualified special-form symbol set. `clone` uses ICloneable,
+and aliases retain their own source Var metadata even when runtime operations are
+shared. See the [complete utility audit](../tests/reference/compiler-utilities-completion-evidence.md).
+
 Generated type fields use munged host properties; writes remain visible to method
 field reads and record lookup, with independent fields on metadata copies.
 
