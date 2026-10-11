@@ -55,6 +55,16 @@ LITERALS = {
     ],
 }
 
+# Independent higher-order results exercise each factory at its public arity,
+# then call the returned function. Saved factory calls supplement direct calls;
+# literal results and ordered effects remain adjacent, independent expectations.
+LITERALS['control'].extend([
+    ('higher-order-factories', '(let [saved comp p partial] [(identity :value) ((constantly :fixed) 1 2) ((complement nil?) :value) ((comp) 7) ((comp inc) 7) ((comp inc inc) 7) ((comp inc inc inc) 7) ((comp inc inc inc inc) 7) ((saved inc inc inc inc) 7) ((partial +) 1 2) ((partial + 1) 2 3) ((partial + 1 2) 3 4) ((partial + 1 2 3) 4) ((partial + 1 2 3 4) 5) ((p + 1 2 3 4) 5) ((fnil vector :a) nil 2) ((fnil vector :a :b) nil nil 3) ((fnil vector :a :b :c) nil nil nil 4) ((every-pred pos?) 1 2) ((every-pred pos? even?) 2 4) ((every-pred pos? even? number?) 2 4) ((every-pred pos? even? number? integer?) 2 4) ((every-pred pos?) 1 -1) ((some-fn nil?) nil) ((some-fn nil? even?) 3 4) ((some-fn nil? even? pos?) -3 3) ((some-fn nil? even? pos? number?) -3 3) ((some-fn nil?) 1 2) ((juxt inc) 3) ((juxt inc dec) 3) ((juxt inc dec identity) 3) ((juxt inc dec identity str) 3)])', '[:value :fixed true 7 8 9 10 11 11 3 6 10 10 15 15 [:a 2] [:a :b 3] [:a :b :c 4] true true true true false true true true true false [4] [4 2] [4 2 3] [4 2 3 \"3\"]]'),
+    ('higher-order-effects', '(let [events (atom []) cached (memoize (fn [x] (swap! events conj x) (* x 2))) step (fn step [n] (if (zero? n) :done (fn [] (step (dec n)))))] [(cached 3) (cached 3) (cached 4) @events (trampoline (fn [] (step 3))) (trampoline step 4)])', '[6 6 8 [3 4] :done :done]'),
+])
+LITERALS['collections'].append(
+    ('collection-function-arities', '[(not-empty []) (not-empty [1]) (every? pos? [1 2]) (not-every? pos? [1 -1]) (some #{2} [1 2 3]) (not-any? neg? [1 2]) (distinct? 1) (distinct? 1 2) (distinct? 1 2 3) (distinct? 1 2 1) (into) (into [1]) (into [] [1 2]) (into [] (map inc) [1 2]) (mapv inc [1 2]) (mapv + [1 2] [3 4]) (mapv + [1] [2] [3]) (mapv + [1] [2] [3] [4]) (filterv even? [1 2 3 4]) (zipmap [:a :b] [1 2]) (frequencies [:a :b :a]) (group-by even? [1 2 3 4]) (vec (map-indexed vector [:a :b])) (into [] (keep identity) [nil false 2]) (vec (keep identity [nil false 2])) (into [] (keep-indexed (fn [i x] (when x i))) [true nil true]) (vec (keep-indexed (fn [i x] (when x i)) [true nil true]))]', '[nil [1] true true 2 true true true true false [] [1] [1 2] [2 3] [2 3] [4 6] [6] [10] [2 4] {:a 1, :b 2} {:a 2, :b 1} {false [1 3], true [2 4]} [[0 :a] [1 :b]] [false 2] [false 2] [0 2] [0 2]]'))
+
 # Reviewed names used as direct calls in these exact workflows. No unbound names,
 # private storage/host helpers, quoted data or textual occurrences become arities.
 NAMES = set('''+ - * / = not= < <= > >= inc dec max min quot rem mod zero? pos? neg?
@@ -67,6 +77,9 @@ select-keys get-in assoc-in update-in update reduce reduce-kv reduced deref
 atom swap! reset! compare-and-set! get-validator set-validator! volatile! vswap! vreset!
 swap-vals! reset-vals! add-watch remove-watch meta with-meta realized? force delay
 ex-info ex-data ex-message ex-cause instance? str pr-str
+identity constantly complement comp partial fnil every-pred some-fn juxt memoize trampoline
+not-empty every? not-every? some not-any? distinct? into mapv filterv zipmap frequencies
+group-by map-indexed keep keep-indexed
 and or if-let when-let when when-not cond case for doseq dotimes some-> some->>
 cond-> cond->> as-> -> ->>'''.split())
 THREADS = {'->', '->>', 'some->', 'some->>', 'cond->', 'cond->>', 'as->'}

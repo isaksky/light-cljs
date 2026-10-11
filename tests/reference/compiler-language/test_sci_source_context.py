@@ -149,4 +149,67 @@ class SourceContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unverified reference identity, source or settings'):
             receipts.classification(row, layers)
 
+    def test_full_run_needs_fresh_complete_layers_without_loading_saved_receipts(self):
+        rows = context.load()
+        recorded = receipts.load()
+        with mock.patch.object(receipts, 'load', side_effect=AssertionError('saved receipts cannot grant coverage')):
+            self.assertTrue(all(receipts.full_report_evidence(row, {})['status'] == 'missing' for row in rows))
+            results = [receipts.full_report_evidence(row, receipt['layers']) for row, receipt in zip(rows, recorded)]
+        self.assertEqual([sum(result['status'] == status for result in results)
+                          for status in ('covered', 'version-difference', 'missing')], [35, 8, 7])
+        for row, receipt in zip(rows, recorded):
+            changed = copy.deepcopy(receipt['layers'])
+            changed['javascript']['engines']['QuickJS']['observed']['stdout'] += 'wrong'
+            self.assertEqual(receipts.full_report_evidence(row, changed)['status'], 'missing')
+
+    def test_distinct_pins_cannot_excuse_local_contract_matching_neither(self):
+        row = next(row for row in context.load() if row['sci_id'] == 'sci-binding-default-effects')
+        layers = copy.deepcopy(next(record['layers'] for record in receipts.load() if record['id'] == row['id']))
+        for kind, value in (('release', 100), ('checkout', 200)):
+            layers[kind]['observed']['outcome']['value'] = value
+            layers[kind]['status'] = 'mismatch'
+        self.assertEqual(receipts.full_report_evidence(row, layers)['status'], 'missing')
+        with self.assertRaisesRegex(ValueError, 'matches neither reference pin'):
+            receipts.classification(row, layers)
+
+    def test_full_ledger_uses_checked_context_statuses_and_preserves_missing(self):
+        import full_ledger
+        rows = context.load()
+        layers = {record['id']: record['layers'] for record in receipts.load()}
+        obligations = [{'id': row['obligation_id'], 'body_sha256': row['body_sha256'],
+                        'disposition': 'intended', 'obligation_kind': 'sci-corpus',
+                        'family': 'sci-corpus', 'name': row['sci_id'], 'source_span': {},
+                        'reason': 'Original SCI obligation'} for row in rows]
+        historical = {'counts': dict.fromkeys(('covered', 'missing', 'version-difference', 'unrelated'), 0),
+                      'strict_complete': False, 'boundary_strict_complete': True}
+        with mock.patch.object(full_ledger, 'load', return_value=([], obligations, {'counts': {}})), \
+             mock.patch.object(full_ledger, 'load_obligation_witnesses', return_value={}), \
+             mock.patch.object(full_ledger, 'load_phase_witnesses', return_value={}):
+            static = full_ledger.expand_report(historical, {}, {})
+            fresh = full_ledger.expand_report(historical, {}, {}, sci_evidence=layers)
+        self.assertEqual(static['counts']['missing'], 50)
+        self.assertEqual([fresh['counts'][key] for key in ('covered', 'version-difference', 'missing')], [35, 8, 7])
+        self.assertFalse(fresh['strict_complete'])
+        self.assertTrue(all(row['columns']['quickjs_macro']['status'] == 'not-run' for row in fresh['assertions']))
+        failures = {'mismatch', 'failed', 'invalid-output'}
+        self.assertTrue(full_ledger.sci_execution_failed(fresh, layers, failures))
+        differences = [row for row in fresh['assertions'] if row['status'] == 'version-difference']
+        difference_layers = {row['source_context_reconciliation']['id']:
+                             layers[row['source_context_reconciliation']['id']] for row in differences}
+        self.assertFalse(full_ledger.sci_execution_failed({'assertions': differences}, difference_layers, failures))
+
+    def test_specialization_preserves_all_other_rows_and_rejects_changed_originals(self):
+        contexts = context.load()
+        generic = sci.load_all()
+        specialized = context.expression_rows(generic, contexts)
+        selected_ids = {row['id'] for row in contexts}
+        self.assertEqual(specialized, [row for row in generic if row['id'] not in selected_ids])
+        self.assertEqual(len(generic) - len(specialized), 50)
+        for key in ('body_sha256', 'original_source_sha256', 'original_row_sha256', 'expected', 'obligation_id'):
+            changed = copy.deepcopy(generic)
+            row = next(row for row in changed if row['id'] in selected_ids)
+            row[key] = 'changed'
+            with self.assertRaisesRegex(ValueError, 'specialization detached'):
+                context.expression_rows(changed, contexts)
+
 if __name__=='__main__':unittest.main()

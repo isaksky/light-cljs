@@ -1234,7 +1234,9 @@ def main(argv=None):
             # historical evaluator disposition never supplies a present pass.
             if not args.feature and not args.id:
                 import sci_execution
-                sci_cases = sci_execution.cases(sci_execution.load_all())
+                import sci_source_context
+                source_rows = sci_source_context.load()
+                sci_cases = sci_execution.cases(sci_source_context.expression_rows(sci_execution.load_all(), source_rows))
                 sci_evidence = {case["id"]: {} for case in sci_cases}
                 local = sci_execution.local_cases(sci_cases, artifacts / "sci" / "local", max(180, args.reference_timeout))
                 for identity, observed in local.items():
@@ -1245,6 +1247,21 @@ def main(argv=None):
                         for identity, layer in observed.items():
                             sci_evidence[identity][kind] = layer
                 (artifacts / "sci" / "evidence.json").write_text(json.dumps(sci_evidence, indent=2) + "\n")
+                source_evidence = {row["id"]: {} for row in source_rows}
+                local = sci_source_context.local_cases(source_rows, artifacts / "sci-source-context" / "local", max(180, args.reference_timeout))
+                for identity, layer in local.items():
+                    source_evidence[identity]["javascript"] = layer
+                for kind in ("release", "checkout"):
+                    if args.reference in (kind, "both"):
+                        observed = sci_source_context.reference_cases(source_rows, kind, artifacts / "sci-source-context" / kind, args.reference_timeout)
+                        for identity, layer in observed.items():
+                            source_evidence[identity][kind] = layer
+                if set(sci_evidence) & set(source_evidence):
+                    raise ValueError("SCI expression/source-context execution identities overlap")
+                sci_evidence.update(source_evidence)
+                (artifacts / "sci-source-context" / "evidence.json").write_text(json.dumps({
+                    "catalog_sha256": sci_execution.digest(sci_source_context.CATALOG.read_bytes()),
+                    "evidence": source_evidence}, indent=2) + "\n")
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":

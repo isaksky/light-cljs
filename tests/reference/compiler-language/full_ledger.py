@@ -487,6 +487,11 @@ def sci_execution_failed(report, evidence, failure_statuses):
                   if row.get("status") == "version-difference"
                   and row.get("canonical_reconciliation", {}).get("status") == "verified"
                   and row["canonical_reconciliation"].get("disposition") == "canonical-dialect-difference"}
+    reconciled.update(row["source_context_reconciliation"]["id"]
+                      for row in report.get("assertions", [])
+                      if row.get("status") == "version-difference"
+                      and row.get("source_context_reconciliation", {}).get("reconciliation") == "verified-pinned-version-difference"
+                      and row["source_context_reconciliation"].get("original_expectation_status") == "unresolved")
     return any(layer.get("status") in failure_statuses
                and not (identity in reconciled and layer.get("status") == "mismatch")
                for identity, layers in evidence.items() for layer in layers.values())
@@ -499,7 +504,10 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
     phases = load_phase_witnesses(obligations)
     phase_evidence = phase_evidence or {}
     from sci_execution import load_all as load_sci, digest as sci_digest, canonical_contract, canonical_status, TEST_FILE, TEST_NAME
-    sci_mappings = {item["obligation_id"]: item for item in load_sci()}
+    from sci_source_context import load as load_source_context, expression_rows
+    from sci_source_context_receipts import full_report_evidence as source_context_evidence
+    source_context_mappings = {item["obligation_id"]: item for item in load_source_context()}
+    sci_mappings = {item["obligation_id"]: item for item in expression_rows(load_sci(), list(source_context_mappings.values()))}
     sci_evidence = sci_evidence or {}
     selected = bool(features or identities)
     rows = []
@@ -522,6 +530,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         mapping = obligation_witnesses.get(row["id"])
         layers = {}
         reconciliation = None
+        source_reconciliation = None
         if status == "missing" and mapping and not mapping.get("local_execution"):
             source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
                                for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
@@ -589,11 +598,20 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                 # Canonical agreement is an explicit dialect difference from
                 # SCI, never a pass of the retained original [0 2] expectation.
                 status = "version-difference" if canonical_pass else "missing"
+        source_context_mapping = source_context_mappings.get(row["id"])
+        if source_context_mapping:
+            if row["body_sha256"] != source_context_mapping["body_sha256"]:
+                raise ValueError("SCI source-context mapping detached from original obligation")
+            layers = sci_evidence.get(source_context_mapping["id"], {})
+            source_reconciliation = {"id": source_context_mapping["id"],
+                                     **source_context_evidence(source_context_mapping, layers)}
+            status = source_reconciliation["status"]
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
                      "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
                      **({"canonical_reconciliation": reconciliation} if reconciliation else {}),
+                     **({"source_context_reconciliation": source_reconciliation} if source_reconciliation else {}),
                      "completion_reason": "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
     counts = Counter(row["status"] for row in rows)
     sections = {}

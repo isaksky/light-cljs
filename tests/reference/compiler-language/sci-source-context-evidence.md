@@ -74,8 +74,8 @@ The seven unresolved originals are:
 
 These may require explicit dialect or reference-fixture reconciliation. This
 receipt does not classify them as implementation defects, retire their original
-expectations, integrate them into the full ledger or declare the broader gate
-passing.
+expectations or declare the broader gate passing. Fresh full-run integration
+is described below; saved receipts alone never supply gate credit.
 
 ## Provenance and retained earlier evidence
 
@@ -107,7 +107,7 @@ reference outcomes reproduce all prior literal outcomes and rejections.
 Temporary build/log locations are optional replay artifacts; checked-in receipts
 retain raw contracts and do not require those directories to validate.
 
-Eleven focused Python tests verify source/form/expectation preservation, stale
+Fifteen focused Python tests verify source/form/expectation preservation, stale
 catalogs and provenance, incomplete execution, missing engines, distinct
 version contracts, immutable pass classifications and literal raw-contract
 stability even when the existing comparison projection would still agree.
@@ -115,3 +115,32 @@ They also reject replacing boolean expectations/settings with numeric values.
 The focused Rust test covers raw macro arguments, repeated effects, sequential
 macro redefinition, separate phase roots and original source locations in both
 Node and QuickJS. It passed. No broad gate was run by this review.
+
+
+## Fresh full-report source specialization
+
+The full report now routes these same 50 original SCI identities through the
+source-context driver. They overlap the generic expression catalog: immutable
+obligation, original-source/row, disposition-body and expectation bindings are
+checked before specializing them. The remaining 1,244 generic rows retain their
+order and adapters; no source obligation is dropped or executed twice.
+
+`report.py --scope intended-language --run --reference both` executes the 50
+contexts afresh in `sci-source-context/` alongside the generic cohort. Its
+per-row validator requires current Rust-driver/observation-adapter hashes,
+both local engines, both pinned identities/settings and oracle/helper hashes.
+The validator checks the actual outcome/effect/stdout observations against each
+untouched original expectation. It never reads stored receipts to grant fresh
+coverage. Static reports keep all 50 missing.
+
+The fresh audit at `/tmp/light-cljs-125-sci-source-context-integrated-current`
+reproduced every recorded literal reference outcome/rejection. Full-report
+validation yields 35 covered originals, eight separately verified version
+differences and seven missing originals. A version difference additionally
+requires both local engines' entire projected observation to match the same
+independently executed reference pin. Two distinct reference results cannot
+excuse a local result that matches neither. The eight difference rows retain
+`original_expectation_status: unresolved`; the seven unresolved originals keep
+failing reference mismatches visible. Context execution grants no macro-phase
+eligibility to other public API obligations. This focused run is not a broad
+full-gate pass.

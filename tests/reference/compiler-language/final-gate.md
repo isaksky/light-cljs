@@ -311,3 +311,81 @@ changed only two cosmetic Rust source spans; residual phase hashes were freshly
 regenerated afterward. These checks do not replace the required broader full
 regression/upstream/ignored/performance acceptance. Recovery logs are under
 `/tmp/light-cljs-125-recovery-*`; exact reference source receipts are linked above.
+
+
+## Evidence continuation after light-cljs-147 and light-cljs-148
+
+Both earlier focused repairs are closed at commits `1b33fa0` and `9f9a3c5`.
+This continuation adds useful evidence while preserving the original acceptance:
+
+- Three independent literal higher-order/collection workflows now supplement the
+  twenty-two complete upstream core bodies. Their public factory arities, saved
+  calls, returned functions, memoization effects, trampoline recursion, collection
+  transformations and transducer paths add 91 reviewed public/local operation
+  receipts (351 total; nine independent literal oracles). All six core-gate tests
+  passed in 6.90 seconds, executing the workflows in Node/QuickJS applications
+  and macro phases; all three new literal sources independently passed both
+  pins. Sources/expectations remain adjacent in `compiler-core-gate.py`; exact
+  calls/signatures are reproduced by `compiler-core-gate-mappings.py`. Fresh
+  reference artifacts: `/tmp/light-cljs-125-higher-order-reference-final`.
+- Three more complete assertion-free upstream bodies retain their actual final
+  returned values. The original array-access macro module stays byte-identical;
+  a separate suppression/restoration contract returns `[true true]`. All four
+  pass both engines/phases and both references. No assertion is invented for an
+  assertion-free source. The canonical driver alone explicitly imports the
+  unchanged macro module with `:require-macros`; local ordinary import semantics
+  are retained. See [complete residual evidence](../compiler-residual-completion.md).
+- The fifty original SCI source-context contracts are now specialized within the
+  full runner. They replace matching generic-expression adapters only after the
+  original source/row/obligation/body/expectation identities agree: 1,294 generic
+  rows become 1,244 generic rows plus fifty specialized rows, with no source lost
+  or executed twice. Fresh local/reference validation gives 35 covered, eight
+  explicit pin differences and seven missing. Stored receipts never grant a
+  present pass. Both local engines must match the same independently executed
+  pin for a version difference; original SCI agreement remains unresolved. An
+  unrelated public macro operation receives no eligibility from these sources.
+  Fresh artifacts: `/tmp/light-cljs-125-sci-source-context-integrated-current`.
+
+- Sixteen complete SCI string/set/walk/EDN sources add a separate import-context
+  scaffold, preserving original require/alias/:refer declarations, callback
+  ordering, printing and return values. Both local engines pass all sixteen;
+  both references agree with fifteen originals and throw for the original EDN
+  discard contract expecting `2`. That original expectation remains unresolved.
+  This bounded cohort is supplemental, not full-ledger coverage; its plan retains
+  another 181 unexecuted candidate sources. See
+  [library source/context evidence](sci-library-context-evidence.md).
+
+The two newly confirmed semantic omissions have focused live owners immediately
+before this gate: light-cljs-149 (variadic callable-type `IFn` rest binding) and
+light-cljs-150 (persistent map/vector/set Object `.equiv`). Their complete original
+probes and SHA256 bindings are reproducible in
+`compiler-residual-completion-omissions.json`. Both pins independently return the
+original expected result, while current local application and macro paths fail.
+The full interop body retains all seven assertions and `LITE_MODE false`; the
+Partial body retains its original variadic implementation and actual result `3`.
+
+The full fourteen-row/eight-predicate integer table, private tapset-dependent
+setup, complete 100,000-trial generative sources, inference checks and invocation
+module remain honestly accounted for. An undefined declared function also fails
+canonical invocation-module initialization; this observation supplies neither a
+pass nor an automatic exclusion. No missing table row, loop, branch or expectation
+was removed to make an adapter pass.
+
+The fresh nonexecuting strict report exits 1, with zero covered, 8,605 missing and
+1,385 outside dispositions. This static check grants no semantic credit. The
+comprehensive zero-missing `--run --strict` gate and broad remaining acceptance
+remain unfinished; another unchanged incomplete full run is not evidence of
+completion. Useful evidence is saved and light-cljs-125 is released behind its
+focused blockers, rather than closed. No production implementation changed in
+this continuation.
+
+
+Continuation verification: all **103** existing/updated runner, accounting and
+provenance tests passed in 147.55 seconds; the **six** new library-context tests
+passed separately. The final focused Rust run passed eight active tests (core,
+residual and source-context contracts); its two explicit source/library audits
+remain ignored in the normal invocation and have separately executed fresh
+50-source and 16-source receipts. Core/residual generators, inventory `--check`,
+scoped Rust 2024 formatting and `git diff --check` passed. These checks validate
+this evidence work; they do not replace the unfinished full regression,
+upstream/ignored and performance acceptance.

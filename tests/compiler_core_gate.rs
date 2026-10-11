@@ -97,7 +97,7 @@ fn core_numeric_applications_and_macros_execute() {
 
 #[test]
 fn core_collections_applications_and_macros_execute() {
-    cohort("collections", 5);
+    cohort("collections", 6);
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn core_state_applications_and_macros_execute() {
 
 #[test]
 fn core_control_applications_and_macros_execute() {
-    cohort("control", 9);
+    cohort("control", 11);
 }
 
 #[test]

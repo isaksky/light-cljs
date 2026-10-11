@@ -62,6 +62,20 @@ def cases(catalog=None):
             for row in (load() if catalog is None else catalog)]
 
 
+def expression_rows(rows, contexts=None):
+    """Specialize matching originals without dropping an unrelated expression."""
+    contexts = load() if contexts is None else contexts
+    by_id = {row["id"]: row for row in contexts}
+    for row in rows:
+        context = by_id.get(row["id"])
+        if context is None:
+            continue
+        keys = ("obligation_id", "original_source_sha256", "original_row_sha256", "body_sha256", "expected")
+        if any(json.dumps(row.get(key), sort_keys=True) != json.dumps(context[key], sort_keys=True) for key in keys):
+            raise ValueError("SCI source specialization detached from original expression: " + row["id"])
+    return [row for row in rows if row["id"] not in by_id]
+
+
 def local_cases(rows, directory, timeout):
     directory.mkdir(parents=True, exist_ok=True)
     source, output = directory / "input.tsv", directory / "observations.tsv"

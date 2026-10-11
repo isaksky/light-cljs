@@ -72,8 +72,33 @@ def classification(row, layers):
             checkout["status"] not in ("passed", "mismatch") or
             runner.same_json(release["observed"], checkout["observed"])):
             raise ValueError("Version difference lacks distinct executed raw contracts: " + row["id"])
+        matching_pins = [kind for kind in ("release", "checkout")
+                         if all(runner.same_json(sci.projection(engine["observed"]),
+                                                 sci.projection(layers[kind]["observed"]))
+                                for engine in javascript["engines"].values())]
+        if not matching_pins:
+            raise ValueError("Original local contract matches neither reference pin: " + row["id"])
         return "verified-pinned-version-difference"
     return "original-contract-unresolved"
+
+
+def full_report_evidence(row, layers):
+    """Classify freshly supplied full-run evidence; stored receipts grant no pass.
+
+    Both local engines and both pinned source/oracle identities are rechecked.
+    A verified pin difference still leaves the original SCI agreement unresolved.
+    """
+    try:
+        reconciliation = classification(row, layers)
+    except (ValueError, KeyError, TypeError) as error:
+        return {"status": "missing", "reconciliation": "unverified",
+                "original_expectation_status": "unresolved", "reason": str(error)}
+    status = {"original-source-agreement": "covered",
+              "verified-pinned-version-difference": "version-difference",
+              "original-contract-unresolved": "missing"}[reconciliation]
+    return {"status": status, "reconciliation": reconciliation,
+            "original_expectation_status": "passed" if status == "covered" else "unresolved",
+            "reason": "Fresh exact original-source Node/QuickJS and pinned reference receipts checked."}
 
 
 def load():
