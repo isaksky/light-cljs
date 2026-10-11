@@ -14,7 +14,8 @@
       (let [v (nth vars i) m (meta v)]
         (assert (var? v))
         (assert (= (nth names i) (:name m)))
-        (assert (= 'cljs.core (if (symbol? (:ns m)) (:ns m) (ns-name (:ns m)))))
+        (assert (symbol? (:ns m)))
+        (assert (= "cljs.core" (ns-name (:ns m))))
         (assert (= "cljs/core.cljs" (:file m)))
         (assert (= (nth lines i) (:line m)))
         (assert (= 1 (:column m)))
@@ -38,7 +39,8 @@
       (let [m (meta v)]
         (assert (= name (:name m)))
         (assert (= line (:line m)))
-        (assert (= 'cljs.core (if (symbol? (:ns m)) (:ns m) (ns-name (:ns m)))))
+        (assert (symbol? (:ns m)))
+        (assert (= "cljs.core" (ns-name (:ns m))))
         (assert (= "cljs/core.cljs" (:file m)))
         (assert (seq? (:arglists m)))
         (assert (= args (:arglists m)))

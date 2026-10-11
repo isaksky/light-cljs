@@ -34,7 +34,7 @@ fn reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines() {
   (assert (= "cljs.user" (:file (meta #'x))))
   (assert (= "cljs.user" (:file (meta #'generated))))
   (list 'quote [(:line (meta #'generated)) (:column (meta #'generated))]))
-[(= 'x (:name (meta #'x))) (= 'cljs.user (ns-name (:ns (meta #'x))))
+[(= 'x (:name (meta #'x))) (= "cljs.user" (ns-name (:ns (meta #'x))))
  (:file (meta #'x)) (:line (meta #'x)) (:column (meta #'x)) (:doc (meta #'x))
  [(:file (meta #'y)) (:line (meta #'y)) (:column (meta #'y))]
  [(:file (meta #'z)) (:line (meta #'z)) (:column (meta #'z)) (:declared (meta #'z))]

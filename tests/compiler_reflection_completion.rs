@@ -75,14 +75,14 @@ fn core_public_vars_are_callable_with_source_metadata_in_both_phases() {
       (let [match-var (get (ns-publics 'cljs.core) 're-matches)]
         (assert (var? match-var))
         (assert (= 're-matches (:name (meta match-var))))
-        (assert (= 'cljs.core (ns-name (:ns (meta match-var)))))
+        (assert (= "cljs.core" (ns-name (:ns (meta match-var)))))
         (assert (= "a" (match-var #"a" "a")))
         (assert (= "a" ((identity @match-var) #"a" "a")))
         (list 'quote :macro)))
       (let [v (get (ns-publics 'cljs.core) 're-matches)
             hooks (ns-interns 'cljs.core)]
         [(from-publics) (v #"a" "a") (= v #'re-matches)
-         (string? (:doc (meta v))) (= 'cljs.core (ns-name (:ns (meta v))))
+         (string? (:doc (meta v))) (= "cljs.core" (ns-name (:ns (meta v))))
          (and (object? (#'js-obj)) (every? #(contains? hooks %) '[create-ns find-ns ns-name Namespace add-tap remove-tap tap> system-time flush]))])"#,
         "[:macro \"a\" true true true true]",
     );

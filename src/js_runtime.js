@@ -3056,7 +3056,7 @@
     if (this.obj == null) return null;
     const key = mungeStr(str(local));
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
-    return definitionVar(() => this.obj[key], symbol(str(this.name), str(local)), null, true);
+    return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
   function createNs(name, obj = null) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
@@ -3109,9 +3109,9 @@
   }
   function nsName(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
-    // Definition metadata historically stores the source symbol; it is an identity view.
-    if (symbols.has(value)) return value;
-    if (!(value instanceof Namespace)) throw new TypeError("ns-name requires a Namespace");
+    // Pinned ns-name reads .name: metadata symbols expose their string name,
+    // while explicitly constructed Namespaces preserve their supplied slot.
+    if (symbols.has(value)) return symbols.get(value).name;
     return value.name;
   }
   function theNs(name) {

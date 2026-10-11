@@ -73,12 +73,17 @@ for row in rows:
     name = row['name'].rsplit('/',1)[-1]
     if row['owner'] != 'light-cljs-124' or row['disposition'] != 'intended' or row['obligation_kind'] not in {'public-api','local-api','local-metadata'} or name not in namespace_names | host_names: continue
     path,test = ('tests/compiler_reflection_completion.rs','namespace_api_arities_execute_in_applications_and_macros') if name in namespace_names else ('tests/compiler_host_hooks.rs','host_hooks_have_macro_application_phase_witnesses')
+    if name == 'ns-name':
+        path, test = 'tests/compiler_ns_name.rs', 'ns_name_result_types_execute_in_both_engines_and_macro_phase'
     execution = {'test_file':path,'test_name':test,'test_source_sha256':hashlib.sha256((ROOT/path).read_bytes()).hexdigest()}
     rationale = 'The entire hashed contract executes this exact public declaration and retained arity through Node/QuickJS applications and a QuickJS macro. Namespace tests retain constructor identity, source public/private Var metadata, real saved invocation and imports; host tests retain ordered tap registration/removal/reentrancy and the ECMAScript clock contract. Host scheduling/callback differences remain explicit in the embedding contract.'
     common={'obligation_id':row['id'],'body_sha256':row['body_sha256'],'rationale':rationale}
     if row.get('signature'): common['signature_sha256']=hashlib.sha256(json.dumps(row['signature'],sort_keys=True).encode()).hexdigest()
+    support = {'tests/fixtures/compiler-ns-name.cljs': hashlib.sha256((ROOT/'tests/fixtures/compiler-ns-name.cljs').read_bytes()).hexdigest()} if name == 'ns-name' else {}
+    if name == 'ns-name':
+        common['rationale'] = 'The unchanged pinned constructor/create/find/metadata contract executes direct, saved and apply ns-name in QuickJS/Node applications and canonical macro computations, with fresh/reused runtimes and macro hosts. Namespace name slots retain their supplied symbol/string identity; metadata remains a symbol whose name reflection is a string. Interned host Vars retain the supplying Namespace. Qualified symbols, host name fields, session identity and phase isolation are checked separately; no namespace spelling is normalized.'
     direct.append({**common,'local_execution':execution,'assertion_ids':[]})
-    phase.append({**common,**execution})
+    phase.append({**common,**execution, **({'support_source_sha256': support} if support else {})})
 for filename,expected in [('obligation-witnesses.jsonl',direct),('phase-witnesses.jsonl',phase)]:
     destination=ROOT/'tests/reference/compiler-language'/filename
     identities={row['obligation_id'] for row in expected}

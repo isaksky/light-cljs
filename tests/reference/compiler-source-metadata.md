@@ -22,8 +22,10 @@ both source paths and actual declaration/expansion locations in both engines.
 
 The exact original `sci-var-reserved-metadata` source and original SCI outcome
 remain unchanged in `sci-outcomes.tsv` and the first seven disposition columns.
-The compiler evaluator now rejects the fake file and matches the documented SCI
-Number projection at its original 1:1 location. The row becomes portable;
+The filename change rejects the fake file and initially matched the documented
+SCI Number projection at its original 1:1 location. Subsequent `ns-name` alignment in
+light-cljs-143 changes the namespace result to the pinned string; this historical
+row now remains a separately recorded nonpassing SCI result-type difference.
 `sci-var-reserved-metadata-effects` remains a gap owned by light-cljs-125.
 Matching historical SCI observations do not themselves establish CLJS parity.
 
@@ -42,11 +44,12 @@ and projected source hashes, reference fixture hashes, checked observations,
 and independent local witness hashes are retained in
 [compiler-source-metadata-provenance.json](compiler-source-metadata-provenance.json).
 
-The exact historical reference also exposes an existing `ns-name` result-type
-difference: pins return the namespace name string, while local reflection returns
-a symbol. That distinct contract has live owner **light-cljs-143** after duplicate
-checks. The filename projection does not hide this difference or claim whole
-historical-source CLJS parity.
+The exact historical reference exposed the `ns-name` result-type difference
+resolved by **light-cljs-143**. Both pins and local reflection now return the
+metadata symbol's string name field. Constructor/create/find Namespace names
+still preserve their supplied slots. [Reflection evidence](compiler-ns-name.md)
+retains the unchanged probes, complete upstream bodies and SCI distinctions;
+namespace spelling and source locations are never normalized to claim parity.
 
 ```sh
 cargo test --locked --test compiler_source_metadata --test eval_cli

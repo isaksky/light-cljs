@@ -66,8 +66,10 @@ consuming their root reports the phase error.
 session identities. Emitted units register their source namespaces, including
 namespaces without definitions. Creating an existing named namespace reuses its
 identity. `create-ns` accepts an optional host object for `.findInternedVar`;
-no browser global namespace traversal is assumed. `ns-name` also accepts source
-symbols retained in Var metadata. These compiler snapshots describe the supported
+no browser global namespace traversal is assumed. `ns-name` returns the supplied name slot for Namespace objects. On source
+symbols retained in Var metadata it returns the symbol's string name field, as
+both pinned ClojureScript references do. Metadata stays symbolic; explicit
+Namespace constructor/create/find identities keep their supplied symbol names. These compiler snapshots describe the supported
 source surface and do not emulate upstream analyzer AST or cache structures.
 
 Runtime `read` and `read-string` use the active dynamic `*ns*`. The default is

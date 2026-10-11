@@ -96,7 +96,7 @@ fn adapted_source(id: &str, source: &str) -> String {
     let source = match id {
         "sci-string-join-adapted" => "(string/join \"-\" [1 2 3])",
         "sci-string-namespace-alias-publics" => {
-            "[(s/join \"-\" [1 2]) (= 'clojure.string (ns-name (:ns (meta #'s/join)))) (= #'s/join (get (ns-publics 'clojure.string) 'join)) (contains? (ns-publics 'clojure.string) 'escape)]"
+            "[(s/join \"-\" [1 2]) (= \"clojure.string\" (ns-name (:ns (meta #'s/join)))) (= #'s/join (get (ns-publics 'clojure.string) 'join)) (contains? (ns-publics 'clojure.string) 'escape)]"
         }
         "sci-string-gensym-arity" => "(apply gensym [\"a\" \"b\"])",
         "sci-string-namespace-repeat-require" => {
@@ -105,7 +105,6 @@ fn adapted_source(id: &str, source: &str) -> String {
         _ => source,
     };
     source
-        .replace("(ns-name (:ns (meta #'s/join)))", "(:ns (meta #'s/join))")
         .replace("-1/2", "(/ -1 2)")
         .replace("3/2", "(/ 3 2)")
         .replace("1/2", "(/ 1 2)")

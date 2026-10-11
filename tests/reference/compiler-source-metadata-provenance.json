@@ -328,7 +328,6 @@
     "checkout/case3.cljs": "30cb19d05ed89427b475b7e35aaeb1b5d27f5694c404fe09f7099adeb4e22e93"
   },
   "owner": "light-cljs-140",
-  "separate_reflection_gap_owner": "light-cljs-143",
   "local_historical_location": [
     1,
     1
@@ -338,12 +337,12 @@
     25
   ],
   "local_witnesses": {
-    "tests/compiler_source_metadata.rs": "28d937deb416846425496570ba534f19eca14d50915069e1b2279e3a00121649",
+    "tests/compiler_source_metadata.rs": "14d918c9c08648a4eef9913fff88b374363ce613941c0ac2f6652199b7cb28f2",
     "tests/eval_cli.rs": "80437764a6a8de027054d1b830b17290b07e1c0b36385972b969b5ef7970b2c2",
     "tests/fixtures/source-metadata/metadata/main.cljs": "929cb434ad4c4fedfe18c056761e00bd7054b62c5f8c8b8f222fee6bc5662e15",
     "tests/fixtures/source-metadata/metadata/values.cljs": "a553ec41e41dc864e7c0a03c823697fb30d0b289d8c747c450104ea7e2450503"
   },
-  "adaptation": "Original SCI source and the exact same-definition projection retain their independent hashes and actual fixture sites. Local ns-name symbol and reference ns-name string are separately owned by light-cljs-143. Generated record factory source metadata is checked independently.",
+  "adaptation": "Original SCI source and the exact same-definition projection retain their independent hashes and actual fixture sites. light-cljs-143 aligns ns-name on the retained metadata symbol with both references: its result is the name string. Explicit Namespace constructor/create/find slots retain their original supplied result types. Generated record factory source metadata is checked independently.",
   "verification": {
     "ordinary_rust": {
       "targets": 70,
@@ -354,5 +353,45 @@
     "pinned_probes_per_reference": 4,
     "strict_clippy": "51 existing production warnings on unchanged lines; warning-mode all-target Clippy succeeds",
     "all_feature_all_target_check": "passed"
+  },
+  "resolved_reflection_owner": "light-cljs-143",
+  "reflection_evidence": "compiler-ns-name-receipt.json",
+  "post_ns_name_sci_observations": {
+    "sci-var-reserved-metadata": {
+      "original_seven_columns_sha256": "99efeff6a9267e4d040d88382ab9ee78c206ca51b30a1e89e4d0cc5a1ba83568",
+      "evaluator_source": "(def ^{:name :fake :ns :fake :file \"fake\" :line 0 :column 0 :doc \"old\"} x \"new\" 1) [(get (meta #'x) :name) (ns-name (get (meta #'x) :ns)) (= \"fake\" (get (meta #'x) :file)) (get (meta #'x) :line) (get (meta #'x) :column) (get (meta #'x) :doc)]",
+      "actual_observation": [
+        "(return (vector (symbol - u0078) (string u0075007300650072) (bool false) (float 3ff0000000000000) (float 3ff0000000000000) (string u006e00650077)))",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "status": "gap",
+      "owner": "light-cljs-125"
+    },
+    "sci-string-namespace-alias-publics": {
+      "original_seven_columns_sha256": "8ae481cc590df272aab891fb8eb031171e51628f51cfa6ec9bb30e36d9c7204c",
+      "evaluator_source": "(require '[clojure.string :as s]) [(s/join \"-\" [1 2]) (= 'clojure.string (ns-name (:ns (meta #'s/join)))) (= #'s/join (get (ns-publics 'clojure.string) 'join)) (contains? (ns-publics 'clojure.string) 'escape)]",
+      "actual_observation": [
+        "(return (vector (string u0031002d0032) (bool false) (bool true) (bool true)))",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "status": "gap",
+      "owner": "light-cljs-125"
+    },
+    "sci-record-constructor-metadata": {
+      "original_seven_columns_sha256": "7d613a3d00e4d84f82e0cfebe73c932dc0036a79925bafd84486bb04e72659d8",
+      "evaluator_source": "(defrecord R [x y]) [(:arglists (meta (var ->R))) (mapv count (:arglists (meta (var map->R)))) (ns-name (:ns (meta (var ->R))))]",
+      "actual_observation": [
+        "(return (vector (list (vector (symbol - u0078) (symbol - u0079))) (vector (float 4000000000000000)) (string u0075007300650072)))",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "status": "gap",
+      "owner": "light-cljs-125"
+    }
   }
 }
