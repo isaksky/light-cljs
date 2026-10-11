@@ -94,8 +94,9 @@ Preserving syntax is deliberately distinct from tools.reader's behavior: for
 example, metadata is a node rather than merged properties, and this parser
 validates conditional feature/pair structure even though reference `:preserve`
 mode can retain malformed branch lists. It validates literal spelling in all
-branches. Context-specific interpretation still needs its own compatibility
-tests when those later stages are added.
+branches. Context-specific interpretation has separate compatibility tests in
+`tests/compiler_reader.rs`; these execute the compiler-owned Rust reader,
+canonical macro computation, and emitted JavaScript independently of parsing.
 
 ## Evidence
 
@@ -107,6 +108,17 @@ fixture. A committed [literal snapshot](../tests/reference/parser_literals.tsv)
 contains 99 cases from the vendored JVM reader; the
 [generator](../tests/reference/parser_literals.clj) documents regeneration.
 Normal tests need no Java or research checkout.
+
+The committed [complete reader corpus](../tests/reference/reader-sources.tsv)
+pins seven upstream source files, 137 complete bodies and their UTF-8 byte spans,
+including reader/tag/syntax-quote/metadata tests and both vendored tools.reader
+implementations. `python3 -B tests/reference/generate_reader_coverage.py --verify`
+checks hashes, spans and generated execution fixtures using only Python. Its
+`--check` mode regenerates against the pinned Git objects; neither mode runs a
+JVM reader or establishes a semantic pass. `tests/parser_corpus.rs` independently
+checks parsing, token progress, incremental body locations and fused EOF.
+`tests/parser.rs` truncates every reader family at every UTF-8 boundary and
+verifies rollback and terminal behavior after malformed partial forms.
 
 The optional corpus test parses all 296 `.clj`, `.cljs`, and `.cljc` files in the
 reference checkout at `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`: 2,834,491 bytes,

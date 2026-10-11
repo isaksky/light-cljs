@@ -167,9 +167,10 @@ def main():
                 raise RuntimeError('primitive source/expected fixtures differ from baseline')
             shutil.copy2(ROOT/'benches/compiler.rs',base/'benches/compiler.rs')
             shutil.copy2(ROOT/'benches/support/allocations.rs',base/'benches/support/allocations.rs')
-            shutil.copytree(FIXTURES,base/'benchmarks/fixtures/compiler/collections')
-            with (base/'Cargo.toml').open('a') as file:
-                file.write('\n[[bench]]\nname = "compiler"\nharness = false\n')
+            shutil.copytree(FIXTURES,base/'benchmarks/fixtures/compiler/collections',dirs_exist_ok=True)
+            if 'name = "compiler"' not in (base/'Cargo.toml').read_text():
+                with (base/'Cargo.toml').open('a') as file:
+                    file.write('\n[[bench]]\nname = "compiler"\nharness = false\n')
             baseline_cli = build(out,base,'light-cljs',label='baseline')
             baseline_bench = build(out,base,'compiler',label='baseline')
             result['primitive-baseline'] = record_bench(out,baseline_bench,'primitive-baseline',args,['--primitive-only'])

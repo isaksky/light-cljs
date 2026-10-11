@@ -127,7 +127,10 @@ impl fmt::Display for EvalDiagnostic {
                 .source()
                 .line_column(span.bytes().start)
                 .unwrap_or((1, 1));
-            write!(f, "{}:{line}:{column}: ", span.source().name())?;
+            let prefix = format!("{}:{line}:{column}: ", span.source().name());
+            if !self.message.starts_with(&prefix) {
+                f.write_str(&prefix)?;
+            }
         }
         f.write_str(&self.message)
     }
@@ -140,6 +143,12 @@ impl From<EvalError> for EvalDiagnostic {
             data: None,
             location: None,
         }
+    }
+}
+impl From<crate::compiler_data::ReadError> for EvalDiagnostic {
+    fn from(error: crate::compiler_data::ReadError) -> Self {
+        // Preserve the public reader message while adding an owned location.
+        Self { message: error.to_string(), location: Some(error.span), data: None }
     }
 }
 #[derive(Clone, Debug)]
@@ -303,11 +312,7 @@ impl EvalSession {
                 .compiler
                 .borrow()
                 .next_form(source, &mut cursor)
-                .map_err(|message| EvalDiagnostic {
-                    data: None,
-                    message,
-                    location: None,
-                });
+                .map_err(EvalDiagnostic::from);
             let form = match next {
                 Ok(Some(form)) => form,
                 Ok(None) => break,
@@ -552,13 +557,9 @@ impl EvalSession {
                     }
                     return Ok(form);
                 }
-                Err(message) => {
+                Err(error) => {
                     self.engine.input_action("inputDiscard", 0)?;
-                    return Err(EvalDiagnostic {
-                        message,
-                        location: source.span(offset..parser.position()),
-                        data: None,
-                    });
+                    return Err(error.into());
                 }
             }
         }
@@ -579,11 +580,7 @@ impl EvalSession {
         self.compiler
             .borrow()
             .read_forms(source)
-            .map_err(|message| EvalDiagnostic {
-                data: None,
-                message,
-                location: None,
-            })
+            .map_err(EvalDiagnostic::from)
     }
     pub fn value(&self, data: &Datum) -> Result<ValueId, EvalDiagnostic> {
         let _operation = self.begin()?;
@@ -927,11 +924,7 @@ fn callback_source(
         let next = compiler
             .borrow()
             .next_form(source, &mut cursor)
-            .map_err(|message| EvalDiagnostic {
-                message,
-                location: None,
-                data: None,
-            })?;
+            .map_err(EvalDiagnostic::from)?;
         let Some(form) = next else { return Ok(last) };
         let located = |message: String| EvalDiagnostic {
             message,

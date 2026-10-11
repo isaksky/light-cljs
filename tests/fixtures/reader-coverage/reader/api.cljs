@@ -1,0 +1,20 @@
+;; First-party public reader contracts, shared by application and macro phases.
+(ns reader.api (:require [cljs.reader :as r] [clojure.edn :as edn]))
+(defn contracts []
+  (let [tagged (apply tagged-literal ['t [1]])
+        stream (r/string-push-back-reader "1 2")
+        edn-stream (r/string-push-back-reader "3 4")]
+    (and (apply tagged-literal? [tagged])
+         (= ::r/x :cljs.reader/x)
+         (= #::r{:x 1 :_/y 2} {:cljs.reader/x 1 :y 2})
+         (not (tagged-literal? [1]))
+         (= (:tag tagged) 't) (= (:form tagged) [1])
+         (= [(r/read stream) (r/read {} stream) (r/read stream false :done {})] [1 2 :done])
+         (= [(edn/read edn-stream) (edn/read {} edn-stream) (edn/read {:eof :done} edn-stream)] [3 4 :done])
+         (= [(read-string "5") (read-string {:eof :done} "")
+             (edn/read-string "6") (edn/read-string {:eof :done} "")] [5 :done 6 :done])
+         (= (with-in-str "7 8" [(read) (read {}) (read {:eof :done})]) [7 8 :done])
+         (= (#(vector % %&) 1 2 3) [1 '(2 3)])
+         (= ((fn [x & xs] [x xs]) 1 2 3) [1 '(2 3)]))))
+(defmacro macro-contract [] (contracts))
+(and (contracts) (macro-contract))

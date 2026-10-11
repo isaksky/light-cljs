@@ -218,6 +218,18 @@ class FullLedgerTests(unittest.TestCase):
                 path.write_text(json.dumps({**item, **change}) + "\n")
                 with self.assertRaises(ValueError):
                     full.load_phase_witnesses([target])
+            support = root / "tests/helper.cljs"
+            support.write_bytes(b"(defn helper [] true)")
+            supported = {**item, "support_source_sha256": {"tests/helper.cljs": inv.digest(support.read_bytes())}}
+            path.write_text(json.dumps(supported) + "\n")
+            self.assertIn("api", full.load_phase_witnesses([target]))
+            support.write_bytes(b"(defn helper [] false)")
+            with self.assertRaises(ValueError):
+                full.load_phase_witnesses([target])
+            for invalid in ({"../outside.cljs": "digest"}, {"tests/missing.cljs": "digest"}, []):
+                path.write_text(json.dumps({**item, "support_source_sha256": invalid}) + "\n")
+                with self.assertRaises(ValueError):
+                    full.load_phase_witnesses([target])
 
     def test_default_strict_cli_reports_gaps_historical_scope_retains_exact_counts(self):
         for scope in ("intended-language", "historical-selected"):

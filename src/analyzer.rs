@@ -2490,7 +2490,7 @@ impl std::error::Error for AnalysisError {}
 enum ReaderDatum {
     Nil,
     Bool(bool),
-    Number(bool, String),
+    Number(u8, String),
     ReaderLiteral(u8, String),
     String(Vec<u16>),
     Named(bool, Option<Vec<u16>>, Vec<u16>),
@@ -4574,7 +4574,7 @@ impl Analyzer<'_> {
             let payload = form.data().compiler_literal_data().unwrap();
             return Ok(match (kind, payload.inspect()) {
                 (CompilerLiteralKind::BigInteger, DatumView::String(text)) => {
-                    Some(ReaderDatum::Number(false, String::from_utf16_lossy(&text)))
+                    Some(ReaderDatum::Number(0, String::from_utf16_lossy(&text)))
                 }
                 (CompilerLiteralKind::Uuid, DatumView::String(text)) => Some(
                     ReaderDatum::ReaderLiteral(0, String::from_utf16_lossy(&text)),
@@ -4588,7 +4588,11 @@ impl Analyzer<'_> {
         let data = match node.kind {
             NodeKind::Nil => ReaderDatum::Nil,
             NodeKind::Boolean(value) => ReaderDatum::Bool(value),
-            NodeKind::Number(kind @ (NumberKind::Integer | NumberKind::Float)) => {
+            NodeKind::Number(kind) => {
+                if self.generated.get(id.0).and_then(Option::as_ref).is_none()
+                    && let Some((category, spelling)) = crate::reader_literals::number_key(self.spelling(id), kind) {
+                    return Ok(Some(ReaderDatum::Number(category, spelling)));
+                }
                 let Some(value) = self
                     .numbers
                     .get(id.0)
@@ -4599,7 +4603,7 @@ impl Analyzer<'_> {
                     return Ok(None);
                 };
                 ReaderDatum::Number(
-                    kind == NumberKind::Float,
+                    u8::from(kind == NumberKind::Float),
                     if kind == NumberKind::Integer {
                         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref) {
                             match form.data().inspect() {

@@ -1398,8 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "3e82635d9c60afd613fcace81a50a534e98d606157788b9962e6526c717b9f0e",
-  "obligations_sha256": "b28c0cc701ddea4baa15b2fb02279bff53b0816dc2e555c50f8721c5b484ae19",
+  "generator_sha256": "12faaa42319ee741b59027b1a313efdf42d31f5ed88b90797cc94493934d42f5",
+  "obligations_sha256": "5be2ceb20592a575b4003af1b3171c4bf0d3f494037393163932b3c35cf843a2",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1440,7 +1440,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "82cd094c2608fb59c6b884a1b5b75522e13c0ff441038a4d60f1fa54eec6dd96"
+      "sha256": "98231e13771ebeb27d0bf5b6ed7933b80af6c44e53815416e59912944011ea0f"
     },
     {
       "path": "src/core_var_metadata.tsv",
@@ -1452,7 +1452,7 @@
     },
     {
       "path": "tests/reference/sci/evaluator-dispositions.tsv",
-      "sha256": "da51f73fc85c8bf5e25e0d461667dfd8bb072487c4ff8aa652cae76744931038"
+      "sha256": "39a35a90cccfa29b17e2989358843520f98090671e7dedbd376fdd6f764a0a3e"
     },
     {
       "path": "tests/reference/sci/historical/supported-apis.tsv",

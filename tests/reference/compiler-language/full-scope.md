@@ -209,3 +209,22 @@ this ledger change. No new source-independent API or macro-phase semantic pass i
 claimed; the checked expanded adapters begin empty. Family records retain links
 to each assigned source/name/arity lead, with residual execution completion owned
 by light-cljs-125.
+
+## Reader phase bindings — 2026-10-11
+
+The reader family now binds its seven source-independent obligations (the two
+public tagged-literal declarations, four retained core/EDN read APIs and `&`
+syntax) to named local application/macro tests in `tests/compiler_reader.rs`.
+They exercise the original constructor/predicate arities, saved/applied calls,
+zero/options/stream/EOF and string/options reads, and rest parameters. Each
+complete test source is hashed; fixture-dependent tests also pin and validate
+`support_source_sha256`, including their complete called helper source.
+
+These mappings begin unexecuted in a static report. Only an exact single Cargo
+test observation can establish local canonical execution/macro evidence; the
+Node/QuickJS application checks are inside those tests. Pinned release/checkout
+and complete upstream assertion-body evidence remain separate, and the overall
+strict ledger is still incomplete. The per-family reader audit and full-source
+regeneration contract are in `../compiler-reader.md`. The independently reproduced
+runtime string-reader namespace/alias gap has focused live owner light-cljs-134;
+source parser/NamespaceView success is not a runtime reader pass.

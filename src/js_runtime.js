@@ -4868,7 +4868,11 @@
   function readWith(profile, args) {
     let stream, option;
     if (args.length === 0) stream = c.readerCurrentInputValue;
-    else if (args.length === 1) stream = args[0];
+    else if (args.length === 1) {
+      if (profile !== 'reader' && inspect(args[0])?.kind === 'map') {
+        option = args[0]; stream = c.readerCurrentInputValue;
+      } else stream = args[0];
+    }
     else if (args.length === 2) [option, stream] = args;
     else if (profile === 'reader' && args.length === 4) {
       stream = args[0]; option = args[3];

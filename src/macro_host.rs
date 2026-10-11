@@ -849,7 +849,13 @@ impl MacroHost {
             .cloned()
             .unwrap_or_default();
         let c = crate::compiler_data::DataBuilder;
-        let key = |s| c.keyword(Name::new(None, s));
+        let key = |s: &str| {
+            let name = s.split_once('/').map_or_else(
+                || Name::new(None, s),
+                |(namespace, name)| Name::new(Some(namespace), name),
+            );
+            c.keyword(name)
+        };
         let sym = |s: &str| c.symbol(Name::new(None, s));
         let build = || -> Result<crate::compiler_data::Datum, String> {
             let mut local_map = c.map(&[])?;

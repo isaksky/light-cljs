@@ -672,14 +672,14 @@ fn generated_maps_preserve_owned_children_order_keys_and_quoted_data() {
 }
 
 #[test]
-fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() {
+fn generated_map_keys_keep_reader_name_parts_through_runtime_equality() {
     let mut h = host(r#"(ns macros)
       (defmacro map-names [] {(keyword nil "a/b") 1 (keyword "a" "b") 2})
       (defmacro key-parts [] [(keyword nil "a/b") (keyword "a" "b")])"#, &["map-names", "key-parts"]);
     let source = "(let [[a b] (key-parts)] (js/console.log (count (map-names)) (namespace a) (name a) (namespace b) (name b)))";
     assert_eq!(
         execute(&compile_with_macros(source, &mut h).unwrap()),
-        "1 null a/b a b\n"
+        "2 null a/b a b\n"
     );
 }
 

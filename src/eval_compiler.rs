@@ -110,7 +110,7 @@ impl InteractiveCompiler {
     pub(crate) fn globals(&self) -> &[crate::GlobalBinding] {
         self.program.as_ref().map_or(&[], |p| p.globals.as_slice())
     }
-    pub(crate) fn read_forms(&self, input: &SourceInput) -> Result<Vec<Form>, String> {
+    pub(crate) fn read_forms(&self, input: &SourceInput) -> Result<Vec<Form>, crate::compiler_data::ReadError> {
         let mut cursor = 0;
         let mut forms = Vec::new();
         while let Some(form) = self.next_form(input, &mut cursor)? {
@@ -122,7 +122,7 @@ impl InteractiveCompiler {
         &self,
         input: &SourceInput,
         cursor: &mut usize,
-    ) -> Result<Option<Form>, String> {
+    ) -> Result<Option<Form>, crate::compiler_data::ReadError> {
         let source = Source::new(&input.file, &input.source);
         self.next_form_in_source(input, cursor, source)
     }
@@ -131,23 +131,25 @@ impl InteractiveCompiler {
         input: &SourceInput,
         cursor: &mut usize,
         source: Source,
-    ) -> Result<Option<Form>, String> {
+    ) -> Result<Option<Form>, crate::compiler_data::ReadError> {
         loop {
             let mut parser = crate::Parser::at_offset(&input.source, *cursor).retaining_discards();
             let root = parser.read_form().map_err(|e| {
-                let (line, column) = source.line_column(e.span.start).unwrap_or((1, 1));
                 let mut message = format!(
-                    "{}:{line}:{column}: {} (bytes {}..{})",
-                    source.name(),
+                    "{} (bytes {}..{})",
                     e,
                     e.span.start,
                     e.span.end
                 );
-                if let Some(open) = e.related {
+                if let Some(open) = &e.related {
                     let (line, column) = source.line_column(open.start).unwrap();
                     message.push_str(&format!("; opened at {}:{line}:{column}", source.name()));
                 }
-                message
+                crate::compiler_data::ReadError {
+                    message,
+                    span: source.span(e.span).unwrap(),
+                    related: e.related.and_then(|span| source.span(span)),
+                }
             })?;
             *cursor = parser.position();
             let Some(root) = root else { return Ok(None) };
@@ -158,7 +160,11 @@ impl InteractiveCompiler {
             };
             if input.file.ends_with(".cljc") {
                 crate::compiler_reader::select_cljs(&input.source, &mut syntax, &mut discards)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| crate::compiler_data::ReadError {
+                        message: e.to_string(),
+                        span: source.span(e.span).unwrap(),
+                        related: None,
+                    })?;
             }
             let Some(root) = syntax.roots.first().copied() else {
                 continue;
@@ -203,8 +209,7 @@ impl InteractiveCompiler {
             return self
                 .host
                 .lower_form_in_view(&source, &syntax, root, &view, &discards)
-                .map(Some)
-                .map_err(|e| e.to_string());
+                .map(Some);
         }
     }
     pub(crate) fn analyze_form(&mut self, form: &Form) -> Result<Program, AnalysisError> {

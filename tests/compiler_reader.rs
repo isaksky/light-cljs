@@ -24,10 +24,213 @@ fn run(js: &str) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 fn check(source: &str, expected: &str) {
+    let js = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    let quickjs = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    let value = quickjs.evaluate_js(&format!("String({js})")).unwrap();
     assert_eq!(
-        run(&compile(source).unwrap_or_else(|e| panic!("{source}: {e}"))),
-        format!("{expected}\n")
+        quickjs.string(value).unwrap(),
+        expected,
+        "QuickJS: {source}"
     );
+    assert_eq!(run(&js), format!("{expected}\n"));
+}
+
+#[test]
+fn complete_pinned_syntax_quote_and_tagged_bodies_execute_in_both_engines() {
+    use light_cljs::compiler_data::Name;
+    let root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
+    for (namespace, assertions) in [
+        ("cljs.syntax-quote-test", "4"),
+        ("cljs.tagged-literals-test", "5"),
+    ] {
+        let mut host = MacroHost::new();
+        host.register_compiler_data_reader(Name::new(Some("cljs"), "tag"), "identity")
+            .unwrap();
+        let js = light_cljs::compile_namespace_with_macros(
+            namespace,
+            std::slice::from_ref(&root),
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(run(&js), format!("{assertions}\n"));
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.number(e.evaluate_js(&js).unwrap()).unwrap().to_string(),
+            assertions
+        );
+    }
+}
+
+#[test]
+fn reader_api_arities_and_rest_execute_in_application_and_macro_phases() {
+    let root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
+    let js = light_cljs::compile_namespace("reader.api", &[root]).unwrap();
+    assert_eq!(run(&js), "true\n");
+    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    assert_eq!(
+        e.string(e.evaluate_js(&format!("String({js})")).unwrap())
+            .unwrap(),
+        "true"
+    );
+}
+
+#[test]
+fn spelling_metadata_gensyms_and_public_tagged_data_execute_in_both_phases() {
+    check(
+        r#"(let [s "\ud800\udc00\udfff" a `[x# x#] b `[x# x#]]
+        (and (= [(.-length s) (.charCodeAt s 0) (.charCodeAt s 1) (.charCodeAt s 2)] [3 55296 56320 57343])
+             (= (first a) (second a)) (not= (first a) (first b))
+             (= (meta ^:outer ^{:inner 2} [1]) {:outer true :inner 2})
+             (= (meta '^"Type" café) {:tag "Type"})
+             (= (meta '^:quoted café) {:quoted true})
+             (= (#(vector % #_ %3 %&) 1 2 3 4) [1 '(4)])
+             (= '#::{:a 1 :_/b 2} {:cljs.user/a 1 :b 2})
+             (tagged-literal? (tagged-literal 't [1]))
+             (= (:tag (tagged-literal 't [1])) 't)
+             (= (:form (tagged-literal 't [1])) [1])
+             (not (tagged-literal? [1]))))"#,
+        "true",
+    );
+    let mut host = MacroHost::new();
+    let js = compile_with_macros(
+        r#"(defmacro reader-check []
+        (let [a `[x# x#] b `[x# x#] tagged (tagged-literal 't [1])]
+          (and (= (first a) (second a)) (not= (first a) (first b))
+               (tagged-literal? tagged) (= (:tag tagged) 't) (= (:form tagged) [1])
+               (= (meta ^:phase [1]) {:phase true}))))
+        (reader-check)"#,
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(run(&js), "true\n");
+    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+    assert_eq!(
+        e.string(e.evaluate_js(&format!("String({js})")).unwrap())
+            .unwrap(),
+        "true"
+    );
+}
+
+#[test]
+fn parser_acceptance_does_not_hide_contextual_reader_errors_or_numeric_duplicates() {
+    use light_cljs::compiler_data::Source;
+    for (text, diagnostic, offending, related) in [
+        ("::absent/x", "MissingAlias", "::absent/x", None),
+        ("#::absent{:x 1}", "MissingAlias", "absent", None),
+        ("#unknown/tag 1", "UnknownTag", "#unknown/tag 1", None),
+        ("^:x 1", "InvalidMetadataTarget", "1", Some("^:x 1")),
+        ("#(%3/2)", "InvalidAnonymousArgument", "%3/2", None),
+        ("{1 :a 1N :b}", "DuplicateMapKey", "1N", Some("1")),
+        ("{1 :a 2/2 :b}", "DuplicateMapKey", "2/2", Some("1")),
+        ("{1.0 :a 1e0 :b}", "DuplicateMapKey", "1e0", Some("1.0")),
+        ("{1M :a 1.00M :b}", "DuplicateMapKey", "1.00M", Some("1M")),
+    ] {
+        assert!(light_cljs::parse(text).is_ok(), "syntax only: {text}");
+        let source = Source::new("reader.cljs", text);
+        let error = MacroHost::new().read_compiler_form(&source).unwrap_err();
+        assert!(error.message.contains(diagnostic), "{text}: {error}");
+        assert_eq!(error.span.text(), offending, "{text}");
+        assert_eq!(error.related.as_ref().map(|s| s.text()), related, "{text}");
+    }
+    // Wide distinct integers remain distinct in reader data, even when their
+    // Number representations collide in the application runtime.
+    for text in [
+        "{9007199254740992 :a 9007199254740993 :b}",
+        "#{9007199254740992 9007199254740993}",
+        "{1 :a 1.0 :b}",
+        "{0 :a -0.0 :b}",
+        "{1 :a 1M :b}",
+        "{[1] :a [1.0] :b}",
+    ] {
+        let source = Source::new("reader.cljs", text);
+        assert!(MacroHost::new().read_compiler_form(&source).is_ok());
+    }
+    for (text, duplicate) in [
+        ("#{1 1N}", "1N"),
+        ("#{1 2/2}", "2/2"),
+        ("#{1M 1.00M}", "1.00M"),
+    ] {
+        assert!(light_cljs::parse(text).is_ok());
+        let light_cljs::CompileError::Analysis(error) = compile(text).unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(
+            &text[error.span], duplicate,
+            "duplicate readable data: {text}"
+        );
+    }
+    for text in ["#{1 1.0}", "#{0 -0.0}", "#{1 1M}"] {
+        assert!(compile(text).is_ok(), "distinct reader categories: {text}");
+    }
+}
+
+#[test]
+fn cljc_selection_metadata_and_inactive_forms_have_distinct_phase_evidence() {
+    use light_cljs::compiler_data::Name;
+    use light_cljs::{EvalOptions, EvalSession, source_provider::SourceInput};
+    let mut session = EvalSession::new(EvalOptions {
+        data_readers: vec![(
+            Name::new(None, "counter"),
+            "(let [n (atom 0)] (fn [x] [x (swap! n inc)]))".into(),
+        )],
+        ..Default::default()
+    })
+    .unwrap();
+    let input = SourceInput::new(
+        "selected.cljc",
+        r#"(let [f #(vector % #?(:clj %3 :cljs %2))]
+        [(f 1 2) #?(:default 3 :cljs 4) #?(:other 0 :cljs 7)
+         ^:flag [#?@(:cljs [1 2])]
+         #?(:clj #unknown/tag 1 :cljs 8)
+         #?(:clj {1 :a 1N :b} :cljs 9)
+         #?(:clj #counter 10 :cljs #counter 11)])"#,
+    );
+    assert!(light_cljs::parse(&input.source).is_ok());
+    let value = session.eval_source(&input).unwrap().value;
+    assert_eq!(
+        session.print(value).unwrap(),
+        "[[1 2] 3 7 [1 2] 8 9 [11 1]]"
+    );
+    session.release(value).unwrap();
+    for (text, offending) in [
+        ("#?(:clj 1 :cljs 2)", "#?(:clj 1 :cljs 2)"),
+        ("[1 #?@(:cljs 2)]", "#?@(:cljs 2)"),
+        ("{:a #?(:clj 1)}", "{:a #?(:clj 1)}"),
+    ] {
+        let filename = if text.starts_with("#?") {
+            "rejected.cljs"
+        } else {
+            "rejected.cljc"
+        };
+        assert!(light_cljs::parse(text).is_ok());
+        let error = session
+            .eval_source(&SourceInput::new(filename, text))
+            .unwrap_err();
+        assert_eq!(error.location.unwrap().text(), offending);
+    }
+    for text in [
+        r#"#?(:cljs 1 :clj "\q")"#,
+        "#?(:cljs 1 :clj {:a})",
+        "#?(:cljs 1 :clj #=(+ 1 2))",
+    ] {
+        let error = light_cljs::parse(text).unwrap_err();
+        assert!(text.get(error.span).is_some());
+        assert!(
+            session
+                .eval_source(&SourceInput::new("malformed.cljc", text))
+                .is_err()
+        );
+    }
+    let value = session.eval_string("42").unwrap().value;
+    assert_eq!(session.print(value).unwrap(), "42");
+    session.release(value).unwrap();
+    let input = SourceInput::new("owned-diagnostic.cljc", "\n[λ #?@(:cljs 2)]");
+    let error = session.read_forms(&input).unwrap_err();
+    drop(session);
+    assert_eq!(error.location.as_ref().unwrap().text(), "#?@(:cljs 2)");
+    assert!(error.to_string().starts_with("owned-diagnostic.cljc:2:5:"));
 }
 #[test]
 fn reader_values() {

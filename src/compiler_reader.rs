@@ -212,6 +212,29 @@ struct Lowerer<'a> {
     spans: Vec<SourceSpan>,
 }
 impl Lowerer<'_> {
+    fn reader_equal(&self, a: FormId, b: FormId) -> bool {
+        // Source spelling carries reader numeric categories; Datum equality is
+        // the canonical JS data model and may already equate distinct categories.
+        let number = |id: FormId| self.syntax.nodes().iter().find_map(|node| {
+            if node.span == self.spans[id.0].bytes()
+                && let NodeKind::Number(kind) = node.kind {
+                crate::reader_literals::number_key(self.spans[id.0].text(), kind)
+            } else { None }
+        });
+        if let (Some(a), Some(b)) = (number(a), number(b)) { return a == b; }
+        match (&self.nodes[a.0].kind, &self.nodes[b.0].kind) {
+            (FormKind::Collection { kind: ak, children: ac }, FormKind::Collection { kind: bk, children: bc }) => {
+                if ac.len() != bc.len() { return false; }
+                match (ak, bk) {
+                    (CollectionKind::List | CollectionKind::Vector, CollectionKind::List | CollectionKind::Vector) => ac.iter().zip(bc.iter()).all(|(&a, &b)| self.reader_equal(a, b)),
+                    (CollectionKind::Map, CollectionKind::Map) => ac.as_chunks::<2>().0.iter().all(|[a, v]| bc.as_chunks::<2>().0.iter().any(|[b, w]| self.reader_equal(*a, *b) && self.reader_equal(*v, *w))),
+                    (CollectionKind::Set, CollectionKind::Set) => ac.iter().all(|&a| bc.iter().any(|&b| self.reader_equal(a, b))),
+                    _ => false,
+                }
+            }
+            _ => self.values[a.0].value_eq(&self.values[b.0]),
+        }
+    }
     fn reader_namespace(&self, alias: Option<&Name>) -> Option<Name> {
         match alias {
             None => Some(self.view.namespace.clone()),
@@ -340,7 +363,7 @@ impl Lowerer<'_> {
             let step = 2;
             for i in (0..values.len()).step_by(step) {
                 let bucket = seen.entry(values[i].value_hash()).or_default();
-                if let Some(&first) = bucket.iter().find(|&&j| values[i].value_eq(&values[j])) {
+                if let Some(&first) = bucket.iter().find(|&&j| self.reader_equal(children[i], children[j])) {
                     let mut e = self.error(
                         LowerErrorKind::DuplicateMapKey,
                         self.spans[children[i].0].bytes(),

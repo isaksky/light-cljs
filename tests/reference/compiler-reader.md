@@ -198,3 +198,77 @@ Verification commands and observed outcomes:
 No full language/native suite, new JVM differential regeneration or evaluator
 migration gate was run for this extraction. Their earlier provenance and remaining
 migration obligations are not relabeled as completion here.
+
+## Reader coverage completion — 2026-10-11
+
+The committed `reader-sources.tsv` retains **seven complete source files, 137
+complete top-level bodies, and 72,143 UTF-8 bytes**, from the same pinned checkout
+above: `reader_test.cljs`, `syntax_quote_test.cljs`, `tagged_literals_test.cljs`,
+`metadata_test.cljc`, the complete `data_readers.cljc` setup table, and the vendored tools.reader and EDN implementation files.
+Every source hash and body byte range regenerates from pinned Git objects. The
+ordinary corpus test validates those spans against both whole-file and incremental
+Rust parsing, plus tokenizer progress and fused EOF. The complete original
+copyright/license notices remain inside the retained source bytes and generated
+fixtures. Python verification checks that the older reader execution fixture
+still contains every original setup/test body. It does not run an oracle.
+
+The whole-checkout parser run separately accepted **296 files, 2,834,491 bytes,
+343,327 syntax nodes, and 6,594 roots**. These are exclusively parser counts.
+Neither corpus is an execution claim for tools.reader, the upstream compiler,
+JVM support code, or the entire checkout.
+
+| Family | Parser / Rust reader evidence | Macro / actual application evidence and disposition |
+| --- | --- | --- |
+| Spelling, UTF-16, characters, numeric forms | Existing 99-case captured literal oracle plus seven-file source pins; every-family truncations retain valid UTF-8 ranges, progress, rollback and terminal EOF | Literal checks now execute in both Node and QuickJS, including lone-surrogate code units. Non-integral ratios/JVM exact-number operations remain explicit dialect boundaries; spelling acceptance alone is not numeric execution. |
+| Quote, syntax quote, unquote/splicing, gensyms | Contextual construction keeps owned child source spans; invalid splice diagnostics remain distinct from syntax acceptance | All four complete upstream syntax-quote assertions execute, retaining the namespace and alias expressions. Local macro/application checks prove per-quote sharing and cross-quote freshness; existing unquote/splice checks execute in both engines. |
+| Anonymous functions and rest | Syntax accepts ratio indices; semantic reading rejects non-integral indices at their own span. Family truncations retain incremental behavior | Application checks include discarded argument discovery and `%&`; a demanded macro helper and application body exercise shorthand and explicit `&` rest bindings and public reader calls. |
+| Metadata | Exact target/related spans reject invalid metadata targets after successful parsing. Stacked metadata, symbols, strings and selected conditional collections are retained | Local metadata checks execute in both phases/engines. The whole upstream metadata file is source inventory, not a new whole-body runtime pass. Its wider public-protocol evidence stays in the independent intended-language ledger. |
+| Tags, #js, Date, UUID, queue, regex | Unknown tags reject after parsing; exact tag payload spans and finite conversion remain compiler-owned | Both complete upstream tagged-literal bodies execute (five assertions), using explicit source identity and runtime identity/inc/`clojure.set/union` handlers. Existing entire reader fixture executes **7,487 dynamic assertions** per engine, including the full Date month/day/hour loop; this differs from source assertion-site counts. Configured readers preserve source order, discarded/untaken-form effects and fresh compilation roots. |
+| Aliases and namespaced maps | Missing aliases locate the original keyword or namespace spelling, rather than becoming parser success | All upstream syntax-quote aliases plus local `::r/x` and `#::r` underscore-escape cases execute in Node/QuickJS applications and canonical macro computation. Namespace parts survive the macro data bridge; synthetic `:light-cljs/id` environment keys now retain their namespace part. |
+| Discards and reader conditionals | `.cljc` selects the first matching `:cljs`/`:default`, supports collection splices and diagnoses selected map arity; `.cljs` rejects contextual conditionals. Malformed inactive literal/collection/read-eval syntax still fails parsing | Selected anonymous parameters, inactive tags/duplicates, exact reader effect counts and session recovery have direct observations. Owned structured diagnostics preserve failing spans after session teardown and retain the existing public located message without a doubled location prefix. Existing namespace/reader suites separately execute emitted conditional programs. |
+| Duplicate numeric data | Reader identity equates integer/`N`/integral-ratio spellings and equivalent decimal spellings, while retaining integer/float/decimal distinctions, including nested keys; emitted Number equality remains separate | Source sets now detect `1`/`1N`, integral-ratio and decimal duplicates. Distinct integer/float reader values remain accepted, while the documented runtime Number/map policy can collapse equal emitted keys. Generated macro Numbers retain their actual data rather than being reclassified by the invocation's source spelling. |
+| Public reader APIs and phase boundary | The expanded ledger binds the two `tagged-literal` declarations, four retained core/EDN read APIs and `&` syntax to exact local tests | Fixed constructor/predicate arities, saved/applied calls, tag/form lookup, zero/options/explicit-stream/EOF reads and string/options reads execute in a called application function and a demanded macro helper. Options-only `read` now uses the current input in the shared runtime, including macro execution. No registration/name scan supplies a pass. |
+| Runtime code-reader namespace state | Source compiler reading uses its immutable NamespaceView; runtime string reading is a separate layer | The direct dynamic `*ns*` probe still returns `[:user/x :user/x]`. This demonstrated residual has live focused owner **light-cljs-134**, created after duplicate checks under the broader light-cljs-125 reconciliation. It is not a passing contextual runtime-reader observation. |
+| Read-eval and JVM boundaries | `#=` is rejected even in discarded/inactive branches; JVM classes/host reader evaluation and exact numeric operations are excluded by the adopted dialect | No execution or parser pass is claimed for those excluded semantics. |
+
+The full-suite accounting run also exposed a message-compatibility regression while adding owned reader locations; the public located message is preserved, and formatting adds its location once. The SCI collection-key row now executes successfully after source numeric-category repair, but retains its original SCI observation separately: emitted JavaScript Numbers intentionally collapse integer/float map identities. It is explicitly retired from SCI exact-key equivalence, not relabeled portable.
+
+The macro suite also exposed two already failing baseline tests, reproduced in
+an independent archive of starting commit `12f8bd0`. The old generated-map count
+expected two distinct namespace/name keys to collapse, contrary to the current
+canonical named-value contract; it now expects both entries. The actual macro
+local-binding metadata bug constructed `:light-cljs/id` as an unqualified name;
+its construction is corrected and the original shadow-ID assertions now pass.
+
+`phase-witnesses.jsonl` and `obligation-witnesses.jsonl` contain seven precise
+local API/syntax mappings. Supporting fixture hashes are validated alongside the
+complete Rust test source, so changing the called helper cannot retain stale
+phase evidence. Source-language assertion mappings and optional reference
+columns remain independent; these local tests do not silently fill every
+unmapped row of the full intended-language report.
+
+### Verification
+
+- `cargo test --locked --no-fail-fast --quiet`: 66 harnesses completed, 574 tests passed, 62 optional tests ignored, and the historical evaluator accounting target initially failed. After preserving the public reader diagnostic message and refreshing the single numeric-key disposition, `cargo test --locked --test evaluator_conformance --test compiler_reader --test eval_sessions --test eval_cli --quiet` passed all 50 tests (two explicit audits ignored). Its historical accounting target executes all 2,475 rows: 1,208 portable, 304 adapted, 877 nonpassing gaps and 86 retirements. Gaps/retirements are not conformance passes; no SCI oracle was regenerated. The entire suite was not rerun a second time.
+- `cargo test --locked --test compiler_reader --test parser_corpus --test parser --test compiler_language --test provenance --test eval_sessions --test eval_cli --quiet`: 66 tests passed, one optional checkout test ignored. These final focused checks include the exact seven-file pins and precise numeric duplicate spans.
+- `cargo test --locked --test compiler_macros --quiet`: all 102 macro tests passed. The EDN and library suites also passed (14 and eight tests), including complete reader bodies in Node and QuickJS.
+- `node --test tests/support/js_runtime.test.js`: passed. `cargo check --locked --all-targets --all-features --quiet` and `git diff --check`: passed.
+- `python3 -B tests/reference/generate_reader_coverage.py --verify` and `--check`: both passed, preserving seven files, 137 bodies and 72,143 source bytes. `python3 -B tests/reference/compiler-language/extract_inventory.py --check`: passed; historical counts remain unchanged. `python3 -B -m unittest discover -s tests/reference/compiler-language -p test_full_ledger.py`: 14 tests passed, including supporting-source hash invalidation.
+- `cargo test --locked --test parser_corpus parse_clojurescript_checkout -- --ignored --nocapture`: passed with the syntax-only checkout counts above.
+- `python3 -B benchmarks/run_compiler.py --output /tmp/light-cljs-9-benchmark-final --samples 9 --iterations 3 --baseline-ref 12f8bd0`: validated the full report and baseline primitive comparisons. All three primitive output hashes and raw/gzip byte counts are identical; runtime source grows 153 bytes. The baseline archive setup now tolerates existing fixture/bench entries. Preliminary setup failures and a source-change snapshot refusal were resolved before the final successful report. Concurrent suite activity makes these observations unsuitable for a timing-improvement claim.
+- `cargo clippy --locked --lib -- -D warnings`: the same 49 baseline diagnostics remain. An independent starting-commit archive and the current tree have identical diagnostic code/message lists; this change adds no new Clippy diagnostics.
+
+Routine fixtures require Rust, Python and Node, with QuickJS supplied by the crate;
+Java and a research checkout are unnecessary. The source regeneration check uses
+Git/research, independently of oracle execution.
+
+A narrowly executed vendored JVM reader probe verified seven numeric
+classifications: `#{1 1N}`, `{1 :a 1N :b}` and `{1 :a 2/2 :b}` reject; the
+integer/float map/set variants, including zero/negative zero, remain distinct.
+This was `clojure -Srepro -Sdeps '{:paths
+["research/clojurescript/src/main/clojure"]}' -M -e` with
+`cljs.vendor.clojure.tools.reader/read-string` over those seven literal strings.
+It was not a full compiler/reference comparison. No new Maven/checkout
+whole-reader semantic comparison, whole-language strict pass, SCI oracle
+regeneration, cross-platform run or hosted CI result is claimed. Earlier
+reference results above remain historical evidence.

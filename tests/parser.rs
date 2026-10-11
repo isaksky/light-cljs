@@ -469,3 +469,55 @@ fn malformed_combinations_and_truncations_keep_valid_spans() {
         }
     }
 }
+
+#[test]
+fn every_reader_family_truncation_preserves_incremental_progress_and_fused_failure() {
+    let forms = [
+        r#"["λ😀\uD800\uDC00" \u03bb \o141 36r10N]"#,
+        "^:flag 'café",
+        "`[x# ~λ ~@xs]",
+        "#(vector % %3 %&)",
+        "#js {:λ [1 2]}",
+        "#unknown/tag [λ]",
+        "#::alias{:λ 1}",
+        "[#_ #unknown/tag 1 2]",
+        "[#?@(:cljs [λ] :default [2])]",
+        "#?(:cljs 1 :clj [2])",
+        "{1 2 1N 3}",
+        "#{1 1.0}",
+    ];
+    for form in forms {
+        for end in form
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(form.len()))
+        {
+            let source = format!("kept {}", &form[..end]);
+            let mut parser = Parser::new(&source);
+            let kept = parser.read_form().unwrap().unwrap();
+            assert_eq!(parser.nodes()[kept.0].span, 0..4);
+            match parser.read_form() {
+                Ok(Some(id)) => {
+                    assert!(parser.nodes()[id.0].span.start >= 5);
+                    assert!(source.get(parser.nodes()[id.0].span.clone()).is_some());
+                    assert_eq!(parser.read_form(), Ok(None));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    assert!(source.get(error.span).is_some(), "{source}");
+                    if let Some(span) = error.related {
+                        assert!(source.get(span).is_some());
+                    }
+                    assert_eq!(
+                        parser.nodes().len(),
+                        1,
+                        "failed form must roll back: {source}"
+                    );
+                }
+            }
+            for _ in 0..3 {
+                assert_eq!(parser.read_form(), Ok(None));
+            }
+        }
+    }
+}

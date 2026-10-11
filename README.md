@@ -101,6 +101,13 @@ identities, including nested and escaped functions; the [letfn audit](tests/refe
 records two explicit upstream slot-reuse differences. Empty bodies return `nil`. Only `nil` and `false` are
 false in conditionals, including when tests produce `0` or `""`.
 
+The [reader coverage audit](tests/reference/compiler-reader.md#reader-coverage-completion--2026-10-11)
+keeps syntax acceptance, contextual Rust expansion, macro computation and
+QuickJS/Node execution separate. Source duplicate checks distinguish integer,
+floating and decimal reader categories before Number emission. `.cljc` selects
+`:cljs`/`:default`; `.cljs` rejects conditionals. Inactive branches still undergo
+syntax validation, while their tags and unresolved symbols are not expanded.
+
 JavaScript interop includes explicit/shorthand dot calls, `new` and constructor
 shorthand, property `set!`, positional/named `js*` templates, `this-as` and
 `js-arguments`. Host arrays/objects, computed access, array traversal macros,

@@ -1,5 +1,46 @@
 //! Compiler-only validation; native reader values never take a print/reparse path.
 
+/// Reader identity precedes Number emission: integer suffixes and integral
+/// ratios share a category, while floating and decimal spellings retain theirs.
+pub(crate) fn number_key(text: &str, kind: crate::NumberKind) -> Option<(u8, String)> {
+    use crate::NumberKind as N;
+    match kind {
+        N::Integer => Some((0, integer_key(text))),
+        N::BigInteger => Some((0, integer_key(text.strip_suffix('N')?))),
+        N::Ratio => {
+            let (n, d) = text.split_once('/')?;
+            integral_ratio_text(n, d).map(|n| (0, n))
+        }
+        N::Float => {
+            let value = crate::analyzer::number(text, kind)?;
+            Some((
+                1,
+                format!("{:x}", if value == 0.0 { 0 } else { value.to_bits() }),
+            ))
+        }
+        N::Decimal => {
+            let text = text.strip_suffix('M')?;
+            let negative = text.starts_with('-');
+            let unsigned = text.trim_start_matches(['+', '-']);
+            let (mantissa, exponent) = unsigned.split_once(['e', 'E']).unwrap_or((unsigned, "0"));
+            let fraction = mantissa.split_once('.').map_or(0, |(_, rest)| rest.len());
+            let mut exponent = exponent.parse::<i64>().ok()?.checked_sub(fraction as i64)?;
+            let mut digits = mantissa.replace('.', "").trim_start_matches('0').to_owned();
+            if digits.is_empty() {
+                return Some((2, "0".into()));
+            }
+            while digits.ends_with('0') {
+                digits.pop();
+                exponent = exponent.checked_add(1)?;
+            }
+            Some((
+                2,
+                format!("{}{digits}e{exponent}", if negative { "-" } else { "" }),
+            ))
+        }
+    }
+}
+
 pub(crate) fn uuid(text: &str) -> Option<String> {
     // java.util.UUID/fromString accepts abbreviated groups and canonicalizes.
     let widths = [8, 4, 4, 4, 12];

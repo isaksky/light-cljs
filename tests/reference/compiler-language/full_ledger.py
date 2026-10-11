@@ -579,6 +579,15 @@ def load_phase_witnesses(obligations):
         data = (ROOT / path).read_bytes()
         if item.get("test_source_sha256") != inv.digest(data) or not re.search(r"#\[test\]\s*(?:pub\s+)?fn\s+" + re.escape(name) + r"\s*\(", data.decode()):
             raise ValueError("Macro phase witness detached from complete local test source")
+        supports = item.get("support_source_sha256", {})
+        if not isinstance(supports, dict):
+            raise ValueError("Invalid macro phase support source map")
+        for support, digest in supports.items():
+            support = Path(support)
+            if (support.is_absolute() or ".." in support.parts or not support.parts
+                    or support.parts[0] != "tests" or not (ROOT / support).is_file()
+                    or inv.digest((ROOT / support).read_bytes()) != digest):
+                raise ValueError("Macro phase witness detached from support source")
         result[target["id"]] = item
     return result
 
