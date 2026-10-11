@@ -13,6 +13,8 @@ pub mod analyzer;
 mod char_classes;
 pub mod compiler;
 mod compiler_binding_macros;
+mod compilation_session;
+mod program_fragment;
 pub mod compiler_data;
 mod compiler_destructuring;
 pub mod compiler_names;

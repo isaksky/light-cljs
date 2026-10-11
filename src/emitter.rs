@@ -10,12 +10,21 @@ use crate::analyzer::{
 /// Emit one JavaScript expression whose value is the last source form (or nil).
 /// The result is self-contained, including its ClojureScript truth predicate.
 pub fn emit_js(program: &Program) -> String {
-    emit_js_mode(program, None)
+    emit_js_mode(program, None, false)
 }
 
 /// Emit a function accepting the session canonical runtime as its sole argument.
 /// This avoids embedding or recreating runtime brands for every evaluated unit.
 pub fn emit_js_unit(program: &Program) -> String {
+    emit_unit_mode(program, false)
+}
+
+/// Compile-time globals use the session demand registry; all semantic lowering is shared.
+pub(crate) fn emit_deferred_unit(program: &Program) -> String {
+    emit_unit_mode(program, true)
+}
+
+fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
     let raw = program.strings.iter().map(|s| String::from_utf16_lossy(s)).collect::<String>();
     let mut index = 0;
     let parameter = loop {
@@ -23,12 +32,13 @@ pub fn emit_js_unit(program: &Program) -> String {
         if !raw.contains(&candidate) { break candidate; }
         index += 1;
     };
-    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter)))
+    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter), demand_roots))
 }
 
-fn emit_js_mode(program: &Program, shared: Option<&str>) -> String {
+fn emit_js_mode(program: &Program, shared: Option<&str>, demand_roots: bool) -> String {
     let mut emitter = Emitter {
         program,
+        demand_roots,
         output: String::new(),
         indent: 1,
         captures: Vec::new(),
@@ -111,6 +121,7 @@ fn emit_js_mode(program: &Program, shared: Option<&str>) -> String {
 
 struct Emitter<'a> {
     program: &'a Program,
+    demand_roots: bool,
     output: String,
     indent: usize,
     captures: Vec<(LocalId, RecurTargetId)>,
@@ -172,6 +183,11 @@ impl Emitter<'_> {
             for member in &path[1..] {
                 self.member(member);
             }
+        } else if self.demand_roots {
+            self.output.push_str("globalThis[\"__lightCompilerRoots\"][");
+            let global = &self.program.globals[id.0];
+            self.string_units(&format!("{}/{}", global.namespace, global.name).encode_utf16().collect::<Vec<_>>());
+            self.output.push(']');
         } else {
             write!(self.output, "g{}", id.0).unwrap();
         }

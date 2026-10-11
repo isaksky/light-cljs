@@ -184,8 +184,12 @@ macro generations, binding-kind conflicts, declaration metadata and runtime
 phase errors are implemented and exercised by `same_file_javascript_macros`
 in `tests/compiler_macros.rs`. Source macro analysis carries definition-site
 namespace/resolution snapshots and preserves host assertions and expansion
-budgets. Ordinary helper demand, source imports and nested-analysis reentry
-remain assigned to light-cljs-109/102/103.
+budgets. Deferred ordinary initializer units now have a reentrant compilation
+service, frozen definition snapshots and once-per-generation semantic IR shared
+between both emissions. Nested macro/helper compilation, cycles, alias and macro
+generation snapshots, failure recovery and shared limits are exercised by
+`reentrant_deferred_units` in the same suite. General demand/overlay semantics
+and source imports remain assigned to light-cljs-102/103.
 Legacy imported native source macros remain explicit adapters until those stages.
 
 Same-file macro validation on 2026-10-10 passed

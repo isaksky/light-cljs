@@ -1917,11 +1917,7 @@ mod same_file_javascript_macros {
         // function/macro with the same spelling while helper demand is pending.
         for name in ["+", "when"] {
             let source = format!("(def {name} (fn [& xs] 99)) (defmacro m [] ({name} 1 2)) (m)");
-            let error = compile(&source).unwrap_err().to_string();
-            assert!(
-                error.contains("ordinary helper") && error.contains("macro compilation"),
-                "{error}"
-            );
+            assert_eq!(result(&compile(&source).unwrap()), "99\n");
         }
     }
 
@@ -2017,5 +2013,193 @@ mod same_file_javascript_macros {
             result(&compile_with_macros("(defmacro answer [] 7) (answer)", &mut host).unwrap()),
             "7\n"
         );
+    }
+}
+
+
+mod reentrant_deferred_units {
+    use super::*;
+
+    fn checked(source: &str) -> String {
+        let source = source.to_owned();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut host = MacroHost::new();
+            host.disable_native_evaluation();
+            send.send(result(&compile_with_macros(&source, &mut host).unwrap()))
+                .unwrap();
+        });
+        receive
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("reentrant compilation must not lock or hang")
+    }
+
+    #[test]
+    fn nested_demands_expand_each_source_occurrence_once_and_share_ir() {
+        assert_eq!(
+            checked(
+                r#"
+          (def effects (atom []))
+          (swap! effects conj :runtime-only)
+          (def leaf (do (swap! effects conj :leaf-init) (fn [] 7)))
+          (defmacro leaf-m [] (swap! effects conj :leaf-m) (leaf))
+          (defn middle [] (leaf-m))
+          (defmacro middle-m [] (swap! effects conj :middle-m) (middle))
+          (defn outer [] (middle-m))
+          (defmacro run [] (outer))
+          (defmacro trace [] (list 'quote @effects))
+          (= [7 7 [:middle-m :leaf-m :leaf-init] [:runtime-only :leaf-init] 7]
+             [(run) (run) (trace) @effects (outer)])"#
+            ),
+            "true\n"
+        );
+    }
+
+    #[test]
+    fn snapshots_freeze_visibility_and_macro_generations_but_roots_are_late_bound() {
+        assert_eq!(
+            checked(
+                r#"
+          (def factor 2)
+          (defmacro old [] 10)
+          (defn helper [x] (+ (old) (* factor x)))
+          (defmacro old [] 100)
+          (def factor 3)
+          (defmacro run [] (helper 4))
+          (= [22 22] [(run) (helper 4)])"#
+            ),
+            "true\n"
+        );
+        for source in [
+            "(defn helper [] future) (def future 1) (helper)",
+            "(defn helper [] (if false future 1)) (def future 1) (helper)",
+            "(defn helper [] (later)) (defmacro later [] 1) (helper)",
+        ] {
+            assert!(
+                compile(source).is_err(),
+                "accepted future binding: {source}"
+            );
+        }
+        assert_eq!(
+            checked(
+                "(declare future) (defn helper [] future) (def future 42) (defmacro run [] (helper)) (run)"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn analysis_cycles_are_distinct_from_ordinary_function_recursion() {
+        let error = compile("(declare helper) (defmacro m [] (helper)) (defn helper [] (m)) (m)")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("compile dependency cycle: cljs.user/helper -> cljs.user/helper"),
+            "{error}"
+        );
+        assert_eq!(
+            checked(
+                "(declare f) (defn f [n] (if (zero? n) 42 (f (dec n)))) (defmacro m [] (f 4)) (m)"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn definition_aliases_metadata_and_clean_session_options_are_frozen() {
+        let sources = Sources::new();
+        sources.write("dep/a.cljs", "(ns dep.a) (def value 40)");
+        sources.write("dep/b.cljs", "(ns dep.b) (def value 100)");
+        sources.write("owner.cljs", "(ns owner (:require [dep.a :as d])) (def ^{:doc \"original\"} value 2) (defn helper [] (+ d/value value)) (defmacro answer [] (helper))");
+        sources.write(
+            "app.cljs",
+            "(ns app (:require [owner] [dep.b :as d])) (js/console.log (owner/answer) d/value)",
+        );
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        assert_eq!(
+            execute(&sources.compile_host("app", &mut host).unwrap()),
+            "42 100\n"
+        );
+        sources.write("dep/a.cljs", "(ns dep.a) (def value 41)");
+        assert_eq!(
+            execute(&sources.compile_host("app", &mut host).unwrap()),
+            "43 100\n"
+        );
+        for number in [42, 43] {
+            sources.write("conditional.cljc", &format!("(ns conditional) (defn h [] #?(:cljs {number} :clj jvm-only)) (defmacro m [] (h)) (js/console.log (m))"));
+            assert_eq!(
+                execute(&sources.compile_host("conditional", &mut host).unwrap()),
+                format!("{number}\n")
+            );
+        }
+        let source = "(defn h [] (assert false) 42) (defmacro m [] (h)) (m)";
+        host.set_assertions(false);
+        assert_eq!(
+            result(&compile_with_macros(source, &mut host).unwrap()),
+            "42\n"
+        );
+        host.set_assertions(true);
+        assert!(
+            compile_with_macros(source, &mut host)
+                .unwrap_err()
+                .to_string()
+                .contains("Assert failed")
+        );
+        assert_eq!(
+            checked(
+                "(def ^{:doc \"frozen\"} v 1) (defn h [] (:doc (meta #'v))) (defmacro m [] (h)) (= \"frozen\" (m))"
+            ),
+            "true\n"
+        );
+    }
+
+    #[test]
+    fn nested_execution_limit_is_terminal_and_a_clean_host_can_be_reused() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        host.evaluator_options.timeout = std::time::Duration::from_millis(300);
+        let error = compile_with_macros(
+            "(defn h [] (loop [] (recur))) (defmacro m [] (h)) (m)",
+            &mut host,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("deadline") || error.contains("budget"),
+            "{error}"
+        );
+        host.evaluator_options = Default::default();
+        assert_eq!(
+            result(
+                &compile_with_macros("(defn h [] 42) (defmacro m [] (h)) (m)", &mut host).unwrap()
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn failed_nested_analysis_execution_and_conversion_do_not_poison_reused_host() {
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        for source in [
+            "(defn h [] missing) (defmacro m [] (h)) (m)",
+            "(defmacro broken [] (throw (js/Error. \"nested\"))) (defn h [] (broken)) (defmacro m [] (h)) (m)",
+            "(def h (js* \"(() => {throw new Error('install')})()\")) (defmacro m [] h) (m)",
+            "(defn h [] (js* \"not valid }\")) (defmacro m [] (h)) (m)",
+            "(defn h [] (js/Promise.resolve 1)) (defmacro m [] (h)) (m)",
+        ] {
+            assert!(
+                compile_with_macros(source, &mut host).is_err(),
+                "accepted {source}"
+            );
+            assert_eq!(
+                result(
+                    &compile_with_macros("(defn h [] 42) (defmacro m [] (h)) (m)", &mut host)
+                        .unwrap()
+                ),
+                "42\n"
+            );
+        }
     }
 }

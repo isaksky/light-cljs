@@ -63,8 +63,10 @@ pub struct MacroHost {
     pub(crate) javascript_macros: HashMap<String, crate::compiler_bootstrap::CompiledMacro>,
     pub(crate) source_bindings: HashMap<String, SourceBindingKind>,
     native_disabled: bool,
-    pub(crate) expansions: usize,
-    pub(crate) generated_nodes: usize,
+    pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
+    pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
+    pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
+    pub(crate) generated_nodes: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 impl MacroHost {
@@ -80,21 +82,21 @@ impl MacroHost {
     /// Function handles are generation-scoped IDs, never engine values in Program.
     pub fn expand_javascript(
         &mut self,
-        evaluator: &crate::evaluator::Evaluator,
+        evaluator: &dyn crate::evaluator::MacroEvaluator,
         function: crate::evaluator::ValueId,
         call: &Form,
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        if self.expansions >= self.limits.expansions {
+        if self.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
-        self.expansions += 1;
+        self.expansions.set(self.expansions.get() + 1);
         let limits = crate::form_bridge::ConversionLimits {
             nodes: self
                 .limits
                 .generated_nodes
-                .saturating_sub(self.generated_nodes),
+                .saturating_sub(self.generated_nodes.get()),
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {
@@ -141,7 +143,10 @@ impl MacroHost {
             }
             message
         })?;
-        self.generated_nodes = self.generated_nodes.saturating_add(expanded.nodes().len());
+        self.generated_nodes.set(self.generated_nodes.get().saturating_add(expanded.nodes().len()));
+        if self.generated_nodes.get() > self.limits.generated_nodes {
+            return Err("compiler macro generated-node limit exceeded".into());
+        }
         Ok(expanded)
     }
 
@@ -358,10 +363,19 @@ impl MacroHost {
             javascript_macros: self.javascript_macros.clone(),
             source_bindings: self.source_bindings.clone(),
             native_disabled: true,
-            expansions: self.expansions,
-            generated_nodes: self.generated_nodes,
+            session_ref: self.session_handle().map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
+            expansions: self.expansions.clone(),
+            generated_nodes: self.generated_nodes.clone(),
             ..Self::default()
         }
+    }
+    // Temporary native import adapter, removed with light-cljs-115. Such hosts
+    // retain their existing eager analysis; JS source macros never use it.
+    pub(crate) fn defers_source_units(&self) -> bool {
+        !self.bootstrap_seed && self.context.is_none() && self.native_namespaces.is_empty()
+    }
+    pub(crate) fn session_handle(&self) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
+        self.session.clone().or_else(|| self.session_ref.upgrade())
     }
     pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
         self.source_bindings.get(&format!("{namespace}/{name}")) == Some(&SourceBindingKind::Value)
@@ -371,9 +385,11 @@ impl MacroHost {
             self.bootstrap = None;
             self.javascript_macros.clear();
             self.source_bindings.clear();
+            self.session = Some(crate::compilation_session::CompilationSession::new());
+            self.session_ref = std::rc::Weak::new();
         }
-        self.expansions = 0;
-        self.generated_nodes = 0;
+        self.expansions = Default::default();
+        self.generated_nodes = Default::default();
         self.runtime_vars.clear();
         self.namespace_imports.clear();
     }
@@ -594,12 +610,12 @@ impl MacroHost {
             None => self.expand_namespace_reflection(form, name)?,
         };
         if let Some(expanded) = &expanded {
-            if self.expansions >= self.limits.expansions {
+            if self.expansions.get() >= self.limits.expansions {
                 return Err("compiler macro expansion limit exceeded".into());
             }
-            self.expansions += 1;
-            self.generated_nodes = self.generated_nodes.saturating_add(expanded.nodes().len());
-            if self.generated_nodes > self.limits.generated_nodes {
+            self.expansions.set(self.expansions.get() + 1);
+            self.generated_nodes.set(self.generated_nodes.get().saturating_add(expanded.nodes().len()));
+            if self.generated_nodes.get() > self.limits.generated_nodes {
                 return Err("compiler macro generated-node limit exceeded".into());
             }
         }
@@ -641,16 +657,16 @@ impl MacroHost {
         var: &RootedValue,
         env: &RootedValue,
     ) -> Result<NativeForm, String> {
-        if self.expansions >= self.limits.expansions {
+        if self.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
-        self.expansions += 1;
+        self.expansions.set(self.expansions.get() + 1);
         let expanded = self
             .context_mut()
             .expand_macro_call(form, var, env)
             .map_err(|e| e.to_string())?;
-        self.generated_nodes = self.generated_nodes.saturating_add(expanded.nodes().len());
-        if self.generated_nodes > self.limits.generated_nodes {
+        self.generated_nodes.set(self.generated_nodes.get().saturating_add(expanded.nodes().len()));
+        if self.generated_nodes.get() > self.limits.generated_nodes {
             return Err("compiler macro generated-node limit exceeded".into());
         }
         Ok(expanded)

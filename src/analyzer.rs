@@ -2035,6 +2035,8 @@ struct Analyzer<'a> {
     type_fields: Option<Vec<(String, bool)>>,
     raw_type: bool,
     macro_host: &'a mut MacroHost,
+    engine: Option<&'a dyn crate::evaluator::MacroEvaluator>,
+    deferred: Vec<(ExprId, usize)>,
     macro_depth: usize,
     analysis_depth: usize,
     macro_source: Option<Source>,
@@ -2132,7 +2134,7 @@ pub fn analyze_with_macro_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
-    analyze_input(source, syntax, macro_host, options, warnings, None, None)
+    analyze_input(source, syntax, macro_host, options, warnings, None, None, None, None)
 }
 
 /// Start a standalone compilation from an immutable compiler form. Generated
@@ -2151,29 +2153,44 @@ pub fn analyze_compiler_form(form: &Form) -> Result<Program, AnalysisError> {
         &mut Vec::new(),
         Some(form),
         None,
+        None,
+        None,
     )
 }
 
-pub(crate) fn analyze_macro_function(
+pub(crate) fn analyze_deferred_form(
     form: &Form,
     host: &mut MacroHost,
-    namespace: &str,
-    aliases: &[(String, String)],
-    requires: &[String],
-    resolution: NamespaceResolution,
-) -> Result<Program, AnalysisError> {
-    analyze_input(
+    snapshot: &crate::compilation_session::DefinitionSnapshot,
+    engine: Option<&dyn crate::evaluator::MacroEvaluator>,
+) -> Result<(Program, Vec<AnalysisWarning>), AnalysisError> {
+    let mut warnings = vec![];
+    let evaluator = host.bootstrap.as_ref().map(|b| b.evaluator.clone());
+    let engine = engine.or_else(|| {
+        evaluator
+            .as_ref()
+            .map(|e| e.as_ref() as &dyn crate::evaluator::MacroEvaluator)
+    });
+    let program = analyze_input(
         form.span().source().text(),
         &SyntaxTree {
             nodes: vec![],
             roots: vec![],
         },
         host,
-        AnalysisOptions::default(),
-        &mut Vec::new(),
+        snapshot.options,
+        &mut warnings,
         Some(form),
-        Some((namespace, aliases, requires, resolution)),
-    )
+        Some((
+            &snapshot.namespace,
+            &snapshot.aliases,
+            &snapshot.requires,
+            snapshot.resolution.clone(),
+        )),
+        Some(snapshot),
+        engine,
+    )?;
+    Ok((program, warnings))
 }
 
 fn analyze_input(
@@ -2184,6 +2201,8 @@ fn analyze_input(
     warnings: &mut Vec<AnalysisWarning>,
     owned_form: Option<&Form>,
     definition_view: Option<(&str, &[(String, String)], &[String], NamespaceResolution)>,
+    snapshot: Option<&crate::compilation_session::DefinitionSnapshot>,
+    engine: Option<&dyn crate::evaluator::MacroEvaluator>,
 ) -> Result<Program, AnalysisError> {
     if definition_view.is_none() {
         macro_host.begin_compilation();
@@ -2204,6 +2223,8 @@ fn analyze_input(
         type_fields: None,
         raw_type: false,
         macro_host,
+        engine,
+        deferred: Vec::new(),
         macro_depth: 0,
         analysis_depth: 0,
         macro_source: None,
@@ -2220,13 +2241,20 @@ fn analyze_input(
         warnings,
         resolving_var: false,
         definition_name: None,
-        top_level: true,
+        top_level: snapshot.is_none(),
     };
+    if let Some(snapshot) = snapshot {
+        analyzer.program = snapshot.resolution_program.clone();
+        analyzer.globals = analyzer.program.globals.iter().enumerate().map(|(i,g)| ((g.namespace.clone(),g.name.clone()),GlobalId(i))).collect();
+        analyzer.source_index = snapshot.source_index;
+        analyzer.definition_name = snapshot.definition_name.clone();
+    }
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
     }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
     analyzer.read_discards_before(source.len())?;
+    analyzer.drain_deferred()?;
     analyzer.collect_expression_warnings();
     Ok(analyzer.program)
 }
@@ -2295,6 +2323,8 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             type_fields: None,
             raw_type: false,
             macro_host,
+            engine: None,
+            deferred: Vec::new(),
             macro_depth: 0,
             analysis_depth: 0,
             macro_source: None,
@@ -2359,6 +2389,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             .read_discards_before(input.source.len())
             .map_err(|e| (source_index, e))?;
         roots.push(root);
+        analyzer.drain_deferred().map_err(|e| (source_index, e))?;
         analyzer.collect_expression_warnings();
         program = analyzer.program;
         globals = analyzer.globals;
@@ -2812,6 +2843,9 @@ impl Analyzer<'_> {
     }
 
     fn form(&mut self, id: NodeId, context: ExprContext) -> Result<ExprId, AnalysisError> {
+        if let Some(engine) = self.engine {
+            engine.control().poll().map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+        }
         if self.macro_depth > 0 && self.analysis_depth >= 128 {
             return Err(self.error(
                 id,
@@ -2830,7 +2864,7 @@ impl Analyzer<'_> {
                 let name = self.spelling(*id);
                 matches!(
                     name,
-                    "do" | "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
+                    "do" | "def" | "defonce" | "declare" | "cljs.core/def" | "cljs.core/defonce" | "cljs.core/declare" | "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
                 ) || (self.lookup(name).is_none()
                     && (self.macro_host.has_javascript_macro(self.namespace, name)
                         || self
@@ -3153,9 +3187,8 @@ impl Analyzer<'_> {
                             .register_javascript_macro(
                                 self.namespace,
                                 &form,
-                                self.aliases,
-                                self.requires,
-                                self.resolution.clone(),
+                                self.definition_snapshot(),
+                                self.engine,
                             )
                             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
                         return Ok(self.push(
@@ -4218,6 +4251,43 @@ impl Analyzer<'_> {
         self.datum(node, ExprContext::Value)
     }
 
+    fn definition_snapshot(&self) -> crate::compilation_session::DefinitionSnapshot {
+        crate::compilation_session::DefinitionSnapshot {
+            namespace: self.namespace.into(),
+            aliases: self.aliases.to_vec(),
+            requires: self.requires.to_vec(),
+            resolution: self.resolution.clone(),
+            resolution_program: crate::program_fragment::resolution_snapshot(&self.program),
+            options: self.options,
+            source_index: self.source_index,
+            definition_name: self.definition_name.clone(),
+        }
+    }
+
+    fn drain_deferred(&mut self) -> Result<(), AnalysisError> {
+        let Some(session) = self.macro_host.session_handle() else {
+            return Ok(());
+        };
+        for (placeholder, unit) in std::mem::take(&mut self.deferred) {
+            let (program, warnings) = session.analyze(unit, self.engine).map_err(|message| {
+                session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
+                    span: self.program.exprs[placeholder.0].span.clone(),
+                    kind: AnalysisErrorKind::MacroExpansion(message),
+                })
+            })?;
+            let globals = self.program.globals.clone();
+            let root = crate::program_fragment::append(&mut self.program, &program);
+            // Snapshot metadata resolves references within the fragment, but must
+            // not roll back a later source declaration's live metadata/flags.
+            self.program.globals[..globals.len()].clone_from_slice(&globals);
+            for (index, global) in self.program.globals.iter().enumerate() {
+                self.globals.insert((global.namespace.clone(), global.name.clone()), GlobalId(index));
+            }
+            self.program.exprs[placeholder.0].kind = ExprKind::Do(vec![root]);
+            self.warnings.extend(warnings);
+        }
+        Ok(())
+    }
     fn definition(
         &mut self,
         id: NodeId,
@@ -4366,10 +4436,26 @@ impl Analyzer<'_> {
         let previous_definition = self
             .definition_name
             .replace(self.program.globals[global.0].name.clone());
-        let init = args
-            .get(if args.len() == 3 { 2 } else { 1 })
-            .map(|&init| self.non_tail_form(init, ExprContext::Value))
-            .transpose();
+        let initializer = args.get(if args.len() == 3 { 2 } else { 1 }).copied();
+        let top_level = self.top_level;
+        self.top_level = false;
+        let init = if top_level && self.macro_host.defers_source_units() {
+            let form = initializer.map(|node| self.compiler_read_form(node)).transpose()
+                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+            let session = self.macro_host.session_handle().expect("compilation session");
+            let unit = session.register(
+                format!("{}/{}", self.namespace, self.program.globals[global.0].name),
+                form, self.definition_snapshot(), self.macro_host.macro_analysis_frame(), once,
+            ).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+            Ok(unit.map(|unit| {
+                let placeholder = self.push(ExprKind::Nil, self.syntax.nodes[initializer.unwrap().0].span.clone(), ExprContext::Value);
+                self.deferred.push((placeholder, unit));
+                placeholder
+            }))
+        } else {
+            initializer.map(|init| self.non_tail_form(init, ExprContext::Value)).transpose()
+        };
+        self.top_level = top_level;
         self.definition_name = previous_definition;
         let init = init?;
         if self.metadata_is(args[0], "macro", "true")
@@ -6387,7 +6473,7 @@ impl Analyzer<'_> {
                 .map_err(error)?;
             let result = self
                 .macro_host
-                .expand_source_javascript(self.namespace, target, &form, &env)
+                .expand_source_javascript(self.namespace, target, &form, &env, self.engine)
                 .map_err(error)?;
             return self.import_form(&result).map(Some);
         }
@@ -6468,7 +6554,7 @@ impl Analyzer<'_> {
                 .map_err(error)?;
             let expanded = self
                 .macro_host
-                .expand_core_javascript(&core_name, &form, &environment)
+                .expand_core_javascript(&core_name, &form, &environment, self.engine)
                 .map_err(error)?;
             return self.import_form(&expanded).map(Some);
         }
@@ -6977,6 +7063,8 @@ impl Analyzer<'_> {
             } else {
                 self.non_tail_form(form, ExprContext::Discard)?
             });
+            // Warning APIs report diagnostics before any later source failure.
+            if self.options.warning_mode { self.drain_deferred()?; }
         }
         Ok(self.push(ExprKind::Do(exprs), span, context))
     }

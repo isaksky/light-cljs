@@ -587,10 +587,8 @@ fn core_functions_resolve_after_locals_and_globals_and_by_explicit_qualifier() {
         })
         .collect();
     assert_eq!(resolved, [CoreFnId::Vector, CoreFnId::Get, CoreFnId::Nth]);
-    assert!(matches!(
-        program.exprs[program.exprs.len() - 2].kind,
-        ExprKind::Global(_)
-    ));
+    let ExprKind::Do(body) = &program.exprs[program.root.0].kind else { panic!("program body") };
+    assert!(matches!(program.exprs[body.last().unwrap().0].kind, ExprKind::Global(_)));
     for name in ["cljs.core/transduce", "other/vector"] {
         assert!(matches!(
             analyze(name, &parse(name).unwrap()).unwrap_err().kind,

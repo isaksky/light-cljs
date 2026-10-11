@@ -210,8 +210,351 @@ impl Evaluator {
                 .catch(&ctx)
                 .map_err(|error| EvalError(error.to_string()))
         });
-        self.control.poll()?;
+        if let Err(error) = self.control.poll() {
+            if result.is_ok() || self.control.0.terminal.load(Ordering::Relaxed) != 4 {
+                return Err(error);
+            }
+        }
         // Engine failures poison this operation. Never retry through a native path.
+        if result.is_err() {
+            self.control.invalidate();
+        }
+        result
+    }
+    /// Borrow the already-active engine context without acquiring its runtime lock.
+    /// The context must belong to this evaluator; the handle cannot outlive it.
+    pub fn active<'a, 'js>(&'a self, ctx: Ctx<'js>) -> Result<ActiveEvaluator<'a, 'js>, EvalError> {
+        if self.context.as_ref().unwrap().as_raw() != ctx.as_raw() {
+            return Err(EvalError(
+                "Context belongs to another JavaScript session".into(),
+            ));
+        }
+        Ok(ActiveEvaluator {
+            ctx,
+            control: &self.control,
+            generation: self.generation,
+            bridge: &self.bridge,
+        })
+    }
+
+    fn with_active<T>(
+        &self,
+        f: impl for<'js> FnOnce(ActiveEvaluator<'_, 'js>) -> Result<T, EvalError>,
+    ) -> Result<T, EvalError> {
+        self.control.poll()?;
+        self.context.as_ref().unwrap().with(|ctx| {
+            // Refresh only at the outer runtime-lock boundary.
+            unsafe {
+                rquickjs::qjs::JS_UpdateStackTop(rquickjs::qjs::JS_GetRuntime(
+                    ctx.as_raw().as_ptr(),
+                ));
+            }
+            f(self.active(ctx)?)
+        })
+    }
+    pub fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        self.with_active(|active| active.evaluate_unit(source))
+    }
+    pub fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
+        self.with_active(|active| active.evaluate_js(expression))
+    }
+    pub fn evaluate(&self, program: &crate::Program) -> Result<ValueId, EvalError> {
+        self.with_active(|active| active.evaluate(program))
+    }
+    pub fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+        self.with_active(|active| active.call(function, arguments))
+    }
+    pub fn number(&self, id: ValueId) -> Result<f64, EvalError> {
+        self.with_active(|active| active.number(id))
+    }
+    pub fn string(&self, id: ValueId) -> Result<String, EvalError> {
+        self.with_active(|active| active.string(id))
+    }
+    pub fn print(&self, id: ValueId) -> Result<String, EvalError> {
+        self.with_active(|active| active.print(id))
+    }
+    pub fn release(&self, id: ValueId) -> Result<(), EvalError> {
+        self.with_active(|active| active.release(id))
+    }
+    pub fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        self.with_active(|active| active.import_form(form, limits))
+    }
+    pub fn import_data(
+        &self,
+        data: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.with_active(|active| active.import_data(data, limits))
+    }
+    pub fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
+        self.with_active(|active| active.export_data(id, limits))
+    }
+    pub fn export_form(
+        &self,
+        id: ValueId,
+        call: &Form,
+        origin: crate::compiler_data::ExpansionOrigin,
+        limits: ConversionLimits,
+    ) -> Result<Form, EvalError> {
+        self.with_active(|active| active.export_form(id, call, origin, limits))
+    }
+    /// Install the compiler's binding-resolution/expansion service. Both nested
+    /// entry points share this service and the session's conversion/engine fuel.
+    /// Brief table borrows end before calling compiler code or nested JavaScript.
+    pub fn install_form_services(
+        &self,
+        call: Form,
+        origin: crate::compiler_data::ExpansionOrigin,
+        limits: ConversionLimits,
+        service: impl Fn(ExecutionControl, Form, bool) -> Result<Form, EvalError> + 'static,
+    ) -> Result<(), EvalError> {
+        let service = Rc::new(service);
+        self.enter(|ctx| {
+            let create = |all: bool| {
+                let service = service.clone();
+                let call = call.clone();
+                let origin = origin.clone();
+                let bridge = self.bridge.clone();
+                let control = self.control.clone();
+                Function::new(
+                    ctx.clone(),
+                    move |descriptor: Array<'_>| -> rquickjs::Result<BridgeOutput> {
+                        let ctx = descriptor.ctx().clone();
+                        let data = bridge
+                            .borrow_mut()
+                            .decode(descriptor, &control, limits, false)?;
+                        let form = Form::from_bridge_expansion(
+                            data,
+                            &call,
+                            origin.clone(),
+                            &bridge.borrow().forms,
+                        );
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            service(control.clone(), form, all)
+                        }));
+                        let output = match result {
+                            Ok(Ok(form)) => form,
+                            Ok(Err(e)) => {
+                                return Err(rquickjs::Exception::throw_message(&ctx, &e.0));
+                            }
+                            Err(_) => {
+                                control.invalidate();
+                                return Err(rquickjs::Exception::throw_message(
+                                    &ctx,
+                                    "compiler macro service panicked",
+                                ));
+                            }
+                        };
+                        control
+                            .poll()
+                            .map_err(|e| rquickjs::Exception::throw_message(&ctx, &e.0))?;
+                        Ok(BridgeOutput {
+                            data: output,
+                            bridge: bridge.clone(),
+                            control: control.clone(),
+                            limits,
+                        })
+                    },
+                )
+            };
+            let one = create(false)?;
+            let all = create(true)?;
+            let install: Function = ctx.eval("__lightEvaluator.formServices")?;
+            install.call((one, all, limits.nodes, limits.depth))
+        })
+    }
+    /// Install a compiler service that returns emitted source for a plain request ID.
+    /// The callback receives the current context so nested macro execution does not
+    /// reacquire the runtime lock. Captures must retain only Rust data and weak
+    /// evaluator references, never engine values or a strong evaluator reference.
+    pub fn install_unit_service(
+        &self,
+        name: &str,
+        callback: impl for<'js> Fn(Ctx<'js>, u64) -> Result<String, String> + 'static,
+    ) -> Result<(), EvalError> {
+        let weak = Arc::downgrade(&self.control.0);
+        self.enter(|ctx| {
+            let f = Function::new(ctx.clone(), move |ctx: Ctx<'_>, request: u64| {
+                let control = ExecutionControl(weak.upgrade().ok_or(rquickjs::Error::Unknown)?);
+                control
+                    .poll()
+                    .map_err(|e| rquickjs::Exception::throw_message(&ctx, &e.0))?;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(ctx.clone(), request)
+                }));
+                let output = match result {
+                    Ok(Ok(output)) => output,
+                    Ok(Err(message)) => {
+                        control.invalidate();
+                        return Err(rquickjs::Exception::throw_message(&ctx, &message));
+                    }
+                    Err(_) => {
+                        control.invalidate();
+                        return Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            "compiler unit service panicked",
+                        ));
+                    }
+                };
+                control
+                    .poll()
+                    .map_err(|e| rquickjs::Exception::throw_message(&ctx, &e.0))?;
+                Ok(output)
+            })?;
+            ctx.globals().set(name, f)
+        })
+    }
+
+    /// Force collection at an outer boundary. Callbacks must use the active Ctx,
+    /// never this runtime-locking method.
+    pub fn collect_garbage(&self) {
+        self.runtime.run_gc();
+    }
+
+    /// Explicit embedding hook for collection while JavaScript is active. It
+    /// captures no engine edges and uses Ctx rather than locking the Runtime.
+    pub fn install_gc_callback(&self, name: &str) -> Result<(), EvalError> {
+        self.enter(|ctx| {
+            let collect = Function::new(ctx.clone(), |ctx: Ctx<'_>| ctx.run_gc())?;
+            ctx.globals().set(name, collect)
+        })
+    }
+
+    /// Register an explicit string callback. Its closure must retain only Rust data.
+    /// Poll the supplied shared control during potentially long bridge work.
+    pub fn install_callback(
+        &self,
+        name: &str,
+        callback: impl Fn(ExecutionControl, String) -> Result<String, EvalError> + 'static,
+    ) -> Result<(), EvalError> {
+        let weak: Weak<ControlState> = Arc::downgrade(&self.control.0);
+        self.enter(|ctx| {
+            let f = Function::new(
+                ctx.clone(),
+                move |input: String| -> rquickjs::Result<String> {
+                    let state = weak.upgrade().ok_or(rquickjs::Error::Unknown)?;
+                    let control = ExecutionControl(state);
+                    control.poll().map_err(|_| rquickjs::Error::Unknown)?;
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        callback(control.clone(), input)
+                    }));
+                    let result = match result {
+                        Ok(Ok(value)) => Ok(value),
+                        _ => {
+                            control.invalidate();
+                            Err(rquickjs::Error::Unknown)
+                        }
+                    };
+                    control.poll().map_err(|_| rquickjs::Error::Unknown)?;
+                    result
+                },
+            )?;
+            ctx.globals().set(name, f)
+        })
+    }
+    /// Live engine allocation accounting, useful for focused retention measurements.
+    pub fn memory_usage_bytes(&self) -> i64 {
+        self.runtime.memory_usage().memory_used_size
+    }
+}
+/// Common macro operations at either an outer boundary or an active callback.
+pub trait MacroEvaluator {
+    fn control(&self) -> ExecutionControl;
+    fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
+    fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError>;
+    fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError>;
+    fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError>;
+    fn export_form(
+        &self,
+        id: ValueId,
+        call: &Form,
+        origin: crate::compiler_data::ExpansionOrigin,
+        limits: ConversionLimits,
+    ) -> Result<Form, EvalError>;
+    fn release(&self, id: ValueId) -> Result<(), EvalError>;
+}
+impl MacroEvaluator for Evaluator {
+    fn control(&self) -> ExecutionControl { Evaluator::control(self) }
+    fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        Evaluator::evaluate_unit(self, source)
+    }
+    fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+        Evaluator::call(self, function, arguments)
+    }
+    fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        Evaluator::import_form(self, form, limits)
+    }
+    fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        Evaluator::import_data(self, data, limits)
+    }
+    fn export_form(
+        &self,
+        id: ValueId,
+        call: &Form,
+        origin: crate::compiler_data::ExpansionOrigin,
+        limits: ConversionLimits,
+    ) -> Result<Form, EvalError> {
+        Evaluator::export_form(self, id, call, origin, limits)
+    }
+    fn release(&self, id: ValueId) -> Result<(), EvalError> {
+        Evaluator::release(self, id)
+    }
+}
+impl MacroEvaluator for ActiveEvaluator<'_, '_> {
+    fn control(&self) -> ExecutionControl { ActiveEvaluator::control(self) }
+    fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        ActiveEvaluator::evaluate_unit(self, source)
+    }
+    fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+        ActiveEvaluator::call(self, function, arguments)
+    }
+    fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        ActiveEvaluator::import_form(self, form, limits)
+    }
+    fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        ActiveEvaluator::import_data(self, data, limits)
+    }
+    fn export_form(
+        &self,
+        id: ValueId,
+        call: &Form,
+        origin: crate::compiler_data::ExpansionOrigin,
+        limits: ConversionLimits,
+    ) -> Result<Form, EvalError> {
+        ActiveEvaluator::export_form(self, id, call, origin, limits)
+    }
+    fn release(&self, id: ValueId) -> Result<(), EvalError> {
+        ActiveEvaluator::release(self, id)
+    }
+}
+/// A scoped view of an evaluator while its JavaScript context is already active.
+/// Nested compiler services must use this handle instead of entering Context::with.
+pub struct ActiveEvaluator<'a, 'js> {
+    ctx: Ctx<'js>,
+    control: &'a ExecutionControl,
+    generation: u64,
+    bridge: &'a Rc<RefCell<BridgeState>>,
+}
+impl<'js> ActiveEvaluator<'_, 'js> {
+    pub fn control(&self) -> ExecutionControl {
+        self.control.clone()
+    }
+    fn enter<T>(&self, f: impl FnOnce(Ctx<'js>) -> rquickjs::Result<T>) -> Result<T, EvalError> {
+        self.control.poll()?;
+        let result = f(self.ctx.clone())
+            .and_then(|value| {
+                self.ctx.eval::<(), _>("__lightEvaluator.checkBridge()")?;
+                Ok(value)
+            })
+            .catch(&self.ctx)
+            .map_err(|error| EvalError(error.to_string()));
+        // Preserve the owned original diagnostic while nested scopes unwind a
+        // poisoned session; cancellation/resource limits still take precedence.
+        if let Err(error) = self.control.poll() {
+            if result.is_ok() || self.control.0.terminal.load(Ordering::Relaxed) != 4 {
+                return Err(error);
+            }
+        }
         if result.is_err() {
             self.control.invalidate();
         }
@@ -345,122 +688,6 @@ impl Evaluator {
             origin,
             &self.bridge.borrow().forms,
         ))
-    }
-    /// Install the compiler's binding-resolution/expansion service. Both nested
-    /// entry points share this service and the session's conversion/engine fuel.
-    /// Brief table borrows end before calling compiler code or nested JavaScript.
-    pub fn install_form_services(
-        &self,
-        call: Form,
-        origin: crate::compiler_data::ExpansionOrigin,
-        limits: ConversionLimits,
-        service: impl Fn(ExecutionControl, Form, bool) -> Result<Form, EvalError> + 'static,
-    ) -> Result<(), EvalError> {
-        let service = Rc::new(service);
-        self.enter(|ctx| {
-            let create = |all: bool| {
-                let service = service.clone();
-                let call = call.clone();
-                let origin = origin.clone();
-                let bridge = self.bridge.clone();
-                let control = self.control.clone();
-                Function::new(
-                    ctx.clone(),
-                    move |descriptor: Array<'_>| -> rquickjs::Result<BridgeOutput> {
-                        let ctx = descriptor.ctx().clone();
-                        let data = bridge
-                            .borrow_mut()
-                            .decode(descriptor, &control, limits, false)?;
-                        let form = Form::from_bridge_expansion(
-                            data,
-                            &call,
-                            origin.clone(),
-                            &bridge.borrow().forms,
-                        );
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            service(control.clone(), form, all)
-                        }));
-                        let output = match result {
-                            Ok(Ok(form)) => form,
-                            Ok(Err(e)) => {
-                                return Err(rquickjs::Exception::throw_message(&ctx, &e.0));
-                            }
-                            Err(_) => {
-                                control.invalidate();
-                                return Err(rquickjs::Exception::throw_message(
-                                    &ctx,
-                                    "compiler macro service panicked",
-                                ));
-                            }
-                        };
-                        control
-                            .poll()
-                            .map_err(|e| rquickjs::Exception::throw_message(&ctx, &e.0))?;
-                        Ok(BridgeOutput {
-                            data: output,
-                            bridge: bridge.clone(),
-                            control: control.clone(),
-                            limits,
-                        })
-                    },
-                )
-            };
-            let one = create(false)?;
-            let all = create(true)?;
-            let install: Function = ctx.eval("__lightEvaluator.formServices")?;
-            install.call((one, all, limits.nodes, limits.depth))
-        })
-    }
-    /// Force collection at an outer boundary. Callbacks must use the active Ctx,
-    /// never this runtime-locking method.
-    pub fn collect_garbage(&self) {
-        self.runtime.run_gc();
-    }
-
-    /// Explicit embedding hook for collection while JavaScript is active. It
-    /// captures no engine edges and uses Ctx rather than locking the Runtime.
-    pub fn install_gc_callback(&self, name: &str) -> Result<(), EvalError> {
-        self.enter(|ctx| {
-            let collect = Function::new(ctx.clone(), |ctx: Ctx<'_>| ctx.run_gc())?;
-            ctx.globals().set(name, collect)
-        })
-    }
-
-    /// Register an explicit string callback. Its closure must retain only Rust data.
-    /// Poll the supplied shared control during potentially long bridge work.
-    pub fn install_callback(
-        &self,
-        name: &str,
-        callback: impl Fn(ExecutionControl, String) -> Result<String, EvalError> + 'static,
-    ) -> Result<(), EvalError> {
-        let weak: Weak<ControlState> = Arc::downgrade(&self.control.0);
-        self.enter(|ctx| {
-            let f = Function::new(
-                ctx.clone(),
-                move |input: String| -> rquickjs::Result<String> {
-                    let state = weak.upgrade().ok_or(rquickjs::Error::Unknown)?;
-                    let control = ExecutionControl(state);
-                    control.poll().map_err(|_| rquickjs::Error::Unknown)?;
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        callback(control.clone(), input)
-                    }));
-                    let result = match result {
-                        Ok(Ok(value)) => Ok(value),
-                        _ => {
-                            control.invalidate();
-                            Err(rquickjs::Error::Unknown)
-                        }
-                    };
-                    control.poll().map_err(|_| rquickjs::Error::Unknown)?;
-                    result
-                },
-            )?;
-            ctx.globals().set(name, f)
-        })
-    }
-    /// Live engine allocation accounting, useful for focused retention measurements.
-    pub fn memory_usage_bytes(&self) -> i64 {
-        self.runtime.memory_usage().memory_used_size
     }
 }
 impl Drop for Evaluator {
@@ -597,5 +824,82 @@ impl<'js> rquickjs::IntoJs<'js> for BridgeOutput {
         let release: Function = ctx.eval("__lightEvaluator.release")?;
         release.call::<_, ()>((id,))?;
         Ok(descriptor.into_value())
+    }
+}
+
+#[cfg(test)]
+mod active_tests {
+    use super::*;
+    use crate::compiler_data::DatumKind;
+
+    #[test]
+    fn unit_service_recurses_with_active_context_and_bridge() {
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
+        let weak = Rc::downgrade(&evaluator);
+        evaluator.install_unit_service("compileNested", move |ctx, request| {
+            let evaluator = weak.upgrade().unwrap();
+            let active = evaluator.active(ctx).map_err(|e| e.0)?;
+            let run = || -> Result<String, EvalError> {
+                let limits = ConversionLimits::default();
+                let input = active.import_data(&Datum::new(DatumKind::Integer(41)), limits)?;
+                let identity = active.evaluate_js("x => x")?;
+                let result = active.call(identity, &[input])?;
+                assert!(matches!(active.export_data(result, limits)?.kind(), DatumKind::Integer(n) if *n == 41));
+                active.release(result)?;
+                active.release(identity)?;
+                active.release(input)?;
+                if request > 0 {
+                    let nested = active.evaluate_js(&format!("compileNested({})", request - 1))?;
+                    assert_eq!(active.string(nested)?, "(rt) => 42");
+                    active.release(nested)?;
+                }
+                Ok("(rt) => 42".into())
+            };
+            run().map_err(|e| e.0)
+        }).unwrap();
+        let result = evaluator.evaluate_js("compileNested(3)").unwrap();
+        assert_eq!(evaluator.string(result).unwrap(), "(rt) => 42");
+        evaluator.release(result).unwrap();
+        assert_eq!(Rc::strong_count(&evaluator), 1);
+    }
+
+    #[test]
+    fn unit_service_cancellation_is_sticky_even_when_js_catches() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let control = evaluator.control();
+        evaluator
+            .install_unit_service("cancelCompile", move |_, _| {
+                control.cancel();
+                Ok("(rt) => 42".into())
+            })
+            .unwrap();
+        let error = evaluator
+            .evaluate_js("(() => { try { cancelCompile(0) } catch (_) {} return 1 })()")
+            .unwrap_err();
+        assert!(error.0.contains("cancelled"), "{error}");
+        assert!(evaluator.evaluate_js("1").is_err());
+    }
+
+    #[test]
+    fn unit_service_failure_is_sticky_even_when_js_catches() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        evaluator
+            .install_unit_service("failCompile", |_, _| Err("compile failed".into()))
+            .unwrap();
+        assert!(
+            evaluator
+                .evaluate_js("(() => { try { failCompile(0) } catch (_) {} return 1 })()")
+                .is_err()
+        );
+        assert!(evaluator.evaluate_js("1").is_err());
+    }
+
+    #[test]
+    fn active_handle_rejects_other_contexts() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let other = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        other.context.as_ref().unwrap().with(|ctx| {
+            assert!(evaluator.active(ctx).is_err());
+        });
     }
 }

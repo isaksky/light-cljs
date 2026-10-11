@@ -21,7 +21,10 @@ Macros will live in `.cljs`/`.cljc` and use ordinary `:require`.
 The [synchronous evaluator](docs/evaluator.md) now executes compiler units with
 one canonical runtime per session, bounded host controls and owned value IDs.
 **Consumer migration is still in progress.** Core compiler macros run as
-compiler-emitted JavaScript in QuickJS. Legacy `.clj`/`.cljc` macro imports, scripts,
+compiler-emitted JavaScript in QuickJS. Ordinary helper initializers can be
+compiled on macro demand, including nested helper/macro compilation; definition
+snapshots and shared semantic IR prevent repeated source expansion. See the
+[reentrant evaluator contract](docs/evaluator.md#deferred-compiler-units). Legacy `.clj`/`.cljc` macro imports, scripts,
 the REPL and embedding APIs still use native evaluation. The existing commands
 and API examples below describe that current checkout. See the
 [evaluator migration design](docs/evaluator-migration.md) for the accepted phase

@@ -173,14 +173,18 @@ impl MacroHost {
         name: &str,
         call: &Form,
         env: &Datum,
+        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
         if self.bootstrap.is_none() {
-            if self.bootstrap_seed {
+            if self.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
             }
             self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
+        if engine.is_none() {
+            if let Some(session) = self.session_handle() { session.attach(&bootstrap)?; }
+        }
         let declaration = bootstrap
             .functions
             .get(name)
@@ -195,7 +199,7 @@ impl MacroHost {
             helpers: vec![],
         };
         let result = self.expand_javascript(
-            &bootstrap.evaluator,
+            engine.unwrap_or(bootstrap.evaluator.as_ref()),
             declaration.function,
             call,
             env,
@@ -287,9 +291,8 @@ impl MacroHost {
         &mut self,
         namespace: &str,
         form: &Form,
-        aliases: &[(String, String)],
-        requires: &[String],
-        resolution: crate::analyzer::NamespaceResolution,
+        snapshot: crate::compilation_session::DefinitionSnapshot,
+        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<(), String> {
         let (name, _, function) = lower_declaration(form)?;
         // The declaration seed computes docs, user arglists and merged name,
@@ -341,20 +344,12 @@ impl MacroHost {
             self.bootstrap = Some(build(self.evaluator_options.clone(), true)?);
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
-        // Each declaration is analyzed against the visible macro generation and
-        // definition namespace. Its expanded code is immutable after installation.
-        // Ordinary helper demand/reentry remains light-cljs-102/109.
+        if let Some(session) = self.session_handle() { session.attach(&bootstrap)?; }
         let mut frame = self.macro_analysis_frame();
-        let program = crate::analyzer::analyze_macro_function(
-            &function, &mut frame, namespace, aliases, requires, resolution,
-        )
-        .map_err(|e| e.to_string());
-        self.expansions = frame.expansions;
-        self.generated_nodes = frame.generated_nodes;
-        let program = program?;
-        let function = bootstrap
-            .evaluator
-            .evaluate(&program)
+        let (program, _) = crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
+            .map_err(|e| e.to_string())?;
+        let function = engine.unwrap_or(bootstrap.evaluator.as_ref())
+            .evaluate_unit(&crate::emitter::emit_deferred_unit(&program))
             .map_err(|e| e.to_string())?;
         self.javascript_macros.insert(
             format!("{namespace}/{name}"),
@@ -384,6 +379,7 @@ impl MacroHost {
         name: &str,
         call: &Form,
         env: &Datum,
+        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
         let key = Self::source_macro_key(namespace, name);
         let declaration = self.javascript_macros.get(&key).unwrap().clone();
@@ -394,7 +390,7 @@ impl MacroHost {
             .clone();
         let (ns, name) = key.split_once('/').unwrap();
         self.expand_javascript(
-            &bootstrap.evaluator,
+            engine.unwrap_or(bootstrap.evaluator.as_ref()),
             declaration.function,
             call,
             env,
@@ -461,7 +457,7 @@ mod tests {
             let source = Source::new("metadata.cljs", "(-> 1 ^:kept (inc))");
             let call = host.read_compiler_form(&source).unwrap().unwrap();
             let expanded = host
-                .expand_core_javascript("->", &call, &DataBuilder.nil())
+                .expand_core_javascript("->", &call, &DataBuilder.nil(), None)
                 .unwrap();
             assert!(matches!(
                 expanded

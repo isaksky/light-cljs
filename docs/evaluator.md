@@ -19,8 +19,11 @@ installs `macroexpand`/`macroexpand1` hooks; missing services fail on use.
 adapter still exists until light-cljs-115; source macros and public native CLI/
 embedding consumers switch in their assigned migration steps. Creating this
 session does not execute source macro bodies through the old adapter, and engine
-failure never falls back to native evaluation. The later reentry boundary belongs
-to light-cljs-109; callbacks here do not reenter `Context::with`.
+failure never falls back to native evaluation. `Evaluator::active(ctx)` borrows the
+already-entered context for nested compilation, without reacquiring its runtime
+lock. `install_unit_service` installs a reentrant `Fn` receiving that context and
+an owned request ID. It catches panics, preserves owned failure diagnostics, and
+shares sticky cancellation/resource limits with the outer operation.
 
 ## Ownership and capabilities
 
@@ -130,3 +133,41 @@ and [rquickjs-core 0.14.0 source](https://docs.rs/crate/rquickjs-core/0.14.0/sou
 especially synchronous runtime/context, allocator and function callback tracing.
 No new dependencies or engine-selection experiment are prerequisites for the
 remaining compiler integration.
+
+## Deferred compiler units
+
+`compilation_session` catalogs ordinary top-level initializer forms with stable
+Var identities and source generations. Each unit owns its namespace, aliases,
+refers, exclusions, visible declaration/metadata snapshot, macro-generation map,
+analysis options and source provenance. Analysis uses an independent private
+frame. The catalog borrows only to select/mark/copy a request and to commit its
+result; no `RefCell` guard survives compiler reentry or JavaScript execution.
+Callbacks capture weak session/evaluator handles, so no Rust/JS ownership cycle
+retains the heap.
+
+Unit analysis is unstarted, analyzing, analyzed or failed. This is independent
+of pending, initializing, ready or failed JS roots. Analysis reentry reports the
+helper dependency path; ordinary recursive functions use already-installed code.
+A scope guard unwinds the analysis stack even on failure. Frame ownership restores
+namespace and macro environments automatically. Active engine handles reuse the
+same context for calls, conversion and installation; they never configure the
+runtime, collect garbage or call `Context::with`.
+
+Successful semantic IR is reused by compile-time emission and final application
+assembly. `program_fragment` remaps arena IDs while preserving binding identity
+and original locations. Compile-time emission uses the ordinary emitter with
+root access hooks and never invokes an application optimizer. Ready root reads
+stay in JS. Unrequested initializers drain in source order; standalone runtime
+expressions are not replayed during macro setup. The warning API drains each
+source form early to preserve diagnostics before later errors.
+
+The unit cache is scoped to a fresh compilation. No application-source artifact
+survives host reuse, so source, options, imports and selected conditional edits
+cannot reuse stale IR. The separately cached bootstrap source is immutable and
+built from this binary's embedded sources. Legacy explicit native macro imports
+keep their existing eager adapter until light-cljs-115; they are not a fallback
+for failed JavaScript compilation. General demand/overlay behavior and declaration
+bundles remain separate migration work.
+
+Execution evidence and the focused commands are recorded in
+[deferred unit validation](../tests/reference/compiler-deferred-units.md).
