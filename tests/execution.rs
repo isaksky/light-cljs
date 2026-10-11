@@ -1714,6 +1714,62 @@ fn resolved_numeric_functions_evaluate_each_argument_once_in_order() {
 }
 
 #[test]
+fn numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node() {
+    use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+    let numeric = cases()
+        .into_iter()
+        .filter(|case| case.id.starts_with("numeric-"))
+        .collect::<Vec<_>>();
+    let actual = compiled_cases(&numeric);
+    for (index, (case, line)) in numeric
+        .iter()
+        .zip(outcomes(&actual, &numeric).unwrap())
+        .enumerate()
+    {
+        assert_eq!(
+            line,
+            format!(
+                "{{\"id\":{},\"outcome\":{},\"trace\":{},\"stdout\":{}}}",
+                json_string(&case.id),
+                case.outcome,
+                case.trace,
+                case.stdout
+            )
+        );
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        e.evaluate_js(&format!(
+            "({})(rt)",
+            include_str!("support/numeric_observation.js")
+        ))
+        .unwrap();
+        let namespace = format!("semantic.case{index}");
+        let source = format!(
+            "(ns {namespace} (:require [cljs.core :as c]))\n(js/numericObservation (fn* [observe] {}))",
+            case.source
+        );
+        let syntax = light_cljs::parse(&source).unwrap();
+        let p = light_cljs::analyzer::analyze_namespaces(&[light_cljs::analyzer::NamespaceInput {
+            name: &namespace,
+            source: &source,
+            syntax: &syntax,
+            aliases: &[("c".into(), "cljs.core".into())],
+            requires: &["cljs.core".into()],
+        }])
+        .unwrap();
+        assert_eq!(
+            e.string(e.evaluate(&p).unwrap()).unwrap(),
+            format!(
+                "{{\"outcome\":{},\"trace\":{},\"stdout\":{}}}",
+                case.outcome, case.trace, case.stdout
+            ),
+            "{}",
+            case.id
+        );
+    }
+    assert_eq!(numeric.len(), 57);
+}
+
+#[test]
 #[ignore = "requires Clojure CLI, Java, Node, and both explicitly pinned references"]
 fn numeric_functions_match_pinned_values_effects_and_stdout() {
     let cases = cases()

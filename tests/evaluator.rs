@@ -214,3 +214,72 @@ fn unit_runtime_parameter_preserves_raw_javascript_hygiene() {
         "[\"undefined\" 42]"
     );
 }
+
+#[test]
+fn wide_radix_literals_round_once_in_applications_and_macro_arguments() {
+    // Exact decimal values independently converted to f64. These nondecimal
+    // spellings exceed u128 and expose per-digit Number accumulation errors.
+    let cases = [
+        (
+            "2r1100010101010010000101100110010011110011101000111100010101110001011101000111011000011000100110010111010110100011101011011011001100100101010010101001010010010011",
+            "1126501793780955840178000892951443180509553398931",
+        ),
+        (
+            "0171163550502456051221373553237567242501240341420455477",
+            "1384156059891590194823490597700216239803630508863",
+        ),
+        (
+            "0x2911675d60067d39d169a3f8cad5e297e6b1e665",
+            "234456738611503117298165641691112104301020964453",
+        ),
+        (
+            "36r5eh0k9j7aajt0etk7t6w4mlhhztx1e0",
+            "264016499809241824936904025929579949326130642504",
+        ),
+    ];
+    for (literal, decimal) in cases {
+        for sign in ["", "-"] {
+            let source = format!("{sign}{literal}");
+            let expected: f64 = format!("{sign}{decimal}").parse().unwrap();
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            assert_eq!(
+                e.number(e.evaluate(&program(&source)).unwrap())
+                    .unwrap()
+                    .to_bits(),
+                expected.to_bits(),
+                "application: {source}"
+            );
+            let mut host = MacroHost::new();
+            host.disable_native_evaluation();
+            let macro_source = format!("(defmacro literal [x] x) (literal {source})");
+            let p = light_cljs::analyze_with_macros(
+                &macro_source,
+                &parse(&macro_source).unwrap(),
+                &mut host,
+            )
+            .unwrap();
+            assert_eq!(
+                e.number(e.evaluate(&p).unwrap()).unwrap().to_bits(),
+                expected.to_bits(),
+                "macro: {source}"
+            );
+            let script = format!(
+                "console.log(Object.is({}, ({})( {} )));",
+                expected,
+                emit_js_unit(&p),
+                light_cljs::evaluator::RUNTIME_SOURCE
+            );
+            let out = Command::new("node").args(["-e", &script]).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap().trim(),
+                "true",
+                "Node: {source}"
+            );
+        }
+    }
+}

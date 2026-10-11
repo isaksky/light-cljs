@@ -1,4 +1,5 @@
-//! Native compiler macro integration. CLJS environment/resolution observations
+//! Compiler macro integration, including transitional native adapter tests.
+//! CLJS environment/resolution observations
 //! are anchored in tests/reference/compiler-macros.md; tests need only Rust/Node.
 use light_cljs::interpreter::{
     Arity, Name, NativeDefinition, NativeEffects, NativeMetadata, Reload, ResourceLimits,
@@ -1217,8 +1218,8 @@ fn generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_met
     );
 }
 
-// Hand-authored compiler/QuickJS bridge observations. These use emitted macro
-// functions directly; source defmacro registration is a later migration seam.
+// Compiler/QuickJS bridge observations, with emitted macro functions and source
+// declarations. The numeric fixtures retain their pinned expected outcomes.
 mod javascript_form_bridge {
     use super::*;
     use light_cljs::{
@@ -1251,6 +1252,146 @@ mod javascript_form_bridge {
     }
     fn execute_form(e: &Evaluator, form: &Form) -> light_cljs::evaluator::ValueId {
         e.evaluate(&analyze_compiler_form(form).unwrap()).unwrap()
+    }
+    #[test]
+    fn pinned_numeric_bodies_execute_inside_the_javascript_macro_bridge() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        e.evaluate_js(&format!(
+            "({})(rt)",
+            include_str!("support/numeric_observation.js")
+        ))
+        .unwrap();
+        let call = read("(macros/identity)");
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        let mut count = 0;
+        for row in include_str!("fixtures/execution-outcomes.tsv").lines() {
+            if !row.starts_with("numeric-") {
+                continue;
+            }
+            let columns: Vec<_> = row.split('\t').collect();
+            let [name, body, outcome, trace, stdout] = columns.as_slice() else {
+                panic!("invalid numeric fixture");
+            };
+            assert_eq!(*stdout, "\"\"");
+            let namespace = format!("semantic.case{count}");
+            let source = format!(
+                "(ns {namespace} (:require [cljs.core :as c]))\n\
+                 (fn* [form env] (js/numericObservation (fn* [observe] {body})))"
+            );
+            let syntax = parse(&source).unwrap();
+            let p = light_cljs::analyzer::analyze_namespaces_with_macros(
+                &[light_cljs::analyzer::NamespaceInput {
+                    name: &namespace,
+                    source: &source,
+                    syntax: &syntax,
+                    aliases: &[("c".into(), "cljs.core".into())],
+                    requires: &["cljs.core".into()],
+                }],
+                &mut host,
+            )
+            .unwrap_or_else(|(_, error)| panic!("{name}: {body}: {error}"));
+            let f = e.evaluate(&p).unwrap();
+            let expansion = host
+                .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let DatumKind::String(text) = expansion.data().kind().clone() else {
+                panic!("{name}: numeric observation was not a string");
+            };
+            assert_eq!(
+                String::from_utf16(&text).unwrap(),
+                format!("{{\"outcome\":{outcome},\"trace\":{trace},\"stdout\":{stdout}}}"),
+                "{name}: {body}"
+            );
+            e.release(f).unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 57);
+    }
+
+    #[test]
+    fn number_expansion_data_matches_independent_application_heaps() {
+        let cases = [
+            (
+                "[(/ 1 2) (= 1 1.0) (inc 9007199254740992) (- (+ 9007199254740992 1) 9007199254740992) (/ 1 -0.0) (/ 1 0) (js/isNaN (/ 0 0)) (infinite? (/ 1 0))]",
+                "[0.5 true 9007199254740992 0 ##-Inf ##Inf true true]",
+            ),
+            (
+                "[(int 4294967297.9) (long 4294967297.9) (byte 300) (short 65537) (float 16777217) (double 16777217) (quot 2 -5) (rem -0.0 2) (mod 4 -2) (== 1 1.0) (/ 1 (long -0.4))]",
+                "[1 4294967297 300 65537 16777217 16777217 -0.0 -0.0 -0.0 true ##-Inf]",
+            ),
+            (
+                "[(get {1 :ok} 1.0) (count (conj #{1} 1.0)) (get {[1 {:n 2}] :nested} [1.0 {:n 2.0}]) (= (hash [1 {:n 2}]) (hash [1.0 {:n 2.0}])) (get {-0.0 :zero} 0) (= (hash -0.0) (hash 0)) (get {##Inf :positive ##-Inf :negative} (/ 1 0)) (= (hash ##Inf) (hash (/ 1 0))) (= ##NaN ##NaN) (get {##NaN :nan} ##NaN :missing) (count (hash-set ##NaN ##NaN)) (get {[##NaN] :nan} [##NaN] :missing)]",
+                "[:ok 1 :nested true :zero true :positive true false :missing 2 :missing]",
+            ),
+            (
+                "(let [f + cmp < calls (atom []) observe (fn [x] (swap! calls conj x) x)] [(apply f [9007199254740992 1 1]) ((nth [inc] 0) 9007199254740992) (mapv inc (range 3)) (number? (count [1])) (number? (nth (range 3) 1)) (number? (first (keep-indexed (fn [i _] i) [:x]))) (name (symbol (str (/ 1 2)))) (name (symbol (pr-str (float 16777217)))) (cmp (observe 9) (observe 4) (observe 2)) (< (observe 8) (observe 3) (observe 1)) @calls])",
+                "[9007199254740992 9007199254740992 [1 2 3] true true true \"0.5\" \"16777217\" false false [9 4 2 8 3 1]]",
+            ),
+        ];
+        for (body, expected) in cases {
+            let source = format!("(defmacro capture [] (list 'quote {body})) [(capture) {body}]");
+            let mut host = MacroHost::new();
+            host.disable_native_evaluation();
+            let syntax = parse(&source).unwrap();
+            let p = analyze_with_macros(&source, &syntax, &mut host).unwrap();
+            let expected = format!("[{expected} {expected}]");
+            let app = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            assert_eq!(
+                app.print(app.evaluate(&p).unwrap()).unwrap(),
+                expected,
+                "{body}"
+            );
+            let script = format!(
+                "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
+                light_cljs::evaluator::RUNTIME_SOURCE,
+                light_cljs::emitter::emit_js_unit(&p)
+            );
+            assert_eq!(execute(&script).trim(), expected, "{body}");
+        }
+    }
+
+    #[test]
+    fn numeric_macro_failures_keep_call_definition_and_helper_provenance() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let f = function(&e, "(fn* [form env] (even? 1.5))");
+        let call = read("\n(macros/identity)");
+        let error = MacroHost::new()
+            .expand_javascript(&e, f, &call, &Datum::new(DatumKind::Nil), origin(&call))
+            .unwrap_err();
+        for part in [
+            "caller.cljs:2:1",
+            "macros/identity",
+            "macros.cljs",
+            "macros/helper",
+            "integer",
+        ] {
+            assert!(error.contains(part), "missing {part:?}: {error}");
+        }
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        assert!(compile_with_macros("(defmacro bad [] (even? 1.5)) (bad)", &mut host).is_err());
+        assert!(compile_with_macros("(defmacro good [] (/ 1 2)) (good)", &mut host).is_ok());
+    }
+
+    #[test]
+    fn reader_numeric_spellings_are_number_values_before_macro_execution() {
+        let source = r#"
+            (defmacro literal [x] x)
+            (defmacro inspect [x] [(number? x) (float? x) (double? x) (= x 1.0)])
+            [(literal 9007199254740993) (literal 9007199254740993N)
+             (literal 16777217M) (literal 4/2) (/ 1 (literal -0.0))
+             (js/isNaN (literal ##NaN)) (infinite? (literal ##Inf))
+             (infinite? (literal ##-Inf)) (inspect 1)]"#;
+        let mut host = MacroHost::new();
+        host.disable_native_evaluation();
+        let p = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(e.evaluate(&p).unwrap()).unwrap(),
+            "[9007199254740992 9007199254740992 16777217 2 ##-Inf true true true [true true true true]]"
+        );
+        assert!(compile_with_macros("(defmacro literal [x] x) (literal 1/2)", &mut host).is_err());
     }
     #[test]
     fn identity_preserves_owned_forms_and_executes_returned_code() {

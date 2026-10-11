@@ -661,6 +661,29 @@ assert.equal(c.lessEqual(1, 1, 2, 2), true);
 assert.equal(c.greater(4, 3, 2, 1), true);
 assert.equal(c.greaterEqual(4, 3, 3, 1), true);
 assert.equal(c.numericEqual(0, -0, 0), true);
+// Both compiler phases use Number keys, including nested collection keys.
+assert.equal(c.get(c.hashMap(1, 'ok'), 1.0), 'ok');
+assert.equal(c.count(c.conj(c.hashSet(1), 1.0)), 1);
+for (const [left, right] of [
+  [0, -0], [1, 1.0], [Infinity, 1 / 0], [-Infinity, 1 / -0],
+  [c.vector(1, c.hashMap('n', 2)), c.vector(1.0, c.hashMap('n', 2.0))],
+  [c.hashSet(0, Infinity), c.hashSet(-0, 1 / 0)],
+]) {
+  assert.equal(c.equal(left, right), true);
+  assert.equal(c.hash(left), c.hash(right));
+  assert.equal(c.get(c.hashMap(left, 'ok'), right), 'ok');
+}
+assert.equal(c.equal(NaN, NaN), false);
+assert.equal(c.get(c.hashMap(NaN, 'nan'), NaN, 'missing'), 'missing');
+assert.equal(c.count(c.hashSet(NaN, NaN)), 2);
+assert.equal(c.get(c.hashMap(c.vector(NaN), 'nan'), c.vector(NaN), 'missing'), 'missing');
+const numberBridge = runtime.compilerFormBridge();
+for (const number of [-0, NaN, Infinity, -Infinity, 9007199254740992]) {
+  const decoded = numberBridge.decode(['number', 0, null, number]);
+  const encoded = numberBridge.encode(decoded, 100, 10);
+  assert.equal(encoded[0], 'number');
+  assert.ok(Object.is(encoded[3], number));
+}
 for (const x of [0, -0, 1, -1, 1e11]) assert.equal(c.isInteger(x), true);
 for (const x of [1.5, 1e21, 1e308, Infinity, -Infinity, NaN, "0", null, undefined, false]) assert.equal(c.isInteger(x), false);
 for (const x of [1.5, 1e21, Infinity, NaN, "2", null, undefined]) {

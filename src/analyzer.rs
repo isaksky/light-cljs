@@ -7763,9 +7763,13 @@ pub(crate) fn number(text: &str, kind: NumberKind) -> Option<f64> {
     } else if let Ok(n) = u128::from_str_radix(digits, radix) {
         n as f64
     } else {
-        digits.chars().try_fold(0.0, |n, d| {
-            Some(n * radix as f64 + d.to_digit(radix)? as f64)
-        })?
+        // Reader-owned macro arguments preserve exact integer text until the
+        // form bridge converts it once. Application literals must round at that
+        // same boundary, rather than accumulate rounding at every radix digit.
+        crate::reader_literals::integer_key(text)
+            .parse::<f64>()
+            .ok()?
+            .abs()
     };
     Some(if text.starts_with('-') && magnitude != 0.0 {
         -magnitude

@@ -74,7 +74,10 @@ in the implementation work, not in another feasibility phase.
   prepare macro state. Application initialization retains source/dependency order.
 - Shared numeric computation uses JavaScript Number throughout, including
   division, rounding, predicates, equality, hashing and map/set keys. The earlier
-  Rust macro-number profile proposal is superseded by `light-cljs-100`.
+  Rust macro-number profile proposal is superseded by `light-cljs-100`, whose
+  [phase audit](../tests/reference/compiler-numeric.md#compile-time-and-application-number-semantics)
+  verifies emitted macro bodies and QuickJS/Node applications against explicit
+  expected outcomes and both pinned upstream references.
 - Ordinary ECMAScript operations may execute during expansion. Embedding QuickJS
   does not supply a DOM, Node/Bun globals, npm resolution, JVM classes or ambient
   filesystem/network/process access. Host callbacks, streams and source providers

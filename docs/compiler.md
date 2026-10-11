@@ -632,6 +632,19 @@ source literals use the same versioned Number rounding and symbolic values. It d
 use the native interpreter's checked integer arithmetic. There is no special
 source-spelling dispatch or optimizer for direct calls.
 
+Compiler-emitted macros use those same canonical runtime operations in QuickJS.
+For example, `(/ 1 2)` returns `0.5`, `(= 1 1.0)` is true, and
+`(inc 9007199254740992)` stays `9007199254740992` during expansion and in an
+application. Computed expansion data retains Number rounding at each operation,
+including signed zero and non-finite values. Reader integer/decimal distinctions
+remain source data for diagnostics and duplicate checks; wide radix integers
+round once at execution, consistently across the reader/form bridge and emitter.
+Non-integral ratio source literals remain rejected; ordinary division produces
+fractional Numbers. No Rust exact/ratio arithmetic profile serves JS macros.
+The remaining native embedding adapter is transitional and is retired by
+`light-cljs-115`. The [numeric phase audit](../tests/reference/compiler-numeric.md#compile-time-and-application-number-semantics)
+records the shared bodies, pinned key behavior and verification limits.
+
 Traversal is iterative, uses direct immutable storage offsets and allocates no
 captured closure or seq wrapper per step. Map/set traversal may materialize O(n)
 entry/member storage once; vectors/lists/seq views need O(1) traversal state.

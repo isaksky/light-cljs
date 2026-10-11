@@ -162,3 +162,91 @@ measured about **0.019 ms** before and **0.055 ms** after. This measures factory
 initialization on this host, not browser parse time or an application benchmark.
 The added startup allocation is one set of core functions per compilation unit,
 not per arithmetic invocation.
+
+## Compile-time and application Number semantics
+
+`light-cljs-100` verifies the canonical JavaScript path introduced by the macro
+bootstrap. All **57** numeric fixture bodies in `execution-outcomes.tsv` now run
+through compiler-emitted macro functions in QuickJS and through application
+units in independent QuickJS heaps and Node. The original 56 typed expectations
+are retained; `numeric-number-keys` adds independent assertions for nested numeric
+keys, signed zeros, NaN and infinities. The first-class inventory checks every
+supported numeric/coercion/predicate binding, alongside saved functions,
+aliases, `apply`, argument effects and failure categories. Test-only
+`numeric_observation.js` encodes primitive/vector results so undefined and
+non-finite intermediate values can be observed without allowing unsupported
+macro expansion values. It does not supply any language operation.
+
+Source-declared macros also return computed Number data through the form bridge,
+then execute in separate application heaps. Explicit expected results include
+`(/ 1 2) => 0.5`, `(= 1 1.0) => true`, and
+`(inc 9007199254740992) => 9007199254740992`. Subtracting the original value
+after that rounded addition returns zero during expansion, preventing an
+implementation that postpones rounding until output conversion. Coercion probes
+cover wrapping `int`, truncating `long`, identity `byte`/`short`, and `float`/`double`
+without JVM float rounding. Count/range/index-generated numbers, saved functions
+in collections, numeric printing followed by symbol construction, and eager
+argument effects share the same operations. Division and reciprocal expose NaN,
+infinities and negative zero directly. Macro failure tests retain call,
+definition and helper provenance and verify a subsequent clean compilation.
+
+Number-equal keys find the same entry, and equal nested values have equal hashes.
+Positive/negative zero compare equal and hash equally. NaN remains non-reflexive:
+an inserted NaN key cannot be looked up with NaN, and a hash-set containing two
+NaNs has two members. Both saved-constructor key probes and the complete numeric
+corpus match release **1.12.134** and checkout
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. Runtime hash integers are internal;
+these checks require equality consistency, not upstream hash-number identity.
+
+The only production adjustment needed was wide radix literal conversion:
+nondecimal integers exceeding u128 previously accumulated f64 rounding per
+digit in application analysis, while macro arguments retained exact reader text
+until one Number conversion. Applications now use that same single-rounding
+boundary. Independent decimal expected values exercise binary, octal,
+hexadecimal and radix-36 literals, both signs, in QuickJS and Node. Integer `N`
+and decimal `M` spellings execute as Numbers; integral ratio literals execute as
+Numbers, while non-integral ratio source literals keep the existing reader
+rejection. The reader's exact identities remain diagnostic/source data.
+
+The former Rust macro arithmetic proposal is retired. No compiler-specific
+native numeric profile was introduced or retained. The historical native
+embedding/eval adapter still has its old semantics until `light-cljs-115` removes
+that consumer; it is not evidence about compiler-emitted macro execution.
+The deliberate direct-comparison effect difference and reader-distinct
+map/set literal policies described above remain explicit.
+
+Executed commands for this delivery:
+
+```sh
+cargo test --locked --test compiler_bootstrap --quiet
+cargo test --locked --test compiler_macros --test evaluator --test compiler_reader --quiet
+cargo test --locked --test compiler_macros reader_numeric_spellings --quiet
+cargo test --locked --test execution numeric_ --quiet
+cargo test --locked --test analyzer numeric_literals --quiet
+node --test tests/support/js_runtime.test.js
+rustfmt --edition 2024 --check src/analyzer.rs tests/compiler_macros.rs tests/evaluator.rs tests/execution.rs
+git diff --check
+
+LIGHT_CLJS_REFERENCE=both \
+LIGHT_CLJS_REFERENCE_CHECKOUT=research/clojurescript \
+LIGHT_CLJS_REFERENCE_REVISION=a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e \
+cargo test --locked --test execution \
+  numeric_functions_match_pinned_values_effects_and_stdout -- --ignored --nocapture
+```
+
+The bootstrap suite passes 11 tests; the initial focused macro/reader/evaluator
+run passes 59/7/9 tests with one explicitly ignored evaluator timing probe. The
+additional reader-spelling test passes separately, bringing macro tests to 60.
+The numeric application selection passes three tests with the optional upstream
+test ignored by its default selection; the explicit upstream invocation then
+passes all 57 outcomes against both references, verifying identity and effective
+compiler settings. Direct Node runtime assertions and the numeric analyzer test
+pass. Formatting and whitespace checks pass for changed files.
+
+`cargo clippy --locked --lib -- -D warnings` was also executed and fails on nine
+existing warnings in untouched `compiler_binding_macros.rs`,
+`compiler_reader.rs`, `macro_host.rs` and `native_form_adapter.rs`; none is in the
+changed numeric lowering. Full Rust, broad upstream and language-inventory
+suites were not repeated for this focused delivery. This adds no new imported
+upstream assertion count: the supplemental key probe has its own hand-authored
+provenance row in `fixture-origins.tsv`.
