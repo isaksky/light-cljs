@@ -1,0 +1,2568 @@
+{
+  "schema_version": 1,
+  "profile": "canonical-hash-map-from-arrays-v1",
+  "comparison": "exact-typed-packets-no-projection",
+  "pins": {
+    "release": "1.12.134",
+    "checkout": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e"
+  },
+  "derivation_root": "/private/tmp/light-cljs-183-independent-contracts-v1",
+  "sources": [
+    {
+      "id": "runtime-map-traversal-public-from-arrays",
+      "source": "(let [m (PersistentHashMap.fromArrays #js [:a :b :c :d :e :f :g :h :i] #js [1 2 3 4 5 6 7 8 9])] [(count m) (vec m) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "3058d5292009a7bf86efa2e24ef9c3f60045c86e3ee548077f3a894bf8907dc0",
+      "canonical_expected": {
+        "id": "runtime-map-traversal-public-from-arrays",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              9,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "e",
+                          "spelling": "e"
+                        }
+                      },
+                      5
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "g",
+                          "spelling": "g"
+                        }
+                      },
+                      7
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "c",
+                          "spelling": "c"
+                        }
+                      },
+                      3
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "h",
+                          "spelling": "h"
+                        }
+                      },
+                      8
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "d",
+                          "spelling": "d"
+                        }
+                      },
+                      4
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "f",
+                          "spelling": "f"
+                        }
+                      },
+                      6
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "i",
+                          "spelling": "i"
+                        }
+                      },
+                      9
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "e",
+                      "spelling": "e"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "g",
+                      "spelling": "g"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "c",
+                      "spelling": "c"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "h",
+                      "spelling": "h"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "d",
+                      "spelling": "d"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "f",
+                      "spelling": "f"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "i",
+                      "spelling": "i"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  5,
+                  7,
+                  3,
+                  8,
+                  2,
+                  4,
+                  6,
+                  9,
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "runtime-map-traversal-public-from-arrays",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              9,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "e",
+                          "spelling": "e"
+                        }
+                      },
+                      5
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "g",
+                          "spelling": "g"
+                        }
+                      },
+                      7
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "c",
+                          "spelling": "c"
+                        }
+                      },
+                      3
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "h",
+                          "spelling": "h"
+                        }
+                      },
+                      8
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "d",
+                          "spelling": "d"
+                        }
+                      },
+                      4
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "f",
+                          "spelling": "f"
+                        }
+                      },
+                      6
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "i",
+                          "spelling": "i"
+                        }
+                      },
+                      9
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "e",
+                      "spelling": "e"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "g",
+                      "spelling": "g"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "c",
+                      "spelling": "c"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "h",
+                      "spelling": "h"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "d",
+                      "spelling": "d"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "f",
+                      "spelling": "f"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "i",
+                      "spelling": "i"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  5,
+                  7,
+                  3,
+                  8,
+                  2,
+                  4,
+                  6,
+                  9,
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-call-forms",
+      "source": "(let [f (.-fromArrays PersistentHashMap) g (.-fromArrays cljs.core/PersistentHashMap)] (mapv (fn [m] [(instance? PersistentHashMap m) (count m) (get m :a) (vec m) (meta m)]) [(PersistentHashMap.fromArrays #js [:a :b] #js [1 2]) (cljs.core/PersistentHashMap.fromArrays #js [:a :b] #js [1 2]) (f #js [:a :b] #js [1 2]) (g #js [:a :b] #js [1 2]) (apply f [#js [:a :b] #js [1 2]])]))",
+      "source_sha256": "4cd64c6a13a3e5f2046dc4e5447f48b44ce317d0924ddc7db5a14b0df92599d1",
+      "canonical_expected": {
+        "id": "from-arrays-call-forms",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-call-forms",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  2,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  null
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-lengths",
+      "source": "(mapv (fn [m] [(instance? PersistentHashMap m) (count m) (vec m)]) [(PersistentHashMap.fromArrays #js [] #js []) (PersistentHashMap.fromArrays #js [] nil) (PersistentHashMap.fromArrays #js [:a] #js [1 2 3]) (PersistentHashMap.fromArrays #js [:a] #js [1] :extra)])",
+      "source_sha256": "f413191b9e2206a4244f896712d0a5316fa815e6ac8919fcebd7a2e5d16c5a29",
+      "canonical_expected": {
+        "id": "from-arrays-lengths",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true,
+                  0,
+                  {
+                    "$vector": []
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  0,
+                  {
+                    "$vector": []
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-lengths",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true,
+                  0,
+                  {
+                    "$vector": []
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  0,
+                  {
+                    "$vector": []
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  true,
+                  1,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-duplicates-collisions",
+      "source": "(let [m (PersistentHashMap.fromArrays #js [nil :a :a \"Aa\" \"BB\" nil 0 32 64 96 128] #js [1 2 3 4 5 6 7 8 9 10 11])] [(count m) (get m nil) (get m :a) (get m \"Aa\") (get m \"BB\") (vec m) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "47e6999ac619df1bac14a50ed812616bb39586d8ec67a9e74bc1dcc5f0e26bce",
+      "canonical_expected": {
+        "id": "from-arrays-duplicates-collisions",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              9,
+              6,
+              3,
+              4,
+              5,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      null,
+                      6
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      0,
+                      7
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      32,
+                      8
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      64,
+                      9
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      96,
+                      10
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      128,
+                      11
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "Aa",
+                      4
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "BB",
+                      5
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      3
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  null,
+                  0,
+                  32,
+                  64,
+                  96,
+                  128,
+                  "Aa",
+                  "BB",
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  4,
+                  5,
+                  3
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-duplicates-collisions",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              9,
+              6,
+              3,
+              4,
+              5,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      null,
+                      6
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      0,
+                      7
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      32,
+                      8
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      64,
+                      9
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      96,
+                      10
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      128,
+                      11
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "Aa",
+                      4
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "BB",
+                      5
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      3
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  null,
+                  0,
+                  32,
+                  64,
+                  96,
+                  128,
+                  "Aa",
+                  "BB",
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  4,
+                  5,
+                  3
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-number-boundaries",
+      "source": "(let [m (PersistentHashMap.fromArrays #js [-0.0 0 9007199254740992 9007199254740993 js/NaN js/NaN js/Infinity js/-Infinity] #js [:neg :zero :large :rounded :nan1 :nan2 :inf :negative-inf])] [(count m) (get m 0) (get m 9007199254740992) (get m js/NaN) (vec m)])",
+      "source_sha256": "29c830d5ac7a8e1a260a258485082ab57a1ada951ea237015bca35970e46556c",
+      "canonical_expected": {
+        "id": "from-arrays-number-boundaries",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              6,
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "zero",
+                  "spelling": "zero"
+                }
+              },
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "rounded",
+                  "spelling": "rounded"
+                }
+              },
+              null,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$number": "-0"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "zero",
+                          "spelling": "zero"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "+Infinity"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "inf",
+                          "spelling": "inf"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "-Infinity"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "negative-inf",
+                          "spelling": "negative-inf"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "NaN"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "nan1",
+                          "spelling": "nan1"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "NaN"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "nan2",
+                          "spelling": "nan2"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      9007199254740992,
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "rounded",
+                          "spelling": "rounded"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-number-boundaries",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              6,
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "zero",
+                  "spelling": "zero"
+                }
+              },
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "rounded",
+                  "spelling": "rounded"
+                }
+              },
+              null,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$number": "-0"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "zero",
+                          "spelling": "zero"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "+Infinity"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "inf",
+                          "spelling": "inf"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "-Infinity"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "negative-inf",
+                          "spelling": "negative-inf"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "NaN"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "nan1",
+                          "spelling": "nan1"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$number": "NaN"
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "nan2",
+                          "spelling": "nan2"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      9007199254740992,
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "rounded",
+                          "spelling": "rounded"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-independent-storage",
+      "source": "(let [ks #js [:a :b] vs #js [1 2] m (PersistentHashMap.fromArrays ks vs) _ (aset ks 0 :changed) _ (aset vs 0 99) n (assoc m :c 3) tagged (with-meta n {:mark true})] [(vec m) (vec n) (get m :a) (get m :changed) (meta m) (meta tagged) (instance? PersistentHashMap (empty tagged)) (meta (empty tagged))])",
+      "source_sha256": "423f3960b51a37f7e5cf2574e45e22e5ce62216820061d96654f56bb0193d0bd",
+      "canonical_expected": {
+        "id": "from-arrays-independent-storage",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "c",
+                          "spelling": "c"
+                        }
+                      },
+                      3
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              1,
+              null,
+              null,
+              {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "mark",
+                        "spelling": "mark"
+                      }
+                    },
+                    true
+                  ]
+                ],
+                "count": 1
+              },
+              true,
+              {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "mark",
+                        "spelling": "mark"
+                      }
+                    },
+                    true
+                  ]
+                ],
+                "count": 1
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-independent-storage",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "c",
+                          "spelling": "c"
+                        }
+                      },
+                      3
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              1,
+              null,
+              null,
+              {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "mark",
+                        "spelling": "mark"
+                      }
+                    },
+                    true
+                  ]
+                ],
+                "count": 1
+              },
+              true,
+              {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "mark",
+                        "spelling": "mark"
+                      }
+                    },
+                    true
+                  ]
+                ],
+                "count": 1
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-missing-value",
+      "source": "(let [f (.-fromArrays PersistentHashMap)] (mapv (fn [thunk] (try (thunk) (catch js/Error e [(instance? js/TypeError e) (.-message e)]))) [(fn [] (PersistentHashMap.fromArrays #js [:a :b] #js [1])) (fn [] (f #js [nil] #js [])) (fn [] (apply f [#js [42] #js []]))]))",
+      "source_sha256": "6d1d11f6d549acf641ed34e9c4b1635d2a73cdb0896db395885182fefb6f7ca6",
+      "canonical_expected": {
+        "id": "from-arrays-missing-value",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  false,
+                  "No value supplied for key: :b"
+                ]
+              },
+              {
+                "$vector": [
+                  false,
+                  "No value supplied for key: "
+                ]
+              },
+              {
+                "$vector": [
+                  false,
+                  "No value supplied for key: 42"
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-missing-value",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  false,
+                  "No value supplied for key: :b"
+                ]
+              },
+              {
+                "$vector": [
+                  false,
+                  "No value supplied for key: "
+                ]
+              },
+              {
+                "$vector": [
+                  false,
+                  "No value supplied for key: 42"
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-native-arities",
+      "source": "(let [f (.-fromArrays PersistentHashMap)] (mapv (fn [thunk] (try [(count (thunk))] (catch js/Error e [(instance? js/TypeError e)]))) [(fn [] (PersistentHashMap.fromArrays)) (fn [] (f)) (fn [] (apply f [])) (fn [] (PersistentHashMap.fromArrays #js [:a])) (fn [] (f #js [])) (fn [] (apply f [#js []])) (fn [] (apply f [#js [:a] #js [1] :extra]))]))",
+      "source_sha256": "71f882a4805ed56be451cd18b50e0ac8e6df05fdca7de0eecb12a9cba5bcc94c",
+      "canonical_expected": {
+        "id": "from-arrays-native-arities",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  0
+                ]
+              },
+              {
+                "$vector": [
+                  0
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-native-arities",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  0
+                ]
+              },
+              {
+                "$vector": [
+                  0
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-native-inputs",
+      "source": "(let [f (.-fromArrays PersistentHashMap)] (mapv (fn [thunk] (try [(count (thunk)) (vec (thunk))] (catch js/Error e [(instance? js/TypeError e)]))) [(fn [] (f nil #js [])) (fn [] (f #js [:a] nil)) (fn [] (f [:a :b] [1 2])) (fn [] (f (js-obj \"length\" 2 \"0\" :a \"1\" :b) (js-obj \"length\" 2 \"0\" 1 \"1\" 2))) (fn [] (f \"ab\" \"12\"))]))",
+      "source_sha256": "81aa3a0beaf2d780008dee9c4b64e8cbc9b1c023ad18801441f15111adc5e797",
+      "canonical_expected": {
+        "id": "from-arrays-native-inputs",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  {
+                    "$vector": []
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  2,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  2,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          "a",
+                          "1"
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          "b",
+                          "2"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-native-inputs",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  true
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  {
+                    "$vector": []
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  2,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "b",
+                              "spelling": "b"
+                            }
+                          },
+                          2
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "a",
+                              "spelling": "a"
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  2,
+                  {
+                    "$vector": [
+                      {
+                        "$vector": [
+                          "a",
+                          "1"
+                        ]
+                      },
+                      {
+                        "$vector": [
+                          "b",
+                          "2"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-operand-effects",
+      "source": "(let [events (atom []) f (.-fromArrays PersistentHashMap) m (f (do (swap! events conj :keys) #js [(do (swap! events conj :k0) :a) (do (swap! events conj :k1) :b)]) (do (swap! events conj :values) #js [(do (swap! events conj :v0) 1) (do (swap! events conj :v1) 2)])) output (with-out-str (println (count m)))] [(vec m) @events output])",
+      "source_sha256": "43139142f7eaf343007e5f2e23432e3694ddf9f2f6b65a12085e4afd0c9d1b48",
+      "canonical_expected": {
+        "id": "from-arrays-operand-effects",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "keys",
+                      "spelling": "keys"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "k0",
+                      "spelling": "k0"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "k1",
+                      "spelling": "k1"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "values",
+                      "spelling": "values"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "v0",
+                      "spelling": "v0"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "v1",
+                      "spelling": "v1"
+                    }
+                  }
+                ]
+              },
+              "2\n"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-operand-effects",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "keys",
+                      "spelling": "keys"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "k0",
+                      "spelling": "k0"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "k1",
+                      "spelling": "k1"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "values",
+                      "spelling": "values"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "v0",
+                      "spelling": "v0"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "v1",
+                      "spelling": "v1"
+                    }
+                  }
+                ]
+              },
+              "2\n"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-accessor-order",
+      "source": "(let [events (atom []) ks #js [:a :b] vs #js [1 2] _ (js/Object.defineProperty ks \"0\" #js {:get (fn [] (swap! events conj :key0) :a)}) _ (js/Object.defineProperty vs \"0\" #js {:get (fn [] (swap! events conj :value0) 1)}) m (PersistentHashMap.fromArrays ks vs)] [(vec m) @events])",
+      "source_sha256": "736cb978a0d8aaa8da7951f1388b425648ee1d61cee9599d24d9c8ee8aa19903",
+      "canonical_expected": {
+        "id": "from-arrays-accessor-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "key0",
+                      "spelling": "key0"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "value0",
+                      "spelling": "value0"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-accessor-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "key0",
+                      "spelling": "key0"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "value0",
+                      "spelling": "value0"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "from-arrays-custom-key-effects",
+      "source": "(do (def events (atom [])) (deftype FactoryKey [id] IHash (-hash [_] (swap! events conj [:hash id]) 7) IEquiv (-equiv [_ other] (swap! events conj [:equal id (.-id other)]) (= id (.-id other)))) (let [a (FactoryKey. 1) b (FactoryKey. 2) again (FactoryKey. 1) m (PersistentHashMap.fromArrays #js [a b again] #js [:a :b :again]) construction @events _ (reset! events []) entries (mapv (fn [e] [(.-id (key e)) (val e)]) m)] [(count m) construction @events entries (identical? a (key (first m))) (get m a)]))",
+      "source_sha256": "426f8b46785700aac646bf79014301142715373a0fb1caf70a60707049ee8ad1",
+      "canonical_expected": {
+        "id": "from-arrays-custom-key-effects",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              2,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "equal",
+                          "spelling": "equal"
+                        }
+                      },
+                      2,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "equal",
+                          "spelling": "equal"
+                        }
+                      },
+                      1,
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": []
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "again",
+                          "spelling": "again"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              true,
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "again",
+                  "spelling": "again"
+                }
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "from-arrays-custom-key-effects",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              2,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      2
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "equal",
+                          "spelling": "equal"
+                        }
+                      },
+                      2,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "hash",
+                          "spelling": "hash"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "equal",
+                          "spelling": "equal"
+                        }
+                      },
+                      1,
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": []
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "again",
+                          "spelling": "again"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              true,
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "again",
+                  "spelling": "again"
+                }
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    }
+  ]
+}

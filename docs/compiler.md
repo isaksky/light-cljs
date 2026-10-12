@@ -605,6 +605,13 @@ construction. Independent assertions cover those exact sources; differential
 constructor cases save `hash-map` as a function to exercise the shared runtime ABI.
 The full typed user acceptance example passes the pinned compiler comparison.
 
+`PersistentHashMap.fromArrays` constructs a persistent hash map from separate
+JavaScript key and value arrays in both application and demanded macro phases.
+It preserves hash routing, duplicate key representatives and ordinary operand
+evaluation. A missing value throws `Error` with `No value supplied for key: ...`;
+extra values are ignored. Qualified, saved and `apply` calls retain the pinned
+factory's JavaScript calling behavior. See the [exact factory proof](../tests/reference/compiler-language/hash-map-from-arrays.md).
+
 The map milestone passes **410** typed fixture outcomes, **48** generated cases,
 and **124** analyzer boundary classifications. Independent map transport probes
 check counts, malformed entries, duplicate encoded keys, cycles, host objects and

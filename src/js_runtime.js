@@ -5164,6 +5164,14 @@
     for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1], "hash-map", edit);
     return makeMap(entries, "hash-map");
   };
+  builtinTypes.PersistentHashMap.fromArrays = (keys, values) => {
+    const length = keys.length, entries = [], edit = {};
+    for (let i = 0; i < length; i++) {
+      if (values.length <= i) throw new Error(str("No value supplied for key: ", keys[i]));
+      putEntry(entries, keys[i], values[i], "hash-map", edit);
+    }
+    return makeMap(entries, "hash-map");
+  };
   function positionalFactory(Type, arity) {
     return function (...args) {
       if (args.length !== arity) return invalidArity(args.length);

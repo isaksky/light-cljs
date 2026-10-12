@@ -50,9 +50,10 @@ and value hashes in this order on first demand and caches the result; ordinary
 sequence traversal never repeats key hash/equality effects. Lookup and update
 routing preserve the original key representatives and their existing effects.
 
-Three independently confirmed neighboring gaps remain whole-source, zero-credit
-controls, with focused ordinary owners placed before strict 125. A fourth historical
-control had an invalid capability premise:
+Two independently confirmed neighboring gaps remain whole-source, zero-credit
+controls, with focused ordinary owners placed before strict 125. One factory gap
+is now delivered separately, and a fourth historical control had an invalid
+capability premise:
 
 - 182 is closed as invalid/not applicable: neither pinned core declares
   `iterator-seq`. Both pins warn about undeclared `user/iterator-seq` and throw a
@@ -60,8 +61,11 @@ control had an invalid capability premise:
   is `es6-iterator-seq`, already implemented in both phases. See the
   [fresh correction proof](iterator-name-correction.md). The frozen source,
   historical packets/rejections and zero credit remain unchanged.
-- 183: `PersistentHashMap.fromArrays` is missing; applications throw a type
-  error and both demanded macro contexts reject.
+- 183: `PersistentHashMap.fromArrays` now matches both pins in eight actual
+  application/macro, fresh/reused, QuickJS/Node frames. The [factory proof](hash-map-from-arrays.md)
+  separately preserves the complete original and twelve canonical factory
+  contracts. This historical 181 catalog, its failing packets and receipt remain
+  unchanged; current passing credit belongs only to the new proof.
 - 184: the direct `hash-map` source macro evaluates key/value operands in
   alternating order locally, while both pins group all keys before all values.
   A separate saved runtime-function source independently confirms ordinary
@@ -70,7 +74,7 @@ control had an invalid capability premise:
   from canonical public `equiv-map`; asymmetric custom values expose the gap.
   A separate symmetric custom-value source proves complete traversal effects.
 
-The remaining gaps are factory, source macro lowering and equivalence roots.
+The remaining gaps are source macro lowering and equivalence roots.
 The invalid-name control grants no runtime traversal or full-language agreement
 credit. Their exact sources, expected packets, actual packets and located
 rejections remain visible.
