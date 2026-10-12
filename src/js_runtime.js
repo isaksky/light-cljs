@@ -4520,6 +4520,12 @@
   variadicCore(hashMap, 0, args => mapFromArray(toArray(args), "hash-map"));
   variadicCore(arrayMap, 0, args => mapFromArray(toArray(args), "array-map"));
   variadicCore(hashSet, 0, args => setFromArray(toArray(args)));
+  // Applied collection arguments remain a sequence. Materializing the rest
+  // here would demand collections after the shortest input has already ended.
+  variadicCore(mapSeq, 4, (fn, c1, c2, c3, colls) =>
+    mapSeq(args => apply(fn, args), mapManySteps(cons(c1, cons(c2, cons(c3, colls))))));
+  variadicCore(mapv, 4, (fn, c1, c2, c3, colls) =>
+    into(vector(), apply(mapSeq, fn, c1, c2, c3, colls)));
   variadicCore(str, 1, (x, more) => {
     let result = str(x);
     for (let s = seq(more); s !== null; s = next(s)) result += str(first(s));

@@ -110,3 +110,20 @@ covered original, 27 verified canonical differences, two missing contracts,
 28 passing macro columns and two mismatching macro columns. Strict completion
 remains false. Historical original/disposition rows, prior receipts and exact
 contract bindings remain unchanged; fresh producers continue to govern credit.
+
+
+## Variadic mapv repair and fresh evidence
+
+The focused 168 repair restores the lazy variadic apply entry points of `map`
+and `mapv`. Its complete original, including all three `apply mapv` expressions
+and invalid deferred `keys` input, now passes every application/macro frame and
+both independently executed pins. Focused controls and verification are in
+[`../compiler-mapv-apply.md`](../compiler-mapv-apply.md).
+
+Fresh current evidence is
+`/tmp/light-cljs-168-canonical-current/evidence.json`, SHA-256
+`a27d10d93f81223de79ff257faf7e85a0124ee2fd6b494aed9e04b29f82073cf`.
+Actual full-ledger integration at `/tmp/light-cljs-168-ledger.json` reports
+**two covered originals, 27 verified canonical differences, and one missing
+contract**. The watch-key source remains owned by 169; strict comprehensive
+completion remains false. Earlier counts and receipts above remain historical.
