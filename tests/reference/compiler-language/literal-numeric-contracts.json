@@ -1666,27 +1666,6 @@
     }
   },
   "local_expected": {
-    "literal-numeric-runtime-small-constructors": {
-      "id": "literal-numeric-runtime-small-constructors",
-      "outcome": {
-        "status": "returned",
-        "value": {
-          "$vector": [
-            1,
-            {
-              "$keyword": {
-                "namespace": null,
-                "name": "float",
-                "spelling": "float"
-              }
-            },
-            1
-          ]
-        }
-      },
-      "trace": [],
-      "stdout": ""
-    },
     "literal-numeric-dynamic-set": {
       "id": "literal-numeric-dynamic-set",
       "outcome": {
@@ -1792,7 +1771,6 @@
     }
   },
   "nonpassing_neighbors": {
-    "literal-numeric-runtime-small-constructors": "177: small runtime constructors deduplicate locally but retain positional entries in both pins",
     "literal-numeric-dynamic-set": "release/checkout disagreement for dynamic equal lowered members",
     "literal-numeric-vector-set-members": "release/checkout disagreement for executable equal lowered vector members",
     "literal-numeric-collision-and-nan": "178: reader hash traversal differs from local insertion order; separate accepted count/membership control",

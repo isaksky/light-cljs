@@ -329,7 +329,7 @@ fn canonical_literal_constants_and_same_host_diagnostic_recovery() {
         (
             r###"literal-char-string-runtime-small-constructor-difference"###,
             r###"[(count (array-map \a 1 "a" 2)) (get (array-map \a 1 "a" 2) \a) (count (hash-set \a "a"))]"###,
-            r###"{"id":"literal-char-string-runtime-small-constructor-difference","outcome":{"status":"returned","value":{"$vector":[1,2,1]}},"trace":[],"stdout":""}"###,
+            r###"{"id":"literal-char-string-runtime-small-constructor-difference","outcome":{"status":"returned","value":{"$vector":[2,1,2]}},"trace":[],"stdout":""}"###,
         ),
         (
             r###"literal-char-string-dynamic-set-duplicate-difference"###,

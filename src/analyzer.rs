@@ -4218,6 +4218,29 @@ impl Analyzer<'_> {
             });
         }
         let callee = self.non_tail_form(operator, ExprContext::Value)?;
+        // The direct CLJS constructor macros retain distinct reader constants
+        // even when character/string or numeric categories lower to equal JS
+        // values. Saved function values and apply keep runtime deduplication.
+        let positional_constructor = match self.program.exprs[callee.0].kind {
+            ExprKind::CoreFn(CoreFnId::ArrayMap) if args.len().is_multiple_of(2) => {
+                self.source_constant_collision(args.iter().step_by(2).copied(), false)?
+                    .then_some(true)
+            }
+            ExprKind::CoreFn(CoreFnId::HashSet) if args.len() <= 8 => {
+                self.source_constant_collision(args.iter().copied(), false)?
+                    .then_some(false)
+            }
+            _ => None,
+        };
+        if let Some(map) = positional_constructor {
+            let items = args.iter()
+                .map(|&arg| self.non_tail_form(arg, ExprContext::Value))
+                .collect::<Result<_, _>>()?;
+            return Ok(self.push(
+                if map { ExprKind::LiteralMap(items) } else { ExprKind::LiteralSet(items) },
+                self.syntax.nodes[id.0].span.clone(), context,
+            ));
+        }
         if matches!(self.syntax.nodes[operator.0].kind, NodeKind::Symbol)
             && let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind
             && !core.accepts_direct_arity(args.len())

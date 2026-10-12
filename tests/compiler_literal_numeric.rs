@@ -371,7 +371,7 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
         (
             r###"literal-numeric-runtime-small-constructors"###,
             r###"[(count (array-map 1 :int 1.0 :float)) (get (array-map 1 :int 1.0 :float) 1) (count (hash-set 1 1.0))]"###,
-            r###"{"id":"literal-numeric-runtime-small-constructors","outcome":{"status":"returned","value":{"$vector":[1,{"$keyword":{"namespace":null,"name":"float","spelling":"float"}},1]}},"trace":[],"stdout":""}"###,
+            r###"{"id":"literal-numeric-runtime-small-constructors","outcome":{"status":"returned","value":{"$vector":[2,{"$keyword":{"namespace":null,"name":"int","spelling":"int"}},2]}},"trace":[],"stdout":""}"###,
         ),
         (
             r###"literal-numeric-dynamic-map"###,

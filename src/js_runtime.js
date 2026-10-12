@@ -1166,6 +1166,10 @@
         if (mapKinds.get(value) === "array-map" && entries.length > 1) {
           // Canonical removal searches first, then copies with query-side equality.
           const retained = entries.filter(entry => !equalPair(key, entry.key));
+          // The positional constructor can contain equal lowered keys. CLJS
+          // allocates room for one removed pair even when the copy skips more;
+          // preserve its trailing undefined pair(s) and decremented count.
+          while (retained.length < entries.length - 1) retained.push(Object.freeze({key: undefined, value: undefined, hash: 0}));
           entries.splice(0, entries.length, ...retained);
         } else if (hashRoots.has(entries)) removeHashEntry(entries, index);
         else entries.splice(index, 1);
@@ -1255,6 +1259,8 @@
     if (!original) throw new Error("disj not supported on this type");
     const treeMap = publicCollectionSlots.get(value)?.["tree-map"];
     if (treeMap) return treeSetConstructor(meta(value), dissoc(treeMap, ...keys), null);
+    const hashMap = publicCollectionSlots.get(value)?.["hash-map"];
+    if (hashMap) return PersistentHashSetValue(meta(value), dissoc(hashMap, ...keys), null);
     const entries = copyEntries(original);
     for (const key of keys) {
       const index = collectionEntryIndex(value, entries, key);

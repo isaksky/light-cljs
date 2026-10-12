@@ -137,3 +137,27 @@ sequence order, and cannot close the strict full-language gate.
 The surrounding verification passed 181 ordinary analyzer/bootstrap/case/equality/literal/macro/reader regressions plus the new numeric regression, 18 inventory guards, 22 full-ledger guards and four character/string literal guards. Byte-exact inventory regeneration changed only the analyzer source hash; all original bodies, obligations and expectations remain unchanged. Six phase and five operation witness file hashes were rebound only after checking that the linked complete test bodies were byte-identical. The fresh current static ledger still has `strict_complete: false`; these controls add no original-language obligation credit. The compiler benchmark completed 423 validated measurements (nine samples, two iterations). Strict Clippy retains 55 pre-existing diagnostics. No cancellation or singular/plural limit suite, push or PR ran; externally blocked 156 remained untouched.
 
 A distinct generic map source evaluation-order defect has a duplicate-checked live owner, Pellet 179, before gate 125. The complete keyword-only nine-entry source in `literal-map-effects-gap-receipt.json` (SHA-256 `7f80685267a423177be8d047cf92371d0811d6686fb8fa2e05848fc89b128a78`) returns `[9 [:e :g :c :h :b :d :f :i :a]]` in both independent pins; all eight actual local frames return `[9 [:a :b :c :d :e :f :g :h :i]]`. The discovery binds reference artifacts, exact source wrappers, emitted JavaScript, executable/environment/source hashes and complete typed packets. It earns zero acceptance or original/full-language credit. Its raw references and local executions remain at `/private/tmp/light-cljs-176-generic-map-effects-reference` and `/private/tmp/light-cljs-176-map-effects-neighbor`. This follow-up was recorded without implementing another Pellet.
+
+
+## Constructor follow-through after Pellet 177
+
+The earlier delivery above remains historical. Pellet 177 fixes the exact small
+direct `array-map`/`hash-set` constructor source without changing its independently
+pinned expectation. Saved/apply calls retain deduplication. Fresh current proof
+includes both pins and all eight actual source/phase/engine/lifecycle frames.
+Constructor updates, metadata/hash, sizes and effects are covered separately in
+[positional-constructors.md](positional-constructors.md).
+
+The current `literal-numeric-receipt.json` is byte-identical to
+`/private/tmp/light-cljs-177-numeric-followthrough-v1/evidence.json` (SHA-256
+`de356e8a0e6a2de282179fed0651a6ea26f0b436c9b23f58e9f43ed14cf0b3a1`). It establishes
+38 accepted complete sources (304 frames), while
+4 complete sources stay explicitly nonpassing. Both pin disagreements
+and Pellet 178 traversal sources remain unchanged and receive zero acceptance
+credit. Every diagnostic and same-host demanded macro recovery was rerun.
+
+The previous receipt is preserved byte-exact as `literal-numeric-historical-176-receipt.json`,
+and its contract catalog is preserved as `literal-numeric-historical-176-contracts.json`;
+historical originals, outcomes and the strict full-language criteria survive.
+The constructor follow-through does not provide original-body or full-language
+completion credit.

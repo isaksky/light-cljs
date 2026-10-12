@@ -148,3 +148,26 @@ No push or pull request was performed.
 The exact numeric neighbor `[(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq #{1 1.0}))]` now agrees with both independent pins: `[2 :int 2 [1 1]]`. The source and canonical packets remain unchanged. The previous 174 receipt is preserved byte-for-byte as `literal-char-string-historical-174-receipt.json` (SHA-256 `1b3b04c33553cb5f3c1502af37a85e3d9a836195334913c77c554a252875a94d`), retaining its nonpassing numeric frame and historical local `[1 :float 1 [1]]` outcome.
 
 The current receipt comes from fresh raw production in `/private/tmp/light-cljs-176-literal-char-current`: both pins, 240 actual execution frames, and 88 same-host diagnostic recovery outcomes. There are now 26 accepted sources (208 accepted engine frames) and four retained nonpassing neighbors. Runtime small constructors remain owned by 177; set traversal remains owned by 178. The pins' two existing dynamic/executable set version differences retain their separate outcomes. Original SCI/full-language completion credit remains zero for these controls. The updated receipt SHA-256 is `7158cc3fd915cc4db76dc43c830954f3acdc03ad74c421f4baf10d9eb1446aa4`.
+
+
+## Constructor follow-through after Pellet 177
+
+The earlier delivery above remains historical. Pellet 177 fixes the exact small
+direct `array-map`/`hash-set` constructor source without changing its independently
+pinned expectation. Saved/apply calls retain deduplication. Fresh current proof
+includes both pins and all eight actual source/phase/engine/lifecycle frames.
+Constructor updates, metadata/hash, sizes and effects are covered separately in
+[positional-constructors.md](positional-constructors.md).
+
+The current `literal-char-string-receipt.json` is byte-identical to
+`/private/tmp/light-cljs-177-char-followthrough-v1/evidence.json` (SHA-256
+`559a435d1a05195e81aa0e265b39ccc78bd618b4b8735be49139b4b8feba4c6b`). It establishes
+27 accepted complete sources (216 frames), while
+3 complete sources stay explicitly nonpassing. Both pin disagreements
+and Pellet 178 traversal sources remain unchanged and receive zero acceptance
+credit. Every diagnostic and same-host demanded macro recovery was rerun.
+
+The previous receipt is preserved byte-exact as `literal-char-string-historical-after176-receipt.json`;
+historical originals, outcomes and the strict full-language criteria survive.
+The constructor follow-through does not provide original-body or full-language
+completion credit.

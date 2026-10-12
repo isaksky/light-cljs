@@ -1,0 +1,990 @@
+{
+  "sources": [
+    {
+      "id": "positional-constructor-original",
+      "source": "[(count (array-map \\a 1 \"a\" 2)) (get (array-map \\a 1 \"a\" 2) \\a) (count (hash-set \\a \"a\"))]",
+      "source_sha256": "9413d84f8cf44c63bcd221dbcfaef802b7fb736f7e7f04294503df84fab75357"
+    },
+    {
+      "id": "positional-constructor-direct-order",
+      "source": "(let [m (array-map \\a 1 \"a\" 2) s (hash-set \\a \"a\")] [(count m) (get m \"a\") (contains? m \\a) (vec (seq m)) (vec (keys m)) (vec (vals m)) (count s) (get s \"a\") (contains? s \\a) (vec (seq s))])",
+      "source_sha256": "8faf704df1bd071e72355bfe990f2314b4fa598b2d94720d51478c0b9d8b80a8"
+    },
+    {
+      "id": "positional-constructor-reverse",
+      "source": "(let [m (array-map \"a\" 2 \\a 1) s (hash-set \"a\" \\a)] [(count m) (get m \\a) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "18c06082600be23017f74b4975081da260c5b298d1f739e05c21bdbde76bbc8e"
+    },
+    {
+      "id": "positional-constructor-numeric",
+      "source": "(let [m (array-map 1 :int 1.0 :float) s (hash-set 1 1.0)] [(count m) (get m 1) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "b11e945f86fd30cb94e4372e1ed0c6319b735ebc01e1e3a1375a657db00a897c"
+    },
+    {
+      "id": "positional-constructor-equal",
+      "source": "[(vec (seq (array-map \"a\" 1 \"a\" 2))) (vec (seq (hash-set \"a\" \"a\"))) (count (array-map 1 :one 0x1 :two)) (count (hash-set 1 0x1))]",
+      "source_sha256": "63764785dd12648cf6c9cc41c22d08e5f193d1b4aecc61e12accd93f95e9af59"
+    },
+    {
+      "id": "positional-constructor-saved",
+      "source": "(let [a array-map h hash-set m (a \\a 1 \"a\" 2) s (h \\a \"a\")] [(count m) (get m \\a) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "040dc2979c9d712052ed64ac1a52b00514630d2826756bbbc3ca20c35db7d1b7"
+    },
+    {
+      "id": "positional-constructor-apply",
+      "source": "(let [m (apply array-map [\\a 1 \"a\" 2]) s (apply hash-set [\\a \"a\"])] [(count m) (get m \\a) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "c733011ab46dfe1b3aaf018680653ba77f28106f94cf026d85896b8562299651"
+    },
+    {
+      "id": "positional-constructor-dynamic",
+      "source": "(let [a \\a b \"a\" m (array-map a 1 b 2) s (hash-set a b)] [(count m) (get m a) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "317554e31f6c793b7884b3a7b0cdd54973dcb40d31e6e972d6d20b42df1ea1c4"
+    },
+    {
+      "id": "positional-constructor-zero-one",
+      "source": "[(count (array-map)) (count (hash-set)) (count (apply array-map [])) (count (apply hash-set [])) (vec (seq (array-map :x 1))) (vec (seq (hash-set :x)))]",
+      "source_sha256": "0b29e402aa7655b8c0d11ff2162b7b602596a729f0ceaa255b2ed4e1cf40df51"
+    },
+    {
+      "id": "positional-constructor-eight",
+      "source": "(let [m (array-map \\a 1 \"a\" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8) s (hash-set \\a \"a\" :b :c :d :e :f :g)] [(count m) (get m \\a) (vec (vals m)) (count s) (vec (seq s))])",
+      "source_sha256": "f84a0451d0f0329a6f57e1dae27d1f3c170ee92d2ff91bcc06775e8a0b62de32"
+    },
+    {
+      "id": "positional-constructor-nine",
+      "source": "(let [m (array-map \\a 1 \"a\" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9) s (hash-set \\a \"a\" :b :c :d :e :f :g :h)] [(count m) (get m \\a) (vec (vals m)) (count s) (contains? s \\a) (contains? s :h)])",
+      "source_sha256": "a7756a13b0bcbed2eefbd14db5b8ac261527a73adaffe7369c5353e94e8159b0"
+    },
+    {
+      "id": "positional-constructor-metadata-hash",
+      "source": "(let [m (with-meta (array-map \\a 1 \"a\" 2) {:tag :map}) s (with-meta (hash-set \\a \"a\") {:tag :set})] [(meta m) (meta s) (count m) (count s) (= (hash m) (hash (array-map \\a 1 \"a\" 2))) (= (hash s) (hash (hash-set \\a \"a\"))) (= (hash m) (hash (with-meta m {:other true}))) (= (hash s) (hash (with-meta s {:other true})))])",
+      "source_sha256": "d0dd41fb713ee9b3b5d8d5fba7d7f6424721a9489c1565a688628b70d85ef226"
+    },
+    {
+      "id": "positional-constructor-map-updates",
+      "source": "(let [m (with-meta (array-map \\a 1 \"a\" 2) {:tag :map}) a (assoc m \"a\" 3) d (dissoc m \"a\") c (conj m [\"a\" 4])] [(count a) (get a \\a) (vec (seq a)) (count d) (mapv (fn [e] [(undefined? (key e)) (undefined? (val e))]) (seq d)) (count c) (get c \\a) (vec (seq c)) (meta a) (meta d) (meta c) (count m) (get m \\a)])",
+      "source_sha256": "9a4d289c56085c0417c4c5024f90324785a12243e3f5014c5b0605cea9eebdd4"
+    },
+    {
+      "id": "positional-constructor-set-updates",
+      "source": "(let [s (with-meta (hash-set \\a \"a\") {:tag :set}) c (conj s \"a\") d (disj s \"a\")] [(count c) (vec (seq c)) (count d) (contains? d \"a\") (mapv undefined? (seq d)) (meta c) (meta d) (count s)])",
+      "source_sha256": "d48324b730460bb9659d745a35e7118f3065bfd71dcceb7e2ac4bfe5107c4a03"
+    },
+    {
+      "id": "positional-constructor-promotion",
+      "source": "(let [m (array-map \\a 1 \"a\" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8) s (hash-set \\a \"a\" :b :c :d :e :f :g) a (assoc m :h 9) c (conj s :h)] [(count a) (get a \"a\") (get a :h) (count c) (contains? c \"a\") (contains? c :h) (count m) (count s)])",
+      "source_sha256": "ea988d872cd1862670f3bfaa685628f6ff59d3c3ea5f06740094f516f0ffe3b9"
+    },
+    {
+      "id": "positional-constructor-unicode",
+      "source": "[(count (array-map \\u0061 1 \"a\" 2)) (get (array-map \\newline 1 \"\\n\" 2) \\u000a) (count (hash-set \\space \" \"))]",
+      "source_sha256": "9433309ba9e2ffb3081a5403d732399262834c59b4a1cdd06d415f09f943ceeb"
+    },
+    {
+      "id": "positional-constructor-quoted",
+      "source": "(let [m (array-map '\\a 1 \"a\" 2) s (hash-set '\\a \"a\")] [(count m) (get m \"a\") (count s) (contains? s \"a\")])",
+      "source_sha256": "0e218529a665495f47907ca953abd2bbeb3d4b59425ad514b248b8e46ab03cae"
+    },
+    {
+      "id": "positional-constructor-hash-map-set-dedup",
+      "source": "(let [m (hash-map \\a 1 \"a\" 2) s (set [\\a \"a\"]) n (set (list \\a \"a\"))] [(count m) (get m \\a) (count s) (count n) (vec (seq s))])",
+      "source_sha256": "99bc16451f797fe8257258d6dbeb053d52913652374c9abb3cee76057d83d30c"
+    },
+    {
+      "id": "positional-constructor-operand-effects",
+      "source": "(let [events (atom []) m (array-map \\a (do (swap! events conj :first) 11) \"a\" (do (swap! events conj :second) 22)) s (hash-set (do (swap! events conj :third) \\a) (do (swap! events conj :fourth) \"a\")) output (with-out-str (println (count m)) (println (get m \\a)))] [(count m) (get m \\a) (count s) @events output])",
+      "source_sha256": "62b0b7e01d7d4ecabdd105a5374b1fa9d9ffdc3c2bc9d0374f990dda04b8a757"
+    },
+    {
+      "id": "positional-constructor-equality-effects",
+      "source": "(let [events (atom []) k (reify IEquiv (-equiv [this other] (swap! events conj :equiv) (identical? this other)) IHash (-hash [this] (swap! events conj :hash) 7)) m (array-map k 1 k 2) s (hash-set k k)] [(count m) (get m k) (count s) (contains? s k) @events])",
+      "source_sha256": "847edbdcd44ad3dee9b8a64166f2da3f28d2524a8a56e6c528ed1ebaf91b2ee8"
+    },
+    {
+      "id": "positional-constructor-odd-recovery",
+      "source": "(let [a array-map events (atom []) result (try (a :a (do (swap! events conj :value) 1) :b) (catch :default e (.-message e)))] [result @events (count (a :ok 42))])",
+      "source_sha256": "4ee4066a4e84691d77cb60d47f9cdd96b648c1f35479d982d6c6aab25fb90677"
+    },
+    {
+      "id": "positional-constructor-saved-boundary",
+      "source": "(let [a array-map h hash-set m (a \\a 1 \"a\" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9) s (apply h [\\a \"a\" :b :c :d :e :f :g :h])] [(count m) (get m \\a) (count s) (contains? s :h)])",
+      "source_sha256": "1b00e46060ca61b2c279eb15e2b1d29c632f64d59a0c48f1e0cdbad7f8f3fef3"
+    },
+    {
+      "id": "positional-constructor-rejection",
+      "source": "(array-map :a {1 1 0x1 2})",
+      "source_sha256": "01009a9d82242d62a3c4e6105e33a90d26ef79870c7566f3b293151ab4d8d3af"
+    }
+  ],
+  "canonical_expected": [
+    {
+      "id": "positional-constructor-original",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-direct-order",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            true,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    1
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            },
+            {
+              "$vector": [
+                1,
+                2
+              ]
+            },
+            2,
+            "a",
+            true,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-reverse",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    1
+                  ]
+                }
+              ]
+            },
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-numeric",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "int",
+                "spelling": "int"
+              }
+            },
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    1,
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "int",
+                        "spelling": "int"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "$vector": [
+                    1,
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "float",
+                        "spelling": "float"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            2,
+            {
+              "$vector": [
+                1,
+                1
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-equal",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            {
+              "$vector": [
+                "a"
+              ]
+            },
+            1,
+            1
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-saved",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            1,
+            {
+              "$vector": [
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-apply",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            1,
+            {
+              "$vector": [
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-dynamic",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            1,
+            {
+              "$vector": [
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-zero-one",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            0,
+            0,
+            0,
+            0,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "x",
+                        "spelling": "x"
+                      }
+                    },
+                    1
+                  ]
+                }
+              ]
+            },
+            {
+              "$vector": [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "x",
+                    "spelling": "x"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-eight",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            8,
+            1,
+            {
+              "$vector": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ]
+            },
+            8,
+            {
+              "$vector": [
+                "a",
+                "a",
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "b",
+                    "spelling": "b"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "c",
+                    "spelling": "c"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "d",
+                    "spelling": "d"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "e",
+                    "spelling": "e"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "f",
+                    "spelling": "f"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "g",
+                    "spelling": "g"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-nine",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            9,
+            1,
+            {
+              "$vector": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9
+              ]
+            },
+            8,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-metadata-hash",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "map",
+                      "spelling": "map"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "set",
+                      "spelling": "set"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            2,
+            2,
+            true,
+            true,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-map-updates",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            3,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    3
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            1,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    true,
+                    true
+                  ]
+                }
+              ]
+            },
+            2,
+            4,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    4
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "map",
+                      "spelling": "map"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "map",
+                      "spelling": "map"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "map",
+                      "spelling": "map"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            2,
+            1
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-set-updates",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            },
+            1,
+            false,
+            {
+              "$vector": [
+                true
+              ]
+            },
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "set",
+                      "spelling": "set"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "tag",
+                      "spelling": "tag"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "set",
+                      "spelling": "set"
+                    }
+                  }
+                ]
+              ],
+              "count": 1
+            },
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-promotion",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            8,
+            2,
+            9,
+            8,
+            true,
+            true,
+            8,
+            8
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-unicode",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-quoted",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-hash-map-set-dedup",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            1,
+            1,
+            {
+              "$vector": [
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-operand-effects",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            11,
+            1,
+            {
+              "$vector": [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "first",
+                    "spelling": "first"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "second",
+                    "spelling": "second"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "third",
+                    "spelling": "third"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "fourth",
+                    "spelling": "fourth"
+                  }
+                }
+              ]
+            },
+            "2\n11\n"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-equality-effects",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            1,
+            true,
+            {
+              "$vector": []
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-odd-recovery",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            "No value supplied for key: :b",
+            {
+              "$vector": [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "value",
+                    "spelling": "value"
+                  }
+                }
+              ]
+            },
+            1
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "positional-constructor-saved-boundary",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            8,
+            2,
+            8,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  ],
+  "checkout_expected": {},
+  "diagnostics": {
+    "release": {
+      "positional-constructor-rejection": "Duplicate key: 1"
+    },
+    "checkout": {
+      "positional-constructor-rejection": "Duplicate key: 1"
+    }
+  },
+  "derivation_artifacts_root": "/private/tmp/light-cljs-177-derive-v2"
+}

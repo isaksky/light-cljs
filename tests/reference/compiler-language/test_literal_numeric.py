@@ -9,7 +9,7 @@ class NumericLiteralSourceGuards(unittest.TestCase):
     def test_exact_original_and_complete_independent_catalog(self):
         rows,negative=literal.load()
         self.assertEqual(literal.ORIGINAL,rows[0]['source'])
-        self.assertEqual([42,26,37],[len(rows),len(negative),sum(r['canonical_acceptance'] for r in rows)])
+        self.assertEqual([42,26,38],[len(rows),len(negative),sum(r['canonical_acceptance'] for r in rows)])
         self.assertEqual(2,sum(not r['two_pin_agreement'] for r in rows))
         for row in rows+negative:
             self.assertEqual(literal.sci.digest(row['source']),row['source_sha256'])
@@ -25,9 +25,9 @@ class NumericLiteralSourceGuards(unittest.TestCase):
         self.assertTrue(by_id['literal-numeric-collision-and-nan-count']['canonical_acceptance'])
         self.assertEqual([3,False],by_id['literal-numeric-collision-and-nan-count']['canonical_expected']['outcome']['value']['$vector'][-2:])
 
-    def test_constructor_pin_and_traversal_gaps_stay_nonpassing(self):
+    def test_pin_and_traversal_gaps_stay_nonpassing(self):
         rows,_=literal.load();gaps=[r for r in rows if not r['canonical_acceptance']]
-        self.assertEqual({'runtime-small-constructors','dynamic-set','vector-set-members','collision-and-nan','set-traversal-gap'},
+        self.assertEqual({'dynamic-set','vector-set-members','collision-and-nan','set-traversal-gap'},
                          {r['id'].removeprefix('literal-numeric-') for r in gaps})
         for row in gaps:
             self.assertTrue(row['nonpassing_reason'])
