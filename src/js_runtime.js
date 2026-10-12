@@ -968,14 +968,23 @@
     // Canonical array maps compare keys without a hash guard. Keyword equality uses
     // fqn, while hashing uses namespace/name; unusual equal keywords can have
     // different hashes and therefore remain distinct in hash maps.
-    return entries.findIndex(entry => (kind === "array-map" || entry.hash === keyHash) && equalPair(entry.key, key));
+    if (kind === "array-map") return entries.findIndex(entry =>
+      key == null ? entry.key == null : typeof key === "string" || typeof key === "number"
+        ? key === entry.key : equalPair(key, entry.key));
+    return entries.findIndex(entry => entry.hash === keyHash && equalPair(key, entry.key));
   }
 
   // Builders mutate only fresh unpublished arrays. Entry cells and retained
   // equivalent keys are shared by subsequent immutable versions.
   function putEntry(entries, key, value, kind) {
-    const keyHash = hash(key), index = entryIndex(entries, key, keyHash, kind);
-    const entry = Object.freeze({key: index < 0 ? key : entries[index].key, value, hash: index < 0 ? keyHash : entries[index].hash});
+    const keyHash = kind === "array-map" ? undefined : hash(key);
+    const index = entryIndex(entries, key, keyHash, kind);
+    const retained = index < 0 ? key : entries[index].key;
+    // Array maps do not hash keys. Keep their hash deferred until promotion.
+    let cachedHash = index < 0 ? keyHash : kind === "array-map" ? undefined : entries[index].hash;
+    const entry = Object.freeze({key: retained, value, get hash() {
+      return cachedHash === undefined ? cachedHash = hash(retained) : cachedHash;
+    }});
     if (index < 0) entries.push(entry);
     else entries[index] = entry;
   }
@@ -1002,7 +1011,13 @@
     const entries = original.slice();
     for (const key of keys) {
       const index = collectionEntryIndex(value, entries, key);
-      if (index >= 0) entries.splice(index, 1);
+      if (index >= 0) {
+        if (mapKinds.get(value) === "array-map" && entries.length > 1) {
+          // Canonical removal searches first, then copies with query-side equality.
+          const retained = entries.filter(entry => !equalPair(key, entry.key));
+          entries.splice(0, entries.length, ...retained);
+        } else entries.splice(index, 1);
+      }
     }
     const Type = recordTypes.get(value);
     const removeRecord = Type && keys.some(key => Type.fieldNames.some(name => equalPair(key, keyword(null, name))));
@@ -2345,7 +2360,16 @@
   }
   function collectionEntryIndex(value, entries, key) {
     const comparator = sortedComparators.get(value);
-    if (!comparator) return entryIndex(entries, key, hash(key), mapKinds.get(value));
+    if (!comparator) {
+      const kind = mapKinds.get(value);
+      if (kind === "array-map") return entryIndex(entries, key, undefined, kind);
+      // Hash-map nil slots are separate from the trie and never hash a query.
+      if (kind === "hash-map") {
+        if (key == null) return entries.findIndex(entry => entry.key == null);
+        if (!entries.some(entry => entry.key != null)) return -1;
+      }
+      return entryIndex(entries, key, hash(key), kind);
+    }
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
   }
@@ -2367,7 +2391,8 @@
       // A fresh nil map starts as an array map; the ninth distinct key promotes
       // it. Check existing keys before promotion, as canonical assoc does.
       const array = (coll == null || kind === "array-map") &&
-        (entries.length < 8 || entryIndex(entries, key, hash(key), "array-map") >= 0);
+        (entries.length < 8 || entryIndex(entries, key, undefined, "array-map") >= 0);
+      if (!array && kind === "array-map") for (const entry of entries) void entry.hash;
       putEntry(entries, key, value, array ? "array-map" : undefined);
     }
   }

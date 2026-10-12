@@ -1,0 +1,2 @@
+# Known public effect gap; owned by focused follow-up, no passing credit.
+promotion-hash-order	(let [events (atom []) a (atom 1) k (reify IHash (-hash [this] (swap! events conj :hash) 7) IEquiv (-equiv [this other] (swap! events conj :equiv) false))] (add-watch a k (fn [& _])) (doseq [i (range 8)] (add-watch a i (fn [& _]))) [@events (do (reset! events []) (remove-watch a k) (reset! a 2)) @events])	[[:hash :hash] 2 [:hash]]

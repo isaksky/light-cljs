@@ -127,3 +127,24 @@ Actual full-ledger integration at `/tmp/light-cljs-168-ledger.json` reports
 **two covered originals, 27 verified canonical differences, and one missing
 contract**. The watch-key source remains owned by 169; strict comprehensive
 completion remains false. Earlier counts and receipts above remain historical.
+
+
+## Atom watch-key repair and fresh evidence
+
+The focused 169 repair restores small-map query equality and demand behavior,
+including unchanged lazy absent watch removal beside the nil-key watch. Its
+complete original now passes both pins and every actual application/macro
+frame. Focused controls and verification are in
+[`../compiler-watch-keys.md`](../compiler-watch-keys.md).
+
+Fresh current evidence is
+`/tmp/light-cljs-169-canonical-current/evidence.json`, SHA-256
+`214c3f69d78df7402c2949832eec9c43f9b435c58b85a992070c4508cd2973d8`.
+Actual full-ledger integration at `/tmp/light-cljs-169-ledger.json` reports
+**three covered originals, 27 verified canonical differences, and zero missing
+contracts in this 30-source cohort**. Strict comprehensive completion remains
+false. A distinct independently reproduced hash-map branch insertion effect gap
+is owned by **light-cljs-170, Preserve public hash effects when hash-map branches
+collide**, immediately before 125; it receives no passing credit. Earlier
+sources, expectations, counts and receipts above remain historical. Externally
+blocked 156 remains untouched.
