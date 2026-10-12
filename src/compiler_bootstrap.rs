@@ -39,6 +39,7 @@ const MACROS: &[(&str, &str)] = &[
     ("vswap!", "vswap!"),
     ("doto", "doto"),
     ("js-obj", "js-obj"),
+    ("hash-map", "hash-map"),
     ("memfn", "memfn"),
     ("amap", "amap"),
     ("areduce", "areduce"),

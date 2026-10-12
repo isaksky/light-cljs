@@ -1,0 +1,1 @@
+(let [events (atom []) f (fn [x] (swap! events conj x) x) m (hash-map (f :a) (f 1) (f :b) (f 2) (f :c) (f 3) (f :d) (f 4) (f :e) (f 5) (f :f) (f 6) (f :g) (f 7) (f :h) (f 8) (f :i) (f 9)) output (with-out-str (println m))] [(count m) (vec m) @events output])

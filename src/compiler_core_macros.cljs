@@ -127,6 +127,20 @@
   (macro-conditional-thread value forms true true))
 (defmacro macro-comment [& forms] nil)
 
+(defmacro macro-hash-map [& kvs]
+  (if (seq kvs)
+    (let [pairs (map (fn [pair] (remove #{:cljs.core/missing} pair))
+                  (partition 2 2 (repeat :cljs.core/missing) kvs))
+          keys (map first pairs)
+          values (map second (take-while (fn [pair] (= 2 (count pair))) pairs))]
+      ;; Keep the pinned macro's operand groups and missing-value behavior.
+      ;; Saved runtime functions continue to consume alternating operands.
+      (with-meta
+        (list 'cljs.core/PersistentHashMap.fromArrays
+          (cons 'cljs.core/array keys) (cons 'cljs.core/array values))
+        {:tag 'cljs.core/PersistentHashMap}))
+    (list '.-EMPTY 'cljs.core/PersistentHashMap)))
+
 (defmacro macro-case [value & clauses]
   (let [pairs (partition 2 clauses)
         groups (mapv (fn [pair]
