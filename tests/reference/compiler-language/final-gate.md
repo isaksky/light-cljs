@@ -1074,3 +1074,93 @@ by automatic safety review for possible cybersecurity risk. Its preserved patch
 was not retried, delegated, investigated or repaired; no cancellation/limits
 suite was run. Remaining full-gate obligations, timeouts and source differences
 cannot be converted into completion by this checkpoint.
+
+## Executed comprehensive checkpoint and new contexts at 8be52ad
+
+After focused production repairs 165 and 166, the complete unfiltered command
+executed at `8be52ad6d2e37e0c9e9a7a64a61244f14f7094d9`:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/report.py --run --strict --reference both --checkout research/clojurescript --timeout 300 --reference-timeout 600 --artifacts /tmp/light-cljs-125-full-8be52ad
+```
+
+Exit 1, full source and fixture selections, strict completion false: **6,242
+covered, 43 verified rejections, 31 warnings, 2,030 missing, 249 version
+differences and 1,396 unrelated**. Missing kinds are 27 original source sites,
+580 public arities, 477 local operations, 944 SCI cases, one assertion-free body
+and one source program. All 1,518 mapped phase obligations passed 56 exact named
+audits. No other phase eligibility is inferred. This actual pre-integration
+receipt remains `/tmp/light-cljs-125-full-8be52ad/report.json`; its log is the
+adjacent `.log`. The following integrations do not relabel that full run.
+
+Fresh 50-source receipts retain 35 original agreements, eight pinned version
+differences and seven unresolved originals. Fresh 191-library receipts retain
+163 original agreements, six pinned version differences and 22 unresolved
+originals. Every complete previous receipt is preserved under `prior_evidence`.
+The separate full library reconciliation executes 176 application/macro frames
+and verifies eleven canonical SCI differences and eleven adopted strict-EDN
+differences. Original expectations stay unresolved. Eleven compiler-document
+scope hashes were refreshed after reviewing the new declaration-generation
+documentation; their complete earlier hash histories remain intact.
+
+The subsequent normal focused report verifies **90 added arity/local links**
+(47 public, 43 local) through 21 complete source oracles, both pins and six exact
+actual macro audits. Integration adds 75 phase rows and preserves the previous
+fifteen replaced/enriched anchors separately. Current report and exact command:
+`/tmp/light-cljs-125-arity-focused-current/report.json` and
+`/tmp/light-cljs-125-arity-focused-current-command.json`. Exit 0 verifies the
+selected source executions; `all_selected_fixtures: false` and
+`strict_complete: false` explicitly prevent comprehensive acceptance.
+
+The fresh unchanged 35-source collection/sequence/Atom audit finds no original
+SCI agreement in both engines and both pins. Thirty exact common canonical
+contracts retain 240 original-source application/macro frames. The new report
+adapter and current real ledger integration verify **27 canonical differences**,
+with zero original SCI pass credit, while three public discrepancies remain
+missing. Current raw proof and receipt hashes are documented in
+`sci-gap-canonical-context.md`. Status-only, stale producer, altered source,
+empty artifact, absent executable, scalar macro and incomplete phase evidence
+are rejected. The full report always produces fresh evidence and never consumes
+the committed historical receipt as a passing fallback.
+
+Fresh duplicate checks created **light-cljs-167, Preserve canonical reduce-kv
+fallback for nested map entries**, **light-cljs-168, Preserve variadic mapv
+shortest-input laziness through apply**, and **light-cljs-169, Preserve lazy key
+effects when removing an absent Atom watch**, immediately before 125. Each
+description retains unchanged complete source and both-pin/current-engine/actual
+macro evidence. This checkpoint implements no production repair and does not
+retire those standard contracts. Pellets remains the live ordering authority.
+
+Only two exact private tap-registry assertions now follow the user's existing
+private-storage boundary. `private-tap-scope.md` records both pin declarations,
+original body/assertion hashes, adjacent public obligations and nine guards.
+The complete original body is retained, and all public tap behavior remains
+required; the private disposition supplies no pass. The regenerated inventory is otherwise
+unchanged, with 97 files, 1,328 bodies, 4,728 assertion sites and 5,263 independent
+obligations. Original corpus/disposition and reference source bytes are unchanged.
+
+The complete original eval test passes all fourteen assertions in both genuine
+upstream self-hosted hosts. Installed local service execution preserves every
+declaration/body and records four true assertions, one false definition-result
+assertion and nine caught failures in both lifecycle contexts. Its Function/Var
+transport and self-hosted profile remain diagnostic scope reconciliation, not
+new source credit or an automatic production gap. The seven other original SCI
+source contexts retain 52 agreeing local frames, four phase-context rejections,
+and both pins' two source rejections/five differences. Their original
+expectations and shared dispositions remain unchanged.
+
+Verification: **131 affected harness tests passed in 209.377 seconds**, followed
+by four focused typed failure-accounting controls. All 48 new context guards,
+the two original-source diagnostics, inventory `--check`, owned Rust formatting
+with edition 2024 and whitespace checks pass. No broad regression, ignored
+generative phase retry or performance/limit traversal is claimed from this
+checkpoint. The earlier full generative phase deadline remains unresolved.
+
+125 stays incomplete: no comprehensive post-integration zero-missing result is
+claimed, and required source/public/local/SCI/body/module evidence remains.
+The distinct public repairs now need their focused owners. The separate 156
+asynchronous cancellation repair remains externally blocked after two automatic
+safety-review rejections citing possible cybersecurity risk. It was not retried,
+delegated, investigated or repaired; no cancellation or limit/limits suite ran.
+The unrelated `.DS_Store` change is preserved and excluded; owned bytecode side
+effects were restored, and no push or pull request was performed.

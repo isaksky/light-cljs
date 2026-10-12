@@ -3,7 +3,7 @@
   "upstream": "https://github.com/clojure/clojurescript",
   "revision": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
   "extractor_sha256": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
-  "inventory_sha256": "7276092e37a2e4aa260b5d293e9819f62e194a7714e3d3c4db4e2dd7e4e7ef53",
+  "inventory_sha256": "c60dcfb19de844a0b2fe843d13c48241c6bf406a2315f639f239991e626c4169",
   "bodies_sha256": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156",
   "counting_unit": "Source assertion sites; each are argument row is a separate assertion. Dynamic loop/helper invocations are retained in complete bodies, not multiplied or claimed executed.",
   "recognized_assertion_macros": [
@@ -21,8 +21,8 @@
     "assertions": 4728,
     "active_assertions": 4686,
     "by_status": {
-      "missing": 3803,
-      "unrelated": 925
+      "missing": 3801,
+      "unrelated": 927
     },
     "by_kind": {
       "are-row": 809,
@@ -40,13 +40,13 @@
       "lite-profile": 35,
       "multimethods-hierarchies": 31,
       "library": 49,
-      "tap-delivery": 3,
-      "upstream-internals": 357,
+      "upstream-internals": 359,
+      "tap-delivery": 1,
       "reference-harness": 5
     },
     "obligations": 5263,
     "public_api_arities": 1327,
-    "intended_assertions": 3803
+    "intended_assertions": 3801
   },
   "features": [],
   "zero_assertion_tests": [
@@ -1398,7 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "001e03bc8070670b67e8d0ec1b2d4d62802632c120106672fc0a4fbaf86a3bfd",
+  "generator_sha256": "bb897bca7590ae834636f14ffb608ad1c5f3200dbb105ecdda37a6913251071b",
+  "private_tap_scope_sha256": "bd7eb9d69479681b3ad5924bb43c5a39e7da27114da0d9c3e15e94e93174d286",
   "obligations_sha256": "b842c952d0725df07a0e263ba63f34fdb702a77ebfee3337433aeed61b93ee74",
   "api_sources": [
     {
@@ -1474,7 +1475,7 @@
     "execution_evidence"
   ],
   "families": {
-    "public-residual": 7401,
+    "public-residual": 7403,
     "array-compiler-settings": 4,
     "utilities": 449,
     "lazy-sequences": 282,
@@ -1489,7 +1490,7 @@
     "regex": 46,
     "library": 273,
     "reader": 80,
-    "tap-delivery": 3,
+    "tap-delivery": 1,
     "public-protocols": 18,
     "public-construction-factories": 26,
     "public-iterator-helpers": 4,

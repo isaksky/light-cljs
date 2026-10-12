@@ -11,6 +11,7 @@ import re
 import subprocess
 
 import extract_inventory as inv
+import private_tap_scope
 
 HERE, ROOT = inv.HERE, inv.ROOT
 COLUMNS = ("parse", "analysis_lowering", "native", "canonical_js", "quickjs_macro", "execution_evidence")
@@ -305,6 +306,7 @@ PRIVATE_EQUALITY_ASSERTIONS = {
     "hash_map_test.cljs::test-cljs-1888::assertion-005": "(is (instance? NodeSeq node-seq))",
     "hash_map_test.cljs::test-cljs-1888::assertion-010": "(is (instance? ArrayNodeSeq array-node-seq))",
 }
+PRIVATE_TAP_ASSERTIONS = {identity: text for identity, text, _ in private_tap_scope.ASSERTIONS}
 
 
 # Optional lite storage tests remain excluded even when their original final
@@ -362,12 +364,22 @@ def generate():
     paths = source_paths()
     generated, manifest = inv.inventory(files=paths, full_scope=True)
     assertions = [json.loads(line) for line in generated["inventory.jsonl"].splitlines()]
+    private_taps = {row['id']: row for row in private_tap_scope.validate()}
     for row in assertions:
         if row["id"] in PRIVATE_EQUALITY_ASSERTIONS:
             if row["assertion"]["text"] != PRIVATE_EQUALITY_ASSERTIONS[row["id"]]:
                 raise ValueError("Private equality exclusion source drift")
             row.update(disposition="unrelated", category="upstream-internals", status="unrelated",
                        reason="Exact private hash-trie sequence storage class identity; complete public sequence metadata behavior executes in compiler-equality.tsv.")
+        if row['id'] in private_taps:
+            basis = private_taps[row['id']]
+            if (row['assertion']['text'] != basis['assertion']['text']
+                    or row['assertion']['sha256'] != basis['assertion']['sha256']
+                    or row['body_sha256'] != basis['body_sha256']):
+                raise ValueError('Private tap storage exclusion source drift')
+            row.update({key: basis[key] for key in ('disposition', 'category', 'status',
+                'reason', 'scope_basis', 'scope_basis_record', 'private_declaration_sha256',
+                'semantic_pass_credit', 'execution_evidence')})
         if row["id"] in OPTIONAL_LITE_ASSERTIONS:
             if row["assertion"]["text"] != OPTIONAL_LITE_ASSERTIONS[row["id"]]:
                 raise ValueError("Optional lite source exclusion drift")
@@ -438,6 +450,7 @@ def generate():
     assertion_bytes, obligation_bytes = inv.encode_jsonl(assertions), inv.encode_jsonl(obligations)
     support_bytes = inv.encode_jsonl(support)
     manifest.update(schema_version=2, scope="intended-language", generator_sha256=inv.digest(Path(__file__).read_bytes()),
+                    private_tap_scope_sha256=inv.digest(Path(private_tap_scope.__file__).read_bytes()),
                     inventory_sha256=inv.digest(assertion_bytes), obligations_sha256=inv.digest(obligation_bytes),
                     api_sources=api_sources, local_sources=local_sources, support_sources=len(support), support_sha256=inv.digest(support_bytes), columns=list(COLUMNS),
                     status_policy="Inventory grants no pass. All intended source/name/arity obligations start missing. Native is removed; macro eligibility requires phase-specific execution evidence.")
@@ -458,9 +471,11 @@ def load():
             raise ValueError(f"Full ledger hash drift: {filename}; regenerate and review")
     if manifest["revision"] != inv.REVISION or manifest["scope"] != "intended-language":
         raise ValueError("Full ledger source revision/scope mismatch")
-    for filename, key in (("full_ledger.py", "generator_sha256"), ("extract_inventory.py", "extractor_sha256")):
+    for filename, key in (("full_ledger.py", "generator_sha256"), ("extract_inventory.py", "extractor_sha256"),
+                          ('private_tap_scope.py', 'private_tap_scope_sha256')):
         if inv.digest((HERE / filename).read_bytes()) != manifest[key]:
             raise ValueError(f"Full ledger generator drift: {filename}")
+    private_tap_scope.validate()
     for entry in manifest["local_sources"]:
         if inv.digest((ROOT / entry["path"]).read_bytes()) != entry["sha256"]:
             raise ValueError(f"Local surface drift: {entry['path']}; regenerate and review")
@@ -489,6 +504,7 @@ def sci_execution_failed(report, evidence, failure_statuses):
     requires both engines, both pins, exact hashes and the macro phase before
     granting this explicit difference; every other execution failure still fails.
     """
+    import report as runner
     reconciled = {row["canonical_reconciliation"]["canonical_expected"]["id"]
                   for row in report.get("assertions", [])
                   if row.get("status") == "version-difference"
@@ -523,6 +539,17 @@ def sci_execution_failed(report, evidence, failure_statuses):
                       and row['reviewed_sci_context_reconciliation'].get('canonical_contract_status') == 'passed'
                       and row.get('columns', {}).get('quickjs_macro', {}).get('status') == 'passed'
                       and row.get('layers') == evidence.get(row['reviewed_sci_context_reconciliation']['id']))
+    reconciled.update(row['gap_sci_context_reconciliation']['id']
+                      for row in report.get('assertions', [])
+                      if row.get('status') == 'version-difference'
+                      and row.get('gap_sci_context_reconciliation', {}).get('reconciliation') == 'verified-canonical-sci-difference'
+                      and row['gap_sci_context_reconciliation'].get('original_expectation_status') == 'unresolved'
+                      and row['gap_sci_context_reconciliation'].get('original_semantic_pass_credit') == 0
+                      and row['gap_sci_context_reconciliation'].get('canonical_contract_status') == 'passed'
+                      and row['gap_sci_context_reconciliation'].get('actual_macro_contract_status') == 'passed'
+                      and row['gap_sci_context_reconciliation'].get('checked_pin_contract_status') == {'release': 'passed', 'checkout': 'passed'}
+                      and row.get('columns', {}).get('quickjs_macro', {}).get('status') == 'passed'
+                      and runner.same_json(row.get('layers'), evidence.get(row['gap_sci_context_reconciliation']['id'])))
     return any(layer.get("status") in failure_statuses
                and not (identity in reconciled and layer.get("status") == "mismatch")
                for identity, layers in evidence.items() for layer in layers.values())
@@ -542,7 +569,7 @@ def verified_library_dialects(document, current_evidence):
     return {row["obligation_id"]: row for row in verified["reconciliations"]}, document["local_evidence"]
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -567,6 +594,15 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         for proof in reviewed_sci_contexts.values():
             if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
                 raise ValueError('Reviewed whole-source context detached from fresh report execution')
+    gap_sci_contexts = {}
+    if gap_sci_context_evidence is not None:
+        import sci_gap_canonical_context as gaps
+        gap_sci_contexts = gaps.reconcile(gap_sci_context_evidence)
+        if set(gap_sci_contexts) & (set(reviewed_sci_contexts) | set(source_context_mappings) | set(library_context_mappings) | set(sci_mappings)):
+            raise ValueError('Canonical gap contexts overlap another execution adapter')
+        for proof in gap_sci_contexts.values():
+            if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
+                raise ValueError('Canonical gap context detached from fresh report execution')
     library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
     selected = bool(features or identities)
     rows = []
@@ -593,6 +629,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         library_reconciliation = None
         library_dialect = None
         reviewed_sci_context = None
+        gap_sci_context = None
         if status == "missing" and mapping and not mapping.get("local_execution"):
             source_statuses = [runner.classify(by_source, witnesses.get(by_source["id"]), evidence)[0]
                                for by_source in assertions if by_source["id"] in mapping["assertion_ids"]]
@@ -698,6 +735,14 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                 raise ValueError('Reviewed whole-source proof detached from original intended SCI obligation')
             layers = reviewed_sci_context['layers']
             status = reviewed_sci_context['status']
+        gap_sci_context = gap_sci_contexts.get(row['id'])
+        if gap_sci_context:
+            binding = gap_sci_context['source_binding']
+            if (row['body_sha256'] != binding['body_sha256'] or row['disposition'] != 'intended'
+                    or row['obligation_kind'] != 'sci-case'):
+                raise ValueError('Canonical gap proof detached from original intended SCI obligation')
+            layers = gap_sci_context['layers']
+            status = gap_sci_context['status']
         observed_columns = columns(layers, status)
         observed_columns["quickjs_macro"] = phase_evidence.get(row["id"], {"status": "not-run"}) if row["id"] in phases else {"status": "not-run"}
         if library_dialect:
@@ -715,6 +760,15 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                 'actual_phase': 'macro', 'hosts': ['fresh', 'reused'], 'engines': ['QuickJS', 'Node'],
                 'source_context_profile': binding['source_context_profile'],
                 'frames': [{'variant': key, **value} for key, value in frames.items() if key.startswith('macro-')]}
+        gap_reason = ('Fresh whole original source and literal canonical result/effects checked in both pins and all application/macro lifecycles; original SCI differences and current production discrepancies stay separate.' if gap_sci_context else None)
+        if gap_sci_context:
+            binding = gap_sci_context['source_binding']
+            frames = gap_sci_context['actual_phase_frames']
+            observed_columns['quickjs_macro'] = {
+                'status': gap_sci_context['actual_macro_contract_status'],
+                'actual_phase': 'macro', 'hosts': ['fresh', 'reused'], 'engines': ['QuickJS', 'Node'],
+                'source_context_profile': binding['source_context_profile'],
+                'frames': [{'variant': key, **value} for key, value in frames.items() if key.startswith('macro-')]}
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
                      "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
                      **({"canonical_reconciliation": reconciliation} if reconciliation else {}),
@@ -722,7 +776,8 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                      **({"library_context_reconciliation": library_reconciliation} if library_reconciliation else {}),
                      **({"library_dialect_reconciliation": library_dialect} if library_dialect else {}),
                      **({'reviewed_sci_context_reconciliation': reviewed_sci_context} if reviewed_sci_context else {}),
-                     "completion_reason": "Fresh complete original source, literal outcome/effects and actual application/macro contexts verified; original SCI agreement or exact canonical difference remains separately reported." if reviewed_sci_context else "Exact source-specific canonical/strict-EDN difference verified in both pins and both application/macro phases; original SCI expectation remains unresolved." if library_dialect else "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"]})
+                     **({'gap_sci_context_reconciliation': gap_sci_context} if gap_sci_context else {}),
+                     "completion_reason": gap_reason or ("Fresh complete original source, literal outcome/effects and actual application/macro contexts verified; original SCI agreement or exact canonical difference remains separately reported." if reviewed_sci_context else "Exact source-specific canonical/strict-EDN difference verified in both pins and both application/macro phases; original SCI expectation remains unresolved." if library_dialect else "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"])})
     counts = Counter(row["status"] for row in rows)
     sections = {}
     for row in rows:

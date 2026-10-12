@@ -391,3 +391,31 @@ independent obligations. Fresh 50-source and 191-library receipts preserve each
 complete prior record; neither receipt file supplies a current full-gate pass.
 See final-gate.md for actual commands, partial-report limits and live repair
 ownership evidence.
+
+## Further whole-source and canonical contexts at production 8be52ad
+
+Ninety additional execution-backed links now bind 47 public signatures and 43
+local operations to 21 complete original source oracles. Seventy-five phase
+requirements are new; fifteen existing phase anchors are enriched or replaced
+with the reviewed whole-source anchors. Their complete prior entries remain in
+`arity-resume-prior-phase-witnesses.jsonl`. Actual call proofs retain the original
+source, exact arity and demanded receiver behavior. The focused normal report
+verifies all ninety with both pins and actual macro execution; source assertion
+counts are not inflated.
+
+The full report also freshly executes thirty exact historical SCI collection,
+sequence and Atom contexts. Twenty-seven currently verify explicit canonical
+differences; three retain missing public behavior under focused live owners
+167–169. Original SCI expectations and all raw mismatch observations remain
+intact. Four additional candidates with pin differences and one rejected ratio
+source receive no context credit. `sci-gap-canonical-context.md` documents the
+fresh-only producer, current executable/raw-artifact replay and typed failure
+accounting. Stored receipts establish historical provenance only.
+
+Only two frozen `test-cljs-2549` assertions inspect the explicitly private
+upstream tap registry and follow the user-adopted private-storage boundary.
+Both pin declarations, the complete original body and neighboring public tap
+contracts are guarded in `private_tap_scope.py`. All public tap APIs and
+`test-cljs-2552` remain intended; this disposition supplies zero semantic credit.
+The complete original self-hosted eval test and seven unresolved SCI source
+contexts remain separately documented diagnostics with unchanged expectations.

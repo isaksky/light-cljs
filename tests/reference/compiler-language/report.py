@@ -285,10 +285,10 @@ def load_contract(scope="historical-selected"):
     cases = fixtures(scope)
     witness_rows = jsonl(HERE / "witnesses.jsonl")
     if scope == "intended-language":
-        from full_ledger import PRIVATE_EQUALITY_ASSERTIONS
+        from full_ledger import PRIVATE_EQUALITY_ASSERTIONS, PRIVATE_TAP_ASSERTIONS
         # Preserve historical evidence, while the intended ledger explicitly
         # excludes only the pinned private storage identity probes.
-        excluded = set(PRIVATE_EQUALITY_ASSERTIONS) | {
+        excluded = set(PRIVATE_EQUALITY_ASSERTIONS) | set(PRIVATE_TAP_ASSERTIONS) | {
             f"analyzer_tests.clj::test-namespace-metadata::assertion-{i:03}" for i in range(1, 9)}
         removed_cases = {w["fixture_id"] for w in witness_rows if w["assertion_id"] in excluded}
         witness_rows = [w for w in witness_rows if w["assertion_id"] not in excluded]
@@ -1214,6 +1214,7 @@ def main(argv=None):
         sci_evidence = {}
         library_dialect_evidence = None
         reviewed_sci_context_evidence = None
+        gap_sci_context_evidence = None
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1333,10 +1334,17 @@ def main(argv=None):
                         if proof['id'] in sci_evidence:
                             raise ValueError('Reviewed SCI context overlaps expression/source/library execution')
                         sci_evidence[proof['id']] = proof['layers']
+                    import sci_gap_canonical_context
+                    gap_sci_context_evidence = sci_gap_canonical_context.run(
+                        artifacts / 'gap-sci-context', max(240, args.reference_timeout))
+                    for proof in sci_gap_canonical_context.reconcile(gap_sci_context_evidence).values():
+                        if proof['id'] in sci_evidence:
+                            raise ValueError('Canonical gap context overlaps another fresh execution adapter')
+                        sci_evidence[proof['id']] = proof['layers']
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
-            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence, reviewed_sci_context_evidence=reviewed_sci_context_evidence)
+            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence, reviewed_sci_context_evidence=reviewed_sci_context_evidence, gap_sci_context_evidence=gap_sci_context_evidence)
         report["execution_selection"] = {"fixture_ids": args.fixture, "all_selected_fixtures": not args.fixture}
         if artifacts:
             report["artifacts"] = str(artifacts)

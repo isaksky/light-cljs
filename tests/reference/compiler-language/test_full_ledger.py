@@ -237,8 +237,8 @@ class FullLedgerTests(unittest.TestCase):
             current = complete[identity]
             for key in ("assertion", "body_id", "body_sha256", "context"):
                 self.assertEqual(old[key], current[key])
-            if identity in full.PRIVATE_EQUALITY_ASSERTIONS:
-                self.assertEqual(current["assertion"]["text"], full.PRIVATE_EQUALITY_ASSERTIONS[identity])
+            if identity in {**full.PRIVATE_EQUALITY_ASSERTIONS, **full.PRIVATE_TAP_ASSERTIONS}:
+                self.assertEqual(current["assertion"]["text"], {**full.PRIVATE_EQUALITY_ASSERTIONS, **full.PRIVATE_TAP_ASSERTIONS}[identity])
                 self.assertEqual(current["disposition"], "unrelated")
                 self.assertEqual(current["category"], "upstream-internals")
                 self.assertNotIn(identity, all_witnesses)
