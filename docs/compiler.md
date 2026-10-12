@@ -442,9 +442,14 @@ saved comparison functions to test the ordinary function ABI explicitly.
 The [numeric evidence](../tests/reference/compiler-numeric.md) lists the complete
 API families, imported assertion mappings, independently expected runtime checks,
 full differential outcomes and the observed release/checkout set difference.
-External Closure Long/Integer construction remains separate from JS Number
-predicates. Additional collection families and unrelated
-libraries are not implied by these predicate names.
+External Closure Long/Integer construction still requires an explicit embedding
+and its genuine loader. Once those classes are initialized, `int?`, `pos-int?`,
+`neg-int?` and `nat-int?` recognize their instances and use their sign/zero methods.
+`integer?` retains its JavaScript Number contract, including negative zero and
+exponent-notation limits. Class-shaped unrelated objects are not integer instances.
+This does not supply ambient constructors or general Closure library loading.
+The [complete integer table evidence](../tests/reference/compiler-language/integer-predicate-after192.md)
+records both phases, both engines and the pinned references.
 
 ## Immutable collection data and the bounded core
 

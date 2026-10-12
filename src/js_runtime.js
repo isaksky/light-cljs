@@ -488,6 +488,16 @@
   // parseInt/parseFloat are intentional: CLJS integer? excludes numbers printed
   // in exponent notation even when Number.isInteger would accept them.
   const isInteger = x => typeof x === "number" && !isNaN(x) && x !== Infinity && parseFloat(x) === parseInt(x, 10);
+  // Closure classes belong to an explicit embedding. Resolve at call time: the
+  // genuine loader can initialize them after this runtime has been created.
+  function isClosureInteger(x) {
+    const goog = globalThis.goog;
+    const Integer = goog?.math?.Integer;
+    if (typeof Integer === "function" && x instanceof Integer) return true;
+    const Long = typeof goog?.module?.get === "function"
+      ? goog.module.get("goog.math.Long") : goog?.math?.Long;
+    return typeof Long === "function" && x instanceof Long;
+  }
   const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
   const mod = (n, d) => ((n % d) + d) % d;
   const quot = (n, d) => fix((n - n % d) / d);
@@ -541,9 +551,11 @@
     bitShiftLeft: (x, n) => x << n, bitShiftRight: (x, n) => x >> n,
     bitShiftRightZeroFill: (x, n) => x >>> n, unsignedBitShiftRight: (x, n) => x >>> n, bitCount,
     isZero: x => x === 0, isPositive: x => x > 0, isNegative: x => x < 0,
-    isEven, isOdd: x => !isEven(x), isInteger, isInt: x => isInteger(x),
-    isPositiveInt: x => isInteger(x) && x > 0, isNegativeInt: x => isInteger(x) && x < 0,
-    isNaturalInt: x => isInteger(x) && !(x < 0),
+    isEven, isOdd: x => !isEven(x), isInteger,
+    isInt: x => isInteger(x) || isClosureInteger(x),
+    isPositiveInt: x => isInteger(x) ? x > 0 : isClosureInteger(x) && !x.isNegative() && !x.isZero(),
+    isNegativeInt: x => isInteger(x) ? x < 0 : isClosureInteger(x) && x.isNegative(),
+    isNaturalInt: x => isInteger(x) ? !(x < 0) : isClosureInteger(x) && !x.isNegative(),
     isNumber: x => typeof x === "number", isFloat: x => typeof x === "number", isDouble: x => typeof x === "number",
     isInfinite: x => x === Infinity || x === -Infinity, isNaN: x => isNaN(x)
   };

@@ -1,0 +1,9 @@
+{
+  "accepting_receipt_sha256": "ea4106f8653dab30a897bb5b8b8cff54921ed7ff407d80f48b1eb4f2342ae176",
+  "original_cargo_executable_path": "/Users/admin/src/light-cljs/target/debug/deps/integer_predicate_after192-1f6b52533745bd8d",
+  "preserved_executable_path": "/private/tmp/light-cljs-192-acceptance-executable",
+  "preserved_executable_sha256": "33ed12ad131c2785ab25316e37ee9a916624b78ac19e12ade367110e05b8dcda",
+  "byte_identical_at_preservation": true,
+  "fresh_baseline_proof_sha256": "cbabc46801ae9a9509c31b8fa4a15b503525954e8935ccd17c59676a6933005c",
+  "fresh_baseline_executable_path": "/tmp/light-cljs-192-baseline-executable"
+}
