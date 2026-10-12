@@ -1,0 +1,201 @@
+[
+  {
+    "id": "declare191-original",
+    "source": "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+    "expected": {
+      "id": "declare191-original",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            null,
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-single",
+    "source": "(let [d ((fn [] (declare x)))] [(undefined? d) (nil? d) (var? d) (identical? d nil)])",
+    "expected": {
+      "id": "declare191-single",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            true,
+            false,
+            false
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-multiple",
+    "source": "(let [d (declare x y)] [(undefined? d) (nil? d) (var? d) (identical? d nil)])",
+    "expected": {
+      "id": "declare191-multiple",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            true,
+            false,
+            false
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-zero",
+    "source": "(let [d (declare)] [(undefined? d) (nil? d) (var? d) (identical? d nil)])",
+    "expected": {
+      "id": "declare191-zero",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            true,
+            false,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-nested",
+    "source": "(let [a (do (observe :before) (declare x y)) b (if true (declare z q) :bad) c ((fn [] (declare r s)))] [(undefined? a) (undefined? b) (undefined? c) (declare)])",
+    "expected": {
+      "id": "declare191-nested",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            true,
+            true,
+            null
+          ]
+        }
+      },
+      "trace": [
+        {
+          "$keyword": {
+            "namespace": null,
+            "name": "before",
+            "spelling": "before"
+          }
+        }
+      ],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-callback",
+    "source": "[(mapv (fn [n] (do (observe n) (declare a b))) [1 2]) (mapv (fn [n] (do (observe n) (declare))) [3 4])]",
+    "expected": {
+      "id": "declare191-callback",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": [
+                {
+                  "$value": "undefined"
+                },
+                {
+                  "$value": "undefined"
+                }
+              ]
+            },
+            {
+              "$vector": [
+                null,
+                null
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-redefinition",
+    "source": "(def x 1) (let [d (declare x y)] (def y 2) (def x 3) [(undefined? d) x y (:declared (meta (var y)))])",
+    "expected": {
+      "id": "declare191-redefinition",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            3,
+            2,
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "declare191-forward",
+    "source": "(declare x y) (defn f [] x) (def x 42) [(var? (declare x)) (f) (nil? y)]",
+    "expected": {
+      "id": "declare191-forward",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            42,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  }
+]

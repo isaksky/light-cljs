@@ -24,6 +24,8 @@ static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocato
 
 const COLLECTION: &str = include_str!("../benchmarks/fixtures/compiler/collections/value.cljs");
 const MACRO_CALL: &str = "(defmacro data [] '[1 2 3]) (data)";
+const DECLARATION_VALUE: &str =
+    "(pr-str [(var? (declare x)) (get (meta (declare y z)) :name) (declare)])";
 const DATA: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/data.cljs");
 const MAIN: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/main.cljs");
 const SINGLE: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/single.cljs");
@@ -297,10 +299,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     if primitives {
         return Ok(());
     }
+    assert_eq!(
+        application_node(&compile(DECLARATION_VALUE)?),
+        b"\"[false nil nil]\"\n"
+    );
     for (name, source) in [
         ("empty", ""),
         ("collections", COLLECTION),
         ("expanded-macro", "[1 2 3]"),
+        ("declaration-value", DECLARATION_VALUE),
     ] {
         phases(name, source, samples, iterations);
         if let Some(dir) = &dump {

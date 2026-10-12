@@ -5739,9 +5739,9 @@ impl Analyzer<'_> {
         args: &[NodeId],
         context: ExprContext,
     ) -> Result<ExprId, AnalysisError> {
-        if !args.is_empty() && context == ExprContext::Value {
-            return Err(self.error(id, AnalysisErrorKind::Unsupported("uninitialized declare in a value position (the reference emits invalid JavaScript)".into())));
-        }
+        // Nonempty declarations have an undefined source value. Keep the
+        // uninitialized Def so demand hosts register the declaration without
+        // forcing its root; an empty declaration remains nil.
         let mut last = None;
         for &name in args {
             let text = self.spelling(name);
