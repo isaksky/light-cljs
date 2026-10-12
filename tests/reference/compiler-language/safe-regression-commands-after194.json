@@ -1,0 +1,1928 @@
+{
+  "executed_regressions": 0,
+  "strict_complete": false,
+  "census_receipt_sha256": "f41a5b44e6d0142b05ff6632e59a9c506912b4d1f45a4235c1cacd24b8ae6e9e",
+  "commands": [
+    {
+      "target": "lib",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--lib",
+        "--",
+        "--skip",
+        "compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host",
+        "--skip",
+        "compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host",
+        "--skip",
+        "evaluator::active_tests::backtracking_deadline_is_terminal_and_fresh_operations_recover",
+        "--skip",
+        "evaluator::active_tests::unit_service_cancellation_is_sticky_even_when_js_catches"
+      ],
+      "expected_active_safe_tests": 17,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host",
+        "compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host",
+        "evaluator::active_tests::backtracking_deadline_is_terminal_and_fresh_operations_recover",
+        "evaluator::active_tests::unit_service_cancellation_is_sticky_even_when_js_catches"
+      ]
+    },
+    {
+      "target": "analyzer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "analyzer",
+        "--"
+      ],
+      "expected_active_safe_tests": 37,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "benchmark_variants",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "benchmark_variants",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "boundaries",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "boundaries",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "cli",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "cli",
+        "--"
+      ],
+      "expected_active_safe_tests": 8,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after171",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after171",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after172",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after172",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after185",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after185",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after188",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after188",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after190",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after190",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after191",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after191",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after191_discovery",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after191_discovery",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_after194",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_after194",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_arity_resume_extended",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_arity_resume_extended",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_array_settings",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_array_settings",
+        "--"
+      ],
+      "expected_active_safe_tests": 7,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_atom_object_equiv",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_atom_object_equiv",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_bootstrap",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_bootstrap",
+        "--",
+        "--skip",
+        "bootstrap_failure_and_expansion_limits_leave_reused_host_clean"
+      ],
+      "expected_active_safe_tests": 11,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "bootstrap_failure_and_expansion_limits_leave_reused_host_clean"
+      ]
+    },
+    {
+      "target": "compiler_boundary_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_boundary_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 9,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_case_char_string_accepted",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_case_char_string_accepted",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_case_numeric",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_case_numeric",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_cljc_prefixes",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_cljc_prefixes",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_cljc_rejections_after191",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_cljc_rejections_after191",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_core_extension_demand",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_core_extension_demand",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_core_factories",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_core_factories",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_core_gate",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_core_gate",
+        "--"
+      ],
+      "expected_active_safe_tests": 6,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_core_helpers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_core_helpers",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_core_var_metadata",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_core_var_metadata",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_data_libraries",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_data_libraries",
+        "--",
+        "--skip",
+        "traversal_limits_and_session_recovery"
+      ],
+      "expected_active_safe_tests": 7,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "traversal_limits_and_session_recovery"
+      ]
+    },
+    {
+      "target": "compiler_declare_values",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_declare_values",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_deferred",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_deferred",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_destructuring_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_destructuring_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 9,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_edn",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_edn",
+        "--",
+        "--skip",
+        "reader_limits_and_cancelled_providers_share_sticky_session_control"
+      ],
+      "expected_active_safe_tests": 13,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "reader_limits_and_cancelled_providers_share_sticky_session_control"
+      ]
+    },
+    {
+      "target": "compiler_edn_stream",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_edn_stream",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_eduction_contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_eduction_contracts",
+        "--",
+        "--skip",
+        "abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines",
+        "--skip",
+        "cancellation_in_eduction_construction_demand_and_completion_is_terminal"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines",
+        "cancellation_in_eduction_construction_demand_and_completion_is_terminal"
+      ]
+    },
+    {
+      "target": "compiler_eductions",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_eductions",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_equality",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_equality",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_equality_contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_equality_contracts",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_extensions",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_extensions",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_find_effects",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_find_effects",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_hash_branch_effects",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_hash_branch_effects",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_hash_map_from_arrays",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_hash_map_from_arrays",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_hash_map_source",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_hash_map_source",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_host_hooks",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_host_hooks",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_ifn_public_context",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_ifn_public_context",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_ifn_rest",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_ifn_rest",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_integer_predicates",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_integer_predicates",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_interop",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_interop",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_iterator_helpers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_iterator_helpers",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_iterator_name",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_iterator_name",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_language",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_language",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_library_bodies",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_library_bodies",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_literal_char_string",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_literal_char_string",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_literal_numeric",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_literal_numeric",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_local_api_source_context",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_local_api_source_context",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_macros",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_macros",
+        "--",
+        "--skip",
+        "collection_macro_compilation_obeys_shared_limits_and_recovers_with_the_same_host",
+        "--skip",
+        "exhausted_expansion_depth_does_not_run_macro_effects",
+        "--skip",
+        "javascript_form_bridge::caught_nested_conversion_limits_cannot_reset_the_session_budget",
+        "--skip",
+        "javascript_form_bridge::quoted_js_literal_export_is_bounded_and_unbranded_nested_values_are_rejected",
+        "--skip",
+        "javascript_form_bridge::unsupported_and_unbounded_results_are_located_and_fresh_sessions_recover",
+        "--skip",
+        "recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits",
+        "--skip",
+        "reentrant_deferred_units::nested_execution_limit_is_terminal_and_a_clean_host_can_be_reused",
+        "--skip",
+        "top_level_definition_groups::terminal_limit_in_owner_cannot_be_caught_and_host_recovers"
+      ],
+      "expected_active_safe_tests": 107,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "collection_macro_compilation_obeys_shared_limits_and_recovers_with_the_same_host",
+        "exhausted_expansion_depth_does_not_run_macro_effects",
+        "javascript_form_bridge::caught_nested_conversion_limits_cannot_reset_the_session_budget",
+        "javascript_form_bridge::quoted_js_literal_export_is_bounded_and_unbranded_nested_values_are_rejected",
+        "javascript_form_bridge::unsupported_and_unbounded_results_are_located_and_fresh_sessions_recover",
+        "recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits",
+        "reentrant_deferred_units::nested_execution_limit_is_terminal_and_a_clean_host_can_be_reused",
+        "top_level_definition_groups::terminal_limit_in_owner_cannot_be_caught_and_host_recovers"
+      ]
+    },
+    {
+      "target": "compiler_map_reader_order",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_map_reader_order",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_map_value_equiv",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_map_value_equiv",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_mapv_apply",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_mapv_apply",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_multimethod_evidence",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_multimethod_evidence",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 2,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_multimethods",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_multimethods",
+        "--"
+      ],
+      "expected_active_safe_tests": 11,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_namespace_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_namespace_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 10,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_namespace_shadowing",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_namespace_shadowing",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_ns_name",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_ns_name",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_object_equiv",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_object_equiv",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_optimization",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_optimization",
+        "--"
+      ],
+      "expected_active_safe_tests": 11,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_positional_constructors",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_positional_constructors",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_predicate_macro",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_predicate_macro",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_prim_seq",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_prim_seq",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_printing_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_printing_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 10,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_protocols",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_protocols",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_public_constructors",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_public_constructors",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_public_print_helpers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_public_print_helpers",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_public_protocols",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_public_protocols",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_quoted_when",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_quoted_when",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_reader",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_reader",
+        "--"
+      ],
+      "expected_active_safe_tests": 19,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_records",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_records",
+        "--"
+      ],
+      "expected_active_safe_tests": 6,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_reduce_kv_entries",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_reduce_kv_entries",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_reflection_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_reflection_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 7,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_regex",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_regex",
+        "--",
+        "--skip",
+        "built_in_backtracking_observes_budget_deadline_and_cancellation"
+      ],
+      "expected_active_safe_tests": 4,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": [
+        "built_in_backtracking_observes_budget_deadline_and_cancellation"
+      ]
+    },
+    {
+      "target": "compiler_reify",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_reify",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_residual_bodies",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_residual_bodies",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_residual_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_residual_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_residual_source_context",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_residual_source_context",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_runtime_map_order",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_runtime_map_order",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_runtime_set_order",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_runtime_set_order",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sci_library_context",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sci_library_context",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sci_record_duplicate_method_probe",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sci_record_duplicate_method_probe",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sci_service_probes",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sci_service_probes",
+        "--",
+        "--skip",
+        "expansion_limits_and_finite_macro_returns_recover"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": [
+        "expansion_limits_and_finite_macro_returns_recover"
+      ]
+    },
+    {
+      "target": "compiler_sci_source_context",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sci_source_context",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sequence_bodies",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sequence_bodies",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sequence_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sequence_completion",
+        "--",
+        "--skip",
+        "shared_lazy_roots_are_phase_separated_and_failed_compilations_reset"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "shared_lazy_roots_are_phase_separated_and_failed_compilations_reset"
+      ]
+    },
+    {
+      "target": "compiler_sequence_contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sequence_contracts",
+        "--",
+        "--skip",
+        "abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines",
+        "--skip",
+        "cancellation_in_sequence_construction_demand_and_completion_is_terminal"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines",
+        "cancellation_in_sequence_construction_demand_and_completion_is_terminal"
+      ]
+    },
+    {
+      "target": "compiler_sequence_object_equiv",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sequence_object_equiv",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sequence_transducers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sequence_transducers",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sequences",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sequences",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_set_project",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_set_project",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sorted_collections",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sorted_collections",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_sorted_contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_sorted_contracts",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_source_metadata",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_source_metadata",
+        "--"
+      ],
+      "expected_active_safe_tests": 4,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_string_fixtures",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_string_fixtures",
+        "--"
+      ],
+      "expected_active_safe_tests": 4,
+      "ignored_not_executed": 2,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_string_join",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_string_join",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_strings",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_strings",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_syntax_context",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_syntax_context",
+        "--"
+      ],
+      "expected_active_safe_tests": 10,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_test_metadata",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_test_metadata",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_transducer_contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_transducer_contracts",
+        "--",
+        "--skip",
+        "cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal"
+      ]
+    },
+    {
+      "target": "compiler_transducers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_transducers",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_transients",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_transients",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_types",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_types",
+        "--"
+      ],
+      "expected_active_safe_tests": 5,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_utilities_bodies",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_utilities_bodies",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_utilities_completion",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_utilities_completion",
+        "--"
+      ],
+      "expected_active_safe_tests": 4,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_var_test_metadata",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_var_test_metadata",
+        "--"
+      ],
+      "expected_active_safe_tests": 7,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_warnings",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_warnings",
+        "--"
+      ],
+      "expected_active_safe_tests": 11,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "compiler_watch_keys",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "compiler_watch_keys",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "eval_cli",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "eval_cli",
+        "--",
+        "--skip",
+        "repl_compacts_consumed_lines_and_preserves_original_locations",
+        "--skip",
+        "repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history",
+        "--skip",
+        "runtime_and_rendering_limits_fail_without_partial_results"
+      ],
+      "expected_active_safe_tests": 15,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "repl_compacts_consumed_lines_and_preserves_original_locations",
+        "repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history",
+        "runtime_and_rendering_limits_fail_without_partial_results"
+      ]
+    },
+    {
+      "target": "eval_examples",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "eval_examples",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "eval_nsstar",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "eval_nsstar",
+        "--"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "eval_sessions",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "eval_sessions",
+        "--",
+        "--skip",
+        "cancellation_and_limits_require_reset_but_host_compilation_recovers",
+        "--skip",
+        "source_output_limits_and_oom_are_explicit"
+      ],
+      "expected_active_safe_tests": 19,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "cancellation_and_limits_require_reset_but_host_compilation_recovers",
+        "source_output_limits_and_oom_are_explicit"
+      ]
+    },
+    {
+      "target": "evaluator",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "evaluator",
+        "--",
+        "--skip",
+        "deadline_allocation_and_panics_produce_owned_failures",
+        "--skip",
+        "terminal_controls_survive_catch_and_fresh_host_sessions_recover"
+      ],
+      "expected_active_safe_tests": 9,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": [
+        "deadline_allocation_and_panics_produce_owned_failures",
+        "terminal_controls_survive_catch_and_fresh_host_sessions_recover"
+      ]
+    },
+    {
+      "target": "evaluator_conformance",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "evaluator_conformance",
+        "--",
+        "--skip",
+        "every_historical_sci_case_has_an_executable_evaluator_disposition"
+      ],
+      "expected_active_safe_tests": 3,
+      "ignored_not_executed": 2,
+      "excluded_exact_tests": [
+        "every_historical_sci_case_has_an_executable_evaluator_disposition"
+      ]
+    },
+    {
+      "target": "evaluator_migration",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "evaluator_migration",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "execution",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "execution",
+        "--"
+      ],
+      "expected_active_safe_tests": 53,
+      "ignored_not_executed": 43,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "full_lexer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "full_lexer",
+        "--"
+      ],
+      "expected_active_safe_tests": 16,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "namespaces",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "namespaces",
+        "--"
+      ],
+      "expected_active_safe_tests": 28,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "parser",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "parser",
+        "--",
+        "--skip",
+        "nesting_limit_includes_collections_prefixes_and_discards"
+      ],
+      "expected_active_safe_tests": 13,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": [
+        "nesting_limit_includes_collections_prefixes_and_discards"
+      ]
+    },
+    {
+      "target": "parser_corpus",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "parser_corpus",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "parser_reference",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "parser_reference",
+        "--"
+      ],
+      "expected_active_safe_tests": 1,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "provenance",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "provenance",
+        "--"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    },
+    {
+      "target": "sci_reference",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "sci_reference",
+        "--",
+        "--skip",
+        "protocol_rejects_lossy_unknown_malformed_and_unbounded_results"
+      ],
+      "expected_active_safe_tests": 2,
+      "ignored_not_executed": 1,
+      "excluded_exact_tests": [
+        "protocol_rejects_lossy_unknown_malformed_and_unbounded_results"
+      ]
+    },
+    {
+      "target": "tokenizer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "tokenizer",
+        "--"
+      ],
+      "expected_active_safe_tests": 7,
+      "ignored_not_executed": 0,
+      "excluded_exact_tests": []
+    }
+  ]
+}

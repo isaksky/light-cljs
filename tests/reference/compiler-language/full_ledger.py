@@ -659,7 +659,7 @@ def verified_cljc_transport(document, prior_contexts):
     return contexts
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None, numeric_sci_context_evidence=None, original_sci_after190_context_evidence=None, original_sci_after191_context_evidence=None, cljc_source_rejection_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None, numeric_sci_context_evidence=None, original_sci_after190_context_evidence=None, original_sci_after191_context_evidence=None, cljc_source_rejection_evidence=None, integer_source_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -724,6 +724,12 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
     canonical_source_rejections = cljc_rejection_after191_accounting.verified(
         cljc_source_rejection_evidence, gap_sci_contexts, sci_evidence or {})
     library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
+    integer_sources = {}
+    if integer_source_context_evidence is not None:
+        import integer_source_context_after194 as integer_original
+        integer_sources = integer_original.reconcile(integer_source_context_evidence)
+        if set(integer_sources) != {integer_original.SITE}:
+            raise ValueError('Complete integer source proof changed its sole original site')
     selected = bool(features or identities)
     rows = []
     for row in assertions:
@@ -738,6 +744,33 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                      "dialect_contract": row.get("dialect_contract"),
                      "fixture_id": witness["fixture_id"] if witness else None, "layers": layers, "columns": columns(layers, status),
                      "body_id": row["body_id"], "body_sha256": row["body_sha256"], "assertion_sha256": row["assertion"]["sha256"]})
+        integer_proof = integer_sources.get(row['id'])
+        if integer_proof is not None:
+            mapping = integer_proof['mapping']
+            if (witness is not None or row['disposition'] != 'in-scope'
+                    or mapping['assertion_id'] != row['id']
+                    or mapping['assertion_sha256'] != row['assertion']['sha256']
+                    or mapping['body_id'] != row['body_id']
+                    or mapping['body_sha256'] != row['body_sha256']
+                    or integer_proof['status'] != 'covered'
+                    or integer_proof['original_assertion_semantic_pass_credit'] != 1
+                    or integer_proof['new_public_or_local_arity_links'] != 0):
+                raise ValueError('Complete integer proof detached from its original assertion')
+            frames = integer_proof['actual_phase_frames']
+            references = {kind: {'status': 'passed', 'whole_original_namespace': proof}
+                          for kind, proof in integer_proof['references'].items()}
+            current = rows[-1]
+            current.update(status='covered',
+                reason='Complete original table and loop execute all112comparisons; both pins and all actual application/macro lifecycles independently replay.',
+                fixture_id=integer_proof['fixture_id'],
+                layers={**references, 'javascript': {'status': 'passed', 'actual_frames': frames}},
+                integer_source_context_reconciliation=integer_proof)
+            current['columns'] = columns(current['layers'], 'covered')
+            current['columns']['quickjs_macro'] = {
+                'status': 'passed', 'actual_phase': 'macro',
+                'hosts': ['fresh', 'reused'], 'engines': ['QuickJS', 'Node'],
+                'original_assertion_semantic_pass_credit': 1,
+                'frames': {key: value for key, value in frames.items() if key.startswith('macro-')}}
     # Independent API/arity obligations are always required by the full gate,
     # even when a source subset is selected for execution.
     for row in obligations:

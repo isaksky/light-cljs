@@ -1,0 +1,1 @@
+(let [a (do (observe :before) (declare x y)) b (if true (declare z q) :bad) c ((fn [] (declare r s)))] [(undefined? a) (undefined? b) (undefined? c) (declare)])

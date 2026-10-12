@@ -1,0 +1,1 @@
+(let [out #js [] f (fn [x] (case x 0 (do (.push out 0) (when-some [v false] v)) (condp = x 1 (and true 7) (or nil 9))))] (case 0 0 (.push out 5) (.push out 8)) (= [false 7 9 [5 0]] [(f 0) (f 1) (f 2) (vec out)]))

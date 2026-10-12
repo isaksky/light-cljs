@@ -1,0 +1,1 @@
+(= [nil 2] [(when-first [x []] (observe 9)) (when-first [x (observe [2 3])] x)])

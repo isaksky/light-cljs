@@ -1,0 +1,1 @@
+(let [s "abc"] (= [3 "bc" "bc" "BC"] [(. s -length) (. s substring 1) (. s (substring 1 3)) (.. s (toUpperCase) (substring 1))]))

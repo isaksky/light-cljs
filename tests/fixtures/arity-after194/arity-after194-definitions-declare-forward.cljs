@@ -1,0 +1,1 @@
+(declare f g) (defn f [x] (if (zero? x) 1 (g (dec x)))) (defn g [x] (f x)) (= 1 (f 4))

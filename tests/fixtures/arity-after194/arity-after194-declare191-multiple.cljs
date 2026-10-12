@@ -1,0 +1,1 @@
+(let [d (declare x y)] [(undefined? d) (nil? d) (var? d) (identical? d nil)])

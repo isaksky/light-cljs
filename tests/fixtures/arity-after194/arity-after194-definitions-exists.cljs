@@ -1,0 +1,1 @@
+(declare a) (and (not (exists? a)) (not (exists? missing)) (not (exists? js/lightDefinitelyMissing.deep)) (exists? js/Math.max) (exists? /) (exists? cljs.core//) (exists? (identity false)) (not (exists? (identity nil))))

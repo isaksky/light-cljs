@@ -1,0 +1,1 @@
+(assert (let [e (MapEntry. :k false nil)] (= [:k false :missing :missing :missing :missing] [(e 0) (apply e [1]) (e 2 :missing) (get e 0.5 :missing) (get e "0" :missing) (nth e 0.5 :missing)]))) true

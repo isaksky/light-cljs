@@ -1,0 +1,1 @@
+(do (let [d (Delay. false 7) xs (LazySeq. nil false nil nil)] (assert (realized? d)) (assert (= 7 @d)) (assert (realized? xs)) (assert (= :error (try (seq xs) (catch js/TypeError _ :error))))) true)

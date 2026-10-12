@@ -1,0 +1,1 @@
+(= [false false :no :no :no :no 0 ""] [(if-some [x false] x :no) (when-some [x false] x) (if-some [x nil] x :no) (if-some [x js/undefined] x :no) (if-let [x false] x :no) (if-let [x nil] x :no) (if-let [x 0] x :no) (when-let [x ""] x)])

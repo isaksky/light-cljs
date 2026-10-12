@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--all-targets",
+    "--",
+    "--list"
+  ],
+  "status": "terminated-owned-cargo-before-execution",
+  "reason": "harness=false evaluator benchmark includes excluded resource-limit recovery; replaced with --lib --tests list-only inventory",
+  "log_sha256": "f994244a6c99bc42f13f3763c54c57fca7336b9f16ff0fc5a95af559b86bdd88",
+  "executed_targets": 0
+}

@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "head_before_checkpoint_commit": "68446dd8b16c949db160d9112d6e93be4cc4d151",
+  "status": "passed-current-focused-evidence-checkpoint",
+  "installed_arity_pairs": 16,
+  "public_pairs": 14,
+  "local_pairs": 2,
+  "permanent_ordinary_rows": 1963,
+  "permanent_phase_rows": 1978,
+  "complete_arity_originals": 27,
+  "actual_arity_frames": 216,
+  "whole_original_arity_pins": [
+    "release",
+    "checkout"
+  ],
+  "source_original_assertions_added": 1,
+  "source_original_comparisons": 112,
+  "source_report_universe_preserved": 9991,
+  "source_arity_credit_added": 0,
+  "permanent_guard_tests": 92,
+  "guard_logs": {
+    "report": {
+      "path": "/private/tmp/light-cljs-125-after194-integrated-report-guards.log",
+      "sha256": "b5183de6f8ca7d95ff9b4f4a0871b72b1508e30344e342ee8103b87232b800e7",
+      "tests": 42
+    },
+    "full-ledger": {
+      "path": "/private/tmp/light-cljs-125-after194-integrated-full-ledger-guards.log",
+      "sha256": "71f132bc97533e7522881e6d5088399d61a937838c7161bec2f4d9040fc26302",
+      "tests": 22
+    },
+    "source": {
+      "path": "/private/tmp/light-cljs-125-after194-installed-source-unit-guards.log",
+      "sha256": "72cc846d2922b535c38148f11b5f13fb4986d1d6dcc38332d5c12fc95165cfe2",
+      "tests": 8
+    },
+    "arity": {
+      "path": "/private/tmp/light-cljs-125-arity-after194-installed-current/guards.log",
+      "sha256": "d10dc98acbd15685f4e641379707c93dd0f12fb819c75fcec15fd03c998d0eb9",
+      "tests": 20
+    }
+  },
+  "controls": {
+    "arity_raw_restoration": 17,
+    "integer_raw_restoration": 13,
+    "integer_mapping": 7,
+    "consumer_mechanical_only": 9,
+    "gap_restoration": 10
+  },
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log_path": "/private/tmp/light-cljs-125-after194-integrated-clippy.log",
+    "log_sha256": "522396f71050b13e53d170e72276417a8e0ae63d5118ba9c3280e09cdd80b1d0",
+    "diagnostics": 0
+  },
+  "new_rust_driver_rustfmt": {
+    "command": [
+      "rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "tests/compiler_arity_after194.rs"
+    ],
+    "log_path": "/private/tmp/light-cljs-125-after194-new-driver-rustfmt.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "passed": true
+  },
+  "genuine_generated_review": {
+    "outputs_changed": [
+      {
+        "path": "tests/reference/compiler-language/full-manifest.json",
+        "changed_fields": [
+          "generator_sha256"
+        ],
+        "old_sha256": "4b771bb330d88cf4dcf2b4aa1d858aacabc0161e02779efd492295ae3fb715a3",
+        "new_sha256": "e84699426fe69b0b306707f5035f77544a010cfd91c71a702400c65ef44a839b"
+      }
+    ],
+    "outputs_byte_identical": [
+      {
+        "path": "tests/reference/compiler-language/support-sources.jsonl",
+        "sha256": "7d4dba57d2121fac2f6329216593f73e66a252a6225ed31598c39217838299b3"
+      },
+      {
+        "path": "tests/reference/compiler-language/full-inventory.jsonl",
+        "sha256": "c60dcfb19de844a0b2fe843d13c48241c6bf406a2315f639f239991e626c4169"
+      },
+      {
+        "path": "tests/reference/compiler-language/full-bodies.jsonl",
+        "sha256": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156"
+      },
+      {
+        "path": "tests/reference/compiler-language/obligations.jsonl",
+        "sha256": "39afc8df1b4dfac6e23726ea8608bbba4353c8a30681e25b1cc0832056660cb1"
+      }
+    ],
+    "actual_generation": true,
+    "source_or_original_expectations_changed": false,
+    "earlier_collector_error": "Initial orchestration incorrectly treated documented generator tuple as a dictionary; no generated output was written before correction."
+  },
+  "list_only_regression_proposal": {
+    "identities": 848,
+    "proposed_active": 711,
+    "whole_exclusions": 33,
+    "ignored_unexecuted": 104,
+    "target_commands": 129,
+    "executed_regressions": 0
+  },
+  "interrupted_full_gate": {
+    "partial_files_preserved": 1191,
+    "report_completed": false,
+    "counts_claimed": false
+  },
+  "historical_receipts_rewritten": false,
+  "production_source_changed": false,
+  "collector_initial_error": "Scalar gap-producer digest was initially treated as a file map; corrected against the producer and separate unchanged phase/source snapshots before any final receipt existed.",
+  "source_manifest_prior_documentation_retained": "arity-after194-installed-current-before-final-controls.md",
+  "final_arity_documentation_updated_only_after_successful_raw_controls": true,
+  "performance_timing_claim": false,
+  "known_preexisting_rustfmt_drift_files": 77,
+  "separate_focused_open_owners": [
+    "light-cljs-195",
+    "light-cljs-196"
+  ],
+  "external_block": "156 native/asynchronous cancellation repair rejected twice by automatic review; no retry or related test execution",
+  "strict_complete": false,
+  "current_owned_evidence_sha256": {
+    "tests/reference/compiler-language/after194-all-target-inventory-preexecution-stop.json": "e50f29d25519dda1b4c204148eaa9816c3b652a6cb3f40346174cfb1206e9eb4",
+    "tests/reference/compiler-language/after194-full-gate-frozen-start.json": "97f1be5658a9f0b70b8e9bf3e2971233b0ab6ab8920a91fa56faa8711a1b580f",
+    "tests/reference/compiler-language/after194-full-manifest-json-before-integration.txt": "4b771bb330d88cf4dcf2b4aa1d858aacabc0161e02779efd492295ae3fb715a3",
+    "tests/reference/compiler-language/after194-full_ledger-py-before-integration.txt": "b66f4da252fc548fc8d3ab6a57b7eb2bb66f5d38367299549af6e1fc7087cfce",
+    "tests/reference/compiler-language/after194-generated-manifest-review.json": "8b6e57703a3a30d346d42c291edc1510c21f5101c57d679c75a10ca7d0034cd4",
+    "tests/reference/compiler-language/after194-integration.md": "43b849ae9a5ff1b9866b1f9ca71d3c5cdded707a8f443df265baf01afb4f24c8",
+    "tests/reference/compiler-language/after194-interrupted-full-gate-receipt.json": "200a50371779704477f393b46df5e2740474b4fafc6444e23ab928df6f8d51cd",
+    "tests/reference/compiler-language/after194-obligation-witnesses-jsonl-before-integration.txt": "3414e26f3cc4d913c0ed2b344efa89885f18807cb22a23a36ec74e50ad89b3a3",
+    "tests/reference/compiler-language/after194-phase-witnesses-jsonl-before-integration.txt": "6f33f262d4f2730a8b5cceaff6c5e74063843e431dd5ef01ce25dc70695ce0a9",
+    "tests/reference/compiler-language/after194-preintegration-generation-review.json": "2dbd508a25ae0f85c7e050da84c0d84ce8a7d862260f62e6a04b5f40ff61e91a",
+    "tests/reference/compiler-language/after194-report-py-before-integration.txt": "9b233074603cd0400daa46ddb502a844b0d42f2633987eba5068bb424a07fc5c",
+    "tests/reference/compiler-language/after194_final_validation.py": "f499cacacc2ed94a49db5dc141b6829e4e0bfa8ada272556c89736be044280b3",
+    "tests/reference/compiler-language/arity-after194-call-receipts.jsonl": "963a69abe0d8a5066fcb887a756d02495fad5e3e7c4949752148658e8ff7a395",
+    "tests/reference/compiler-language/arity-after194-catalog.json": "f10ca161341c6631e128e0912c3d7e679f49acc126e633c637ddf0f209d2df0e",
+    "tests/reference/compiler-language/arity-after194-context-receipt.json": "9020c038481f7ce6fb8b57a528d0933225c3d9ea203cb0bdee3ff1705afd4ba6",
+    "tests/reference/compiler-language/arity-after194-discovery-catalog-history.json": "375655bece9221be50564302485734836f43a7ca57ded289e561fe71ec9475ac",
+    "tests/reference/compiler-language/arity-after194-discovery-history-receipt.json": "1275e851805ce0bc1c76da7a70398c3406e22812426001970450d8da50816413",
+    "tests/reference/compiler-language/arity-after194-discovery-pin-history.json": "da826ff661c37a3154437df9353204c9059c8d8cd321cae948f3c7944aae5852",
+    "tests/reference/compiler-language/arity-after194-installed-current-before-final-controls.md": "3f4c2ddeff02e9acbc231de38adc4ddd05c88da66a1e2f285d558c9515d5f51b",
+    "tests/reference/compiler-language/arity-after194-installed-current-completion.json": "423571e7997e3a6eafe4f414661fb988f84965b716cfaafca545869a1622f1eb",
+    "tests/reference/compiler-language/arity-after194-installed-current-context-receipt.json": "1776d36c6c9f6a1a264fcf242ca2e2b4aa38ec54c6dfe927dbe778a3a7a512ec",
+    "tests/reference/compiler-language/arity-after194-installed-current-history-preservation-receipt.json": "a6667ff749c776221632348efc3c3a7813a619a4eb2879e5cdb9b943ff4b281c",
+    "tests/reference/compiler-language/arity-after194-installed-current-raw-guard-receipt.json": "36076149189d43baee478aec81ccfd5de6cb15d9aeaa30fcaf4e86bb2563cc32",
+    "tests/reference/compiler-language/arity-after194-installed-current.md": "e5cb468123a997b608baa3c02c745084a1ac7fe7a77881a411b2fd47a5008f8f",
+    "tests/reference/compiler-language/arity-after194-installed-loader-audit-receipt.json": "7d9edb5be30729e5b10ebd8b9d701d7f35b961c343cb97329580240382302455",
+    "tests/reference/compiler-language/arity-after194-raw-guard-receipt.json": "d86366c8557ddf31312ac865e06aa3e77247ada1a013bb38047f5637d6231f02",
+    "tests/reference/compiler-language/arity-after194.md": "3790fdd13d5a07d74643b71f5dfcd6f2620e59da724e2f0ea18d8810ffb95637",
+    "tests/reference/compiler-language/arity_after194.py": "2a7e8e4da20b17ef8ad2452696da9f4fe3a9df95aa0c43a7497cab7bcd92e53f",
+    "tests/reference/compiler-language/arity_after194.py.discovery-history.txt": "1fa9586ba7f73daf3b9e3402125cb5c677afb81c105df51148601521fc0c72a9",
+    "tests/reference/compiler-language/arity_after194_installed_audit.py": "00a7dfd6c4c7bfcb96d23b791487edb57d22c74d5c0260b3a9e0aa3c9f118c62",
+    "tests/reference/compiler-language/arity_after194_proof.py": "bb3e7d009231f72f38e9ff1c4e6c5254b5850b4418c163300bc7c70d87a7a662",
+    "tests/reference/compiler-language/arity_after194_raw_guard.py": "3becc6da2089bdacd247cd660cd0e12471e643eebbfc26f73b7a2d7ce86f9a23",
+    "tests/reference/compiler-language/arity_after194_reference.py": "34fd8e1995c1cc2c465817578965414592dd46e4ed6fb97df3148e1200de5af0",
+    "tests/reference/compiler-language/arity_after194_reference.py.discovery-history.txt": "34fd8e1995c1cc2c465817578965414592dd46e4ed6fb97df3148e1200de5af0",
+    "tests/reference/compiler-language/compiler_arity_after194_discovery-before-runtime.rs.txt": "4f4baf425840b96c542f12a817dd2eac054513d88076c79fcd06280891ce7c9b",
+    "tests/reference/compiler-language/integer-original-source-after194-failed-history.json": "dbf2cf9f808730856dab77fddf5869259867d8b49d28654d1d8c10b6dd9f038a",
+    "tests/reference/compiler-language/integer-original-source-after194-installed-raw-controls.json": "33e583d0cc6d9ac58103c5cc05181a44af17338f2b32387196ecd47febe6e92e",
+    "tests/reference/compiler-language/integer-original-source-after194-installed.json": "c00495c04ded7bf5f1d93b5fb45edb989c654a54c05b5772facb2477a7946429",
+    "tests/reference/compiler-language/integer-original-source-after194-raw-controls.json": "33e583d0cc6d9ac58103c5cc05181a44af17338f2b32387196ecd47febe6e92e",
+    "tests/reference/compiler-language/integer-original-source-after194.json": "6110b30c110b351bd294126ed30a0d962dff5c7c0658260909d9507924ea8907",
+    "tests/reference/compiler-language/integer-original-source-after194.md": "71cc8d1c9ee61950fc0cda42e777d14978815574b9e46ef08669b329195fffe1",
+    "tests/reference/compiler-language/integer-source-context-after194-installed-reconciliation-controls.json": "b182a4f5ba98c389b5c0bfac0f0144eab86c4dcbd171adfde62664b90124b63b",
+    "tests/reference/compiler-language/integer-source-context-after194-installed-report-integration.json": "7a66977d04b0976125d35e7f892402ee710e6ee62d1c1281f10fed1ad9b51c9d",
+    "tests/reference/compiler-language/integer-source-context-after194-installed.json": "fc47970eaeb5316fa2b7d1c6d09e9daef4df9ad921b6ba8161008e7f989c2fe6",
+    "tests/reference/compiler-language/integer-source-context-after194-reconcile-result.json": "626913d9a6ea88cf5c71ea131171e8674f7c451cfde33233521785a01f6ae356",
+    "tests/reference/compiler-language/integer-source-context-after194-reconciliation-controls.json": "b182a4f5ba98c389b5c0bfac0f0144eab86c4dcbd171adfde62664b90124b63b",
+    "tests/reference/compiler-language/integer-source-context-after194.json": "ca21d28c523cf5d008df0d12cbd5914c5e840fcb11f43f18aed5f39f65ab611a",
+    "tests/reference/compiler-language/integer-source-context-after194.md": "24858dceacb1ed0fe7e22bfbf2c8bbf03997f858343109a960055c4fb273cba4",
+    "tests/reference/compiler-language/integer-source-integration-after194.md": "a57fa91de9295726ba42d3758de6e20b79400419ad32b1eab3cb7b7df580fa9d",
+    "tests/reference/compiler-language/integer_original_source_after194.py": "d105d0e78a26d61446383ed3aabeb72f8ea0a5da2b42a6e38c3b8891a5a6d760",
+    "tests/reference/compiler-language/integer_source_context_after194.py": "e8241b26c8616c01cb6d5f90fa8c92193c1f1c7cd7247260421c3e84654fdb0d",
+    "tests/reference/compiler-language/integer_source_integration_after194.py": "84a44b961096fe4b543a67eec7358b59b8344be0dfc91710f9d6d1aa8cd32d6d",
+    "tests/reference/compiler-language/safe-regression-commands-after194-installed-current.json": "c0669ac31208ba613e363d05b423c89fa245937ab0c318b20e2ac4b122175835",
+    "tests/reference/compiler-language/safe-regression-commands-after194.json": "238d6b1a48e857cc66767e35b7cac01b1777f31eda55b1ce2653cc298ef99ca4",
+    "tests/reference/compiler-language/safe-regressions-after194.md": "25a4372993da67fd8f6d59a95439f36e521919061a59c9df41d992415c73c445",
+    "tests/reference/compiler-language/safe-source-regression-audit-after194-before-list-history.json": "42ef40d818bf0b2d9bf74981d6ee2096e48854578064dd47e0a191471aae5f6a",
+    "tests/reference/compiler-language/safe-source-regression-audit-after194-installed-current.json": "64913d8fcbf5c09e396140f5e132dd111a1abbafd7402b5fdedd8e0361c2045d",
+    "tests/reference/compiler-language/safe-source-regression-audit-after194.json": "f41a5b44e6d0142b05ff6632e59a9c506912b4d1f45a4235c1cacd24b8ae6e9e",
+    "tests/reference/compiler-language/safe_regression_inventory_after194.py": "794006c35696d881772267072f64176c2cd01781d76085c051ddcb6e771f6034",
+    "tests/reference/compiler-language/sci-originals-after194-discovery-sources.json": "6c217e54cbd9fb0264d1045bf1ce988dba676437a9e83d1bb2643d947fdd7c59",
+    "tests/reference/compiler-language/sci-originals-after194-discovery.json": "8b963c9c91efafdab818478740cfb61337dd27aee332dbe8523ca4ad000c361d",
+    "tests/reference/compiler-language/sci-originals-after194-discovery.md": "bb994f483ef1fb18cbfd233d2f4abdc9fe66784b2c676f3efec14e0a752a5938",
+    "tests/reference/compiler-language/sci-originals-after194-gap-proof-v1.json": "b42f6c5731b54338d4493a62050e429dff3df98209b4819293d90b0ed8dfced5",
+    "tests/reference/compiler-language/sci-originals-after194-gap-proof.json": "133aa6b919f398b8d14c520978f16264db8976dfa36ca9b79984fc67de295031",
+    "tests/reference/compiler-language/sci-originals-after194-phase-discovery.json": "829ca1a49fd0a054142e967fc4f635e94acb21cc1b41710619a4a283502008ca",
+    "tests/reference/compiler-language/sci-originals-after194-source-discovery.json": "5df5080e300351ac5e9a97edbdd0d2d9b2e74221a08695551fcae823163a3020",
+    "tests/reference/compiler-language/sci_originals_after194_discovery.py": "79a9e5336bc087b4a134624b2104f6ea0671995f82fee2883c3a9aeb81c08803",
+    "tests/reference/compiler-language/sci_originals_after194_gap_proof.py": "58ee76e70b667a674fea05e6675760c537b84a4dd418c85992e42ef2bcaafd24",
+    "tests/reference/compiler-language/sci_originals_after194_phase_discovery.py": "eba2602eadd197dd79c1aa6f968c9e3680d814acfc62d3056f44b8b63d7fa771",
+    "tests/reference/compiler-language/sci_originals_after194_source_discovery.py": "ae463252980270e52816ec4bb68e6ceb8372c0af9c7277f6e2203b257ee6670a",
+    "tests/reference/compiler-language/source-evidence-after194-files.json": "c19b45b74c92b8931c119a65184ff8745e7525f43f598861d23c224d48ee54a3",
+    "tests/reference/compiler-language/source-evidence-after194-installed-files.json": "e36b0be8f331c6b6f748848586f9750784ed0ab0301a0abdd55067ad60b6ca15",
+    "tests/reference/compiler-language/test_arity_after194.py": "65cb2104eadcb36fbc7083b052875e221db1edc5e5f6b1816aaac903b650a5b5",
+    "tests/reference/compiler-language/test_integer_original_source_after194.py": "5b5ab30a078fdc60cd247ac24ba6226b8912818c834c7a67cfa215e5d53dece5",
+    "tests/reference/compiler-language/test_integer_source_context_after194.py": "0e18d85cc5c0ba31812fa49d6f1d575be233ec8a1ee18037534a32b05f628a02",
+    "tests/reference/compiler-language/test_integer_source_integration_after194.py": "77792a24c692c5b0b9a69f5ebcd4c9eb0bfb04c82b2c6d722ecf13e44ff0dd17"
+  }
+}

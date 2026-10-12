@@ -1,0 +1,1 @@
+(declare x y) (defn f [] x) (def x 42) [(var? (declare x)) (f) (nil? y)]

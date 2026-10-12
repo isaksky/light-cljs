@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "passed-preintegration-current-source-reconciliation",
+  "full_reconcile_raw_stdout": "{\"site_status\": {\"src/test/cljs/cljs/predicates_test.cljs::test-int-preds::assertion-001\": \"covered\"}, \"strict_complete\": false}\n",
+  "full_reconcile_raw_stdout_sha256": "cde4c957cc9fad18576d2128d96157df8f2d8fb5086236c181d39f2a49c10f1a",
+  "preintegration_receipt_sha256": "ca21d28c523cf5d008df0d12cbd5914c5e840fcb11f43f18aed5f39f65ab611a",
+  "site_count": 1,
+  "original_loop_comparisons": 112,
+  "new_public_or_local_arity_links": 0,
+  "raw_mutation_controls": 13,
+  "reconciliation_mutation_controls": 7,
+  "static_guards": 6,
+  "strict_complete": false
+}

@@ -1,0 +1,1 @@
+(= [2 3] [(if-let [x (observe 2)] x (observe 9)) (when-some [x (observe 3)] x)])

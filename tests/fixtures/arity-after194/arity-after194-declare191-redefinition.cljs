@@ -1,0 +1,1 @@
+(def x 1) (let [d (declare x y)] (def y 2) (def x 3) [(undefined? d) x y (:declared (meta (var y)))])

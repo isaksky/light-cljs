@@ -1,0 +1,1 @@
+[(mapv (fn [n] (do (observe n) (declare a b))) [1 2]) (mapv (fn [n] (do (observe n) (declare))) [3 4])]

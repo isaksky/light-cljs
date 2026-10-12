@@ -1,0 +1,1 @@
+(defn f "docs" [x] x) (declare f) (and (= 3 (f 3)) (= (quote ([x])) (:arglists (meta #'f))) (= "docs" (:doc (meta #'f))))

@@ -1,0 +1,1 @@
+(assert (let [e (MapEntry. :key :val nil) m (with-meta e {:m true})] (and (map-entry? e) (vector? m) (not (map-entry? m)) (= {:m true} (meta m)) (nil? (meta e)) (nil? (empty e)) (= [:key] (pop e)) (not (map-entry? (conj e :third))) (= (hash e) (hash [:key :val]))))) true

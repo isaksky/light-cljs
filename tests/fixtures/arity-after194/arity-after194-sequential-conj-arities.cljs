@@ -1,0 +1,1 @@
+[(conj) (conj [1]) (conj [1] 2 3) (conj '(1) 2 3) (conj nil 1 2)]

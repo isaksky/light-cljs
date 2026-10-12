@@ -1,0 +1,1 @@
+(let [s (reify ISeqable (-seq [this] (observe "seq") this) ISeq (-first [_] (observe "first") (MapEntry. :a 1 nil)) (-rest [_] (throw (js/Error. "use next"))) INext (-next [_] (observe "next") nil)) projected (keys s)] (observe "made") (rest projected) (observe "rested") (first projected) (rest projected) true)

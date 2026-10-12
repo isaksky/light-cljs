@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "controls": [
+    {
+      "id": "detached-site-mapping",
+      "status": "rejected",
+      "reason": "Detached original integer site/body/table mapping"
+    },
+    {
+      "id": "changed-site-hash",
+      "status": "rejected",
+      "reason": "Detached original integer site/body/table mapping"
+    },
+    {
+      "id": "changed-complete-body-hash",
+      "status": "rejected",
+      "reason": "Detached original integer site/body/table mapping"
+    },
+    {
+      "id": "changed-complete-table-hash",
+      "status": "rejected",
+      "reason": "Detached original integer site/body/table mapping"
+    },
+    {
+      "id": "changed-current-producer",
+      "status": "rejected",
+      "reason": "Current original integer producer/source/executable binding drift"
+    },
+    {
+      "id": "changed-current-executable",
+      "status": "rejected",
+      "reason": "Current original integer actual executable changed"
+    },
+    {
+      "id": "changed-original-source-contract",
+      "status": "rejected",
+      "reason": "Changed original integer source body/site/table contract"
+    }
+  ],
+  "pristine_binding_restored": "passed",
+  "shared_original_source_modified": false,
+  "strict_complete": false
+}

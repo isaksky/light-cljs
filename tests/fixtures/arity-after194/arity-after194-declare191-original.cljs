@@ -1,0 +1,1 @@
+[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]

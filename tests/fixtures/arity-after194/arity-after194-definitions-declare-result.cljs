@@ -1,0 +1,1 @@
+(and (undefined? ((fn [] (declare forward)))) (nil? (declare)) (true? (:declared (meta #'forward))))

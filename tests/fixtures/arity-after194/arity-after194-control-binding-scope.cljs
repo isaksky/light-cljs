@@ -1,0 +1,1 @@
+(let [x 9] (= [9 9 3 3] [(if-let [x nil] 0 x) (if-some [x nil] 0 x) (when-let [[x] [3]] x) (when-some [{:keys [x]} {:x 3}] x)]))

@@ -1,0 +1,1 @@
+(do (let [d (Delay. (fn [] 2) nil) e (->Delay nil 3) xs (LazySeq. {:a 1} (fn [] [4]) nil nil) ys (->LazySeq nil nil (list 5) nil)] (assert (= [2 3 4 5] [@d @e (first xs) (first ys)])) (assert (instance? LazySeq xs)) (assert (= {:a 1} (meta xs))) (assert (= 4 (first (.sval xs)))) (assert (.equiv xs [4]))) true)
