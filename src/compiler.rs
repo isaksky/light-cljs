@@ -439,6 +439,13 @@ impl NamespaceSource {
         for &node in &self.syntax.roots[1..].to_vec() {
             self.top_level_clauses(node, &mut clauses)?;
         }
+        self.read_clauses(root, clauses)
+    }
+    fn read_clauses(
+        &mut self,
+        root: NodeId,
+        clauses: Vec<(NodeId, String, Vec<NodeId>)>,
+    ) -> Result<(), NamespaceCompileError> {
         for (clause, kind, arguments) in clauses {
             // Existing readers use a head slot; its spelling is irrelevant here.
             let mut parts = vec![clause];
@@ -655,6 +662,93 @@ impl NamespaceSource {
     }
 }
 
+/// A validated source directive, staged until the session has loaded its dependencies.
+pub(crate) struct SessionNamespaceDirective {
+    pub aliases: Vec<(String, String)>,
+    pub requires: Vec<String>,
+    pub resolution: crate::analyzer::NamespaceResolution,
+    pub imports: Vec<MacroImport>,
+    pub namespace_imports: Vec<(String, String)>,
+}
+
+pub(crate) fn session_nsstar(
+    form: &crate::compiler_data::Form,
+    namespace: &str,
+    aliases: &[(String, String)],
+    requires: &[String],
+    resolution: &crate::analyzer::NamespaceResolution,
+) -> Result<SessionNamespaceDirective, NamespaceCompileError> {
+    let span = form.span();
+    let source = span.source().text();
+    let mut parser = crate::Parser::at_offset(source, span.bytes().start);
+    let root = parser
+        .read_form()
+        .map_err(|error| {
+            NamespaceCompileError::new(error.to_string()).at(
+                Path::new(span.source().name()),
+                source,
+                error.span,
+            )
+        })?
+        .ok_or_else(|| NamespaceCompileError::new("ns* requires a source directive"))?;
+    let mut file = NamespaceSource {
+        name: namespace.into(),
+        name_span: span.bytes(),
+        path: span.source().name().into(),
+        source: source.into(),
+        syntax: SyntaxTree {
+            nodes: parser.into_nodes(),
+            roots: vec![root],
+        },
+        aliases: aliases.to_vec(),
+        requires: requires.to_vec(),
+        require_spans: vec![],
+        runtime_specs: vec![],
+        namespace_imports: vec![],
+        resolution: resolution.clone(),
+        warning_mode: false,
+    };
+    let mut clauses = vec![];
+    file.top_level_clauses(root, &mut clauses)?;
+    file.read_clauses(root, clauses)?;
+    let mut imports = vec![];
+    for spec in &file.runtime_specs {
+        let mut import = spec.import.clone();
+        import.refers.clear();
+        for original in &spec.import.refers {
+            let local = spec
+                .renames
+                .iter()
+                .find(|(from, _)| from == original)
+                .map_or(original, |(_, to)| to);
+            let refer = (local.clone(), import.namespace.clone(), original.clone());
+            if !file.resolution.refers.contains(&refer) {
+                if file
+                    .resolution
+                    .refers
+                    .iter()
+                    .any(|(name, _, _)| name == local)
+                {
+                    return Err(
+                        file.error(root, format!("duplicate or conflicting refer: {local}"))
+                    );
+                }
+                file.resolution.refers.push(refer);
+            }
+            if local == original {
+                import.refers.push(original.clone());
+            }
+        }
+        imports.push(import);
+    }
+    Ok(SessionNamespaceDirective {
+        aliases: file.aliases,
+        requires: file.requires,
+        resolution: file.resolution,
+        imports,
+        namespace_imports: file.namespace_imports,
+    })
+}
 pub(crate) fn valid_namespace(name: &str) -> bool {
     name != "js"
         && name.split('.').all(|part| {

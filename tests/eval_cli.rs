@@ -510,3 +510,29 @@ fn definition_metadata_uses_text_file_and_incremental_repl_locations() {
     assert!(text.contains("[\"<stdin>.cljc\" 2 1]"), "{text}");
     assert!(text.contains("[\"<stdin>.cljc\" 5 1]"), "{text}");
 }
+
+#[test]
+fn original_raw_nsstar_source_executes_with_explicit_roots() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sources = root.join("tests/fixtures/compiler-nsstar");
+    let source = sources.join("syntax/nsstar.cljs");
+    ok(
+        run(
+            &[
+                "--eval",
+                "--source-root",
+                sources.to_str().unwrap(),
+                source.to_str().unwrap(),
+            ],
+            "",
+        ),
+        "\"true\"\n",
+    );
+    ok(
+        run(
+            &["--eval", "--source-root", sources.to_str().unwrap(), "-"],
+            include_str!("fixtures/compiler-nsstar/syntax/nsstar.cljs"),
+        ),
+        "\"true\"\n",
+    );
+}

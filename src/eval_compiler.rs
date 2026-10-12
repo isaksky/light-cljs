@@ -427,12 +427,95 @@ impl InteractiveCompiler {
         }
         Ok(())
     }
+    pub(crate) fn finish_directive(
+        &mut self,
+        staged: Option<crate::compiler::SessionNamespaceDirective>,
+    ) -> Result<(), String> {
+        let Some(staged) = staged else {
+            return self.validate_imports();
+        };
+        // Check against freshly loaded declarations before publishing any aliases.
+        let previous = std::mem::replace(&mut self.resolution, staged.resolution);
+        if let Err(error) = self.validate_imports() {
+            self.resolution = previous;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .host
+            .set_interactive_imports(&self.namespace, staged.imports)
+        {
+            self.resolution = previous;
+            return Err(error);
+        }
+        self.aliases = staged.aliases;
+        self.requires = staged.requires;
+        self.host
+            .set_renames(&self.namespace, self.resolution.refers.clone());
+        self.host
+            .add_namespace_imports(&self.namespace, staged.namespace_imports);
+        Ok(())
+    }
     /// Apply a namespace directive and return explicit source-provider requests.
     /// `None` is an executable form; `Some` has the value nil after its loads finish.
     pub(crate) fn directive(
         &mut self,
         form: &Form,
-    ) -> Result<Option<Vec<crate::source_provider::LoadRequest>>, String> {
+    ) -> Result<
+        Option<(
+            Vec<crate::source_provider::LoadRequest>,
+            Option<crate::compiler::SessionNamespaceDirective>,
+        )>,
+        crate::EvalDiagnostic,
+    > {
+        let children = form.children();
+        if matches!(
+            form.data().kind(),
+            DatumKind::Collection {
+                kind: crate::CollectionKind::List,
+                ..
+            }
+        ) && matches!(children.first().map(|f| f.data().kind().clone()),
+            Some(DatumKind::Symbol(name)) if name == Name::new(None, "ns*")
+                || name == Name::new(Some("cljs.core"), "ns*")
+                || name == Name::new(Some("clojure.core"), "ns*"))
+        {
+            let staged = crate::compiler::session_nsstar(
+                form,
+                &self.namespace,
+                &self.aliases,
+                &self.requires,
+                &self.resolution,
+            )
+            .map_err(|error| crate::EvalDiagnostic {
+                message: error.message,
+                location: error
+                    .span
+                    .and_then(|bytes| form.span().source().span(bytes)),
+                data: None,
+            })?;
+            let requests = staged
+                .imports
+                .iter()
+                .map(|import| crate::source_provider::LoadRequest {
+                    namespace: Name::new(None, &import.namespace),
+                    requesting_namespace: Name::new(None, &self.namespace),
+                    requesting_file: Some(form.span().source().name().into()),
+                    reload: crate::source_provider::Reload::None,
+                })
+                .collect();
+            return Ok(Some((requests, Some(staged))));
+        }
+        self.directive_inner(form)
+            .map_err(|message| crate::EvalDiagnostic {
+                message,
+                location: Some(form.span()),
+                data: None,
+            })
+    }
+    fn directive_inner(
+        &mut self,
+        form: &Form,
+    ) -> Result<Option<(Vec<crate::source_provider::LoadRequest>, Option<crate::compiler::SessionNamespaceDirective>)>, String> {
         use crate::source_provider::{LoadRequest, Reload};
         fn text(form: &Form) -> Option<String> {
             match form.data().kind() {
@@ -482,7 +565,7 @@ impl InteractiveCompiler {
                 .and_then(text)
                 .ok_or("in-ns requires a quoted namespace symbol")?;
             self.set_namespace(&name);
-            return Ok(Some(vec![]));
+            return Ok(Some((vec![], None)));
         }
         let mut specs = Vec::new();
         if head == "ns" {
@@ -575,7 +658,7 @@ impl InteractiveCompiler {
             request.reload = reload;
         }
         self.set_imports(imports)?;
-        Ok(Some(requests))
+        Ok(Some((requests, None)))
     }
 }
 

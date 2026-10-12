@@ -1,0 +1,232 @@
+{
+  "owner": "light-cljs-164",
+  "starting_head": "75bb540bec6aeae78b3c3413343e0cd00841afbb",
+  "original_case": {
+    "id": "syntax-context-namespace-nsstar-alias",
+    "source": "(ns syntax.nsstar (:require [clojure.string]))\n(ns* (:require '[clojure.string :as text]))\n(defn run [observe] (= [\"A\" \"1-2\"] [(text/upper-case \"a\") (text/join \"-\" [1 2])]))\n(pr-str (run nil))\n",
+    "expected": {
+      "id": "syntax-context-namespace-nsstar-alias",
+      "outcome": {
+        "status": "returned",
+        "value": true
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "native_stdout": "true\n",
+    "source_root": "tests/fixtures/compiler-nsstar",
+    "entry": "syntax.nsstar",
+    "export": "run"
+  },
+  "original_source_sha256": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+  "original_expectation_sha256": "312ebd41fb88638577df53d6520c395481bbdba3cc0e060552b96c6541cfc232",
+  "current_producer_source_sha256": {
+    "src/analyzer.rs": "fe95082fd9a31c883b1b6a1c29b89abe664a940b694a72b1e12d01ce3ca53f8c",
+    "src/application.rs": "5f57d4984b27b084d115657af827b23e51527e9356baf3d05f23ca6a1f1ee3f0",
+    "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+    "src/compilation_session.rs": "36ef734d1426bbecd024cb855c3688b12a9a8b8afb262eb0e8a78a77c8b02aae",
+    "src/compiler.rs": "d70dcb6466b1fb3dddbef3a2cb9cc80339b2f48c28db4b1110f6a39e43e122ef",
+    "src/compiler_binding_macros.rs": "1b30d8a94b556fe256975e36c4e4ebfa8b487d161297881e43134a239ea641dd",
+    "src/compiler_bootstrap.rs": "ca064659400cb4970c14db5f3fd79372b8141df853c67d1384b78365e8d5a332",
+    "src/compiler_core_macros.cljs": "ae7399e2bc5456ecd8c89d636f532fa7ab101dc3c695dd001a1fc078e385c774",
+    "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+    "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+    "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+    "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+    "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+    "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+    "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+    "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+    "src/compiler_names.rs": "e11e07045ef01ef41852a3166d109a20eb38486a1c1475552e290d9f280599bc",
+    "src/compiler_reader.rs": "df25eed094adf8acd36e5ee866345ab63dad225868467e2f6f8d242c8808b5db",
+    "src/compiler_roots.js": "ef2f2b66eb9ef3a4964df3ebd21737c64616435f51fa7e401de8adb552dfdfdd",
+    "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+    "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+    "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+    "src/emitter.rs": "c22210518d884f45743b0acc3f529b5b846e1c14a4420808ef6d9a418499b5ab",
+    "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+    "src/eval_compiler.rs": "946d2a4ee4ea57fea163126bcc23cf24f33fcea42af81d3af0c95bbc1e6bda5b",
+    "src/eval_session.rs": "ac57ab272b3c742f13d66a98be066b7143f7a99cebd36a2295d8ccf136517ec6",
+    "src/evaluator.rs": "1310ec60415b969a0ead6b9a64370ebd492b4ae26e3c8a9b749bfc58b001e240",
+    "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+    "src/js_runtime.js": "bb8140c402301188da25c452db4b9b4e3a07c1443fa694724b7354aab9ffba2b",
+    "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+    "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+    "src/macro_host.rs": "697d154f7360d95220d8054aa0229d7ccb41c867b006c4bd61758a10697832ce",
+    "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+    "src/parser.rs": "149cc2d9b999d3e81d1f186e9261e65df96f045206b3b80839025fa3985c9de7",
+    "src/program_fragment.rs": "2367943d3926002479357d16b6860ca3a8a6779bd97ddd17a29eb81f6833cd37",
+    "src/reader_literals.rs": "1ba803ab87ddc247beac5d6a0a2a87e870eb3bdf56543710f898e998c1d2d5e7",
+    "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7"
+  },
+  "driver_source_sha256": {
+    "tests/eval_nsstar.rs": "688507c1f8fa85cd9760d7ef73af04583bdd20e9289bccf88f79c120cff65173",
+    "tests/eval_cli.rs": "3da1961012fa38535deffe641fffc0799465138be65e197a01851d716870104e",
+    "tests/compiler_syntax_context.rs": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99"
+  },
+  "evaluation": {
+    "fresh_and_reused_sessions": "actual complete string \"true\"; alias resolution, located recovery and no stale aliases pass",
+    "explicit_root_cli": {
+      "file_stdout": "\"true\"\n",
+      "stdin_stdout": "\"true\"\n",
+      "file_stdout_sha256": "d5437a189aeda6e136fbdb082a26d7bab92dd356106001ea6b01ab5bada7875b",
+      "stdin_stdout_sha256": "d5437a189aeda6e136fbdb082a26d7bab92dd356106001ea6b01ab5bada7875b"
+    },
+    "source_bound_namespace_engines": {
+      "Node": {
+        "id": "syntax-context-namespace-nsstar-alias",
+        "outcome": {
+          "status": "returned",
+          "value": "true"
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "QuickJS": {
+        "id": "syntax-context-namespace-nsstar-alias",
+        "outcome": {
+          "status": "returned",
+          "value": "true"
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "compiled_js_sha256": "7945877443cb5cacf1b22928d31360e1e0b1d77179e54ba25081556ea75ea334",
+      "observation_script_sha256": "6facd69338f8edc25b4df7ef4eb0d59eb338acc8834038b225cda4e674730865"
+    },
+    "supplemental_source_bound_engines_and_sessions": {
+      "driver": "source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner",
+      "actual_string": "[true [:before :after] true true true]",
+      "ordered_effects": [
+        "before",
+        "after"
+      ],
+      "contract": "renamed .cljs macro/value referrals, owner identity, imports and ordinary namespaces; Node/QuickJS and fresh/reused EvalSession assertions"
+    }
+  },
+  "references": {
+    "release": {
+      "checked_identity": "1.12.134",
+      "settings": {
+        "optimizations": "none",
+        "static-fns": false,
+        "def-emits-var": false
+      },
+      "complete_observed": {
+        "complete_result": "true",
+        "exported_callback": true,
+        "trace": [],
+        "stdout": ""
+      },
+      "source_copy_sha256": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+      "compiled_original_sha256": "e698cdc96e3911fb9b9bc110fbc44e82ea50c9801ce8238db7db296c9ef3b839",
+      "identity_settings_stdout_sha256": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "callback_stdout_sha256": "b0242441ade77658075a39cccb2dd1d17885635c27ceaa3257198bba89a31562",
+      "completion_stdout_sha256": "05a200a2a76efdee2f82a285011545c33d0059098ccba9bd688164261a607b99"
+    },
+    "checkout": {
+      "checked_identity": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+      "settings": {
+        "optimizations": "none",
+        "static-fns": false,
+        "def-emits-var": false
+      },
+      "complete_observed": {
+        "complete_result": "true",
+        "exported_callback": true,
+        "trace": [],
+        "stdout": ""
+      },
+      "source_copy_sha256": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+      "compiled_original_sha256": "5970758bf66f5b9cb9371045e7aaecdf66e48918ade04f3859e687c0cc71eff3",
+      "identity_settings_stdout_sha256": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "callback_stdout_sha256": "b0242441ade77658075a39cccb2dd1d17885635c27ceaa3257198bba89a31562",
+      "completion_stdout_sha256": "05a200a2a76efdee2f82a285011545c33d0059098ccba9bd688164261a607b99"
+    }
+  },
+  "reference_completion_driver_sha256": "5537a708aaa57add34f6f3753a7bd10e0587ef366cf81884fdfd484197d56b49",
+  "checks": {
+    "session-tests-verified": {
+      "passing_cohorts": [
+        3,
+        19
+      ],
+      "stdout_sha256": "3ddd3857a058939557abfa5b5ee2ca3706f8e7281dc5d4492e631c6f6c710e43",
+      "stderr_sha256": "072964085bb5a861a73fd393cd5be6ea04490ebf496808df8d6e37f82524803e",
+      "limit": null
+    },
+    "session-tests-final": {
+      "passing_cohorts": [
+        17
+      ],
+      "stdout_sha256": "2646e462e4ab6b146e782855302e8b96f28c1216a570d94fd73241046c987467",
+      "stderr_sha256": "9379c36305cd9fe2083cfc7cb6555cfa5655adc03f833bf410180aff08cf250b",
+      "limit": "only its successful 17-test CLI cohort is credited; subsequent supplemental failure receives no credit"
+    },
+    "namespace-tests": {
+      "passing_cohorts": [
+        12,
+        114,
+        10,
+        2,
+        10,
+        28
+      ],
+      "stdout_sha256": "9dcdbc447fce9a5e3a1067974ee3502ca31ef456bb6fdfa8e03c96a4c7231c9e",
+      "stderr_sha256": "cbc6035450a472a4fdd27546aaf0609f36f0e6cdd7e2e7f0bed357dd0e648f23",
+      "limit": null
+    },
+    "python-report": {
+      "passed": 42,
+      "stderr_sha256": "7b1d66a41fa7f6fb34f89f00062038781e356b79110d34ccd8f0cc81aaeacb35"
+    },
+    "python-ledger": {
+      "passed": 22,
+      "stderr_sha256": "2fcbca1a25603cf710561b999c1cf2cf8697ab9ddd02e029f05d7c4d0a5f0d55"
+    },
+    "python-namespace": {
+      "passed": 6,
+      "stderr_sha256": "5523a2c465e5bf1b1fa9f709b8be44ec100c2c828018eab4e48c79b503d61a6c"
+    },
+    "python-syntax": {
+      "passed": 7,
+      "stderr_sha256": "30954b64668fcd658ad0a54fd2c57e9056515f6dcc19764f2067b9d18246b215"
+    }
+  },
+  "integrated_report": {
+    "path": "/tmp/light-cljs-164-report-final/report.json",
+    "sha256": "458a5fcddda7ce802ed365e52affe79dade4b391af4141906e6a3414f76abcaa",
+    "counts": {
+      "covered": 2,
+      "verified-rejection": 0,
+      "verified-warning": 0,
+      "missing": 8598,
+      "version-difference": 0,
+      "unrelated": 1391
+    },
+    "boundary_strict_complete": true,
+    "strict_complete": false,
+    "compiler_binary": {
+      "path": "/Users/admin/src/light-cljs/target/debug/light-cljs",
+      "sha256": "a575c2243059bfeb3e7a11315cc45c1f88ea1132cba997608cad544bd3cd7bb3"
+    }
+  },
+  "performance": {
+    "path": "/tmp/light-cljs-164-production-final",
+    "manifest_sha256": "0ee9f582e4bdceea0daa4782b5adf8e7e6a05eda775155e9a44f31d779fcd7e9",
+    "samples": 9,
+    "iterations": 1,
+    "comparison": "current validated timing/allocation receipt; no before/after claim"
+  },
+  "historical_evidence_sha256": {
+    "tests/reference/compiler-nsstar-verification.json": "b11e178395b38edfdfe64ef22024c2e8502f7aeda4d1b66766c4fe7d4e6da4bb",
+    "tests/reference/compiler-language/namespace-result-verification.json": "d87d3ef8a81cacf82131724a4bb6054fed2ea460e4797bc705af1f9a02734aac"
+  },
+  "artifacts": "/tmp/light-cljs-164-session",
+  "excluded": "light-cljs-156 cancellation/native crash and cancellation/limits suites; no push/PR; .DS_Store preserved",
+  "superseded_nonpassing_artifacts": [
+    "/tmp/light-cljs-164-production",
+    "/tmp/light-cljs-164-session/session-tests.stdout",
+    "/tmp/light-cljs-164-session/session-tests-final.stdout"
+  ]
+}

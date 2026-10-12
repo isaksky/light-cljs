@@ -549,6 +549,21 @@ impl MacroHost {
                 )
             })
     }
+    pub(crate) fn add_namespace_imports(
+        &mut self,
+        namespace: &str,
+        imports: Vec<(String, String)>,
+    ) {
+        let current = self
+            .namespace_imports
+            .entry(namespace.to_owned())
+            .or_default();
+        for import in imports {
+            if !current.contains(&import) {
+                current.push(import);
+            }
+        }
+    }
     pub(crate) fn set_namespace_imports(
         &mut self,
         namespace: &str,

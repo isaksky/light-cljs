@@ -335,20 +335,24 @@ impl EvalSession {
         self.form(form)
     }
     fn form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
+        if let Some(children) = top_level_do(form) {
+            let mut last = self.value(&Datum::new(DatumKind::Nil))?;
+            for child in children {
+                let result = self.form(&child);
+                let _ = self.engine.release(last);
+                last = result?.value;
+            }
+            return Ok(EvalResult { value: last, namespace: self.namespace() });
+        }
         self.engine.input_action("clearError", 0)?;
         let requests = self
             .compiler
             .borrow_mut()
-            .directive(form)
-            .map_err(|message| EvalDiagnostic {
-                data: None,
-                message,
-                location: Some(form.span()),
-            })?;
+            .directive(form)?;
         if requests.is_some() {
             self.sync_namespace()?;
         }
-        if let Some(requests) = requests {
+        if let Some((requests, staged)) = requests {
             for request in requests {
                 let name = String::from_utf16_lossy(request.namespace.name());
                 if self.loaded.borrow().contains(&name)
@@ -402,8 +406,8 @@ impl EvalSession {
                 self.loaded.borrow_mut().insert(name);
             }
             self.compiler
-                .borrow()
-                .validate_imports()
+                .borrow_mut()
+                .finish_directive(staged)
                 .map_err(|message| EvalDiagnostic {
                     data: None,
                     message,
@@ -898,6 +902,59 @@ fn file_source(
     .ok_or_else(|| EvalError(format!("missing file {path}")))
 }
 
+fn top_level_do(form: &Form) -> Option<Vec<Form>> {
+    if !matches!(
+        form.data().kind(),
+        DatumKind::Collection {
+            kind: crate::CollectionKind::List,
+            ..
+        }
+    ) {
+        return None;
+    }
+    let children = form.children();
+    match children.first()?.data().kind() {
+        DatumKind::Symbol(name) if name == &crate::compiler_data::Name::new(None, "do") => {
+            let children: Vec<_> = children.into_iter().skip(1).collect();
+            children
+                .iter()
+                .any(has_nsstar_operation)
+                .then_some(children)
+        }
+        _ => None,
+    }
+}
+fn has_nsstar_operation(form: &Form) -> bool {
+    if !matches!(
+        form.data().kind(),
+        DatumKind::Collection {
+            kind: crate::CollectionKind::List,
+            ..
+        }
+    ) {
+        return false;
+    }
+    let children = form.children();
+    match children.first().map(|head| head.data().kind().clone()) {
+        Some(DatumKind::Symbol(name))
+            if name == crate::compiler_data::Name::new(None, "ns*")
+                || name == crate::compiler_data::Name::new(Some("cljs.core"), "ns*")
+                || name == crate::compiler_data::Name::new(Some("clojure.core"), "ns*") =>
+        {
+            true
+        }
+        Some(DatumKind::Symbol(name)) if name == crate::compiler_data::Name::new(None, "do") => {
+            children.iter().skip(1).any(has_nsstar_operation)
+        }
+        _ => false,
+    }
+}
+fn source_operations(form: Form) -> Vec<Form> {
+    match top_level_do(&form) {
+        Some(children) => children.into_iter().flat_map(source_operations).collect(),
+        None => vec![form],
+    }
+}
 /// Runtime callbacks use the already active engine context and this session's
 /// compiler. No second evaluator or filesystem authority is introduced.
 fn callback_source(
@@ -926,86 +983,90 @@ fn callback_source(
             .next_form(source, &mut cursor)
             .map_err(EvalDiagnostic::from)?;
         let Some(form) = next else { return Ok(last) };
-        let located = |message: String| EvalDiagnostic {
-            message,
-            location: Some(form.span()),
-            data: None,
-        };
-        let requests = compiler.borrow_mut().directive(&form).map_err(located)?;
-        if requests.is_some() {
-            callback_sync_namespace(call, compiler, namespace_update)?;
-        }
-        if let Some(requests) = requests {
-            for request in requests {
-                let name = String::from_utf16_lossy(request.namespace.name());
-                if name == "cljs.core"
-                    || name == "clojure.core"
-                    || (loaded.borrow().contains(&name)
-                        && request.reload == crate::source_provider::Reload::None)
-                {
-                    continue;
-                }
-                if loading.borrow().contains(&name) {
-                    return Err(located(format!(
-                        "namespace load cycle: {} -> {name}",
-                        loading.borrow().join(" -> ")
-                    )));
-                }
-                let dependency = if let Some(text) = crate::compiler_libraries::source(&name) {
-                    SourceInput::new(format!("<builtin>/{name}.cljs"), text)
-                } else {
-                    options
-                        .source_provider
-                        .as_ref()
-                        .ok_or_else(|| located(format!("no source provider for {name}")))?
-                        .load(&request)
-                        .map_err(|error| located(error.to_string()))?
-                        .ok_or_else(|| located(format!("missing namespace {name}")))?
-                };
-                let namespace = compiler.borrow().namespace().to_owned();
-                loading.borrow_mut().push(name.clone());
-                let result = callback_source(
-                    call,
-                    compiler,
-                    namespace_update,
-                    options,
-                    loaded,
-                    loading,
-                    &dependency,
-                );
-                loading.borrow_mut().pop();
-                compiler.borrow_mut().set_namespace(&namespace);
+        for form in source_operations(form) {
+            let located = |message: String| EvalDiagnostic {
+                message,
+                location: Some(form.span()),
+                data: None,
+            };
+            let requests = compiler.borrow_mut().directive(&form)?;
+            if requests.is_some() {
                 callback_sync_namespace(call, compiler, namespace_update)?;
-                call.release_scoped(result?)?;
-                loaded.borrow_mut().insert(name);
             }
-            compiler.borrow().validate_imports().map_err(located)?;
-            let value = call.value(&Datum::new(DatumKind::Nil))?;
-            call.release_scoped(last)?;
-            last = value;
-        } else {
-            let program =
+            if let Some((requests, staged)) = requests {
+                for request in requests {
+                    let name = String::from_utf16_lossy(request.namespace.name());
+                    if name == "cljs.core"
+                        || name == "clojure.core"
+                        || (loaded.borrow().contains(&name)
+                            && request.reload == crate::source_provider::Reload::None)
+                    {
+                        continue;
+                    }
+                    if loading.borrow().contains(&name) {
+                        return Err(located(format!(
+                            "namespace load cycle: {} -> {name}",
+                            loading.borrow().join(" -> ")
+                        )));
+                    }
+                    let dependency = if let Some(text) = crate::compiler_libraries::source(&name) {
+                        SourceInput::new(format!("<builtin>/{name}.cljs"), text)
+                    } else {
+                        options
+                            .source_provider
+                            .as_ref()
+                            .ok_or_else(|| located(format!("no source provider for {name}")))?
+                            .load(&request)
+                            .map_err(|error| located(error.to_string()))?
+                            .ok_or_else(|| located(format!("missing namespace {name}")))?
+                    };
+                    let namespace = compiler.borrow().namespace().to_owned();
+                    loading.borrow_mut().push(name.clone());
+                    let result = callback_source(
+                        call,
+                        compiler,
+                        namespace_update,
+                        options,
+                        loaded,
+                        loading,
+                        &dependency,
+                    );
+                    loading.borrow_mut().pop();
+                    compiler.borrow_mut().set_namespace(&namespace);
+                    callback_sync_namespace(call, compiler, namespace_update)?;
+                    call.release_scoped(result?)?;
+                    loaded.borrow_mut().insert(name);
+                }
                 compiler
                     .borrow_mut()
-                    .analyze_form(&form)
-                    .map_err(|error| EvalDiagnostic {
-                        message: error.to_string(),
-                        location: form
-                            .span()
-                            .source()
-                            .span(error.span)
-                            .or_else(|| Some(form.span())),
-                        data: None,
-                    })?;
-            let value = call
-                .unit(&crate::emitter::emit_interactive_unit(&program))
-                .map_err(|error| located(error.0))?;
-            call.release_scoped(last)?;
-            last = value;
+                    .finish_directive(staged)
+                    .map_err(located)?;
+                let value = call.value(&Datum::new(DatumKind::Nil))?;
+                call.release_scoped(last)?;
+                last = value;
+            } else {
+                let program =
+                    compiler
+                        .borrow_mut()
+                        .analyze_form(&form)
+                        .map_err(|error| EvalDiagnostic {
+                            message: error.to_string(),
+                            location: form
+                                .span()
+                                .source()
+                                .span(error.span)
+                                .or_else(|| Some(form.span())),
+                            data: None,
+                        })?;
+                let value = call
+                    .unit(&crate::emitter::emit_interactive_unit(&program))
+                    .map_err(|error| located(error.0))?;
+                call.release_scoped(last)?;
+                last = value;
+            }
         }
     }
 }
-
 fn callback_sync_namespace(
     call: &HostCall<'_, '_>,
     compiler: &Rc<RefCell<InteractiveCompiler>>,
