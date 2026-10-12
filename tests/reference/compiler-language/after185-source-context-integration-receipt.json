@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "profile": "after185-raw-whole-source-integration-v1",
+  "inputs": {
+    "gap": {
+      "path": "/private/tmp/light-cljs-125-gap-current-after185/evidence.json",
+      "sha256": "7353c38f64d1691f3ada05f3f91671e427a6bb9e8f7640370f75e6f2866c589c"
+    },
+    "print": {
+      "path": "/private/tmp/light-cljs-125-print-current-after185/evidence.json",
+      "sha256": "f8a7e224f76411724bccaa603dc08e76624c5704fa41f925909ea03391e6d69b"
+    },
+    "cljc": {
+      "path": "/private/tmp/light-cljs-125-cljc-current-after185/evidence.json",
+      "sha256": "51bdde854a23e145711611986ad400a967a0233d58736228d4e8946f11638e2a"
+    },
+    "lazy": {
+      "path": "/private/tmp/light-cljs-125-lazy-current-after185/evidence.json",
+      "sha256": "aa683925726d93f76f19fdc6bfb29b847810a628f8902415193da84ffdb845c4"
+    },
+    "char": {
+      "path": "/private/tmp/light-cljs-125-char-final-integration-after185/evidence.json",
+      "sha256": "56b75c6d56a8f03da858a5f91987b16a0d27bd8d20e5094b71ebf73d3d96a296"
+    },
+    "transport": {
+      "path": "/private/tmp/light-cljs-125-cljc-transport-after185-final-v1/evidence.json",
+      "sha256": "ebf3f72443d948ffb32cf7e7ce587944e76592ed2b5d210c2099cbb953e71b05"
+    }
+  },
+  "source_cohort_counts": {
+    "version-difference": 87,
+    "covered": 5,
+    "missing": 4
+  },
+  "source_cohort_total": 96,
+  "actual_macro_passed_sources": 92,
+  "original_sci_semantic_pass_credit": 5,
+  "typed_transport_original_sci_credit": 0,
+  "typed_transport_retains_original_observers": true,
+  "detached_observer_control": "rejected",
+  "remaining_source_ids": [
+    "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+    "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-metadata-no-match",
+    "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+    "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity"
+  ],
+  "source_report": {
+    "path": "/private/tmp/light-cljs-125-source-integrated-after185-final/source-context-report.json",
+    "sha256": "8a5c8a84063a5833c03ff72f0579e72f6f99b8f3d471d968a16fe8f27c0da592"
+  },
+  "integration_inputs": {
+    "after185_source_integration.py": "9f294db386893aeeed8ec94c2a93fbb5aa0c0198125acd50d0c12abbdac18253",
+    "full_ledger.py": "820c4e237deb6c4faf61ad0b3b30c8c773cb60335f0d707285839b6c4687e37e",
+    "report.py": "de68421c882e0cc74c3f4952b501a2d4718bd912e3bb70e410b8fa2b96bc7842",
+    "full-manifest.json": "37f12a2588b2bf597c88dcda3a325cf9737bb6c8ce47947985ddcf6cc08d2be1",
+    "obligation-witnesses.jsonl": "d5d33241049da42b9d2d7591c5579e0292c651f4c7e990dde7ad8fb3ed5f797d",
+    "phase-witnesses.jsonl": "6863abdf456124ae9fc8318ec772287f49a25200dc793910163d8f5bea60cdb7"
+  },
+  "strict_complete": false,
+  "complete_unfiltered_gate": false
+}

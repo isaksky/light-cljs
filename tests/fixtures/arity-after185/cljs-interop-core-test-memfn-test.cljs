@@ -1,0 +1,1 @@
+(do (let [substr (memfn substr start length)] (assert (= "cde" (substr "abcdefg" 2 3)))) (let [trim (memfn trim)] (assert (= ["abc" "def"] (map trim ["   abc   " "  def   "])))) true)

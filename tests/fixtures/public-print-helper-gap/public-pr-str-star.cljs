@@ -1,0 +1,1 @@
+(let [printer pr-str*] [(pr-str* [1 2]) (cljs.core/pr-str* [3 4]) (printer {:a 1}) (apply printer [[5 6]])])

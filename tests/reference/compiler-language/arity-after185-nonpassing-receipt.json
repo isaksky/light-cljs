@@ -1,0 +1,116 @@
+{
+  "scope": "exploratory original source discrepancies; zero canonical operation credit",
+  "head": "3a0e5cbbc5fc74550e57a78d037ad5db7647e6d6",
+  "sources": {
+    "cljs-residual-source-context-edn-stream": {
+      "source": ";; Copyright (c) Rich Hickey. Eclipse Public License 1.0.\n;; See research/clojurescript/epl-v10.html; retain this notice.\n(ns clojure.edn-test (:require [clojure.edn :as edn] [cljs.reader :as reader] [cljs.reader :as reader-types]))\n(defn- test-reader []\n  (reader-types/string-push-back-reader \"[1 2 3]\"))\n(defn run [] (do (do (do (assert (= (edn/read (test-reader))\n         (reader/read (test-reader)))) (assert (= (edn/read {} (test-reader))\n           (reader/read {} (test-reader)))) (assert (= (edn/read (test-reader) false \"EOF\" {})\n           (reader/read (test-reader) false \"EOF\" {})))) true)))\n",
+      "source_sha256": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
+      "expected": {
+        "id": "cljs-residual-source-context-edn-stream",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    "cljs-extra-core-test-req-": {
+      "source": "(do  (do (let [m {:a 1 :b 2 :f nil :g false nil \"nil\"}] (assert (try (req! m :e) false (catch js/Error extra-error true))) (do (assert (= (req! m :a) 1)) (assert (= (req! m nil) \"nil\")) (assert (= (req! m :b) 2)) (assert (= (req! m :f) nil))))) true)",
+      "source_sha256": "6d6116cfaec7f524d28472971a191afc7c4ebd4731a40dc19990c0b2c34bb741",
+      "expected": {
+        "id": "cljs-extra-core-test-req-",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    }
+  },
+  "references": {
+    "release": {
+      "raw_root": "/tmp/light-cljs-arity-after185-trial-pins/release",
+      "identity": "release 1.12.134",
+      "observations": {
+        "cljs-residual-source-context-edn-stream": {
+          "id": "cljs-residual-source-context-edn-stream",
+          "outcome": {
+            "status": "threw",
+            "error": {
+              "category": "type-error"
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "cljs-extra-core-test-req-": {
+          "id": "cljs-extra-core-test-req-",
+          "outcome": {
+            "status": "threw",
+            "error": {
+              "category": "type-error"
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      "raw_artifact_sha256": {
+        "build.clj": "9a4c36a9e6c2ec48ae73edd2f5a04acff4a107fa9d204d74d6430d70253a8be2",
+        "build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "build/stderr": "058bfb0e922653c72e18df29433c41a75e59627b2f30e83333f364c9146756af",
+        "node/stdout": "1752fe29be655da96093d06aeb2b2d8c199f485955347b7735f45d99d3ac0a0e",
+        "node/stderr": "3bd38676e904b05a2aaf18437bafeb5bc8fd4a788e6424ea2bd66acf17314319"
+      }
+    },
+    "checkout": {
+      "raw_root": "/tmp/light-cljs-arity-after185-trial-pins/checkout",
+      "identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+      "observations": {
+        "cljs-residual-source-context-edn-stream": {
+          "id": "cljs-residual-source-context-edn-stream",
+          "outcome": {
+            "status": "threw",
+            "error": {
+              "category": "type-error"
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "cljs-extra-core-test-req-": {
+          "id": "cljs-extra-core-test-req-",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        }
+      },
+      "raw_artifact_sha256": {
+        "build.clj": "9a4c36a9e6c2ec48ae73edd2f5a04acff4a107fa9d204d74d6430d70253a8be2",
+        "build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "build/stderr": "1072a8dd9b39c25fdf051730b11f6f06e897a8e6d1e8875ca673ca4f8e7bf1c1",
+        "node/stdout": "9e6d12ce96001a442a768e221b3dc9c110e9897b249f53c5e8ae81b64690c9e3",
+        "node/stderr": "3bd38676e904b05a2aaf18437bafeb5bc8fd4a788e6424ea2bd66acf17314319"
+      }
+    }
+  },
+  "limits": "Exploratory producer later changed; this receipt preserves raw original outcomes and does not provide final accepted-cohort or executable-bound proof.",
+  "initial_ordinary_timeout": {
+    "id": "cljs-final-seqs-iteration-seq-equals-reduce",
+    "raw_log_path": "/tmp/light-cljs-arity-after185-finaldraft/actual.log",
+    "raw_log_sha256": "62bf7c741780be13b8ce72bd5d0f5c8e03422e55c536b28dbeeacfac8c97c093",
+    "observation": "Default10-second application QuickJS session reached its deadline after28preceding complete oracles. No semantic discrepancy inferred; zero-credit original run. Subsequent ordinary proof uses explicit120-second test duration while retaining all49 seed/initk combinations."
+  },
+  "hash_packet_driver_build_failure": {
+    "log_path": "/tmp/light-cljs-125-arity-after185-hash-packet-build-failure.log",
+    "log_sha256": "032e70d937c4de4ca90fac5a5cf257d83f979852671787d85a609e04b9813a6e",
+    "status": "compile-error",
+    "operation_credit": 0,
+    "reason": "Owned proof driver moved the saved program before using it in the Node input-hash packet; repaired by borrowing it when saving. No original source/compiler semantic change. Final repaired driver passed the complete actual run."
+  }
+}

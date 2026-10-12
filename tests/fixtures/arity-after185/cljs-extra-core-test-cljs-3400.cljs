@@ -1,0 +1,1 @@
+(assert (true? (and))) (assert (nil? (or))) true

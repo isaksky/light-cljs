@@ -1,0 +1,1 @@
+(do (defn fixture-get [o k] (unchecked-get o k)) (defn fixture-set [o k v] (unchecked-set o k v)) (do  (do (assert (= (partitionv-all 4 [1 2 3 4 5 6 7 8 9]) [[1 2 3 4] [5 6 7 8] [9]])) (assert (= (partitionv-all 4 2 [1 2 3 4 5 6 7 8 9]) [[1 2 3 4] [3 4 5 6] [5 6 7 8] [7 8 9] [9]]))) true))

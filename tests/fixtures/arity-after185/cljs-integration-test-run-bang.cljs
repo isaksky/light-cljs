@@ -1,0 +1,1 @@
+(do (do (let [a (atom 0)]       (run! (fn [n]               (swap! a + n))         (range 5))       (assert (= 10 @a))) (assert (nil? (run! identity [1]))) (assert (nil? (run! reduced (range)))))) true

@@ -1,0 +1,1 @@
+(do (do (assert (zero? ((fn [x]                 (while (pos? @x)                   (let [curr @x]                     (when (number? curr)                       (reset! x (dec curr)))))                 @x) (atom 1)))) true))

@@ -1,0 +1,1 @@
+(do (defprotocol IWoz (-woz [this])) (def noz []) (do (do (assert (= (specify noz IWoz (-woz [_] :boz)) noz)) (assert (not (identical? (specify noz IWoz (-woz [_] :boz)) noz))) (assert (= (-woz (specify noz IWoz (-woz [this] this))) noz)) (assert (= (-woz (specify noz IWoz (-woz [_] :boz))) :boz)))) true)

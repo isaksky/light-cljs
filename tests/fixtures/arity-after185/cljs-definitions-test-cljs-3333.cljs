@@ -1,0 +1,1 @@
+(do (defonce not-native 17) (assert (== 17 not-native)) true)

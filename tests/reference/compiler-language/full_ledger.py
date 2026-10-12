@@ -572,9 +572,47 @@ def sci_execution_failed(report, evidence, failure_statuses):
                       and row['gap_sci_context_reconciliation'].get('checked_pin_contract_status') == {'release': 'passed', 'checkout': 'passed'}
                       and row.get('columns', {}).get('quickjs_macro', {}).get('status') == 'passed'
                       and runner.same_json(row.get('layers'), evidence.get(row['gap_sci_context_reconciliation']['id'])))
+    reconciled.update(verified_transport_observer_ids(report, evidence))
     return any(layer.get("status") in failure_statuses
                and not (identity in reconciled and layer.get("status") == "mismatch")
                for identity, layers in evidence.items() for layer in layers.values())
+
+
+def verified_transport_observer_ids(report, evidence):
+    """Link an already replayed typed proof to its retained failed observer.
+
+    This only explains an original mismatch. It never suppresses other failure
+    statuses, grants original SCI credit, or replaces the original observation.
+    """
+    import report as runner
+    import sci_cljc_transport_after185 as transport
+    frozen = {row['id']: row for row in transport.load()}
+    result = set()
+    for row in report.get('assertions', []):
+        proof = row.get('gap_sci_context_reconciliation', {})
+        original = frozen.get(proof.get('id'))
+        prior = proof.get('prior_observer_reconciliation', {})
+        if not original or row.get('status') != 'version-difference':
+            continue
+        if not (proof.get('intermediate_value_transport_profile') == transport.PROFILE
+                and proof.get('reconciliation') == 'verified-canonical-sci-difference'
+                and proof.get('original_expectation_status') == 'unresolved'
+                and proof.get('original_semantic_pass_credit') == 0
+                and proof.get('canonical_contract_status') == 'passed'
+                and proof.get('actual_macro_contract_status') == 'passed'
+                and proof.get('checked_pin_contract_status') == {'release': 'passed', 'checkout': 'passed'}
+                and row.get('columns', {}).get('quickjs_macro', {}).get('status') == 'passed'
+                and prior.get('status') == 'missing'
+                and prior.get('source_binding', {}).get('canonical_expected') is None
+                and runner.same_json(prior.get('layers'), evidence.get(proof['id']))
+                and runner.same_json(row.get('layers'), proof.get('layers'))):
+            continue
+        keys = ('source', 'source_sha256', 'original_row_sha256', 'body_sha256', 'original_expected')
+        if all(runner.same_json(proof.get('source_binding', {}).get(key), original.get(key))
+               and runner.same_json(prior.get('source_binding', {}).get(key), original.get(key))
+               for key in keys):
+            result.add(proof['id'])
+    return result
 
 
 def verified_library_dialects(document, current_evidence):
@@ -591,7 +629,34 @@ def verified_library_dialects(document, current_evidence):
     return {row["obligation_id"]: row for row in verified["reconciliations"]}, document["local_evidence"]
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None):
+def verified_cljc_transport(document, prior_contexts):
+    """Supplement only three unresolved observers; preserve their original evidence."""
+    if document is None:
+        return {}
+    import copy
+    import sci_cljc_transport_after185 as transport
+    contexts = transport.reconcile(document)
+    expected = {row['obligation_id'] for row in transport.load()}
+    if set(contexts) != expected:
+        raise ValueError('Incomplete or extra original CLJC transport cohort')
+    for identity, proof in contexts.items():
+        prior = prior_contexts.get(identity)
+        if not prior or prior.get('status') != 'missing':
+            raise ValueError('Transport proof must supplement an actual unresolved whole-source observer')
+        binding = prior['source_binding']
+        if binding.get('canonical_expected') is not None:
+            raise ValueError('Transport proof cannot replace an existing canonical source literal')
+        for key in ('source', 'source_sha256', 'original_row_sha256', 'body_sha256', 'original_expected'):
+            if binding.get(key) != proof['source_binding'].get(key):
+                raise ValueError('Transport proof changed original source or expectation: ' + key)
+        if proof.get('status') != 'version-difference' or proof.get('original_semantic_pass_credit') != 0:
+            raise ValueError('Intermediate transport must retain original SCI differences and zero pass credit')
+        proof['prior_observer_reconciliation'] = copy.deepcopy(prior)
+        proof['intermediate_value_transport_profile'] = transport.PROFILE
+    return contexts
+
+
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -648,6 +713,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
                 raise ValueError(label + ' context detached from fresh report execution')
         gap_sci_contexts.update(contexts)
+    gap_sci_contexts.update(verified_cljc_transport(transport_sci_context_evidence, gap_sci_contexts))
     library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
     selected = bool(features or identities)
     rows = []
@@ -911,6 +977,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
         result[target["id"]] = item
     validate_arity_after171(result, 'obligation-witnesses.jsonl', obligations)
     validate_arity_after172(result, 'obligation-witnesses.jsonl', obligations)
+    validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after185')
     return result
 
 
@@ -954,6 +1021,7 @@ def load_phase_witnesses(obligations):
         result[target["id"]] = item
     validate_arity_after171(result, 'phase-witnesses.jsonl', obligations)
     validate_arity_after172(result, 'phase-witnesses.jsonl', obligations)
+    validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after185')
     return result
 
 

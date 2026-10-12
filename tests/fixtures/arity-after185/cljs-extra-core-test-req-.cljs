@@ -1,0 +1,1 @@
+(do  (do (let [m {:a 1 :b 2 :f nil :g false nil "nil"}] (assert (try (req! m :e) false (catch js/Error extra-error true))) (do (assert (= (req! m :a) 1)) (assert (= (req! m nil) "nil")) (assert (= (req! m :b) 2)) (assert (= (req! m :f) nil))))) true)

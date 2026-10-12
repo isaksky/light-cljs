@@ -1,0 +1,1 @@
+(do (assert (var? #'inc)) (assert (not (var? 1))) true)

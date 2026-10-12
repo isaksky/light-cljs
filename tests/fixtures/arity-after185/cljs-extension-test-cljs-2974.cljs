@@ -1,0 +1,1 @@
+(do  (do (extend-protocol IEmptyableCollection array (-empty [_] #js [])) (let [empty-array (empty #js [1 2 3])] (assert (and (array? empty-array) (empty? empty-array))))) true)

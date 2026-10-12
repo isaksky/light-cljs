@@ -1,0 +1,1 @@
+(do  (do (assert (= (char 65) \A)) (assert (= (char \A) \A))) true)

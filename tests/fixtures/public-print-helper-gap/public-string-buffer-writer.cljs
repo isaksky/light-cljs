@@ -1,0 +1,1 @@
+(let [out (atom "") sb #js {:append (fn [s] (swap! out str s))} writer (StringBufferWriter. sb)] [(-write writer "a") (-flush writer) @out])

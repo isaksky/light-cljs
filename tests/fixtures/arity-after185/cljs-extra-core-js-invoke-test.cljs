@@ -1,0 +1,1 @@
+(do (defn fixture-get [o k] (unchecked-get o k)) (defn fixture-set [o k v] (unchecked-set o k v)) (do  (do (let [o (doto (js-obj) (fixture-set "my sum" (fn [a b] (+ a b))))] (assert (= 5 (js-invoke o "my sum" 2 3))))) true))

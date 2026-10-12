@@ -1,0 +1,1 @@
+(do (assert (loop [v (transient []) xs (range 100)] (if-let [x (first xs)] (recur (condp #(%1 (mod %2 3)) x #{0 2} (conj! v x) #{1} (assoc! v (count v) x)) (next xs)) (= (vec (range 100)) (persistent! v))))) true)

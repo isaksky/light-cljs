@@ -1,0 +1,1 @@
+(do (do (assert (= 1 ((resolve 'first) [1 2 3])))) true)
