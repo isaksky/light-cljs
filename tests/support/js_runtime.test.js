@@ -965,21 +965,39 @@ console.log("atom, volatile, validator, watch and state protocol assertions pass
   assert.equal(c.meta(new c.Var(getter, sym)), undefined);
   assert.equal(c.get(runtime.mapFromArray([a, "same"]), b), "same");
   let demands = 0;
-  const deferred = runtime.definitionVar(() => { demands++; return root; }, sym, meta, true);
-  assert.equal(c.get(c.meta(deferred), runtime.keyword(null, "doc")), "function");
+  let metadataDemands = 0;
+  const callback = root.cljs$lang$test;
+  const deferred = runtime.definitionVar(() => { demands++; return root; }, sym, meta, () => {
+    metadataDemands++;
+    return callback;
+  });
+  assert.equal(demands, 0);
+  assert.equal(metadataDemands, 0);
   assert.equal(c.equal(deferred, a), true);
   assert.equal(c.hash(deferred), c.hash(a));
+  assert.equal(metadataDemands, 0);
+  const reflected = c.meta(deferred);
+  assert.equal(c.get(reflected, runtime.keyword(null, "doc")), "function");
+  assert.equal(c.get(reflected, runtime.keyword(null, "test")), callback);
+  assert.equal(metadataDemands, 1);
+  assert.equal(c.meta(deferred), reflected);
+  assert.equal(deferred._meta, reflected);
+  assert.equal(metadataDemands, 1);
   assert.equal(demands, 0);
   assert.equal(c.deref(deferred), root);
   assert.equal(demands, 1);
   assert.equal(c.equal(c.test(deferred), runtime.keyword(null, "ok")), true);
-  assert.equal(demands, 2);
+  assert.equal(demands, 1);
+  assert.equal(metadataDemands, 1);
   assert.equal(calls, 3);
+  assert.equal(c.deref(deferred), root);
+  assert.equal(demands, 2);
   let overrides = 0;
   const edited = c.withMeta(deferred, runtime.mapFromArray([runtime.keyword(null, "test"), () => { overrides++; }]));
   assert.equal(c.equal(c.test(edited), runtime.keyword(null, "ok")), true);
   assert.equal(overrides, 1);
   assert.equal(demands, 2);
+  assert.equal(metadataDemands, 1);
 }
 console.log("Var identity, metadata, live getter and callback receiver assertions passed");
 
