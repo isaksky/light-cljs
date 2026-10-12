@@ -9508,6 +9508,17 @@ impl Analyzer<'_> {
                 self.local_kinds.insert(local, ("arg", Some(params.len())));
                 params.push(local);
             }
+            if method_kind != MethodKind::Function
+                && let Some(&receiver) = params.first()
+            {
+                // Canonical type/reify adapters introduce this-as inside the
+                // method body, so the receiver shadows even a later formal
+                // parameter with the same source name. Keep distinct argument
+                // slots and ordinary function last-parameter binding intact.
+                let scope = self.env.scopes.last_mut().unwrap();
+                scope.retain(|&local| local != receiver);
+                scope.push(receiver);
+            }
             let span = self.syntax.nodes[id.0].span.clone();
             // CLJS lowers IFn methods by dropping the receiver parameter and
             // binding its source name to this. The analyzer's protocol marker
