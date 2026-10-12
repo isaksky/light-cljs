@@ -1,0 +1,1807 @@
+{
+  "source_bindings": [
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "source": "(defrecord R [x y]) [(:arglists (meta (var ->R))) (mapv count (:arglists (meta (var map->R)))) (ns-name (:ns (meta (var ->R))))]",
+      "source_sha256": "bc1fd41c8e91462486f2bb7306d7c6c03028a5b0182a236fd0e320dfa87a3f50",
+      "expected": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "namespace": "user",
+      "source_name": "sci-original.cljs",
+      "forms": [
+        {
+          "kind": "runtime",
+          "source": "(defrecord R [x y])",
+          "utf8_byte_start": 0,
+          "utf8_byte_end": 19
+        },
+        {
+          "kind": "runtime",
+          "source": "[(:arglists (meta (var ->R))) (mapv count (:arglists (meta (var map->R)))) (ns-name (:ns (meta (var ->R))))]",
+          "utf8_byte_start": 20,
+          "utf8_byte_end": 128
+        }
+      ]
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "source": "(declare ->MetadataZeroRecord map->MetadataZeroRecord ->MetadataOneRecord map->MetadataOneRecord ->MetadataManyRecord map->MetadataManyRecord)\n(defrecord MetadataZeroRecord [])\n(defrecord MetadataOneRecord [x])\n(defrecord MetadataManyRecord [x y z])\n(assert (= [0 1 3] (mapv #(count (first (:arglists (meta %)))) [#'->MetadataZeroRecord #'->MetadataOneRecord #'->MetadataManyRecord])))\n(assert (= [1 1 1] (mapv #(count (first (:arglists (meta %)))) [#'map->MetadataZeroRecord #'map->MetadataOneRecord #'map->MetadataManyRecord])))\n(assert (= '([]) (:arglists (meta #'->MetadataZeroRecord))))\n(assert (= '([x]) (:arglists (meta #'->MetadataOneRecord))))\n(assert (= '([x y z]) (:arglists (meta #'->MetadataManyRecord))))\n(assert (every? symbol? (first (:arglists (meta #'map->MetadataManyRecord)))))\n(assert (= 'map->MetadataManyRecord (:name (meta #'map->MetadataManyRecord))))\n(assert (= \"user\" (ns-name (:ns (meta #'map->MetadataManyRecord)))))\n(assert (= \"Factory function for user/MetadataManyRecord, taking a map of keywords to field values.\" (:doc (meta #'map->MetadataManyRecord))))\n(assert (= \"Positional factory function for user/MetadataManyRecord.\" (:doc (meta #'->MetadataManyRecord))))\n(assert (= (select-keys (meta #'->MetadataManyRecord) [:file :line :column])\n           (select-keys (meta #'map->MetadataManyRecord) [:file :line :column])))\n(assert (string? (:file (meta #'map->MetadataManyRecord))))\n(assert (pos? (:line (meta #'map->MetadataManyRecord))))\n(assert (pos? (:column (meta #'map->MetadataManyRecord))))\n(assert (identical? @#'map->MetadataManyRecord map->MetadataManyRecord))\n(assert (= #'map->MetadataManyRecord #'map->MetadataManyRecord))\n(assert (= (->MetadataZeroRecord) (map->MetadataZeroRecord {})))\n(assert (= (->MetadataOneRecord 7) (map->MetadataOneRecord {:x 7})))\n(assert (= (->MetadataManyRecord 1 2 3) (map->MetadataManyRecord {:x 1 :y 2 :z 3})))\n(assert (= [nil nil nil] (mapv #(get (map->MetadataManyRecord {}) %) [:x :y :z])))\n(assert (= 9 (:extra (map->MetadataManyRecord {:x 1 :extra 9}))))\n(def saved-position ->MetadataManyRecord)\n(def saved-map map->MetadataManyRecord)\n(def saved-var #'map->MetadataManyRecord)\n(def saved-metadata (meta #'map->MetadataManyRecord))\n(defrecord MetadataManyRecord [x y z])\n(assert (not (identical? saved-position ->MetadataManyRecord)))\n(assert (not (identical? saved-map map->MetadataManyRecord)))\n(assert (= 1 (count (first (:arglists saved-metadata)))))\n(assert (= [1] (mapv count (:arglists (meta saved-var)))))\n(assert (= [3] (mapv count (:arglists (meta #'->MetadataManyRecord)))))\n(assert (= [1 2 3] (mapv #(get (saved-position 1 2 3) %) [:x :y :z])))\n(assert (= [4 5 6] (mapv #(get (saved-map {:x 4 :y 5 :z 6}) %) [:x :y :z])))\n(assert (= [7 8 9] (mapv #(get (@saved-var {:x 7 :y 8 :z 9}) %) [:x :y :z])))\ntrue\n",
+      "source_sha256": "3a1b4ad1cce46ca6cf51387bf7e9f97eeb22ca676fab11f87506804f4f0e3094",
+      "expected": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "namespace": "user",
+      "source_name": "sci-original.cljs",
+      "forms": [
+        {
+          "kind": "runtime",
+          "source": "(declare ->MetadataZeroRecord map->MetadataZeroRecord ->MetadataOneRecord map->MetadataOneRecord ->MetadataManyRecord map->MetadataManyRecord)",
+          "utf8_byte_start": 0,
+          "utf8_byte_end": 142
+        },
+        {
+          "kind": "runtime",
+          "source": "(defrecord MetadataZeroRecord [])",
+          "utf8_byte_start": 143,
+          "utf8_byte_end": 176
+        },
+        {
+          "kind": "runtime",
+          "source": "(defrecord MetadataOneRecord [x])",
+          "utf8_byte_start": 177,
+          "utf8_byte_end": 210
+        },
+        {
+          "kind": "runtime",
+          "source": "(defrecord MetadataManyRecord [x y z])",
+          "utf8_byte_start": 211,
+          "utf8_byte_end": 249
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [0 1 3] (mapv #(count (first (:arglists (meta %)))) [#'->MetadataZeroRecord #'->MetadataOneRecord #'->MetadataManyRecord])))",
+          "utf8_byte_start": 250,
+          "utf8_byte_end": 385
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [1 1 1] (mapv #(count (first (:arglists (meta %)))) [#'map->MetadataZeroRecord #'map->MetadataOneRecord #'map->MetadataManyRecord])))",
+          "utf8_byte_start": 386,
+          "utf8_byte_end": 530
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= '([]) (:arglists (meta #'->MetadataZeroRecord))))",
+          "utf8_byte_start": 531,
+          "utf8_byte_end": 591
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= '([x]) (:arglists (meta #'->MetadataOneRecord))))",
+          "utf8_byte_start": 592,
+          "utf8_byte_end": 652
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= '([x y z]) (:arglists (meta #'->MetadataManyRecord))))",
+          "utf8_byte_start": 653,
+          "utf8_byte_end": 718
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (every? symbol? (first (:arglists (meta #'map->MetadataManyRecord)))))",
+          "utf8_byte_start": 719,
+          "utf8_byte_end": 797
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= 'map->MetadataManyRecord (:name (meta #'map->MetadataManyRecord))))",
+          "utf8_byte_start": 798,
+          "utf8_byte_end": 876
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= \"user\" (ns-name (:ns (meta #'map->MetadataManyRecord)))))",
+          "utf8_byte_start": 877,
+          "utf8_byte_end": 945
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= \"Factory function for user/MetadataManyRecord, taking a map of keywords to field values.\" (:doc (meta #'map->MetadataManyRecord))))",
+          "utf8_byte_start": 946,
+          "utf8_byte_end": 1088
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= \"Positional factory function for user/MetadataManyRecord.\" (:doc (meta #'->MetadataManyRecord))))",
+          "utf8_byte_start": 1089,
+          "utf8_byte_end": 1197
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= (select-keys (meta #'->MetadataManyRecord) [:file :line :column])\n           (select-keys (meta #'map->MetadataManyRecord) [:file :line :column])))",
+          "utf8_byte_start": 1198,
+          "utf8_byte_end": 1356
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (string? (:file (meta #'map->MetadataManyRecord))))",
+          "utf8_byte_start": 1357,
+          "utf8_byte_end": 1416
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (pos? (:line (meta #'map->MetadataManyRecord))))",
+          "utf8_byte_start": 1417,
+          "utf8_byte_end": 1473
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (pos? (:column (meta #'map->MetadataManyRecord))))",
+          "utf8_byte_start": 1474,
+          "utf8_byte_end": 1532
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (identical? @#'map->MetadataManyRecord map->MetadataManyRecord))",
+          "utf8_byte_start": 1533,
+          "utf8_byte_end": 1605
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= #'map->MetadataManyRecord #'map->MetadataManyRecord))",
+          "utf8_byte_start": 1606,
+          "utf8_byte_end": 1670
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= (->MetadataZeroRecord) (map->MetadataZeroRecord {})))",
+          "utf8_byte_start": 1671,
+          "utf8_byte_end": 1735
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= (->MetadataOneRecord 7) (map->MetadataOneRecord {:x 7})))",
+          "utf8_byte_start": 1736,
+          "utf8_byte_end": 1804
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= (->MetadataManyRecord 1 2 3) (map->MetadataManyRecord {:x 1 :y 2 :z 3})))",
+          "utf8_byte_start": 1805,
+          "utf8_byte_end": 1889
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [nil nil nil] (mapv #(get (map->MetadataManyRecord {}) %) [:x :y :z])))",
+          "utf8_byte_start": 1890,
+          "utf8_byte_end": 1972
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= 9 (:extra (map->MetadataManyRecord {:x 1 :extra 9}))))",
+          "utf8_byte_start": 1973,
+          "utf8_byte_end": 2038
+        },
+        {
+          "kind": "runtime",
+          "source": "(def saved-position ->MetadataManyRecord)",
+          "utf8_byte_start": 2039,
+          "utf8_byte_end": 2080
+        },
+        {
+          "kind": "runtime",
+          "source": "(def saved-map map->MetadataManyRecord)",
+          "utf8_byte_start": 2081,
+          "utf8_byte_end": 2120
+        },
+        {
+          "kind": "runtime",
+          "source": "(def saved-var #'map->MetadataManyRecord)",
+          "utf8_byte_start": 2121,
+          "utf8_byte_end": 2162
+        },
+        {
+          "kind": "runtime",
+          "source": "(def saved-metadata (meta #'map->MetadataManyRecord))",
+          "utf8_byte_start": 2163,
+          "utf8_byte_end": 2216
+        },
+        {
+          "kind": "runtime",
+          "source": "(defrecord MetadataManyRecord [x y z])",
+          "utf8_byte_start": 2217,
+          "utf8_byte_end": 2255
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (not (identical? saved-position ->MetadataManyRecord)))",
+          "utf8_byte_start": 2256,
+          "utf8_byte_end": 2319
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (not (identical? saved-map map->MetadataManyRecord)))",
+          "utf8_byte_start": 2320,
+          "utf8_byte_end": 2381
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= 1 (count (first (:arglists saved-metadata)))))",
+          "utf8_byte_start": 2382,
+          "utf8_byte_end": 2439
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [1] (mapv count (:arglists (meta saved-var)))))",
+          "utf8_byte_start": 2440,
+          "utf8_byte_end": 2498
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [3] (mapv count (:arglists (meta #'->MetadataManyRecord)))))",
+          "utf8_byte_start": 2499,
+          "utf8_byte_end": 2570
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [1 2 3] (mapv #(get (saved-position 1 2 3) %) [:x :y :z])))",
+          "utf8_byte_start": 2571,
+          "utf8_byte_end": 2641
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [4 5 6] (mapv #(get (saved-map {:x 4 :y 5 :z 6}) %) [:x :y :z])))",
+          "utf8_byte_start": 2642,
+          "utf8_byte_end": 2718
+        },
+        {
+          "kind": "runtime",
+          "source": "(assert (= [7 8 9] (mapv #(get (@saved-var {:x 7 :y 8 :z 9}) %) [:x :y :z])))",
+          "utf8_byte_start": 2719,
+          "utf8_byte_end": 2796
+        },
+        {
+          "kind": "runtime",
+          "source": "true",
+          "utf8_byte_start": 2797,
+          "utf8_byte_end": 2801
+        }
+      ]
+    }
+  ],
+  "original_provenance": {
+    "original_fields": [
+      "sci-record-constructor-metadata",
+      "portable",
+      "(defrecord R [x y]) [(:arglists (meta (var ->R))) (mapv count (:arglists (meta (var map->R)))) (ns-name (:ns (meta (var ->R))))]",
+      "(return (vector (seq (vector (symbol - u0078) (symbol - u0079))) (vector (int 1)) (symbol - u0075007300650072)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "original_row_sha256": "7d613a3d00e4d84f82e0cfebe73c932dc0036a79925bafd84486bb04e72659d8",
+    "disposition_row_sha256": "c2f8047a4018a9d8f0eb99902e625034c4d2a2f6f691e878b284b975a05d56e7",
+    "historical_expected": {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$seq": [
+                {
+                  "$vector": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "x",
+                        "spelling": "x"
+                      }
+                    },
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "y",
+                        "spelling": "y"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "$vector": [
+                1
+              ]
+            },
+            {
+              "$symbol": {
+                "namespace": null,
+                "name": "user",
+                "spelling": "user"
+              }
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  },
+  "producer_sha256": {
+    "src/analyzer.rs": "fb405ceddc0ed3cb22da701e13934e343efb6147e40db64f66f3e6595a819673",
+    "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+    "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+    "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+    "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+    "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+    "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+    "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+    "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+    "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+    "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+    "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+    "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+    "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+    "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+    "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+    "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+    "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+    "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+    "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+    "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+    "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+    "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+    "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+    "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+    "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+    "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+    "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+    "src/js_runtime.js": "f40b3f3144ad0556f1c87466169e2955fc64400850357d1079003989fea6a040",
+    "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+    "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+    "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+    "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+    "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+    "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+    "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+    "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+    "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+    "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+    "tests/reference/compiler-language/record_map_constructor_metadata.py": "524bc877e8df17d2b2f23077d1931abc028567c6048fabe26dca5e09fc7eb8a7",
+    "tests/compiler_record_map_constructor_metadata.rs": "5a6d4ebdf25d78522ee6516b9f0b3312f4d7bcdabf14fc34b9be616496c9100d",
+    "tests/fixtures/record-map-constructor-metadata/controls.cljs": "3a1b4ad1cce46ca6cf51387bf7e9f97eeb22ca676fab11f87506804f4f0e3094",
+    "tests/fixtures/sci-outcomes.tsv": "8dd8718da0639dc11ff1cc0d6186284a6b2f70e57919b47c34f3c5269db869e5",
+    "tests/reference/sci/evaluator-dispositions.tsv": "186d9e391aa8e468981a1f972d7fd4f5433971400587665fbbece65c305cd429"
+  },
+  "historical_sci_expectations_modified": false,
+  "original_sci_pass_credit": 0,
+  "canonical_top_level": {
+    "local": {
+      "sci-execution-sci-record-constructor-metadata": {
+        "status": "passed",
+        "engines": {
+          "Node": {
+            "status": "passed",
+            "observed": {
+              "id": "sci-execution-sci-record-constructor-metadata",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$vector": [
+                    {
+                      "$list": [
+                        {
+                          "$vector": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "x",
+                                "spelling": "x"
+                              }
+                            },
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "y",
+                                "spelling": "y"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "$vector": [
+                        1
+                      ]
+                    },
+                    "user"
+                  ]
+                }
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+          },
+          "QuickJS": {
+            "status": "passed",
+            "observed": {
+              "id": "sci-execution-sci-record-constructor-metadata",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$vector": [
+                    {
+                      "$list": [
+                        {
+                          "$vector": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "x",
+                                "spelling": "x"
+                              }
+                            },
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "y",
+                                "spelling": "y"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "$vector": [
+                        1
+                      ]
+                    },
+                    "user"
+                  ]
+                }
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+          }
+        },
+        "source_sha256": "bc1fd41c8e91462486f2bb7306d7c6c03028a5b0182a236fd0e320dfa87a3f50",
+        "test_file": "tests/compiler_sci_source_context.rs",
+        "test_name": "retained_sources_execute_with_original_namespace_and_positions",
+        "test_source_sha256": "cd489defd95f93a3c2ed88d05b5bd21cc3ca9b69afb4f815e16803a248cf1aad",
+        "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240",
+        "source_context_adapter_sha256": "a45e790566cba1d19a2613fffa1748d7858b0a21324c318438d49443937f3b03",
+        "compiler_source_sha256": {
+          "src/analyzer.rs": "fb405ceddc0ed3cb22da701e13934e343efb6147e40db64f66f3e6595a819673",
+          "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+          "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+          "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+          "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+          "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+          "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+          "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+          "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+          "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+          "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+          "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+          "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+          "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+          "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+          "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+          "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+          "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+          "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+          "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+          "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+          "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+          "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+          "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+          "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+          "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+          "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+          "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+          "src/js_runtime.js": "f40b3f3144ad0556f1c87466169e2955fc64400850357d1079003989fea6a040",
+          "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+          "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+          "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+          "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+          "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+          "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+          "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+          "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+          "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+          "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94"
+        }
+      },
+      "record-map-constructor-controls": {
+        "status": "passed",
+        "engines": {
+          "Node": {
+            "status": "passed",
+            "observed": {
+              "id": "record-map-constructor-controls",
+              "outcome": {
+                "status": "returned",
+                "value": true
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+          },
+          "QuickJS": {
+            "status": "passed",
+            "observed": {
+              "id": "record-map-constructor-controls",
+              "outcome": {
+                "status": "returned",
+                "value": true
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+          }
+        },
+        "source_sha256": "3a1b4ad1cce46ca6cf51387bf7e9f97eeb22ca676fab11f87506804f4f0e3094",
+        "test_file": "tests/compiler_sci_source_context.rs",
+        "test_name": "retained_sources_execute_with_original_namespace_and_positions",
+        "test_source_sha256": "cd489defd95f93a3c2ed88d05b5bd21cc3ca9b69afb4f815e16803a248cf1aad",
+        "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240",
+        "source_context_adapter_sha256": "a45e790566cba1d19a2613fffa1748d7858b0a21324c318438d49443937f3b03",
+        "compiler_source_sha256": {
+          "src/analyzer.rs": "fb405ceddc0ed3cb22da701e13934e343efb6147e40db64f66f3e6595a819673",
+          "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+          "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+          "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+          "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+          "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+          "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+          "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+          "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+          "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+          "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+          "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+          "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+          "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+          "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+          "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+          "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+          "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+          "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+          "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+          "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+          "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+          "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+          "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+          "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+          "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+          "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+          "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+          "src/js_runtime.js": "f40b3f3144ad0556f1c87466169e2955fc64400850357d1079003989fea6a040",
+          "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+          "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+          "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+          "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+          "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+          "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+          "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+          "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+          "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+          "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94"
+        }
+      }
+    },
+    "release": {
+      "sci-execution-sci-record-constructor-metadata": {
+        "status": "passed",
+        "observed": {
+          "id": "sci-execution-sci-record-constructor-metadata",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$list": [
+                    {
+                      "$vector": [
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "x",
+                            "spelling": "x"
+                          }
+                        },
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "y",
+                            "spelling": "y"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "$vector": [
+                    1
+                  ]
+                },
+                "user"
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "source_sha256": "bc1fd41c8e91462486f2bb7306d7c6c03028a5b0182a236fd0e320dfa87a3f50",
+        "oracle_source_sha256": "f780c3ebf6df47096db82e0150d6d312c17a572ce7eccf798c6a7fa516b1ab3c",
+        "oracle_helper_source_sha256": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+        "observation_source_sha256": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+        "reference_phase_effects": [
+          "[]"
+        ]
+      }
+    },
+    "checkout": {
+      "sci-execution-sci-record-constructor-metadata": {
+        "status": "passed",
+        "observed": {
+          "id": "sci-execution-sci-record-constructor-metadata",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$list": [
+                    {
+                      "$vector": [
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "x",
+                            "spelling": "x"
+                          }
+                        },
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "y",
+                            "spelling": "y"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "$vector": [
+                    1
+                  ]
+                },
+                "user"
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "source_sha256": "bc1fd41c8e91462486f2bb7306d7c6c03028a5b0182a236fd0e320dfa87a3f50",
+        "oracle_source_sha256": "f780c3ebf6df47096db82e0150d6d312c17a572ce7eccf798c6a7fa516b1ab3c",
+        "oracle_helper_source_sha256": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+        "observation_source_sha256": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+        "reference_phase_effects": [
+          "[]"
+        ]
+      }
+    }
+  },
+  "control_namespace_references": {
+    "release": {
+      "status": "passed",
+      "observed": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reference_identity": "release 1.12.134",
+      "settings": {
+        "optimizations": "none",
+        "static-fns": false,
+        "def-emits-var": false
+      },
+      "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+    },
+    "checkout": {
+      "status": "passed",
+      "observed": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+      "settings": {
+        "optimizations": "none",
+        "static-fns": false,
+        "def-emits-var": false
+      },
+      "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+    }
+  },
+  "actual_frames": [
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "fresh",
+      "phase": "application",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "3fdc2566ccff898d5543cb4c1b330636a1da3746a5905f086269c682abcb089a",
+      "compiled_js_sha256": "1cc4cf21df0ef87e7e1a69b4d6e981c5f7aaba778366e80172a7e9dfa2f9b173"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "fresh",
+      "phase": "application",
+      "engine": "Node",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "3fdc2566ccff898d5543cb4c1b330636a1da3746a5905f086269c682abcb089a",
+      "compiled_js_sha256": "1cc4cf21df0ef87e7e1a69b4d6e981c5f7aaba778366e80172a7e9dfa2f9b173"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "fresh",
+      "phase": "macro",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "23c00510957cc693e66f36f328b2fe1e80fb981471213833892003186f3b3209",
+      "compiled_js_sha256": "5510c727d1a9a63ec2b3e151ece7f9811eb6d46ba3a58d7243df87de27d76406"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "fresh",
+      "phase": "macro",
+      "engine": "Node",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "23c00510957cc693e66f36f328b2fe1e80fb981471213833892003186f3b3209",
+      "compiled_js_sha256": "5510c727d1a9a63ec2b3e151ece7f9811eb6d46ba3a58d7243df87de27d76406"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "reused",
+      "phase": "application",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "3fdc2566ccff898d5543cb4c1b330636a1da3746a5905f086269c682abcb089a",
+      "compiled_js_sha256": "0d83a8aee532495560b8408731616461563729a2126fc84b1c4bfb0df51a6cb3"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "reused",
+      "phase": "application",
+      "engine": "Node",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "3fdc2566ccff898d5543cb4c1b330636a1da3746a5905f086269c682abcb089a",
+      "compiled_js_sha256": "0d83a8aee532495560b8408731616461563729a2126fc84b1c4bfb0df51a6cb3"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "reused",
+      "phase": "macro",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "23c00510957cc693e66f36f328b2fe1e80fb981471213833892003186f3b3209",
+      "compiled_js_sha256": "5510c727d1a9a63ec2b3e151ece7f9811eb6d46ba3a58d7243df87de27d76406"
+    },
+    {
+      "id": "sci-execution-sci-record-constructor-metadata",
+      "lifecycle": "reused",
+      "phase": "macro",
+      "engine": "Node",
+      "packet": {
+        "id": "sci-execution-sci-record-constructor-metadata",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$list": [
+                  {
+                    "$vector": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "y",
+                          "spelling": "y"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  1
+                ]
+              },
+              "user"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "23c00510957cc693e66f36f328b2fe1e80fb981471213833892003186f3b3209",
+      "compiled_js_sha256": "5510c727d1a9a63ec2b3e151ece7f9811eb6d46ba3a58d7243df87de27d76406"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "fresh",
+      "phase": "application",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+      "compiled_js_sha256": "16714deb72c9d4104d3fb8245f11721d90c18e60a37a7c764260d560c333edb0"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "fresh",
+      "phase": "application",
+      "engine": "Node",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+      "compiled_js_sha256": "16714deb72c9d4104d3fb8245f11721d90c18e60a37a7c764260d560c333edb0"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "fresh",
+      "phase": "macro",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "a610e957769a1b617d6c23559b42c6bdb4f6be81bab0b63487b5f5c896841dc8",
+      "compiled_js_sha256": "36552202e8272d935eee3bab7b3e5fa138a3eda699698ba0720646884fcd74c8"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "fresh",
+      "phase": "macro",
+      "engine": "Node",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "a610e957769a1b617d6c23559b42c6bdb4f6be81bab0b63487b5f5c896841dc8",
+      "compiled_js_sha256": "36552202e8272d935eee3bab7b3e5fa138a3eda699698ba0720646884fcd74c8"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "reused",
+      "phase": "application",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+      "compiled_js_sha256": "a803be0543fd9c134b76c122d46cb8a9a6a01a53cbd6a45cac639f5d4f24d514"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "reused",
+      "phase": "application",
+      "engine": "Node",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+      "compiled_js_sha256": "a803be0543fd9c134b76c122d46cb8a9a6a01a53cbd6a45cac639f5d4f24d514"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "reused",
+      "phase": "macro",
+      "engine": "QuickJS",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "a610e957769a1b617d6c23559b42c6bdb4f6be81bab0b63487b5f5c896841dc8",
+      "compiled_js_sha256": "36552202e8272d935eee3bab7b3e5fa138a3eda699698ba0720646884fcd74c8"
+    },
+    {
+      "id": "record-map-constructor-controls",
+      "lifecycle": "reused",
+      "phase": "macro",
+      "engine": "Node",
+      "packet": {
+        "id": "record-map-constructor-controls",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_sha256": "a610e957769a1b617d6c23559b42c6bdb4f6be81bab0b63487b5f5c896841dc8",
+      "compiled_js_sha256": "36552202e8272d935eee3bab7b3e5fa138a3eda699698ba0720646884fcd74c8"
+    }
+  ],
+  "actual_macro_same_host_failure_recovery": "passed",
+  "deferred_unrelated_root_laziness": "passed",
+  "artifact_root": "/private/tmp/light-cljs-195-proof-v3",
+  "status": "canonical-passed",
+  "artifact_sha256": {
+    "actual-command.json": "83709ad9e96350377ec7c735fa7d8f7c04eb086fc69540f7f6084a4c75d0b870",
+    "actual-phases/observer-runtime.js": "ca117f68c07ba8de18536b1d9fe9522a1e46b5a95bed869a25ba19642a6da47a",
+    "actual-phases/record-map-constructor-controls/fresh/application/compiled.js": "16714deb72c9d4104d3fb8245f11721d90c18e60a37a7c764260d560c333edb0",
+    "actual-phases/record-map-constructor-controls/fresh/application/node.stdin": "bee87fcf23c3e1c30dacdce68dd1e5dbe64b9d16abc808941031ba6bedd3fb9b",
+    "actual-phases/record-map-constructor-controls/fresh/application/node.stdout": "b69a09e2586e6f27cabe47bb16fe8d378962d1ff0de9611cbc78979ea9a516da",
+    "actual-phases/record-map-constructor-controls/fresh/application/quickjs.raw": "313fe61f25c3cbaafefa0a0bb6475ba89c72d3ec6d9735c0e660f01170a33af4",
+    "actual-phases/record-map-constructor-controls/fresh/application/quickjs.stdin": "14eca95b6e936b1e425a524b2c8be95f22947777443bc2786764681c8ec502f8",
+    "actual-phases/record-map-constructor-controls/fresh/application/script.js": "1bc40bb817eff1b101c836da6fd841a01be747fe1c374cff20f143f2c4dce946",
+    "actual-phases/record-map-constructor-controls/fresh/application/user.cljs": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+    "actual-phases/record-map-constructor-controls/fresh/macro/compiled.js": "36552202e8272d935eee3bab7b3e5fa138a3eda699698ba0720646884fcd74c8",
+    "actual-phases/record-map-constructor-controls/fresh/macro/node.stdin": "07604ac0c03ecb2f62c835b0f3f27b4b635be6b7ddf104f5de1db59a58c64f8e",
+    "actual-phases/record-map-constructor-controls/fresh/macro/node.stdout": "ed1a9d4a79a2573d87044e94011caa884a951bf0670c8d8066171aa4c21459e0",
+    "actual-phases/record-map-constructor-controls/fresh/macro/quickjs.raw": "313fe61f25c3cbaafefa0a0bb6475ba89c72d3ec6d9735c0e660f01170a33af4",
+    "actual-phases/record-map-constructor-controls/fresh/macro/quickjs.stdin": "297aae3394135c83501d54ad9e96d0bc08ebe509b5f567cb235a2afe41496a5b",
+    "actual-phases/record-map-constructor-controls/fresh/macro/script.js": "0a708f664356750a13e08e26d20039c4d3bbaba8fcbf0c87ef9053d95ef21489",
+    "actual-phases/record-map-constructor-controls/fresh/macro/user.cljs": "a610e957769a1b617d6c23559b42c6bdb4f6be81bab0b63487b5f5c896841dc8",
+    "actual-phases/record-map-constructor-controls/reused/application/compiled.js": "a803be0543fd9c134b76c122d46cb8a9a6a01a53cbd6a45cac639f5d4f24d514",
+    "actual-phases/record-map-constructor-controls/reused/application/node.stdin": "2fc1fc26271dcf3fb5570d950379295d7ad8fb375d4920a93474d231b6a092eb",
+    "actual-phases/record-map-constructor-controls/reused/application/node.stdout": "a6b2c742278d0605012395e8fa64bf28b961a8f66fc52e3f8688712ff5c9a337",
+    "actual-phases/record-map-constructor-controls/reused/application/quickjs.raw": "313fe61f25c3cbaafefa0a0bb6475ba89c72d3ec6d9735c0e660f01170a33af4",
+    "actual-phases/record-map-constructor-controls/reused/application/quickjs.stdin": "9eb76515a6d583453cdbf781d199b99328385178ae23c29b23e6ef3206b12d30",
+    "actual-phases/record-map-constructor-controls/reused/application/script.js": "73a461a1f6fe2203a792dbc7d97047fd71b32bfa520c1f6323dd78cf2c51acfb",
+    "actual-phases/record-map-constructor-controls/reused/application/user.cljs": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+    "actual-phases/record-map-constructor-controls/reused/macro/compiled.js": "36552202e8272d935eee3bab7b3e5fa138a3eda699698ba0720646884fcd74c8",
+    "actual-phases/record-map-constructor-controls/reused/macro/node.stdin": "07604ac0c03ecb2f62c835b0f3f27b4b635be6b7ddf104f5de1db59a58c64f8e",
+    "actual-phases/record-map-constructor-controls/reused/macro/node.stdout": "ed1a9d4a79a2573d87044e94011caa884a951bf0670c8d8066171aa4c21459e0",
+    "actual-phases/record-map-constructor-controls/reused/macro/quickjs.raw": "313fe61f25c3cbaafefa0a0bb6475ba89c72d3ec6d9735c0e660f01170a33af4",
+    "actual-phases/record-map-constructor-controls/reused/macro/quickjs.stdin": "297aae3394135c83501d54ad9e96d0bc08ebe509b5f567cb235a2afe41496a5b",
+    "actual-phases/record-map-constructor-controls/reused/macro/script.js": "0a708f664356750a13e08e26d20039c4d3bbaba8fcbf0c87ef9053d95ef21489",
+    "actual-phases/record-map-constructor-controls/reused/macro/user.cljs": "a610e957769a1b617d6c23559b42c6bdb4f6be81bab0b63487b5f5c896841dc8",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/compiled.js": "1cc4cf21df0ef87e7e1a69b4d6e981c5f7aaba778366e80172a7e9dfa2f9b173",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/node.stdin": "0aed17e14771208e306d33be04a765a2cd0ce0e0e63e9867cf7cd4461a345fdf",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/node.stdout": "23c9dba49a2c1e6854b08f75215162eaa22b8d4fe2a28d138beafe02e87d21ca",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/quickjs.raw": "f83c2fbcac39b6d3cc46603ee4510b95d7342957255f5d7d209c24d6a4aef974",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/quickjs.stdin": "b73c980b5ed8c347fa920078b6be11f51a672572e99f24f889ad8f31f141be60",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/script.js": "68a448b574ca8ed1f89bea2090397337523783e902c1fcc5967f267f593f012e",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/application/user.cljs": "3fdc2566ccff898d5543cb4c1b330636a1da3746a5905f086269c682abcb089a",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/compiled.js": "5510c727d1a9a63ec2b3e151ece7f9811eb6d46ba3a58d7243df87de27d76406",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/node.stdin": "0f080827934acec134b02d5323d2414829e0feed6445c1ec7dfa51c5f7532ae6",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/node.stdout": "e535c931208801a0711a464ac00ba1b28e53d388edf9e6634dc1fe5054aa5546",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/quickjs.raw": "f83c2fbcac39b6d3cc46603ee4510b95d7342957255f5d7d209c24d6a4aef974",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/quickjs.stdin": "7ae989a410bf7eaf0a8a5f545594597304bf8782f0b2fa48ffa9cf7521b07aa9",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/script.js": "60063999daa8e5be0e7f3274ec20cc4ee88f8289c548e368815446c18721d1c0",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/fresh/macro/user.cljs": "23c00510957cc693e66f36f328b2fe1e80fb981471213833892003186f3b3209",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/compiled.js": "0d83a8aee532495560b8408731616461563729a2126fc84b1c4bfb0df51a6cb3",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/node.stdin": "0573792da2ce923cba526b4ca45e6ce3b17396245aa30f3fc2284d6522f08a7e",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/node.stdout": "f99460b75a290ca4e1fdf241e8bf3278d94c3f5eefa9bf168a868dc2ec222cb8",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/quickjs.raw": "f83c2fbcac39b6d3cc46603ee4510b95d7342957255f5d7d209c24d6a4aef974",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/quickjs.stdin": "402b629be2b72719b4d99fc256281c2da3a230d6979136adc972ef2cb1e40225",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/script.js": "8debd63c4e0d926870ddc159b7dbbf782bb3b9e7340b79acdaad21a94a152501",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/application/user.cljs": "3fdc2566ccff898d5543cb4c1b330636a1da3746a5905f086269c682abcb089a",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/compiled.js": "5510c727d1a9a63ec2b3e151ece7f9811eb6d46ba3a58d7243df87de27d76406",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/node.stdin": "0f080827934acec134b02d5323d2414829e0feed6445c1ec7dfa51c5f7532ae6",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/node.stdout": "e535c931208801a0711a464ac00ba1b28e53d388edf9e6634dc1fe5054aa5546",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/quickjs.raw": "f83c2fbcac39b6d3cc46603ee4510b95d7342957255f5d7d209c24d6a4aef974",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/quickjs.stdin": "7ae989a410bf7eaf0a8a5f545594597304bf8782f0b2fa48ffa9cf7521b07aa9",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/script.js": "60063999daa8e5be0e7f3274ec20cc4ee88f8289c548e368815446c18721d1c0",
+    "actual-phases/sci-execution-sci-record-constructor-metadata/reused/macro/user.cljs": "23c00510957cc693e66f36f328b2fe1e80fb981471213833892003186f3b3209",
+    "actual-phases/warmup.cljs": "33e06e3fd47f0c307709ed861b35b4b6c896c3392663ad560730e41ac4b779f3",
+    "actual-phases/warmup.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+    "actual.stderr": "aa2e92cb8b86ec1096a89a54601ce9a86251a72d6e3f87e401b2839a76b11e44",
+    "actual.stdout": "82df4c2028247ea96a08e4258b7c5a742d9b0dccb8bc977236453bcbb2ac7189",
+    "checkout/build/invocation.json": "058f017545d0779ec248612c7f3427bc4ba2b51404fb0d19c96048a33cb8f03c",
+    "checkout/build/stderr": "b12f531fb77d53952ec1d6bde6b71a2da11bf0c925b744883158fbe053db1755",
+    "checkout/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "checkout/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+    "checkout/case-js/sci-execution-sci-record-constructor-metadata.js": "08cc70d4863eec2cfed034c7c34696c594374662c23644f10221bf12837fdb08",
+    "checkout/contexts.js": "df5a5ed08b72a5516ebaf938d5e6ef304ccd209046a5161953c2a7da51c9289c",
+    "checkout/contexts.tsv": "2f0773c5b11da4c25eb1adb41917f4c6ed7cf589a3cf956fd3ebd324483e2e72",
+    "checkout/originals.tsv": "585b7d988ac1dac451a0c3768aebccb8448005b82b6675500ac1146f1827789a",
+    "checkout/out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+    "checkout/out/cljs/core.js": "4e5a3df1afb094e54f6fe0cd69154816f40a79be2231c9aea75cecca4d4472f6",
+    "checkout/out/cljs/core.js.map": "7b35a597b8a60dbea610fc35c82db3c354c5a2bb87be74d3f9dc3bd8a0d71168",
+    "checkout/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+    "checkout/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+    "checkout/out/cljs_deps.js": "ab85ca4b9a77b51956334fe2e4f5ed1b030a9e8182b4b3894d3e352c9d7fe8c5",
+    "checkout/out/cljsc_opts.edn": "2565991016f80266ca781fe6c7905cb1d646fc8323a86db3432fd2e37e38450c",
+    "checkout/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+    "checkout/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+    "checkout/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+    "checkout/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+    "checkout/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+    "checkout/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+    "checkout/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+    "checkout/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+    "checkout/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+    "checkout/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+    "checkout/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+    "checkout/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+    "checkout/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+    "checkout/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+    "checkout/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+    "checkout/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+    "checkout/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+    "checkout/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+    "checkout/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+    "checkout/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+    "checkout/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+    "checkout/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+    "checkout/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+    "checkout/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+    "checkout/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+    "checkout/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+    "checkout/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+    "checkout/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+    "checkout/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+    "checkout/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+    "checkout/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+    "checkout/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+    "checkout/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+    "checkout/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+    "checkout/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+    "checkout/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+    "checkout/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+    "checkout/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+    "checkout/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+    "checkout/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+    "checkout/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+    "checkout/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+    "checkout/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+    "checkout/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+    "checkout/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+    "checkout/out/nodejs.js": "00cee392b17af8c51b1d677dd3fc70f5a482bffd2e36340bd881d0f5794220cd",
+    "checkout/out/nodejs.js.map": "a744900d1eb8af81841e614d8bb829e1b5812be5b1eca34de7fd835ce6d41d76",
+    "checkout/out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+    "checkout/out/nodejscli.js.map": "f2b51a0441a0ab119da1f5ec6ea87e641f80f0461ebea3582c82430e102d12d3",
+    "checkout/out/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+    "checkout/out/semantic/reference.js": "cfc49568ffb1551df7568f86eda581dfcd70dd7576f5fc7b64e6f78c345b3569",
+    "checkout/out/semantic/reference.js.map": "dc8cf332f12c0f76c19afd6f0352d9f74eb8d5d80ac6ebdef4953b33921bc3ed",
+    "checkout/out/user.cljs": "91f5d8bb8e027c29e5972f4a20f28dfd8eb59004cf342d4857bb207b2ad81cfa",
+    "checkout/out/user.js": "8a7ff26f35c143b85890cf2856021bc4b5d260339f6c1d34caeaf85803e10aca",
+    "checkout/out/user.js.map": "7ccad1164c89b3b79ae9d714f14d5f15274f8c06025b65bb4351c6b82b4606c9",
+    "checkout/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+    "checkout/sci-execution-sci-record-constructor-metadata/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+    "checkout/sci-execution-sci-record-constructor-metadata/stderr": "31d747a710206512f3eb4b76424f692cb988bab2051d210d07ca6e544f037992",
+    "checkout/sci-execution-sci-record-constructor-metadata/stdin": "b184a2c4989222975023a2c54f9320136e39ff7767b48421bf04dc874ac8e4e4",
+    "checkout/sci-execution-sci-record-constructor-metadata/stdout": "52438cbd7c91b1ad408b285a4db79e72166094d1c89eaa377c2d7b37a8dbfadf",
+    "checkout/src/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+    "checkout/src/user.cljs": "91f5d8bb8e027c29e5972f4a20f28dfd8eb59004cf342d4857bb207b2ad81cfa",
+    "control-source/user.cljs": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+    "controls-checkout/record-map-constructor-controls/build/invocation.json": "35b7983ce5a804963f013a2fb664ca2bfd93950052daff43a56f7a11d643e854",
+    "controls-checkout/record-map-constructor-controls/build/stderr": "bfa8ff2c90d1601e14c6bc4cbf46b8bdfe3c9a3cc1caba4d22b8e57e9a885d83",
+    "controls-checkout/record-map-constructor-controls/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "controls-checkout/record-map-constructor-controls/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+    "controls-checkout/record-map-constructor-controls/node/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+    "controls-checkout/record-map-constructor-controls/node/stderr": "03ddd5c697b0ae13899be279c0ae379737708817e55e6ceffea3d04f2a4ee37d",
+    "controls-checkout/record-map-constructor-controls/node/stdin": "8e06c79cfd8fd92af26ed6ea264357b4a9138e23544f53d5724549c10a59e2b9",
+    "controls-checkout/record-map-constructor-controls/node/stdout": "c3254d0414b2f3a467938909cd348f1386bd1d1031e8532ee0fe709ee2ee6eb0",
+    "controls-checkout/record-map-constructor-controls/observer-src/semantic/program.cljs": "d5c0f9bf26240b143dd3ebaa69b9c0c6294e75100823dea91144da73a983fe6f",
+    "controls-checkout/record-map-constructor-controls/out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+    "controls-checkout/record-map-constructor-controls/out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+    "controls-checkout/record-map-constructor-controls/out/cljs/core.js.map": "f55423fca92eaa2cb1a3a5aa1bb3b87c847415904e1533304b5f40ff133ae14a",
+    "controls-checkout/record-map-constructor-controls/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+    "controls-checkout/record-map-constructor-controls/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+    "controls-checkout/record-map-constructor-controls/out/cljs_deps.js": "050ab5442de7fdac4ff786e1a2adb6d834b3539b9cd1a12a91be09eaae85e79d",
+    "controls-checkout/record-map-constructor-controls/out/cljsc_opts.edn": "7eff4578e39d0cbc0512a7a4ab7c74fff6195519bf304231b464a89436e352ed",
+    "controls-checkout/record-map-constructor-controls/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+    "controls-checkout/record-map-constructor-controls/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+    "controls-checkout/record-map-constructor-controls/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+    "controls-checkout/record-map-constructor-controls/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+    "controls-checkout/record-map-constructor-controls/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+    "controls-checkout/record-map-constructor-controls/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+    "controls-checkout/record-map-constructor-controls/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+    "controls-checkout/record-map-constructor-controls/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+    "controls-checkout/record-map-constructor-controls/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+    "controls-checkout/record-map-constructor-controls/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+    "controls-checkout/record-map-constructor-controls/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+    "controls-checkout/record-map-constructor-controls/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+    "controls-checkout/record-map-constructor-controls/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+    "controls-checkout/record-map-constructor-controls/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+    "controls-checkout/record-map-constructor-controls/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+    "controls-checkout/record-map-constructor-controls/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+    "controls-checkout/record-map-constructor-controls/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+    "controls-checkout/record-map-constructor-controls/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+    "controls-checkout/record-map-constructor-controls/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+    "controls-checkout/record-map-constructor-controls/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+    "controls-checkout/record-map-constructor-controls/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+    "controls-checkout/record-map-constructor-controls/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+    "controls-checkout/record-map-constructor-controls/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+    "controls-checkout/record-map-constructor-controls/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+    "controls-checkout/record-map-constructor-controls/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+    "controls-checkout/record-map-constructor-controls/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+    "controls-checkout/record-map-constructor-controls/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+    "controls-checkout/record-map-constructor-controls/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+    "controls-checkout/record-map-constructor-controls/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+    "controls-checkout/record-map-constructor-controls/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+    "controls-checkout/record-map-constructor-controls/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+    "controls-checkout/record-map-constructor-controls/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+    "controls-checkout/record-map-constructor-controls/out/nodejs.js": "a102de5d120b112cf213c9e993b39b401b0b88298d843dd4f5d0b7b55cf624b2",
+    "controls-checkout/record-map-constructor-controls/out/nodejs.js.map": "b4f95e8a86596e123f2c2bd48a5bf14674786b0d2296aa205acdf2c43c4dc8fd",
+    "controls-checkout/record-map-constructor-controls/out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+    "controls-checkout/record-map-constructor-controls/out/nodejscli.js.map": "0593b2c22e40410555de5283b4c77982a22264ec0e32d841bad7d1a8a505385b",
+    "controls-checkout/record-map-constructor-controls/out/semantic/program.cljs": "d5c0f9bf26240b143dd3ebaa69b9c0c6294e75100823dea91144da73a983fe6f",
+    "controls-checkout/record-map-constructor-controls/out/semantic/program.js": "22ea85e9d979c86bf03888dd0ef4d501b3ac6ac9937a76dec8e764ce42ae46c9",
+    "controls-checkout/record-map-constructor-controls/out/semantic/program.js.map": "2ab26848e4756c0fb57a2d48068fc6a35e88ca24d37c1d3d7eefe0371821298d",
+    "controls-checkout/record-map-constructor-controls/out/user.cljs": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+    "controls-checkout/record-map-constructor-controls/out/user.js": "ce60c624bb3fa0aa9e1e0022e345f40b54c67ff145149e50f5686d0ba0d6e2bd",
+    "controls-checkout/record-map-constructor-controls/out/user.js.map": "2b8401ee69ce4fecf5c9c7d709a4a659eea6f0c5534d2fb494e4669fb1c0419f",
+    "controls-checkout/record-map-constructor-controls/reference.js": "2daa3f13f14e8f19e8fe15b82aa4f76590432f4ef023739206b4a312d0555766",
+    "controls-release/record-map-constructor-controls/build/invocation.json": "7a830e4d133f73c2adc845faef3320c1f507956e30de54e97ef72f7a8cf73c43",
+    "controls-release/record-map-constructor-controls/build/stderr": "bfa8ff2c90d1601e14c6bc4cbf46b8bdfe3c9a3cc1caba4d22b8e57e9a885d83",
+    "controls-release/record-map-constructor-controls/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "controls-release/record-map-constructor-controls/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+    "controls-release/record-map-constructor-controls/node/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+    "controls-release/record-map-constructor-controls/node/stderr": "03ddd5c697b0ae13899be279c0ae379737708817e55e6ceffea3d04f2a4ee37d",
+    "controls-release/record-map-constructor-controls/node/stdin": "1a332af04d8752105a282e394223f13bae21e661ea4813a496ba7ba6fc9bb43b",
+    "controls-release/record-map-constructor-controls/node/stdout": "c3254d0414b2f3a467938909cd348f1386bd1d1031e8532ee0fe709ee2ee6eb0",
+    "controls-release/record-map-constructor-controls/observer-src/semantic/program.cljs": "d5c0f9bf26240b143dd3ebaa69b9c0c6294e75100823dea91144da73a983fe6f",
+    "controls-release/record-map-constructor-controls/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+    "controls-release/record-map-constructor-controls/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+    "controls-release/record-map-constructor-controls/out/cljs/core.js.map": "0922ab669f59a55b5dfc8e06fda932134173bad378d3cf9d1f0b63fcce6af60d",
+    "controls-release/record-map-constructor-controls/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+    "controls-release/record-map-constructor-controls/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+    "controls-release/record-map-constructor-controls/out/cljs_deps.js": "fb966b71bc6e5e71e95e57227ba98aa93aaf2aae2b3bb3fc503b6fe2e711d88f",
+    "controls-release/record-map-constructor-controls/out/cljsc_opts.edn": "18630ab82db7b34decebdce2ff06c6f69574059118a2c998ac6826e6112bd5d7",
+    "controls-release/record-map-constructor-controls/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+    "controls-release/record-map-constructor-controls/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+    "controls-release/record-map-constructor-controls/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+    "controls-release/record-map-constructor-controls/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+    "controls-release/record-map-constructor-controls/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+    "controls-release/record-map-constructor-controls/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+    "controls-release/record-map-constructor-controls/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+    "controls-release/record-map-constructor-controls/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+    "controls-release/record-map-constructor-controls/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+    "controls-release/record-map-constructor-controls/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+    "controls-release/record-map-constructor-controls/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+    "controls-release/record-map-constructor-controls/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+    "controls-release/record-map-constructor-controls/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+    "controls-release/record-map-constructor-controls/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+    "controls-release/record-map-constructor-controls/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+    "controls-release/record-map-constructor-controls/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+    "controls-release/record-map-constructor-controls/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+    "controls-release/record-map-constructor-controls/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+    "controls-release/record-map-constructor-controls/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+    "controls-release/record-map-constructor-controls/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+    "controls-release/record-map-constructor-controls/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+    "controls-release/record-map-constructor-controls/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+    "controls-release/record-map-constructor-controls/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+    "controls-release/record-map-constructor-controls/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+    "controls-release/record-map-constructor-controls/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+    "controls-release/record-map-constructor-controls/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+    "controls-release/record-map-constructor-controls/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+    "controls-release/record-map-constructor-controls/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+    "controls-release/record-map-constructor-controls/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+    "controls-release/record-map-constructor-controls/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+    "controls-release/record-map-constructor-controls/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+    "controls-release/record-map-constructor-controls/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+    "controls-release/record-map-constructor-controls/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+    "controls-release/record-map-constructor-controls/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+    "controls-release/record-map-constructor-controls/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+    "controls-release/record-map-constructor-controls/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+    "controls-release/record-map-constructor-controls/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+    "controls-release/record-map-constructor-controls/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+    "controls-release/record-map-constructor-controls/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+    "controls-release/record-map-constructor-controls/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+    "controls-release/record-map-constructor-controls/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+    "controls-release/record-map-constructor-controls/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+    "controls-release/record-map-constructor-controls/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+    "controls-release/record-map-constructor-controls/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+    "controls-release/record-map-constructor-controls/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+    "controls-release/record-map-constructor-controls/out/nodejs.js": "f45a172697a290a9d8149ba81a625a8610b13276ecb427a91ae5630f18bbe8d1",
+    "controls-release/record-map-constructor-controls/out/nodejs.js.map": "3b628f55ba6d3370ff306a7d0acd20788c9e253daadc2cf15547fdbd809948bc",
+    "controls-release/record-map-constructor-controls/out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+    "controls-release/record-map-constructor-controls/out/nodejscli.js.map": "6aed7c98992d0ca9a077b3bf19c745972fe3306e36d4348eb692270155858926",
+    "controls-release/record-map-constructor-controls/out/semantic/program.cljs": "d5c0f9bf26240b143dd3ebaa69b9c0c6294e75100823dea91144da73a983fe6f",
+    "controls-release/record-map-constructor-controls/out/semantic/program.js": "c829421c560394a2c868e344f17e9e4909244946ff0236e0ee8f6cdd707223d8",
+    "controls-release/record-map-constructor-controls/out/semantic/program.js.map": "1ca833dbb31510bc6f61816ae64e3959528644515f991abbcf5d28b12c89a7b0",
+    "controls-release/record-map-constructor-controls/out/user.cljs": "b8a6984024aa2663c763d22809977fe09eb56bf1a6df8d77103522973f1b63dd",
+    "controls-release/record-map-constructor-controls/out/user.js": "6fc1c717be62ca58357f15415192592ec30342170b8c2b8d46c24add4ff7c381",
+    "controls-release/record-map-constructor-controls/out/user.js.map": "df904660c7db05071d4586d2194719c800d7883e7e24c5dcd1560455857b8e15",
+    "controls-release/record-map-constructor-controls/reference.js": "2daa3f13f14e8f19e8fe15b82aa4f76590432f4ef023739206b4a312d0555766",
+    "release/build/invocation.json": "b0029e0c1231bbf2a5561af6ed63ddc8794d540fc2896fc85643e7350863fee6",
+    "release/build/stderr": "2ac7ffea65ff36b217f235eb6b705b3af673e5dfdef6e60bca5905aff0adbc2e",
+    "release/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+    "release/case-js/sci-execution-sci-record-constructor-metadata.js": "4dcd731f3985aa01e9fb70a39448ed5f2cacca45c46e0912f128885c50b26b6d",
+    "release/contexts.js": "2dd638c9ea10a08dac235517cf985b37927fd9b8204a785b5d6ceefc14bcfdb8",
+    "release/contexts.tsv": "2f0773c5b11da4c25eb1adb41917f4c6ed7cf589a3cf956fd3ebd324483e2e72",
+    "release/originals.tsv": "585b7d988ac1dac451a0c3768aebccb8448005b82b6675500ac1146f1827789a",
+    "release/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+    "release/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+    "release/out/cljs/core.js.map": "57194b75253da9c6e2d0c2f715849b6afde21dd736f7dad875a02bb01a468132",
+    "release/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+    "release/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+    "release/out/cljs_deps.js": "d8779c7ead8442c98cf2754c12120cdc4b9bf4cf4fdaecf0f06144c0b140371e",
+    "release/out/cljsc_opts.edn": "5fdbf8ccbd75c73b0c1cfad093f1ef04a3bd7d2954efaf8b6918dfc763a56251",
+    "release/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+    "release/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+    "release/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+    "release/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+    "release/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+    "release/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+    "release/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+    "release/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+    "release/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+    "release/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+    "release/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+    "release/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+    "release/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+    "release/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+    "release/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+    "release/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+    "release/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+    "release/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+    "release/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+    "release/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+    "release/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+    "release/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+    "release/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+    "release/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+    "release/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+    "release/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+    "release/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+    "release/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+    "release/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+    "release/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+    "release/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+    "release/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+    "release/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+    "release/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+    "release/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+    "release/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+    "release/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+    "release/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+    "release/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+    "release/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+    "release/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+    "release/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+    "release/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+    "release/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+    "release/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+    "release/out/nodejs.js": "a57006662318988ecfbaee9b5db922ae4627a6d66a7e69e7cfa7b0636d265e8b",
+    "release/out/nodejs.js.map": "bd147d3c38acc9b30db1bbe3a32441ad109256b670222d0410081868a62326cd",
+    "release/out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+    "release/out/nodejscli.js.map": "0500f119d29482f5c36c69a0e651af935ca86dea3680bd9e1f08fdaeef5ac833",
+    "release/out/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+    "release/out/semantic/reference.js": "7f829e3cbef5fc5d69077a9564612d048ad3679b26fb7d2e8438b44580113fa7",
+    "release/out/semantic/reference.js.map": "e197a41479115e858a5fc6cfb6374a224a0598d3df7e9a062480b9c6919a392a",
+    "release/out/user.cljs": "91f5d8bb8e027c29e5972f4a20f28dfd8eb59004cf342d4857bb207b2ad81cfa",
+    "release/out/user.js": "88a995fa1fc6c15c5bedda309b84254c24f05738733b7587fc0e6d14c9d8dc47",
+    "release/out/user.js.map": "f2cde1675f58aa15026b9cd265950cfe0a03263b75c738b163e78ccb989bf068",
+    "release/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+    "release/sci-execution-sci-record-constructor-metadata/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+    "release/sci-execution-sci-record-constructor-metadata/stderr": "31d747a710206512f3eb4b76424f692cb988bab2051d210d07ca6e544f037992",
+    "release/sci-execution-sci-record-constructor-metadata/stdin": "03bb03931d10bf18caef8d7592b696a954193f8abe1d9077e7245e155dd6026a",
+    "release/sci-execution-sci-record-constructor-metadata/stdout": "52438cbd7c91b1ad408b285a4db79e72166094d1c89eaa377c2d7b37a8dbfadf",
+    "release/src/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+    "release/src/user.cljs": "91f5d8bb8e027c29e5972f4a20f28dfd8eb59004cf342d4857bb207b2ad81cfa",
+    "top-level-local/cargo.stderr": "e305c981bb2ee1c0938b214d351f950e4623d73500e6da51d692c14970277ff0",
+    "top-level-local/cargo.stdout": "a589db63893527279d8af75954f6cee93762937df81210a892d6087b1a01f88d",
+    "top-level-local/input.tsv": "36ff0a467e424847d98c871605ee975cdd6b73d3ddd15d787e9e34f3f86c81de",
+    "top-level-local/observations.tsv": "cd8382850d4cc8cb45640994733f72f30c8b8e6796757166e0dc7c91301fdd3e"
+  },
+  "actual_executable": {
+    "path": "/Users/admin/src/light-cljs/target/debug/deps/compiler_record_map_constructor_metadata-bc2adb65ab8f3c66",
+    "sha256": "e085eb0e9060715297d9c882115bfefd3bc1a662698c11f3086546512dde9700"
+  },
+  "starting_head": "e20e292a59aee242ef70dd3de393cf5c89b18bad",
+  "focused_regressions": {
+    "status": "passed",
+    "passed": 28,
+    "ignored": 1,
+    "targets": [
+      "compiler_source_metadata",
+      "compiler_var_test_metadata",
+      "compiler_test_metadata",
+      "compiler_types",
+      "compiler_records",
+      "compiler_positional_constructors",
+      "compiler_record_map_constructor_metadata"
+    ],
+    "log_sha256": "2c9c70b746b2b20849283983cbfc7d90366399519cefe2f595bb8fd2ecf3fae3",
+    "log_path": "/tmp/light-cljs-195-regressions-current.log"
+  },
+  "strict_clippy": {
+    "status": "passed",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log_sha256": "77f0129c303e88b95d0a861d05bbecfc8f4c372ad8cb29a0220d5d2c8534b1b0"
+  },
+  "normal_validated_performance": {
+    "command": [
+      "cargo",
+      "bench",
+      "--locked",
+      "--bench",
+      "compiler",
+      "--",
+      "--samples",
+      "9",
+      "--iterations",
+      "2"
+    ],
+    "status": "passed",
+    "validated_samples": 459,
+    "phase_groups": 51,
+    "median_nanoseconds_per_iteration": {
+      "integer/parse": 146.0,
+      "integer/analyze": 1020.5,
+      "integer/emit": 1125.0,
+      "integer/total": 2333.5,
+      "nested-closure/parse": 1270.5,
+      "nested-closure/analyze": 8583.0,
+      "nested-closure/emit": 5083.0,
+      "nested-closure/total": 15333.5,
+      "js-nested-method/parse": 437.5,
+      "js-nested-method/analyze": 3625.0,
+      "js-nested-method/emit": 2208.5,
+      "js-nested-method/total": 6271.0,
+      "empty/parse": 21.0,
+      "empty/analyze": 812.5,
+      "empty/emit": 812.5,
+      "empty/total": 1625.0,
+      "collections/parse": 2646.0,
+      "collections/analyze": 25729.0,
+      "collections/emit": 21187.5,
+      "collections/total": 49895.5,
+      "expanded-macro/parse": 250.0,
+      "expanded-macro/analyze": 1520.5,
+      "expanded-macro/emit": 20458.5,
+      "expanded-macro/total": 23604.0,
+      "declaration-value/parse": 1104.0,
+      "declaration-value/analyze": 38125.0,
+      "declaration-value/emit": 16541.5,
+      "declaration-value/total": 56208.0,
+      "macro/parse": 667.0,
+      "macro/host-setup": 125.0,
+      "macro/analyze-reused-host": 26136875.0,
+      "macro/analyze-fresh-host": 25813958.5,
+      "macro/emit": 13229.0,
+      "macro/total-reused-host": 25936583.5,
+      "macro/total-fresh-host": 26007437.5,
+      "single/parse": 854.0,
+      "single/analyze": 38229.5,
+      "single/emit": 16854.0,
+      "single/total-resident": 53292.0,
+      "combined/parse": 1396.0,
+      "combined/analyze": 38312.5,
+      "combined/emit": 18396.0,
+      "combined/total-resident": 56104.5,
+      "bench.single/filesystem-reused-host": 95166.5,
+      "bench.single/filesystem-fresh-host": 87146.0,
+      "bench.main/filesystem-reused-host": 110708.0,
+      "bench.main/filesystem-fresh-host": 107583.5,
+      "bench.macro/filesystem-reused-host": 26334291.5,
+      "bench.macro/filesystem-fresh-host": 26088083.5,
+      "bench.macro-main/filesystem-reused-host": 26357666.5,
+      "bench.macro-main/filesystem-fresh-host": 26382791.5
+    },
+    "log_sha256": "85ae193ba7d5cdad69586ad42c8b3239f47a96274dfb88958b5a9ed54c0d6b5b",
+    "claim": "validated smoke only; no statistically significant performance comparison"
+  },
+  "excluded_verification": [
+    "cancellation/resource-limit execution",
+    "externally blocked light-cljs-156"
+  ]
+}

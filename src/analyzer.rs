@@ -7453,13 +7453,18 @@ impl Analyzer<'_> {
             )
         {
             let doc = format!("{prefix}{}/{name}{suffix}", self.namespace);
-            let metadata = self.data_source(&format!(
-                "{{:doc {doc:?} :arglists ([{}])}}",
+            // A map factory consumes one map, independent of the record's fields.
+            let parameters = if Some(factory) == map_constructor {
+                "m".to_owned()
+            } else {
                 fields
                     .iter()
                     .map(|(name, _)| name.as_str())
                     .collect::<Vec<_>>()
                     .join(" ")
+            };
+            let metadata = self.data_source(&format!(
+                "{{:doc {doc:?} :arglists ([{parameters}])}}"
             ))?;
             let mut provenance = Vec::new();
             self.definition_provenance(id, &mut provenance)?;
