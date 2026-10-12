@@ -593,6 +593,12 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             if oracle:
                 oracle_layers = evidence.get(oracle, {})
                 layers.update({kind: oracle_layers.get(kind, {"status": "not-run"}) for kind in ("release", "checkout")})
+                import namespace_results
+                if oracle in namespace_results.IDS:
+                    case = runner.fixtures('intended-language')[oracle]
+                    complete = oracle_layers.get('javascript', {})
+                    verified = verified and namespace_results.verified_local(case, complete)
+                    layers['javascript'] = complete or {'status': 'not-run'}
             # Application/macro tests cannot manufacture pinned compatibility.
             # Only explicit source/phase dialect contracts may omit that oracle.
             references = bool(oracle) and all(layers.get(kind, {}).get("status") == "passed" for kind in ("release", "checkout"))
@@ -787,9 +793,13 @@ def load_phase_witnesses(obligations):
     return result
 
 
-def run_phase_witnesses(obligations, artifacts, timeout):
+def run_phase_witnesses(obligations, artifacts, timeout, *, reference_fixtures=None):
     import report as runner
     mappings = load_phase_witnesses(obligations)
+    if reference_fixtures is not None:
+        linked = {item['obligation_id'] for item in map(json.loads, (HERE / 'obligation-witnesses.jsonl').read_text().splitlines())
+                  if item.get('reference_fixture_id') in reference_fixtures}
+        mappings = {identity: item for identity, item in mappings.items() if identity in linked}
     results, cache = {}, {}
     for identity, item in mappings.items():
         key = (item["test_file"], item["test_name"])

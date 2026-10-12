@@ -1,0 +1,459 @@
+{
+  "owner": "light-cljs-163",
+  "starting_head": "981621c239fc56aafa8c8e3e897d955e9428702e",
+  "report_path": "/private/tmp/light-cljs-163-report-verified/report.json",
+  "report_sha256": "678a687f0b6d04c48d40ef2c360e7d405a7607415c4fff07e3079ad0d8ec5b11",
+  "compiler_binary": {
+    "path": "/Users/admin/src/light-cljs/target/debug/light-cljs",
+    "sha256": "e74eb7f2311e02486cb5c9b532bab62c2bc46dbe9c580979e9e5f7cd81fc5df6"
+  },
+  "counts": {
+    "covered": 2,
+    "verified-rejection": 0,
+    "verified-warning": 0,
+    "missing": 8598,
+    "version-difference": 0,
+    "unrelated": 1391
+  },
+  "strict_complete": false,
+  "execution_selection": {
+    "fixture_ids": [
+      "syntax-context-namespace-header-context",
+      "syntax-context-namespace-nsstar-alias"
+    ],
+    "all_selected_fixtures": false
+  },
+  "namespace_results": {
+    "syntax-context-namespace-header-context": {
+      "source": "(ns syntax.header (:require [clojure.string :as text] [syntax.observer :refer [caller]]))\n(def value 4)\n(defn run [observe] (= [\"4-A\" \"syntax.header\" true] [(text/join \"-\" [value (text/upper-case \"a\")]) (caller) (= syntax.header/value value)]))\n(pr-str (run nil))\n",
+      "source_sha256": "c2204dec28a9f0c550ba7ced96bb46f85bf71058c40ecb0c49a2b4166b29a02e",
+      "original_expected": {
+        "id": "syntax-context-namespace-header-context",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected_sha256": "306e97ef767673e1cedff0d290d17d867b7fe29824afaafa2f3492b21c665edd",
+      "historical_native": {
+        "status": "historical-not-executed",
+        "observed": "true\n"
+      },
+      "actual_macro_source_sha256": "2c27dca53398898136d7a39d8bc06a584b90f231bd56acc3a8c9650ba3852b5b",
+      "compiled_js_sha256": "620b660c1b479eb266a9a94d2d9527272c63a63bdb8999f53b08c3730cd3931e",
+      "observation_script_sha256": "b04fc68c4278ebb3ff626ceae8a2de2a8e20ef7f9818d3dbae5334cb1da16266",
+      "quickjs_raw_sha256": "fadb730e6f02134193db03234d0712cb85d44f78b0240b54e17d929f5bf12abf",
+      "node_raw_sha256": "fadb730e6f02134193db03234d0712cb85d44f78b0240b54e17d929f5bf12abf",
+      "layers": {
+        "javascript": {
+          "status": "passed",
+          "detail": "Complete source returns its serialized scalar; pinned references separately observe the original export contract.",
+          "engines": {
+            "Node": {
+              "status": "passed",
+              "observed": {
+                "id": "syntax-context-namespace-header-context",
+                "outcome": {
+                  "status": "returned",
+                  "value": "true"
+                },
+                "trace": [],
+                "stdout": ""
+              }
+            },
+            "QuickJS": {
+              "status": "passed",
+              "observed": {
+                "id": "syntax-context-namespace-header-context",
+                "outcome": {
+                  "status": "returned",
+                  "value": "true"
+                },
+                "trace": [],
+                "stdout": ""
+              }
+            }
+          },
+          "actual_macro_driver": {
+            "status": "passed",
+            "test_file": "tests/compiler_syntax_context.rs",
+            "test_name": "syntax_namespace_context_executes_with_actual_macro_environment",
+            "test_source_sha256": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99"
+          },
+          "complete_result_expected": "true",
+          "original_expected": {
+            "id": "syntax-context-namespace-header-context",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_sha256": "c2204dec28a9f0c550ba7ced96bb46f85bf71058c40ecb0c49a2b4166b29a02e",
+          "compiled_js_sha256": "620b660c1b479eb266a9a94d2d9527272c63a63bdb8999f53b08c3730cd3931e",
+          "producer_source_sha256": {
+            "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+            "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+            "src/analyzer.rs": "fe95082fd9a31c883b1b6a1c29b89abe664a940b694a72b1e12d01ce3ca53f8c",
+            "src/application.rs": "5f57d4984b27b084d115657af827b23e51527e9356baf3d05f23ca6a1f1ee3f0",
+            "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+            "src/compilation_session.rs": "36ef734d1426bbecd024cb855c3688b12a9a8b8afb262eb0e8a78a77c8b02aae",
+            "src/compiler.rs": "071c831a201ce8d03d8bcf75c656c5a28908c3ee834fd3a9b6e3a520be5c3ad9",
+            "src/compiler_binding_macros.rs": "1b30d8a94b556fe256975e36c4e4ebfa8b487d161297881e43134a239ea641dd",
+            "src/compiler_bootstrap.rs": "ca064659400cb4970c14db5f3fd79372b8141df853c67d1384b78365e8d5a332",
+            "src/compiler_core_macros.cljs": "ae7399e2bc5456ecd8c89d636f532fa7ab101dc3c695dd001a1fc078e385c774",
+            "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+            "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+            "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+            "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+            "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+            "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+            "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+            "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+            "src/compiler_names.rs": "e11e07045ef01ef41852a3166d109a20eb38486a1c1475552e290d9f280599bc",
+            "src/compiler_reader.rs": "df25eed094adf8acd36e5ee866345ab63dad225868467e2f6f8d242c8808b5db",
+            "src/compiler_roots.js": "ef2f2b66eb9ef3a4964df3ebd21737c64616435f51fa7e401de8adb552dfdfdd",
+            "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+            "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+            "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+            "src/emitter.rs": "c22210518d884f45743b0acc3f529b5b846e1c14a4420808ef6d9a418499b5ab",
+            "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+            "src/eval_compiler.rs": "8c47975e700a2f022ba5b401182015501d3c72a0624121723597a02259682acc",
+            "src/eval_session.rs": "a20b45a970a9a11e49f87407d02b892280efc77b893f2ca2b8285d868c3a5293",
+            "src/evaluator.rs": "1310ec60415b969a0ead6b9a64370ebd492b4ae26e3c8a9b749bfc58b001e240",
+            "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+            "src/js_runtime.js": "bb8140c402301188da25c452db4b9b4e3a07c1443fa694724b7354aab9ffba2b",
+            "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+            "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+            "src/macro_host.rs": "554e07ca225a5ae1c7a74dd059890265887bab778c62f2e01bec92c3e4a6fa30",
+            "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+            "src/parser.rs": "149cc2d9b999d3e81d1f186e9261e65df96f045206b3b80839025fa3985c9de7",
+            "src/program_fragment.rs": "2367943d3926002479357d16b6860ca3a8a6779bd97ddd17a29eb81f6833cd37",
+            "src/reader_literals.rs": "1ba803ab87ddc247beac5d6a0a2a87e870eb3bdf56543710f898e998c1d2d5e7",
+            "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+            "tests/compiler_language_namespace.rs": "1f7f69f997af0a946c1490584aefa878273bc0440d5eee5a0211c440266f672a",
+            "tests/compiler_syntax_context.rs": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99",
+            "tests/fixtures/compiler-syntax-context/local/syntax/header.cljs": "c2204dec28a9f0c550ba7ced96bb46f85bf71058c40ecb0c49a2b4166b29a02e",
+            "tests/fixtures/compiler-syntax-context/local/syntax/observer.clj": "d863c845920755b5162a4ecebb510cb40eeb66c3d2dad77ccc9331d46235d10b",
+            "tests/fixtures/compiler-syntax-context/local/syntax/observer.cljs": "d863c845920755b5162a4ecebb510cb40eeb66c3d2dad77ccc9331d46235d10b",
+            "tests/fixtures/compiler-syntax-context/reference/syntax/header.cljs": "4be750412f63b55fb8d99cc955b145c83d24bfba8be12aa3dd1355d0d76e9c11",
+            "tests/fixtures/compiler-syntax-context/reference/syntax/observer.clj": "d863c845920755b5162a4ecebb510cb40eeb66c3d2dad77ccc9331d46235d10b",
+            "tests/fixtures/compiler-syntax-context/reference/syntax/observer.cljs": "d863c845920755b5162a4ecebb510cb40eeb66c3d2dad77ccc9331d46235d10b",
+            "tests/reference/compiler-language/namespace_results.py": "410d5195910b58f104b115050f129f21ac7241bbc4a5a863d5124fedaa57767e",
+            "tests/reference/compiler-language/report.py": "af1bf85d0e9f0b3e73a0928f8f986f90f1fbc05e58aeea697b692ebb549a4589",
+            "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "syntax-context-namespace-header-context",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "syntax-context-namespace-header-context",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    },
+    "syntax-context-namespace-nsstar-alias": {
+      "source": "(ns syntax.nsstar (:require [clojure.string]))\n(ns* (:require '[clojure.string :as text]))\n(defn run [observe] (= [\"A\" \"1-2\"] [(text/upper-case \"a\") (text/join \"-\" [1 2])]))\n(pr-str (run nil))\n",
+      "source_sha256": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+      "original_expected": {
+        "id": "syntax-context-namespace-nsstar-alias",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected_sha256": "86c44cba35c2d1f7d80f8f9b50a0a25bd6e25e5a63d2ee082af4f18a61f16d89",
+      "historical_native": {
+        "status": "historical-not-executed",
+        "observed": "true\n"
+      },
+      "actual_macro_source_sha256": "f123bde7996c94082c63ce2b35fb25705e008ba769caae940e595d69837e2857",
+      "compiled_js_sha256": "7945877443cb5cacf1b22928d31360e1e0b1d77179e54ba25081556ea75ea334",
+      "observation_script_sha256": "6facd69338f8edc25b4df7ef4eb0d59eb338acc8834038b225cda4e674730865",
+      "quickjs_raw_sha256": "09d287714af635bc70d111bb41eb3f9fb101b9c642d3d0330be9b677191a0892",
+      "node_raw_sha256": "09d287714af635bc70d111bb41eb3f9fb101b9c642d3d0330be9b677191a0892",
+      "layers": {
+        "javascript": {
+          "status": "passed",
+          "detail": "Complete source returns its serialized scalar; pinned references separately observe the original export contract.",
+          "engines": {
+            "Node": {
+              "status": "passed",
+              "observed": {
+                "id": "syntax-context-namespace-nsstar-alias",
+                "outcome": {
+                  "status": "returned",
+                  "value": "true"
+                },
+                "trace": [],
+                "stdout": ""
+              }
+            },
+            "QuickJS": {
+              "status": "passed",
+              "observed": {
+                "id": "syntax-context-namespace-nsstar-alias",
+                "outcome": {
+                  "status": "returned",
+                  "value": "true"
+                },
+                "trace": [],
+                "stdout": ""
+              }
+            }
+          },
+          "actual_macro_driver": {
+            "status": "passed",
+            "test_file": "tests/compiler_syntax_context.rs",
+            "test_name": "syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts",
+            "test_source_sha256": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99"
+          },
+          "complete_result_expected": "true",
+          "original_expected": {
+            "id": "syntax-context-namespace-nsstar-alias",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_sha256": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+          "compiled_js_sha256": "7945877443cb5cacf1b22928d31360e1e0b1d77179e54ba25081556ea75ea334",
+          "producer_source_sha256": {
+            "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+            "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+            "src/analyzer.rs": "fe95082fd9a31c883b1b6a1c29b89abe664a940b694a72b1e12d01ce3ca53f8c",
+            "src/application.rs": "5f57d4984b27b084d115657af827b23e51527e9356baf3d05f23ca6a1f1ee3f0",
+            "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+            "src/compilation_session.rs": "36ef734d1426bbecd024cb855c3688b12a9a8b8afb262eb0e8a78a77c8b02aae",
+            "src/compiler.rs": "071c831a201ce8d03d8bcf75c656c5a28908c3ee834fd3a9b6e3a520be5c3ad9",
+            "src/compiler_binding_macros.rs": "1b30d8a94b556fe256975e36c4e4ebfa8b487d161297881e43134a239ea641dd",
+            "src/compiler_bootstrap.rs": "ca064659400cb4970c14db5f3fd79372b8141df853c67d1384b78365e8d5a332",
+            "src/compiler_core_macros.cljs": "ae7399e2bc5456ecd8c89d636f532fa7ab101dc3c695dd001a1fc078e385c774",
+            "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+            "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+            "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+            "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+            "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+            "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+            "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+            "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+            "src/compiler_names.rs": "e11e07045ef01ef41852a3166d109a20eb38486a1c1475552e290d9f280599bc",
+            "src/compiler_reader.rs": "df25eed094adf8acd36e5ee866345ab63dad225868467e2f6f8d242c8808b5db",
+            "src/compiler_roots.js": "ef2f2b66eb9ef3a4964df3ebd21737c64616435f51fa7e401de8adb552dfdfdd",
+            "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+            "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+            "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+            "src/emitter.rs": "c22210518d884f45743b0acc3f529b5b846e1c14a4420808ef6d9a418499b5ab",
+            "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+            "src/eval_compiler.rs": "8c47975e700a2f022ba5b401182015501d3c72a0624121723597a02259682acc",
+            "src/eval_session.rs": "a20b45a970a9a11e49f87407d02b892280efc77b893f2ca2b8285d868c3a5293",
+            "src/evaluator.rs": "1310ec60415b969a0ead6b9a64370ebd492b4ae26e3c8a9b749bfc58b001e240",
+            "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+            "src/js_runtime.js": "bb8140c402301188da25c452db4b9b4e3a07c1443fa694724b7354aab9ffba2b",
+            "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+            "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+            "src/macro_host.rs": "554e07ca225a5ae1c7a74dd059890265887bab778c62f2e01bec92c3e4a6fa30",
+            "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+            "src/parser.rs": "149cc2d9b999d3e81d1f186e9261e65df96f045206b3b80839025fa3985c9de7",
+            "src/program_fragment.rs": "2367943d3926002479357d16b6860ca3a8a6779bd97ddd17a29eb81f6833cd37",
+            "src/reader_literals.rs": "1ba803ab87ddc247beac5d6a0a2a87e870eb3bdf56543710f898e998c1d2d5e7",
+            "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+            "tests/compiler_language_namespace.rs": "1f7f69f997af0a946c1490584aefa878273bc0440d5eee5a0211c440266f672a",
+            "tests/compiler_syntax_context.rs": "bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99",
+            "tests/fixtures/compiler-nsstar/syntax/nsstar.cljs": "ebe59a510ec23b6b0d43bbf8927dc149714e1c248abee2c6ca06faef9180e957",
+            "tests/reference/compiler-language/namespace_results.py": "410d5195910b58f104b115050f129f21ac7241bbc4a5a863d5124fedaa57767e",
+            "tests/reference/compiler-language/report.py": "af1bf85d0e9f0b3e73a0928f8f986f90f1fbc05e58aeea697b692ebb549a4589",
+            "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          }
+        },
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "syntax-context-namespace-nsstar-alias",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "syntax-context-namespace-nsstar-alias",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      }
+    }
+  },
+  "callback_control": {
+    "source_sha256": "18685ab9d78170466721822fb2a04cc232237e4a4b1df0b94c75af2eac9f07a1",
+    "source": "(ns callback.probe)\n(enable-console-print!)\n(println \"setup\")\n(def state (atom 1))\n(defn run [observe] (observe (swap! state inc)) (println \"callback\") (= 2 @state))\nrun\n",
+    "expected": {
+      "id": "namespace-callback-effects-control",
+      "outcome": {
+        "status": "returned",
+        "value": true
+      },
+      "trace": [
+        2
+      ],
+      "stdout": "setup\ncallback\n"
+    },
+    "explicit_host": "Node console; QuickJS console.log forwards each complete line to the capture sink",
+    "layers": {
+      "native": {
+        "status": "historical-not-executed",
+        "detail": "legacy fixture observation; native adapter is retired for CLI evaluation",
+        "observed": null
+      },
+      "lexer": {
+        "status": "accepted",
+        "observed": null
+      },
+      "parser": {
+        "status": "accepted",
+        "observed": null
+      },
+      "evaluation": {
+        "status": "not-applicable",
+        "detail": "no compatible CLI stdout expectation; compiler-only host behavior"
+      },
+      "javascript": {
+        "status": "passed",
+        "observed": {
+          "id": "namespace-callback-effects-control",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [
+            2
+          ],
+          "stdout": "setup\ncallback\n"
+        }
+      },
+      "quickjs_callback": {
+        "status": "passed",
+        "observed": {
+          "id": "namespace-callback-effects-control",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [
+            2
+          ],
+          "stdout": "setup\ncallback\n"
+        }
+      },
+      "release": {
+        "status": "passed",
+        "observed": {
+          "id": "namespace-callback-effects-control",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [
+            2
+          ],
+          "stdout": "setup\ncallback\n"
+        },
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      },
+      "checkout": {
+        "status": "passed",
+        "observed": {
+          "id": "namespace-callback-effects-control",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [
+            2
+          ],
+          "stdout": "setup\ncallback\n"
+        },
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        }
+      }
+    }
+  },
+  "callback_artifacts": "/tmp/light-cljs-163-callback-final",
+  "focused_checks": {
+    "python": 77,
+    "rust_syntax": 10
+  },
+  "superseded_reports": [
+    "/tmp/light-cljs-163-report",
+    "/tmp/light-cljs-163-report-current"
+  ],
+  "production_eval_blocker": "light-cljs-164",
+  "excluded_external_blocker": "light-cljs-156"
+}

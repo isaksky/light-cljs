@@ -332,6 +332,8 @@ def load_contract(scope="historical-selected"):
     for case in cases.values():
         import hosted_source_dispatch
         hosted_source_dispatch.validate_case(case)
+        import namespace_results
+        namespace_results.validate(case)
         if "nodejs_rt" in case and (case["nodejs_rt"] is not False or "source_root" not in case):
             raise ValueError(f"invalid explicit Node bootstrap setting: {case['id']}")
         validate_reference_source(case)
@@ -499,6 +501,9 @@ def same_json(left, right):
 
 def local_layers(case, binary, directory, timeout, *, warning_mode=False):
     import hosted_source_dispatch
+    import namespace_results
+    if namespace_results.validate(case):
+        return namespace_results.local(case, binary, directory, timeout)
     if hosted_source_dispatch.validate_case(case):
         raise ValueError('reviewed hosted source requires actual embedding dispatch; generic CLI is not evidence')
     if "warning" in case:
@@ -512,7 +517,9 @@ def local_layers(case, binary, directory, timeout, *, warning_mode=False):
         if layer == "evaluation" and case["native_stdout"] is None:
             layers[layer] = result("not-applicable", "no compatible CLI stdout expectation; compiler-only host behavior")
             continue
-        run = invoke([binary, *flags, "-"], directory / layer, source=case["source"], timeout=timeout)
+        roots = (["--source-root", ROOT / case["source_root"]]
+                 if layer == "evaluation" and "source_root" in case else [])
+        run = invoke([binary, *flags, *roots, "-"], directory / layer, source=case["source"], timeout=timeout)
         if run["status"] == "completed":
             if layer == "evaluation":
                 status = "passed" if run["stdout"] == case["native_stdout"] else "mismatch"
@@ -791,6 +798,8 @@ def reference_diagnostics(cases, kind, checkout, directory, timeout):
 
 def reference_program(case, kind, checkout, directory, timeout):
     """Use the same checked program oracle as the Rust namespace comparisons."""
+    import namespace_results
+    namespace_results.validate(case)
     validate_reference_source(case)
     directory.mkdir(parents=True, exist_ok=True)
     identity = RELEASE if kind == "release" else REVISION
@@ -826,6 +835,7 @@ def reference_program(case, kind, checkout, directory, timeout):
     ran = invoke([os.environ.get("NODE", "node"), "-"], directory / "node", source=script, timeout=timeout)
     if ran["status"] != "completed":
         return {case["id"]: ran}
+    namespace_results.validate(case)
     return {key: {**observed, "reference_identity": kind + " " + identity,
                   "settings": {"optimizations": "none", "static-fns": False, "def-emits-var": False,
                                **({"nodejs-rt": False} if case.get("nodejs_rt") is False else {})}}
@@ -1162,6 +1172,7 @@ def main(argv=None):
     parser.add_argument("--strict", action="store_true", help="require every selected source assertion and every supplemental boundary check")
     parser.add_argument("--feature", action="append", default=[], help="exact feature section; repeatable")
     parser.add_argument("--id", action="append", default=[], help="exact stable assertion ID; repeatable")
+    parser.add_argument("--fixture", action="append", default=[], help="execute only these exact fixture IDs; all other obligations remain in the report and strict gate")
     parser.add_argument("--reference", choices=("none", "release", "checkout", "both"), default="both")
     parser.add_argument("--checkout", type=Path, default=ROOT / "research/clojurescript")
     parser.add_argument("--binary", type=Path, help="prebuilt executable (requires --no-build)")
@@ -1180,6 +1191,8 @@ def main(argv=None):
     try:
         historical_inventory, historical_witnesses, historical_cases = load_contract()
         inventory, witnesses, cases = load_contract(args.scope) if args.scope == "intended-language" else (historical_inventory, historical_witnesses, historical_cases)
+        if set(args.fixture) - set(cases):
+            raise ValueError("unknown execution fixture ID")
         from full_ledger import expand_report, load as load_full, sci_execution_failed
         full_rows, obligations, _ = load_full() if args.scope == "intended-language" else ([], [], {})
         all_features = {row["feature"] for row in [*inventory.values(), *full_rows]} | {row["family"] for row in [*full_rows, *obligations]}
@@ -1191,6 +1204,10 @@ def main(argv=None):
             selected = expand_report(selected, witnesses, {}, features=args.feature, identities=args.id)
         selected_ids = {row["fixture_id"] for row in selected["assertions"] if row["fixture_id"]}
         selected_cases = [case for identity, case in cases.items() if identity in selected_ids]
+        if args.fixture:
+            if set(args.fixture) - {case['id'] for case in selected_cases}:
+                raise ValueError("execution fixture outside selected report scope")
+            selected_cases = [case for case in selected_cases if case['id'] in args.fixture]
         evidence = {}
         boundary_evidence = {}
         phase_evidence = {}
@@ -1242,11 +1259,12 @@ def main(argv=None):
                                                      artifacts / "boundary-support", args.timeout, args.reference_timeout, args.reference)
         if args.run and args.scope == "intended-language":
             from full_ledger import run_phase_witnesses
-            phase_evidence = run_phase_witnesses(obligations, artifacts / "macro-phase", args.timeout)
+            phase_evidence = run_phase_witnesses(obligations, artifacts / "macro-phase", args.timeout,
+                reference_fixtures=args.fixture or None)
             # SCI rows are independent source obligations. Execute the original
             # portable cohort through both local engines and checked pins; a
             # historical evaluator disposition never supplies a present pass.
-            if not args.feature and not args.id:
+            if not args.feature and not args.id and not args.fixture:
                 import sci_execution
                 import sci_source_context
                 import sci_library_context
@@ -1308,6 +1326,7 @@ def main(argv=None):
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
             report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence)
+        report["execution_selection"] = {"fixture_ids": args.fixture, "all_selected_fixtures": not args.fixture}
         if artifacts:
             report["artifacts"] = str(artifacts)
             report["compiler_binary"] = binary_identity
