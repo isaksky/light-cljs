@@ -380,6 +380,13 @@ The [full language gate receipt](tests/reference/compiler-language/final-gate.md
 records remaining public construction and Var source-metadata work;
 whole-language completion remains incomplete.
 
+Public `pr-str*`, `StringBufferWriter`, and `->StringBufferWriter` execute in
+applications and macro computations. The writer preserves JavaScript append
+receivers and callback results; `pr-str*` calls the printing protocol with nil
+options. The [printing helper proof](tests/reference/compiler-language/public-print-helper-accepted.md)
+retains exact pin comparisons, print bindings, failure recovery, and the checked
+nil version difference.
+
 Public `Cons`, `Reduced`, and `Symbol` positional constructors and their
 `->Cons`, `->Reduced`, and `->Symbol` factories initialize canonical runtime
 values in applications and macro computations. They retain explicit tails,

@@ -40,7 +40,8 @@
   const publicConstructors = {List: ListValue, EmptyList: EmptyListValue, Keyword: KeywordValue,
     Cycle: CycleValue, Repeat: RepeatValue, Iterate: IterateValue, PersistentVector: PersistentVectorValue,
     Subvec: SubvecValue, ChunkedSeq: ChunkedSeqValue, PersistentQueue: PersistentQueueValue,
-    PersistentArrayMap: PersistentArrayMapValue, PersistentHashMap: PersistentHashMapValue, PersistentHashSet: PersistentHashSetValue};
+    PersistentArrayMap: PersistentArrayMapValue, PersistentHashMap: PersistentHashMapValue, PersistentHashSet: PersistentHashSetValue,
+    StringBufferWriter};
   const builtinTypes = {};
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
@@ -4628,10 +4629,21 @@
     finally { core.printReadably = saved; }
   }
   function stringWriter() {
-    const buffer = {text: ""};
-    const writer = installMethods({}, [["IWriter", 0, null],
-      ["IWriter/-write", 2, (_self, text) => { buffer.text += text; return null; }], ["IWriter/-flush", 1, () => null]]);
-    return {buffer, writer};
+    const buffer = {text: "", append(text) { this.text += text; return this; }};
+    return {buffer, writer: new StringBufferWriter(buffer)};
+  }
+  function StringBufferWriter(sb) {
+    const writer = builtinValue("StringBufferWriter", Object.prototype);
+    writer.sb = sb;
+    return writer;
+  }
+  function prStrStar(value) {
+    // The public helper calls the protocol directly with nil options. In
+    // particular, it does not use pr-str's generic native/nil printer.
+    const {buffer, writer} = stringWriter();
+    prWriter(value, writer, null);
+    flushWriter(writer);
+    return buffer.text;
   }
   function printMetaQ(options, value) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
@@ -4953,6 +4965,11 @@
   }
   const write = coreMethod("IWriter/-write", [2], () => null);
   const flushWriter = coreMethod("IWriter/-flush", [1], () => null);
+  installMethods(builtinType("StringBufferWriter", Object.prototype).prototype, [
+    ["IWriter", 0, null],
+    ["IWriter/-write", 2, (writer, text) => writer.sb.append(text)],
+    ["IWriter/-flush", 1, () => null]
+  ]);
   const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true));
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (cells.get(value)?.kind === "range") {
@@ -5244,7 +5261,7 @@
     hashOrderedColl, hashUnorderedColl, hashDouble, stringHash, rotateLeft, imul: Math.imul,
     compare: compareKeys, INamed, nameProtocol: coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); }), namespaceProtocol: coreMethod("INamed/-namespace", [1], namespace), IHash, IEquiv, hashProtocol: coreMethod("IHash/-hash", [1], hash), equivProtocol: coreMethod("IEquiv/-equiv", [2], equalPair), type: value => value == null ? null : value.constructor,
     Fn, IList, IFn, ISeqable, ISeq, INext, ICounted, IIndexed, ILookup, ISequential, IAssociative, seqProtocol, firstProtocol, restProtocol, nextProtocol, countProtocol, nthProtocol, lookupProtocol, containsProtocol,
-    protocolSentinel, IMeta, IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, clone, prWriter, write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol, empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, str, uuid,
+    protocolSentinel, IMeta, IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, StringBufferWriter, clone, prWriter, write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol, empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, prStrStar, str, uuid,
     identical: (a, b) => a === b, isUuid: value => implementsProtocol(IUUID, value), isInst: value => satisfies(Inst, value),
     printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct, isDistinct, sort, sortBy,
     someFn, everyPred, memoize, rand, randInt, randNth, parseLong, parseDouble, parseUuid, parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,

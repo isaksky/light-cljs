@@ -1,0 +1,582 @@
+{
+  "profile": "canonical-public-print-helpers-v1",
+  "historical_catalog_sha256": "60f57b4d5a530cfb7aa627c1cf770ed642c2995a4567c395b17a3ba88845824b",
+  "sources": [
+    {
+      "id": "public-pr-str-star",
+      "source": "(let [printer pr-str*] [(pr-str* [1 2]) (cljs.core/pr-str* [3 4]) (printer {:a 1}) (apply printer [[5 6]])])",
+      "source_sha256": "386334bbdd445e37b4d49f4f3dcc90e69aa2d0e6f7a72c5f27abaa3f21aa8c45",
+      "canonical_expected": {
+        "id": "public-pr-str-star",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "[1 2]",
+              "[3 4]",
+              "{:a 1}",
+              "[5 6]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-pr-str-star",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "[1 2]",
+              "[3 4]",
+              "{:a 1}",
+              "[5 6]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-string-buffer-writer",
+      "source": "(let [out (atom \"\") sb #js {:append (fn [s] (swap! out str s))} writer (StringBufferWriter. sb)] [(-write writer \"a\") (-flush writer) @out])",
+      "source_sha256": "29f024c19a38f31f9db240ce473b5172b181338eb70ac3f62d9edf2f3010678c",
+      "canonical_expected": {
+        "id": "public-string-buffer-writer",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "a",
+              null,
+              "a"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-string-buffer-writer",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "a",
+              null,
+              "a"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-writer-factories",
+      "source": "(let [events (atom []) sb #js {:append (fn [s] (this-as this (swap! events conj [s (= (.-tag this) \"sb\")]))) :tag \"sb\"} factory ->StringBufferWriter a (factory sb) b (apply factory [sb]) c (cljs.core/->StringBufferWriter sb) write -write flush -flush] [(instance? StringBufferWriter a) (satisfies? IWriter a) (write a \"a\") (apply write [b \"b\"]) (cljs.core/-write c \"c\") (flush a) @events])",
+      "source_sha256": "8b97cb1883bf841d750601560c35c81d3c4a37db7ad59cc13d8ff9125c893c4b",
+      "canonical_expected": {
+        "id": "public-print-writer-factories",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      true
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "c",
+                      true
+                    ]
+                  }
+                ]
+              },
+              null,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "c",
+                      true
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-writer-factories",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      true
+                    ]
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "c",
+                      true
+                    ]
+                  }
+                ]
+              },
+              null,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      true
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "c",
+                      true
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-writer-receiver",
+      "source": "(let [events (atom []) sb #js {:append (fn [s] (this-as this (swap! events conj [s (.-tag this)]) (.-tag this))) :tag \"original\"} writer (StringBufferWriter. sb)] [(-write writer \"a\") (do (set! (.-tag sb) \"changed\") (-write writer \"b\")) (-flush writer) @events])",
+      "source_sha256": "eded0232e582b9c718bd56513b55f6b68e5e0eeda330f62915caacdc82de19ac",
+      "canonical_expected": {
+        "id": "public-print-writer-receiver",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "original",
+              "changed",
+              null,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      "original"
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      "changed"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-writer-receiver",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "original",
+              "changed",
+              null,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      "a",
+                      "original"
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      "b",
+                      "changed"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-star-options",
+      "source": "[(binding [*print-readably* false] (pr-str* [\"x\"])) (binding [*print-length* 1] (pr-str* [1 2])) (binding [*print-level* 1] (pr-str* [[1] 2])) (binding [*print-meta* true] (pr-str* (with-meta [1] {:tag \"v\"}))) (binding [*print-namespace-maps* true] (pr-str* {:sample/a 1 :sample/b 2}))]",
+      "source_sha256": "9930c0f461d8643874cfb16f8aa589e596ddca499a0957f19c5563c5b8c41a2e",
+      "canonical_expected": {
+        "id": "public-print-star-options",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "[x]",
+              "[1 ...]",
+              "[# 2]",
+              "[1]",
+              "#:sample{:a 1, :b 2}"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-star-options",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "[x]",
+              "[1 ...]",
+              "[# 2]",
+              "[1]",
+              "#:sample{:a 1, :b 2}"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-star-custom",
+      "source": "(let [events (atom []) value (reify IPrintWithWriter (-pr-writer [this writer opts] (swap! events conj [(nil? opts) (instance? StringBufferWriter writer) (satisfies? IWriter writer)]) (-write writer \"custom\") (-flush writer))) printer pr-str*] [(printer value) @events])",
+      "source_sha256": "1cd045d152f328019faccb3228b36bf4040a695add9e4927bbb52620d19fb430",
+      "canonical_expected": {
+        "id": "public-print-star-custom",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "custom",
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      true,
+                      true,
+                      true
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-star-custom",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "custom",
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      true,
+                      true,
+                      true
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-writer-failure",
+      "source": "(let [hits (atom 0) sb #js {:append (fn [s] (swap! hits inc) (throw (js/Error. \"append failed\")))} writer (->StringBufferWriter sb)] [(try (-write writer \"x\") (catch js/Error e (.-message e))) (-flush writer) @hits (pr-str* [42])])",
+      "source_sha256": "8fb0263044ddff4ec59a692d562d1c9bac82780aa3b9e837d43aaeba3ec741ae",
+      "canonical_expected": {
+        "id": "public-print-writer-failure",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "append failed",
+              null,
+              1,
+              "[42]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-writer-failure",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "append failed",
+              null,
+              1,
+              "[42]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-star-failure-binding",
+      "source": "(let [value (reify IPrintWithWriter (-pr-writer [this writer opts] (throw (js/Error. \"print failed\"))))] [(try (binding [*print-length* 1 *print-level* 1 *print-readably* false] (pr-str* value)) (catch js/Error e (.-message e))) [*print-length* *print-level* *print-readably*] (pr-str* [\"x\" 2])])",
+      "source_sha256": "35e597b3dea9c40fdb31d390db293b86946b7a9416c8f3103e2fc0a5b217cfdc",
+      "canonical_expected": {
+        "id": "public-print-star-failure-binding",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "print failed",
+              {
+                "$vector": [
+                  null,
+                  null,
+                  true
+                ]
+              },
+              "[\"x\" 2]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-star-failure-binding",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "print failed",
+              {
+                "$vector": [
+                  null,
+                  null,
+                  true
+                ]
+              },
+              "[\"x\" 2]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-star-fixed-extra",
+      "source": "(let [printer pr-str*] [(printer [1] :ignored) (apply printer [[2] :ignored])])",
+      "source_sha256": "39a0ef05c55245200064814bec8bebdd8511522a83d4b166226b2aa5302ebf55",
+      "canonical_expected": {
+        "id": "public-print-star-fixed-extra",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "[1]",
+              "[2]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-star-fixed-extra",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "[1]",
+              "[2]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": true,
+      "nonpassing_reason": null
+    },
+    {
+      "id": "public-print-star-nil-version-control",
+      "source": "[(try (pr-str* nil) (catch js/Error e (if (instance? js/TypeError e) \"type-error\" \"error\"))) (pr-str* [42])]",
+      "source_sha256": "d38db0aed521c40df7981254313a959f839fa26919a90ba16ae3f60b47083d19",
+      "canonical_expected": {
+        "id": "public-print-star-nil-version-control",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "type-error",
+              "[42]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "checkout_expected": {
+        "id": "public-print-star-nil-version-control",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              "error",
+              "[42]"
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "canonical_acceptance": false,
+      "nonpassing_reason": "Checked release throws TypeError for nil; checkout throws Error. Production preserves checkout failure and recovery. Zero two-pin acceptance credit."
+    }
+  ]
+}

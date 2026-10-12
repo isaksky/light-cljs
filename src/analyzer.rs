@@ -550,6 +550,8 @@ pub enum CoreFnId {
     Update,
 
     PrStr,
+    PrStrStar,
+    StringBufferWriter,
     Str,
     Identical,
     IsUuid,
@@ -1195,6 +1197,9 @@ impl CoreFnId {
             "update" => Self::Update,
 
             "pr-str" => Self::PrStr,
+            "pr-str*" => Self::PrStrStar,
+            "StringBufferWriter" => Self::StringBufferWriter,
+            "->StringBufferWriter" => Self::StringBufferWriter,
             "str" | "str_" => Self::Str,
             "identical?" => Self::Identical,
             "uuid?" => Self::IsUuid,
@@ -2022,6 +2027,8 @@ impl CoreFnId {
             Self::Update => "update",
 
             Self::PrStr => "prStr",
+            Self::PrStrStar => "prStrStar",
+            Self::StringBufferWriter => "StringBufferWriter",
             Self::Str => "str",
             Self::Identical => "identical",
             Self::IsUuid => "isUuid",

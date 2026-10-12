@@ -1220,6 +1220,7 @@ def main(argv=None):
         lazy_sci_context_evidence = None
         case_sci_context_evidence = None
         transport_sci_context_evidence = None
+        public_print_helper_evidence = None
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1268,6 +1269,11 @@ def main(argv=None):
             from full_ledger import run_phase_witnesses
             phase_evidence = run_phase_witnesses(obligations, artifacts / "macro-phase", args.timeout,
                 reference_fixtures=args.fixture or None)
+            public_print_fixtures = {'public-pr-str-star', 'public-string-buffer-writer', 'public-print-writer-factories'}
+            if args.reference == 'both' and public_print_fixtures & {case['id'] for case in selected_cases}:
+                import public_print_helpers
+                public_print_helper_evidence = public_print_helpers.run(
+                    artifacts / 'public-print-helpers', max(600, args.reference_timeout))
             # SCI rows are independent source obligations. Execute the original
             # portable cohort through both local engines and checked pins; a
             # historical evaluator disposition never supplies a present pass.
@@ -1386,6 +1392,8 @@ def main(argv=None):
         if args.scope == "intended-language":
             report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence, reviewed_sci_context_evidence=reviewed_sci_context_evidence, gap_sci_context_evidence=gap_sci_context_evidence, print_sci_context_evidence=print_sci_context_evidence, cljc_sci_context_evidence=cljc_sci_context_evidence, lazy_sci_context_evidence=lazy_sci_context_evidence, case_sci_context_evidence=case_sci_context_evidence, transport_sci_context_evidence=transport_sci_context_evidence)
         report["execution_selection"] = {"fixture_ids": args.fixture, "all_selected_fixtures": not args.fixture}
+        if public_print_helper_evidence is not None:
+            report['public_print_helper_evidence'] = public_print_helper_evidence
         if artifacts:
             report["artifacts"] = str(artifacts)
             report["compiler_binary"] = binary_identity

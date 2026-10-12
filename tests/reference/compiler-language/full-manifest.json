@@ -1402,7 +1402,7 @@
   "private_tap_scope_sha256": "bd7eb9d69479681b3ad5924bb43c5a39e7da27114da0d9c3e15e94e93174d286",
   "inference_optimizer_scope_sha256": "4ff63b2e4cf45f6b9aa9ba1ee273447a7dc071505e3d59a40b6c2068f15f795f",
   "invoke_program_scope_sha256": "9a088865c8e2c0326e16240581da13692c1cb3ea431c1f363e4a06070cfb52f0",
-  "obligations_sha256": "2fd2357dbdec3634944770add21ed127ae385706e78d02d94f2c4bffb9138b5c",
+  "obligations_sha256": "39afc8df1b4dfac6e23726ea8608bbba4353c8a30681e25b1cc0832056660cb1",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1443,7 +1443,7 @@
   "local_sources": [
     {
       "path": "src/analyzer.rs",
-      "sha256": "193c764c641910854805c05d239687bcb47c62cb08d3f052a364fe662d991ea2"
+      "sha256": "1f953037ed38124682c19f0ad97618cb149723739bd4cfb7486728cfbf0c2759"
     },
     {
       "path": "src/core_var_metadata.tsv",
