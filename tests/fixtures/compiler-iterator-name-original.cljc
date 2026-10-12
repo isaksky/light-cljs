@@ -1,0 +1,1 @@
+(let [m (hash-map 33 :a 1 :b 65 :c 2 :d nil :nil) i (iter m)] [(loop [a []] (if (.hasNext i) (recur (conj a (.next i))) a)) (vec (iterator-seq (.keys m))) (vec (iterator-seq (.values m))) (mapv vec (iterator-seq (.entries m))) (vec (iterator-seq (js* "~{}[Symbol.iterator]()" m)))])

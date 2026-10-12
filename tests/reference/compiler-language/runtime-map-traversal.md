@@ -50,10 +50,16 @@ and value hashes in this order on first demand and caches the result; ordinary
 sequence traversal never repeats key hash/equality effects. Lookup and update
 routing preserve the original key representatives and their existing effects.
 
-Four independently confirmed neighboring gaps remain whole-source, zero-credit
-controls, with focused ordinary owners placed before strict 125:
+Three independently confirmed neighboring gaps remain whole-source, zero-credit
+controls, with focused ordinary owners placed before strict 125. A fourth historical
+control had an invalid capability premise:
 
-- 182: public `iterator-seq` is unresolved in all four source phases.
+- 182 is closed as invalid/not applicable: neither pinned core declares
+  `iterator-seq`. Both pins warn about undeclared `user/iterator-seq` and throw a
+  TypeError for the unchanged complete source. The canonical public conversion
+  is `es6-iterator-seq`, already implemented in both phases. See the
+  [fresh correction proof](iterator-name-correction.md). The frozen source,
+  historical packets/rejections and zero credit remain unchanged.
 - 183: `PersistentHashMap.fromArrays` is missing; applications throw a type
   error and both demanded macro contexts reject.
 - 184: the direct `hash-map` source macro evaluates key/value operands in
@@ -64,9 +70,10 @@ controls, with focused ordinary owners placed before strict 125:
   from canonical public `equiv-map`; asymmetric custom values expose the gap.
   A separate symmetric custom-value source proves complete traversal effects.
 
-These are API resolution, factory, source macro lowering and equivalence roots;
-none grants runtime traversal or full-language agreement credit. Their exact
-sources, expected packets, actual packets and located rejections remain visible.
+The remaining gaps are factory, source macro lowering and equivalence roots.
+The invalid-name control grants no runtime traversal or full-language agreement
+credit. Their exact sources, expected packets, actual packets and located
+rejections remain visible.
 Both pins agree on all 64 sources; there are no reference-version differences
 in this catalog. Missing engine execution after a compilation rejection is
 reported as a rejection context, never fabricated as an engine pass.
