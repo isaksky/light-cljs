@@ -1637,10 +1637,24 @@
   function find(value, key) {
     const method = publicMethod(value, "IFind/-find", 2);
     if (method) return method.call(value, value, key);
-    if (value == null || !predicates.isAssociative(value) || !contains(value, key)) return null;
     const entries = !recordTypes.has(value) && maps.get(value);
-    const entry = entries && entries[collectionEntryIndex(value, entries, key)];
-    return mapEntry(entry ? entry.key : key, get(value, key));
+    if (entries) {
+      const comparator = sortedComparators.get(value);
+      if (comparator) {
+        for (let node = publicTree(value); node != null;) {
+          const order = comparator.call(null, key, node.key);
+          if (order === 0) return node;
+          node = order < 0 ? node.left : node.right;
+        }
+        return null;
+      }
+      // IFind returns the retained entry from one search. Repeating contains?
+      // or get would repeat observable IHash/IEquiv calls on the query key.
+      const index = collectionEntryIndex(value, entries, key);
+      return index < 0 ? null : mapEntry(entries[index].key, entries[index].value);
+    }
+    if (value == null || !predicates.isAssociative(value) || !contains(value, key)) return null;
+    return mapEntry(key, get(value, key));
   }
 
   function getIn(value, keys, notFound) {

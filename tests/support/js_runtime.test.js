@@ -1260,3 +1260,37 @@ for (const [Type, fields] of [
   }
 }
 console.log('public constructor fields preserve canonical payload brands');
+
+// Public find and the IFind fallback consume one retained map search.
+{
+  const events = [];
+  const retained = runtime.makeReify([['IHash', 0, null], ['IHash/-hash', 1, () => 7]]);
+  const value = c.atom(42);
+  const query = runtime.makeReify([
+    ['IHash', 0, null], ['IHash/-hash', 1, () => { events.push('hash'); return 7; }],
+    ['IEquiv', 0, null], ['IEquiv/-equiv', 2, (_self, other) => { events.push('equiv'); return other === retained; }]
+  ]);
+  const old = c.withMeta(c.hashMap(retained, value, null, null), c.hashMap('tag', 'kept'));
+  for (const lookup of [c.find, c.findProtocol]) {
+    events.length = 0;
+    const entry = lookup(old, query);
+    assert.equal(c.keyProtocol(entry), retained);
+    assert.equal(c.valProtocol(entry), value);
+    assert.deepEqual(events, ['hash', 'equiv']);
+    assert.equal(lookup(old, null) && c.valProtocol(lookup(old, null)), null);
+    assert.equal(lookup(c.hashMap(), query), null);
+    assert.deepEqual(events, ['hash', 'equiv']);
+  }
+  assert.equal(c.get(c.meta(old), 'tag'), 'kept');
+  let receiver;
+  receiver = runtime.makeReify([
+    ['IFind', 0, null], ['IFind/-find', 2, function (self, key) {
+      assert.equal(this, receiver); assert.equal(self, receiver);
+      return new c.MapEntry('retained', key, null);
+    }],
+    ['IAssociative', 0, null], ['IAssociative/-contains-key?', 2, () => { throw new Error('unexpected contains'); }]
+  ]);
+  assert.equal(c.valProtocol(c.find(receiver, value)), value);
+  assert.equal(c.valProtocol(c.findProtocol(receiver, value)), value);
+}
+console.log('public find preserves one search and direct receiver dispatch');
