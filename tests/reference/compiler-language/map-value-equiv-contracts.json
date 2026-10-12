@@ -1,0 +1,2419 @@
+{
+  "profile": "canonical-map-value-equiv-v1",
+  "comparison": "exact-typed-packets-no-projection",
+  "pins": {
+    "release": "1.12.134",
+    "checkout": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e"
+  },
+  "independent_reference_root": "/private/tmp/light-cljs-185-independent-map-value-v2",
+  "sources": [
+    {
+      "id": "runtime-map-traversal-custom-value-equality-effects",
+      "source": "(let [events (atom []) m (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) [7 3 6 1 5 0 4 2 8])) n (zipmap (range 9) (range 9)) same (= m n)] [same @events])",
+      "source_sha256": "e0173f7c4ecffce1ff4f8e59162e2d71be96fb7584c23facd7a7e8a47b6fefc8",
+      "canonical_expected": {
+        "id": "runtime-map-traversal-custom-value-equality-effects",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "runtime-map-traversal-custom-value-equality-effects",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-direct",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (= m n)] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "d0cb93e1e60b8b96ad29c1c573671f407b63e87acf7ebfe9661373a14754f0e4",
+      "canonical_expected": {
+        "id": "map-value-equiv-direct",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-direct",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-qualified",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (cljs.core/= m n)] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "4d8899ea9599789e70fe4385be0c750eec15c0771d20a8dd7fc4ae8454e5cc36",
+      "canonical_expected": {
+        "id": "map-value-equiv-qualified",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-qualified",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-saved",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (let [f =] (f m n))] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "6df6e78d6c36aac57d8cbe576469c1a13331b79b2c139593cb770383c6298476",
+      "canonical_expected": {
+        "id": "map-value-equiv-saved",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-saved",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-apply",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (apply = [m n])] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "ba36c7bf00552b282c93828ffe498b272214ca2aea754b1736713d53d32d1d9e",
+      "canonical_expected": {
+        "id": "map-value-equiv-apply",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-apply",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-equiv-map",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (equiv-map m n)] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "41cf21ca99b7e8dbc80a40906123e484a988fbb2db319d230ad7b2c9735471bd",
+      "canonical_expected": {
+        "id": "map-value-equiv-equiv-map",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-equiv-map",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-equiv-map-qualified",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (cljs.core/equiv-map m n)] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "f2ee9260f76e0a1f49e8001f091f89bc06dcce6322ff4ce8e5bade1dfbabe418",
+      "canonical_expected": {
+        "id": "map-value-equiv-equiv-map-qualified",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-equiv-map-qualified",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-equiv-map-saved",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (let [f equiv-map] (f m n))] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "dce66ccfbc18c853e06040642fd2f201dc713bdef2bd4e55dfcbc5a15ed8f0c7",
+      "canonical_expected": {
+        "id": "map-value-equiv-equiv-map-saved",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-equiv-map-saved",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-equiv-map-apply",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (apply equiv-map [m n])] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "70110b0aa19f79d7bdacb7fe3c3b836f1483c9c2ae86b0e61663b8e8503f946e",
+      "canonical_expected": {
+        "id": "map-value-equiv-equiv-map-apply",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-equiv-map-apply",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-object",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (.equiv m n)] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "e15a688074b900a8ecffe334c1ffb60e2a0ad2ec594f398e05aa5b4c2f6d7e2b",
+      "canonical_expected": {
+        "id": "map-value-equiv-object",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-object",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-protocol",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (-equiv m n)] [same @events (count m) (get m 7) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "944ca424e506c8fddfec0e8d6434de78509c1c201e34bedd44507c196a47cf45",
+      "canonical_expected": {
+        "id": "map-value-equiv-protocol",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-protocol",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              9,
+              7,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              },
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a 1 :b 2) n (array-map :a (v 1) :b (v 2)) same (= m n)] [same @events (count m) (vec (keys m))])",
+      "source_sha256": "b395bbf49c303e505005f7a6908d61d088170cf31ed0e8f1730d24e18ca9a2de",
+      "canonical_expected": {
+        "id": "map-value-equiv-array",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              },
+              2,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              },
+              2,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-literal",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m {:a 1 :b 2} n {:a (v 1) :b (v 2)} same (= m n)] [same @events (count m) (vec (keys m))])",
+      "source_sha256": "18ba2f981365d258c7c4e0d0a19dc97a44bd8dc3a831e52e1e9f02c8f84e2aaf",
+      "canonical_expected": {
+        "id": "map-value-equiv-literal",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              },
+              2,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-literal",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              },
+              2,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-sorted",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (sorted-map :b 2 :a 1) n (sorted-map :b (v 2) :a (v 1)) same (= m n)] [same @events (count m) (vec (keys m))])",
+      "source_sha256": "9afbc532f6ae8840605cc49be1d81c75abddc232ce7ec846904b52d1afa6386f",
+      "canonical_expected": {
+        "id": "map-value-equiv-sorted",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              },
+              2,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-sorted",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              },
+              2,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "b",
+                      "spelling": "b"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-nested",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m {:a {:b 2}} n {:a {:b (v 2)}} same (= m n)] [same @events (count m) (vec (keys m))])",
+      "source_sha256": "18eabf2b48ee7d1a82dab4b61c56a9cade920b4ebb7035bc16e93d2fa1ff0707",
+      "canonical_expected": {
+        "id": "map-value-equiv-nested",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              },
+              1,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-nested",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              },
+              1,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "a",
+                      "spelling": "a"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-short-circuit",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) false))) m (array-map :a 1 :b 2) n (array-map :a (v 1) :b (v 2)) same (= m n)] [same @events])",
+      "source_sha256": "f6cc6967284801a8291469b8f9c8940004f47963182119dc28670ef33da15886",
+      "canonical_expected": {
+        "id": "map-value-equiv-short-circuit",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-short-circuit",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-missing-count-nonmap",
+      "source": "(let [events (atom []) v (reify IEquiv (-equiv [_ other] (swap! events conj other) true)) m {:a 1} n {:a v} results [(= m {}) (= m {:b v}) (= m [v]) (= m nil) (= m {:a v :b v})]] [results @events])",
+      "source_sha256": "0bccd12ea845379035e8a6152220c4ae2c6b1784cdaf35a1205e2f780fcf0f31",
+      "canonical_expected": {
+        "id": "map-value-equiv-missing-count-nonmap",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  false
+                ]
+              },
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-missing-count-nonmap",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  false,
+                  false,
+                  false,
+                  false,
+                  false
+                ]
+              },
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-identity-single-variadic",
+      "source": "(let [events (atom []) m {:a (reify IEquiv (-equiv [_ other] (swap! events conj :called) false))}] [(= m) (= m m) (apply = [m m m]) (identical? m m) @events])",
+      "source_sha256": "fe4f443db7eb589bd68bf9991410adccb5f777eea44d18b0a3cf4851125a90d9",
+      "canonical_expected": {
+        "id": "map-value-equiv-identity-single-variadic",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              true,
+              true,
+              true,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-identity-single-variadic",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              true,
+              true,
+              true,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-operand-order",
+      "source": "(let [events (atom []) v (reify IEquiv (-equiv [_ other] (swap! events conj [:value other]) true)) same (= (do (swap! events conj :left) {:a 1}) (do (swap! events conj :right) {:a v}))] [same @events])",
+      "source_sha256": "6c0817411bec9bfdd1d4a1ea0563bec2a2603131ef8ffdfb4520925a42e22142",
+      "canonical_expected": {
+        "id": "map-value-equiv-operand-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "left",
+                      "spelling": "left"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "right",
+                      "spelling": "right"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-operand-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "left",
+                      "spelling": "left"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "right",
+                      "spelling": "right"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-number-and-sequential",
+      "source": "[(= {0 1} {-0.0 1}) (= {:a js/NaN} {:a js/NaN}) (= {:a 9007199254740992} {:a 9007199254740993}) (= [1 2] (list 1 2)) (= {:a [1 2]} {:a (list 1 2)})]",
+      "source_sha256": "f47f1e295a6953262a1273715d7f1a6fdf114f47849b00d3135ad6a6be467564",
+      "canonical_expected": {
+        "id": "map-value-equiv-number-and-sequential",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              false,
+              true,
+              true,
+              true
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-number-and-sequential",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              false,
+              true,
+              true,
+              true
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-throw-caught",
+      "source": "(let [events (atom []) v (reify IEquiv (-equiv [_ other] (swap! events conj other) (throw (ex-info \"value-equiv\" {:operand other})))) result (try (= {:a 7} {:a v}) (catch :default e [(ex-message e) (ex-data e)]))] [result @events])",
+      "source_sha256": "f663adca473de365700b1bc1f4fb4bfcb00d640ca958f4303f627863abdde5d1",
+      "canonical_expected": {
+        "id": "map-value-equiv-throw-caught",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-throw-caught",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-object",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a 1 :b 2) n (array-map :a (v 1) :b (v 2)) same (.equiv m n)] [same @events])",
+      "source_sha256": "4f0f009fb8755b07a8ada8cb36701ef97402051505f09dacc6a2d6d603fed223",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-object",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-object",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-protocol",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a 1 :b 2) n (array-map :a (v 1) :b (v 2)) same (-equiv m n)] [same @events])",
+      "source_sha256": "34fe98647482ec707fdb399cd88b45b53e67878e47f32b257212d7c1debfcd35",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-protocol",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-protocol",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-equiv-map",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a 1 :b 2) n (array-map :a (v 1) :b (v 2)) same (equiv-map m n)] [same @events])",
+      "source_sha256": "07f313e4ed07c9173470a2444a67e06637c87f6b290cd84bfbc4ddb310a97b7c",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-equiv-map",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-equiv-map",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-equiv-map-apply",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a 1 :b 2) n (array-map :a (v 1) :b (v 2)) same (apply equiv-map [m n])] [same @events])",
+      "source_sha256": "23caa5b58bbdcb83d14edc9cfb372434247156d294479c4f23a47dc00165ea50",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-equiv-map-apply",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-equiv-map-apply",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-left-object",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a (v 1) :b (v 2)) n (array-map :a 1 :b 2) same (.equiv m n)] [same @events])",
+      "source_sha256": "e17cc3d1e038c1ccc0769ea567dd4fefcd8eb6583fbdb114a144a758028c1311",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-left-object",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-left-object",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-left-protocol",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a (v 1) :b (v 2)) n (array-map :a 1 :b 2) same (-equiv m n)] [same @events])",
+      "source_sha256": "de67ff7850d18dc261b0736e849d4655c284c16eb7113695c3daefc439a77d1d",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-left-protocol",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-left-protocol",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-left-equal",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a (v 1) :b (v 2)) n (array-map :a 1 :b 2) same (= m n)] [same @events])",
+      "source_sha256": "45be4f3ca4892c6c1ddc7273df514acd2ecbd39a1c71e9a6ae2c794e5ad39dc2",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-left-equal",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-left-equal",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$vector": [
+                      1,
+                      1
+                    ]
+                  },
+                  {
+                    "$vector": [
+                      2,
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-array-left-equiv-map",
+      "source": "(let [events (atom []) v (fn [x] (reify IEquiv (-equiv [_ other] (swap! events conj [x other]) (= x other)))) m (array-map :a (v 1) :b (v 2)) n (array-map :a 1 :b 2) same (equiv-map m n)] [same @events])",
+      "source_sha256": "a462e2d077d5391025e813ccde0349d901a8886704c9ed8b943b17512b043924",
+      "canonical_expected": {
+        "id": "map-value-equiv-array-left-equiv-map",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-array-left-equiv-map",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": []
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-hash-operand-order",
+      "source": "(let [events (atom []) v (reify IEquiv (-equiv [_ other] (swap! events conj [:value other]) true)) same (= (do (swap! events conj :left) (hash-map :a 1)) (do (swap! events conj :right) (hash-map :a v)))] [same @events])",
+      "source_sha256": "d4a7b948117749eddd0fd6a2173df5ecc30ec25b238f9ef436acea3bf82e1180",
+      "canonical_expected": {
+        "id": "map-value-equiv-hash-operand-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "left",
+                      "spelling": "left"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "right",
+                      "spelling": "right"
+                    }
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "value",
+                          "spelling": "value"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-hash-operand-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "left",
+                      "spelling": "left"
+                    }
+                  },
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "right",
+                      "spelling": "right"
+                    }
+                  },
+                  {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "value",
+                          "spelling": "value"
+                        }
+                      },
+                      1
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-hash-throw-caught",
+      "source": "(let [events (atom []) v (reify IEquiv (-equiv [_ other] (swap! events conj other) (throw (ex-info \"value-equiv\" {:operand other})))) result (try (= (hash-map :a 7) (hash-map :a v)) (catch :default e [(ex-message e) (ex-data e)]))] [result @events])",
+      "source_sha256": "e40185740cd66554bf44fdce077ae407a72667b0fb2efa42df8212ad11f0e8ab",
+      "canonical_expected": {
+        "id": "map-value-equiv-hash-throw-caught",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  "value-equiv",
+                  {
+                    "$map": [
+                      [
+                        {
+                          "$keyword": {
+                            "namespace": null,
+                            "name": "operand",
+                            "spelling": "operand"
+                          }
+                        },
+                        7
+                      ]
+                    ],
+                    "count": 1
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  7
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-hash-throw-caught",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              {
+                "$vector": [
+                  "value-equiv",
+                  {
+                    "$map": [
+                      [
+                        {
+                          "$keyword": {
+                            "namespace": null,
+                            "name": "operand",
+                            "spelling": "operand"
+                          }
+                        },
+                        7
+                      ]
+                    ],
+                    "count": 1
+                  }
+                ]
+              },
+              {
+                "$vector": [
+                  7
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-value-equiv-variadic-adjacent",
+      "source": "(let [events (atom []) xs [7 3 6 1 5 0 4 2 8] m (zipmap (range 9) (range 9)) n (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) xs)) same (= m n m)] [same @events])",
+      "source_sha256": "b1bcca5fb125124ee270166fe9f28b32fce481105a49cf8f5710009eac9369ea",
+      "canonical_expected": {
+        "id": "map-value-equiv-variadic-adjacent",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "original_expected": {
+        "id": "map-value-equiv-variadic-adjacent",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              {
+                "$vector": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    }
+  ]
+}

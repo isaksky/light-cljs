@@ -1939,7 +1939,7 @@
   function objectEquiv(value, other) {
     const equiv = builtin(value, "IEquiv/-equiv", 2);
     if (equiv) return equiv.call(value, value, other);
-    if (maps.has(value)) return !predicates.isRecord(other) && equivMap(value, other);
+    if (maps.has(value)) return structuralEqualPair(value, other);
     // Sequence/collection protocols compare contents even for the same receiver
     // (for example, a list containing NaN is not equivalent to itself). Cycle
     // and Iterate retain their default identity equality.
@@ -1974,7 +1974,10 @@
       if (!predicates.isMap(right) || predicates.isRecord(right) || count(left) !== count(right)) return false;
       return mapTraversal(left).every(entry => {
         const found = get(right, entry.key, missing);
-        return found !== missing && equalPair(entry.value, found);
+        // Hash/tree maps use equiv-map's right-first value dispatch. Array
+        // maps retain their distinct left-first IEquiv implementation.
+        return found !== missing && (mapKinds.get(left) === "array-map"
+          ? equalPair(entry.value, found) : equalPair(found, entry.value));
       });
     }
     const leftSet = sets.get(left);

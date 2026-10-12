@@ -1,0 +1,1 @@
+(let [events (atom []) m (apply hash-map (mapcat (fn [x] [x (reify IEquiv (-equiv [_ other] (swap! events conj x) (= x other)))]) [7 3 6 1 5 0 4 2 8])) n (zipmap (range 9) (range 9)) same (= m n)] [same @events])
