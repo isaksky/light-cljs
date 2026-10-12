@@ -1,0 +1,1 @@
+(defprotocol P (f [x])) (deftype T [] IFn (-invoke [_ x] (+ 1 x))) (let [v (T.) out (specify! v P (f [self] (identical? self v)) Object (toString [_] "instance") IFn (-invoke ([_ x] (+ 2 x))))] (assert (identical? v out)) (assert (f v)) (assert (= [5 5 "instance"] [(v 3) (apply v [3]) (.toString v)]))) true

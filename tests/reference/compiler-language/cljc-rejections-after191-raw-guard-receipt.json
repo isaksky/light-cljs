@@ -1,0 +1,39 @@
+{
+  "mutations": [
+    {
+      "mutation": "duplicate-warmup",
+      "result": "rejected"
+    },
+    {
+      "mutation": "missing-macro-rejection",
+      "result": "rejected"
+    },
+    {
+      "mutation": "changed-original-source",
+      "result": "rejected"
+    },
+    {
+      "mutation": "changed-recovery-result",
+      "result": "rejected"
+    },
+    {
+      "mutation": "coherent-recovery-unit",
+      "result": "rejected"
+    },
+    {
+      "mutation": "coherent-pin-input",
+      "result": "rejected"
+    },
+    {
+      "mutation": "coherent-pin-unit",
+      "result": "rejected"
+    },
+    {
+      "mutation": "changed-pin-identity",
+      "result": "rejected"
+    }
+  ],
+  "pristine_restored_replay": "passed",
+  "original_semantic_pass_credit": 0,
+  "original_macro_execution_pass_credit": 0
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "scope": "Unfiltered after191 attempt failed closed before any gate execution; no coverage counts or pass credit",
+  "head": "add2625a41d96ce70bca25ae946ef3fdc4ec9e78",
+  "command": [
+    "python3",
+    "-B",
+    "tests/reference/compiler-language/report.py",
+    "--run",
+    "--strict",
+    "--reference",
+    "both",
+    "--timeout",
+    "600",
+    "--reference-timeout",
+    "600",
+    "--json",
+    "--artifacts",
+    "/tmp/light-cljs-125-full-after191"
+  ],
+  "exit_code": 2,
+  "log": "coverage contract error: Local surface drift: src/analyzer.rs; regenerate and review\n",
+  "log_sha256": "08950f83f3523db95c8016bddfa85dba5d24f675a798ea9a9b9976ca14c2f3d3",
+  "frozen_start": {
+    "head": "add2625a41d96ce70bca25ae946ef3fdc4ec9e78",
+    "producer_sha256": {
+      "report.py": "b65ce072df1b78d901178a8c1b3bbcc736d9e0dfeda833ee037b0a9c9bb00af7",
+      "full_ledger.py": "2f0593743bc54dc3b641c1be8452a83befe7ea0350846aecd9cd58d99540fb30",
+      "full-manifest.json": "9db184a9963ba57e5d3c0fa69d41335f4554d01e9db10530bfcbb518f5c7bee1",
+      "obligation-witnesses.jsonl": "3714dc4ae1086b19a09ea69a8cb8be567ac2116bad450da6e49bb8833f0be788",
+      "phase-witnesses.jsonl": "4681cc6a7fb5dda86d5bcc4086e1700f3575ba775b34db1e22bbdb10073b9b1b",
+      "full-inventory.jsonl": "c60dcfb19de844a0b2fe843d13c48241c6bf406a2315f639f239991e626c4169",
+      "full-bodies.jsonl": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156",
+      "obligations.jsonl": "39afc8df1b4dfac6e23726ea8608bbba4353c8a30681e25b1cc0832056660cb1",
+      "support-sources.jsonl": "7d4dba57d2121fac2f6329216593f73e66a252a6225ed31598c39217838299b3",
+      "arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+      "sci_originals_after190.py": "aee1bdb6312185855bf34ca381b47a551f485fd455945e6c226451cfbefa6c93",
+      "sci-originals-after190-contracts.json": "46972a906d261245af01bb95443d2fcfa453f86694f0b9b68b0afb63bd4eff30",
+      "sci-originals-after190-sources.json": "f81d4169ae88acd452180ed4fb4c7a8ae98deb998593687017c252f8fa2ebd33"
+    }
+  }
+}

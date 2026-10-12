@@ -1,0 +1,1 @@
+[(min 0 -0.0) (min -0.0 0) (max 0 -0.0) (max -0.0 0) (min 1 ##NaN 2) (max 1 ##NaN 2) (max "x" 2) (abs -0.0) (abs ##-Inf)]

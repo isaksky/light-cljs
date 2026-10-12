@@ -1,0 +1,306 @@
+[
+  {
+    "id": "sci-execution-sci-var-declare-result",
+    "sci_id": "sci-var-declare-result",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-declare-result",
+    "body_sha256": "83d039fca2d9d14d6c5b58bc9b29c85d695bf2dffe32a7cebd16bf87bd2600df",
+    "original_row_sha256": "9efc2f2d1c53abdb6c2ab16685725f5fcf5adc279fe44944c1769529ae6f3e69",
+    "source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+    "original_source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+    "source": "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+    "original_fields": [
+      "sci-var-declare-result",
+      "portable",
+      "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+      "(return (vector (bool true) (symbol - u007a) nil))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-var-declare-result",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            {
+              "$symbol": {
+                "namespace": null,
+                "name": "z",
+                "spelling": "z"
+              }
+            },
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-var-defonce-declared",
+    "sci_id": "sci-var-defonce-declared",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-declared",
+    "body_sha256": "057d4a175a0b6e46cc09bb68fda3b016421619ca07f8a8105bba6ccf3edc232e",
+    "original_row_sha256": "0b7592dfa581cb5dc2100e85677c5b43e84292c7f9e84916657aac8ca1e21ab2",
+    "source_sha256": "636db199e1189d192709500b2f1e48285487fa0eb70f7686c4767e17ee63de26",
+    "original_source_sha256": "636db199e1189d192709500b2f1e48285487fa0eb70f7686c4767e17ee63de26",
+    "source": "(declare x) [(var? (defonce x 7)) x (defonce x 8)]",
+    "original_fields": [
+      "sci-var-defonce-declared",
+      "portable",
+      "(declare x) [(var? (defonce x 7)) x (defonce x 8)]",
+      "(return (vector (bool true) (int 7) nil))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-var-defonce-declared",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            7,
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-var-defonce-meta-order",
+    "sci_id": "sci-var-defonce-meta-order",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-meta-order",
+    "body_sha256": "c4291515758dbedbed7133cc1183b8808062b8e04c795905a2af66767ddfbd74",
+    "original_row_sha256": "b0b81d35eb9e2514e9d2c2a61a001717e920cd81818669dd5b5ac7d1c4d18242",
+    "source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+    "original_source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+    "source": "(defonce ^{:m (observe :meta)} x (observe :init)) (defonce ^{:m (observe :next)} x (observe :skipped)) [x (get (meta #'x) :m)]",
+    "original_fields": [
+      "sci-var-defonce-meta-order",
+      "portable",
+      "(defonce ^{:m (observe :meta)} x (observe :init)) (defonce ^{:m (observe :next)} x (observe :skipped)) [x (get (meta #'x) :m)]",
+      "(return (vector (keyword - u0069006e00690074) (keyword - u006e006500780074)))",
+      "(vector (keyword - u006d006500740061) (keyword - u0069006e00690074) (keyword - u006d006500740061) (keyword - u006e006500780074))",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-var-defonce-meta-order",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "init",
+                "spelling": "init"
+              }
+            },
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "next",
+                "spelling": "next"
+              }
+            }
+          ]
+        }
+      },
+      "trace": [
+        {
+          "$keyword": {
+            "namespace": null,
+            "name": "meta",
+            "spelling": "meta"
+          }
+        },
+        {
+          "$keyword": {
+            "namespace": null,
+            "name": "init",
+            "spelling": "init"
+          }
+        },
+        {
+          "$keyword": {
+            "namespace": null,
+            "name": "meta",
+            "spelling": "meta"
+          }
+        },
+        {
+          "$keyword": {
+            "namespace": null,
+            "name": "next",
+            "spelling": "next"
+          }
+        }
+      ],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-string-keyword-split",
+    "sci_id": "sci-string-keyword-split",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-string-keyword-split",
+    "body_sha256": "3a3a0521687b7209f9a18843b6a7edd687815fd2ce0fbce79767e02f0851b61c",
+    "original_row_sha256": "57866419e4ce5357f97d8a5cf9d4bb22c21cf3d7476bc6e7a5e4594b82bdae27",
+    "source_sha256": "bcfc3af7027b6b1fa66903cbc10c9ff45ef3e6089db538a17752268ffc3bec55",
+    "original_source_sha256": "bcfc3af7027b6b1fa66903cbc10c9ff45ef3e6089db538a17752268ffc3bec55",
+    "source": "(mapv (fn [x] [(name x) (namespace x) (str x)]) [(keyword \"a/b/c\") (keyword \"/\") (keyword \"/x\") (keyword \"a/\") (keyword \"\") (keyword \"\" \"x\")])",
+    "original_fields": [
+      "sci-string-keyword-split",
+      "portable",
+      "(mapv (fn [x] [(name x) (namespace x) (str x)]) [(keyword \"a/b/c\") (keyword \"/\") (keyword \"/x\") (keyword \"a/\") (keyword \"\") (keyword \"\" \"x\")])",
+      "(return (vector (vector (string u0062002f0063) (string u0061) (string u003a0061002f0062002f0063)) (vector (string u002f) nil (string u003a002f)) (vector (string u0078) (string u) (string u003a002f0078)) (vector (string u) (string u0061) (string u003a0061002f)) (vector (string u) nil (string u003a)) (vector (string u0078) (string u) (string u003a002f0078))))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-string-keyword-split",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": [
+                "b/c",
+                "a",
+                ":a/b/c"
+              ]
+            },
+            {
+              "$vector": [
+                "/",
+                null,
+                ":/"
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                ":/x"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                "a",
+                ":a/"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                null,
+                ":"
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                ":/x"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-string-symbol-split",
+    "sci_id": "sci-string-symbol-split",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-string-symbol-split",
+    "body_sha256": "88632f71d21285c04feb97d0aa3df3b7b25b9e3ffe9ce04307b7d6a025b03e9c",
+    "original_row_sha256": "d78974a7b73a813e28db3899a6a844ece80763082f674cc8bb16c4ac300808b4",
+    "source_sha256": "017ad8ea427bee15a9a933f7f0ac88026014e114ae8d2e29582702d5e91f2faa",
+    "original_source_sha256": "017ad8ea427bee15a9a933f7f0ac88026014e114ae8d2e29582702d5e91f2faa",
+    "source": "(mapv (fn [x] [(name x) (namespace x) (str x)]) [(symbol \"a/b/c\") (symbol \"/\") (symbol \"/x\") (symbol \"a/\") (symbol \"\") (symbol \"\" \"x\")])",
+    "original_fields": [
+      "sci-string-symbol-split",
+      "portable",
+      "(mapv (fn [x] [(name x) (namespace x) (str x)]) [(symbol \"a/b/c\") (symbol \"/\") (symbol \"/x\") (symbol \"a/\") (symbol \"\") (symbol \"\" \"x\")])",
+      "(return (vector (vector (string u0062002f0063) (string u0061) (string u0061002f0062002f0063)) (vector (string u002f) nil (string u002f)) (vector (string u0078) (string u) (string u002f0078)) (vector (string u) (string u0061) (string u0061002f)) (vector (string u) nil (string u)) (vector (string u0078) (string u) (string u002f0078))))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-string-symbol-split",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": [
+                "b/c",
+                "a",
+                "a/b/c"
+              ]
+            },
+            {
+              "$vector": [
+                "/",
+                null,
+                "/"
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                "/x"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                "a",
+                "a/"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                null,
+                ""
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                "/x"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  }
+]

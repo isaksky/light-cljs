@@ -1,0 +1,677 @@
+{
+  "reviewed": [
+    {
+      "id": "arity-after191-discovery-invocation-apply-to",
+      "original_id": "invocation-apply-to",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-invocation-apply-to.cljs",
+      "source_sha256": "7662bfd9cfe4d150817c90638d8d9604d4bd86bac7b8804eba648dc22df393b1",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "e44c81c127812ca630766160baada06693bb62d394cb84e6bd4378e7bf32327d",
+      "case_sha256": "3dc47f884bada2c5523e1dd7fd13236143442098d9045d6f0fb44d358783dc8a",
+      "case": {
+        "id": "arity-after191-discovery-invocation-apply-to",
+        "source": "(= [3 0] [(apply-to + 2 [1 2 9]) (apply-to + 0 [9])])",
+        "expected": {
+          "id": "arity-after191-discovery-invocation-apply-to",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-state-watch-protocol-returns",
+      "original_id": "state-watch-protocol-returns",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-state-watch-protocol-returns.cljs",
+      "source_sha256": "cb024ff3bdf30d01ca8828e3958dbfb54910d3aade098a89ad6530acc949bafa",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "2558e3af53a3784a9f58c099c17f83b30a1f4301400fec7b921e815046c197e3",
+      "case_sha256": "623e8c2a2d00ef30c7a8f487bb56d67e0343a9737fc79e2b161f649313b43fab",
+      "case": {
+        "id": "arity-after191-discovery-state-watch-protocol-returns",
+        "source": "(let [a (atom 0)] [(nil? (-remove-watch a :missing)) (identical? a (-add-watch a :x (fn [_ _ _ _] nil))) (empty? (-remove-watch a :x)) (nil? (-notify-watches a 1 2))])",
+        "expected": {
+          "id": "arity-after191-discovery-state-watch-protocol-returns",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                true,
+                true,
+                true,
+                true
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-state-constructors",
+      "original_id": "state-constructors",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-state-constructors.cljs",
+      "source_sha256": "9ef1dfa91100ec48823355aef33e6ac84655c3d41c1913c2803c2741c65874f0",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "fa213b9cbfbf30dda35f2a2e9f7ecdaa0cc67d43ce3c475e163a29071b12ff6a",
+      "case_sha256": "f4b337bd64e7cbd27e7b67eee6a8212abad607b59e460c490b69b7896ca45073",
+      "case": {
+        "id": "arity-after191-discovery-state-constructors",
+        "source": "(let [a (->Atom 1 {:x 2} nil nil) b (Atom. 3 nil nil nil) v (->Volatile 4) w (Volatile. 5)] [@a (:x (meta a)) @b @v @w (volatile? v) (= a b) (= a a) (identical? deref -deref) (identical? vreset! -vreset!) (identical? volatile! ->Volatile) (.equiv a a) (.equiv a b)])",
+        "expected": {
+          "id": "arity-after191-discovery-state-constructors",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                true,
+                false,
+                true,
+                false,
+                false,
+                false,
+                true,
+                false
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-interop-object-helpers",
+      "original_id": "interop-object-helpers",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-interop-object-helpers.cljs",
+      "source_sha256": "32525b29b8eac7fbbdbf49c008581229a08b28514383ab37bf7cf4d09af8df69",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "c0a98c11eba131070d4f2edc079caf9e245ee0f033990b5141698b8261247915",
+      "case_sha256": "bc4ee5f4825c0d7ccfccc4b20ca8d62fad446ca5829c33f85565eb6d05644d44",
+      "case": {
+        "id": "arity-after191-discovery-interop-object-helpers",
+        "source": "(let [o (js-obj \"a\" 1 \"b\" 2) f (fn [x] (this-as self (+ (aget self \"a\") x)))] (aset o \"my method\" f) (and (= 5 (js-invoke o \"my method\" 4)) (js-in \"b\" o) (js-delete o \"b\") (not (js-in \"b\" o)) (= [\"a\" \"my method\"] (vec (js-keys o)))))",
+        "expected": {
+          "id": "arity-after191-discovery-interop-object-helpers",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-interop-readonly-write",
+      "original_id": "interop-readonly-write",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-interop-readonly-write.cljs",
+      "source_sha256": "6e83a84c00ab6ca2bf044b2f56b8e9ddb0426b58e7cccc2500c337b673693f54",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "3c7d9d9cfb26a495e8412257efbb6ca8d6b1066afd1625a56c84667924b5d9cd",
+      "case_sha256": "28ed27e584dbb48e4b86d75faf8a3d0f27f0bb4ae808e1af89adfe576f08bac3",
+      "case": {
+        "id": "arity-after191-discovery-interop-readonly-write",
+        "source": "(let [o (js/Object.freeze #js {:x 1}) put aset del js-delete] (and (= 2 (set! (.-x o) 2)) (= 3 (put o \"x\" 3)) (= 1 (.-x o)) (false? (js-delete o \"x\")) (false? (del o \"x\"))))",
+        "expected": {
+          "id": "arity-after191-discovery-interop-readonly-write",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-interop-checked-strict",
+      "original_id": "interop-checked-strict",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-interop-checked-strict.cljs",
+      "source_sha256": "c71d0a089cb120d02d1ccbfbe2bb21f818d7d3211096f36f9fc0c55dd2a17076",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "6671189e10c8f9a59083058dfd27ee8c11448fd6584e4e4fb956997398df4963",
+      "case_sha256": "05eb923613c30b241ce9d08f859f44d8b2055cbcb8b2fc03477b236955156e4a",
+      "case": {
+        "id": "arity-after191-discovery-interop-checked-strict",
+        "source": "(and (= 2 (checked-aget' #js [1 2] 1)) (= \"x\" (checked-aset' #js [1] 0 \"x\")) (try (checked-aget' #js [1] \"0\") false (catch js/Error e true)))",
+        "expected": {
+          "id": "arity-after191-discovery-interop-checked-strict",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-protocol-membership",
+      "original_id": "protocol-membership",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-protocol-membership.cljs",
+      "source_sha256": "70004e1dacd46d1c6c011e3c4badcf43d11f6c20e64934873db58a239d1362c6",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "4d48a1cf5582d8cc755c1fa751f659869d074f4ca1189452074a6a78ddbf68f3",
+      "case_sha256": "254691c0f8bba2e50cce0ad99494bcb6f8c2e575471fe650e02b00e19dba6ab7",
+      "case": {
+        "id": "arity-after191-discovery-protocol-membership",
+        "source": "(defprotocol P (f [this] [this x]) (g [this])) (defprotocol M) (let [v (reify P (f [_] 1) M)] (assert (= 1 (f v))) (assert (satisfies? P v)) (assert (implements? P v)) (assert (satisfies? M v)) (assert (implements? M v)) (assert (not (satisfies? P {}))) (assert (= :missing (try (g v) (catch js/Error e :missing))))) true",
+        "expected": {
+          "id": "arity-after191-discovery-protocol-membership",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-protocol-metadata-precedence",
+      "original_id": "protocol-metadata-precedence",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-protocol-metadata-precedence.cljs",
+      "source_sha256": "82f272b4fe4e34fad858f6ea4ceb26a7c563c437cc235fb760bedc4f4d52e129",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "767c20671863358f5c44bc443bf725cbce0aaae60de616d05ee4e41a40cdb8de",
+      "case_sha256": "babc4fe972f693769420550822c9888c8fc2f001008337770f4b34325bbf1b16",
+      "case": {
+        "id": "arity-after191-discovery-protocol-metadata-precedence",
+        "source": "(defprotocol P :extend-via-metadata true (f [this])) (extend-type object P (f [_] :external)) (let [v (with-meta (reify P (f [_] :direct)) {`f (fn [_] :metadata)}) m (with-meta {} {`f (fn [_] :metadata)})] (assert (= :metadata (f v))) (assert (= :metadata (f m))) (assert (not (implements? P m))) (assert (satisfies? P v))) true",
+        "expected": {
+          "id": "arity-after191-discovery-protocol-metadata-precedence",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-protocol-native-and-default",
+      "original_id": "protocol-native-and-default",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-protocol-native-and-default.cljs",
+      "source_sha256": "fc2c4633621fa90b1ac2ddef39839526cb5f2668d88cafd6b6e3ec9a43cde887",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "0151f5b777e8d8c9afaddd464db9182b8edbaf22195563afedefdd5a01d16f11",
+      "case_sha256": "fd28748b4b495245973d974f84aa5f3146431df8ba83e766de38d2bb2f47c84e",
+      "case": {
+        "id": "arity-after191-discovery-protocol-native-and-default",
+        "source": "(defprotocol P (f [this] [this x])) (extend-protocol P default (f ([_] :default) ([_ x] [:default x])) string (f ([_] :string) ([_ x] [:string x])) nil (f ([_] :nil) ([_ x] [:nil x]))) (assert (= [:string :nil :nil :default [:string 2] [:default 3]] [(f \"x\") (f nil) (f js/undefined) (f 1) (f \"x\" 2) (f #js [] 3)])) (assert (satisfies? P false)) (assert (not (implements? P \"x\"))) true",
+        "expected": {
+          "id": "arity-after191-discovery-protocol-native-and-default",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-protocol-external-named",
+      "original_id": "protocol-external-named",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-protocol-external-named.cljs",
+      "source_sha256": "eb215b7159174987967424396793008c7ad8342a4dabdb40c135128304f93427",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "0a7d08cd333deb7a305651c5787e0976c506591a022dcd72fc3c298b41efcb19",
+      "case_sha256": "c09419f1aa6cc31086ec7f83141afe217d153b4d5cb63e9ad8d34009bd3225cd",
+      "case": {
+        "id": "arity-after191-discovery-protocol-external-named",
+        "source": "(defprotocol P (f [this] [this x])) (deftype T []) (let [v (T.)] (extend-type T P (f [_] 1) (f [_ x] x)) (assert (= [1 3] [(f v) (f v 3)])) (assert (implements? P v)) (assert (satisfies? P v)) (extend-type T P (f ([_] 4) ([_ x] (+ x 1)))) (assert (= [4 4] [(f v) (f v 3)]))) true",
+        "expected": {
+          "id": "arity-after191-discovery-protocol-external-named",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-protocol-external-host",
+      "original_id": "protocol-external-host",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-protocol-external-host.cljs",
+      "source_sha256": "c67fea70ca3e6d55e153d317c0450669d29bbf5ffdfe7ca3304b2132220b93e9",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "bf48721733df348655d6fca3b9e717e59dcafc8218b4ad2800ccaf1ecf9e267a",
+      "case_sha256": "f7e413216c8d10cc4786575fddaaf1ecf44eb78896208dcce9d097d0ded99291",
+      "case": {
+        "id": "arity-after191-discovery-protocol-external-host",
+        "source": "(defprotocol P (f [this])) (extend-type js/RegExp P (f [x] (.test x \"abc\"))) (assert (f (js/RegExp. \"b\"))) (assert (implements? P (js/RegExp. \"b\"))) true",
+        "expected": {
+          "id": "arity-after191-discovery-protocol-external-host",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-extension-direct-2",
+      "original_id": "extension-direct-2",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-extension-direct-2.cljs",
+      "source_sha256": "602d5077908b1ff4a0dfa8ad903dd43405c6cf5ed361f26d4cb554dc13ee88d7",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "5a8297ac115254f5909fd0e9e465c89f4c4f37e4f044f5426207762663bf3ffa",
+      "case_sha256": "eaf712b90dc4869c8905c55d5e497fc9260142f8d40413aa450633955ef042f4",
+      "case": {
+        "id": "arity-after191-discovery-extension-direct-2",
+        "source": "       (defprotocol P :extend-via-metadata true (f [x]))       (deftype T []) (defrecord R [])       (let [old (T.) record (R.) saved f]         (extend-type default P (f [_] \"default\"))         (extend-type T P (f [_] \"type\"))         (extend-type R P (f [_] \"record\"))         (specify! old P (f [_] \"instance\"))         (array (identical? old (specify! old)) (saved old) (saved (T.)) (saved record)           (f (with-meta record {`f (fn [_] \"metadata\")}))           (satisfies? P old) (implements? P old)))     ",
+        "expected": {
+          "id": "arity-after191-discovery-extension-direct-2",
+          "outcome": {
+            "status": "returned",
+            "value": [
+              true,
+              "instance",
+              "type",
+              "record",
+              "metadata",
+              true,
+              true
+            ]
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-extension-instance-object-ifn",
+      "original_id": "extension-instance-object-ifn",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-extension-instance-object-ifn.cljs",
+      "source_sha256": "78a5a34e5d6a9bef607cc8c921cb39ce4cba61a6fb87a4b204b9e72db08364b2",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "6eee561c4f0894c8a8053f73833cc5a5503f7236a75ec1849ac05bf1bc63151b",
+      "case_sha256": "de03c0f36606125b386b34089d3b32436af7257914dea2b9054f20e7abfdc902",
+      "case": {
+        "id": "arity-after191-discovery-extension-instance-object-ifn",
+        "source": "(defprotocol P (f [x])) (deftype T [] IFn (-invoke [_ x] (+ 1 x))) (let [v (T.) out (specify! v P (f [self] (identical? self v)) Object (toString [_] \"instance\") IFn (-invoke ([_ x] (+ 2 x))))] (assert (identical? v out)) (assert (f v)) (assert (= [5 5 \"instance\"] [(v 3) (apply v [3]) (.toString v)]))) true",
+        "expected": {
+          "id": "arity-after191-discovery-extension-instance-object-ifn",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-extension-instance-exception",
+      "original_id": "extension-instance-exception",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-extension-instance-exception.cljs",
+      "source_sha256": "3f44ad50254c6a719ff33d50c22012f98e336abf5adc8a071148e10f424d0715",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "beaf96d741094e3260b9496848f6c25bde641ef2802084d67a0977bfc3c0cdca",
+      "case_sha256": "a1ed4d890e7f4f9f0b85b7bf115ed42300e4ef1f3220e75ae7f8ad990dd3f306",
+      "case": {
+        "id": "arity-after191-discovery-extension-instance-exception",
+        "source": "(defprotocol P (f [x])) (let [v #js {} thrown #js {}] (specify! v P (f [_] (throw thrown))) (assert (identical? thrown (try (f v) (catch :default e e)))) (specify! v P (f [_] 7)) (assert (= 7 (f v)))) true",
+        "expected": {
+          "id": "arity-after191-discovery-extension-instance-exception",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-extension-primitive-instance-noop",
+      "original_id": "extension-primitive-instance-noop",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-extension-primitive-instance-noop.cljs",
+      "source_sha256": "3e052cb098cad1db1ebc0ce86d326bb944dfb40572fd11e45638a5d9ff52e3a2",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "87e9a7f8367e3dddcb15d7c0db70f6378584c149a5f0275b75ee32a1caa125f8",
+      "case_sha256": "8d5985cfc1925d2dbe68e250405d11365543e0e72ad4d67f2744539f07d90062",
+      "case": {
+        "id": "arity-after191-discovery-extension-primitive-instance-noop",
+        "source": "(defprotocol P (f [x])) (specify! 1 P (f [_] 2))",
+        "expected": {
+          "id": "arity-after191-discovery-extension-primitive-instance-noop",
+          "outcome": {
+            "status": "returned",
+            "value": 1
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    },
+    {
+      "id": "arity-after191-discovery-core-protocol-writer-flush",
+      "original_id": "core-protocol-writer-flush",
+      "fixture": "tests/fixtures/arity-after191-discovery/arity-after191-discovery-core-protocol-writer-flush.cljs",
+      "source_sha256": "f40281c38189653240a37e9b7c9cff18813d53298d6b814709c2d770d06a5f0f",
+      "original_fixture": "tests/fixtures/execution-outcomes.tsv",
+      "original_row_sha256": "443fd572d32f347a66c4ff77e6393d7091b19794044e202b67da79ac2aa7d120",
+      "case_sha256": "63c75843f556e3d68807e246ea2a1c9f71c45dbb71572232aa0d020e10dfee6b",
+      "case": {
+        "id": "arity-after191-discovery-core-protocol-writer-flush",
+        "source": "(let [log (atom []) writer (reify IWriter (-write [_ s] (swap! log conj s)) (-flush [_] (swap! log conj :flushed))) x (reify IPrintWithWriter (-pr-writer [_ w opts] (write-all w \"a\" \"b\")))] (-pr-writer x writer {}) (-flush writer) (assert (= [\"a\" \"b\" :flushed] @log))) true",
+        "expected": {
+          "id": "arity-after191-discovery-core-protocol-writer-flush",
+          "outcome": {
+            "status": "returned",
+            "value": true
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "native_stdout": null
+      },
+      "namespace": "user",
+      "invoke": ""
+    }
+  ],
+  "selection": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::-pr-writer::arity-1",
+      "workflow": "arity-after191-discovery-core-protocol-writer-flush",
+      "body_sha256": "0e200947029ff81edafacb508d8c170c933e90678ae7dd1f95b5f8299972ff8c",
+      "signature_sha256": "39191707838df40bd4cf4075f6fc7439d25b81bd07c6d7e7a66d2b74de890a31",
+      "call_name": "-pr-writer",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::-notify-watches::arity-1",
+      "workflow": "arity-after191-discovery-state-watch-protocol-returns",
+      "body_sha256": "129155e71344259109a0af4de48172ebb927e3074241b5c73462fd36b5bd5c08",
+      "signature_sha256": "1dcebbb7caf5d952cba9fd3d31709060e767f12c4e29dc1277a0a571011abbe5",
+      "call_name": "-notify-watches",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::-add-watch::arity-1",
+      "workflow": "arity-after191-discovery-state-watch-protocol-returns",
+      "body_sha256": "129155e71344259109a0af4de48172ebb927e3074241b5c73462fd36b5bd5c08",
+      "signature_sha256": "8a30ecd22d38d1a480ca0cd7587dd4ccd7c078613809225c5ea7d1b5fd621a28",
+      "call_name": "-add-watch",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::-remove-watch::arity-1",
+      "workflow": "arity-after191-discovery-state-watch-protocol-returns",
+      "body_sha256": "129155e71344259109a0af4de48172ebb927e3074241b5c73462fd36b5bd5c08",
+      "signature_sha256": "92f57955c18a24ee2e464fff870a5899e89bbe20b3a7aa629a3941901211ece3",
+      "call_name": "-remove-watch",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::js-delete::arity-1",
+      "workflow": "arity-after191-discovery-interop-object-helpers",
+      "body_sha256": "e225a6a8c56ddf57cc87df04384d905c0f5bb67d999f3a1120113d96e5059948",
+      "signature_sha256": "772c0487ff6df5a1fab64ac54d7c8cdc409bc56eb95a39c22005ff591a704783",
+      "call_name": "js-delete",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::->Atom::arity-1",
+      "workflow": "arity-after191-discovery-state-constructors",
+      "body_sha256": "a915088d1555e30b568ed1cbb29d18f26f1a7ef57a728f7c6c8bc15dc282a48b",
+      "signature_sha256": "f1fc07c4a5a02b41fc7a2e0cb471f8612c3047d362ab87b08e1530d9f8807b6a",
+      "call_name": "->Atom",
+      "direct_arities": [
+        4
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::->Volatile::arity-1",
+      "workflow": "arity-after191-discovery-state-constructors",
+      "body_sha256": "3eb1afc8e98963a7441bc014e020fcced3288d3ca7e7cbf04bcc94f79595ffa3",
+      "signature_sha256": "b618af3a1350c734994c7fa24debb338e85f775527cd977f6d42a9d42baaffb5",
+      "call_name": "->Volatile",
+      "direct_arities": [
+        1
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::js-delete::arity-1",
+      "workflow": "arity-after191-discovery-interop-object-helpers",
+      "body_sha256": "a6e387754ae28b3443044b365c9d081f1ca4be8bc4a0270527a103da3814f01b",
+      "signature_sha256": "772c0487ff6df5a1fab64ac54d7c8cdc409bc56eb95a39c22005ff591a704783",
+      "call_name": "js-delete",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::js-in::arity-1",
+      "workflow": "arity-after191-discovery-interop-object-helpers",
+      "body_sha256": "47c71012c191bf8b9dc916d0b999d16f63ab3d7637c7fe52a4494b85e872af4f",
+      "signature_sha256": "b852acac14c7debfad11b8ac549b42d70d4abf0ad9ccfdfaaa131ebff37a76c5",
+      "call_name": "js-in",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::specify!::arity-1",
+      "workflow": "arity-after191-discovery-extension-direct-2",
+      "body_sha256": "501755a27f9875a5f2e60c9ddcbac0c51e7d547158d23ede3e28ba41c1ba4ac1",
+      "signature_sha256": "b7b396081cb180f929858a50442768dbeb7cb37ff5a688affe9ac31585ca330c",
+      "call_name": "specify!",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "api::src/main/clojure/cljs/core.cljc::implements?::arity-1",
+      "workflow": "arity-after191-discovery-protocol-membership",
+      "body_sha256": "adf4c249c620bd28592ecfeb417189f2495b4858f57deb3fe4abcf49598ed808",
+      "signature_sha256": "89b401f820b36fc870a4aed3e12ac58ae3168e391f6cd9ec1ccc4a53b4406dff",
+      "call_name": "implements?",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::->Atom",
+      "workflow": "arity-after191-discovery-state-constructors",
+      "body_sha256": "2fac4f078f27c3f1ac27f74c330e31b235ca50b0fd9c6025ac4fd89118d6bf15",
+      "signature_sha256": null,
+      "call_name": "->Atom",
+      "direct_arities": [
+        4
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::->Volatile",
+      "workflow": "arity-after191-discovery-state-constructors",
+      "body_sha256": "b9eda0d315c8e7e7b3871ffa2c3311399242fe9bea1dde59dd7929a3fd3c8cb8",
+      "signature_sha256": null,
+      "call_name": "->Volatile",
+      "direct_arities": [
+        1
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::-add-watch",
+      "workflow": "arity-after191-discovery-state-watch-protocol-returns",
+      "body_sha256": "c8cc0603a359bdc6e5d49620fe22f7982344f2de94d77803d07f008fdbc0a8c2",
+      "signature_sha256": null,
+      "call_name": "-add-watch",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::-notify-watches",
+      "workflow": "arity-after191-discovery-state-watch-protocol-returns",
+      "body_sha256": "36380f281cabc02525b4d5aa237096d99485c3e7df76e6510b1ecff55b43b932",
+      "signature_sha256": null,
+      "call_name": "-notify-watches",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::-pr-writer",
+      "workflow": "arity-after191-discovery-core-protocol-writer-flush",
+      "body_sha256": "f22b62ba460dab7734b411c8dafbfbdefb2b93913436ac00df917864a4d7ce3a",
+      "signature_sha256": null,
+      "call_name": "-pr-writer",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::-remove-watch",
+      "workflow": "arity-after191-discovery-state-watch-protocol-returns",
+      "body_sha256": "bbbf4d8b3b168971fa1645c7b2187f6e2c56c53444c924a2506605127a4fc86b",
+      "signature_sha256": null,
+      "call_name": "-remove-watch",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::apply-to",
+      "workflow": "arity-after191-discovery-invocation-apply-to",
+      "body_sha256": "91ce28e7282b91b6a43f04bb9fe8d29a63f957f4f1237dc10fc76f3ba386ef96",
+      "signature_sha256": null,
+      "call_name": "apply-to",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::checked-aget'",
+      "workflow": "arity-after191-discovery-interop-checked-strict",
+      "body_sha256": "14a0d2808306bd119e7c004d53aabd64c725a1eda199b0a85226d6e28fd8e4f9",
+      "signature_sha256": null,
+      "call_name": "checked-aget'",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::checked-aset'",
+      "workflow": "arity-after191-discovery-interop-checked-strict",
+      "body_sha256": "9137e8fb2d07adba20f7834990d57261e8de65d3093266a8af5f093738ec1a48",
+      "signature_sha256": null,
+      "call_name": "checked-aset'",
+      "direct_arities": [
+        3
+      ],
+      "evidence_mode": "direct"
+    },
+    {
+      "obligation_id": "local::src/core_var_metadata.tsv::js-delete",
+      "workflow": "arity-after191-discovery-interop-object-helpers",
+      "body_sha256": "d8d9e1b3d704d8bae90c9c737722b328a9e875dd1f2d8f3ff3b358e196e8f23f",
+      "signature_sha256": null,
+      "call_name": "js-delete",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct"
+    }
+  ],
+  "strict_complete": false,
+  "source_site_credit_added": 0,
+  "new_ordinary_or_phase_pass_credit": 0,
+  "frozen_primary_110_catalog_sha256": "911c575c2410044ce1d276443c3e983a3d089bfc8d77c1f87682e428913efc7c",
+  "deliberate_exclusions": [
+    "second conditional CLJC macro bodies",
+    "source callbacks requiring observe trace outside current whole-source macro transport"
+  ],
+  "prior_cohort_ids_sha256": "a2ced731e5b506de063e4347ddd80610b951377bd37fbc7355a2c48118a10020"
+}

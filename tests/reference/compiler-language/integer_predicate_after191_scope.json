@@ -1,0 +1,272 @@
+{
+  "documentation": {
+    "path": "docs/compiler.md",
+    "sha256": "c874cc5c18238dc78d0f4f7e384a8ce69a2e295ffbaba10957f7b13863484912",
+    "existing_exact_boundary_text": "External Closure Long/Integer construction remains separate from JS Number\npredicates."
+  },
+  "public_and_local_obligations": [
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::int?::arity-1",
+      "obligation_kind": "public-api",
+      "name": "int?",
+      "declaration": "defn",
+      "signature": {
+        "kind": "fixed",
+        "minimum": 1,
+        "parameters": [
+          "x"
+        ]
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::int?",
+      "body_sha256": "1e209df817eb08edd91586aa345efcf4b26537952aecdcb67a36175545cea412",
+      "source_span": {
+        "start_line": 2393,
+        "end_line": 2399,
+        "start_byte": 64812,
+        "end_byte": 65023,
+        "sha256": "1e209df817eb08edd91586aa345efcf4b26537952aecdcb67a36175545cea412",
+        "text": "(defn int?\n  \"Return true if x satisfies integer? or is an instance of goog.math.Integer\n   or goog.math.Long.\"\n  [x]\n  (or (integer? x)\n      (instance? goog.math.Integer x)\n      (instance? goog.math.Long x)))"
+      },
+      "container_span": {
+        "start_line": 2393,
+        "end_line": 2399,
+        "start_byte": 64812,
+        "end_byte": 65023,
+        "sha256": "1e209df817eb08edd91586aa345efcf4b26537952aecdcb67a36175545cea412",
+        "text": "(defn int?\n  \"Return true if x satisfies integer? or is an instance of goog.math.Integer\n   or goog.math.Long.\"\n  [x]\n  (or (integer? x)\n      (instance? goog.math.Integer x)\n      (instance? goog.math.Long x)))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 956,
+        "arm_sha256": "27461ce560f67c67913ba910d54c84d2f152d1524c7f02dc943371e51cd3182f",
+        "status": "static-registration-only"
+      }
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::pos-int?::arity-1",
+      "obligation_kind": "public-api",
+      "name": "pos-int?",
+      "declaration": "defn",
+      "signature": {
+        "kind": "fixed",
+        "minimum": 1,
+        "parameters": [
+          "x"
+        ]
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::pos-int?",
+      "body_sha256": "8b6b7c294fe89381406ff57b62ca4142e2f9f0c8fdeb4d78902a0b985302ad9c",
+      "source_span": {
+        "start_line": 2401,
+        "end_line": 2415,
+        "start_byte": 65025,
+        "end_byte": 65340,
+        "sha256": "8b6b7c294fe89381406ff57b62ca4142e2f9f0c8fdeb4d78902a0b985302ad9c",
+        "text": "(defn pos-int?\n  \"Return true if x satisfies int? and is positive.\"\n  [x]\n  (cond\n    (integer? x) (pos? x)\n\n    (instance? goog.math.Integer x)\n    (and (not (.isNegative x))\n         (not (.isZero x)))\n\n    (instance? goog.math.Long x)\n    (and (not (.isNegative x))\n         (not (.isZero x)))\n\n    :else false))"
+      },
+      "container_span": {
+        "start_line": 2401,
+        "end_line": 2415,
+        "start_byte": 65025,
+        "end_byte": 65340,
+        "sha256": "8b6b7c294fe89381406ff57b62ca4142e2f9f0c8fdeb4d78902a0b985302ad9c",
+        "text": "(defn pos-int?\n  \"Return true if x satisfies int? and is positive.\"\n  [x]\n  (cond\n    (integer? x) (pos? x)\n\n    (instance? goog.math.Integer x)\n    (and (not (.isNegative x))\n         (not (.isZero x)))\n\n    (instance? goog.math.Long x)\n    (and (not (.isNegative x))\n         (not (.isZero x)))\n\n    :else false))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 957,
+        "arm_sha256": "542057b364715e3fd03e46ba0ca2d8da48eeb0d783709d36499a109a49b7893b",
+        "status": "static-registration-only"
+      }
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::neg-int?::arity-1",
+      "obligation_kind": "public-api",
+      "name": "neg-int?",
+      "declaration": "defn",
+      "signature": {
+        "kind": "fixed",
+        "minimum": 1,
+        "parameters": [
+          "x"
+        ]
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::neg-int?",
+      "body_sha256": "9c45e7c73ff03baa17285883086ed57e51f96b2767ac01c4e568aa57cc0dcaaf",
+      "source_span": {
+        "start_line": 2417,
+        "end_line": 2429,
+        "start_byte": 65342,
+        "end_byte": 65588,
+        "sha256": "9c45e7c73ff03baa17285883086ed57e51f96b2767ac01c4e568aa57cc0dcaaf",
+        "text": "(defn ^boolean neg-int?\n  \"Return true if x satisfies int? and is negative.\"\n  [x]\n  (cond\n    (integer? x) (neg? x)\n\n    (instance? goog.math.Integer x)\n    (.isNegative x)\n\n    (instance? goog.math.Long x)\n    (.isNegative x)\n\n    :else false))"
+      },
+      "container_span": {
+        "start_line": 2417,
+        "end_line": 2429,
+        "start_byte": 65342,
+        "end_byte": 65588,
+        "sha256": "9c45e7c73ff03baa17285883086ed57e51f96b2767ac01c4e568aa57cc0dcaaf",
+        "text": "(defn ^boolean neg-int?\n  \"Return true if x satisfies int? and is negative.\"\n  [x]\n  (cond\n    (integer? x) (neg? x)\n\n    (instance? goog.math.Integer x)\n    (.isNegative x)\n\n    (instance? goog.math.Long x)\n    (.isNegative x)\n\n    :else false))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 958,
+        "arm_sha256": "006db5ac9fdab0967050b3020de1de4970b4b17fc1cc48c08948523f9b471120",
+        "status": "static-registration-only"
+      }
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::nat-int?::arity-1",
+      "obligation_kind": "public-api",
+      "name": "nat-int?",
+      "declaration": "defn",
+      "signature": {
+        "kind": "fixed",
+        "minimum": 1,
+        "parameters": [
+          "x"
+        ]
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::nat-int?",
+      "body_sha256": "51c06283738756c7b5b4da6593f5d68dcc7db59ed28d90c8d9cb567c6295318c",
+      "source_span": {
+        "start_line": 2431,
+        "end_line": 2444,
+        "start_byte": 65590,
+        "end_byte": 65864,
+        "sha256": "51c06283738756c7b5b4da6593f5d68dcc7db59ed28d90c8d9cb567c6295318c",
+        "text": "(defn nat-int?\n  \"Return true if x satisfies int? and is a natural integer value.\"\n  [x]\n  (cond\n    (integer? x)\n    (not (neg? x))\n\n    (instance? goog.math.Integer x)\n    (not (.isNegative x))\n\n    (instance? goog.math.Long x)\n    (not (.isNegative x))\n\n    :else false))"
+      },
+      "container_span": {
+        "start_line": 2431,
+        "end_line": 2444,
+        "start_byte": 65590,
+        "end_byte": 65864,
+        "sha256": "51c06283738756c7b5b4da6593f5d68dcc7db59ed28d90c8d9cb567c6295318c",
+        "text": "(defn nat-int?\n  \"Return true if x satisfies int? and is a natural integer value.\"\n  [x]\n  (cond\n    (integer? x)\n    (not (neg? x))\n\n    (instance? goog.math.Integer x)\n    (not (.isNegative x))\n\n    (instance? goog.math.Long x)\n    (not (.isNegative x))\n\n    :else false))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 959,
+        "arm_sha256": "166b8cda8245b6bcba147929bcdd19bf93360521290bcb38493aa19784c3df6a",
+        "status": "static-registration-only"
+      }
+    },
+    {
+      "id": "local::src/core_var_metadata.tsv::int?",
+      "obligation_kind": "local-api",
+      "name": "int?",
+      "source": "src/core_var_metadata.tsv",
+      "line": 413,
+      "body_id": "src/core_var_metadata.tsv::int?",
+      "body_sha256": "9827cf0fd0701cc32a46077de93eae7231984efeffadfe48f46e16274b92fdfc",
+      "source_span": {
+        "text": "int?\t{:file \"cljs/core.cljs\", :line 2393, :column 1, :end-line 2393, :end-column 11, :doc \"Return true if x satisfies integer? or is an instance of goog.math.Integer\\n   or goog.math.Long.\", :arglists ([x])}",
+        "sha256": "9827cf0fd0701cc32a46077de93eae7231984efeffadfe48f46e16274b92fdfc"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125"
+    },
+    {
+      "id": "local::src/core_var_metadata.tsv::nat-int?",
+      "obligation_kind": "local-api",
+      "name": "nat-int?",
+      "source": "src/core_var_metadata.tsv",
+      "line": 473,
+      "body_id": "src/core_var_metadata.tsv::nat-int?",
+      "body_sha256": "58db3d5e00c4b69a29245d668120faa68ad6ea96b4b0dac4aac520d0e20f9422",
+      "source_span": {
+        "text": "nat-int?\t{:file \"cljs/core.cljs\", :line 2431, :column 1, :end-line 2431, :end-column 15, :doc \"Return true if x satisfies int? and is a natural integer value.\", :arglists ([x])}",
+        "sha256": "58db3d5e00c4b69a29245d668120faa68ad6ea96b4b0dac4aac520d0e20f9422"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125"
+    },
+    {
+      "id": "local::src/core_var_metadata.tsv::neg-int?",
+      "obligation_kind": "local-api",
+      "name": "neg-int?",
+      "source": "src/core_var_metadata.tsv",
+      "line": 474,
+      "body_id": "src/core_var_metadata.tsv::neg-int?",
+      "body_sha256": "42cc3609ef7e70d60bb640ef1c5c6ae5d34c9d0d0ba705dbae2aa647c99face2",
+      "source_span": {
+        "text": "neg-int?\t{:file \"cljs/core.cljs\", :line 2417, :column 1, :end-line 2417, :end-column 24, :tag boolean, :doc \"Return true if x satisfies int? and is negative.\", :arglists ([x])}",
+        "sha256": "42cc3609ef7e70d60bb640ef1c5c6ae5d34c9d0d0ba705dbae2aa647c99face2"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125"
+    },
+    {
+      "id": "local::src/core_var_metadata.tsv::pos-int?",
+      "obligation_kind": "local-api",
+      "name": "pos-int?",
+      "source": "src/core_var_metadata.tsv",
+      "line": 509,
+      "body_id": "src/core_var_metadata.tsv::pos-int?",
+      "body_sha256": "85012523f6275ef38fdbe7b47c5fa693a6225b0ca460fa1d35acb44e6851e69b",
+      "source_span": {
+        "text": "pos-int?\t{:file \"cljs/core.cljs\", :line 2401, :column 1, :end-line 2401, :end-column 15, :doc \"Return true if x satisfies int? and is positive.\", :arglists ([x])}",
+        "sha256": "85012523f6275ef38fdbe7b47c5fa693a6225b0ca460fa1d35acb44e6851e69b"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125"
+    }
+  ],
+  "complete_original_body": {
+    "id": "src/test/cljs/cljs/predicates_test.cljs::test-int-preds",
+    "source": "src/test/cljs/cljs/predicates_test.cljs",
+    "name": "test-int-preds",
+    "form": "deftest",
+    "kind": "test",
+    "ordinal": 5,
+    "assertions": [
+      "src/test/cljs/cljs/predicates_test.cljs::test-int-preds::assertion-001"
+    ],
+    "source_span": {
+      "start_line": 72,
+      "end_line": 78,
+      "start_byte": 5312,
+      "end_byte": 5555,
+      "sha256": "4effa47d1bb9402702f5b48342dba0c244a6846e7a5590d09b276accdc0f97ee",
+      "text": "(deftest test-int-preds\n  (let [[preds & rows] int-val-table]\n    (doseq [row rows]\n      (let [v (first row)]\n        (dotimes [i (count row)]\n          (is (= ((nth preds i) v) (nth row i))\n              (pr-str (list (nth preds i) v))))))))"
+    }
+  },
+  "conclusion": "Four Number-only predicate implementations differ on initialized genuine Closure objects under explicit embedding. Existing construction/predicate documentation scope is recorded; intended source/public obligations remain unresolved. Parent determines focused owner or existing boundary policy.",
+  "zero_original_site_credit": true,
+  "no_disposition_change": true,
+  "no_repair": true
+}

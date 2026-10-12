@@ -1,0 +1,1 @@
+(and (= 2 (checked-aget' #js [1 2] 1)) (= "x" (checked-aset' #js [1] 0 "x")) (try (checked-aget' #js [1] "0") false (catch js/Error e true)))

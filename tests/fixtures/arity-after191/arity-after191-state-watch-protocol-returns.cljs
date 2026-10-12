@@ -1,0 +1,1 @@
+(let [a (atom 0)] [(nil? (-remove-watch a :missing)) (identical? a (-add-watch a :x (fn [_ _ _ _] nil))) (empty? (-remove-watch a :x)) (nil? (-notify-watches a 1 2))])

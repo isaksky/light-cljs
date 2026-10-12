@@ -1,0 +1,1622 @@
+{
+  "schema_version": 1,
+  "scope": "31selected complete SCI originals; baseline selection only, no execution/completion credit",
+  "report_path": "/tmp/light-cljs-125-full-after190/report.json",
+  "report_sha256": "968a2be5a9c3a182b56ab7233d2de592e58f2899c3c267de7234c4d5215d449a",
+  "current_head": "add2625a41d96ce70bca25ae946ef3fdc4ec9e78",
+  "source_obligations": [
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-declared",
+      "obligation_kind": "sci-case",
+      "name": "sci-var-defonce-declared",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 220,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-declared",
+      "body_sha256": "057d4a175a0b6e46cc09bb68fda3b016421619ca07f8a8105bba6ccf3edc232e",
+      "source_span": {
+        "text": "sci-var-defonce-declared\tportable\t(declare x) [(var? (defonce x 7)) x (defonce x 8)]\t(return (vector (bool true) (int 7) nil))\t(vector)\t(string u)\t(string u)\tgap\t(declare x) [(var? (defonce x 7)) x (defonce x 8)]\t(return (vector (bool false) (float 401c000000000000) nil))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-var; Evaluator result differs from the portable SCI observation; both expectations are retained and this row is nonpassing. Residual historical discrepancy retained for live full-language reconciliation after the scoped printing/reflection/host delivery; no CLJS compatibility pass is inferred.",
+        "sha256": "057d4a175a0b6e46cc09bb68fda3b016421619ca07f8a8105bba6ccf3edc232e"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-var-defonce-declared",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-meta-order",
+      "obligation_kind": "sci-case",
+      "name": "sci-var-defonce-meta-order",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 221,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-meta-order",
+      "body_sha256": "c4291515758dbedbed7133cc1183b8808062b8e04c795905a2af66767ddfbd74",
+      "source_span": {
+        "text": "sci-var-defonce-meta-order\tportable\t(defonce ^{:m (observe :meta)} x (observe :init)) (defonce ^{:m (observe :next)} x (observe :skipped)) [x (get (meta #'x) :m)]\t(return (vector (keyword - u0069006e00690074) (keyword - u006e006500780074)))\t(vector (keyword - u006d006500740061) (keyword - u0069006e00690074) (keyword - u006d006500740061) (keyword - u006e006500780074))\t(string u)\t(string u)\tgap\t(defonce ^{:m (observe :meta)} x (observe :init)) (defonce ^{:m (observe :next)} x (observe :skipped)) [x (get (meta #'x) :m)]\t(return (vector (keyword - u0069006e00690074) (list (symbol - u006f006200730065007200760065) (keyword - u006e006500780074))))\t(vector (keyword - u0069006e00690074))\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-var; Evaluator effects (numeric tags also differ in the CLJS projection) differs from the portable SCI observation; both expectations are retained and this row is nonpassing. Residual historical discrepancy retained for live full-language reconciliation after the scoped printing/reflection/host delivery; no CLJS compatibility pass is inferred.",
+        "sha256": "c4291515758dbedbed7133cc1183b8808062b8e04c795905a2af66767ddfbd74"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-var-defonce-meta-order",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-root-reference",
+      "obligation_kind": "sci-case",
+      "name": "sci-var-root-reference",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 223,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-var-root-reference",
+      "body_sha256": "9365d85a15c9e4f41712f005a60bb5c7fff99d478bc2296ee88d671f2565429f",
+      "source_span": {
+        "text": "sci-var-root-reference\tportable\t(def x 1) (def saved #'x) (def f (fn* [] x)) (def x 2) [(identical? saved #'x) (deref saved) (f)]\t(return (vector (bool true) (int 2) (int 2)))\t(vector)\t(string u)\t(string u)\tgap\t(def x 1) (def saved #'x) (def f (fn* [] x)) (def x 2) [(identical? saved #'x) (deref saved) (f)]\t(return (vector (bool false) (float 4000000000000000) (float 4000000000000000)))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-var; Evaluator result differs from the portable SCI observation; both expectations are retained and this row is nonpassing. Residual historical discrepancy retained for live full-language reconciliation after the scoped printing/reflection/host delivery; no CLJS compatibility pass is inferred.",
+        "sha256": "9365d85a15c9e4f41712f005a60bb5c7fff99d478bc2296ee88d671f2565429f"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-var-root-reference",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-declare-result",
+      "obligation_kind": "sci-case",
+      "name": "sci-var-declare-result",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 232,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-var-declare-result",
+      "body_sha256": "83d039fca2d9d14d6c5b58bc9b29c85d695bf2dffe32a7cebd16bf87bd2600df",
+      "source_span": {
+        "text": "sci-var-declare-result\tportable\t[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]\t(return (vector (bool true) (symbol - u007a) nil))\t(vector)\t(string u)\t(string u)\tgap\t[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]\t(diagnostic (string u0075006e0073007500700070006f007200740065006400200063006f006e007300740072007500630074003a00200075006e0069006e0069007400690061006c0069007a006500640020006400650063006c00610072006500200069006e00200061002000760061006c0075006500200070006f0073006900740069006f006e002000280074006800650020007200650066006500720065006e0063006500200065006d00690074007300200069006e00760061006c006900640020004a0061007600610053006300720069007000740029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-var; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string unsupported construct: uninitialized declare in a value position (the reference emits invalid JavaScript))). Residual historical discrepancy retained for live full-language reconciliation after the scoped printing/reflection/host delivery; no CLJS compatibility pass is inferred.",
+        "sha256": "83d039fca2d9d14d6c5b58bc9b29c85d695bf2dffe32a7cebd16bf87bd2600df"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-var-declare-result",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-count-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-count-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 347,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-count-invalid",
+      "body_sha256": "2841916b0dd075e8384526ec9757f4c91af011efaea47b3c46cc8f7305604075",
+      "source_span": {
+        "text": "sci-coll-count-invalid\tportable\t(count 1)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(count 1)\t(diagnostic (string u004500720072006f0072003a00200063006f0075006e00740020006e006f007400200073007500700070006f00720074006500640020006f006e0020007400680069007300200074007900700065))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: count not supported on this type)).",
+        "sha256": "2841916b0dd075e8384526ec9757f4c91af011efaea47b3c46cc8f7305604075"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-count-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-empty-p-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-empty-p-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 352,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-empty-p-invalid",
+      "body_sha256": "350632a6483d20a9632c838b3c05888fc64a3aca8a74282b85a18c5a76ffee99",
+      "source_span": {
+        "text": "sci-coll-empty-p-invalid\tportable\t(empty? 1)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(empty? 1)\t(diagnostic (string u004500720072006f0072003a002000310020006900730020006e006f00740020004900530065007100610062006c0065))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: 1 is not ISeqable)).",
+        "sha256": "350632a6483d20a9632c838b3c05888fc64a3aca8a74282b85a18c5a76ffee99"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-empty-p-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-select-keys-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-select-keys-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 361,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-select-keys-invalid",
+      "body_sha256": "5f130d5b335ce8d695bf40d3ecd11a058b13540cb7c3be2ff08d3011dce31d7d",
+      "source_span": {
+        "text": "sci-coll-select-keys-invalid\tportable\t(select-keys {} 1)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(select-keys {} 1)\t(diagnostic (string u004500720072006f0072003a002000310020006900730020006e006f00740020004900530065007100610062006c0065))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: 1 is not ISeqable)).",
+        "sha256": "5f130d5b335ce8d695bf40d3ecd11a058b13540cb7c3be2ff08d3011dce31d7d"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-select-keys-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-merge-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-merge-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 364,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-merge-invalid",
+      "body_sha256": "439cb83226e603e92156553600c841421f4c34b551f9211c0d93947bdab1f0c2",
+      "source_span": {
+        "text": "sci-coll-merge-invalid\tportable\t(merge {} 1)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(merge {} 1)\t(diagnostic (string u004500720072006f0072003a002000310020006900730020006e006f00740020004900530065007100610062006c0065))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: 1 is not ISeqable)).",
+        "sha256": "439cb83226e603e92156553600c841421f4c34b551f9211c0d93947bdab1f0c2"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-merge-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-merge-with-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-merge-with-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 367,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-merge-with-invalid",
+      "body_sha256": "cf9246f49596c845464311ff47c119c1027d77378417d1d606bb17054c4184d4",
+      "source_span": {
+        "text": "sci-coll-merge-with-invalid\tportable\t(merge-with 42 {:a 1} {:a 2})\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(merge-with 42 {:a 1} {:a 2})\t(diagnostic (string u004500720072006f0072003a0020006e006f007400200061002000660075006e006300740069006f006e))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: not a function)).",
+        "sha256": "cf9246f49596c845464311ff47c119c1027d77378417d1d606bb17054c4184d4"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-merge-with-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-peek-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-peek-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 370,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-peek-invalid",
+      "body_sha256": "beae2fe73151e1e65e977d81164022b98403867b0e59e857955d933d22186178",
+      "source_span": {
+        "text": "sci-coll-peek-invalid\tportable\t(peek {})\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(peek {})\t(diagnostic (string u004500720072006f0072003a0020004e006f002000700072006f0074006f0063006f006c0020006d006500740068006f0064002000490053007400610063006b002e002d007000650065006b00200064006500660069006e0065006400200066006f007200200074006800690073002000760061006c00750065))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: No protocol method IStack.-peek defined for this value)).",
+        "sha256": "beae2fe73151e1e65e977d81164022b98403867b0e59e857955d933d22186178"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-peek-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-pop-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-pop-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 373,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-pop-invalid",
+      "body_sha256": "d1ec65e62bb7c866efa22589d3e0bd8160866916eede7054070d30eb76b7f57d",
+      "source_span": {
+        "text": "sci-coll-pop-invalid\tportable\t(pop {})\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(pop {})\t(diagnostic (string u004500720072006f0072003a0020004e006f002000700072006f0074006f0063006f006c0020006d006500740068006f0064002000490053007400610063006b002e002d0070006f007000200064006500660069006e0065006400200066006f007200200074006800690073002000760061006c00750065))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: No protocol method IStack.-pop defined for this value)).",
+        "sha256": "d1ec65e62bb7c866efa22589d3e0bd8160866916eede7054070d30eb76b7f57d"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-pop-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-conj-vector-sequence-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-conj-vector-sequence-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 389,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-conj-vector-sequence-invalid",
+      "body_sha256": "00aabf2e0be963b505f9144f9405b4e86afc1cd3f1509e841c7b5ab25ae49b39",
+      "source_span": {
+        "text": "sci-coll-conj-vector-sequence-invalid\tportable\t(conj {} '([:a 1]))\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(conj {} '([:a 1]))\t(return (map (entry (keyword - u0061) (float 3ff0000000000000))))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-coll; SCI execution type contract remains nonpassing: EvalDiagnostic has no equivalent structured SCI phase/category API. Recorded evaluator observation: (return (map (entry (keyword - a) (float 3ff0000000000000)))).",
+        "sha256": "00aabf2e0be963b505f9144f9405b4e86afc1cd3f1509e841c7b5ab25ae49b39"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-conj-vector-sequence-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-conj-entry-length-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-conj-entry-length-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 390,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-conj-entry-length-invalid",
+      "body_sha256": "05d56fb7be4aedd9ff29b2454b5bbae5e9642a2d6731f2c83c3006b61cf09b28",
+      "source_span": {
+        "text": "sci-coll-conj-entry-length-invalid\tportable\t(conj {} [:a 1 2])\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(conj {} [:a 1 2])\t(return (map (entry (keyword - u0061) (float 3ff0000000000000))))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-coll; SCI execution type contract remains nonpassing: EvalDiagnostic has no equivalent structured SCI phase/category API. Recorded evaluator observation: (return (map (entry (keyword - a) (float 3ff0000000000000)))).",
+        "sha256": "05d56fb7be4aedd9ff29b2454b5bbae5e9642a2d6731f2c83c3006b61cf09b28"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-conj-entry-length-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-vector-arity",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-call-vector-arity",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 401,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-vector-arity",
+      "body_sha256": "8a2d39de9bb724a27461aaf406076a57ca86209894739923fb5a6ce2eab3bbb2",
+      "source_span": {
+        "text": "sci-coll-call-vector-arity\tportable\t([1] (observe 0) (observe 2))\t(error execution arity)\t(vector (int 0) (int 2))\t(string u)\t(string u)\tgap\t([1] (observe 0) (observe 2))\t(return (float 3ff0000000000000))\t(vector (float 0000000000000000) (float 4000000000000000))\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-coll; SCI execution arity contract remains nonpassing: EvalDiagnostic has no equivalent structured SCI phase/category API. Recorded evaluator observation: (return (float 3ff0000000000000)).",
+        "sha256": "8a2d39de9bb724a27461aaf406076a57ca86209894739923fb5a6ce2eab3bbb2"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-call-vector-arity",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-set-arity",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-call-set-arity",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 402,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-set-arity",
+      "body_sha256": "4c2d9db2b95ea8bcbfdfcec268a9d83e3689fe761aaf86131c2900c6b99a66d0",
+      "source_span": {
+        "text": "sci-coll-call-set-arity\tportable\t(#{1} 1 :missing)\t(error execution arity)\t(vector)\t(string u)\t(string u)\tgap\t(#{1} 1 :missing)\t(return (float 3ff0000000000000))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-coll; SCI execution arity contract remains nonpassing: EvalDiagnostic has no equivalent structured SCI phase/category API. Recorded evaluator observation: (return (float 3ff0000000000000)).",
+        "sha256": "4c2d9db2b95ea8bcbfdfcec268a9d83e3689fe761aaf86131c2900c6b99a66d0"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-call-set-arity",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-map-arity",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-call-map-arity",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 404,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-map-arity",
+      "body_sha256": "cc43b2244608821d5f1ebf2a476bded2d1a418106762bea7d9a651168abce92b",
+      "source_span": {
+        "text": "sci-coll-call-map-arity\tportable\t({})\t(error execution arity)\t(vector)\t(string u)\t(string u)\tgap\t({})\t(diagnostic (string u004500720072006f0072003a00200049006e00760061006c00690064002000610072006900740079003a00200030))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution arity phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Invalid arity: 0)).",
+        "sha256": "cc43b2244608821d5f1ebf2a476bded2d1a418106762bea7d9a651168abce92b"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-call-map-arity",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-symbol-arity",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-call-symbol-arity",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 405,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-symbol-arity",
+      "body_sha256": "6f092bba40cccceadc3d62777f135780c63c4a6135d5c27412171d7eab3543e1",
+      "source_span": {
+        "text": "sci-coll-call-symbol-arity\tportable\t('a 1 2 3)\t(error execution arity)\t(vector)\t(string u)\t(string u)\tgap\t('a 1 2 3)\t(diagnostic (string u004500720072006f0072003a00200049006e00760061006c00690064002000610072006900740079003a00200033))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution arity phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Invalid arity: 3)).",
+        "sha256": "6f092bba40cccceadc3d62777f135780c63c4a6135d5c27412171d7eab3543e1"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-call-symbol-arity",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-vector-type",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-call-vector-type",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 406,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-vector-type",
+      "body_sha256": "7eba0b80aa2c2d1611c98b818fac401fb5b1cb7ea5571c8fc55fa5122979c958",
+      "source_span": {
+        "text": "sci-coll-call-vector-type\tportable\t([1] :a)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t([1] :a)\t(diagnostic (string u004500720072006f0072003a0020004b006500790020006d00750073007400200062006500200069006e00740065006700650072))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Key must be integer)).",
+        "sha256": "7eba0b80aa2c2d1611c98b818fac401fb5b1cb7ea5571c8fc55fa5122979c958"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-call-vector-type",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-vector-bounds",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-call-vector-bounds",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 407,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-call-vector-bounds",
+      "body_sha256": "86cf30e0e3c9b71bd3c9c84aa36b92f739db5a116c33d295ce8291114cec2bd6",
+      "source_span": {
+        "text": "sci-coll-call-vector-bounds\tportable\t([1] -1)\t(error execution bounds)\t(vector)\t(string u)\t(string u)\tgap\t([1] -1)\t(diagnostic (string u004500720072006f0072003a00200049006e0064006500780020006f007500740020006f006600200062006f0075006e00640073))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution bounds phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Index out of bounds)).",
+        "sha256": "86cf30e0e3c9b71bd3c9c84aa36b92f739db5a116c33d295ce8291114cec2bd6"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-call-vector-bounds",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-nth-bounds",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-nth-bounds",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 408,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-nth-bounds",
+      "body_sha256": "d5d7faf2cc5440a8d8003bd4e080a214215b12bb912f042c8900d36f44511438",
+      "source_span": {
+        "text": "sci-coll-nth-bounds\tportable\t(nth [] 0)\t(error execution bounds)\t(vector)\t(string u)\t(string u)\tgap\t(nth [] 0)\t(diagnostic (string u004500720072006f0072003a00200049006e0064006500780020006f007500740020006f006600200062006f0075006e00640073))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution bounds phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Index out of bounds)).",
+        "sha256": "d5d7faf2cc5440a8d8003bd4e080a214215b12bb912f042c8900d36f44511438"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-nth-bounds",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-nth-type",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-nth-type",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 409,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-nth-type",
+      "body_sha256": "99acbff3c458972ff49546aab63da61e75ee4ed41d2b7e0176f6d511a0ea47be",
+      "source_span": {
+        "text": "sci-coll-nth-type\tportable\t(nth [1] :a)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(nth [1] :a)\t(diagnostic (string u004500720072006f0072003a00200049006e00640065007800200061007200670075006d0065006e007400200074006f0020006e007400680020006d007500730074002000620065002000610020006e0075006d006200650072))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Index argument to nth must be a number)).",
+        "sha256": "99acbff3c458972ff49546aab63da61e75ee4ed41d2b7e0176f6d511a0ea47be"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-nth-type",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-assoc-bounds",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-assoc-bounds",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 410,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-assoc-bounds",
+      "body_sha256": "aa43f6428968d33660e91297bbe5aaa2758f94989b21e3d78838c2e86cc97a5b",
+      "source_span": {
+        "text": "sci-coll-assoc-bounds\tportable\t(assoc [1] 2 3)\t(error execution bounds)\t(vector)\t(string u)\t(string u)\tgap\t(assoc [1] 2 3)\t(diagnostic (string u004500720072006f0072003a00200049006e0064006500780020006f007500740020006f006600200062006f0075006e00640073))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution bounds phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Index out of bounds)).",
+        "sha256": "aa43f6428968d33660e91297bbe5aaa2758f94989b21e3d78838c2e86cc97a5b"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-assoc-bounds",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-assoc-type",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-assoc-type",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 411,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-assoc-type",
+      "body_sha256": "26f8f811fac8805389e90f79c57f0e8c7b6116e9aa046f4ad3e7300433cd51eb",
+      "source_span": {
+        "text": "sci-coll-assoc-type\tportable\t(assoc [1] 0.0 3)\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(assoc [1] 0.0 3)\t(return (vector (float 4008000000000000)))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-coll; SCI execution type contract remains nonpassing: EvalDiagnostic has no equivalent structured SCI phase/category API. Recorded evaluator observation: (return (vector (float 4008000000000000))).",
+        "sha256": "26f8f811fac8805389e90f79c57f0e8c7b6116e9aa046f4ad3e7300433cd51eb"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-assoc-type",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-pop-vector-empty",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-pop-vector-empty",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 412,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-pop-vector-empty",
+      "body_sha256": "cca6394978dc3751eb0963a38dfd42f93052b8c3e5152e13bbfc7df7fefbd1ef",
+      "source_span": {
+        "text": "sci-coll-pop-vector-empty\tportable\t(pop [])\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(pop [])\t(diagnostic (string u004500720072006f0072003a002000430061006e0027007400200070006f007000200065006d00700074007900200076006500630074006f0072))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Can't pop empty vector)).",
+        "sha256": "cca6394978dc3751eb0963a38dfd42f93052b8c3e5152e13bbfc7df7fefbd1ef"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-pop-vector-empty",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-pop-list-empty",
+      "obligation_kind": "sci-case",
+      "name": "sci-coll-pop-list-empty",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 413,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-coll-pop-list-empty",
+      "body_sha256": "f3487cf4cbfd8e09fdb1012927ab1153594d84236fd5e3e90f9fd17a6809b4bf",
+      "source_span": {
+        "text": "sci-coll-pop-list-empty\tportable\t(pop '())\t(error execution type)\t(vector)\t(string u)\t(string u)\tgap\t(pop '())\t(diagnostic (string u004500720072006f0072003a002000430061006e0027007400200070006f007000200065006d0070007400790020006c006900730074))\t(vector)\t(string u)\t(string u)\towner=light-cljs-116; kind=diagnostic-contract; family=sci-coll; Evaluator emits an owned diagnostic; SCI execution type phase/category is not compared because EvalDiagnostic has no matching structured API. This is a nonpassing error-contract entry. (diagnostic (string Error: Can't pop empty list)).",
+        "sha256": "f3487cf4cbfd8e09fdb1012927ab1153594d84236fd5e3e90f9fd17a6809b4bf"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-coll-pop-list-empty",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-vars-duplicate-redefs",
+      "obligation_kind": "sci-case",
+      "name": "sci-vars-duplicate-redefs",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1512,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-vars-duplicate-redefs",
+      "body_sha256": "251aedd79ae04c9e81f7198287c48ebe34f0ab074fbe08512de12a7204940d02",
+      "source_span": {
+        "text": "sci-vars-duplicate-redefs\tportable\t(def x 0) [(with-redefs [x (observe 1) x (observe 2)] x) x]\t(return (vector (int 2) (int 0)))\t(vector (int 2))\t(string u)\t(string u)\tgap\t(def x 0) [(with-redefs [x (observe 1) x (observe 2)] x) x]\t(return (vector (float 4000000000000000) (float 0000000000000000)))\t(vector (float 3ff0000000000000) (float 4000000000000000))\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-vars; Evaluator effects (numeric tags also differ in the CLJS projection) differs from the portable SCI observation; both expectations are retained and this row is nonpassing. Residual historical discrepancy retained for live full-language reconciliation after the scoped printing/reflection/host delivery; no CLJS compatibility pass is inferred.",
+        "sha256": "251aedd79ae04c9e81f7198287c48ebe34f0ab074fbe08512de12a7204940d02"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-vars-duplicate-redefs",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-vars-def-bound",
+      "obligation_kind": "sci-case",
+      "name": "sci-vars-def-bound",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1559,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-vars-def-bound",
+      "body_sha256": "42b32f6a0088c630c1fef67e25c4e48b1ba3241ca6a5b4e876ecca83e9e0ab32",
+      "source_span": {
+        "text": "sci-vars-def-bound\tportable\t(def ^:dynamic x 0) [(binding [x 1] (def ^:dynamic x 2) x) x]\t(return (vector (int 1) (int 2)))\t(vector)\t(string u)\t(string u)\tgap\t(def ^:dynamic x 0) [(binding [x 1] (def ^:dynamic x 2) x) x]\t(return (vector (float 4000000000000000) (float 0000000000000000)))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-vars; Evaluator result differs from the portable SCI observation; both expectations are retained and this row is nonpassing. Residual historical discrepancy retained for live full-language reconciliation after the scoped printing/reflection/host delivery; no CLJS compatibility pass is inferred.",
+        "sha256": "42b32f6a0088c630c1fef67e25c4e48b1ba3241ca6a5b4e876ecca83e9e0ab32"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-vars-def-bound",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-string-keyword-split",
+      "obligation_kind": "sci-case",
+      "name": "sci-string-keyword-split",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1702,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-string-keyword-split",
+      "body_sha256": "3a3a0521687b7209f9a18843b6a7edd687815fd2ce0fbce79767e02f0851b61c",
+      "source_span": {
+        "text": "sci-string-keyword-split\tportable\t(mapv (fn [x] [(name x) (namespace x) (str x)]) [(keyword \"a/b/c\") (keyword \"/\") (keyword \"/x\") (keyword \"a/\") (keyword \"\") (keyword \"\" \"x\")])\t(return (vector (vector (string u0062002f0063) (string u0061) (string u003a0061002f0062002f0063)) (vector (string u002f) nil (string u003a002f)) (vector (string u0078) (string u) (string u003a002f0078)) (vector (string u) (string u0061) (string u003a0061002f)) (vector (string u) nil (string u003a)) (vector (string u0078) (string u) (string u003a002f0078))))\t(vector)\t(string u)\t(string u)\tgap\t(mapv (fn [x] [(name x) (namespace x) (str x)]) [(keyword \"a/b/c\") (keyword \"/\") (keyword \"/x\") (keyword \"a/\") (keyword \"\") (keyword \"\" \"x\")])\t(return (vector (vector (string u0061) nil (string u003a0061002f0062002f0063)) (vector (string u002f) nil (string u003a002f)) (vector (string u0078) (string u) (string u003a002f0078)) (vector (string u) (string u0061) (string u003a0061002f)) (vector (string u) nil (string u003a)) (vector (string u0078) (string u) (string u003a002f0078))))\t(vector)\t(string u)\t(string u)\towner=light-cljs-49; kind=language-or-dialect-gap; family=sci-string; Evaluator result differs from the portable SCI observation; both expectations are retained and this row is nonpassing.",
+        "sha256": "3a3a0521687b7209f9a18843b6a7edd687815fd2ce0fbce79767e02f0851b61c"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-string-keyword-split",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-string-symbol-split",
+      "obligation_kind": "sci-case",
+      "name": "sci-string-symbol-split",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1705,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-string-symbol-split",
+      "body_sha256": "88632f71d21285c04feb97d0aa3df3b7b25b9e3ffe9ce04307b7d6a025b03e9c",
+      "source_span": {
+        "text": "sci-string-symbol-split\tportable\t(mapv (fn [x] [(name x) (namespace x) (str x)]) [(symbol \"a/b/c\") (symbol \"/\") (symbol \"/x\") (symbol \"a/\") (symbol \"\") (symbol \"\" \"x\")])\t(return (vector (vector (string u0062002f0063) (string u0061) (string u0061002f0062002f0063)) (vector (string u002f) nil (string u002f)) (vector (string u0078) (string u) (string u002f0078)) (vector (string u) (string u0061) (string u0061002f)) (vector (string u) nil (string u)) (vector (string u0078) (string u) (string u002f0078))))\t(vector)\t(string u)\t(string u)\tgap\t(mapv (fn [x] [(name x) (namespace x) (str x)]) [(symbol \"a/b/c\") (symbol \"/\") (symbol \"/x\") (symbol \"a/\") (symbol \"\") (symbol \"\" \"x\")])\t(return (vector (vector (string u0062002f0063) (string u0061) (string u0061002f0062002f0063)) (vector (string u002f) nil (string u002f)) (vector (string u002f0078) nil (string u002f0078)) (vector (string u) (string u0061) (string u0061002f)) (vector (string u) nil (string u)) (vector (string u0078) (string u) (string u002f0078))))\t(vector)\t(string u)\t(string u)\towner=light-cljs-49; kind=language-or-dialect-gap; family=sci-string; Evaluator result differs from the portable SCI observation; both expectations are retained and this row is nonpassing.",
+        "sha256": "88632f71d21285c04feb97d0aa3df3b7b25b9e3ffe9ce04307b7d6a025b03e9c"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-string-symbol-split",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-xf-bounds-empty-invalid",
+      "obligation_kind": "sci-case",
+      "name": "sci-xf-bounds-empty-invalid",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 2237,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-xf-bounds-empty-invalid",
+      "body_sha256": "38c6b5f7b95a6a3ffd88d05e59d069bdf004d31cf97b5ae40fdcb4a59fcdc8bb",
+      "source_span": {
+        "text": "sci-xf-bounds-empty-invalid\tportable\t[(into [] (take :bad) []) (into [] (drop :bad) []) (into [] (take-while :bad) []) (into [] (take nil) []) (into [] (drop nil) [])]\t(return (vector (vector) (vector) (vector) (vector) (vector)))\t(vector)\t(string u)\t(string u)\tgap\t[(into [] (take :bad) []) (into [] (drop :bad) []) (into [] (take-while :bad) []) (into [] (take nil) []) (into [] (drop nil) [])]\t(diagnostic (string u004500720072006f0072003a00200041007300730065007200740020006600610069006c00650064003a00200028006e0075006d006200650072003f0020006e0029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-xf; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string Error: Assert failed: (number? n))).",
+        "sha256": "38c6b5f7b95a6a3ffd88d05e59d069bdf004d31cf97b5ae40fdcb4a59fcdc8bb"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-xf-bounds-empty-invalid",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-protocol-same-shape",
+      "obligation_kind": "sci-case",
+      "name": "sci-protocol-same-shape",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 2392,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-protocol-same-shape",
+      "body_sha256": "d310d7e8555508c598ca6fa91e46d2640304dfaf24d35cd49c47f78a5df5c28f",
+      "source_span": {
+        "text": "sci-protocol-same-shape\tportable\t(defprotocol P (f [x])) (def saved f) (defprotocol P \"updated\" (f [receiver] \"updated-method\")) [(identical? saved f) (:doc (meta (var P))) (:doc (meta (var f)))]\t(return (vector (bool true) (string u0075007000640061007400650064) (string u0075007000640061007400650064002d006d006500740068006f0064)))\t(vector)\t(string u)\t(string u)\tgap\t(defprotocol P (f [x])) (def saved f) (defprotocol P \"updated\" (f [receiver] \"updated-method\")) [(identical? saved f) (:doc (meta (var P))) (:doc (meta (var f)))]\t(return (vector (bool false) (string u0075007000640061007400650064) (string u0075007000640061007400650064002d006d006500740068006f0064)))\t(vector)\t(string u)\t(string u)\towner=light-cljs-125; kind=language-or-dialect-gap; family=sci-protocol; Evaluator result differs from the portable SCI observation; both expectations are retained and this row is nonpassing.",
+        "sha256": "d310d7e8555508c598ca6fa91e46d2640304dfaf24d35cd49c47f78a5df5c28f"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-protocol-same-shape",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "not-run"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass."
+    }
+  ],
+  "full_completion_credit": false
+}

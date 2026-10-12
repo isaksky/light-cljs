@@ -1,0 +1,1 @@
+(let [log (atom []) writer (reify IWriter (-write [_ s] (swap! log conj s)) (-flush [_] (swap! log conj :flushed))) x (reify IPrintWithWriter (-pr-writer [_ w opts] (write-all w "a" "b")))] (-pr-writer x writer {}) (-flush writer) (assert (= ["a" "b" :flushed] @log))) true

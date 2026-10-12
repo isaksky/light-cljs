@@ -1,0 +1,7 @@
+{
+  "accepting_receipt_sha256": "d623c89327165319e404d26f7695c4ceebc73511e8c17d6f492713a5aa2bf763",
+  "original_cargo_executable_path": "/Users/admin/src/light-cljs/target/debug/deps/compiler_arity_after191-2252fb1af382af6f",
+  "preserved_executable_path": "/private/tmp/light-cljs-125-arity-after191-combined/cargo-test-executable",
+  "preserved_executable_sha256": "ebbc197bf9c78df0392786a9765a81079360365a95ecc1b575e358bebee7b31b",
+  "byte_identical_at_preservation": true
+}

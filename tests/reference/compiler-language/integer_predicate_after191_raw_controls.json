@@ -1,0 +1,84 @@
+{
+  "controls": [
+    {
+      "id": "missing-actual-engine-frame",
+      "status": "rejected",
+      "reason": "missing/reordered/extra actual integer engine frame"
+    },
+    {
+      "id": "false-original-assertion-pass-substitution",
+      "status": "rejected",
+      "reason": "actual complete raw engine frame changed"
+    },
+    {
+      "id": "genuine-receiver-control-lost",
+      "status": "rejected",
+      "reason": "actual complete raw engine frame changed"
+    },
+    {
+      "id": "changed-integer_predicate_after191.cljs",
+      "status": "rejected",
+      "reason": "unchanged original full table/body or adapter source replaced"
+    },
+    {
+      "id": "changed-compiled.js",
+      "status": "rejected",
+      "reason": "full original actual engine input/observer changed"
+    },
+    {
+      "id": "changed-script.js",
+      "status": "rejected",
+      "reason": "full original actual engine input/observer changed"
+    },
+    {
+      "id": "changed-quickjs.stdin",
+      "status": "rejected",
+      "reason": "full original actual engine input/observer changed"
+    },
+    {
+      "id": "changed-quickjs.stdout",
+      "status": "rejected",
+      "reason": "actual complete raw engine frame changed"
+    },
+    {
+      "id": "changed-node.stdin",
+      "status": "rejected",
+      "reason": "full original actual engine input/observer changed"
+    },
+    {
+      "id": "changed-node.stdout",
+      "status": "rejected",
+      "reason": "actual complete raw engine frame changed"
+    },
+    {
+      "id": "changed-genuine-library-loader",
+      "status": "rejected",
+      "reason": "genuine compiled loader/archive provenance drift"
+    },
+    {
+      "id": "changed-release-112-counters",
+      "status": "rejected",
+      "reason": "raw canonical pin artifact census/hash drift"
+    },
+    {
+      "id": "changed-release-original-table",
+      "status": "rejected",
+      "reason": "whole original pin source/table/body drift"
+    },
+    {
+      "id": "changed-checkout-112-counters",
+      "status": "rejected",
+      "reason": "raw canonical pin artifact census/hash drift"
+    },
+    {
+      "id": "changed-checkout-original-table",
+      "status": "rejected",
+      "reason": "whole original pin source/table/body drift"
+    }
+  ],
+  "restored_pristine_replay": "passed",
+  "original_site_credit": 0,
+  "ordinary_credit": 0,
+  "phase_credit": 0,
+  "strict_complete": false
+}

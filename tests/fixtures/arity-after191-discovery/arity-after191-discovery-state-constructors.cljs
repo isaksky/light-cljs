@@ -1,0 +1,1 @@
+(let [a (->Atom 1 {:x 2} nil nil) b (Atom. 3 nil nil nil) v (->Volatile 4) w (Volatile. 5)] [@a (:x (meta a)) @b @v @w (volatile? v) (= a b) (= a a) (identical? deref -deref) (identical? vreset! -vreset!) (identical? volatile! ->Volatile) (.equiv a a) (.equiv a b)])

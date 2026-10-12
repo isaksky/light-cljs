@@ -1,0 +1,761 @@
+[
+  {
+    "sci_id": "sci-var-declare-result",
+    "source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+    "original_row_sha256": "9efc2f2d1c53abdb6c2ab16685725f5fcf5adc279fe44944c1769529ae6f3e69",
+    "body_sha256": "83d039fca2d9d14d6c5b58bc9b29c85d695bf2dffe32a7cebd16bf87bd2600df",
+    "canonical_expected": {
+      "id": "sci-execution-sci-var-declare-result",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            null,
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical declare returns nil in value position and carries no Var :name metadata.",
+    "scope_basis": "Live125 intended CLJS Number/runtime/language contract; exact complete portable source and both required default pins. Historical SCI expectation remains explicit and unresolved with zero original semantic credit."
+  },
+  {
+    "sci_id": "sci-var-defonce-declared",
+    "source_sha256": "636db199e1189d192709500b2f1e48285487fa0eb70f7686c4767e17ee63de26",
+    "original_row_sha256": "0b7592dfa581cb5dc2100e85677c5b43e84292c7f9e84916657aac8ca1e21ab2",
+    "body_sha256": "057d4a175a0b6e46cc09bb68fda3b016421619ca07f8a8105bba6ccf3edc232e",
+    "canonical_expected": {
+      "id": "sci-execution-sci-var-defonce-declared",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            7,
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical defonce returns nil while initializes the declared root once.",
+    "scope_basis": "Live125 intended CLJS Number/runtime/language contract; exact complete portable source and both required default pins. Historical SCI expectation remains explicit and unresolved with zero original semantic credit."
+  },
+  {
+    "sci_id": "sci-var-defonce-meta-order",
+    "source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+    "original_row_sha256": "b0b81d35eb9e2514e9d2c2a61a001717e920cd81818669dd5b5ac7d1c4d18242",
+    "body_sha256": "c4291515758dbedbed7133cc1183b8808062b8e04c795905a2af66767ddfbd74",
+    "canonical_expected": {
+      "id": "sci-execution-sci-var-defonce-meta-order",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "init",
+                "spelling": "init"
+              }
+            },
+            {
+              "$list": [
+                {
+                  "$symbol": {
+                    "namespace": null,
+                    "name": "observe",
+                    "spelling": "observe"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "next",
+                    "spelling": "next"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [
+        {
+          "$keyword": {
+            "namespace": null,
+            "name": "init",
+            "spelling": "init"
+          }
+        }
+      ],
+      "stdout": ""
+    },
+    "reason": "Canonical defonce metadata retains unevaluated (observe :next), and only the first initializer observes :init.",
+    "scope_basis": "Live125 intended CLJS Number/runtime/language contract; exact complete portable source and both required default pins. Historical SCI expectation remains explicit and unresolved with zero original semantic credit."
+  },
+  {
+    "sci_id": "sci-string-keyword-split",
+    "source_sha256": "bcfc3af7027b6b1fa66903cbc10c9ff45ef3e6089db538a17752268ffc3bec55",
+    "original_row_sha256": "57866419e4ce5357f97d8a5cf9d4bb22c21cf3d7476bc6e7a5e4594b82bdae27",
+    "body_sha256": "3a3a0521687b7209f9a18843b6a7edd687815fd2ce0fbce79767e02f0851b61c",
+    "canonical_expected": {
+      "id": "sci-execution-sci-string-keyword-split",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": [
+                "a",
+                null,
+                ":a/b/c"
+              ]
+            },
+            {
+              "$vector": [
+                "/",
+                null,
+                ":/"
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                ":/x"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                "a",
+                ":a/"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                null,
+                ":"
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                ":/x"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical keyword parsing of a/b/c retains its full spelling with name a and nil namespace.",
+    "scope_basis": "Live125 intended CLJS Number/runtime/language contract; exact complete portable source and both required default pins. Historical SCI expectation remains explicit and unresolved with zero original semantic credit."
+  },
+  {
+    "sci_id": "sci-string-symbol-split",
+    "source_sha256": "017ad8ea427bee15a9a933f7f0ac88026014e114ae8d2e29582702d5e91f2faa",
+    "original_row_sha256": "d78974a7b73a813e28db3899a6a844ece80763082f674cc8bb16c4ac300808b4",
+    "body_sha256": "88632f71d21285c04feb97d0aa3df3b7b25b9e3ffe9ce04307b7d6a025b03e9c",
+    "canonical_expected": {
+      "id": "sci-execution-sci-string-symbol-split",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": [
+                "b/c",
+                "a",
+                "a/b/c"
+              ]
+            },
+            {
+              "$vector": [
+                "/",
+                null,
+                "/"
+              ]
+            },
+            {
+              "$vector": [
+                "/x",
+                null,
+                "/x"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                "a",
+                "a/"
+              ]
+            },
+            {
+              "$vector": [
+                "",
+                null,
+                ""
+              ]
+            },
+            {
+              "$vector": [
+                "x",
+                "",
+                "/x"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical symbol parsing of /x retains /x as its name and nil namespace.",
+    "scope_basis": "Live125 intended CLJS Number/runtime/language contract; exact complete portable source and both required default pins. Historical SCI expectation remains explicit and unresolved with zero original semantic credit."
+  },
+  {
+    "sci_id": "sci-var-root-reference",
+    "source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+    "original_row_sha256": "97e7499c89c3a4dbffc0673b7a754784b5f2c810ee43833b1cea29479ac0fcaf",
+    "body_sha256": "9365d85a15c9e4f41712f005a60bb5c7fff99d478bc2296ee88d671f2565429f",
+    "canonical_expected": {
+      "id": "sci-execution-sci-var-root-reference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            2,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical separately constructed Vars are not identical; captured root getter and ordinary function see redefinition2.",
+    "scope_basis": "Live125 intended CLJS language/runtime/Var/protocol/transformation contract; complete unchanged portable original source and both required defaultpins. Full original SCI expectation remains explicit and unresolved with zero semantic credit."
+  },
+  {
+    "sci_id": "sci-vars-duplicate-redefs",
+    "source_sha256": "9db7be280451c932a016c09c8f0522798207d4e3fe0f2ef7870b0568188e7c7d",
+    "original_row_sha256": "cbcccd48586ce24c224cd82e39343e89901dbc34e29af72b54710c6d4431fe00",
+    "body_sha256": "251aedd79ae04c9e81f7198287c48ebe34f0ab074fbe08512de12a7204940d02",
+    "canonical_expected": {
+      "id": "sci-execution-sci-vars-duplicate-redefs",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            0
+          ]
+        }
+      },
+      "trace": [
+        1,
+        2
+      ],
+      "stdout": ""
+    },
+    "reason": "Canonical complete duplicate redefs initializes both ordered values [1,2], uses the last override2 and restores root0.",
+    "scope_basis": "Live125 intended CLJS language/runtime/Var/protocol/transformation contract; complete unchanged portable original source and both required defaultpins. Full original SCI expectation remains explicit and unresolved with zero semantic credit."
+  },
+  {
+    "sci_id": "sci-vars-def-bound",
+    "source_sha256": "be9d5c40a8f73680ab2e9c195987ee95831bb0b212cd3be9f714074202197a73",
+    "original_row_sha256": "9dd43ae1405e8ede2eaf21d0630bebe1e8f44a9281ad9f02fdbf8524961ffbbc",
+    "body_sha256": "42b32f6a0088c630c1fef67e25c4e48b1ba3241ca6a5b4e876ecca83e9e0ab32",
+    "canonical_expected": {
+      "id": "sci-execution-sci-vars-def-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            0
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical definition inside dynamicbinding yields2 inside binding and restores original root0.",
+    "scope_basis": "Live125 intended CLJS language/runtime/Var/protocol/transformation contract; complete unchanged portable original source and both required defaultpins. Full original SCI expectation remains explicit and unresolved with zero semantic credit."
+  },
+  {
+    "sci_id": "sci-protocol-same-shape",
+    "source_sha256": "b52078a925e827020b1315f11bbb02a8b04f36e76a7c5c2562af1c6abf74a6fb",
+    "original_row_sha256": "c285252ec5f74d87946f801d10be29788e4bd6bb89faff381cccbfe2913b634f",
+    "body_sha256": "d310d7e8555508c598ca6fa91e46d2640304dfaf24d35cd49c47f78a5df5c28f",
+    "canonical_expected": {
+      "id": "sci-execution-sci-protocol-same-shape",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            "updated",
+            "updated-method"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical complete same-shaped protocol redefinition creates a distinct method function and updates both full documentation values.",
+    "scope_basis": "Live125 intended CLJS language/runtime/Var/protocol/transformation contract; complete unchanged portable original source and both required defaultpins. Full original SCI expectation remains explicit and unresolved with zero semantic credit."
+  },
+  {
+    "sci_id": "sci-xf-bounds-empty-invalid",
+    "source_sha256": "b51647cb8c40397f3160eed2006c2ea284af543c90afe8e576ea59c374013332",
+    "original_row_sha256": "6bd65fb1b48b6f3c2491df37b7f24039e454b607cd7fb68343871e324ab87927",
+    "body_sha256": "38c6b5f7b95a6a3ffd88d05e59d069bdf004d31cf97b5ae40fdcb4a59fcdc8bb",
+    "canonical_expected": {
+      "id": "sci-execution-sci-xf-bounds-empty-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical complete original invalid transformer sequence throws structured categoryerror before return despite empty collection inputs; historical SCI full returned vector stays unresolved.",
+    "scope_basis": "Live125 intended CLJS language/runtime/Var/protocol/transformation contract; complete unchanged portable original source and both required defaultpins. Full original SCI expectation remains explicit and unresolved with zero semantic credit."
+  },
+  {
+    "sci_id": "sci-coll-count-invalid",
+    "source_sha256": "ec5dd14a1c461cf5aa09bdec5d5c9261551c348491f50bcf4658b20ea2041c94",
+    "original_row_sha256": "e76ffe5d859e9b1c0dc9d2eb4a8c1a799c23b09b7d1b01e98edfcb8ba2e6479c",
+    "body_sha256": "2841916b0dd075e8384526ec9757f4c91af011efaea47b3c46cc8f7305604075",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-count-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-empty-p-invalid",
+    "source_sha256": "6622a6a283a89e6c921b2847fcb628f05c81b97ac28b0e0d62812d1fca9e0a6e",
+    "original_row_sha256": "3cd3dfebb9645af8f60851528598f509b387873e8d2775c068d4e06194ad87eb",
+    "body_sha256": "350632a6483d20a9632c838b3c05888fc64a3aca8a74282b85a18c5a76ffee99",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-empty-p-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-select-keys-invalid",
+    "source_sha256": "79366cd0bc08632f49f2f816dcbf71fdb657e6eef4cbdae0dd9e65fc4e43d709",
+    "original_row_sha256": "d914df45ac2bc281ad271635da46176624d1457a754d4e222af45e6a147bfbeb",
+    "body_sha256": "5f130d5b335ce8d695bf40d3ecd11a058b13540cb7c3be2ff08d3011dce31d7d",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-select-keys-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-merge-invalid",
+    "source_sha256": "0bb14f9cd63b9e2cd3e3c181b385819786609c2be871e819c2bc0d6238147ea2",
+    "original_row_sha256": "c1086aff5c4922adb1e8d1706207fa55f1b474ab351f2f695358c3211a913889",
+    "body_sha256": "439cb83226e603e92156553600c841421f4c34b551f9211c0d93947bdab1f0c2",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-merge-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-merge-with-invalid",
+    "source_sha256": "7b905841cc5202722921e352ec0420ba018f8bca03fb8e82c5e049659a0c6fdd",
+    "original_row_sha256": "94605f5599175b85604eaa798919e261fdf6e11e80331f41f1bb44973f80a834",
+    "body_sha256": "cf9246f49596c845464311ff47c119c1027d77378417d1d606bb17054c4184d4",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-merge-with-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "type-error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured type-error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-peek-invalid",
+    "source_sha256": "ee8176af2a607e8aa4274e623838f2b9d0014179971422224bf97004654749ea",
+    "original_row_sha256": "5cd9d870c4f9689abae8eb658a12243949aaf3ef4b6c09cc1d6d179a38ad5019",
+    "body_sha256": "beae2fe73151e1e65e977d81164022b98403867b0e59e857955d933d22186178",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-peek-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-pop-invalid",
+    "source_sha256": "be127b07e07560ac043697c7eed2718908cdc8b83f2f5dcc375aae553d787a37",
+    "original_row_sha256": "5b611df28a74bacd0060c4cceafa0f5f6c48ce56d8e0948f194f7318bbb7c32a",
+    "body_sha256": "d1ec65e62bb7c866efa22589d3e0bd8160866916eede7054070d30eb76b7f57d",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-pop-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-conj-vector-sequence-invalid",
+    "source_sha256": "a01ca8d1384f407409ca7d87fe0f19957cb11ecf34715a641b8c55a57e3cf131",
+    "original_row_sha256": "20dd9d4fc462b1029e3bd03872e9d2364f0ef7c196999249024e731059e4da46",
+    "body_sha256": "00aabf2e0be963b505f9144f9405b4e86afc1cd3f1509e841c7b5ab25ae49b39",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-conj-vector-sequence-invalid",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$map": [
+            [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "a",
+                  "spelling": "a"
+                }
+              },
+              1
+            ]
+          ],
+          "count": 1
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original returns the full literal {\"$map\":[[{\"$keyword\":{\"namespace\":null,\"name\":\"a\",\"spelling\":\"a\"}},1]],\"count\":1} with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-conj-entry-length-invalid",
+    "source_sha256": "9583fc9db94c3a93e957742c7f028ad83892e232ab1cc99b6c79aa38411f90ed",
+    "original_row_sha256": "ab733c0fdee1f167ea668f3c275b4ae2cd74d6187eb9f3cffd549270789175d0",
+    "body_sha256": "05d56fb7be4aedd9ff29b2454b5bbae5e9642a2d6731f2c83c3006b61cf09b28",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-conj-entry-length-invalid",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$map": [
+            [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "a",
+                  "spelling": "a"
+                }
+              },
+              1
+            ]
+          ],
+          "count": 1
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original returns the full literal {\"$map\":[[{\"$keyword\":{\"namespace\":null,\"name\":\"a\",\"spelling\":\"a\"}},1]],\"count\":1} with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-call-vector-arity",
+    "source_sha256": "3707fdda85ef41f58aa66e1eaab0e70dcff12b89f1857ab14afbd3b25091ac3a",
+    "original_row_sha256": "8d795f4982829d1eda6309d12a9ad884bef8bd93f5a8ce6283330ba364c3ca31",
+    "body_sha256": "8a2d39de9bb724a27461aaf406076a57ca86209894739923fb5a6ce2eab3bbb2",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-call-vector-arity",
+      "outcome": {
+        "status": "returned",
+        "value": 1
+      },
+      "trace": [
+        0,
+        2
+      ],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original returns the full literal 1 with exact ordered effects [0,2]; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-call-set-arity",
+    "source_sha256": "880028f8206da4ddeb4a01a0bf83faae15debfe7ca16c25560e6fe2d2cf2a086",
+    "original_row_sha256": "1661fe2437e9feb1f90f02e8db9484483e0b772b34ff02c820f25cef396ba36b",
+    "body_sha256": "4c2d9db2b95ea8bcbfdfcec268a9d83e3689fe761aaf86131c2900c6b99a66d0",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-call-set-arity",
+      "outcome": {
+        "status": "returned",
+        "value": 1
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original returns the full literal 1 with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-call-map-arity",
+    "source_sha256": "5b8d2b991d2c1f5bf78beb557d17e6650086a267e5ffd4bb6f8aaa942c570f5d",
+    "original_row_sha256": "f667a61baa5c17ac0952c17a4c60ad441e56f779048d8e758b83b17dedac4732",
+    "body_sha256": "cc43b2244608821d5f1ebf2a476bded2d1a418106762bea7d9a651168abce92b",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-call-map-arity",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-call-symbol-arity",
+    "source_sha256": "ab55c7f2497d11607de81508242a9c3f8710c03b9f1103d197d1decaa1550f72",
+    "original_row_sha256": "d5517eec9caa03400a6f27ebabe6ce9c811e0461d160bbe46674cc249a195529",
+    "body_sha256": "6f092bba40cccceadc3d62777f135780c63c4a6135d5c27412171d7eab3543e1",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-call-symbol-arity",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-call-vector-type",
+    "source_sha256": "cd1ebc4014a85f92cf3d0a782e02f62b80124cd90bffcbd329e8eefa08d6c1cb",
+    "original_row_sha256": "75b8f00b1f846fd64fd575d693e54e9144389245d28f66a78cc474ad301f6ac8",
+    "body_sha256": "7eba0b80aa2c2d1611c98b818fac401fb5b1cb7ea5571c8fc55fa5122979c958",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-call-vector-type",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-call-vector-bounds",
+    "source_sha256": "150adbee561f93c5a00fab44c128db646cbebe40d7801cfd8cc5619aa525bec0",
+    "original_row_sha256": "301345b0c5b8d0179e3f085462f57812c0a9f75f992eb1cab63e0c90243d4d2a",
+    "body_sha256": "86cf30e0e3c9b71bd3c9c84aa36b92f739db5a116c33d295ce8291114cec2bd6",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-call-vector-bounds",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-nth-bounds",
+    "source_sha256": "a2fa717d3d4b47c0ca57cb95a0446ca0ab544dd5427127285e7f5feb87a2fe75",
+    "original_row_sha256": "855c930e3138638fc97bdebdba47a97edfacb03ee0db9b0ec0c243ad1f28b968",
+    "body_sha256": "d5d7faf2cc5440a8d8003bd4e080a214215b12bb912f042c8900d36f44511438",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-nth-bounds",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-nth-type",
+    "source_sha256": "088641bd463dc44199c3dc485678fe8f7df18bc48680998b5f3d3b50ccb5b85d",
+    "original_row_sha256": "1c01849228c87e8987fd9f09b3b2812ceae1bc12b717c5a1e82e7b35948b17f2",
+    "body_sha256": "99acbff3c458972ff49546aab63da61e75ee4ed41d2b7e0176f6d511a0ea47be",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-nth-type",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-assoc-bounds",
+    "source_sha256": "35faf2d009fc0b8276927d4ff9f92a2011eec56a906e92bd3a84d3e2a06bc26d",
+    "original_row_sha256": "d45f3c5309377e5bd98dcd690ed961ec8569c3aae14d90f3c344da9ce9b181f2",
+    "body_sha256": "aa43f6428968d33660e91297bbe5aaa2758f94989b21e3d78838c2e86cc97a5b",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-assoc-bounds",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-assoc-type",
+    "source_sha256": "b307f8ea205cd96942dbc00270b889735f7046a343c9f695492b968d828e3287",
+    "original_row_sha256": "be0ea28afb0979efb59f38a7c1c8a12930d476f97e75458bb25305f1f9be535b",
+    "body_sha256": "26f8f811fac8805389e90f79c57f0e8c7b6116e9aa046f4ad3e7300433cd51eb",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-assoc-type",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            3
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original returns the full literal {\"$vector\":[3]} with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-pop-vector-empty",
+    "source_sha256": "a349bb89b255753f68f3d67f8fb5d5fe66ecb7216298f114f3e313e61f4800c1",
+    "original_row_sha256": "aa817e7efddba0172de93c571d8982972b34c222b50afa0f05b7ce2b937e965f",
+    "body_sha256": "cca6394978dc3751eb0963a38dfd42f93052b8c3e5152e13bbfc7df7fefbd1ef",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-pop-vector-empty",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  },
+  {
+    "sci_id": "sci-coll-pop-list-empty",
+    "source_sha256": "fe8dc40ecc0271aa5dfddcbad521cfab8beffe9b5fc2b25ef91c7b32228c4912",
+    "original_row_sha256": "a9c9cfeb77f145f6be73cd346a2afd84f5937fecf905da0ea21d008551f22899",
+    "body_sha256": "f3487cf4cbfd8e09fdb1012927ab1153594d84236fd5e3e90f9fd17a6809b4bf",
+    "canonical_expected": {
+      "id": "sci-execution-sci-coll-pop-list-empty",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "reason": "Canonical unchanged original throws exact structured error with exact ordered effects []; historical SCI execution phase/category is retained separately, unchanged and unresolved.",
+    "scope_basis": "Live125 intended CLJS collection/index/invocation and Number contract. Full original source, SCI structured phase/category, ordered effects and streams remain exact; both required defaultpins and actual macro/application phases have literal canonical contracts. No originalSCI semantic pass credit."
+  }
+]

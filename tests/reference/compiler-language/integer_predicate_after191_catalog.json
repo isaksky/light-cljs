@@ -1,0 +1,59 @@
+{
+  "module": "research/clojurescript/src/test/cljs/cljs/predicates_test.cljs",
+  "module_sha256": "630745c091260bef35c6cf57540056aff75e4a8f34b382c2dd2a732a980e597e",
+  "forms": {
+    "int-val-table": {
+      "source": "(def int-val-table\n  (let [posint 10e10\n        negint -10e10\n        neg0   (/ ##-Inf)\n        ;; NOTE: we must go through a var because in self-parity tests\n        ;; we cannot simply import goog.module namespaces if cljs.core\n        ;; depends on the type - that's because cljs.core was *separately\n        ;; compiled* already bundling goog.modules. In many cases this is\n        ;; not an issue, but it is an issue if internally we use the type\n        ;; to make instanceof assertions - which we do for Long\n        natl   (.getZero LongImpl)\n        posl   (.fromNumber LongImpl posint)\n        negl   (.fromNumber LongImpl negint)\n        nati   Integer.ZERO\n        posi   (Integer.fromNumber posint)\n        negi   (Integer.fromNumber negint)]\n    [[identity  neg?  pos?   integer? int?   neg-int?  pos-int?  nat-int?]\n     [0         false false  true     true   false     false     true    ]\n     [neg0      false false  true     true   false     false     true    ]\n     [1         false true   true     true   false     true      true    ]\n     [-1        true  false  true     true   true      false     false   ]\n     [1.0       false true   true     true   false     true      true    ]\n     [-1.0      true  false  true     true   true      false     false   ]\n     [posint    false true   true     true   false     true      true    ]\n     [negint    true  false  true     true   true      false     false   ]\n     [natl      false false  false    true   false     false     true    ]\n     [posl      false true   false    true   false     true      true    ]\n     [negl      true  false  false    true   true      false     false   ]\n     [nati      false false  false    true   false     false     true    ]\n     [posi      false true   false    true   false     true      true    ]\n     [negi      true  false  false    true   true      false     false   ]]))",
+      "sha256": "ef0594f249eb5094f5641283824eb6a6bfb3fe66c9dec755f4240acd06071479"
+    },
+    "test-int-preds": {
+      "source": "(deftest test-int-preds\n  (let [[preds & rows] int-val-table]\n    (doseq [row rows]\n      (let [v (first row)]\n        (dotimes [i (count row)]\n          (is (= ((nth preds i) v) (nth row i))\n              (pr-str (list (nth preds i) v))))))))",
+      "sha256": "4effa47d1bb9402702f5b48342dba0c244a6846e7a5590d09b276accdc0f97ee"
+    }
+  },
+  "genuine_compiled_dependency_root": "/tmp/light-cljs-125-hosted-import-adapter-v1/release/cljs-hosted-original-import-context/out/goog",
+  "compiled_dependency_sha256": {
+    "base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+    "deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+    "debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+    "dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+    "asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+    "reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+    "math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+    "math/math.js": "43eff984882740275ba9277d1eb613ae84f28cae028dd3ddc499646b631da47a",
+    "math/coordinate.js": "80eb59b3766531eaf58f952300a60abe4c2adec842c36336c01b5623e1bf33f1",
+    "math/vec2.js": "b9eb5c3dfd8115916f1f1411393866dce8b8e79afe5a3098f828a06c2a11b46d",
+    "math/coordinate3.js": "ef5de4467663a36432e71b3bc968b6a34b86a1638cd1d9dd87fb1fce7e3b9582",
+    "math/vec3.js": "d2c026a351f6e83431064b867cd5c6e315d8202662110e8ffbb1c130e0418fb3",
+    "math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a"
+  },
+  "library_origin": {
+    "archive": "/Users/admin/.m2/repository/org/clojure/google-closure-library/0.0-20250515-f04e4c0e/google-closure-library-0.0-20250515-f04e4c0e.jar",
+    "archive_sha256": "451cc32a6897448c925a9c72338a7a573a874bd3da0b385eda87e81c060d7e1a",
+    "raw_source_dependency_sha256": {
+      "base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+      "deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+      "debug/error.js": "ea89152940c93038d827650e8a987d91499830d0c134d17bc95aacc18953ca0b",
+      "dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+      "asserts/asserts.js": "dc5b34f8a4e7e7fcf5ceb1f2f6c119820ba7fd95674178d5275fc6580402e574",
+      "reflect/reflect.js": "29cba29225ab4e83709f8693a423a10b30dac4b3500c4b79da474a3c65319354",
+      "math/long.js": "93f8b7994ed21e43505d9525533882f90e88c74df712db8128df5fb5a04a2c32",
+      "math/math.js": "43eff984882740275ba9277d1eb613ae84f28cae028dd3ddc499646b631da47a",
+      "math/coordinate.js": "80eb59b3766531eaf58f952300a60abe4c2adec842c36336c01b5623e1bf33f1",
+      "math/vec2.js": "2d1ea1de51d6fffbe2f30449072e79b92aa6fec798167888eed22a7718cf6477",
+      "math/coordinate3.js": "b6347cd7a3f845077ea91b260878764513853f96f1366291dbc9010cb888f406",
+      "math/vec3.js": "d2c026a351f6e83431064b867cd5c6e315d8202662110e8ffbb1c130e0418fb3",
+      "math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a"
+    }
+  },
+  "closure_loader_sha256": "17f4366ee0f60eeb9069d9949cca2f845043a5e7288791a5ffd5b98d1c01b605",
+  "adapter_boundaries": [
+    "explicit audited genuine Closure bytes",
+    "LongImpl alias to goog.module.get(goog.math.Long)",
+    "external deftest/is assertion collector; original forms unchanged"
+  ],
+  "original_site_credit": 0,
+  "ordinary_credit": 0,
+  "phase_credit": 0,
+  "strict_complete": false
+}

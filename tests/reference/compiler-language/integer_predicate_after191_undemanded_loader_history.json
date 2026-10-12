@@ -1,0 +1,338 @@
+{
+  "helper_copy": "tests/reference/compiler-language/integer_predicate_after191_undemanded_loader.py.txt",
+  "helper_sha256": "3f884fd03ea128b98440911811f928221ad954027bf387901da43b78cacb33aa",
+  "artifact_root": "/tmp/light-cljs-125-integer-predicate-after191-namespace",
+  "raw_log_sha256": "d9c6bb16ec08de1cb9cefd53a00fbd747dd03e8b14b63cc120a21c6d30436c70",
+  "application_diagnostics": [
+    {
+      "context": [
+        "fresh",
+        "application",
+        "QuickJS"
+      ],
+      "controls": {
+        "$vector": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          0,
+          100000000000,
+          -100000000000,
+          0,
+          100000000000,
+          -100000000000
+        ]
+      },
+      "assertions": 112,
+      "failures": [
+        {
+          "row": 8,
+          "predicate": 4
+        },
+        {
+          "row": 8,
+          "predicate": 7
+        },
+        {
+          "row": 9,
+          "predicate": 4
+        },
+        {
+          "row": 9,
+          "predicate": 6
+        },
+        {
+          "row": 9,
+          "predicate": 7
+        },
+        {
+          "row": 10,
+          "predicate": 4
+        },
+        {
+          "row": 10,
+          "predicate": 5
+        },
+        {
+          "row": 11,
+          "predicate": 4
+        },
+        {
+          "row": 11,
+          "predicate": 7
+        },
+        {
+          "row": 12,
+          "predicate": 4
+        },
+        {
+          "row": 12,
+          "predicate": 6
+        },
+        {
+          "row": 12,
+          "predicate": 7
+        },
+        {
+          "row": 13,
+          "predicate": 4
+        },
+        {
+          "row": 13,
+          "predicate": 5
+        }
+      ]
+    },
+    {
+      "context": [
+        "fresh",
+        "application",
+        "Node"
+      ],
+      "controls": {
+        "$vector": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          0,
+          100000000000,
+          -100000000000,
+          0,
+          100000000000,
+          -100000000000
+        ]
+      },
+      "assertions": 112,
+      "failures": [
+        {
+          "row": 8,
+          "predicate": 4
+        },
+        {
+          "row": 8,
+          "predicate": 7
+        },
+        {
+          "row": 9,
+          "predicate": 4
+        },
+        {
+          "row": 9,
+          "predicate": 6
+        },
+        {
+          "row": 9,
+          "predicate": 7
+        },
+        {
+          "row": 10,
+          "predicate": 4
+        },
+        {
+          "row": 10,
+          "predicate": 5
+        },
+        {
+          "row": 11,
+          "predicate": 4
+        },
+        {
+          "row": 11,
+          "predicate": 7
+        },
+        {
+          "row": 12,
+          "predicate": 4
+        },
+        {
+          "row": 12,
+          "predicate": 6
+        },
+        {
+          "row": 12,
+          "predicate": 7
+        },
+        {
+          "row": 13,
+          "predicate": 4
+        },
+        {
+          "row": 13,
+          "predicate": 5
+        }
+      ]
+    },
+    {
+      "context": [
+        "reused",
+        "application",
+        "QuickJS"
+      ],
+      "controls": {
+        "$vector": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          0,
+          100000000000,
+          -100000000000,
+          0,
+          100000000000,
+          -100000000000
+        ]
+      },
+      "assertions": 112,
+      "failures": [
+        {
+          "row": 8,
+          "predicate": 4
+        },
+        {
+          "row": 8,
+          "predicate": 7
+        },
+        {
+          "row": 9,
+          "predicate": 4
+        },
+        {
+          "row": 9,
+          "predicate": 6
+        },
+        {
+          "row": 9,
+          "predicate": 7
+        },
+        {
+          "row": 10,
+          "predicate": 4
+        },
+        {
+          "row": 10,
+          "predicate": 5
+        },
+        {
+          "row": 11,
+          "predicate": 4
+        },
+        {
+          "row": 11,
+          "predicate": 7
+        },
+        {
+          "row": 12,
+          "predicate": 4
+        },
+        {
+          "row": 12,
+          "predicate": 6
+        },
+        {
+          "row": 12,
+          "predicate": 7
+        },
+        {
+          "row": 13,
+          "predicate": 4
+        },
+        {
+          "row": 13,
+          "predicate": 5
+        }
+      ]
+    },
+    {
+      "context": [
+        "reused",
+        "application",
+        "Node"
+      ],
+      "controls": {
+        "$vector": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          0,
+          100000000000,
+          -100000000000,
+          0,
+          100000000000,
+          -100000000000
+        ]
+      },
+      "assertions": 112,
+      "failures": [
+        {
+          "row": 8,
+          "predicate": 4
+        },
+        {
+          "row": 8,
+          "predicate": 7
+        },
+        {
+          "row": 9,
+          "predicate": 4
+        },
+        {
+          "row": 9,
+          "predicate": 6
+        },
+        {
+          "row": 9,
+          "predicate": 7
+        },
+        {
+          "row": 10,
+          "predicate": 4
+        },
+        {
+          "row": 10,
+          "predicate": 5
+        },
+        {
+          "row": 11,
+          "predicate": 4
+        },
+        {
+          "row": 11,
+          "predicate": 7
+        },
+        {
+          "row": 12,
+          "predicate": 4
+        },
+        {
+          "row": 12,
+          "predicate": 6
+        },
+        {
+          "row": 12,
+          "predicate": 7
+        },
+        {
+          "row": 13,
+          "predicate": 4
+        },
+        {
+          "row": 13,
+          "predicate": 5
+        }
+      ]
+    }
+  ],
+  "macro_boundary": "top-level loader expression not demanded by lazy macro environment; no goog initialized; no predicate credit",
+  "original_site_credit": 0
+}

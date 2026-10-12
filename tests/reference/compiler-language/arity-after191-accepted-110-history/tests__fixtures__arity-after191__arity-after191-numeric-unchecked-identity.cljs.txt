@@ -1,0 +1,1 @@
+[(unchecked-byte 300) (unchecked-short 65537) (unchecked-char 65) (unchecked-float "x") (unchecked-double false) (identical? unchecked-add +) (identical? unchecked-inc inc)]

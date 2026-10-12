@@ -1,0 +1,1 @@
+(defprotocol P (f [this] [this x])) (deftype T []) (let [v (T.)] (extend-type T P (f [_] 1) (f [_ x] x)) (assert (= [1 3] [(f v) (f v 3)])) (assert (implements? P v)) (assert (satisfies? P v)) (extend-type T P (f ([_] 4) ([_ x] (+ x 1)))) (assert (= [4 4] [(f v) (f v 3)]))) true

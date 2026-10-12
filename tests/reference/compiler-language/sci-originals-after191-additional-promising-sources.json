@@ -1,0 +1,544 @@
+[
+  {
+    "id": "sci-execution-sci-var-root-reference",
+    "sci_id": "sci-var-root-reference",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-root-reference",
+    "body_sha256": "9365d85a15c9e4f41712f005a60bb5c7fff99d478bc2296ee88d671f2565429f",
+    "original_row_sha256": "97e7499c89c3a4dbffc0673b7a754784b5f2c810ee43833b1cea29479ac0fcaf",
+    "source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+    "original_source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+    "source": "(def x 1) (def saved #'x) (def f (fn* [] x)) (def x 2) [(identical? saved #'x) (deref saved) (f)]",
+    "original_fields": [
+      "sci-var-root-reference",
+      "portable",
+      "(def x 1) (def saved #'x) (def f (fn* [] x)) (def x 2) [(identical? saved #'x) (deref saved) (f)]",
+      "(return (vector (bool true) (int 2) (int 2)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-var-root-reference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            2,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-var-root-reference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            2,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-var-root-reference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            2,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  },
+  {
+    "id": "sci-execution-sci-vars-duplicate-redefs",
+    "sci_id": "sci-vars-duplicate-redefs",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-vars-duplicate-redefs",
+    "body_sha256": "251aedd79ae04c9e81f7198287c48ebe34f0ab074fbe08512de12a7204940d02",
+    "original_row_sha256": "cbcccd48586ce24c224cd82e39343e89901dbc34e29af72b54710c6d4431fe00",
+    "source_sha256": "9db7be280451c932a016c09c8f0522798207d4e3fe0f2ef7870b0568188e7c7d",
+    "original_source_sha256": "9db7be280451c932a016c09c8f0522798207d4e3fe0f2ef7870b0568188e7c7d",
+    "source": "(def x 0) [(with-redefs [x (observe 1) x (observe 2)] x) x]",
+    "original_fields": [
+      "sci-vars-duplicate-redefs",
+      "portable",
+      "(def x 0) [(with-redefs [x (observe 1) x (observe 2)] x) x]",
+      "(return (vector (int 2) (int 0)))",
+      "(vector (int 2))",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-vars-duplicate-redefs",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            0
+          ]
+        }
+      },
+      "trace": [
+        2
+      ],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-vars-duplicate-redefs",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            0
+          ]
+        }
+      },
+      "trace": [
+        2
+      ],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-vars-duplicate-redefs",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            0
+          ]
+        }
+      },
+      "trace": [
+        1,
+        2
+      ],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  },
+  {
+    "id": "sci-execution-sci-vars-def-bound",
+    "sci_id": "sci-vars-def-bound",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-vars-def-bound",
+    "body_sha256": "42b32f6a0088c630c1fef67e25c4e48b1ba3241ca6a5b4e876ecca83e9e0ab32",
+    "original_row_sha256": "9dd43ae1405e8ede2eaf21d0630bebe1e8f44a9281ad9f02fdbf8524961ffbbc",
+    "source_sha256": "be9d5c40a8f73680ab2e9c195987ee95831bb0b212cd3be9f714074202197a73",
+    "original_source_sha256": "be9d5c40a8f73680ab2e9c195987ee95831bb0b212cd3be9f714074202197a73",
+    "source": "(def ^:dynamic x 0) [(binding [x 1] (def ^:dynamic x 2) x) x]",
+    "original_fields": [
+      "sci-vars-def-bound",
+      "portable",
+      "(def ^:dynamic x 0) [(binding [x 1] (def ^:dynamic x 2) x) x]",
+      "(return (vector (int 1) (int 2)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-vars-def-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-vars-def-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-vars-def-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            0
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  },
+  {
+    "id": "sci-execution-sci-vars-defonce-bound",
+    "sci_id": "sci-vars-defonce-bound",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-vars-defonce-bound",
+    "body_sha256": "e73557365bcf885423a07e51bf917445012b78d7327af46a56726d32b34e5304",
+    "original_row_sha256": "1440e7fcc0bb5286ca4d5aa0b6ba065cda9df905d7eb53d228af83281af3f086",
+    "source_sha256": "4d49f69b4253fb80855513d9ab4f451f3cc7c666f4e22d804688f2142c3ad1b6",
+    "original_source_sha256": "4d49f69b4253fb80855513d9ab4f451f3cc7c666f4e22d804688f2142c3ad1b6",
+    "source": "(def ^:dynamic x) [(binding [x 1] (defonce ^:dynamic x 2) x) x]",
+    "original_fields": [
+      "sci-vars-defonce-bound",
+      "portable",
+      "(def ^:dynamic x) [(binding [x 1] (defonce ^:dynamic x 2) x) x]",
+      "(return (vector (int 1) (int 2)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-vars-defonce-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-vars-defonce-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-vars-defonce-bound",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            {
+              "$value": "undefined"
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  },
+  {
+    "id": "sci-execution-sci-protocol-same-shape",
+    "sci_id": "sci-protocol-same-shape",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-protocol-same-shape",
+    "body_sha256": "d310d7e8555508c598ca6fa91e46d2640304dfaf24d35cd49c47f78a5df5c28f",
+    "original_row_sha256": "c285252ec5f74d87946f801d10be29788e4bd6bb89faff381cccbfe2913b634f",
+    "source_sha256": "b52078a925e827020b1315f11bbb02a8b04f36e76a7c5c2562af1c6abf74a6fb",
+    "original_source_sha256": "b52078a925e827020b1315f11bbb02a8b04f36e76a7c5c2562af1c6abf74a6fb",
+    "source": "(defprotocol P (f [x])) (def saved f) (defprotocol P \"updated\" (f [receiver] \"updated-method\")) [(identical? saved f) (:doc (meta (var P))) (:doc (meta (var f)))]",
+    "original_fields": [
+      "sci-protocol-same-shape",
+      "portable",
+      "(defprotocol P (f [x])) (def saved f) (defprotocol P \"updated\" (f [receiver] \"updated-method\")) [(identical? saved f) (:doc (meta (var P))) (:doc (meta (var f)))]",
+      "(return (vector (bool true) (string u0075007000640061007400650064) (string u0075007000640061007400650064002d006d006500740068006f0064)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-protocol-same-shape",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            "updated",
+            "updated-method"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-protocol-same-shape",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            "updated",
+            "updated-method"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-protocol-same-shape",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            false,
+            "updated",
+            "updated-method"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  },
+  {
+    "id": "sci-execution-sci-syntax-quote-core",
+    "sci_id": "sci-syntax-quote-core",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-syntax-quote-core",
+    "body_sha256": "202fc90a15efca71415f250f8f15a44e66a7a54b6ca336bc293a1d7a81157d35",
+    "original_row_sha256": "2867ba12a84249931dab37087368112a6a545f9d744ec995eed56be99f9e8f3c",
+    "source_sha256": "12449234d577c7b597d976bc6a53f4bf08c7b66a59c5b1bd06e56a4b28676b45",
+    "original_source_sha256": "12449234d577c7b597d976bc6a53f4bf08c7b66a59c5b1bd06e56a4b28676b45",
+    "source": "(let* [x 10] `(list ~x ~x))",
+    "original_fields": [
+      "sci-syntax-quote-core",
+      "portable",
+      "(let* [x 10] `(list ~x ~x))",
+      "(return (seq (symbol u0063006c006f006a007500720065002e0063006f00720065 u006c006900730074) (int 10) (int 10)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-syntax-quote-core",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$seq": [
+            {
+              "$symbol": {
+                "namespace": "clojure.core",
+                "name": "list",
+                "spelling": "clojure.core/list"
+              }
+            },
+            10,
+            10
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-syntax-quote-core",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$seq": [
+            {
+              "$symbol": {
+                "namespace": "clojure.core",
+                "name": "list",
+                "spelling": "clojure.core/list"
+              }
+            },
+            10,
+            10
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-syntax-quote-core",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$seq": [
+            {
+              "$symbol": {
+                "namespace": "cljs.core",
+                "name": "list",
+                "spelling": "cljs.core/list"
+              }
+            },
+            10,
+            10
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  },
+  {
+    "id": "sci-execution-sci-xf-bounds-empty-invalid",
+    "sci_id": "sci-xf-bounds-empty-invalid",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-xf-bounds-empty-invalid",
+    "body_sha256": "38c6b5f7b95a6a3ffd88d05e59d069bdf004d31cf97b5ae40fdcb4a59fcdc8bb",
+    "original_row_sha256": "6bd65fb1b48b6f3c2491df37b7f24039e454b607cd7fb68343871e324ab87927",
+    "source_sha256": "b51647cb8c40397f3160eed2006c2ea284af543c90afe8e576ea59c374013332",
+    "original_source_sha256": "b51647cb8c40397f3160eed2006c2ea284af543c90afe8e576ea59c374013332",
+    "source": "[(into [] (take :bad) []) (into [] (drop :bad) []) (into [] (take-while :bad) []) (into [] (take nil) []) (into [] (drop nil) [])]",
+    "original_fields": [
+      "sci-xf-bounds-empty-invalid",
+      "portable",
+      "[(into [] (take :bad) []) (into [] (drop :bad) []) (into [] (take-while :bad) []) (into [] (take nil) []) (into [] (drop nil) [])]",
+      "(return (vector (vector) (vector) (vector) (vector) (vector)))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-xf-bounds-empty-invalid",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "original_expected": {
+      "id": "sci-execution-sci-xf-bounds-empty-invalid",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            },
+            {
+              "$vector": []
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "canonical_expected": {
+      "id": "sci-execution-sci-xf-bounds-empty-invalid",
+      "outcome": {
+        "status": "threw",
+        "error": {
+          "category": "error"
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_context_profile": "additional-whole-original-after191-discovery-v1",
+    "original_semantic_pass_credit": 0,
+    "original_expectation_status": "unresolved",
+    "reason": "Whole original canonical/runtime contrast; discovery only, no acceptance credit",
+    "scope_basis": "All original source/return/error/effects retained; current local and both defaultpin discovery agree exactly; actual demanded macro and independent executable replay remain required",
+    "focused_owner": null
+  }
+]

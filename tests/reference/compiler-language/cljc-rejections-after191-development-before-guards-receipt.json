@@ -1,0 +1,1408 @@
+{
+  "schema_version": 1,
+  "profile": "exact-original-cljc-rejections-after191-v1",
+  "root": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3",
+  "source_binding": [
+    {
+      "id": "sci-execution-sci-context-reader-metadata-no-match",
+      "sci_id": "sci-context-reader-metadata-no-match",
+      "source": "(meta '^:private #?(:cljs x) y)",
+      "source_sha256": "e0cfa8dea46e470f0a4e3f9d9a42dcbfb194d83ae65d79fc6b1c11c228c06a95",
+      "original_row_sha256": "3ba850a266625ed032282ecc18ebce9bf53c310c1d6ca3ef684f28a9098f5663",
+      "body_sha256": "bab535d44f5f386b774a4b83a8f4e33cb837395248944096b1454f7bc64e6d00",
+      "expected": {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$map": [
+              [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "private",
+                    "spelling": "private"
+                  }
+                },
+                true
+              ]
+            ],
+            "count": 1
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_name": "sci-original.cljc",
+      "reader_feature": "cljs",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-metadata-no-match",
+      "required_diagnostic": "unresolved symbol: y",
+      "canonical_reference_rejection": null,
+      "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+    },
+    {
+      "id": "sci-execution-sci-context-reader-skipped-tag",
+      "sci_id": "sci-context-reader-skipped-tag",
+      "source": "#?(:clj 42 :cljs #missing/tag [1 2])",
+      "source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+      "original_row_sha256": "d33ad763f37ae3d91cb3dcae1579a5ec9e0539907f1546589e18d92f910b2101",
+      "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+      "expected": {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "outcome": {
+          "status": "returned",
+          "value": 42
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_name": "sci-original.cljc",
+      "reader_feature": "cljs",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+      "required_diagnostic": "UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })",
+      "canonical_reference_rejection": "No reader function for tag missing/tag.",
+      "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+    },
+    {
+      "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+      "sci_id": "sci-context-reader-skipped-tag-identity",
+      "source": "#?(:cljs {#a 1 :a (a 1) :b} :clj 2)",
+      "source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+      "original_row_sha256": "69105c35267ccc87daadf739cf36f6b9d08948fb7b22022d14cdfc579ecb7057",
+      "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+      "expected": {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "outcome": {
+          "status": "returned",
+          "value": 2
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_name": "sci-original.cljc",
+      "reader_feature": "cljs",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+      "required_diagnostic": "UnknownTag(Name { namespace: None, name: [97] })",
+      "canonical_reference_rejection": "No reader function for tag a.",
+      "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+    },
+    {
+      "id": "sci-execution-sci-context-reader-splice-map-key",
+      "sci_id": "sci-context-reader-splice-map-key",
+      "source": "{:a #?(:clj 1) #?@(:clj [:b 2])}",
+      "source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+      "original_row_sha256": "1accb85286deda99a8b3431f47f90c023d07f1335cd49f915be76ea7ce688ace",
+      "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+      "expected": {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$map": [
+              [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "a",
+                    "spelling": "a"
+                  }
+                },
+                1
+              ],
+              [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "b",
+                    "spelling": "b"
+                  }
+                },
+                2
+              ]
+            ],
+            "count": 2
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_name": "sci-original.cljc",
+      "reader_feature": "cljs",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+      "required_diagnostic": "map requires an even number of selected forms",
+      "canonical_reference_rejection": "Map literals must contain an even number of forms.",
+      "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+    }
+  ],
+  "source_snapshot": {
+    "src/analyzer.rs": "d64be5abbd0f4d3f15139cd0fb8430f0ef78a188fb60dc146d0b1a93c7d5d041",
+    "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+    "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+    "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+    "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+    "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+    "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+    "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+    "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+    "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+    "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+    "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+    "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+    "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+    "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+    "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+    "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+    "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+    "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+    "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+    "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+    "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+    "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+    "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+    "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+    "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+    "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+    "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+    "src/js_runtime.js": "bb10805cc1d78cb650847286707787b98e9bcc12f2698f973d3923544b1c8e24",
+    "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+    "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+    "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+    "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+    "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+    "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+    "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+    "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+    "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+    "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+    "tests/reference/compiler-language/sci_cljc_source_probe.py": "0c96e43d78a902673d0133abae7615f4231d9df14cd8dd9c4ee59340d42bcccd",
+    "tests/reference/compiler-language/sci_cljc_source_probe.clj": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4",
+    "tests/compiler_sci_cljc_source_probe.rs": "79d22be8fb9f40698d0dc0333b27ab4febb714f2481803f029b7ed0db1df0803",
+    "tests/reference/compiler-language/sci-cljc-source-probe-catalog.json": "3b8cce3f332306327f27c13ffb3f4a81cee67aab9ade6eee0f53aefbf09c25f0",
+    "tests/fixtures/sci-outcomes.tsv": "8dd8718da0639dc11ff1cc0d6186284a6b2f70e57919b47c34f3c5269db869e5",
+    "tests/reference/sci/evaluator-dispositions.tsv": "186d9e391aa8e468981a1f972d7fd4f5433971400587665fbbece65c305cd429",
+    "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+    "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+    "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240",
+    "tests/reference/compiler-language/cljc_rejections_after191.py": "55558f52663f37dc7018fb0389a8a759da829475cbbe96be3b72c5553ad1c711",
+    "tests/reference/compiler-language/cljc-rejections-after191-contracts.json": "432dc7dd6cf67fe1bd1554d04fd1cbe9dbd5a19b5a43623259bc6bffd8ffdcb9",
+    "tests/compiler_cljc_rejections_after191.rs": "66ba91f4f52faab6484133804b871bbd0524def7a0a249ef46a41c96c8ea15a9",
+    "tests/reference/compiler-language/test_cljc_rejections_after191.py": "0d9a6f170a8718d5e8760e0a06bc850d0c7f3f18e84f2dc6aacad37b5dac42e2"
+  },
+  "executable_binding": {
+    "cargo": {
+      "path": "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo",
+      "sha256": "35152b6c4de025e32d70be80fdf70fd4bf42cdb69d630c0fe92ebe6901e340a9"
+    },
+    "node": {
+      "path": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node",
+      "sha256": "b423af50c2fb0f4d79da9b8bd7df7279f6e4ee4221421dc26d26cca999f19615"
+    },
+    "clojure": {
+      "path": "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+      "sha256": "a266aa4f011e27ccbaac2cd359b72a3077ec26facf115904fefe6056eba74a15"
+    }
+  },
+  "local": {
+    "command": [
+      "env",
+      "LIGHT_CLJC_REJECTIONS_AFTER191_ROOT=/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local",
+      "cargo",
+      "test",
+      "--locked",
+      "--message-format=json",
+      "--test",
+      "compiler_cljc_rejections_after191",
+      "unchanged_original_reader_rejections_preserve_source_and_host_recovery",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "command_result": {
+      "status": "completed",
+      "returncode": 0,
+      "stdout": "{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#find-msvc-tools@0.1.14\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.14/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"find_msvc_tools\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.14/src/lib.rs\",\"edition\":\"2021\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":0,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/libfind_msvc_tools-93e13571f05d2366.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/libfind_msvc_tools-93e13571f05d2366.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#shlex@2.0.1\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/shlex-2.0.1/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"shlex\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/shlex-2.0.1/src/lib.rs\",\"edition\":\"2018\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":0,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[\"default\",\"std\"],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/libshlex-406f49f0da98fec0.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/libshlex-406f49f0da98fec0.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#allocator-api2@0.2.21\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/allocator-api2-0.2.21/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"allocator_api2\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/allocator-api2-0.2.21/src/lib.rs\",\"edition\":\"2018\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[\"alloc\"],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/liballocator_api2-27a566790c784aba.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/liballocator_api2-27a566790c784aba.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"equivalent\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2/src/lib.rs\",\"edition\":\"2015\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/libequivalent-9f85f7935d781944.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/libequivalent-9f85f7935d781944.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"foldhash\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/lib.rs\",\"edition\":\"2021\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/libfoldhash-6fadb88ddb452646.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/libfoldhash-6fadb88ddb452646.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#cc@1.7.0\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cc-1.7.0/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"cc\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cc-1.7.0/src/lib.rs\",\"edition\":\"2021\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":0,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/libcc-e5e08044cfe7bc86.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/libcc-e5e08044cfe7bc86.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.17.1\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.17.1/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"hashbrown\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.17.1/src/lib.rs\",\"edition\":\"2024\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[\"allocator-api2\",\"default\",\"default-hasher\",\"equivalent\",\"inline-more\",\"raw-entry\"],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/libhashbrown-688a30d11849f42f.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/libhashbrown-688a30d11849f42f.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#rquickjs-sys@0.14.0\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-sys-0.14.0/Cargo.toml\",\"target\":{\"kind\":[\"custom-build\"],\"crate_types\":[\"bin\"],\"name\":\"build-script-build\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-sys-0.14.0/build.rs\",\"edition\":\"2021\",\"doc\":false,\"doctest\":false,\"test\":false},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":0,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/build/rquickjs-sys-a334a8be1b98b282/build-script-build\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"build-script-executed\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#rquickjs-sys@0.14.0\",\"linked_libs\":[\"static=quickjs\"],\"linked_paths\":[\"native=/Users/admin/src/light-cljs/target/debug/build/rquickjs-sys-065f3ee4d5969d6d/out\"],\"cfgs\":[],\"env\":[],\"out_dir\":\"/Users/admin/src/light-cljs/target/debug/build/rquickjs-sys-065f3ee4d5969d6d/out\"}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#rquickjs-sys@0.14.0\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-sys-0.14.0/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"rquickjs_sys\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-sys-0.14.0/src/lib.rs\",\"edition\":\"2021\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/librquickjs_sys-2d5025bc7e52dc54.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/librquickjs_sys-2d5025bc7e52dc54.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#rquickjs-core@0.14.0\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-core-0.14.0/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"rquickjs_core\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-core-0.14.0/src/lib.rs\",\"edition\":\"2021\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[\"std\"],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/librquickjs_core-aa2d4701086761c9.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/librquickjs_core-aa2d4701086761c9.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"registry+https://github.com/rust-lang/crates.io-index#rquickjs@0.14.0\",\"manifest_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-0.14.0/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"rquickjs\",\"src_path\":\"/Users/admin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rquickjs-0.14.0/src/lib.rs\",\"edition\":\"2021\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[\"std\"],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/librquickjs-635f6bf6e206043c.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/librquickjs-635f6bf6e206043c.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"path+file:///Users/admin/src/light-cljs#0.1.0\",\"manifest_path\":\"/Users/admin/src/light-cljs/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"light_cljs\",\"src_path\":\"/Users/admin/src/light-cljs/src/lib.rs\",\"edition\":\"2024\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/liblight_cljs-83d5882418f132ee.rlib\",\"/Users/admin/src/light-cljs/target/debug/deps/liblight_cljs-83d5882418f132ee.rmeta\"],\"executable\":null,\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"path+file:///Users/admin/src/light-cljs#0.1.0\",\"manifest_path\":\"/Users/admin/src/light-cljs/Cargo.toml\",\"target\":{\"kind\":[\"bin\"],\"crate_types\":[\"bin\"],\"name\":\"light-cljs\",\"src_path\":\"/Users/admin/src/light-cljs/src/main.rs\",\"edition\":\"2024\",\"doc\":true,\"doctest\":false,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/light-cljs\"],\"executable\":\"/Users/admin/src/light-cljs/target/debug/light-cljs\",\"fresh\":true}\n{\"reason\":\"compiler-artifact\",\"package_id\":\"path+file:///Users/admin/src/light-cljs#0.1.0\",\"manifest_path\":\"/Users/admin/src/light-cljs/Cargo.toml\",\"target\":{\"kind\":[\"test\"],\"crate_types\":[\"bin\"],\"name\":\"compiler_cljc_rejections_after191\",\"src_path\":\"/Users/admin/src/light-cljs/tests/compiler_cljc_rejections_after191.rs\",\"edition\":\"2024\",\"doc\":false,\"doctest\":false,\"test\":true},\"profile\":{\"opt_level\":\"0\",\"debuginfo\":2,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":true},\"features\":[],\"filenames\":[\"/Users/admin/src/light-cljs/target/debug/deps/compiler_cljc_rejections_after191-7850308a6c9bb699\"],\"executable\":\"/Users/admin/src/light-cljs/target/debug/deps/compiler_cljc_rejections_after191-7850308a6c9bb699\",\"fresh\":false}\n{\"reason\":\"build-finished\",\"success\":true}\n\nrunning 1 test\ntest unchanged_original_reader_rejections_preserve_source_and_host_recovery ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.55s\n\n",
+      "stderr": "   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.97s\n     Running tests/compiler_cljc_rejections_after191.rs (target/debug/deps/compiler_cljc_rejections_after191-7850308a6c9bb699)\n",
+      "elapsed_seconds": 14.583
+    },
+    "actual_executable": "/Users/admin/src/light-cljs/target/debug/deps/compiler_cljc_rejections_after191-7850308a6c9bb699",
+    "actual_executable_sha256": "079076c6d77bfb937fcd59a2ccb77f778588516d1bdb2d6342b96359e34b07f5",
+    "frames": [
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "application-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "602c16988383b7bf9d1f478bea5a15d3a74ec601c29fd4a8be7b882ba45b37bd",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/application-fresh/user.cljc",
+        "message": "macro expansion: generated by clojure.core/fn: unresolved symbol: y",
+        "span": [
+          63,
+          64
+        ],
+        "line_column": [
+          2,
+          54
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/application-fresh/user.cljc:2:54: macro expansion: generated by clojure.core/fn: unresolved symbol: y (bytes 63..64)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "application-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "application-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "macro-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "619c2301407527092aa6599d4ad4aa0b764b61b5fc09920bdaf2645d27c1d797",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/macro-fresh/user.cljc",
+        "message": "macro expansion: macro expansion: generated by cljs.core/fn: unresolved symbol: y",
+        "span": [
+          10,
+          83
+        ],
+        "line_column": [
+          2,
+          1
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/macro-fresh/user.cljc:2:1: macro expansion: macro expansion: generated by cljs.core/fn: unresolved symbol: y (bytes 10..83)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "macro-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "macro-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "application-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "602c16988383b7bf9d1f478bea5a15d3a74ec601c29fd4a8be7b882ba45b37bd",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/application-reused/user.cljc",
+        "message": "macro expansion: generated by clojure.core/fn: unresolved symbol: y",
+        "span": [
+          63,
+          64
+        ],
+        "line_column": [
+          2,
+          54
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/application-reused/user.cljc:2:54: macro expansion: generated by clojure.core/fn: unresolved symbol: y (bytes 63..64)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "application-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "application-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "macro-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "619c2301407527092aa6599d4ad4aa0b764b61b5fc09920bdaf2645d27c1d797",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/macro-reused/user.cljc",
+        "message": "macro expansion: macro expansion: generated by cljs.core/fn: unresolved symbol: y",
+        "span": [
+          10,
+          83
+        ],
+        "line_column": [
+          2,
+          1
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-metadata-no-match/macro-reused/user.cljc:2:1: macro expansion: macro expansion: generated by cljs.core/fn: unresolved symbol: y (bytes 10..83)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "macro-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-metadata-no-match",
+        "variant": "macro-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "application-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+        "span": [
+          51,
+          69
+        ],
+        "line_column": [
+          2,
+          42
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "application-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "application-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "macro-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+        "span": [
+          66,
+          84
+        ],
+        "line_column": [
+          2,
+          57
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "macro-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "macro-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "application-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+        "span": [
+          51,
+          69
+        ],
+        "line_column": [
+          2,
+          42
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "application-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "application-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "macro-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+        "span": [
+          66,
+          84
+        ],
+        "line_column": [
+          2,
+          57
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "macro-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "variant": "macro-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "application-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+        "span": [
+          44,
+          48
+        ],
+        "line_column": [
+          2,
+          35
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "application-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "application-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "macro-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+        "span": [
+          59,
+          63
+        ],
+        "line_column": [
+          2,
+          50
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "macro-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "macro-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "application-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+        "span": [
+          44,
+          48
+        ],
+        "line_column": [
+          2,
+          35
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "application-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "application-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "macro-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc",
+        "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+        "span": [
+          59,
+          63
+        ],
+        "line_column": [
+          2,
+          50
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "macro-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "variant": "macro-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "application-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc",
+        "message": "map requires an even number of selected forms",
+        "span": [
+          34,
+          66
+        ],
+        "line_column": [
+          2,
+          25
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "application-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "application-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "macro-fresh",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc",
+        "message": "map requires an even number of selected forms",
+        "span": [
+          49,
+          81
+        ],
+        "line_column": [
+          2,
+          40
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "macro-fresh",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "macro-fresh",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "application-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc",
+        "message": "map requires an even number of selected forms",
+        "span": [
+          34,
+          66
+        ],
+        "line_column": [
+          2,
+          25
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "application-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "application-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "macro-reused",
+        "status": "rejected-before-original-computation",
+        "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+        "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc",
+        "message": "map requires an even number of selected forms",
+        "span": [
+          49,
+          81
+        ],
+        "line_column": [
+          2,
+          40
+        ],
+        "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-development-v3/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "macro-reused",
+        "engine": "QuickJS",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      },
+      {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "variant": "macro-reused",
+        "engine": "Node",
+        "status": "recovery-passed",
+        "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+        "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+        "raw": "42"
+      }
+    ],
+    "artifact_sha256": {
+      "command/invocation.json": "9126c42137b79c60b3a3b1a8dc97472aa2f952c7ec659fb9e8d2d7ff3294770c",
+      "command/stderr": "d6e39b9d403496cf8650c0d1ed2e5b6b2b87d959c646db6453561533e2c4ef4c",
+      "command/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "command/stdout": "280843e00a6e79c91d23475e6aa21c50030ca97d07a856b11f1c75d7f0d92c8f",
+      "input.tsv": "8d9df4b0e00ceadeb184ec610664ae4fbee64cca6ebe964258318bd1c80db9c9",
+      "observations.tsv": "a595a7b9405f9fcc714ab5f499fd3cefe5895c1367a6596e422197df9c2feacd",
+      "sci-execution-sci-context-reader-metadata-no-match/application-fresh/diagnostic.txt": "4753e22dbd9dd7fd4492c4cad7d144ddab39e7e5a7c1a97cc909c39bf1ea4c0a",
+      "sci-execution-sci-context-reader-metadata-no-match/application-fresh/input-source.txt": "602c16988383b7bf9d1f478bea5a15d3a74ec601c29fd4a8be7b882ba45b37bd",
+      "sci-execution-sci-context-reader-metadata-no-match/application-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-metadata-no-match/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-metadata-no-match/application-fresh/user.cljc": "602c16988383b7bf9d1f478bea5a15d3a74ec601c29fd4a8be7b882ba45b37bd",
+      "sci-execution-sci-context-reader-metadata-no-match/application-reused/diagnostic.txt": "53892bc55c2fa37306fa6d3d8c8692be9824cdcfb4228d9f2eb1e73179d32624",
+      "sci-execution-sci-context-reader-metadata-no-match/application-reused/input-source.txt": "602c16988383b7bf9d1f478bea5a15d3a74ec601c29fd4a8be7b882ba45b37bd",
+      "sci-execution-sci-context-reader-metadata-no-match/application-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-metadata-no-match/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-metadata-no-match/application-reused/user.cljc": "602c16988383b7bf9d1f478bea5a15d3a74ec601c29fd4a8be7b882ba45b37bd",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-fresh/diagnostic.txt": "add28b8ce5a515ee6313acf2454a2179a28ac8218f1b9a82403ec051055f9490",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-fresh/input-source.txt": "619c2301407527092aa6599d4ad4aa0b764b61b5fc09920bdaf2645d27c1d797",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-fresh/user.cljc": "619c2301407527092aa6599d4ad4aa0b764b61b5fc09920bdaf2645d27c1d797",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-reused/diagnostic.txt": "18bd89f780d712815a6171db3688b8b585b18bdb3f8df90d663c23ac24e71361",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-reused/input-source.txt": "619c2301407527092aa6599d4ad4aa0b764b61b5fc09920bdaf2645d27c1d797",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-metadata-no-match/macro-reused/user.cljc": "619c2301407527092aa6599d4ad4aa0b764b61b5fc09920bdaf2645d27c1d797",
+      "sci-execution-sci-context-reader-skipped-tag/application-fresh/diagnostic.txt": "90457a3fbbe62c054acd642bea791b29e549b2709445cf657b476dd22034a75e",
+      "sci-execution-sci-context-reader-skipped-tag/application-fresh/input-source.txt": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+      "sci-execution-sci-context-reader-skipped-tag/application-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+      "sci-execution-sci-context-reader-skipped-tag/application-reused/diagnostic.txt": "64d29d207fc5d8f3374588527264f147fabeb061c7ec4d4a1f74993f285f1545",
+      "sci-execution-sci-context-reader-skipped-tag/application-reused/input-source.txt": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+      "sci-execution-sci-context-reader-skipped-tag/application-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+      "sci-execution-sci-context-reader-skipped-tag/macro-fresh/diagnostic.txt": "5bdadcd520a14c27aaa805e8f786eb84ebbc199ba4df4a2b9bee01f77418262f",
+      "sci-execution-sci-context-reader-skipped-tag/macro-fresh/input-source.txt": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+      "sci-execution-sci-context-reader-skipped-tag/macro-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+      "sci-execution-sci-context-reader-skipped-tag/macro-reused/diagnostic.txt": "640f09c174a66e9921001f812ae531a1bcef2f2711f0486c426985931f13c07c",
+      "sci-execution-sci-context-reader-skipped-tag/macro-reused/input-source.txt": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+      "sci-execution-sci-context-reader-skipped-tag/macro-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/diagnostic.txt": "b88f327cd056204963b83bc5d8d175ee707bc739131175f482bd26c5b034ec1a",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/input-source.txt": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-reused/diagnostic.txt": "bba3ecb1f6fecef50e47be64402251e190386c7de6a3e3409dded40695584ea0",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-reused/input-source.txt": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/diagnostic.txt": "d5858ed721895678e01df518fcd10cd32b35683c734bf2bcc1bc18ccf1b8cd43",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/input-source.txt": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/diagnostic.txt": "14a643cd53feff7dca147894b55427f399c61e0668598516c65d2d3b3d45a41a",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/input-source.txt": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+      "sci-execution-sci-context-reader-splice-map-key/application-fresh/diagnostic.txt": "86f1ae4f1170487e43c1da2bda74d7b48736a6c76b81417ae482bb7e7389b93b",
+      "sci-execution-sci-context-reader-splice-map-key/application-fresh/input-source.txt": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+      "sci-execution-sci-context-reader-splice-map-key/application-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-splice-map-key/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+      "sci-execution-sci-context-reader-splice-map-key/application-reused/diagnostic.txt": "36b886c5b2ebe9439db363de86f4af77c82b7b20c277dd62939340cd1897f647",
+      "sci-execution-sci-context-reader-splice-map-key/application-reused/input-source.txt": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+      "sci-execution-sci-context-reader-splice-map-key/application-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-splice-map-key/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+      "sci-execution-sci-context-reader-splice-map-key/macro-fresh/diagnostic.txt": "f3e4720fbaf6bd951b01a615705f504df0477faad68d711bfb731491dff44dec",
+      "sci-execution-sci-context-reader-splice-map-key/macro-fresh/input-source.txt": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+      "sci-execution-sci-context-reader-splice-map-key/macro-fresh/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-splice-map-key/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+      "sci-execution-sci-context-reader-splice-map-key/macro-reused/diagnostic.txt": "d5fec9d86787761a5ee3ad560ea6fd13429373a66466e9f828938c16b3bd4118",
+      "sci-execution-sci-context-reader-splice-map-key/macro-reused/input-source.txt": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+      "sci-execution-sci-context-reader-splice-map-key/macro-reused/recovery.cljs": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+      "sci-execution-sci-context-reader-splice-map-key/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+      "sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+      "warmup.cljs": "5d009d04817b19e6c8f63289aafd8a6c829e8929be65a77142e03c6fccc2bc63",
+      "warmup.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16"
+    }
+  },
+  "references": {
+    "release": {
+      "sci-execution-sci-context-reader-metadata-no-match": {
+        "status": "passed",
+        "observed": {
+          "id": "sci-execution-sci-context-reader-metadata-no-match",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "private",
+                      "spelling": "private"
+                    }
+                  },
+                  true
+                ]
+              ],
+              "count": 1
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "e0cfa8dea46e470f0a4e3f9d9a42dcbfb194d83ae65d79fc6b1c11c228c06a95",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      },
+      "sci-execution-sci-context-reader-skipped-tag": {
+        "status": "rejected",
+        "detail": [
+          "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+        ],
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      },
+      "sci-execution-sci-context-reader-skipped-tag-identity": {
+        "status": "rejected",
+        "detail": [
+          "sci-original.cljc [line 1, col 13] No reader function for tag a."
+        ],
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      },
+      "sci-execution-sci-context-reader-splice-map-key": {
+        "status": "rejected",
+        "detail": [
+          "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+        ],
+        "reference_identity": "release 1.12.134",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      }
+    },
+    "checkout": {
+      "sci-execution-sci-context-reader-metadata-no-match": {
+        "status": "passed",
+        "observed": {
+          "id": "sci-execution-sci-context-reader-metadata-no-match",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$map": [
+                [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "private",
+                      "spelling": "private"
+                    }
+                  },
+                  true
+                ]
+              ],
+              "count": 1
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "e0cfa8dea46e470f0a4e3f9d9a42dcbfb194d83ae65d79fc6b1c11c228c06a95",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      },
+      "sci-execution-sci-context-reader-skipped-tag": {
+        "status": "rejected",
+        "detail": [
+          "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+        ],
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      },
+      "sci-execution-sci-context-reader-skipped-tag-identity": {
+        "status": "rejected",
+        "detail": [
+          "sci-original.cljc [line 1, col 13] No reader function for tag a."
+        ],
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      },
+      "sci-execution-sci-context-reader-splice-map-key": {
+        "status": "rejected",
+        "detail": [
+          "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+        ],
+        "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "settings": {
+          "optimizations": "none",
+          "static-fns": false,
+          "def-emits-var": false
+        },
+        "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+        "source_name": "sci-original.cljc",
+        "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+      }
+    }
+  },
+  "reference_artifact_sha256": {
+    "release": {
+      "build/invocation.json": "5175a8676da455d8321045ccb5fe873963309081438915e9c876500120e25226",
+      "build/stderr": "1b119de537783669bf77b9d0e87592a1b64f3426c8a908f4ec8598a0c9d925aa",
+      "build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "contexts.js": "2dcc5d1f7a725b766b8d6489bf47bd1e625b5c670b17760933f65618e46665ca",
+      "contexts.tsv": "efd67c07022103f88cfefd8fde00454e9bd16b97567876d756e31e88c25750bc",
+      "input.tsv": "5ae26b75f47f4b853775b416b2f14841ca761d068a203a16016c4d891c992d93",
+      "node/sci-execution-sci-context-reader-metadata-no-match/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "node/sci-execution-sci-context-reader-metadata-no-match/stderr": "f24604204a2fdfe6013817773bf455c97dae8daadee032a4957e7c1802fa6578",
+      "node/sci-execution-sci-context-reader-metadata-no-match/stdin": "23d2ced33a7585c04061c691cb3a48f26b4ee1f340f64ba00fae7ad1226f1157",
+      "node/sci-execution-sci-context-reader-metadata-no-match/stdout": "3df2815ff284c3c05cf1a036df3e1292cdc4779d5904b3a52dfc95aef8347a1a",
+      "out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+      "out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+      "out/cljs/core.js.map": "e715e59a0f70607fcfe81d5121897ba5f43e5874cf19a975670c63e5e581b84a",
+      "out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+      "out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+      "out/cljs_deps.js": "d8779c7ead8442c98cf2754c12120cdc4b9bf4cf4fdaecf0f06144c0b140371e",
+      "out/cljsc_opts.edn": "9200b4b8b9f4edc52b1b32fe12ef63704e11c12344c9b4dd81b09404caa196d8",
+      "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+      "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+      "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+      "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+      "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+      "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+      "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+      "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+      "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+      "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+      "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+      "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+      "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+      "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+      "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+      "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+      "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+      "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+      "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+      "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+      "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+      "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+      "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+      "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+      "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+      "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+      "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+      "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+      "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+      "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+      "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+      "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+      "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+      "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+      "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+      "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+      "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+      "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+      "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+      "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+      "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+      "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+      "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+      "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+      "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+      "out/nodejs.js": "d36e79859634f4262fb3d9bfe5cd39d1a9500b5dd5aadeae7aecf1e0247c1637",
+      "out/nodejs.js.map": "daaec62cf82ef22ebe92a63d42113090ed0f98b46e99b296e06321f4639a7d40",
+      "out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+      "out/nodejscli.js.map": "7cf84298cf3cb41547b1d0d8973fbb5f48ab1170cd550179aaf00fbd4fb0472e",
+      "out/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+      "out/semantic/reference.js": "38e3f04550d7a53d47ec453c7a6318783756b59af4620b137fb04b4bc4d31aef",
+      "out/semantic/reference.js.map": "ed8992280f73c256608ec2918ad2baf7f1b6cd4ac7803a43efb6db400d1618b5",
+      "out/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1",
+      "out/user.js": "d13cdfde37223cf190cd6533a636168ce925a913045c590317115dcd449c517f",
+      "out/user.js.map": "faf82915ec66ed1171fb8ae3b26e6374f837eea8f768429ecbec04704ddf9c15",
+      "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+      "src/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+      "src/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1"
+    },
+    "checkout": {
+      "build/invocation.json": "5cc621577e0edccb79a1ef510a2c21c8c42354d6efa815b571d1e44bb40dc95e",
+      "build/stderr": "f2112200d190ac21631e763a4de68337055b7387f157ea1bfe0b6f057a57f30c",
+      "build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "contexts.js": "2dcc5d1f7a725b766b8d6489bf47bd1e625b5c670b17760933f65618e46665ca",
+      "contexts.tsv": "efd67c07022103f88cfefd8fde00454e9bd16b97567876d756e31e88c25750bc",
+      "input.tsv": "5ae26b75f47f4b853775b416b2f14841ca761d068a203a16016c4d891c992d93",
+      "node/sci-execution-sci-context-reader-metadata-no-match/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "node/sci-execution-sci-context-reader-metadata-no-match/stderr": "f24604204a2fdfe6013817773bf455c97dae8daadee032a4957e7c1802fa6578",
+      "node/sci-execution-sci-context-reader-metadata-no-match/stdin": "ac1f0225d808ebf6e55b80704433dda55bac0619b3439db4dc81d3118bc766e5",
+      "node/sci-execution-sci-context-reader-metadata-no-match/stdout": "3df2815ff284c3c05cf1a036df3e1292cdc4779d5904b3a52dfc95aef8347a1a",
+      "out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+      "out/cljs/core.js": "fcfa4abe7ce014185f1755c4713bf1617f7342ae79e2f20b445a253d9afbb1cc",
+      "out/cljs/core.js.map": "65398d1006b996ee3f8f9e073c3469ce029e9eeb37df190bdc513616a67768aa",
+      "out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+      "out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+      "out/cljs_deps.js": "ab85ca4b9a77b51956334fe2e4f5ed1b030a9e8182b4b3894d3e352c9d7fe8c5",
+      "out/cljsc_opts.edn": "0aae189ebb52e945fdfcb61b0a2136ebf7ffafbfc296508ce0b2f5dd39e2521d",
+      "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+      "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+      "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+      "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+      "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+      "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+      "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+      "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+      "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+      "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+      "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+      "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+      "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+      "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+      "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+      "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+      "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+      "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+      "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+      "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+      "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+      "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+      "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+      "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+      "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+      "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+      "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+      "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+      "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+      "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+      "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+      "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+      "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+      "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+      "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+      "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+      "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+      "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+      "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+      "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+      "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+      "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+      "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+      "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+      "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+      "out/nodejs.js": "5cece21f99278c6b32483687ba854c2ab2bcf4bb99f32efef2cefb9086a0b703",
+      "out/nodejs.js.map": "67234daf6f8515f09a86711d3ae0415bbef8dc1693f9a051318afcd9e03ee55d",
+      "out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+      "out/nodejscli.js.map": "d81dd44c04ed5ff9117f7015a2c91544ec0a3a0ccb73852f700b519d281d9b8c",
+      "out/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+      "out/semantic/reference.js": "489bca2674cd18e83c56de51f7ddb021af08d2643a412b7337f058157856ba2f",
+      "out/semantic/reference.js.map": "baeab26cb3da4d34e82cfded490a76e2ee918584432736697d6921f0c5cb5539",
+      "out/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1",
+      "out/user.js": "b47be5b1b16f3f5547eb5692183c529f5c854154c9b78eedb44362d19bbf9d6f",
+      "out/user.js.map": "acdac1b50a6935ef282e43f1252fd914097a135a35073aefc0983ee93da58974",
+      "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+      "src/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
+      "src/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1"
+    }
+  },
+  "classifications": [
+    {
+      "id": "sci-execution-sci-context-reader-metadata-no-match",
+      "classification": "unresolved-local-unbound-name-policy",
+      "original_semantic_pass_credit": 0,
+      "original_macro_execution_pass_credit": 0,
+      "reference_layers": {
+        "release": {
+          "status": "passed",
+          "observed": {
+            "id": "sci-execution-sci-context-reader-metadata-no-match",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "private",
+                        "spelling": "private"
+                      }
+                    },
+                    true
+                  ]
+                ],
+                "count": 1
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "e0cfa8dea46e470f0a4e3f9d9a42dcbfb194d83ae65d79fc6b1c11c228c06a95",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "passed",
+          "observed": {
+            "id": "sci-execution-sci-context-reader-metadata-no-match",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "private",
+                        "spelling": "private"
+                      }
+                    },
+                    true
+                  ]
+                ],
+                "count": 1
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "e0cfa8dea46e470f0a4e3f9d9a42dcbfb194d83ae65d79fc6b1c11c228c06a95",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      }
+    },
+    {
+      "id": "sci-execution-sci-context-reader-skipped-tag",
+      "classification": "verified-original-source-rejection",
+      "original_semantic_pass_credit": 0,
+      "original_macro_execution_pass_credit": 0,
+      "reference_layers": {
+        "release": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+          ],
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+          ],
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      }
+    },
+    {
+      "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+      "classification": "verified-original-source-rejection",
+      "original_semantic_pass_credit": 0,
+      "original_macro_execution_pass_credit": 0,
+      "reference_layers": {
+        "release": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 13] No reader function for tag a."
+          ],
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 13] No reader function for tag a."
+          ],
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      }
+    },
+    {
+      "id": "sci-execution-sci-context-reader-splice-map-key",
+      "classification": "verified-original-source-rejection",
+      "original_semantic_pass_credit": 0,
+      "original_macro_execution_pass_credit": 0,
+      "reference_layers": {
+        "release": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+          ],
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+          ],
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      }
+    }
+  ],
+  "original_semantic_pass_credit": 0,
+  "original_macro_execution_pass_credit": 0,
+  "strict_complete": false,
+  "prior_failed_history": "development-v1 canonical /tmp filesystem alias mismatch is nonpassing; sources were not changed"
+}

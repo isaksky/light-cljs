@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "four_independent_ledger_files": "byte-identical",
+  "obligations": 5263,
+  "ordinary_loader_rows": 1947,
+  "phase_loader_rows": 1962,
+  "after191_pairs": {
+    "state": "installed-exact-paired",
+    "ordinary_rows": 131,
+    "phase_rows": 131,
+    "expected_owned_rows": 131,
+    "overlap_or_drift": "rejected by exact whole-row comparison",
+    "ordinary_loader": "passed-exact-own-cohort",
+    "phase_loader": "passed-exact-own-cohort"
+  },
+  "cohort_complete_originals": 23,
+  "ordinary_linked_cohort_fixtures": 16,
+  "earlier_stops": [
+    "Both131row sharedtables installed once; stop on already-existing owned131row call-receipt table. No duplicate sharedinstallation.",
+    "Fixture validation rejected7unmapped control neighbors; they retain full pairedproof/pin observations but no inventedmapping. Report now includes only16actuallylinked cohortfixtures."
+  ],
+  "generation_producer_sha256": "b66f4da252fc548fc8d3ab6a57b7eb2bb66f5d38367299549af6e1fc7087cfce",
+  "manifest_sha256": "4b771bb330d88cf4dcf2b4aa1d858aacabc0161e02779efd492295ae3fb715a3"
+}

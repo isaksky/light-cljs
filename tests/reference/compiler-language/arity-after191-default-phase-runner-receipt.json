@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "command": "cargo test --locked --message-format=json --test compiler_arity_after191 remaining_arity_sources_execute_in_actual_phases_and_lifecycles -- --exact --nocapture",
+  "custom_artifact_environment": "omitted",
+  "driver_sha256": "0eb56128ac7305634655f1e0c8c45ec6a19e1df6c061ecaf4cf07f3c2e48804f",
+  "log_path": "/tmp/light-cljs-125-arity-after191-combined-default-phase-runner.log",
+  "log_sha256": "8956098b10013857441656136cc4029040da1fd69c023be13f23f87be346709a",
+  "engine_observations": 184,
+  "source_snapshot_equal_after": true,
+  "source_site_credit_added": 0,
+  "strict_complete": false
+}

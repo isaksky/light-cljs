@@ -1,0 +1,3350 @@
+{
+  "schema_version": 1,
+  "profile": "real-current-negative-source-selected-integration",
+  "prior_receipt": "/tmp/light-cljs-125-cljc-prior-after191/evidence.json",
+  "prior_sha256": "d899a25c058a213027329b4cc5758445079cc92770ac8ffbe336de549bc25140",
+  "negative_receipt": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/evidence.json",
+  "negative_sha256": "a004d5e171a832055a7bb6a64d3c918e8a3f3d87ab5abd7ab69d8a46a8a80ebc",
+  "prior_whole_source_count": 30,
+  "absent_rows": [
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+      "obligation_kind": "sci-case",
+      "name": "sci-context-reader-splice-map-key",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1374,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+      "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+      "source_span": {
+        "text": "sci-context-reader-splice-map-key\tportable\t{:a #?(:clj 1) #?@(:clj [:b 2])}\t(return (map (entry (keyword - u0061) (int 1)) (entry (keyword - u0062) (int 2))))\t(vector)\t(string u)\t(string u)\tgap\t{:a #?(:clj 1) #?@(:clj [:b 2])}\t(diagnostic (string u003c007300630069002d006500760061006c007500610074006f0072003e002e0063006c006a0073003a0031003a0035003a0020004c006f00770065007200280055006e0073007500700070006f007200740065006400280052006500610064006500720043006f006e0064006900740069006f006e0061006c00290029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-9; kind=language-or-dialect-gap; family=sci-context; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string <sci-evaluator>.cljs:1:5: Lower(Unsupported(ReaderConditional)))).",
+        "sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-context-reader-splice-map-key",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {
+        "javascript": {
+          "status": "mismatch",
+          "engines": {
+            "QuickJS": {},
+            "Node": {}
+          }
+        },
+        "release": {
+          "status": "rejected",
+          "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "source_name": "sci-original.cljc"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "source_name": "sci-original.cljc"
+        }
+      },
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "mismatch",
+          "engines": {
+            "QuickJS": {},
+            "Node": {}
+          }
+        },
+        "quickjs_macro": {
+          "status": "unresolved",
+          "actual_phase": "macro",
+          "hosts": [
+            "fresh",
+            "reused"
+          ],
+          "engines": [
+            "QuickJS",
+            "Node"
+          ],
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "frames": [
+            {
+              "variant": "macro-fresh/rejected",
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+              "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+            },
+            {
+              "variant": "macro-reused/rejected",
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+              "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+            }
+          ]
+        },
+        "execution_evidence": {
+          "status": "missing",
+          "references": {
+            "release": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+              "source_name": "sci-original.cljc"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+              "source_name": "sci-original.cljc"
+            }
+          }
+        }
+      },
+      "gap_sci_context_reconciliation": {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+        "status": "missing",
+        "original_expectation_status": "unresolved",
+        "original_semantic_pass_credit": 0,
+        "canonical_contract_status": "unresolved",
+        "checked_pin_contract_status": {
+          "release": "rejected",
+          "checkout": "rejected"
+        },
+        "actual_macro_contract_status": "unresolved",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-splice-map-key",
+          "sci_id": "sci-context-reader-splice-map-key",
+          "source": "{:a #?(:clj 1) #?@(:clj [:b 2])}",
+          "source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "original_row_sha256": "1accb85286deda99a8b3431f47f90c023d07f1335cd49f915be76ea7ce688ace",
+          "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    1
+                  ],
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    },
+                    2
+                  ]
+                ],
+                "count": 2
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    1
+                  ],
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    },
+                    2
+                  ]
+                ],
+                "count": 2
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "layers": {
+          "javascript": {
+            "status": "mismatch",
+            "engines": {
+              "QuickJS": {},
+              "Node": {}
+            }
+          },
+          "release": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "source_name": "sci-original.cljc"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "source_name": "sci-original.cljc"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)",
+            "phase_source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49"
+          },
+          "macro-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+            "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+          },
+          "application-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)",
+            "phase_source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49"
+          },
+          "macro-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+            "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+          }
+        },
+        "reconciliation": "original-contract-unresolved"
+      },
+      "completion_reason": "Fresh whole original source observations retained; this original source/phase contract remains unresolved."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+      "obligation_kind": "sci-case",
+      "name": "sci-context-reader-skipped-tag",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1407,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+      "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+      "source_span": {
+        "text": "sci-context-reader-skipped-tag\tportable\t#?(:clj 42 :cljs #missing/tag [1 2])\t(return (int 42))\t(vector)\t(string u)\t(string u)\tgap\t#?(:clj 42 :cljs #missing/tag [1 2])\t(diagnostic (string u003c007300630069002d006500760061006c007500610074006f0072003e002e0063006c006a0073003a0031003a0031003a0020004c006f00770065007200280055006e0073007500700070006f007200740065006400280052006500610064006500720043006f006e0064006900740069006f006e0061006c00290029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-9; kind=language-or-dialect-gap; family=sci-context; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string <sci-evaluator>.cljs:1:1: Lower(Unsupported(ReaderConditional)))).",
+        "sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-context-reader-skipped-tag",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {
+        "javascript": {
+          "status": "mismatch",
+          "engines": {
+            "QuickJS": {},
+            "Node": {}
+          }
+        },
+        "release": {
+          "status": "rejected",
+          "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "source_name": "sci-original.cljc"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "source_name": "sci-original.cljc"
+        }
+      },
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "mismatch",
+          "engines": {
+            "QuickJS": {},
+            "Node": {}
+          }
+        },
+        "quickjs_macro": {
+          "status": "unresolved",
+          "actual_phase": "macro",
+          "hosts": [
+            "fresh",
+            "reused"
+          ],
+          "engines": [
+            "QuickJS",
+            "Node"
+          ],
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "frames": [
+            {
+              "variant": "macro-fresh/rejected",
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+              "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+            },
+            {
+              "variant": "macro-reused/rejected",
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+              "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+            }
+          ]
+        },
+        "execution_evidence": {
+          "status": "missing",
+          "references": {
+            "release": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+              "source_name": "sci-original.cljc"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+              "source_name": "sci-original.cljc"
+            }
+          }
+        }
+      },
+      "gap_sci_context_reconciliation": {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+        "status": "missing",
+        "original_expectation_status": "unresolved",
+        "original_semantic_pass_credit": 0,
+        "canonical_contract_status": "unresolved",
+        "checked_pin_contract_status": {
+          "release": "rejected",
+          "checkout": "rejected"
+        },
+        "actual_macro_contract_status": "unresolved",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-skipped-tag",
+          "sci_id": "sci-context-reader-skipped-tag",
+          "source": "#?(:clj 42 :cljs #missing/tag [1 2])",
+          "source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "original_row_sha256": "d33ad763f37ae3d91cb3dcae1579a5ec9e0539907f1546589e18d92f910b2101",
+          "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "outcome": {
+              "status": "returned",
+              "value": 42
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "outcome": {
+              "status": "returned",
+              "value": 42
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "layers": {
+          "javascript": {
+            "status": "mismatch",
+            "engines": {
+              "QuickJS": {},
+              "Node": {}
+            }
+          },
+          "release": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "source_name": "sci-original.cljc"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "source_name": "sci-original.cljc"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)",
+            "phase_source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c"
+          },
+          "macro-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+            "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+          },
+          "application-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)",
+            "phase_source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c"
+          },
+          "macro-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+            "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+          }
+        },
+        "reconciliation": "original-contract-unresolved"
+      },
+      "completion_reason": "Fresh whole original source observations retained; this original source/phase contract remains unresolved."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+      "obligation_kind": "sci-case",
+      "name": "sci-context-reader-skipped-tag-identity",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1433,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+      "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+      "source_span": {
+        "text": "sci-context-reader-skipped-tag-identity\tportable\t#?(:cljs {#a 1 :a (a 1) :b} :clj 2)\t(return (int 2))\t(vector)\t(string u)\t(string u)\tgap\t#?(:cljs {#a 1 :a (a 1) :b} :clj 2)\t(diagnostic (string u003c007300630069002d006500760061006c007500610074006f0072003e002e0063006c006a0073003a0031003a0031003a0020004c006f00770065007200280055006e0073007500700070006f007200740065006400280052006500610064006500720043006f006e0064006900740069006f006e0061006c00290029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-9; kind=language-or-dialect-gap; family=sci-context; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string <sci-evaluator>.cljs:1:1: Lower(Unsupported(ReaderConditional)))).",
+        "sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-context-reader-skipped-tag-identity",
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {
+        "javascript": {
+          "status": "mismatch",
+          "engines": {
+            "QuickJS": {},
+            "Node": {}
+          }
+        },
+        "release": {
+          "status": "rejected",
+          "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "source_name": "sci-original.cljc"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "source_name": "sci-original.cljc"
+        }
+      },
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "mismatch",
+          "engines": {
+            "QuickJS": {},
+            "Node": {}
+          }
+        },
+        "quickjs_macro": {
+          "status": "unresolved",
+          "actual_phase": "macro",
+          "hosts": [
+            "fresh",
+            "reused"
+          ],
+          "engines": [
+            "QuickJS",
+            "Node"
+          ],
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "frames": [
+            {
+              "variant": "macro-fresh/rejected",
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+              "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+            },
+            {
+              "variant": "macro-reused/rejected",
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+              "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+            }
+          ]
+        },
+        "execution_evidence": {
+          "status": "missing",
+          "references": {
+            "release": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+              "source_name": "sci-original.cljc"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+              "source_name": "sci-original.cljc"
+            }
+          }
+        }
+      },
+      "gap_sci_context_reconciliation": {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+        "status": "missing",
+        "original_expectation_status": "unresolved",
+        "original_semantic_pass_credit": 0,
+        "canonical_contract_status": "unresolved",
+        "checked_pin_contract_status": {
+          "release": "rejected",
+          "checkout": "rejected"
+        },
+        "actual_macro_contract_status": "unresolved",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+          "sci_id": "sci-context-reader-skipped-tag-identity",
+          "source": "#?(:cljs {#a 1 :a (a 1) :b} :clj 2)",
+          "source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "original_row_sha256": "69105c35267ccc87daadf739cf36f6b9d08948fb7b22022d14cdfc579ecb7057",
+          "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "outcome": {
+              "status": "returned",
+              "value": 2
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "outcome": {
+              "status": "returned",
+              "value": 2
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "layers": {
+          "javascript": {
+            "status": "mismatch",
+            "engines": {
+              "QuickJS": {},
+              "Node": {}
+            }
+          },
+          "release": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "source_name": "sci-original.cljc"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "source_name": "sci-original.cljc"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)",
+            "phase_source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90"
+          },
+          "macro-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+            "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+          },
+          "application-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)",
+            "phase_source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90"
+          },
+          "macro-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+            "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+          }
+        },
+        "reconciliation": "original-contract-unresolved"
+      },
+      "completion_reason": "Fresh whole original source observations retained; this original source/phase contract remains unresolved."
+    }
+  ],
+  "present_rows": [
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+      "obligation_kind": "sci-case",
+      "name": "sci-context-reader-splice-map-key",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1374,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+      "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+      "source_span": {
+        "text": "sci-context-reader-splice-map-key\tportable\t{:a #?(:clj 1) #?@(:clj [:b 2])}\t(return (map (entry (keyword - u0061) (int 1)) (entry (keyword - u0062) (int 2))))\t(vector)\t(string u)\t(string u)\tgap\t{:a #?(:clj 1) #?@(:clj [:b 2])}\t(diagnostic (string u003c007300630069002d006500760061006c007500610074006f0072003e002e0063006c006a0073003a0031003a0035003a0020004c006f00770065007200280055006e0073007500700070006f007200740065006400280052006500610064006500720043006f006e0064006900740069006f006e0061006c00290029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-9; kind=language-or-dialect-gap; family=sci-context; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string <sci-evaluator>.cljs:1:5: Lower(Unsupported(ReaderConditional)))).",
+        "sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-context-reader-splice-map-key",
+      "status": "verified-rejection",
+      "fixture_id": null,
+      "layers": {
+        "diagnostic": {
+          "status": "verified-original-source-rejection",
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "application-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                34,
+                66
+              ],
+              "line_column": [
+                2,
+                25
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                49,
+                81
+              ],
+              "line_column": [
+                2,
+                40
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "application-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                34,
+                66
+              ],
+              "line_column": [
+                2,
+                25
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                49,
+                81
+              ],
+              "line_column": [
+                2,
+                40
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+            }
+          ]
+        },
+        "javascript": {
+          "status": "not-executed-original",
+          "original_semantic_pass_credit": 0
+        },
+        "release": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+          ],
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+          ],
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      },
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "verified-original-source-rejection",
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "application-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                34,
+                66
+              ],
+              "line_column": [
+                2,
+                25
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                49,
+                81
+              ],
+              "line_column": [
+                2,
+                40
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "application-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                34,
+                66
+              ],
+              "line_column": [
+                2,
+                25
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                49,
+                81
+              ],
+              "line_column": [
+                2,
+                40
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+            }
+          ]
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-executed-original",
+          "original_semantic_pass_credit": 0
+        },
+        "quickjs_macro": {
+          "status": "rejected-before-original-computation",
+          "actual_phase": "macro",
+          "hosts": [
+            "fresh",
+            "reused"
+          ],
+          "original_macro_execution_pass_credit": 0,
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                49,
+                81
+              ],
+              "line_column": [
+                2,
+                40
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc",
+              "message": "map requires an even number of selected forms",
+              "span": [
+                49,
+                81
+              ],
+              "line_column": [
+                2,
+                40
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+            }
+          ]
+        },
+        "execution_evidence": {
+          "status": "verified-rejection",
+          "references": {
+            "release": {
+              "status": "rejected",
+              "detail": [
+                "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+              ],
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+              "source_name": "sci-original.cljc",
+              "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": [
+                "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+              ],
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+              "source_name": "sci-original.cljc",
+              "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+            }
+          }
+        }
+      },
+      "gap_sci_context_reconciliation": {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+        "status": "missing",
+        "original_expectation_status": "unresolved",
+        "original_semantic_pass_credit": 0,
+        "canonical_contract_status": "unresolved",
+        "checked_pin_contract_status": {
+          "release": "rejected",
+          "checkout": "rejected"
+        },
+        "actual_macro_contract_status": "unresolved",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-splice-map-key",
+          "sci_id": "sci-context-reader-splice-map-key",
+          "source": "{:a #?(:clj 1) #?@(:clj [:b 2])}",
+          "source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "original_row_sha256": "1accb85286deda99a8b3431f47f90c023d07f1335cd49f915be76ea7ce688ace",
+          "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    1
+                  ],
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    },
+                    2
+                  ]
+                ],
+                "count": 2
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    1
+                  ],
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    },
+                    2
+                  ]
+                ],
+                "count": 2
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "layers": {
+          "javascript": {
+            "status": "mismatch",
+            "engines": {
+              "QuickJS": {},
+              "Node": {}
+            }
+          },
+          "release": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "source_name": "sci-original.cljc"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "source_name": "sci-original.cljc"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)",
+            "phase_source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49"
+          },
+          "macro-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+            "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+          },
+          "application-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)",
+            "phase_source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49"
+          },
+          "macro-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+            "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+          }
+        },
+        "reconciliation": "original-contract-unresolved"
+      },
+      "canonical_source_rejection_reconciliation": {
+        "id": "sci-execution-sci-context-reader-splice-map-key",
+        "status": "verified-rejection",
+        "reconciliation": "verified-canonical-original-source-rejection",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-splice-map-key",
+          "sci_id": "sci-context-reader-splice-map-key",
+          "source": "{:a #?(:clj 1) #?@(:clj [:b 2])}",
+          "source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+          "original_row_sha256": "1accb85286deda99a8b3431f47f90c023d07f1335cd49f915be76ea7ce688ace",
+          "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    1
+                  ],
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    },
+                    2
+                  ]
+                ],
+                "count": 2
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$map": [
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    1
+                  ],
+                  [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    },
+                    2
+                  ]
+                ],
+                "count": 2
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "profile": "exact-original-cljc-rejections-after191-v1",
+        "layers": {
+          "diagnostic": {
+            "status": "verified-original-source-rejection",
+            "frames": [
+              {
+                "id": "sci-execution-sci-context-reader-splice-map-key",
+                "variant": "application-fresh",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc",
+                "message": "map requires an even number of selected forms",
+                "span": [
+                  34,
+                  66
+                ],
+                "line_column": [
+                  2,
+                  25
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-splice-map-key",
+                "variant": "macro-fresh",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc",
+                "message": "map requires an even number of selected forms",
+                "span": [
+                  49,
+                  81
+                ],
+                "line_column": [
+                  2,
+                  40
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-splice-map-key",
+                "variant": "application-reused",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc",
+                "message": "map requires an even number of selected forms",
+                "span": [
+                  34,
+                  66
+                ],
+                "line_column": [
+                  2,
+                  25
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-splice-map-key",
+                "variant": "macro-reused",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc",
+                "message": "map requires an even number of selected forms",
+                "span": [
+                  49,
+                  81
+                ],
+                "line_column": [
+                  2,
+                  40
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+              }
+            ]
+          },
+          "javascript": {
+            "status": "not-executed-original",
+            "original_semantic_pass_credit": 0
+          },
+          "release": {
+            "status": "rejected",
+            "detail": [
+              "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+            ],
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "source_name": "sci-original.cljc",
+            "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": [
+              "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms."
+            ],
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "source_name": "sci-original.cljc",
+            "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "application-fresh",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc",
+            "message": "map requires an even number of selected forms",
+            "span": [
+              34,
+              66
+            ],
+            "line_column": [
+              2,
+              25
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+          },
+          "macro-fresh/rejected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "macro-fresh",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc",
+            "message": "map requires an even number of selected forms",
+            "span": [
+              49,
+              81
+            ],
+            "line_column": [
+              2,
+              40
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+          },
+          "application-reused/rejected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "application-reused",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc",
+            "message": "map requires an even number of selected forms",
+            "span": [
+              34,
+              66
+            ],
+            "line_column": [
+              2,
+              25
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)"
+          },
+          "macro-reused/rejected": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "macro-reused",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc",
+            "message": "map requires an even number of selected forms",
+            "span": [
+              49,
+              81
+            ],
+            "line_column": [
+              2,
+              40
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)"
+          }
+        },
+        "actual_macro_contract_status": "rejected-before-original-computation",
+        "same_host_recovery_frames": [
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "application-fresh",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "application-fresh",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "macro-fresh",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "macro-fresh",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "application-reused",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "application-reused",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "macro-reused",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "variant": "macro-reused",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          }
+        ],
+        "original_semantic_pass_credit": 0,
+        "original_macro_execution_pass_credit": 0,
+        "reason": "Both pinned readers reject this complete unchanged original source; fresh/reused local application and macro readers reject it with located diagnostics and both engines recover on the same hosts. The original body was not executed.",
+        "prior_observer_reconciliation": {
+          "id": "sci-execution-sci-context-reader-splice-map-key",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+          "status": "missing",
+          "original_expectation_status": "unresolved",
+          "original_semantic_pass_credit": 0,
+          "canonical_contract_status": "unresolved",
+          "checked_pin_contract_status": {
+            "release": "rejected",
+            "checkout": "rejected"
+          },
+          "actual_macro_contract_status": "unresolved",
+          "source_binding": {
+            "id": "sci-execution-sci-context-reader-splice-map-key",
+            "sci_id": "sci-context-reader-splice-map-key",
+            "source": "{:a #?(:clj 1) #?@(:clj [:b 2])}",
+            "source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+            "original_row_sha256": "1accb85286deda99a8b3431f47f90c023d07f1335cd49f915be76ea7ce688ace",
+            "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+            "expected": {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ],
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  ],
+                  "count": 2
+                }
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "source_name": "sci-original.cljc",
+            "reader_feature": "cljs",
+            "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+            "canonical_expected": null,
+            "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+            "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+            "original_expected": {
+              "id": "sci-execution-sci-context-reader-splice-map-key",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ],
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "b",
+                          "spelling": "b"
+                        }
+                      },
+                      2
+                    ]
+                  ],
+                  "count": 2
+                }
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+            "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+          },
+          "layers": {
+            "javascript": {
+              "status": "mismatch",
+              "engines": {
+                "QuickJS": {},
+                "Node": {}
+              }
+            },
+            "release": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+              "source_name": "sci-original.cljc"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 33] The map literal starting with :a on line 1 column 1 contains 1 form(s). Map literals must contain an even number of forms.",
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+              "source_name": "sci-original.cljc"
+            }
+          },
+          "actual_phase_frames": {
+            "application-fresh/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/application-fresh/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)",
+              "phase_source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49"
+            },
+            "macro-fresh/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-fresh/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+              "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+            },
+            "application-reused/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/application-reused/user.cljc:2:25: map requires an even number of selected forms (bytes 34..66)",
+              "phase_source_sha256": "35858074888e07bef6a70a544907d054228d9bbe253faa49fa834e3a1de18e49"
+            },
+            "macro-reused/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-splice-map-key/macro-reused/user.cljc:2:40: map requires an even number of selected forms (bytes 49..81)",
+              "phase_source_sha256": "f38c1f4e4216af14affa08879beb402e49e93d88c5264f523b9b68645a92de4e"
+            }
+          },
+          "reconciliation": "original-contract-unresolved"
+        }
+      },
+      "completion_reason": "Both pinned readers reject this complete unchanged original source; fresh/reused local application and macro readers reject it with located diagnostics and both engines recover on the same hosts. The original body was not executed."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+      "obligation_kind": "sci-case",
+      "name": "sci-context-reader-skipped-tag",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1407,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+      "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+      "source_span": {
+        "text": "sci-context-reader-skipped-tag\tportable\t#?(:clj 42 :cljs #missing/tag [1 2])\t(return (int 42))\t(vector)\t(string u)\t(string u)\tgap\t#?(:clj 42 :cljs #missing/tag [1 2])\t(diagnostic (string u003c007300630069002d006500760061006c007500610074006f0072003e002e0063006c006a0073003a0031003a0031003a0020004c006f00770065007200280055006e0073007500700070006f007200740065006400280052006500610064006500720043006f006e0064006900740069006f006e0061006c00290029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-9; kind=language-or-dialect-gap; family=sci-context; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string <sci-evaluator>.cljs:1:1: Lower(Unsupported(ReaderConditional)))).",
+        "sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-context-reader-skipped-tag",
+      "status": "verified-rejection",
+      "fixture_id": null,
+      "layers": {
+        "diagnostic": {
+          "status": "verified-original-source-rejection",
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "application-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                51,
+                69
+              ],
+              "line_column": [
+                2,
+                42
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                66,
+                84
+              ],
+              "line_column": [
+                2,
+                57
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "application-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                51,
+                69
+              ],
+              "line_column": [
+                2,
+                42
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                66,
+                84
+              ],
+              "line_column": [
+                2,
+                57
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+            }
+          ]
+        },
+        "javascript": {
+          "status": "not-executed-original",
+          "original_semantic_pass_credit": 0
+        },
+        "release": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+          ],
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+          ],
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      },
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "verified-original-source-rejection",
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "application-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                51,
+                69
+              ],
+              "line_column": [
+                2,
+                42
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                66,
+                84
+              ],
+              "line_column": [
+                2,
+                57
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "application-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                51,
+                69
+              ],
+              "line_column": [
+                2,
+                42
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                66,
+                84
+              ],
+              "line_column": [
+                2,
+                57
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+            }
+          ]
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-executed-original",
+          "original_semantic_pass_credit": 0
+        },
+        "quickjs_macro": {
+          "status": "rejected-before-original-computation",
+          "actual_phase": "macro",
+          "hosts": [
+            "fresh",
+            "reused"
+          ],
+          "original_macro_execution_pass_credit": 0,
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                66,
+                84
+              ],
+              "line_column": [
+                2,
+                57
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+              "span": [
+                66,
+                84
+              ],
+              "line_column": [
+                2,
+                57
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+            }
+          ]
+        },
+        "execution_evidence": {
+          "status": "verified-rejection",
+          "references": {
+            "release": {
+              "status": "rejected",
+              "detail": [
+                "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+              ],
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+              "source_name": "sci-original.cljc",
+              "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": [
+                "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+              ],
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+              "source_name": "sci-original.cljc",
+              "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+            }
+          }
+        }
+      },
+      "gap_sci_context_reconciliation": {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+        "status": "missing",
+        "original_expectation_status": "unresolved",
+        "original_semantic_pass_credit": 0,
+        "canonical_contract_status": "unresolved",
+        "checked_pin_contract_status": {
+          "release": "rejected",
+          "checkout": "rejected"
+        },
+        "actual_macro_contract_status": "unresolved",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-skipped-tag",
+          "sci_id": "sci-context-reader-skipped-tag",
+          "source": "#?(:clj 42 :cljs #missing/tag [1 2])",
+          "source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "original_row_sha256": "d33ad763f37ae3d91cb3dcae1579a5ec9e0539907f1546589e18d92f910b2101",
+          "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "outcome": {
+              "status": "returned",
+              "value": 42
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "outcome": {
+              "status": "returned",
+              "value": 42
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "layers": {
+          "javascript": {
+            "status": "mismatch",
+            "engines": {
+              "QuickJS": {},
+              "Node": {}
+            }
+          },
+          "release": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "source_name": "sci-original.cljc"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "source_name": "sci-original.cljc"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)",
+            "phase_source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c"
+          },
+          "macro-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+            "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+          },
+          "application-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)",
+            "phase_source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c"
+          },
+          "macro-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+            "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+          }
+        },
+        "reconciliation": "original-contract-unresolved"
+      },
+      "canonical_source_rejection_reconciliation": {
+        "id": "sci-execution-sci-context-reader-skipped-tag",
+        "status": "verified-rejection",
+        "reconciliation": "verified-canonical-original-source-rejection",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-skipped-tag",
+          "sci_id": "sci-context-reader-skipped-tag",
+          "source": "#?(:clj 42 :cljs #missing/tag [1 2])",
+          "source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+          "original_row_sha256": "d33ad763f37ae3d91cb3dcae1579a5ec9e0539907f1546589e18d92f910b2101",
+          "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "outcome": {
+              "status": "returned",
+              "value": 42
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "outcome": {
+              "status": "returned",
+              "value": 42
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "profile": "exact-original-cljc-rejections-after191-v1",
+        "layers": {
+          "diagnostic": {
+            "status": "verified-original-source-rejection",
+            "frames": [
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag",
+                "variant": "application-fresh",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+                "span": [
+                  51,
+                  69
+                ],
+                "line_column": [
+                  2,
+                  42
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag",
+                "variant": "macro-fresh",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+                "span": [
+                  66,
+                  84
+                ],
+                "line_column": [
+                  2,
+                  57
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag",
+                "variant": "application-reused",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+                "span": [
+                  51,
+                  69
+                ],
+                "line_column": [
+                  2,
+                  42
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag",
+                "variant": "macro-reused",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+                "span": [
+                  66,
+                  84
+                ],
+                "line_column": [
+                  2,
+                  57
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+              }
+            ]
+          },
+          "javascript": {
+            "status": "not-executed-original",
+            "original_semantic_pass_credit": 0
+          },
+          "release": {
+            "status": "rejected",
+            "detail": [
+              "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+            ],
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "source_name": "sci-original.cljc",
+            "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": [
+              "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag."
+            ],
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "source_name": "sci-original.cljc",
+            "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "application-fresh",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+            "span": [
+              51,
+              69
+            ],
+            "line_column": [
+              2,
+              42
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+          },
+          "macro-fresh/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "macro-fresh",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+            "span": [
+              66,
+              84
+            ],
+            "line_column": [
+              2,
+              57
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+          },
+          "application-reused/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "application-reused",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+            "span": [
+              51,
+              69
+            ],
+            "line_column": [
+              2,
+              42
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)"
+          },
+          "macro-reused/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "macro-reused",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] }))",
+            "span": [
+              66,
+              84
+            ],
+            "line_column": [
+              2,
+              57
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)"
+          }
+        },
+        "actual_macro_contract_status": "rejected-before-original-computation",
+        "same_host_recovery_frames": [
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "application-fresh",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "application-fresh",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "macro-fresh",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "macro-fresh",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "application-reused",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "application-reused",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "macro-reused",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "variant": "macro-reused",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          }
+        ],
+        "original_semantic_pass_credit": 0,
+        "original_macro_execution_pass_credit": 0,
+        "reason": "Both pinned readers reject this complete unchanged original source; fresh/reused local application and macro readers reject it with located diagnostics and both engines recover on the same hosts. The original body was not executed.",
+        "prior_observer_reconciliation": {
+          "id": "sci-execution-sci-context-reader-skipped-tag",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+          "status": "missing",
+          "original_expectation_status": "unresolved",
+          "original_semantic_pass_credit": 0,
+          "canonical_contract_status": "unresolved",
+          "checked_pin_contract_status": {
+            "release": "rejected",
+            "checkout": "rejected"
+          },
+          "actual_macro_contract_status": "unresolved",
+          "source_binding": {
+            "id": "sci-execution-sci-context-reader-skipped-tag",
+            "sci_id": "sci-context-reader-skipped-tag",
+            "source": "#?(:clj 42 :cljs #missing/tag [1 2])",
+            "source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+            "original_row_sha256": "d33ad763f37ae3d91cb3dcae1579a5ec9e0539907f1546589e18d92f910b2101",
+            "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+            "expected": {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "outcome": {
+                "status": "returned",
+                "value": 42
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "source_name": "sci-original.cljc",
+            "reader_feature": "cljs",
+            "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+            "canonical_expected": null,
+            "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+            "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+            "original_expected": {
+              "id": "sci-execution-sci-context-reader-skipped-tag",
+              "outcome": {
+                "status": "returned",
+                "value": 42
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+            "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+          },
+          "layers": {
+            "javascript": {
+              "status": "mismatch",
+              "engines": {
+                "QuickJS": {},
+                "Node": {}
+              }
+            },
+            "release": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+              "source_name": "sci-original.cljc"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 30] No reader function for tag missing/tag.",
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+              "source_name": "sci-original.cljc"
+            }
+          },
+          "actual_phase_frames": {
+            "application-fresh/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-fresh/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)",
+              "phase_source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c"
+            },
+            "macro-fresh/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-fresh/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+              "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+            },
+            "application-reused/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/application-reused/user.cljc:2:42: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 51..69)",
+              "phase_source_sha256": "25d5641ea99083818da4d6e2bf31d6b36aa06f745c7b7cdc55dd2d7f27f6641c"
+            },
+            "macro-reused/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag/macro-reused/user.cljc:2:57: Lower(UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })) (bytes 66..84)",
+              "phase_source_sha256": "4e394758d664284a1ada12a9447ecb454815931428ca42857eb6c81cfad62fc7"
+            }
+          },
+          "reconciliation": "original-contract-unresolved"
+        }
+      },
+      "completion_reason": "Both pinned readers reject this complete unchanged original source; fresh/reused local application and macro readers reject it with located diagnostics and both engines recover on the same hosts. The original body was not executed."
+    },
+    {
+      "id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+      "obligation_kind": "sci-case",
+      "name": "sci-context-reader-skipped-tag-identity",
+      "source": "tests/reference/sci/evaluator-dispositions.tsv",
+      "line": 1433,
+      "body_id": "tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+      "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+      "source_span": {
+        "text": "sci-context-reader-skipped-tag-identity\tportable\t#?(:cljs {#a 1 :a (a 1) :b} :clj 2)\t(return (int 2))\t(vector)\t(string u)\t(string u)\tgap\t#?(:cljs {#a 1 :a (a 1) :b} :clj 2)\t(diagnostic (string u003c007300630069002d006500760061006c007500610074006f0072003e002e0063006c006a0073003a0031003a0031003a0020004c006f00770065007200280055006e0073007500700070006f007200740065006400280052006500610064006500720043006f006e0064006900740069006f006e0061006c00290029))\t(vector)\t(string u)\t(string u)\towner=light-cljs-9; kind=language-or-dialect-gap; family=sci-context; Historical supported SCI source is a nonpassing compiler/evaluator capability gap: (diagnostic (string <sci-evaluator>.cljs:1:1: Lower(Unsupported(ReaderConditional)))).",
+        "sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5"
+      },
+      "disposition": "intended",
+      "reason": "Local/API and historical SCI provenance retained; historical/native observations and registration metadata establish no current semantic pass.",
+      "family": "public-residual",
+      "owner": "light-cljs-125",
+      "feature": "public-residual",
+      "test": "sci-context-reader-skipped-tag-identity",
+      "status": "verified-rejection",
+      "fixture_id": null,
+      "layers": {
+        "diagnostic": {
+          "status": "verified-original-source-rejection",
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "application-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                44,
+                48
+              ],
+              "line_column": [
+                2,
+                35
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                59,
+                63
+              ],
+              "line_column": [
+                2,
+                50
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "application-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                44,
+                48
+              ],
+              "line_column": [
+                2,
+                35
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                59,
+                63
+              ],
+              "line_column": [
+                2,
+                50
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+            }
+          ]
+        },
+        "javascript": {
+          "status": "not-executed-original",
+          "original_semantic_pass_credit": 0
+        },
+        "release": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 13] No reader function for tag a."
+          ],
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        },
+        "checkout": {
+          "status": "rejected",
+          "detail": [
+            "sci-original.cljc [line 1, col 13] No reader function for tag a."
+          ],
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "source_name": "sci-original.cljc",
+          "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+        }
+      },
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "verified-original-source-rejection",
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "application-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                44,
+                48
+              ],
+              "line_column": [
+                2,
+                35
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                59,
+                63
+              ],
+              "line_column": [
+                2,
+                50
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "application-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                44,
+                48
+              ],
+              "line_column": [
+                2,
+                35
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                59,
+                63
+              ],
+              "line_column": [
+                2,
+                50
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+            }
+          ]
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-executed-original",
+          "original_semantic_pass_credit": 0
+        },
+        "quickjs_macro": {
+          "status": "rejected-before-original-computation",
+          "actual_phase": "macro",
+          "hosts": [
+            "fresh",
+            "reused"
+          ],
+          "original_macro_execution_pass_credit": 0,
+          "frames": [
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "macro-fresh",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                59,
+                63
+              ],
+              "line_column": [
+                2,
+                50
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+            },
+            {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "variant": "macro-reused",
+              "status": "rejected-before-original-computation",
+              "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+              "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc",
+              "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+              "span": [
+                59,
+                63
+              ],
+              "line_column": [
+                2,
+                50
+              ],
+              "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+            }
+          ]
+        },
+        "execution_evidence": {
+          "status": "verified-rejection",
+          "references": {
+            "release": {
+              "status": "rejected",
+              "detail": [
+                "sci-original.cljc [line 1, col 13] No reader function for tag a."
+              ],
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+              "source_name": "sci-original.cljc",
+              "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": [
+                "sci-original.cljc [line 1, col 13] No reader function for tag a."
+              ],
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+              "source_name": "sci-original.cljc",
+              "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+            }
+          }
+        }
+      },
+      "gap_sci_context_reconciliation": {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+        "status": "missing",
+        "original_expectation_status": "unresolved",
+        "original_semantic_pass_credit": 0,
+        "canonical_contract_status": "unresolved",
+        "checked_pin_contract_status": {
+          "release": "rejected",
+          "checkout": "rejected"
+        },
+        "actual_macro_contract_status": "unresolved",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+          "sci_id": "sci-context-reader-skipped-tag-identity",
+          "source": "#?(:cljs {#a 1 :a (a 1) :b} :clj 2)",
+          "source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "original_row_sha256": "69105c35267ccc87daadf739cf36f6b9d08948fb7b22022d14cdfc579ecb7057",
+          "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "outcome": {
+              "status": "returned",
+              "value": 2
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "outcome": {
+              "status": "returned",
+              "value": 2
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "layers": {
+          "javascript": {
+            "status": "mismatch",
+            "engines": {
+              "QuickJS": {},
+              "Node": {}
+            }
+          },
+          "release": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "source_name": "sci-original.cljc"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "source_name": "sci-original.cljc"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)",
+            "phase_source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90"
+          },
+          "macro-fresh/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+            "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+          },
+          "application-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)",
+            "phase_source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90"
+          },
+          "macro-reused/rejected": {
+            "status": "rejected",
+            "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+            "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+          }
+        },
+        "reconciliation": "original-contract-unresolved"
+      },
+      "canonical_source_rejection_reconciliation": {
+        "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+        "status": "verified-rejection",
+        "reconciliation": "verified-canonical-original-source-rejection",
+        "source_binding": {
+          "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+          "sci_id": "sci-context-reader-skipped-tag-identity",
+          "source": "#?(:cljs {#a 1 :a (a 1) :b} :clj 2)",
+          "source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+          "original_row_sha256": "69105c35267ccc87daadf739cf36f6b9d08948fb7b22022d14cdfc579ecb7057",
+          "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+          "expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "outcome": {
+              "status": "returned",
+              "value": 2
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_name": "sci-original.cljc",
+          "reader_feature": "cljs",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+          "canonical_expected": null,
+          "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+          "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+          "original_expected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "outcome": {
+              "status": "returned",
+              "value": 2
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+          "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+        },
+        "profile": "exact-original-cljc-rejections-after191-v1",
+        "layers": {
+          "diagnostic": {
+            "status": "verified-original-source-rejection",
+            "frames": [
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+                "variant": "application-fresh",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+                "span": [
+                  44,
+                  48
+                ],
+                "line_column": [
+                  2,
+                  35
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+                "variant": "macro-fresh",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+                "span": [
+                  59,
+                  63
+                ],
+                "line_column": [
+                  2,
+                  50
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+                "variant": "application-reused",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+                "span": [
+                  44,
+                  48
+                ],
+                "line_column": [
+                  2,
+                  35
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+              },
+              {
+                "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+                "variant": "macro-reused",
+                "status": "rejected-before-original-computation",
+                "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+                "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc",
+                "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+                "span": [
+                  59,
+                  63
+                ],
+                "line_column": [
+                  2,
+                  50
+                ],
+                "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+              }
+            ]
+          },
+          "javascript": {
+            "status": "not-executed-original",
+            "original_semantic_pass_credit": 0
+          },
+          "release": {
+            "status": "rejected",
+            "detail": [
+              "sci-original.cljc [line 1, col 13] No reader function for tag a."
+            ],
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "source_name": "sci-original.cljc",
+            "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+          },
+          "checkout": {
+            "status": "rejected",
+            "detail": [
+              "sci-original.cljc [line 1, col 13] No reader function for tag a."
+            ],
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "source_name": "sci-original.cljc",
+            "oracle_sha256": "988c8d9225f61d9463aec42b860a057e610e811f94180c0c4004c20e89ff10c4"
+          }
+        },
+        "actual_phase_frames": {
+          "application-fresh/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "application-fresh",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+            "span": [
+              44,
+              48
+            ],
+            "line_column": [
+              2,
+              35
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+          },
+          "macro-fresh/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "macro-fresh",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+            "span": [
+              59,
+              63
+            ],
+            "line_column": [
+              2,
+              50
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+          },
+          "application-reused/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "application-reused",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+            "span": [
+              44,
+              48
+            ],
+            "line_column": [
+              2,
+              35
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)"
+          },
+          "macro-reused/rejected": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "macro-reused",
+            "status": "rejected-before-original-computation",
+            "source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae",
+            "source_path": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc",
+            "message": "macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] }))",
+            "span": [
+              59,
+              63
+            ],
+            "line_column": [
+              2,
+              50
+            ],
+            "detail": "/private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-rejections-after191-integrated-v1/local/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)"
+          }
+        },
+        "actual_macro_contract_status": "rejected-before-original-computation",
+        "same_host_recovery_frames": [
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "application-fresh",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "application-fresh",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "macro-fresh",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "macro-fresh",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "application-reused",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "application-reused",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "macro-reused",
+            "engine": "QuickJS",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          },
+          {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "variant": "macro-reused",
+            "engine": "Node",
+            "status": "recovery-passed",
+            "recovery_source_sha256": "f5805f3cad82de178f5bf2a5aee60a25dbb27ae67812b32d1899c54400689796",
+            "emitted_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
+            "raw": "42"
+          }
+        ],
+        "original_semantic_pass_credit": 0,
+        "original_macro_execution_pass_credit": 0,
+        "reason": "Both pinned readers reject this complete unchanged original source; fresh/reused local application and macro readers reject it with located diagnostics and both engines recover on the same hosts. The original body was not executed.",
+        "prior_observer_reconciliation": {
+          "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+          "status": "missing",
+          "original_expectation_status": "unresolved",
+          "original_semantic_pass_credit": 0,
+          "canonical_contract_status": "unresolved",
+          "checked_pin_contract_status": {
+            "release": "rejected",
+            "checkout": "rejected"
+          },
+          "actual_macro_contract_status": "unresolved",
+          "source_binding": {
+            "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+            "sci_id": "sci-context-reader-skipped-tag-identity",
+            "source": "#?(:cljs {#a 1 :a (a 1) :b} :clj 2)",
+            "source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+            "original_row_sha256": "69105c35267ccc87daadf739cf36f6b9d08948fb7b22022d14cdfc579ecb7057",
+            "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+            "expected": {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "outcome": {
+                "status": "returned",
+                "value": 2
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "source_name": "sci-original.cljc",
+            "reader_feature": "cljs",
+            "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+            "canonical_expected": null,
+            "scope_basis": "Complete original .cljc reader context uses the adopted :cljs feature; immutable historical SCI :clj observations remain separate. Finite macro export and strict arity boundaries remain nonpassing.",
+            "reason": "No reviewed full-phase literal contract; original source is retained and requires independent resolution.",
+            "original_expected": {
+              "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+              "outcome": {
+                "status": "returned",
+                "value": 2
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "source_context_profile": "exact-original-sci-cljc-reader-context-v1",
+            "comparison": "SCI Number/character/finite list-vs-seq projection v1"
+          },
+          "layers": {
+            "javascript": {
+              "status": "mismatch",
+              "engines": {
+                "QuickJS": {},
+                "Node": {}
+              }
+            },
+            "release": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+              "reference_identity": "release 1.12.134",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+              "source_name": "sci-original.cljc"
+            },
+            "checkout": {
+              "status": "rejected",
+              "detail": "sci-original.cljc [line 1, col 13] No reader function for tag a.",
+              "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+              "settings": {
+                "optimizations": "none",
+                "static-fns": false,
+                "def-emits-var": false
+              },
+              "original_source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+              "source_name": "sci-original.cljc"
+            }
+          },
+          "actual_phase_frames": {
+            "application-fresh/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-fresh/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)",
+              "phase_source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90"
+            },
+            "macro-fresh/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-fresh/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+              "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+            },
+            "application-reused/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/application-reused/user.cljc:2:35: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 44..48)",
+              "phase_source_sha256": "89e00db97dce66d56d6588b55619c5134dafbd09cb8bab1d1edc731c8baa0e90"
+            },
+            "macro-reused/rejected": {
+              "status": "rejected",
+              "detail": "/private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: macro expansion: reader: /private/tmp/light-cljs-125-cljc-prior-after191/phases/sci-execution-sci-context-reader-skipped-tag-identity/macro-reused/user.cljc:2:50: Lower(UnknownTag(Name { namespace: None, name: [97] })) (bytes 59..63)",
+              "phase_source_sha256": "b21398d614ce88ab5555f07bd9ed011ffcb6d510458a0445b9afad44b4a038ae"
+            }
+          },
+          "reconciliation": "original-contract-unresolved"
+        }
+      },
+      "completion_reason": "Both pinned readers reject this complete unchanged original source; fresh/reused local application and macro readers reject it with located diagnostics and both engines recover on the same hosts. The original body was not executed."
+    }
+  ],
+  "controls": [
+    {
+      "id": "macro-pass",
+      "status": "rejected-as-unexplained-execution-failure"
+    },
+    {
+      "id": "original-credit",
+      "status": "rejected-as-unexplained-execution-failure"
+    },
+    {
+      "id": "observation-error",
+      "status": "rejected-as-unexplained-execution-failure"
+    },
+    {
+      "id": "unrelated-source",
+      "status": "rejected-as-unexplained-execution-failure"
+    },
+    {
+      "id": "detached-evidence",
+      "status": "rejected",
+      "reason": "Original rejection detached from fresh original observer"
+    },
+    {
+      "id": "accepted-prior-pin",
+      "status": "rejected",
+      "reason": "Original rejection replaced accepted pin observer"
+    },
+    {
+      "id": "changed-source",
+      "status": "rejected",
+      "reason": "Original rejection changed whole source/expectation binding"
+    }
+  ],
+  "original_semantic_pass_credit": 0,
+  "original_macro_execution_pass_credit": 0,
+  "full_scope_selected": false,
+  "strict_complete": false,
+  "source_strict_complete": false,
+  "executed_audit_source": {
+    "original_path": "/tmp/light-cljs-125-after191-negative-selected.py",
+    "durable_byte_identical_path": "tests/reference/compiler-language/cljc_rejections_after191_selected_audit.py",
+    "sha256": "11360bb62ae8a8fe0093b4fff47926fdbe1278e286474987d5b70a697845fb93"
+  },
+  "command": "env PYTHONDONTWRITEBYTECODE=1 python3 -B /tmp/light-cljs-125-after191-negative-selected.py",
+  "log_path": "/tmp/light-cljs-125-after191-negative-selected.log",
+  "log_sha256": "99dca0ecf552dc6a9b4a4b22e597467b6d36bd5de7581f5f1a937db69bb8c736"
+}

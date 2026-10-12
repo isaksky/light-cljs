@@ -1,0 +1,132 @@
+[
+  {
+    "id": "sci-execution-sci-context-reader-metadata-no-match",
+    "sci_id": "sci-context-reader-metadata-no-match",
+    "source": "(meta '^:private #?(:cljs x) y)",
+    "source_sha256": "e0cfa8dea46e470f0a4e3f9d9a42dcbfb194d83ae65d79fc6b1c11c228c06a95",
+    "original_row_sha256": "3ba850a266625ed032282ecc18ebce9bf53c310c1d6ca3ef684f28a9098f5663",
+    "body_sha256": "bab535d44f5f386b774a4b83a8f4e33cb837395248944096b1454f7bc64e6d00",
+    "expected": {
+      "id": "sci-execution-sci-context-reader-metadata-no-match",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$map": [
+            [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "private",
+                  "spelling": "private"
+                }
+              },
+              true
+            ]
+          ],
+          "count": 1
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_name": "sci-original.cljc",
+    "reader_feature": "cljs",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-metadata-no-match",
+    "required_diagnostic": "unresolved symbol: y",
+    "canonical_reference_rejection": null,
+    "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+  },
+  {
+    "id": "sci-execution-sci-context-reader-skipped-tag",
+    "sci_id": "sci-context-reader-skipped-tag",
+    "source": "#?(:clj 42 :cljs #missing/tag [1 2])",
+    "source_sha256": "2c12b16b024b9abcecdae32e2d5bb4c9966db00e7d431ec6715276cb0c361b3a",
+    "original_row_sha256": "d33ad763f37ae3d91cb3dcae1579a5ec9e0539907f1546589e18d92f910b2101",
+    "body_sha256": "481de7a3bddc3119cd9c80ad646a4d198b6e5ac0a6cc127735f5b39869ff744b",
+    "expected": {
+      "id": "sci-execution-sci-context-reader-skipped-tag",
+      "outcome": {
+        "status": "returned",
+        "value": 42
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_name": "sci-original.cljc",
+    "reader_feature": "cljs",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag",
+    "required_diagnostic": "UnknownTag(Name { namespace: Some([109, 105, 115, 115, 105, 110, 103]), name: [116, 97, 103] })",
+    "canonical_reference_rejection": "No reader function for tag missing/tag.",
+    "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+  },
+  {
+    "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+    "sci_id": "sci-context-reader-skipped-tag-identity",
+    "source": "#?(:cljs {#a 1 :a (a 1) :b} :clj 2)",
+    "source_sha256": "0dd0259cceff1bfc471cca911c0fba295d8203db9914e7d2382afee7a28bac82",
+    "original_row_sha256": "69105c35267ccc87daadf739cf36f6b9d08948fb7b22022d14cdfc579ecb7057",
+    "body_sha256": "c202b10ea7d5b003e803932cdc82eecea6bada2e16a5f8551288f74582da96e5",
+    "expected": {
+      "id": "sci-execution-sci-context-reader-skipped-tag-identity",
+      "outcome": {
+        "status": "returned",
+        "value": 2
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_name": "sci-original.cljc",
+    "reader_feature": "cljs",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-skipped-tag-identity",
+    "required_diagnostic": "UnknownTag(Name { namespace: None, name: [97] })",
+    "canonical_reference_rejection": "No reader function for tag a.",
+    "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+  },
+  {
+    "id": "sci-execution-sci-context-reader-splice-map-key",
+    "sci_id": "sci-context-reader-splice-map-key",
+    "source": "{:a #?(:clj 1) #?@(:clj [:b 2])}",
+    "source_sha256": "f3e4fcf6f80b6d75b45663c52e1fc9517bb3be72e24b18cf96910124714b9263",
+    "original_row_sha256": "1accb85286deda99a8b3431f47f90c023d07f1335cd49f915be76ea7ce688ace",
+    "body_sha256": "cfcfdce003377ceb98ce072b5b36925d4ece48384dcd85e228e9d11dc72e8ecf",
+    "expected": {
+      "id": "sci-execution-sci-context-reader-splice-map-key",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$map": [
+            [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "a",
+                  "spelling": "a"
+                }
+              },
+              1
+            ],
+            [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "b",
+                  "spelling": "b"
+                }
+              },
+              2
+            ]
+          ],
+          "count": 2
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "source_name": "sci-original.cljc",
+    "reader_feature": "cljs",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-context-reader-splice-map-key",
+    "required_diagnostic": "map requires an even number of selected forms",
+    "canonical_reference_rejection": "Map literals must contain an even number of forms.",
+    "scope_basis": "The complete original uses adopted :cljs selection; original SCI :clj source/body/row/value/effects remain untouched. Rejections are diagnostic evidence, never executing original-source or macro semantic passes."
+  }
+]

@@ -1,0 +1,1 @@
+[(boolean 0) (boolean "") (boolean ##NaN) (boolean #js []) (boolean nil) (boolean false) (not 0) (not "") (not ##NaN) (not nil) (not js/undefined) (some? false) (nil? js/undefined) (undefined? nil) (undefined? js/undefined) (any?) (not=) (not= 1) (not= 1 1 2)]

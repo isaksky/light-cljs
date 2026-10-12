@@ -573,8 +573,11 @@ def sci_execution_failed(report, evidence, failure_statuses):
                       and row.get('columns', {}).get('quickjs_macro', {}).get('status') == 'passed'
                       and runner.same_json(row.get('layers'), evidence.get(row['gap_sci_context_reconciliation']['id'])))
     reconciled.update(verified_transport_observer_ids(report, evidence))
+    import cljc_rejection_after191_accounting
+    source_rejections = cljc_rejection_after191_accounting.explained_ids(report, evidence)
     return any(layer.get("status") in failure_statuses
                and not (identity in reconciled and layer.get("status") == "mismatch")
+               and not (identity in source_rejections and layer.get("status") in {"mismatch", "rejected"})
                for identity, layers in evidence.items() for layer in layers.values())
 
 
@@ -656,7 +659,7 @@ def verified_cljc_transport(document, prior_contexts):
     return contexts
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None, numeric_sci_context_evidence=None, original_sci_after190_context_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None, numeric_sci_context_evidence=None, original_sci_after190_context_evidence=None, original_sci_after191_context_evidence=None, cljc_source_rejection_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -704,7 +707,8 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             (lazy_sci_context_evidence, 'sci_lazy_context', 'Exact lazy/iteration/control'),
             (case_sci_context_evidence, 'case_char_string_accepted', 'Exact character/string case'),
             (numeric_sci_context_evidence, 'sci_numeric_error_after188', 'Exact original numeric/error'),
-            (original_sci_after190_context_evidence, 'sci_originals_after190', 'Exact original after190')):
+            (original_sci_after190_context_evidence, 'sci_originals_after190', 'Exact original after190'),
+            (original_sci_after191_context_evidence, 'sci_originals_after191', 'Exact original after191')):
         if document is None:
             continue
         import importlib
@@ -716,6 +720,9 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                 raise ValueError(label + ' context detached from fresh report execution')
         gap_sci_contexts.update(contexts)
     gap_sci_contexts.update(verified_cljc_transport(transport_sci_context_evidence, gap_sci_contexts))
+    import cljc_rejection_after191_accounting
+    canonical_source_rejections = cljc_rejection_after191_accounting.verified(
+        cljc_source_rejection_evidence, gap_sci_contexts, sci_evidence or {})
     library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
     selected = bool(features or identities)
     rows = []
@@ -882,6 +889,21 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                 'actual_phase': 'macro', 'hosts': ['fresh', 'reused'], 'engines': ['QuickJS', 'Node'],
                 'source_context_profile': binding['source_context_profile'],
                 'frames': [{'variant': key, **value} for key, value in frames.items() if key.startswith('macro-')]}
+        canonical_source_rejection = canonical_source_rejections.get(row['id'])
+        if canonical_source_rejection:
+            binding = canonical_source_rejection['source_binding']
+            if row['body_sha256'] != binding['body_sha256'] or row['obligation_kind'] != 'sci-case':
+                raise ValueError('Canonical source rejection detached from original obligation')
+            status = 'verified-rejection'
+            layers = canonical_source_rejection['layers']
+            observed_columns = columns(layers, status)
+            observed_columns['quickjs_macro'] = {
+                'status': 'rejected-before-original-computation',
+                'actual_phase': 'macro', 'hosts': ['fresh', 'reused'],
+                'original_macro_execution_pass_credit': 0,
+                'frames': [frame for frame in canonical_source_rejection['actual_phase_frames'].values()
+                           if frame['variant'].startswith('macro-')]}
+            gap_reason = canonical_source_rejection['reason']
         rows.append({**row, "feature": row["family"], "test": row["name"], "line": row["source_span"].get("start_line", row.get("line")),
                      "status": status, "fixture_id": mapping.get("reference_fixture_id") if mapping else None, "layers": layers, "columns": observed_columns,
                      **({"canonical_reconciliation": reconciliation} if reconciliation else {}),
@@ -890,6 +912,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                      **({"library_dialect_reconciliation": library_dialect} if library_dialect else {}),
                      **({'reviewed_sci_context_reconciliation': reviewed_sci_context} if reviewed_sci_context else {}),
                      **({'gap_sci_context_reconciliation': gap_sci_context} if gap_sci_context else {}),
+                     **({'canonical_source_rejection_reconciliation': canonical_source_rejection} if canonical_source_rejection else {}),
                      "completion_reason": gap_reason or ("Fresh complete original source, literal outcome/effects and actual application/macro contexts verified; original SCI agreement or exact canonical difference remains separately reported." if reviewed_sci_context else "Exact source-specific canonical/strict-EDN difference verified in both pins and both application/macro phases; original SCI expectation remains unresolved." if library_dialect else "QuickJS macro eligibility not run; ordinary body evidence cannot prove expansion-phase operation support." if row["obligation_kind"] == "public-api" and mapping and observed_columns["quickjs_macro"]["status"] != "passed" else row["reason"])})
     counts = Counter(row["status"] for row in rows)
     sections = {}
@@ -982,6 +1005,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
     validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after185')
     validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after188')
     validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after190')
+    validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after191')
     return result
 
 
@@ -1028,6 +1052,7 @@ def load_phase_witnesses(obligations):
     validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after185')
     validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after188')
     validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after190')
+    validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after191')
     return result
 
 
