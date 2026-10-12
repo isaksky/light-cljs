@@ -109,3 +109,18 @@ has zero original semantic credit, four passing demanded macro frames, and
 full result counts with this selection policy explicit; it cannot certify the
 comprehensive language gate. No cancellation or singular/plural limit tests,
 externally blocked Pellet 156 work, push or PR were performed.
+
+## Numeric case completion (175)
+
+The retained observations above describe 173 delivery. Its original contracts
+and receipt are now preserved byte-for-byte under
+`case-char-string-accepted-historical-173-{contracts,receipt}.json`.
+[Numeric case completion](case-numeric.md) updates the current producer to accept
+`(case 1 1 :integer 1.0 :float)` with `:integer`, using fresh independent pins
+and all eight application/macro engine contexts. It moves this source from the
+historical local diagnostic cohort into accepted controls; seven true
+duplicate/malformed sources retain same-host recovery. The current receipt at
+`/tmp/light-cljs-175-case-neighbors-final/evidence.json` has all 88 source frames
+passing, including the character/string literal behavior completed in 174, and
+56 recovery outcomes. The original SCI difference and zero-credit full-ledger
+policy remain unchanged. Stored historical positives are never a fallback.

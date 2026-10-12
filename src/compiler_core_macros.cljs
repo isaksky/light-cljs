@@ -134,8 +134,8 @@
                          (if (seq? constants) (vec constants) [constants]))) pairs)
         thens (mapv second pairs)
         result (list 'compiler-case* value groups thens)]
-    ;; The complete borrowed source retains character/string reader identity;
-    ;; individual JavaScript macro arguments have already become strings.
+    ;; The complete borrowed source retains scalar reader identity;
+    ;; individual macro arguments already use JavaScript strings and Numbers.
     (with-meta
       (if (odd? (count clauses)) (concat result (list (last clauses))) result)
       {:light-cljs/case-source &form})))

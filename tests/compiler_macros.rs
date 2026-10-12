@@ -1124,6 +1124,9 @@ fn compiler_assertion_configuration_removes_conditions_messages_and_prepost_chec
 
 #[test]
 fn control_iteration_captures_have_direct_expected_values_and_do_not_leak_recur() {
+    // The historical Number-based duplicate rejection is retained in the
+    // pre-repair receipt; independent pins require first-match acceptance.
+    assert_eq!(result(&compile("(str (case 1 1 :integer 1.0 :float))").unwrap()), ":integer\n");
     let primitive_case = compile("(case 1 1 2 3)").unwrap();
     assert!(!primitive_case.contains("const rt ="));
     assert!(primitive_case.contains("switch (caseValue)"));

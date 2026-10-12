@@ -7,8 +7,8 @@ class CaseAcceptanceGuards(unittest.TestCase):
         rows,negatives=case.load()
         self.assertEqual([2,2],rows[0]['original_expected']['outcome']['value']['$vector'])
         self.assertEqual([1,1],rows[0]['canonical_expected']['outcome']['value']['$vector'])
-        self.assertEqual(10,len(rows));self.assertEqual(8,len(negatives))
-        self.assertIn('swap!',rows[4]['source'])
+        self.assertEqual(11,len(rows));self.assertEqual(7,len(negatives))
+        self.assertIn('swap!',rows[5]['source'])
         for row in rows:
             for phase in ('application','macro'):
                 self.assertIn('(do '+row['source']+')',case.proof.historical.source(row['source'],phase))

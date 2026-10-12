@@ -15,6 +15,11 @@
       "source_sha256": "2ffde7c522ee281f970f51bd142f5c19ec3dea01dba215b1b08d596f180a15c9"
     },
     {
+      "id": "case-control-integer-float",
+      "source": "(case 1 1 :integer 1.0 :float)",
+      "source_sha256": "0740d4358e9da2798806f3708b439328cb3e50413a45c3b1cf44c13e2f470d12"
+    },
+    {
       "id": "case-control-characters",
       "source": "[(case \\a \\a 1 \\b 2 3) (case \\z \\a 1 \\b 2 3)]",
       "source_sha256": "fa73cc42cacd7631335ccae61ad1fe5ea9ed4531bd1e26538254375f1eeb060a"
@@ -58,11 +63,6 @@
       "id": "case-control-unicode-character",
       "source": "[(case \\u0061 \"a\" 1 \\a 2 3) (case \\a \\u0061 7 9)]",
       "source_sha256": "05398209e0622ab43baa018d59d6dfb771a2cd1efd7367bd49aa9128e0b2ccd7"
-    },
-    {
-      "id": "case-rejection-duplicate-numbers",
-      "source": "(case 1 1 :integer 1.0 :float)",
-      "source_sha256": "0740d4358e9da2798806f3708b439328cb3e50413a45c3b1cf44c13e2f470d12"
     },
     {
       "id": "case-rejection-duplicate-characters",
@@ -110,6 +110,21 @@
             1,
             1
           ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "case-control-integer-float",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$keyword": {
+            "namespace": null,
+            "name": "integer",
+            "spelling": "integer"
+          }
         }
       },
       "trace": [],
@@ -279,21 +294,5 @@
       "stdout": ""
     }
   ],
-  "diagnostic_canonical_expected": {
-    "case-rejection-duplicate-numbers": {
-      "id": "case-rejection-duplicate-numbers",
-      "outcome": {
-        "status": "returned",
-        "value": {
-          "$keyword": {
-            "namespace": null,
-            "name": "integer",
-            "spelling": "integer"
-          }
-        }
-      },
-      "trace": [],
-      "stdout": ""
-    }
-  }
+  "diagnostic_canonical_expected": {}
 }

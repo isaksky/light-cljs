@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, collections::HashMap, fmt, ops::Range};
 
-use crate::compiler_data::{CompilerLiteralKind, DatumView, Form, FormKind, Source};
+use crate::compiler_data::{CompilerLiteralKind, DatumView, Form, FormKind, Origin, Source};
 use crate::macro_host::MacroHost;
 
 use crate::{CollectionKind, NodeId, NodeKind, NumberKind, PrefixKind, SyntaxTree};
@@ -4858,7 +4858,7 @@ impl Analyzer<'_> {
     fn reader_identity(
         &mut self,
         id: NodeId,
-        canonical_numbers: bool,
+        case_numbers: bool,
     ) -> Result<Option<ReaderDatum>, AnalysisError> {
         if self.macro_depth > 0 && self.analysis_depth >= 128 {
             return Err(self.error(
@@ -4869,7 +4869,7 @@ impl Analyzer<'_> {
             ));
         }
         self.analysis_depth += 1;
-        let result = self.reader_datum_inner(id, canonical_numbers);
+        let result = self.reader_datum_inner(id, case_numbers);
         self.analysis_depth -= 1;
         result
     }
@@ -4877,7 +4877,7 @@ impl Analyzer<'_> {
     fn reader_datum_inner(
         &mut self,
         id: NodeId,
-        canonical_numbers: bool,
+        case_numbers: bool,
     ) -> Result<Option<ReaderDatum>, AnalysisError> {
         let node = self.syntax.nodes[id.0].clone();
         // Owned macro forms lower characters to JavaScript strings, but reader
@@ -4895,16 +4895,7 @@ impl Analyzer<'_> {
             return Ok(match (kind, payload.inspect()) {
                 (CompilerLiteralKind::BigInteger, DatumView::String(text)) => {
                     let text = String::from_utf16_lossy(&text);
-                    if canonical_numbers {
-                        text.parse::<f64>().ok().map(|value| {
-                            ReaderDatum::Number(
-                                1,
-                                format!("{:x}", if value == 0.0 { 0 } else { value.to_bits() }),
-                            )
-                        })
-                    } else {
-                        Some(ReaderDatum::Number(0, text))
-                    }
+                    Some(ReaderDatum::Number(0, text))
                 }
                 (CompilerLiteralKind::Uuid, DatumView::String(text)) => Some(
                     ReaderDatum::ReaderLiteral(0, String::from_utf16_lossy(&text)),
@@ -4919,10 +4910,38 @@ impl Analyzer<'_> {
             NodeKind::Nil => ReaderDatum::Nil,
             NodeKind::Boolean(value) => ReaderDatum::Bool(value),
             NodeKind::Number(kind) => {
-                if !canonical_numbers
-                    && self.generated.get(id.0).and_then(Option::as_ref).is_none()
-                    && let Some((category, spelling)) =
-                        crate::reader_literals::number_key(self.spelling(id), kind)
+                let generated = self.generated.get(id.0).and_then(Option::as_ref);
+                // Source decimal forms become Doubles in the macro bridge. The
+                // borrowed source occurrence still carries the JVM reader key,
+                // including decimal scale normalization and exact integer digits.
+                let source_number = if case_numbers {
+                    generated
+                        .filter(|form| matches!(form.node().origin, Origin::Source))
+                        .map(|form| {
+                            let text = form.span().text().to_owned();
+                            let kind = if text.ends_with('M') {
+                                NumberKind::Decimal
+                            } else if text.ends_with('N') && !text.starts_with("##") {
+                                NumberKind::BigInteger
+                            } else if text.contains('/') {
+                                NumberKind::Ratio
+                            } else {
+                                kind
+                            };
+                            (text, kind)
+                        })
+                } else {
+                    None
+                };
+                if let Some((category, spelling)) = source_number
+                    .as_ref()
+                    .and_then(|(text, kind)| crate::reader_literals::number_key(text, *kind))
+                    .or_else(|| {
+                        generated
+                            .is_none()
+                            .then(|| crate::reader_literals::number_key(self.spelling(id), kind))
+                            .flatten()
+                    })
                 {
                     return Ok(Some(ReaderDatum::Number(category, spelling)));
                 }
@@ -4935,13 +4954,10 @@ impl Analyzer<'_> {
                 else {
                     return Ok(None);
                 };
-                if canonical_numbers {
-                    // The source carrier preserves characters, while all numeric
-                    // spellings retain the shared JavaScript Number contract.
-                    return Ok(Some(ReaderDatum::Number(
-                        1,
-                        format!("{:x}", if value == 0.0 { 0 } else { value.to_bits() }),
-                    )));
+                // NaN is nonreflexive in the pinned reader's case validation,
+                // so repeated NaN constants (including nested ones) can coexist.
+                if case_numbers && value.is_nan() {
+                    return Ok(None);
                 }
                 ReaderDatum::Number(
                     u8::from(kind == NumberKind::Float),
@@ -4977,7 +4993,7 @@ impl Analyzer<'_> {
                 kind: PrefixKind::Quote,
                 form,
             } => {
-                let Some(data) = self.reader_identity(form, canonical_numbers)? else {
+                let Some(data) = self.reader_identity(form, case_numbers)? else {
                     return Ok(None);
                 };
                 ReaderDatum::Sequential(vec![
@@ -4995,7 +5011,7 @@ impl Analyzer<'_> {
             } => {
                 let mut values = Vec::with_capacity(children.len());
                 for &child in children {
-                    let Some(data) = self.reader_identity(child, canonical_numbers)? else {
+                    let Some(data) = self.reader_identity(child, case_numbers)? else {
                         return Ok(None);
                     };
                     values.push(data);
@@ -8825,8 +8841,8 @@ impl Analyzer<'_> {
                 })
         {
             // The core macro executes normally, but its scalar arguments cannot
-            // carry occurrence identity once both characters and strings have
-            // become JavaScript primitives. Recover constant groups from the
+            // carry reader identity once characters/strings and numeric categories
+            // become the same JavaScript primitives. Recover constant groups from the
             // unmodified borrowed whole source, preserving their reader identity
             // and locations. Branches retain the executed macro's grouped shape.
             let clauses = source.children();

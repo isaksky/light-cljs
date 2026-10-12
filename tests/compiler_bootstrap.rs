@@ -108,12 +108,9 @@ fn case_and_condp_preserve_grouping_defaults_and_predicate_results() {
     );
     invalid("(case 1 (1 2) :a 2 :b)", "duplicate case test constant");
     invalid("(case [1] [1] :a [1] :b)", "duplicate case test constant");
-    // Macro arguments use the same canonical JavaScript Number contract as
-    // compiled runtime values: integer-looking and decimal syntax coincide.
-    invalid(
-        "(case 1 1 :integer 1.0 :float)",
-        "duplicate case test constant",
-    );
+    // Historically rejected after Number lowering; both independent canonical
+    // pins accept the complete source and choose the first Number match.
+    assert_eq!(result("(case 1 1 :integer 1.0 :float)"), ":integer");
     invalid("(cond true)", "even number");
 }
 

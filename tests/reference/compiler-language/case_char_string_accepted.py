@@ -12,8 +12,9 @@ PROFILE='canonical-case-char-string-accepted-v1'
 DRIVER=ROOT/'tests/compiler_case_char_string_accepted.rs'
 TEST='accepted_case_constants_execute_in_fresh_and_reused_macro_hosts'
 CONTRACTS=Path(__file__).with_name('case-char-string-accepted-contracts.json')
-CONTRACTS_SHA256='d8c1c00d68d5e413ad5d08bd6b42be5416421b8bd7f2beccd54d093fb41eb15d'
+CONTRACTS_SHA256='ff97fa105fb32dfffcf4d8035f38c5cb3189322876808e8e858e4053d67c9ea6'
 CONTROLS=(
+ ('integer-float',r'''(case 1 1 :integer 1.0 :float)'''),
  ('characters',r'''[(case \a \a 1 \b 2 3) (case \z \a 1 \b 2 3)]'''),
  ('strings',r'''[(case "a" "a" 1 "b" 2 3) (case "z" "a" 1 "b" 2 3)]'''),
  ('mixed-grouped-default',r'''[(case \a ("a" \a) 1 ("b" \b) 2 3) (case "b" ("a" \a) 1 ("b" \b) 2 3) (case \z ("a" \a) 1 ("b" \b) 2 3)]'''),
@@ -25,7 +26,6 @@ CONTROLS=(
  ('unicode-character',r'''[(case \u0061 "a" 1 \a 2 3) (case \a \u0061 7 9)]'''),
 )
 NEGATIVES=(
- ('duplicate-numbers',r'''(case 1 1 :integer 1.0 :float)''','Duplicate case test constant','duplicate case test constant'),
  ('duplicate-characters',r'''(case \a \a 1 \a 2 3)''','Duplicate case test constant','duplicate case test constant'),
  ('duplicate-character-spelling',r'''(case \a \a 1 \u0061 2 3)''','Duplicate case test constant','duplicate case test constant'),
  ('duplicate-strings',r'''(case "a" "a" 1 "a" 2 3)''','Duplicate case test constant','duplicate case test constant'),
@@ -83,11 +83,8 @@ def references(root,rows,negative,programs):
     for row in negative:
         for kind in result:
             frame=result[kind][row['id']]
-            if row['id']=='case-rejection-duplicate-numbers':
-                proof.same(frame['status'],'passed','Retained local numeric diagnostic pin difference drift')
-            else:
-                proof.same(frame['status'],'rejected','True duplicate/malformed case source accepted by pin')
-                if row['pin_diagnostic'] not in frame['detail']:raise ValueError('Wrong canonical case diagnostic')
+            proof.same(frame['status'],'rejected','True duplicate/malformed case source accepted by pin')
+            if row['pin_diagnostic'] not in frame['detail']:raise ValueError('Wrong canonical case diagnostic')
     return result
 
 
@@ -145,7 +142,7 @@ def verified_document(directory):
             'execution_binding':binding,'compiler_build_producer_source_sha256':before,'references':refs,'frames':frames,'diagnostics':diagnostics,
             'canonical_contract_status':'passed','actual_macro_contract_status':'passed','original_expectation_status':'unresolved',
             'status':'version-difference','original_semantic_pass_credit':0,
-            'retained_numeric_diagnostic_status':'canonical-mismatch',
+            'numeric_case_status':'passed',
             'neighboring_literal_status':'passed' if all(f['status']=='passed' for f in frames['case-control-map-set-literals'].values()) else 'mismatch'}
 
 
@@ -186,7 +183,7 @@ def run(directory,timeout=600):
     binding={'producer_source_sha256':before,'programs':programs,'executables_sha256':hashes,'audit_executable':binary,'audit_environment':env,'artifact_sha256':proof.tree(root)}
     (root/'binding.json').write_text(json.dumps(binding,indent=2)+'\n')
     document=verified_document(root);(root/'evidence.json').write_text(json.dumps(document,indent=2)+'\n');reconcile(document)
-    print('Verified original + 8 case controls, 1 neighboring literal diagnostic in 80 actual source-phase engine frames; 8 rejections in 32 same-host recovery contexts',flush=True)
+    print('Verified original + 9 case controls, 1 neighboring literal diagnostic in 88 actual source-phase engine frames; 7 rejections in 28 same-host recovery contexts',flush=True)
     return document
 
 if __name__=='__main__':

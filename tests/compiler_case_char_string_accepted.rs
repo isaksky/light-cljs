@@ -144,7 +144,7 @@ fn accepted_case_constants_execute_in_fresh_and_reused_macro_hosts() {
             }
         }
     }
-    assert_eq!(input.lines().count(), 10);
+    assert_eq!(input.lines().count(), 11);
     out.flush().unwrap();
     let negatives = root.parent().unwrap().join("diagnostics");
     let input = fs::read_to_string(negatives.join("input.tsv")).unwrap();
@@ -211,6 +211,11 @@ fn canonical(context: &rquickjs::Context, value: &str) -> String {
 fn canonical_case_constants_and_same_host_diagnostic_recovery() {
     let mut host = MacroHost::new();
     let controls: &[(&str, &str, &str)] = &[
+        (
+            r###"case-control-integer-float"###,
+            r###"(case 1 1 :integer 1.0 :float)"###,
+            r###"{"id":"case-control-integer-float","outcome":{"status":"returned","value":{"$keyword":{"namespace":null,"name":"integer","spelling":"integer"}}},"trace":[],"stdout":""}"###,
+        ),
         (
             r###"sci-execution-sci-control-case-char-string"###,
             r###"[(case \a "a" 1 \a 2 3) (case "a" \a 1 "a" 2 3)]"###,
@@ -286,10 +291,6 @@ fn canonical_case_constants_and_same_host_diagnostic_recovery() {
         }
     }
     let diagnostics: &[(&str, &str)] = &[
-        (
-            r###"(case 1 1 :integer 1.0 :float)"###,
-            "duplicate case test constant",
-        ),
         (
             r###"(case \a \a 1 \a 2 3)"###,
             r###"duplicate case test constant"###,
