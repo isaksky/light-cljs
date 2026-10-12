@@ -1,0 +1,55 @@
+{
+  "profile": "after188-shared-integration-static-validation",
+  "strict_complete": false,
+  "original_source_site_credit_added": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "exit_code": 0,
+      "diagnostics": 0,
+      "elapsed_seconds": 10.06
+    },
+    {
+      "command": "python3 -B -m unittest discover -s tests/reference/compiler-language -p test_report.py",
+      "exit_code": 0,
+      "tests": 42,
+      "seconds": 63.025,
+      "raw_log": "/tmp/light-cljs-125-after188-report-guards.log",
+      "raw_log_sha256": "a89ede4a3f89127c8741454fad58c6a63cd077b8a9b12c5ad03f1a78cf2bb941"
+    },
+    {
+      "command": "python3 -B -m unittest discover -s tests/reference/compiler-language -p test_full_ledger.py",
+      "exit_code": 0,
+      "tests": 22,
+      "seconds": 81.698,
+      "raw_log": "/tmp/light-cljs-125-after188-ledger-guards.log",
+      "raw_log_sha256": "6555c6cc21e547d65cfd4dccc6f34585ea692c21c05917e6bb297332cf4cde2d"
+    },
+    {
+      "command": "python3 -B tests/reference/compiler-language/report.py --json",
+      "exit_code": 0,
+      "purpose": "normal no-run validation, no semantic credit",
+      "output": "/tmp/light-cljs-125-after188-integrated-no-run.json",
+      "output_sha256": "2a86c4fdb36e9320864a4f6b90cd1dc18256886498e2964e87dadc95ca83358f"
+    }
+  ],
+  "shared_input_sha256": {
+    "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+    "tests/reference/compiler-language/full_ledger.py": "8e0e10d6ad33cfc18f4cd26c9d427397d81051a341ee98a4b129937d30a41105",
+    "tests/reference/compiler-language/full-manifest.json": "e4a31bbfd3bad63fa0aea43146cc472a4364ca00211f4ea0110385a3edb21083",
+    "tests/reference/compiler-language/obligation-witnesses.jsonl": "0c34d544303563e8da4d7b811723c739d1c7f312d01aafed9e677cfd0f75a100",
+    "tests/reference/compiler-language/phase-witnesses.jsonl": "ff5d258cce7444a0d0f4ec0602f196bbaabdce3f595f7e9ce459695a6b2ead42"
+  },
+  "new_driver_sha256": {
+    "tests/compiler_arity_after188.rs": "d07eca5136ac88ff10b989824c22d8597ceec98ddcd0f2365eaa44fe7ccdbd67",
+    "tests/compiler_test_metadata_after188.rs": "f0eb9295a8a27ab6e208377faa592ea7cc6980422dbbb97617a9e00e08409233"
+  },
+  "verified_integrated_cohort_receipt_sha256": {
+    "tests/reference/compiler-language/arity-after188-context-receipt.json": "4a0db0c7199f1177b4bcc7f64030b505530591f2e980e5e0b3741cfb05622455",
+    "tests/reference/compiler-language/arity-after188-raw-guard-receipt.json": "e7fb45b47d4f780b3617c2e1d687a065de507fc9cdf27a78a04c81c2011223b1",
+    "tests/reference/compiler-language/arity-after188-installed-loader-receipt.json": "dc4d4e63972a4eb73640486006fb6d04b6074889ab5b5fcbca893106c810fa90",
+    "tests/reference/compiler-language/sci-numeric-error-after188-receipt.json": "d8ae1f7ea2728c5a29b90ce1239b1a24ffcdaf61230ffaa76963c6e06e782bf1",
+    "tests/reference/compiler-language/sci-numeric-error-after188-integration-receipt.json": "7fa29e86171db6d42e403d04c1461c4e48424901715990f57edcacb61c817bf5",
+    "tests/reference/compiler-language/sci-numeric-error-after188-guard-receipt.json": "c7a0cf46ba5b80d255e5dee52906613ba42c17a4f5a3e3eef09ac9b105229d07"
+  }
+}

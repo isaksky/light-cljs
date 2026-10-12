@@ -656,7 +656,7 @@ def verified_cljc_transport(document, prior_contexts):
     return contexts
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None, transport_sci_context_evidence=None, numeric_sci_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -702,7 +702,8 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
     for document, module_name, label in (
             (cljc_sci_context_evidence, 'sci_cljc_accepted_context', 'Exact CLJC reader'),
             (lazy_sci_context_evidence, 'sci_lazy_context', 'Exact lazy/iteration/control'),
-            (case_sci_context_evidence, 'case_char_string_accepted', 'Exact character/string case')):
+            (case_sci_context_evidence, 'case_char_string_accepted', 'Exact character/string case'),
+            (numeric_sci_context_evidence, 'sci_numeric_error_after188', 'Exact original numeric/error')):
         if document is None:
             continue
         import importlib
@@ -978,6 +979,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
     validate_arity_after171(result, 'obligation-witnesses.jsonl', obligations)
     validate_arity_after172(result, 'obligation-witnesses.jsonl', obligations)
     validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after185')
+    validate_arity_cohort(result, 'obligation-witnesses.jsonl', obligations, 'arity_after188')
     return result
 
 
@@ -1022,6 +1024,7 @@ def load_phase_witnesses(obligations):
     validate_arity_after171(result, 'phase-witnesses.jsonl', obligations)
     validate_arity_after172(result, 'phase-witnesses.jsonl', obligations)
     validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after185')
+    validate_arity_cohort(result, 'phase-witnesses.jsonl', obligations, 'arity_after188')
     return result
 
 

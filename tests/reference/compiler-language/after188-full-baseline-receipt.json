@@ -1,0 +1,59 @@
+{
+  "profile": "full-intended-language-frozen-after188-before-new-cohort-integration",
+  "head": "f6656a5499e0fcfea09330170f86e13e516c759e",
+  "command": "python3 -B tests/reference/compiler-language/report.py --run --strict --reference both --timeout 180 --reference-timeout 240 --json --artifacts /tmp/light-cljs-125-full-after188",
+  "exit_code": 1,
+  "counts": {
+    "covered": 6416,
+    "verified-rejection": 43,
+    "verified-warning": 31,
+    "missing": 1765,
+    "version-difference": 336,
+    "unrelated": 1400
+  },
+  "strict_complete": false,
+  "source_strict_complete": false,
+  "report_path": "/private/tmp/light-cljs-125-full-after188/report.json",
+  "report_sha256": "11d0adc4c83a5a3e586ea5cbf70815e1c32b979a0d9f90bab2b20370785593a5",
+  "log_path": "/tmp/light-cljs-125-full-after188.log",
+  "log_sha256": "a7ab0e52d49340fa5bbd8d1ee2c15819626ba942c1d52cbec23bc2584808bef2",
+  "preintegration_shared_source_sha256": {
+    "tests/reference/compiler-language/report.py": "cd263339b1e453d5332bfef488931864d620c13c5d2052937916091235b27025",
+    "tests/reference/compiler-language/full_ledger.py": "820c4e237deb6c4faf61ad0b3b30c8c773cb60335f0d707285839b6c4687e37e",
+    "tests/reference/compiler-language/full-manifest.json": "dc34c1455004eecfa8eddf91f3dfecfcf825c5903220f04c9eac036b032d342f",
+    "tests/reference/compiler-language/obligation-witnesses.jsonl": "280284d2ee4a02701ecb03b3c14bfb8eef2758006bae3a3c0e55734bd9a08bef",
+    "tests/reference/compiler-language/phase-witnesses.jsonl": "53263c8660e7faabe3d18a5463e5f93df2b11a3e8c592559ef2a6839002265dd"
+  },
+  "unchanged_original_inventory_sha256": {
+    "tests/reference/compiler-language/full-inventory.jsonl": "c60dcfb19de844a0b2fe843d13c48241c6bf406a2315f639f239991e626c4169",
+    "tests/reference/compiler-language/full-bodies.jsonl": "ed6c8b8e72b0b5cec18bb98040289b745dba889d3e8f3f86f89bb3d4e1291156",
+    "tests/reference/compiler-language/obligations.jsonl": "39afc8df1b4dfac6e23726ea8608bbba4353c8a30681e25b1cc0832056660cb1",
+    "tests/reference/compiler-language/support-sources.jsonl": "7d4dba57d2121fac2f6329216593f73e66a252a6225ed31598c39217838299b3"
+  },
+  "macro_nonpassing_groups": [
+    {
+      "status": "timed-out",
+      "test_file": null,
+      "test_name": null,
+      "affected_rows": 54
+    },
+    {
+      "status": "unresolved",
+      "test_file": null,
+      "test_name": null,
+      "affected_rows": 4
+    }
+  ],
+  "external_blocker": "156 remains untouched after two automatic review rejections; no cancellation/resource-limit suite executed",
+  "separate_confirmed_owner": "light-cljs-189",
+  "new_after188_cohorts_integrated": false,
+  "resolved_timeout_groups": [
+    {
+      "test_file": "tests/compiler_arity_after185.rs",
+      "test_name": "complete_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "detail": "exceeded 180.0s; artifacts: /private/tmp/light-cljs-125-full-after188/macro-phase/compiler_arity_after185/complete_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "affected_rows": 54
+    }
+  ],
+  "separate_complete_actual_rerun_receipt": "tests/reference/compiler-language/arity-after185-actual-rerun-after188-receipt.json"
+}

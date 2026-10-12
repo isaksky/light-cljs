@@ -1,0 +1,1 @@
+(def ^:const cljs-2104 "cljs-2104") (assert (= cljs-2104 "cljs-2104")) (assert (= (if-some [x true] cljs-2104 "unreachable") "cljs-2104")) true

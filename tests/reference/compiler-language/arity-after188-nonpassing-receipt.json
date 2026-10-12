@@ -1,0 +1,52 @@
+{
+  "original_complete_case": {
+    "id": "cljs-definitions-var-test",
+    "source_root": "tests/fixtures/compiler-namespaces/definitions",
+    "entry": "cljs.var-test",
+    "export": "run",
+    "source": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n(ns cljs.var-test)\n\n(defn cljs-3411-function\n  \"this function adds two numbers\"\n  {:test #(do\n            (assert (= (cljs-3411-function 2 3) 5))\n            (assert (= (cljs-3411-function 4 4) 8)))}\n  ([x y] (+ x y)))\n\n(defn cljs-3411 []\n  (do\n    (assert (= :ok (test cljs-3411-function)))\n    (assert (= :ok (test #'cljs-3411-function)))))\n\n(defn run [observe] (cljs-3411) true)\nrun\n",
+    "native_stdout": null,
+    "expected": {
+      "id": "cljs-definitions-var-test",
+      "outcome": {
+        "status": "returned",
+        "value": true
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  },
+  "source_sha256": "a6aea8026522804962ec49a6f5e2531c482eb9830c1c16b5962cf21f22b847b0",
+  "original_case_sha256": "ba0f8526d6a7da4acec44ba0de3e781e0529e2e88664ba705e66e0c3ac5fcd86",
+  "initial_complete_14_source_trial": {
+    "actual_log_path": "/tmp/light-cljs-125-arity-after188-actual-trial.log",
+    "actual_log_sha256": "5fd453d5d7ce8e304481a276b27ab05d81faeaa48e382c76cf2ea551e100d2ef",
+    "status": "fresh macro source rejection after successful application observations; partial cohort supplies no phase credit",
+    "required_pin_receipts": {
+      "release": {
+        "path": "/tmp/light-cljs-125-arity-after188-trial-pins/release/receipt.json",
+        "sha256": "e570ece512d6dd37fe2c03f756068a8937907c1ba7f3330c607f507ac150a3b5"
+      },
+      "checkout": {
+        "path": "/tmp/light-cljs-125-arity-after188-trial-pins/checkout/receipt.json",
+        "sha256": "6b51b8ffe53b5bac014328dc698faf3a22c9aaf7f9b82d4ae9123a01ec86bc2c"
+      }
+    },
+    "historical_operation_credit": 0
+  },
+  "current_diagnostic_receipt": {
+    "path": "/Users/admin/src/light-cljs/tests/reference/compiler-language/test-metadata-after188-receipt.json",
+    "sha256": "67e64a28c8ada7c402152c65a9a2abd3ecec03380cab2be65b37462eb74dd4d3"
+  },
+  "excluded_operation_ids": [
+    "api::src/main/cljs/cljs/core.cljs::test::arity-1",
+    "local::src/core_var_metadata.tsv::test"
+  ],
+  "operation_credit_added": 0,
+  "strict_complete": false,
+  "pre_ignored_diagnostic_history": {
+    "receipt": "test-metadata-after188-receipt-before-ignored-diagnostic.json",
+    "sha256": "3b6d3a74d8e2b10213ec1b87a45dab1ad02da3582636b6824410482e7db5ecec",
+    "operation_credit_added": 0
+  }
+}

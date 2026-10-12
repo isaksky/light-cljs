@@ -1,0 +1,532 @@
+[
+  {
+    "id": "sci-execution-sci-native-divide-zero",
+    "sci_id": "sci-native-divide-zero",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-divide-zero",
+    "body_sha256": "24ba78482e8a0160bb02cf40ed3b85f796f4bd0431dd114df69f25baedb294aa",
+    "original_row_sha256": "578be309c634f00fbc14ad14063e7cfea4e75b0485f680e6db7d448eb43537cc",
+    "source_sha256": "2783f688d010615ed05dd86cd496a9ff7cacf3614b90ddfe7d882d0bda782135",
+    "original_source_sha256": "2783f688d010615ed05dd86cd496a9ff7cacf3614b90ddfe7d882d0bda782135",
+    "source": "(/ (observe 1) (observe 0))",
+    "original_fields": [
+      "sci-native-divide-zero",
+      "portable",
+      "(/ (observe 1) (observe 0))",
+      "(error execution arithmetic)",
+      "(vector (int 1) (int 0))",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-divide-zero",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [
+        1,
+        0
+      ],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-float-zero",
+    "sci_id": "sci-native-float-zero",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-float-zero",
+    "body_sha256": "ff6f98ccdbe1db7ece917fdd81598d4b0ea17a9ca20e5bdc917a40606845993f",
+    "original_row_sha256": "77c1804a9a6cf8a22e5f2aebbbde390b43882045cfbb554acb12dd8d2639de42",
+    "source_sha256": "56237f60197b324c4cf950b5a75a4aad7ea0e2e3b47d7dc4841ac0088ae89485",
+    "original_source_sha256": "56237f60197b324c4cf950b5a75a4aad7ea0e2e3b47d7dc4841ac0088ae89485",
+    "source": "(/ 1.0 -0.0)",
+    "original_fields": [
+      "sci-native-float-zero",
+      "portable",
+      "(/ 1.0 -0.0)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-float-zero",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-float-quot-zero",
+    "sci_id": "sci-native-float-quot-zero",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-float-quot-zero",
+    "body_sha256": "a3df6c9df78facc67ed286a939ad2119ef99759cdf98324e48eeb2e861924952",
+    "original_row_sha256": "e571c2c8385762cb90686fcd4bf2030fee9d352883393974dd23cfb297fc10ff",
+    "source_sha256": "84ec28f85a2e89ccb34b2cde6b7a77f2bc1254f66c4e7035f6c794b69755b7a6",
+    "original_source_sha256": "84ec28f85a2e89ccb34b2cde6b7a77f2bc1254f66c4e7035f6c794b69755b7a6",
+    "source": "(quot 1.0 0.0)",
+    "original_fields": [
+      "sci-native-float-quot-zero",
+      "portable",
+      "(quot 1.0 0.0)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-float-quot-zero",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-float-rem-nan",
+    "sci_id": "sci-native-float-rem-nan",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-float-rem-nan",
+    "body_sha256": "adc735b8e89287789869f4dcc98c677ba90bf3280491febbc4bad9abee367618",
+    "original_row_sha256": "e12b4b01a9d1c835664baea0c3f83def70dffddf8a08170e61f6244f5b91d11b",
+    "source_sha256": "dac717d3fa3302971daf77b1063defb4541930f5719988c6c3713dc7a00d2353",
+    "original_source_sha256": "dac717d3fa3302971daf77b1063defb4541930f5719988c6c3713dc7a00d2353",
+    "source": "(rem ##NaN 1)",
+    "original_fields": [
+      "sci-native-float-rem-nan",
+      "portable",
+      "(rem ##NaN 1)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-float-rem-nan",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-overflow-add",
+    "sci_id": "sci-native-overflow-add",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-overflow-add",
+    "body_sha256": "67db9c730d8651ae9702c5df87dabf08b3d5ebac5fd8d1eb06dfe5a61977020e",
+    "original_row_sha256": "8dd452cf85c430b65c9468479048c56fc7cd31f4e02a4d6978fc5a1b224b4152",
+    "source_sha256": "cddbd9b98f8d622d52a31213165292da6146ae9fc2e6907b59475cbe01207573",
+    "original_source_sha256": "cddbd9b98f8d622d52a31213165292da6146ae9fc2e6907b59475cbe01207573",
+    "source": "(+ 9223372036854775807 1)",
+    "original_fields": [
+      "sci-native-overflow-add",
+      "portable",
+      "(+ 9223372036854775807 1)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-overflow-add",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-overflow-multiply",
+    "sci_id": "sci-native-overflow-multiply",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-overflow-multiply",
+    "body_sha256": "5acba870452f9a44f8d918634423e5f91f737a620db9e6cef91e98e3f704297b",
+    "original_row_sha256": "7aa053f3e55f1d18b5445ccefdf05294b1c7f5390c94c5c02dd842e1fb89d096",
+    "source_sha256": "070e335925bc03fd1d4db91d02fc24a7ef97501f53280f36fae17fb7aebccf06",
+    "original_source_sha256": "070e335925bc03fd1d4db91d02fc24a7ef97501f53280f36fae17fb7aebccf06",
+    "source": "(* 9223372036854775807 2)",
+    "original_fields": [
+      "sci-native-overflow-multiply",
+      "portable",
+      "(* 9223372036854775807 2)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-overflow-multiply",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-overflow-negate",
+    "sci_id": "sci-native-overflow-negate",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-overflow-negate",
+    "body_sha256": "6dee7a25530dbf0576faec1274022c96cde4d7ef44a3c469abf95d112ffcdea7",
+    "original_row_sha256": "41752bec58be89669bd88dc8afe313886be7ff85d72c1295ea11382efe8e547e",
+    "source_sha256": "30cf8fc7ef60252c68bd5f0897df2eac7445e5399d4c6d9b15d4240736fc2c0f",
+    "original_source_sha256": "30cf8fc7ef60252c68bd5f0897df2eac7445e5399d4c6d9b15d4240736fc2c0f",
+    "source": "(- -9223372036854775808)",
+    "original_fields": [
+      "sci-native-overflow-negate",
+      "portable",
+      "(- -9223372036854775808)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-overflow-negate",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-overflow-inc",
+    "sci_id": "sci-native-overflow-inc",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-overflow-inc",
+    "body_sha256": "4827d0050b3dbb02acb5b8cfefc628939748be386a2f1f71af55fdcf3fb7eb4c",
+    "original_row_sha256": "bea823c8ef950ae2e655092624dad95407937996dd151fb5716bb49125f24f34",
+    "source_sha256": "ef0485f6ebea639d880883aba1f8c0c2a979173a99509ef9129e8dcfb05db3ee",
+    "original_source_sha256": "ef0485f6ebea639d880883aba1f8c0c2a979173a99509ef9129e8dcfb05db3ee",
+    "source": "(inc 9223372036854775807)",
+    "original_fields": [
+      "sci-native-overflow-inc",
+      "portable",
+      "(inc 9223372036854775807)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-overflow-inc",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-overflow-dec",
+    "sci_id": "sci-native-overflow-dec",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-overflow-dec",
+    "body_sha256": "e6affb87c305c16a267f5806f1b379add8b7d520361e9f1956f2f389c31f40de",
+    "original_row_sha256": "ea85fa007edfbf84acb572fcca95a0972d65ab81f5bde84a31d0d8e736ee3ef4",
+    "source_sha256": "5150b12161e2ec67deeb9006830cdc8c79202dbf1f2d76740a2b45d5d3b43dfd",
+    "original_source_sha256": "5150b12161e2ec67deeb9006830cdc8c79202dbf1f2d76740a2b45d5d3b43dfd",
+    "source": "(dec -9223372036854775808)",
+    "original_fields": [
+      "sci-native-overflow-dec",
+      "portable",
+      "(dec -9223372036854775808)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-overflow-dec",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-wrong-type",
+    "sci_id": "sci-native-wrong-type",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-wrong-type",
+    "body_sha256": "5a8bb2cdad471e978b72c34acda30ae7af88388b568ce1cb17ca0e6fe74358a4",
+    "original_row_sha256": "fb2ca2acd57d89384dc534a855cc7326343288f5893ccc44978650de80c02349",
+    "source_sha256": "eeac49bd2986dc9c5f6c6a646af68c11fcdb50d5c90a2e82718018c11379d8b7",
+    "original_source_sha256": "eeac49bd2986dc9c5f6c6a646af68c11fcdb50d5c90a2e82718018c11379d8b7",
+    "source": "(+ :a 1)",
+    "original_fields": [
+      "sci-native-wrong-type",
+      "portable",
+      "(+ :a 1)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-wrong-type",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-wrong-unary-type",
+    "sci_id": "sci-native-wrong-unary-type",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-wrong-unary-type",
+    "body_sha256": "3cbe821819a9beb29a1a5b0cb839b2fd60bfb5009f1599a6eb13e2a67b1c78a5",
+    "original_row_sha256": "c15949f4019644d4e88c9610cbf71eac8d818aa7f896ccc5dcb97679ae894b9d",
+    "source_sha256": "11d95eb370cc18f5ab999f1dc4f30cea5a6cd9d5aa36d4a7fd9a1affac95134e",
+    "original_source_sha256": "11d95eb370cc18f5ab999f1dc4f30cea5a6cd9d5aa36d4a7fd9a1affac95134e",
+    "source": "(+ :a)",
+    "original_fields": [
+      "sci-native-wrong-unary-type",
+      "portable",
+      "(+ :a)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-wrong-unary-type",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-even-type",
+    "sci_id": "sci-native-even-type",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-even-type",
+    "body_sha256": "5a503f4dee0e459e4be1c09a002264fa98b859ea58db9d29d0cdf70f46c7716a",
+    "original_row_sha256": "9e1a730ab883e2f5497d13e78bb8d4c81203d3c1c6c166675f6135a2bc89a871",
+    "source_sha256": "691882b862e5e0b58d84bde8de5ce9bd572bf1a6b86a9ffa4468423d7d277767",
+    "original_source_sha256": "691882b862e5e0b58d84bde8de5ce9bd572bf1a6b86a9ffa4468423d7d277767",
+    "source": "(even? 2.0)",
+    "original_fields": [
+      "sci-native-even-type",
+      "portable",
+      "(even? 2.0)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-even-type",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-conversion-byte-range",
+    "sci_id": "sci-native-conversion-byte-range",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-conversion-byte-range",
+    "body_sha256": "78e454b73ba1cdf68c162bfcc885b0b223e6917e5729f24f2a7a6240a794d6c4",
+    "original_row_sha256": "8f2b17f2b6ff90b651b0cc237e40079edb8ec2ceaf0eb67582e39685fb8abc7f",
+    "source_sha256": "5ec435cc9971613ced6bbcf44b9e3c284085b0199ec157db7f2603fa35ad1ee4",
+    "original_source_sha256": "5ec435cc9971613ced6bbcf44b9e3c284085b0199ec157db7f2603fa35ad1ee4",
+    "source": "(byte 128)",
+    "original_fields": [
+      "sci-native-conversion-byte-range",
+      "portable",
+      "(byte 128)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-conversion-byte-range",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-conversion-int-range",
+    "sci_id": "sci-native-conversion-int-range",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-conversion-int-range",
+    "body_sha256": "6448980215ed1bf434f26eca7fd168b8eabd9d166fb39734b1342ab0ec00ab2b",
+    "original_row_sha256": "c6880b1ef7b2287ace6b66a78357010683cb1445ac970188360f38ed5a93ce43",
+    "source_sha256": "f7c91826809c9350b39ba6c4b729c657a31927c66c66f7bef4f6f9a64fe70892",
+    "original_source_sha256": "f7c91826809c9350b39ba6c4b729c657a31927c66c66f7bef4f6f9a64fe70892",
+    "source": "(int 2147483648)",
+    "original_fields": [
+      "sci-native-conversion-int-range",
+      "portable",
+      "(int 2147483648)",
+      "(error execution arithmetic)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-conversion-int-range",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "arithmetic"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-conversion-long-infinity",
+    "sci_id": "sci-native-conversion-long-infinity",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-conversion-long-infinity",
+    "body_sha256": "d4a7be79ba6a3d58e8b56e78daf99d7ed7e82344b2662fc8603da4de221ca30d",
+    "original_row_sha256": "da3bfcb306b8b086d7ed9f0882e222c3c1424c7437988a96de08535af1675a8d",
+    "source_sha256": "1e421871962ee7b6e3b6229ea9f4cd30c63395b07b48b22de0a2edaa791e4a42",
+    "original_source_sha256": "1e421871962ee7b6e3b6229ea9f4cd30c63395b07b48b22de0a2edaa791e4a42",
+    "source": "(long ##Inf)",
+    "original_fields": [
+      "sci-native-conversion-long-infinity",
+      "portable",
+      "(long ##Inf)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-conversion-long-infinity",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-conversion-float-range",
+    "sci_id": "sci-native-conversion-float-range",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-conversion-float-range",
+    "body_sha256": "153e4fb2e14f15f2476d294334a8fda629507334ceebb7f0a742ca4faa4f3ffa",
+    "original_row_sha256": "e9edb825a4623f32478ab9e5304d963d99a3cf8775f05e7d6a33973553622630",
+    "source_sha256": "5896b9b07f535982f791455b3c5a2a7fb87a3805e2bebf4a8156c8252efcd40e",
+    "original_source_sha256": "5896b9b07f535982f791455b3c5a2a7fb87a3805e2bebf4a8156c8252efcd40e",
+    "source": "(float 3.402823466385289e38)",
+    "original_fields": [
+      "sci-native-conversion-float-range",
+      "portable",
+      "(float 3.402823466385289e38)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-conversion-float-range",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  },
+  {
+    "id": "sci-execution-sci-native-conversion-double-char",
+    "sci_id": "sci-native-conversion-double-char",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-native-conversion-double-char",
+    "body_sha256": "44befaef55e84a234a6691bd5d5137e7f50094bb6ca48166ad3a17c70c6b301e",
+    "original_row_sha256": "5421092ce9119786de8dad31a7e959cf5c8867dc8b16605f74cbd4b7864622cd",
+    "source_sha256": "943b55e82f121d6a9ca324450569b968277683e5a0c0c4b6c3d7de91763328fc",
+    "original_source_sha256": "943b55e82f121d6a9ca324450569b968277683e5a0c0c4b6c3d7de91763328fc",
+    "source": "(double \\a)",
+    "original_fields": [
+      "sci-native-conversion-double-char",
+      "portable",
+      "(double \\a)",
+      "(error execution type)",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-native-conversion-double-char",
+      "outcome": {
+        "status": "sci-error",
+        "phase": "execution",
+        "category": "type"
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true
+  }
+]

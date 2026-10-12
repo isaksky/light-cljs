@@ -1,0 +1,1 @@
+(do (defn fixture-get [o k] (unchecked-get o k)) (defn fixture-set [o k v] (unchecked-set o k v)) (do  (do (assert (= (symbol :foo/bar) 'foo/bar)) (assert (= (symbol (->Var nil 'bar/foo nil)) 'bar/foo)) (assert (try (symbol 1) false (catch js/Error extra-error true)))) true))

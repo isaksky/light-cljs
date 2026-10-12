@@ -90,3 +90,9 @@ python3 -B tests/reference/compiler-language/original_eval_source_probe.py --ref
 These commands build only the dedicated ignored local diagnostic and one
 original upstream test per reference. They do not run cancellation/limit suites
 or investigate native crashes.
+
+## Fresh host-profile evidence after188
+
+At production `f6656a5`, the complete unchanged14-assertion source was freshly rerun through both genuine pinned self-host hosts and current fresh/reused installed application services. Both pins pass all14; each local service retains four true assertions, one false initializer/Var-metadata expectation and nine caught Function/Var form-transport or dependent-definition errors. All source expressions, declarations, original literals and earlier receipts remain intact. `original-eval-source-after188-receipt.json` binds the actual raw files, current compiler and driver hashes, both original files, original body/ordinal assertions and exact observations. Fresh artifacts are `/tmp/light-cljs-125-original-eval-after188`.
+
+This is explicit source/host/dialect evidence, with zero shared semantic or macro credit and no source disposition change. The14 original ledger sites remain unresolved pending their exact acceptance reconciliation; source evaluation and finite-form core operations are not retired. The adopted finite Form input and definition-initializer result contract, and the excluded upstream self-hosted profile, are documented separately from ordinary operation support. No cancellation/resource-limit suite or native asynchronous crash work ran.

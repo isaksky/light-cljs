@@ -1,0 +1,55 @@
+{
+  "ordinary_count": 20,
+  "phase_count": 20,
+  "installed_export_source_sha256": {
+    "obligation-witnesses.jsonl": "4f2471d39a0bd304ce0fe1cd78f436d4138649aaec28ec4f74677af20f5aa218",
+    "phase-witnesses.jsonl": "29ac0c02cb74d09bc05084c56c68f350a1a22a718c7f6f9b4c34758bb428f9f6",
+    "arity-after188-call-receipts.jsonl": "a8b9260ec9beceb6c23737f942d54510fb5f3ac1602e31d6e1716a9a826dba3c"
+  },
+  "live_loader_checks": [
+    {
+      "loader": "obligation-witnesses.jsonl",
+      "mutation": "missing",
+      "status": "rejected"
+    },
+    {
+      "loader": "obligation-witnesses.jsonl",
+      "mutation": "changed",
+      "status": "rejected"
+    },
+    {
+      "loader": "obligation-witnesses.jsonl",
+      "mutation": "reordered",
+      "status": "rejected"
+    },
+    {
+      "loader": "phase-witnesses.jsonl",
+      "mutation": "missing",
+      "status": "rejected"
+    },
+    {
+      "loader": "phase-witnesses.jsonl",
+      "mutation": "changed",
+      "status": "rejected"
+    },
+    {
+      "loader": "phase-witnesses.jsonl",
+      "mutation": "reordered",
+      "status": "rejected"
+    }
+  ],
+  "shared_integration_sha256": {
+    "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+    "tests/reference/compiler-language/full_ledger.py": "8e0e10d6ad33cfc18f4cd26c9d427397d81051a341ee98a4b129937d30a41105",
+    "tests/reference/compiler-language/full-manifest.json": "e4a31bbfd3bad63fa0aea43146cc472a4364ca00211f4ea0110385a3edb21083",
+    "tests/reference/compiler-language/obligation-witnesses.jsonl": "0c34d544303563e8da4d7b811723c739d1c7f312d01aafed9e677cfd0f75a100",
+    "tests/reference/compiler-language/phase-witnesses.jsonl": "ff5d258cce7444a0d0f4ec0602f196bbaabdce3f595f7e9ce459695a6b2ead42"
+  },
+  "strict_complete": false,
+  "installed_export_hash_encoding": "SHA256 of UTF-8 json.dumps(export_rows, sort_keys=True); canonical record arrays, not JSONL file bytes",
+  "export_file_sha256": {
+    "obligation-witnesses.jsonl": "b1922de30266f1cfb59bd82281cf75160296fac947a35a48c58bf12ba9bd7be7",
+    "phase-witnesses.jsonl": "d2538193912da80f903b7075b729d96eb9bdce18f46e1d8c9595e03613b37a67",
+    "arity-after188-call-receipts.jsonl": "d5e8e34322a137aab2050b65ab03a210568ff8ffaaf1771c2e38a717f88c41ce"
+  }
+}
