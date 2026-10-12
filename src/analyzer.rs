@@ -2288,6 +2288,9 @@ pub enum ExprKind {
     Vector(Vec<ExprId>),
     Map(Vec<ExprId>),
     Set(Vec<ExprId>),
+    /// Canonical source constants whose reader identity survives lowering.
+    LiteralMap(Vec<ExprId>),
+    LiteralSet(Vec<ExprId>),
     CoreFn(CoreFnId),
     Local(LocalId),
     Global(GlobalId),
@@ -2613,6 +2616,34 @@ enum ReaderDatum {
     Sequential(Vec<ReaderDatum>),
     Map(Vec<(ReaderDatum, ReaderDatum)>),
     Set(Vec<ReaderDatum>),
+}
+
+impl ReaderDatum {
+    fn lowered_characters(self) -> Self {
+        match self {
+            Self::Character(value) => Self::String(vec![value]),
+            Self::Sequential(items) => Self::Sequential(
+                items.into_iter().map(Self::lowered_characters).collect(),
+            ),
+            Self::Map(items) => {
+                let mut items = items
+                    .into_iter()
+                    .map(|(key, value)| (key.lowered_characters(), value.lowered_characters()))
+                    .collect::<Vec<_>>();
+                items.sort();
+                Self::Map(items)
+            }
+            Self::Set(items) => {
+                let mut items = items
+                    .into_iter()
+                    .map(Self::lowered_characters)
+                    .collect::<Vec<_>>();
+                items.sort();
+                Self::Set(items)
+            }
+            other => other,
+        }
+    }
 }
 
 /// A scope holds IDs, while records live for the entire compilation unit.
@@ -3744,24 +3775,33 @@ impl Analyzer<'_> {
                 children,
             } => {
                 self.check_map_keys(children)?;
-                ExprKind::Map(
-                    children
-                        .iter()
-                        .map(|&child| self.non_tail_form(child, ExprContext::Value))
-                        .collect::<Result<_, _>>()?,
-                )
+                let direct = children.len() <= 16
+                    && self.source_constant_collision(children.iter().step_by(2).copied(), false)?;
+                let items = children
+                    .iter()
+                    .map(|&child| self.non_tail_form(child, ExprContext::Value))
+                    .collect::<Result<_, _>>()?;
+                if direct {
+                    ExprKind::LiteralMap(items)
+                } else {
+                    ExprKind::Map(items)
+                }
             }
             NodeKind::Collection {
                 kind: CollectionKind::Set,
                 children,
             } => {
                 self.check_set_members(children, false)?;
-                ExprKind::Set(
-                    children
-                        .iter()
-                        .map(|&child| self.non_tail_form(child, ExprContext::Value))
-                        .collect::<Result<_, _>>()?,
-                )
+                let direct = self.source_constant_collision(children.iter().copied(), false)?;
+                let items = children
+                    .iter()
+                    .map(|&child| self.non_tail_form(child, ExprContext::Value))
+                    .collect::<Result<_, _>>()?;
+                if direct {
+                    ExprKind::LiteralSet(items)
+                } else {
+                    ExprKind::Set(items)
+                }
             }
             NodeKind::Symbol => {
                 self.validate_symbol(id)?;
@@ -4703,6 +4743,53 @@ impl Analyzer<'_> {
         Ok(())
     }
 
+    fn source_constant_collision(
+        &mut self,
+        nodes: impl Iterator<Item = NodeId>,
+        quoted_collection: bool,
+    ) -> Result<bool, AnalysisError> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut lowered = std::collections::BTreeSet::new();
+        let mut collision = false;
+        for mut id in nodes {
+            // Only source constants qualify. Quoted data is constant recursively;
+            // executable collection forms and symbols retain runtime construction.
+            let quoted = match self.syntax.nodes[id.0].kind {
+                NodeKind::Prefix { kind: PrefixKind::Quote, form } if !quoted_collection => {
+                    id = form;
+                    true
+                }
+                NodeKind::Collection { kind: CollectionKind::List, ref children }
+                    if !quoted_collection && children.len() == 2
+                        && matches!(self.syntax.nodes[children[0].0].kind, NodeKind::Symbol)
+                        && self.spelling(children[0]) == "quote" => {
+                    id = children[1];
+                    true
+                }
+                _ => quoted_collection,
+            };
+            if !quoted && !matches!(
+                self.syntax.nodes[id.0].kind,
+                NodeKind::Nil | NodeKind::Boolean(_) | NodeKind::Number(_)
+                    | NodeKind::SymbolicValue(_) | NodeKind::Character(_)
+                    | NodeKind::String(_) | NodeKind::Keyword { .. }
+            )
+            {
+                return Ok(false);
+            }
+            let Some(identity) = self.reader_identity(id, false)? else {
+                return Ok(false);
+            };
+            collision |= !lowered.insert(identity.clone().lowered_characters());
+            if !seen.insert(identity) {
+                return Ok(false);
+            }
+        }
+        // Preserve established builders unless lowering actually collapses
+        // source identity. Numeric-only distinctions retain existing construction.
+        Ok(collision)
+    }
+
     fn check_set_members(
         &mut self,
         children: &[NodeId],
@@ -5030,7 +5117,13 @@ impl Analyzer<'_> {
                         ..
                     }
                 ) {
-                    ExprKind::Map(items)
+                    if children.len() <= 16
+                        && self.source_constant_collision(children.iter().step_by(2).copied(), true)?
+                    {
+                        ExprKind::LiteralMap(items)
+                    } else {
+                        ExprKind::Map(items)
+                    }
                 } else if matches!(
                     node.kind,
                     NodeKind::Collection {
@@ -5038,7 +5131,11 @@ impl Analyzer<'_> {
                         ..
                     }
                 ) {
-                    ExprKind::Set(items)
+                    if self.source_constant_collision(children.iter().copied(), true)? {
+                        ExprKind::LiteralSet(items)
+                    } else {
+                        ExprKind::Set(items)
+                    }
                 } else {
                     ExprKind::Vector(items)
                 }

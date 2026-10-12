@@ -1,0 +1,1007 @@
+{
+  "schema_version": 1,
+  "derivation": {
+    "artifacts_root": "/tmp/light-cljs-174-literal-derivation-v5",
+    "pins": [
+      "1.12.134",
+      "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e"
+    ],
+    "method": "complete source emitted and executed by each independent pin before local expectations; source-bound pin differences retain zero agreement credit"
+  },
+  "sources": [
+    {
+      "id": "literal-char-string-original",
+      "source": "[(count {\\a 1 \"a\" 2}) (get {\\a 1 \"a\" 2} \\a) (count #{\\a \"a\"}) (contains? #{\\a \"a\"} \"a\")]",
+      "source_sha256": "604867e102b2214788723df617613a48f3ff223a645cc9dc34156ee54ddea42e"
+    },
+    {
+      "id": "literal-char-string-map-order-lookup",
+      "source": "(let [m {\\a 1 \"a\" 2}] [(count m) (get m \\a) (get m \"a\") (contains? m \\a) (contains? m \"a\") (vec (seq m)) (vec (keys m)) (vec (vals m))])",
+      "source_sha256": "b41b2bc8a8b094eefc137fd82a51a3f5fe4fd3c54ddaa68ab592420f4e47273f"
+    },
+    {
+      "id": "literal-char-string-map-reverse-order",
+      "source": "(let [m {\"a\" 2 \\a 1}] [(count m) (get m \\a) (get m \"a\") (vec (seq m))])",
+      "source_sha256": "17f7fdd689b878b662be0bc7571247a8dbfcf7948a253e6bc68be3786712ba20"
+    },
+    {
+      "id": "literal-char-string-set-order-membership",
+      "source": "(let [s #{\\a \"a\"}] [(count s) (contains? s \\a) (contains? s \"a\") (get s \\a) (get s \"a\") (vec (seq s))])",
+      "source_sha256": "868ab98e685c4acaf940f9a87851a5320ad9cc674d92da602aa851c59f67e9f4"
+    },
+    {
+      "id": "literal-char-string-set-reverse-order",
+      "source": "(let [s #{\"a\" \\a}] [(count s) (vec (seq s)) (contains? s \"a\")])",
+      "source_sha256": "e75506c7e1ec4c553f6fdc985bd3dbfda7422a7f8d8ec1abeff63c816e0e5cd0"
+    },
+    {
+      "id": "literal-char-string-quoted",
+      "source": "(let [m '{\\a 1 \"a\" 2} s '#{\\a \"a\"}] [(count m) (get m \\a) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "df44fa4e66fe38b269295c73541b60f9278688b24894e71baa3cfee973667efb"
+    },
+    {
+      "id": "literal-char-string-nested-literals",
+      "source": "(let [x [{:m {\\a 1 \"a\" 2} :s #{\\a \"a\"}}] m (get (first x) :m) s (get (first x) :s)] [(count m) (get m \\a) (vec (seq m)) (count s) (vec (seq s))])",
+      "source_sha256": "0b480f6373dd0037bcf75750afc5356eec44903531bd1290e4961e18f54729ee"
+    },
+    {
+      "id": "literal-char-string-quoted-nested",
+      "source": "(let [x '({:m {\\a 1 \"a\" 2} :s #{\\a \"a\"}}) m (get (first x) :m) s (get (first x) :s)] [(count m) (get m \\a) (count s) (vec (seq s))])",
+      "source_sha256": "e84011fed0f2b97e6bf1b3420bf711b8487cf03bbb8f04406f39c39a796a9c1c"
+    },
+    {
+      "id": "literal-char-string-unicode-spelling",
+      "source": "[(count {\\u0061 1 \"a\" 2}) (get {\\u0061 1 \"a\" 2} \\a) (count #{\\u0061 \"a\"}) (vec (seq #{\\u0061 \"a\"}))]",
+      "source_sha256": "eda1d3a2503f8a28f71645009fcc9cbd9cef878fbce8cae354e822137fb24cb9"
+    },
+    {
+      "id": "literal-char-string-named-spelling",
+      "source": "[(count {\\newline 1 \"\\n\" 2}) (get {\\newline 1 \"\\n\" 2} \\u000a) (count #{\\space \" \"}) (vec (seq #{\\space \" \"}))]",
+      "source_sha256": "6d2f6dfd6dec3e022eb1d17e6ef828eb8985d14ca549a177c736f8fa013a6cbc"
+    },
+    {
+      "id": "literal-char-string-map-effects",
+      "source": "(let [events (atom []) m {\\a (do (swap! events conj :first) 11) \"a\" (do (swap! events conj :second) 22)} output (with-out-str (println (count m)) (println (get m \\a)))] [(count m) (get m \\a) (vec (seq m)) @events output])",
+      "source_sha256": "b96900f7e081ecac9fcd8d9f22e97d7de973e57b80148b89badf1da3d03e959a"
+    },
+    {
+      "id": "literal-char-string-runtime-constructors",
+      "source": "(let [m (hash-map \\a 1 \"a\" 2) s (set [\\a \"a\"])] [(count m) (get m \\a) (count s) (vec (seq s))])",
+      "source_sha256": "aba9327d15d0b03b3fe8a736904b5a1828642352636822113688e51497a5235d"
+    },
+    {
+      "id": "literal-char-string-dynamic-map",
+      "source": "(let [a \\a b \"a\" m {a 1 b 2}] [(count m) (get m a) (get m b) (vec (seq m))])",
+      "source_sha256": "e6690f79bb5973f7302343f56412ce64effb5a336182300d7f6b5a75875bacd6"
+    },
+    {
+      "id": "literal-char-string-dynamic-set-distinct",
+      "source": "(let [a \\a b \"b\"] [(count #{a b}) (contains? #{a b} \"a\") (contains? #{a b} \"b\")])",
+      "source_sha256": "ab46baca8f2ac988631ca9195b62cafe83da3ae8f8d23cd2dbed60a92104b665"
+    },
+    {
+      "id": "literal-char-string-map-eight-pairs",
+      "source": "(let [m {\\a 1 \"a\" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8}] [(count m) (get m \\a) (get m \"a\") (vec (vals m))])",
+      "source_sha256": "acaf4499b9dc7f7254de15add39a68ae23c7f87ab463a2b97d7120c2065d7742"
+    },
+    {
+      "id": "literal-char-string-map-nine-pairs",
+      "source": "(let [m {\\a 1 \"a\" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9}] [(count m) (get m \\a) (get m \"a\")])",
+      "source_sha256": "0980e2eb05ec9f353855635c63ec2d2588e90081d8c5fc0def9bd828000af1af"
+    },
+    {
+      "id": "literal-char-string-set-ten-scalars",
+      "source": "(let [s #{\\a \"a\" :b :c :d :e :f :g :h :i}] [(count s) (contains? s \\a) (contains? s :i)])",
+      "source_sha256": "22189d7e61998efe12b3452e8797e2e2e768592ca02af2b3eca4e0c41087ea5e"
+    },
+    {
+      "id": "literal-char-string-vector-map-keys",
+      "source": "(let [m {[\\a] 1 [\"a\"] 2}] [(count m) (get m [\\a]) (vec (seq m))])",
+      "source_sha256": "f85742c56fcf4a3973dcc42b9e5fc7a4292ef1f73e295e18d5564153e7e12178"
+    },
+    {
+      "id": "literal-char-string-quoted-vector-map-keys",
+      "source": "(let [m '{[\\a] 1 [\"a\"] 2}] [(count m) (get m [\\a]) (vec (seq m))])",
+      "source_sha256": "fa061181c9a13d4798ec02c5d31a46936585f2530a7b9e5d38cf2216c447b855"
+    },
+    {
+      "id": "literal-char-string-vector-set-distinct",
+      "source": "(let [s #{[\\a] [\"b\"]}] [(count s) (contains? s [\"a\"]) (contains? s [\\b])])",
+      "source_sha256": "1bb93306ef69fdb1f3c235e0a6d4c316fbe75600a5affbe6d4a180a7afcac2d0"
+    },
+    {
+      "id": "literal-char-string-quoted-vector-set-members",
+      "source": "(let [s '#{[\\a] [\"a\"]}] [(count s) (vec (seq s)) (contains? s [\"a\"])])",
+      "source_sha256": "5fd68d3378425ff9826c5dce9c94ed7d7df13c8d842db357be37d1620f6e38e0"
+    },
+    {
+      "id": "literal-char-string-quoted-composite-map-keys",
+      "source": "(let [m '{{\\a 1} 11 {\"a\" 1} 22} n '{#{\\a} 33 #{\"a\"} 44}] [(count m) (get m {\"a\" 1}) (count n) (get n #{\"a\"})])",
+      "source_sha256": "5d3dfc68cebba8ce32cc22e7a35c9f78f31a2872f409c4e8b6446156cd968d1e"
+    },
+    {
+      "id": "literal-char-string-quoted-composite-set-members",
+      "source": "(let [s '#{{\\a 1} {\"a\" 1}} t '#{#{\\a} #{\"a\"}}] [(count s) (count t) (contains? s {\"a\" 1}) (contains? t #{\"a\"})])",
+      "source_sha256": "dbc3a7a95b9e08b77dc113f342396930f4bdac0b30516c85cd5cdcb45b72330b"
+    },
+    {
+      "id": "literal-char-string-runtime-small-constructor-difference",
+      "source": "[(count (array-map \\a 1 \"a\" 2)) (get (array-map \\a 1 \"a\" 2) \\a) (count (hash-set \\a \"a\"))]",
+      "source_sha256": "9413d84f8cf44c63bcd221dbcfaef802b7fb736f7e7f04294503df84fab75357"
+    },
+    {
+      "id": "literal-char-string-dynamic-set-duplicate-difference",
+      "source": "(let [a \\a b \"a\"] (try [(count #{a b})] (catch :default e [:duplicate])))",
+      "source_sha256": "b2586abe45f916e42b14722e723f052627b8c79a9c515a2512045a35b75c0cd1"
+    },
+    {
+      "id": "literal-char-string-vector-set-duplicate-difference",
+      "source": "(try [(count #{[\\a] [\"a\"]})] (catch :default e [:duplicate]))",
+      "source_sha256": "b59823dcf4afc99655b37a83cc04f098ca3584c1dc7125d002dfae42709e27bb"
+    },
+    {
+      "id": "literal-char-string-quoted-inner-quote-set",
+      "source": "(let [s '#{\\a \"a\" '\\b \\b}] [(count s) (contains? s \\b) (contains? s '(quote \\b))])",
+      "source_sha256": "ba4c168d9b37d079ba8ff53d84c695b9bbe66dd2f69794d174e4acb7e0b5696e"
+    },
+    {
+      "id": "literal-char-string-quoted-inner-quote-set-order-difference",
+      "source": "(let [s '#{\\a \"a\" '\\b \\b}] [(count s) (contains? s \\b) (contains? s '(quote \\b)) (vec (seq s))])",
+      "source_sha256": "83bfc04030f834b656df6bf82aa8e1be13cf27ceb54706b5bf00f12150ac5374"
+    },
+    {
+      "id": "literal-char-string-quoted-inner-quote-map",
+      "source": "(let [m '{\\a 1 \"a\" 2 '\\b 3 \\b 4}] [(count m) (get m \\b) (get m '(quote \\b)) (vec (vals m))])",
+      "source_sha256": "47548b73ea9f4f43a9095e3634a0018ed24a57841cfa067570148e48fe9832b5"
+    },
+    {
+      "id": "literal-char-string-numeric-literals",
+      "source": "[(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq #{1 1.0}))]",
+      "source_sha256": "16384260e30a3cad962d44dc8a3964bec800f07aeb1ab1af60fbff5fb7bf2802"
+    },
+    {
+      "id": "literal-rejection-map-character",
+      "source": "{\\a 1 \\a 2}",
+      "source_sha256": "4182464a9399af121c51d52c01e8b33118d489c725c98d5973609b0ae1152249"
+    },
+    {
+      "id": "literal-rejection-map-character-spelling",
+      "source": "{\\a 1 \\u0061 2}",
+      "source_sha256": "6e96c4e67a41562f74c93e44b9f7974e8b0e9c895d5ef393d9c277f00ff24847"
+    },
+    {
+      "id": "literal-rejection-map-string",
+      "source": "{\"a\" 1 \"a\" 2}",
+      "source_sha256": "cdd5c24fd87e8efcd0126c4550567a82bd4181de52da523c13676d53027bb886"
+    },
+    {
+      "id": "literal-rejection-set-character",
+      "source": "#{\\a \\a}",
+      "source_sha256": "320bebf8919583854996e2f8cdeb1810a40e4c6afdbd62c99bfb5ad2b55da7f7"
+    },
+    {
+      "id": "literal-rejection-set-character-spelling",
+      "source": "#{\\a \\u0061}",
+      "source_sha256": "882282037b01807478141e2bd9dd1222a564e53b42e0857a2a320311e0716d35"
+    },
+    {
+      "id": "literal-rejection-set-string",
+      "source": "#{\"a\" \"a\"}",
+      "source_sha256": "dbf67c57feb713a539bc6a85c1f27413cf77c42580b434310f9f45e14d158e17"
+    },
+    {
+      "id": "literal-rejection-map-nested-duplicate",
+      "source": "{:x {\\a 1 \\u0061 2}}",
+      "source_sha256": "0779cd6d4551b164e42da184e8abba28bdff45bf9f769cfda9a54249c4792252"
+    },
+    {
+      "id": "literal-rejection-set-nested-duplicate",
+      "source": "[#{\"a\" \"a\"}]",
+      "source_sha256": "4347a3a8dd1cfbbb801cfdc90bf45588177b45b67a9534967af1ec867bd2265d"
+    },
+    {
+      "id": "literal-rejection-map-odd",
+      "source": "{\\a 1 \"a\"}",
+      "source_sha256": "989e54a3a92a93bfb2d10b691f796e81ec452def9c214eb7e7a82694663e6e96"
+    },
+    {
+      "id": "literal-rejection-map-unclosed",
+      "source": "{\\a 1 \"a\" 2",
+      "source_sha256": "b3b2c4bc40682e4fd1eebbea0b969198135aa65b6d065663b2c25404d13a770b"
+    },
+    {
+      "id": "literal-rejection-set-unclosed",
+      "source": "#{\\a \"a\"",
+      "source_sha256": "f060ffea73e4d1be342b4c7a326ded05501a3dc76d5d544c42c2f135c013ee7f"
+    }
+  ],
+  "canonical_expected": [
+    {
+      "id": "literal-char-string-original",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-map-order-lookup",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            1,
+            true,
+            true,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    1
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            },
+            {
+              "$vector": [
+                1,
+                2
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-map-reverse-order",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            2,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-set-order-membership",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            true,
+            true,
+            "a",
+            "a",
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-set-reverse-order",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            },
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    1
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-nested-literals",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    1
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            },
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-nested",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-unicode-spelling",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2,
+            {
+              "$vector": [
+                "a",
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-named-spelling",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2,
+            {
+              "$vector": [
+                " ",
+                " "
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-map-effects",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            11,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    11
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a",
+                    22
+                  ]
+                }
+              ]
+            },
+            {
+              "$vector": [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "first",
+                    "spelling": "first"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "second",
+                    "spelling": "second"
+                  }
+                }
+              ]
+            },
+            "2\n11\n"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-runtime-constructors",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            1,
+            {
+              "$vector": [
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-dynamic-map",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-dynamic-set-distinct",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-map-eight-pairs",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            8,
+            1,
+            1,
+            {
+              "$vector": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-map-nine-pairs",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            8,
+            2,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-set-ten-scalars",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            10,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-vector-map-keys",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    {
+                      "$vector": [
+                        "a"
+                      ]
+                    },
+                    2
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-vector-map-keys",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    {
+                      "$vector": [
+                        "a"
+                      ]
+                    },
+                    1
+                  ]
+                },
+                {
+                  "$vector": [
+                    {
+                      "$vector": [
+                        "a"
+                      ]
+                    },
+                    2
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-vector-set-distinct",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-vector-set-members",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a"
+                  ]
+                },
+                {
+                  "$vector": [
+                    "a"
+                  ]
+                }
+              ]
+            },
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-composite-map-keys",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            11,
+            2,
+            33
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-composite-set-members",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            2,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-runtime-small-constructor-difference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1,
+            2
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-dynamic-set-duplicate-difference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-vector-set-duplicate-difference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-inner-quote-set",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-inner-quote-set-order-difference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            true,
+            true,
+            {
+              "$vector": [
+                "a",
+                "b",
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    "b"
+                  ]
+                },
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-quoted-inner-quote-map",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            4,
+            3,
+            {
+              "$vector": [
+                1,
+                2,
+                3,
+                4
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-char-string-numeric-literals",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "int",
+                "spelling": "int"
+              }
+            },
+            2,
+            {
+              "$vector": [
+                1,
+                1
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  ],
+  "checkout_expected": {
+    "literal-char-string-dynamic-set-duplicate-difference": {
+      "id": "literal-char-string-dynamic-set-duplicate-difference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "duplicate",
+                "spelling": "duplicate"
+              }
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "literal-char-string-vector-set-duplicate-difference": {
+      "id": "literal-char-string-vector-set-duplicate-difference",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "duplicate",
+                "spelling": "duplicate"
+              }
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  },
+  "diagnostics": {
+    "release": {
+      "literal-rejection-map-character": "Duplicate key: a",
+      "literal-rejection-map-character-spelling": "Duplicate key: a",
+      "literal-rejection-map-string": "Duplicate key: a",
+      "literal-rejection-set-character": "Duplicate key: a",
+      "literal-rejection-set-character-spelling": "Duplicate key: a",
+      "literal-rejection-set-string": "Duplicate key: a",
+      "literal-rejection-map-nested-duplicate": "Duplicate key: a",
+      "literal-rejection-set-nested-duplicate": "Duplicate key: a",
+      "literal-rejection-map-odd": "sci-original.cljc [line 1, col 11] The map literal starting with <java.lang.Character> on line 1 column 1 contains 3 form(s). Map literals must contain an even number of forms.",
+      "literal-rejection-map-unclosed": "sci-original.cljc [line 1, col 11] Unexpected EOF while reading item 4 of map, starting at line 1 and column 1.",
+      "literal-rejection-set-unclosed": "sci-original.cljc [line 1, col 9] Unexpected EOF while reading item 2 of set, starting at line 1 and column 2."
+    },
+    "checkout": {
+      "literal-rejection-map-character": "Duplicate key: a",
+      "literal-rejection-map-character-spelling": "Duplicate key: a",
+      "literal-rejection-map-string": "Duplicate key: a",
+      "literal-rejection-set-character": "Duplicate key: a",
+      "literal-rejection-set-character-spelling": "Duplicate key: a",
+      "literal-rejection-set-string": "Duplicate key: a",
+      "literal-rejection-map-nested-duplicate": "Duplicate key: a",
+      "literal-rejection-set-nested-duplicate": "Duplicate key: a",
+      "literal-rejection-map-odd": "sci-original.cljc [line 1, col 11] The map literal starting with <java.lang.Character> on line 1 column 1 contains 3 form(s). Map literals must contain an even number of forms.",
+      "literal-rejection-map-unclosed": "sci-original.cljc [line 1, col 11] Unexpected EOF while reading item 4 of map, starting at line 1 and column 1.",
+      "literal-rejection-set-unclosed": "sci-original.cljc [line 1, col 9] Unexpected EOF while reading item 2 of set, starting at line 1 and column 2."
+    }
+  }
+}

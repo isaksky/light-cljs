@@ -98,6 +98,8 @@ fn emit_js_mode(
                 | ExprKind::Vector(_)
                 | ExprKind::Map(_)
                 | ExprKind::Set(_)
+                | ExprKind::LiteralMap(_)
+                | ExprKind::LiteralSet(_)
                 | ExprKind::CoreFn(_)
                 | ExprKind::ReaderLiteral { .. }
                 | ExprKind::WithMeta { .. }
@@ -1508,6 +1510,17 @@ impl Emitter<'_> {
             }
             ExprKind::Map(items) => {
                 self.output.push_str("rt.mapFromArray([");
+                self.arguments(items);
+                self.output.push_str("])");
+            }
+            ExprKind::LiteralMap(items) | ExprKind::LiteralSet(items) => {
+                self.output.push_str(if matches!(
+                    self.program.exprs[id.0].kind, ExprKind::LiteralMap(_)
+                ) {
+                    "rt.constantMapFromArray(["
+                } else {
+                    "rt.constantSetFromArray(["
+                });
                 self.arguments(items);
                 self.output.push_str("])");
             }

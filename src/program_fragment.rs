@@ -212,6 +212,7 @@ pub(crate) fn interactive_resolution_snapshot(program: &Program) -> Program {
         | ExprKind::ReaderLiteral { .. } | ExprKind::WithMeta { .. }
         | ExprKind::Keyword(_) | ExprKind::Symbol(_) | ExprKind::List(_)
         | ExprKind::Vector(_) | ExprKind::Map(_) | ExprKind::Set(_)
+        | ExprKind::LiteralMap(_) | ExprKind::LiteralSet(_)
         | ExprKind::CoreFn(_) | ExprKind::Global(_) | ExprKind::JsGlobal(_)
         | ExprKind::Var { .. })) {
         snapshot.locals.clear();
@@ -356,6 +357,8 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             | Vector(items)
             | Map(items)
             | Set(items)
+            | LiteralMap(items)
+            | LiteralSet(items)
             | Do(items) => self.exprs(items),
             WithMeta { value, metadata } => {
                 self.expr(value);

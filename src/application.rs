@@ -136,10 +136,10 @@ fn inert(program: &Program, id: ExprId) -> bool {
             true
         }
         Do(items) | List(items) | Vector(items) => items.iter().all(|id| inert(program, *id)),
-        Map(items) => items
+        Map(items) | LiteralMap(items) => items
             .chunks_exact(2)
             .all(|pair| scalar(program, pair[0]) && inert(program, pair[1])),
-        Set(items) => items.iter().all(|id| scalar(program, *id)),
+        Set(items) | LiteralSet(items) => items.iter().all(|id| scalar(program, *id)),
         // Non-scalar hashing, reader literals, metadata and unknown operations
         // may throw or dispatch user code and are deliberately not pure here.
         _ => false,

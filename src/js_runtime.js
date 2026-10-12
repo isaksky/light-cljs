@@ -1137,6 +1137,19 @@
   function hashMap(...pairs) { return mapFromArray(pairs, "hash-map"); }
   function arrayMap(...pairs) { return mapFromArray(pairs, "array-map"); }
 
+  // The analyzer has checked distinct source constants. Characters and strings
+  // can become equal JS strings, so canonical literal storage retains every
+  // positional entry and uses the array map's first-match lookup.
+  function constantMapFromArray(pairs) {
+    return PersistentArrayMapValue(null, pairs.length / 2, pairs, null);
+  }
+
+  function constantSetFromArray(items) {
+    const pairs = [];
+    for (const item of items) pairs.push(item, null);
+    return PersistentHashSetValue(null, constantMapFromArray(pairs), null);
+  }
+
   function dissoc(value, ...keys) {
     if (value != null && builtin(value, "IMap/-dissoc", 2)) return keys.reduce((result, key) => {
       const method = result == null ? null : builtin(result, "IMap/-dissoc", 2);
@@ -5812,5 +5825,5 @@
     currentNs: createNs(symbol(null, "cljs.user")), assertions: true});
   createNs(symbol(null, "cljs.core"));
   Object.seal(core);
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()
