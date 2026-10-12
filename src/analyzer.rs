@@ -6978,19 +6978,30 @@ impl Analyzer<'_> {
                         AnalysisErrorKind::InvalidForm("protocol method arity mismatch"),
                     ));
                 }
-                if strict
-                    && methods
-                        .iter()
-                        .any(|(key, method): &(MethodDispatch, FnMethod)| {
-                            key == &dispatch
-                                && method.params.len() + if method.rest.is_some() { 2 } else { 0 }
-                                    == slot_arity
-                        })
-                {
-                    return Err(self.error(
-                        arg,
-                        AnalysisErrorKind::InvalidForm("duplicate protocol method arity"),
-                    ));
+                if strict {
+                    if matches!(&dispatch, MethodDispatch::Builtin(name) if name.starts_with("Object/"))
+                        && methods
+                            .iter()
+                            .any(|(key, method): &(MethodDispatch, FnMethod)| {
+                                key == &dispatch
+                                    && method.params.len()
+                                        + if method.rest.is_some() { 2 } else { 0 }
+                                        == slot_arity
+                            })
+                    {
+                        return Err(self.error(
+                            arg,
+                            AnalysisErrorKind::InvalidForm("duplicate protocol method arity"),
+                        ));
+                    }
+                    // Canonical record/type/reify lowering installs each protocol
+                    // slot in source order: a later implementation replaces only
+                    // this dispatch key and arity, preserving unrelated overloads.
+                    methods.retain(|(key, method): &(MethodDispatch, FnMethod)| {
+                        key != &dispatch
+                            || method.params.len() + if method.rest.is_some() { 2 } else { 0 }
+                                != slot_arity
+                    });
                 }
                 methods.push((dispatch.clone(), parsed));
             }

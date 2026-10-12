@@ -38,6 +38,11 @@ macro does. External extensions replace the relevant methods for existing instan
 
 User protocol, IFn and Object methods retain the existing type method machinery:
 resolved fields, destructuring, overloads, escaped closures, exceptions, and recur.
+Repeated implementations of the same protocol method and arity select the last
+implementation, independently of other methods and arities. The same replacement
+holds for supported `deftype` and `reify` protocol methods; both required pins
+execute the focused controls. Protocol declaration duplicate signatures and
+malformed receiver/arity/field diagnostics remain checked separately.
 Named record methods resolve surrounding names through namespace Vars rather than
 capturing enclosing lexical locals. Redefinition leaves old instances and their
 methods intact; saved factories and generated copy/update methods read the current

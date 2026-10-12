@@ -1038,6 +1038,25 @@ immediately before 125. This checkpoint implements no production repair and does
 not exclude the original record obligation. Pellets remains the live status and
 ordering authority.
 
+The focused 165 production follow-up now selects the last repeated protocol
+method/arity. Its unchanged original returns 9 on QuickJS/Node application
+execution and both faithful fresh/reused actual macro adapters. Current exact
+source/build/binary/raw evidence and both pins are retained in
+[`sci-record-duplicate-method-receipt.json`](sci-record-duplicate-method-receipt.json)
+and `/tmp/light-cljs-165-verified-v4`, receipt SHA-256
+`8aaee6479f33194e6e0445041d35769179fac38856e6d361d4ff45c4a799b1a8`.
+This resolves that focused production discrepancy; comprehensive reconciliation
+and zero-missing language validation still belong to 125.
+The independent split record-redefinition setup still demands old records from
+the current generation during macro computation; the source without repeated
+methods has the identical discrepancy. Both pins and entire sequential macro
+execution preserve `[3 17 15 14]`, while split macro setup yields `[13 17 15 14]`.
+No split-generation passing frame or credit is supplied. Fresh duplicate checks
+created focused **light-cljs-166, Preserve source-visible record generations in
+demanded macro initializers**, immediately before125. Full retained evidence is
+`/tmp/light-cljs-165-generation-gap-v2` and
+`/tmp/light-cljs-165-verified-v3/audit`; no166 implementation is performed here.
+
 The distinct original returned record closure remains unresolved under its
 located source-root/macro boundary; the diagnostic does not prove a newly
 required production gap. The full generative source remains unregistered and
