@@ -649,7 +649,12 @@ fn generated_maps_preserve_owned_children_order_keys_and_quoted_data() {
     let source = format!(
         "(let [f (fn* [x] (js/console.log x) x) m (identity-form {{{entries}}})] (js/console.log (count m) (= (:a (data)) [1 2]) (= (get (quoted) 'danger) '(unresolved 1))))"
     );
-    let expected = (0..32).map(|i| format!("{i}\n")).collect::<String>() + "16 true true\n";
+    // Both independent references evaluate reader-ordered keys, then values.
+    // The exact original source and historical insertion-order expectation are
+    // retained in literal-map-traversal-historical-macro-receipt.json.
+    let expected = [14, 16, 12, 30, 2, 20, 18, 24, 10, 26, 0, 22, 8, 6, 28, 4,
+                    15, 17, 13, 31, 3, 21, 19, 25, 11, 27, 1, 23, 9, 7, 29, 5]
+        .into_iter().map(|i| format!("{i}\n")).collect::<String>() + "16 true true\n";
     assert_eq!(
         execute(&compile_with_macros(&source, &mut h).unwrap()),
         expected

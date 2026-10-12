@@ -739,7 +739,7 @@ fn repeated_quoted_literals_grow_linearly_without_duplicate_runtime_preludes() {
 }
 
 #[test]
-fn map_literals_lower_in_source_order_and_reader_duplicates_keep_number_categories() {
+fn small_map_literals_keep_source_order_and_reader_duplicates_keep_number_categories() {
     for (source, duplicate) in [
         ("{:a 1 :a 2}", ":a"),
         ("{[1 2] 1 (1 2) 2}", "(1 2)"),
@@ -785,6 +785,22 @@ fn map_literals_lower_in_source_order_and_reader_duplicates_keep_number_categori
         .map(|id| program.exprs[id.0].span.start)
         .collect::<Vec<_>>();
     assert!(spans.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+
+#[test]
+fn hash_map_reader_traversal_preserves_whole_pairs_and_original_spans() {
+    // This order is independently observed in both pinned ClojureScript readers.
+    // Analysis must carry value spans with keys across the eight-entry boundary.
+    for prefix in ["", "'", "^:marked ", "'^:marked "] {
+        let source = format!("{prefix}{{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}}");
+        let program = analyze(&source, &parse(&source).unwrap()).unwrap();
+        let items = program.exprs.iter().find_map(|expr| match &expr.kind {
+            ExprKind::Map(items) => Some(items), _ => None,
+        }).unwrap();
+        let spans = items.iter().map(|id| &source[program.exprs[id.0].span.clone()]).collect::<Vec<_>>();
+        assert_eq!(spans, [":e", "5", ":g", "7", ":c", "3", ":h", "8", ":b", "2", ":d", "4", ":f", "6", ":i", "9", ":a", "1"]);
+    }
 }
 
 #[test]

@@ -3832,11 +3832,22 @@ impl Analyzer<'_> {
                 self.check_map_keys(children)?;
                 let direct = children.len() <= 16
                     && self.source_constant_collision(children.iter().step_by(2).copied(), false)?;
-                let ordered = self.source_numeric_map_order(children)?;
-                let items = ordered
-                    .iter()
-                    .map(|&child| self.non_tail_form(child, ExprContext::Value))
-                    .collect::<Result<_, _>>()?;
+                let ordered = self.source_map_order(id, children)?;
+                // Hash map lowering analyzes all keys before values as well:
+                // demanded expansion effects follow the same two groups.
+                let items = if ordered.len() > 16 {
+                    let keys = ordered.iter().step_by(2)
+                        .map(|&child| self.non_tail_form(child, ExprContext::Value))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let values = ordered.iter().skip(1).step_by(2)
+                        .map(|&child| self.non_tail_form(child, ExprContext::Value))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    keys.into_iter().zip(values).flat_map(|(key, value)| [key, value]).collect()
+                } else {
+                    ordered.iter()
+                        .map(|&child| self.non_tail_form(child, ExprContext::Value))
+                        .collect::<Result<_, _>>()?
+                };
                 if direct {
                     ExprKind::LiteralMap(items)
                 } else {
@@ -4823,39 +4834,32 @@ impl Analyzer<'_> {
         Ok(())
     }
 
-    fn source_numeric_map_order(
+    fn source_map_order(
         &mut self,
+        id: NodeId,
         children: &[NodeId],
     ) -> Result<Vec<NodeId>, AnalysisError> {
-        let mut ordered = children.to_vec();
-        if children.len() <= 16 {
-            return Ok(ordered);
+        // Array maps retain source insertion order through eight entries.
+        // Macro-computed maps already carry their runtime traversal; only
+        // source reader maps acquire JVM hash traversal before lowering.
+        if children.len() <= 16
+            || self.generated.get(id.0).and_then(Option::as_ref)
+                .is_some_and(|form| !matches!(form.node().origin, Origin::Source | Origin::Metadata))
+        {
+            return Ok(children.to_vec());
         }
-        let mut groups = std::collections::BTreeMap::<ReaderDatum, Vec<(usize, u32)>>::new();
-        for (index, pair) in children.as_chunks::<2>().0.iter().enumerate() {
-            if let Some(data) = self.reader_datum(pair[0])?
-                && let ReaderDatum::Number(category, spelling) = &data
-                && let Some(hash) = crate::reader_literals::number_hash(*category, spelling)
-            {
-                groups
-                    .entry(data.lowered_constants())
-                    .or_default()
-                    .push((index, hash));
-            }
+        let mut entries = Vec::with_capacity(children.len() / 2);
+        for pair in children.as_chunks::<2>().0 {
+            let Some(data) = self.reader_datum(pair[0])? else { return Ok(children.to_vec()); };
+            let Some(hash) = data.reader_hash() else { return Ok(children.to_vec()); };
+            entries.push((*pair, matches!(data, ReaderDatum::Nil), hash));
         }
-        for group in groups.values_mut().filter(|group| group.len() > 1) {
-            let positions = group.iter().map(|(index, _)| *index).collect::<Vec<_>>();
-            // PersistentHashMap walks successive five-bit hash partitions. Equal
-            // hashes retain reader insertion order; stable sorting preserves it.
-            group.sort_by_key(|(_, hash)| {
-                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31)
-            });
-            for (position, (original, _)) in positions.into_iter().zip(group.iter()) {
-                ordered[position * 2] = children[original * 2];
-                ordered[position * 2 + 1] = children[original * 2 + 1];
-            }
-        }
-        Ok(ordered)
+        // Nil precedes the trie. Successive five-bit partitions determine its
+        // traversal, while equal-hash collision nodes keep insertion order.
+        // Carry whole pairs to retain each key's matching value and source span;
+        // hash-map lowering evaluates the ordered keys before ordered values.
+        entries.sort_by_key(|(_, nil, hash)| (!*nil, std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31)));
+        Ok(entries.into_iter().flat_map(|(pair, _, _)| pair).collect())
     }
 
     fn source_set_order(&mut self, id: NodeId, children: &[NodeId]) -> Result<Vec<NodeId>, AnalysisError> {
@@ -5270,7 +5274,7 @@ impl Analyzer<'_> {
                     self.check_set_members(children, true)?;
                 }
                 let ordered = if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Map, .. }) {
-                    self.source_numeric_map_order(children)?
+                    self.source_map_order(id, children)?
                 } else if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Set, .. }) {
                     self.source_set_order(id, children)?
                 } else {

@@ -1137,6 +1137,14 @@
   function hashMap(...pairs) { return mapFromArray(pairs, "hash-map"); }
   function arrayMap(...pairs) { return mapFromArray(pairs, "array-map"); }
 
+  // Source hash-map literals evaluate all reader-ordered keys before values.
+  // This emitter helper preserves the ordinary runtime constructor semantics.
+  function mapFromArrays(keys, values) {
+    const pairs = [];
+    for (let i = 0; i < keys.length; i++) pairs.push(keys[i], values[i]);
+    return mapFromArray(pairs, "hash-map");
+  }
+
   // The analyzer has checked distinct source constants. Character/string and
   // numeric reader categories can lower to equal JS values, so literal storage
   // retains positional entries and the array map's first-match lookup.
@@ -5831,5 +5839,5 @@
     currentNs: createNs(symbol(null, "cljs.user")), assertions: true});
   createNs(symbol(null, "cljs.core"));
   Object.seal(core);
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

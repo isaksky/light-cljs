@@ -1509,9 +1509,17 @@ impl Emitter<'_> {
                 self.output.push_str("])");
             }
             ExprKind::Map(items) => {
-                self.output.push_str("rt.mapFromArray([");
-                self.arguments(items);
-                self.output.push_str("])");
+                if items.len() > 16 {
+                    self.output.push_str("rt.mapFromArrays([");
+                    self.arguments(&items.iter().step_by(2).copied().collect::<Vec<_>>());
+                    self.output.push_str("], [");
+                    self.arguments(&items.iter().skip(1).step_by(2).copied().collect::<Vec<_>>());
+                    self.output.push_str("])");
+                } else {
+                    self.output.push_str("rt.mapFromArray([");
+                    self.arguments(items);
+                    self.output.push_str("])");
+                }
             }
             ExprKind::LiteralMap(items) | ExprKind::LiteralSet(items) => {
                 self.output.push_str(if matches!(
