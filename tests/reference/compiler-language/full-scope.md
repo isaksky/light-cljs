@@ -347,3 +347,47 @@ SCI expectations. Library conflicts after canonical join/project repairs remain
 separately unresolved against original SCI expectations. None of the supplemental
 receipts establishes a comprehensive pass; the current final execution receipt
 and remaining obligations are tracked in final-gate.md.
+
+## Original API/source and declaration evidence continuation — October 12, 2026
+
+The complete local API adapter executes 121 unchanged original SCI bodies with
+their typed results, effects and output in fresh/reused application and actual
+macro contexts, across QuickJS and Node. It separately verifies 143 qualified
+root identities; those checks do not prove qualified invocation or metadata
+values. Thirty of those whole-source oracles now bind 60 independently missing
+local/public operation rows. Five receiver-demanding IFn workflows bind 25
+public/local rows, including all 22 receiver-inclusive `-invoke` signatures.
+The original callable routes, rest adapter, metadata, failure and reuse remain
+part of the literal contracts. Existing complete array-map/lazy-seq, sequence,
+transient and demanded declaration workflows add another 14 ordinary links.
+There are 99 added ordinary links and 98 added actual phase requirements; the
+sequence link already has its phase witness. These are execution requirements,
+never static registration passes. The four declaration arities retain complete
+`defrecord`, `defprotocol`, `deftype` and `reify` source workflows that actually
+demand their constructed receiver/method behavior.
+
+The configured custom-reader adapter now binds the sole original top-level
+assertion in the complete `data_readers_test/core.cljc` module. Its standalone
+audit returns no catalog credit; the shared hosted dispatcher grants that one
+source link only after replaying eight raw application/macro observations and
+both pin builds with the exact original reader map and form-producing handler.
+The five original record-tag assertions remain a separate unresolved context.
+
+The full report dispatches exactly nine independently reviewed original SCI
+contexts: four original agreements and five explicit canonical differences.
+Fresh raw proofs, current producer sources, complete original setup/order,
+literal results/effects/output and both pins are required. Three record sources
+declare their original Box/Empty namespace exclusions explicitly; six genuine
+default-header TypeErrors remain nonpassing. Five canonical record/protocol
+differences retain the differing original SCI expectations with zero original
+semantic pass credit. No blanket record/SCI exclusion or stored-receipt fallback
+is introduced. The same requirement continues to govern the 22 separately
+reviewed string/set/strict-EDN differences.
+
+Five exact historical native numeric API rows retain original text and rejection
+receipts while carrying the user's explicit retired numeric-tower scope basis.
+Mixed SCI source bodies, other predicates and explicit JS BigInt interop remain
+independent obligations. Fresh 50-source and 191-library receipts preserve each
+complete prior record; neither receipt file supplies a current full-gate pass.
+See final-gate.md for actual commands, partial-report limits and live repair
+ownership evidence.

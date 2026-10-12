@@ -939,3 +939,119 @@ freshness, scoped Rust formatting, contract loaders and whitespace checks pass. 
 remains the last full strict result; no zero-missing or final acceptance claim
 is made from focused integration counts. The 156 external limitation remains
 unchanged and no cancellation/limits suite was run.
+
+## Original source, API and declaration checkpoint — October 12, 2026
+
+Production baseline is `d838fca9518d01877fab1d0d5e4fb7746bc288dd`. The raw
+`ns*` discrepancies described in the preceding historical checkpoint were
+repaired by 162/164; 163 also fixed faithful complete namespace scalar result
+execution. Their original sources and current both-pin receipts remain required.
+This checkpoint changes evidence adapters, catalogs and documentation only.
+
+The unfiltered command was actually run against that production baseline:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/report.py --run --strict --reference both --checkout research/clojurescript --timeout 300 --reference-timeout 600 --artifacts /tmp/light-cljs-125-full-d838fca
+```
+
+It completed the original ordinary/reference layers, 48 exact macro tests, SCI
+expression contexts, all 50 source contexts and all 191 library contexts. The
+complete residual body test passed at 163.37 seconds without shortening its
+original bodies or increasing evaluator limits. The invocation then exited **2**:
+`Adopted source-specific scope basis changed`. It produced **no final report**
+and therefore no new comprehensive coverage count or strict acceptance result.
+The closed raw-`ns*` documentation paragraph changed the document hash; review
+confirmed the promised canonical string/set contract itself was unchanged.
+Eleven exact scope-basis hashes were refreshed, retaining their previous hashes
+and every original source, expectation, literal and disposition. No acceptance
+criterion was relaxed. The current 22-library reconciliation then passed all
+176 actual fresh/reused application/macro frames against those complete original
+source layers at `/tmp/light-cljs-125-library-current-reconciliation-v1`.
+
+Fresh 50-source receipts report 35 original agreements, eight pin differences
+and seven unresolved cases; fresh 191-library receipts report 163 agreements,
+six walk pin differences and 22 unresolved original expectations. The writers
+preserve every complete previous record and every source binding. These are
+whole-source receipts, not inferred public arity or actual-phase coverage.
+
+The new source cohorts execute 121 complete original SCI API bodies with 968
+ordered application/actual-macro engine frames, five complete receiver-demanding
+IFn workflows, and the complete configured custom-reader module. Shared catalogs
+add 99 ordinary links, 98 phase requirements, 36 exact oracles and one original
+upstream assertion witness. The seven local transient phase links also have
+their own current exact execution receipt at
+`/tmp/light-cljs-125-transient-local-phase-current-v2/evidence.json`; selected
+fixture reports do not implicitly execute assertion-linked supplemental phases.
+The four public declaration signatures reuse existing complete demanded receiver
+workflows; no undemanded declaration or metadata value receives credit.
+
+The fresh **43-fixture filtered report exits zero** at
+`/tmp/light-cljs-125-new-cohort-integrated-v2/report.json`. All 99 newly mapped
+ordinary obligations are covered; 91 of the new phase links execute through 13
+exact single Rust tests, all passing with zero ignored tests. The seven
+assertion-linked transient phase requirements pass in the separate exact receipt
+above. The full original residual-body phase test again passed without shortened
+source. After documentation registration was clarified, the sole custom-reader
+source assertion was freshly reexecuted in both phases/engines and both pins at
+`/tmp/light-cljs-125-custom-final-producer-integrated-v2/report.json`, also exit
+zero. Twenty affected reader/dispatch guards pass after the final documentation and
+whitespace edits (48.045 seconds); the final source assertion proof binds those
+exact current producer bytes.
+The 43-fixture report retains 132 covered, 8463 missing and 1396 unrelated rows;
+these are **filtered invocation counts**, not a comprehensive checkpoint. Both
+reports explicitly retain incomplete strict status and unexecuted obligations.
+The exact positive-cohort verification is preserved at
+`/tmp/light-cljs-125-final-new-cohort-verification-v1.json`.
+
+Exactly nine reviewed SCI contexts now enter the full report through a fresh
+dispatcher. Four preserve original SCI agreements; five retain different SCI
+expectations and require independent canonical literal results in both pins and
+both phases. The three original Box/Empty records retain their explicit namespace
+profiles and all six default-header TypeError controls. Current documented proof
+is `/tmp/light-cljs-125-reviewed-nine-integrated-v2/evidence.json`. The real ledger
+integration independently replays these nine and the 22 library proofs, showing
+four covered originals and 27 explicit differences with 31 actual macro columns
+at `/tmp/light-cljs-125-fresh-selected-context-ledger-v2.json`. This is selected
+integration evidence, not a comprehensive report. Differing SCI expectations
+keep zero original semantic pass credit. The adapter engine-list shape is kept
+out of the older flattened-expression classifier; detached raw proofs or source
+bindings remain rejected.
+
+The final stable Python harness passes **260 tests in 270.377 seconds**, with no
+failures, errors or skips, at
+`/tmp/light-cljs-125-all-python-guards-current-v2.log`. Its actual recursive type,
+negative-zero and output controls ran through compiler/QuickJS/Node and both pins
+at `/tmp/light-cljs-125-final-recursive-api-controls-v2/evidence.json`. Inventory
+freshness, exact source/catalog loaders and scoped Rust formatting pass. Earlier
+integration attempts that encountered adapter shape or generator-hash drift are
+retained as nonpassing diagnostics; they do not supply final report credit.
+
+The unchanged original repeated record method returns literal **9** in both
+required pins while ordinary compilation and four actual fresh/reused macro
+controls reject its second same-arity implementation. The located rejection,
+clean-after-failure controls and full original proof are retained at
+`/tmp/light-cljs-125-record-duplicate-method-confirmed-gap.json`, SHA-256
+`c56459058e24afd870a2455ab73afef4412b855bca5a3a8c23d970fbc668811d`.
+After a fresh live duplicate check, focused **light-cljs-165**, **Accept repeated
+record protocol method arities with canonical last-method dispatch**, was added
+immediately before 125. This checkpoint implements no production repair and does
+not exclude the original record obligation. Pellets remains the live status and
+ordering authority.
+
+The distinct original returned record closure remains unresolved under its
+located source-root/macro boundary; the diagnostic does not prove a newly
+required production gap. The full generative source remains unregistered and
+nonpassing in phase: both original 100000-trial properties pass each genuine
+provider pin bundle, but the corrected actual macro audit hit its normal
+deadline. Its unchanged source/driver/dependencies and outcome are preserved at
+`/tmp/light-cljs-125-generative-audit-v3/handoff.json`. No property options, loops,
+expectations or evaluator limits were changed and no deadline was treated as a
+pass. Five exact native numeric API rows retain historical bytes/rejections and
+the user's explicit retired numeric-tower basis; other native/Number predicates,
+mixed SCI bodies and JS BigInt interop are unaffected.
+
+125 remains incomplete. The separate 156 cancellation repair was twice rejected
+by automatic safety review for possible cybersecurity risk. Its preserved patch
+was not retried, delegated, investigated or repaired; no cancellation/limits
+suite was run. Remaining full-gate obligations, timeouts and source differences
+cannot be converted into completion by this checkpoint.

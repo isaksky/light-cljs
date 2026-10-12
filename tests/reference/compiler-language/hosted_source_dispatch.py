@@ -1,4 +1,4 @@
-"""Four reviewed source embeddings; fresh receipts only, no generic CLI credit."""
+"""Reviewed source embeddings; registration never supplies execution credit."""
 import copy
 import contextlib
 from pathlib import Path
@@ -6,10 +6,17 @@ import report
 import configured_source_context as configured
 import hosted_import_source_context as imports
 import hosted_namespace_source_context as namespaces
+import local_api_source_context as local_apis
+import configured_custom_source_context as custom
 
 PROFILES = {configured.ID: 'configured-reader-identity-v1', imports.ID: 'original-import-real-closure-v1',
             namespaces.SPECS[0][1]: 'original-goog-real-delegation-v1',
             namespaces.SPECS[1][1]: 'original-repl-error-map-v1'}
+# The helper knows all 121 reviewed sources. Catalog integration remains the
+# separately reviewed subset of 30 exact exported cases, never all known IDs.
+LOCAL_API_IDS = frozenset(case['id'] for case in local_apis.cases())
+PROFILES.update({identity: local_apis.PROFILE for identity in LOCAL_API_IDS})
+PROFILES[custom.ID] = custom.PROFILE
 BOUNDARIES = {
  imports.ID: 'Complete original import body with genuine pinned Long/Integer/Vec2/Vec3 dependency closure installed in application and actual MacroHost. No general Closure build/library parity.',
  namespaces.SPECS[0][1]: 'Complete original goog body uses a compiled delegation to genuine pinned Closure isArrayLike. Real base initialization is explicit in both phases. No default goog namespace or foreign-function-root parity.',
@@ -31,18 +38,27 @@ def ordinary_profiles():
             spec = next(s for s in namespaces.SPECS if s[1] == row['id'])
             row['module_source'] = spec[3]
             row['complete_original_provenance'] = [{'body_id': key, 'source_sha256': value} for key,value in row['original_complete_body_sha256'].items()]
-    return [register(row) for row in rows]
+    return [register(row) for row in rows] + [custom.case()]
 
 def validate_case(case):
     identity = case.get('id')
     marker = case.get('hosted_source_adapter')
     if identity not in PROFILES:
-        if marker is not None or any(k in case for k in ('compiler_data_readers','hosted_import_profile','hosted_namespace_profile')):
+        if (str(identity).startswith('local-api-source-') or marker is not None
+                or any(k in case for k in ('compiler_data_readers','hosted_import_profile','hosted_namespace_profile'))):
             raise ValueError('unknown hosted source profile')
         return False
     if not report.same_json(marker, {'profile': PROFILES[identity], 'schema_version': 1}):
         raise ValueError('missing/changed reviewed hosted source dispatch profile')
-    if identity == configured.ID:
+    if identity in LOCAL_API_IDS:
+        if not local_apis.validate(case):
+            raise ValueError('unknown original local API source')
+        expected = next(row for row in local_apis.cases() if row['id'] == identity)
+        if not report.same_json(case, expected):
+            raise ValueError('changed original local API source/typed contract')
+    elif identity == custom.ID:
+        custom.validate_case(case)
+    elif identity == configured.ID:
         configured.validate(case)
     else:
         expected = next(row for row in ordinary_profiles() if row['id'] == identity)
@@ -52,6 +68,13 @@ def validate_case(case):
 
 def validate_witnesses(case, witnesses, inventory):
     if not validate_case(case):return
+    if case['id'] in LOCAL_API_IDS:
+        # SCI sources have operation witnesses and an exact oracle, not
+        # invented upstream assertion/body witnesses. Ordinary mapping
+        # eligibility is still checked independently by report/full_ledger.
+        if any(row['fixture_id'] == case['id'] for row in witnesses.values()):
+            raise ValueError('original local API source cannot claim upstream assertion witnesses')
+        return
     origins={row['body_id']:row['source_sha256'] for row in case['complete_original_provenance']}
     expected=[row['id'] for row in inventory.values() if row['body_id'] in origins and row['disposition']=='in-scope']
     actual=[row['assertion_id'] for row in witnesses.values() if row['fixture_id']==case['id']]
@@ -77,6 +100,34 @@ def layers(document, identity):
     return {'status': 'passed', 'observed': observations[expected[0]]['observed'],
             'hosted_source_adapter': PROFILES[identity], 'observations': observations,
             'generic_cli': 'not claimed'}
+
+
+def local_api_layers(case, layer):
+    """Validate actual local/phase metadata independently of source registration."""
+    variants = ('application-fresh', 'application-reused', 'macro-fresh', 'macro-reused')
+    expected = [variant+'/'+engine for variant in variants for engine in ('QuickJS', 'Node')]
+    observations = layer.get('observations', {})
+    if (layer.get('status') != 'passed' or list(observations) != expected
+            or layer.get('hosted_source_adapter') != local_apis.PROFILE
+            or layer.get('generic_cli') != 'not claimed'
+            or not report.same_json(layer.get('observed'), case['expected'])):
+        raise ValueError('incomplete current original local API source evidence')
+    producers = local_apis.snapshot()
+    for slot, observed in observations.items():
+        variant, engine = slot.split('/')
+        phase, host = variant.split('-')
+        frame = {'id': case['id'], 'phase': phase, 'host': host, 'engine': engine, 'raw': 'true'}
+        if (observed.get('status') != 'passed'
+                or not report.same_json(observed.get('observed'), case['expected'])
+                or not report.same_json(observed.get('actual_frame'), frame)
+                or observed.get('raw_observation_sha256') != local_apis.digest('true')
+                or not report.same_json(observed.get('compiler_build_producer_source_sha256'), producers)
+                or any(not isinstance(observed.get(key), str) or len(observed[key]) != 64
+                       or any(ch not in '0123456789abcdef' for ch in observed[key])
+                       for key in ('audit_executable_sha256', 'compiled_js_sha256', 'module_source_sha256'))):
+            raise ValueError('missing current raw original local API source provenance')
+    return layer
+
 
 def _execute(cases, directory, timeout, reference='both', checkout=None):
     if reference not in ('none','release','checkout','both'):
@@ -105,6 +156,23 @@ def _execute(cases, directory, timeout, reference='both', checkout=None):
             results[identity]={'javascript':layers(doc,identity)}
             for kind in ('release','checkout'):
                 if reference in (kind,'both'):results[identity][kind]=doc['references'][kind][identity]
+    if custom.ID in selected:
+        result = custom.execute([selected[custom.ID]], directory/'custom', timeout, reference, checkout)
+        if set(result) != {custom.ID}:
+            raise ValueError('missing/extra current custom-reader hosted result')
+        layers({'status': result[custom.ID]['javascript'].get('status'),
+                'observations': result[custom.ID]['javascript'].get('observations', {})}, custom.ID)
+        results.update(result)
+    api_cases = [case for identity, case in selected.items() if identity in LOCAL_API_IDS]
+    if api_cases:
+        # The exact helper always executes the complete original 121-source
+        # cohort, then returns only the requested source identities.
+        result = local_apis.execute(api_cases, directory/'local-api', timeout, reference, checkout)
+        if set(result) != {case['id'] for case in api_cases}:
+            raise ValueError('missing/extra current original local API source results')
+        for case in api_cases:
+            result[case['id']]['javascript'] = local_api_layers(case, result[case['id']]['javascript'])
+        results.update(result)
     return results
 
 def execute(cases, directory, timeout, reference='both', checkout=None):

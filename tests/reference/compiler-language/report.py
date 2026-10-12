@@ -1213,6 +1213,7 @@ def main(argv=None):
         phase_evidence = {}
         sci_evidence = {}
         library_dialect_evidence = None
+        reviewed_sci_context_evidence = None
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1271,7 +1272,10 @@ def main(argv=None):
                 source_rows = sci_source_context.load()
                 library_rows = sci_library_context.load()
                 expression_rows = sci_source_context.expression_rows(sci_execution.load_all(), source_rows)
-                sci_cases = sci_execution.cases(sci_library_context.expression_rows(expression_rows, library_rows))
+                import reviewed_sci_context_dispatch
+                ordinary_sci_rows, _ = reviewed_sci_context_dispatch.partition(
+                    sci_library_context.expression_rows(expression_rows, library_rows))
+                sci_cases = sci_execution.cases(ordinary_sci_rows)
                 sci_evidence = {case["id"]: {} for case in sci_cases}
                 local = sci_execution.local_cases(sci_cases, artifacts / "sci" / "local", max(180, args.reference_timeout))
                 for identity, observed in local.items():
@@ -1322,10 +1326,17 @@ def main(argv=None):
                     sidecar['full_evidence'] = library_document
                     (artifacts / 'sci-library-reconciliation' / 'evidence.json').write_text(json.dumps(sidecar, indent=2) + '\n')
                     library_dialect_evidence = sidecar
+                if args.reference == 'both':
+                    reviewed_sci_context_evidence = reviewed_sci_context_dispatch.run(
+                        artifacts / 'reviewed-sci-context', max(240, args.reference_timeout))
+                    for proof in reviewed_sci_context_dispatch.reconcile(reviewed_sci_context_evidence).values():
+                        if proof['id'] in sci_evidence:
+                            raise ValueError('Reviewed SCI context overlaps expression/source/library execution')
+                        sci_evidence[proof['id']] = proof['layers']
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
-            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence)
+            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence, reviewed_sci_context_evidence=reviewed_sci_context_evidence)
         report["execution_selection"] = {"fixture_ids": args.fixture, "all_selected_fixtures": not args.fixture}
         if artifacts:
             report["artifacts"] = str(artifacts)

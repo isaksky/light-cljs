@@ -1398,8 +1398,8 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "bc67317353bc1922e0b0b93b2e823d48a9e6beedf0cbac142b3ea8a1bfa6b2fb",
-  "obligations_sha256": "4e5990031aa81f6d34c3868eaf9f2ff0c9a69da5faf0c06296d268c6c4310f3b",
+  "generator_sha256": "001e03bc8070670b67e8d0ec1b2d4d62802632c120106672fc0a4fbaf86a3bfd",
+  "obligations_sha256": "b842c952d0725df07a0e263ba63f34fdb702a77ebfee3337433aeed61b93ee74",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",
@@ -1457,6 +1457,10 @@
     {
       "path": "tests/reference/sci/historical/supported-apis.tsv",
       "sha256": "10626e25aa1fd998aeff2d3e7d0aa166df488c7d25385f69a6db7b71566d8b8f"
+    },
+    {
+      "path": "tests/reference/compiler-language/native_api_retirement.py",
+      "sha256": "9b6d34f372d5cca7c8927a878bc6fdf898337e8e43e902b0aa79314f6a2defca"
     }
   ],
   "support_sources": 11,
