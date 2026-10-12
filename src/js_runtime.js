@@ -195,11 +195,13 @@
   }
   function PersistentHashMapValue(metadata, cnt, root, hasNil, nilValue, cachedHash) {
     const entries = root == null ? [] : (maps.get(root) ?? []).filter(e => e.key != null).slice();
+    if (root != null && hashRoots.has(maps.get(root))) hashRoots.set(entries, hashRoots.get(maps.get(root)));
     if (hasNil) entries.unshift(Object.freeze({key: null, value: nilValue, hash: 0}));
     return constructorSlots(makeMap(entries, "hash-map"), {cnt, root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
   }
   function PersistentHashSetValue(metadata, source, cachedHash) {
     const entries = (maps.get(source) ?? []).map(e => Object.freeze({key: e.key, hash: e.hash}));
+    if (mapKinds.get(source) === "hash-map") ensureHashRoot(entries);
     return constructorSlots(makeSet(entries, mapKinds.get(source)), {"hash-map": source}, metadata, cachedHash);
   }
 
@@ -881,7 +883,7 @@
         result = updated === source ? result : slots["tree-map"] ? treeSetConstructor(meta(result), updated, null) : PersistentHashSetValue(meta(result), updated, null);
       }
       else if (sets.has(result)) {
-        const entries = sets.get(result).slice();
+        const entries = copyEntries(sets.get(result));
         putCollectionEntry(result, entries, args[i], undefined, true);
         if (entries.length === sets.get(result).length) continue;
         result = sortedComparators.has(previous) ? makeSet(entries, "sorted-set", sortedComparators.get(previous)) : makeSet(entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
@@ -913,7 +915,7 @@
       return withMeta(assoc(normalized, key, item, ...pairs), meta(value));
     }
     if (value == null || maps.has(value)) {
-      const entries = value == null ? [] : maps.get(value).slice();
+      const entries = value == null ? [] : copyEntries(maps.get(value));
       putCollectionEntry(value, entries, key, item);
       let result = updatedMap(value, entries);
       for (let i = 0; i < pairs.length; i += 2)
@@ -956,6 +958,132 @@
     }
   });
 
+  // Routing nodes preserve observable key tests and rehashes at trie splits.
+  // Entry storage still owns iteration; immutable nodes can be shared by old
+  // maps and transient copies. Transient capacity affects expansion timing.
+  const hashRoots = new WeakMap();
+  function copyEntries(entries) {
+    const copy = entries.slice();
+    if (hashRoots.has(entries)) hashRoots.set(copy, hashRoots.get(entries));
+    return copy;
+  }
+  function bitmapNode(slots = [], edit = null, capacity = slots.filter(Boolean).length) {
+    return {kind: "bitmap", slots, edit, capacity};
+  }
+  function hashNodeAssoc(node, shift, keyHash, entry, edit, result, effects = true) {
+    node ??= bitmapNode();
+    if (node.kind === "collision") {
+      if (keyHash === node.hash) {
+        const index = node.entries.findIndex(old => effects ? equalPair(entry.key, old.key) : entry.key === old.key);
+        const entries = node.entries.slice();
+        if (index < 0) entries.push(entry);
+        else {
+          result.old = entries[index];
+          // Persistent collision nodes compare values with public equality;
+          // transient replacement uses identity, as does an ordinary leaf.
+          if (effects && !edit && equalPair(result.old.value, entry.value)) {
+            result.entry = result.old; return node;
+          }
+          entries[index] = Object.freeze({...entry, key: result.old.key, hash: result.old.hash});
+          result.entry = entries[index];
+        }
+        return {...node, entries};
+      }
+      const slots = []; slots[(node.hash >>> shift) & 31] = {node};
+      return hashNodeAssoc(bitmapNode(slots, edit, edit ? 2 : 1), shift, keyHash, entry, edit, result, effects);
+    }
+    const index = (keyHash >>> shift) & 31, slot = node.slots[index];
+    const slots = node.slots.slice(), n = slots.filter(Boolean).length;
+    if (node.kind === "array") {
+      slots[index] = {node: hashNodeAssoc(slot?.node, shift + 5, keyHash, entry, edit, result, effects)};
+      return {...node, slots};
+    }
+    if (!slot) {
+      if (n >= 16 && (!edit || n >= node.capacity)) {
+        // Canonical expansion visits retained leaves in ascending branch order.
+        slots[index] = {node: hashNodeAssoc(null, shift + 5, keyHash, entry, edit, result, effects)};
+        for (let i = 0; i < node.slots.length; ++i) {
+          const old = node.slots[i];
+          if (old?.entry) slots[i] = {node: hashNodeAssoc(null, shift + 5, effects ? hash(old.entry.key) : old.entry.hash, old.entry, edit, {}, effects)};
+        }
+        return {kind: "array", slots};
+      }
+      slots[index] = {entry};
+      const capacity = !edit ? n + 1 : n < node.capacity ? node.edit === edit ? node.capacity : n + 1 : n + 4;
+      return bitmapNode(slots, edit, capacity);
+    }
+    if (slot.node) slots[index] = {node: hashNodeAssoc(slot.node, shift + 5, keyHash, entry, edit, result, effects)};
+    else if (effects ? equalPair(entry.key, slot.entry.key) : entry.key === slot.entry.key) {
+      result.old = slot.entry;
+      result.entry = Object.freeze({...entry, key: slot.entry.key, hash: slot.entry.hash});
+      slots[index] = {entry: result.entry};
+    } else {
+      const oldHash = effects ? hash(slot.entry.key) : slot.entry.hash;
+      let child;
+      if (oldHash === keyHash) child = {kind: "collision", hash: keyHash, entries: [slot.entry, entry]};
+      else {
+        child = hashNodeAssoc(null, shift + 5, oldHash, slot.entry, edit, {}, effects);
+        child = hashNodeAssoc(child, shift + 5, keyHash, entry, edit, {}, effects);
+      }
+      slots[index] = {node: child};
+    }
+    return bitmapNode(slots, edit, edit && node.edit !== edit ? n + 1 : node.capacity);
+  }
+  function hashNodeFind(node, shift, keyHash, key) {
+    if (!node) return null;
+    if (node.kind === "collision") return node.entries.find(entry => equalPair(key, entry.key)) ?? null;
+    const slot = node.slots[(keyHash >>> shift) & 31];
+    return !slot ? null : slot.node ? hashNodeFind(slot.node, shift + 5, keyHash, key) : equalPair(key, slot.entry.key) ? slot.entry : null;
+  }
+  function hashNodeRemove(node, shift, keyHash, removed, edit) {
+    if (!node) return null;
+    if (node.kind === "collision") {
+      const entries = node.entries.slice(), index = entries.indexOf(removed);
+      if (index < 0) return node;
+      if (edit) entries[index] = entries[entries.length - 1];
+      entries.splice(edit ? entries.length - 1 : index, 1);
+      return entries.length ? {...node, entries} : null;
+    }
+    const index = (keyHash >>> shift) & 31, slot = node.slots[index];
+    if (!slot) return node;
+    const slots = node.slots.slice(), n = slots.filter(Boolean).length;
+    if (slot.node) {
+      const child = hashNodeRemove(slot.node, shift + 5, keyHash, removed, edit);
+      if (child === slot.node) return node;
+      slots[index] = child ? {node: child} : undefined;
+    } else {
+      if (slot.entry !== removed) return node;
+      slots[index] = undefined;
+    }
+    if (!slots.some(Boolean)) return null;
+    if (node.kind === "array") return n <= 8 && !slots[index] ? bitmapNode(slots, edit, edit ? 2 * (n - 1) : n - 1) : {...node, slots};
+    return bitmapNode(slots, edit, edit && node.edit !== edit ? n + 1 : node.capacity);
+  }
+  function ensureHashRoot(entries) {
+    if (!hashRoots.has(entries)) {
+      let root = null;
+      for (const entry of entries) if (entry.key != null) root = hashNodeAssoc(root, 0, entry.hash, entry, null, {}, false);
+      hashRoots.set(entries, root);
+    }
+    return hashRoots.get(entries);
+  }
+  function hashEntryIndex(entries, key, keyHash) {
+    if (key == null) return entries.findIndex(entry => entry.key == null);
+    const root = ensureHashRoot(entries);
+    if (!root) return -1;
+    return entries.indexOf(hashNodeFind(root, 0, keyHash ?? hash(key), key));
+  }
+  function removeHashEntry(entries, index, edit) {
+    const entry = entries[index];
+    if (entry.key != null) hashRoots.set(entries, hashNodeRemove(ensureHashRoot(entries), 0, entry.hash, entry, edit));
+    entries.splice(index, 1);
+  }
+  function promoteEntries(entries, edit) {
+    const promoted = [];
+    for (const entry of entries) putEntry(promoted, entry.key, entry.value, "hash-map", edit);
+    return promoted;
+  }
+
   function makeMap(entries, kind = entries.length <= 8 ? "array-map" : "hash-map", comparator = compareKeys) {
     const value = builtinValue(kind === "hash-map" ? "PersistentHashMap" : kind === "sorted-map" ? "PersistentTreeMap" : "PersistentArrayMap", mapPrototype);
     maps.set(value, Object.freeze(entries));
@@ -976,23 +1104,33 @@
 
   // Builders mutate only fresh unpublished arrays. Entry cells and retained
   // equivalent keys are shared by subsequent immutable versions.
-  function putEntry(entries, key, value, kind) {
-    const keyHash = kind === "array-map" ? undefined : hash(key);
-    const index = entryIndex(entries, key, keyHash, kind);
-    const retained = index < 0 ? key : entries[index].key;
-    // Array maps do not hash keys. Keep their hash deferred until promotion.
-    let cachedHash = index < 0 ? keyHash : kind === "array-map" ? undefined : entries[index].hash;
-    const entry = Object.freeze({key: retained, value, get hash() {
-      return cachedHash === undefined ? cachedHash = hash(retained) : cachedHash;
-    }});
-    if (index < 0) entries.push(entry);
-    else entries[index] = entry;
+  function putEntry(entries, key, value, kind, edit = null) {
+    if (kind === "array-map") {
+      const index = entryIndex(entries, key, undefined, kind), retained = index < 0 ? key : entries[index].key;
+      let cachedHash;
+      const entry = Object.freeze({key: retained, value, get hash() {
+        return cachedHash === undefined ? cachedHash = hash(retained) : cachedHash;
+      }});
+      if (index < 0) entries.push(entry); else entries[index] = entry;
+      return;
+    }
+    const keyHash = key == null ? 0 : hash(key), entry = Object.freeze({key, value, hash: keyHash});
+    if (key == null) {
+      const index = entries.findIndex(old => old.key == null);
+      if (index < 0) entries.push(entry); else entries[index] = Object.freeze({...entry, key: entries[index].key});
+      return;
+    }
+    const result = {}, root = hashNodeAssoc(ensureHashRoot(entries), 0, keyHash, entry, edit, result);
+    if (result.old) entries[entries.indexOf(result.old)] = result.entry;
+    else entries.push(entry);
+    hashRoots.set(entries, root);
   }
 
   function mapFromArray(pairs, kind = pairs.length <= 16 ? "array-map" : "hash-map") {
     if (pairs.length % 2) throw new Error("No value supplied for key: " + str(pairs[pairs.length - 1]));
     const entries = [];
-    for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], kind);
+    const edit = kind === "hash-map" ? {} : null;
+    for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], kind, edit);
     return makeMap(entries, kind);
   }
 
@@ -1008,7 +1146,7 @@
     if (keys.length === 0 || value == null) return value;
     const original = maps.get(value);
     if (!original) throw new Error("dissoc not supported on this type");
-    const entries = original.slice();
+    const entries = copyEntries(original);
     for (const key of keys) {
       const index = collectionEntryIndex(value, entries, key);
       if (index >= 0) {
@@ -1016,7 +1154,8 @@
           // Canonical removal searches first, then copies with query-side equality.
           const retained = entries.filter(entry => !equalPair(key, entry.key));
           entries.splice(0, entries.length, ...retained);
-        } else entries.splice(index, 1);
+        } else if (hashRoots.has(entries)) removeHashEntry(entries, index);
+        else entries.splice(index, 1);
       }
     }
     const Type = recordTypes.get(value);
@@ -1063,23 +1202,30 @@
     return value;
   }
 
-  function putMember(entries, key) {
-    const keyHash = hash(key);
-    if (entryIndex(entries, key, keyHash) < 0)
-      entries.push(Object.freeze({key, hash: keyHash}));
+  function putMember(entries, key, edit = null) {
+    if (!hashRoots.has(entries)) {
+      if (entries.length < 8 || entryIndex(entries, key, undefined, "array-map") >= 0) {
+        putEntry(entries, key, null, "array-map"); return;
+      }
+      const promoted = promoteEntries(entries, edit ?? {});
+      entries.splice(0, entries.length, ...promoted);
+      hashRoots.set(entries, hashRoots.get(promoted));
+    }
+    putEntry(entries, key, null, "hash-map", edit);
   }
 
   function setFromArray(items) {
     const entries = [];
-    for (const item of items) putMember(entries, item);
+    const edit = {};
+    for (const item of items) putMember(entries, item, edit);
     return makeSet(entries);
   }
 
   function literalSetFromArray(items) {
-    const entries = [];
+    const entries = [], edit = {};
     for (const item of items) {
       const before = entries.length;
-      putMember(entries, item);
+      putMember(entries, item, edit);
       if (entries.length === before) throw new Error("Duplicate key: " + str(item));
     }
     return makeSet(entries);
@@ -1096,10 +1242,12 @@
     if (!original) throw new Error("disj not supported on this type");
     const treeMap = publicCollectionSlots.get(value)?.["tree-map"];
     if (treeMap) return treeSetConstructor(meta(value), dissoc(treeMap, ...keys), null);
-    const entries = original.slice();
+    const entries = copyEntries(original);
     for (const key of keys) {
       const index = collectionEntryIndex(value, entries, key);
-      if (index >= 0) entries.splice(index, 1);
+      if (index >= 0) {
+        if (hashRoots.has(entries)) removeHashEntry(entries, index); else entries.splice(index, 1);
+      }
     }
     if (entries.length === original.length) return value;
     return preserveMeta(value, makeSet(entries, setKinds.get(value), sortedComparators.get(value)));
@@ -1118,7 +1266,7 @@
   function makeTransient(kind, entries, mapKind) {
     const name = kind === "vector" ? "TransientVector" : kind === "set" ? "TransientHashSet" : mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap";
     const result = builtinValue(name, transientPrototype);
-    transients.set(result, {kind, entries, mapKind, editable: true});
+    transients.set(result, {kind, entries, mapKind, editable: true, edit: {}});
     return result;
   }
   function editableTransient(value, operation) {
@@ -1129,8 +1277,8 @@
   function transient(value) { return core.asTransientProtocol(value); }
   function asTransient(value) {
     if (vectors.has(value)) return makeTransient("vector", vectors.get(value).slice());
-    if (maps.has(value)) return makeTransient("map", maps.get(value).slice(), mapKinds.get(value));
-    return makeTransient("set", sets.get(value).slice(), setKinds.get(value));
+    if (maps.has(value)) return makeTransient("map", copyEntries(maps.get(value)), mapKinds.get(value));
+    return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
   }
   function persistentBang(value) { return core.persistentBangProtocol(value); }
   function persistTransient(value) {
@@ -1154,7 +1302,7 @@
     // persistence in both pinned versions. Array maps and vectors reject it.
     if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
     if (state.kind === "vector") return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
-    const index = entryIndex(state.entries, key, hash(key), state.kind === "map" ? state.mapKind : undefined);
+    const index = state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
     return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
   }
   function assocTransient(value, key, item, indexed = false) {
@@ -1167,9 +1315,12 @@
       else outOfBounds();
     } else {
       editableTransient(value, "assoc!");
-      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, hash(key), "array-map") < 0)
-        return assocTransient(makeTransient("map", state.entries.slice(), "hash-map"), key, item);
-      putEntry(state.entries, key, item, state.mapKind);
+      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, undefined, "array-map") < 0) {
+        const promoted = makeTransient("map", [], "hash-map"), target = transients.get(promoted);
+        for (const entry of state.entries) putEntry(target.entries, entry.key, entry.value, "hash-map", target.edit);
+        return assocTransient(promoted, key, item);
+      }
+      putEntry(state.entries, key, item, state.mapKind, state.edit);
     }
     return value;
   }
@@ -1177,7 +1328,7 @@
     const state = editableTransient(value, "conj!");
     if (state.kind === "vector") { state.entries.push(member); return value; }
     if (state.kind === "set") {
-      putMember(state.entries, member);
+      putMember(state.entries, member, state.edit);
       if (state.entries.length > 8) state.mapKind = "hash-map";
       return value;
     }
@@ -1190,10 +1341,11 @@
     return value;
   }
   function removeTransient(value, key, operation) {
-    const state = editableTransient(value, operation), index = entryIndex(state.entries, key, hash(key), state.kind === "map" ? state.mapKind : undefined);
+    const state = editableTransient(value, operation), index = state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
     if (index >= 0) {
-      if (state.mapKind === "array-map") state.entries[index] = state.entries[state.entries.length - 1];
-      state.entries.splice(state.mapKind === "array-map" ? state.entries.length - 1 : index, 1);
+      if (state.mapKind === "array-map" && !hashRoots.has(state.entries)) state.entries[index] = state.entries[state.entries.length - 1];
+      if (hashRoots.has(state.entries)) removeHashEntry(state.entries, index, state.edit);
+      else state.entries.splice(state.mapKind === "array-map" ? state.entries.length - 1 : index, 1);
     }
     return value;
   }
@@ -1709,7 +1861,8 @@
   function set(value) {
     if (predicates.isSet(value)) return withMeta(value, null);
     const entries = [];
-    for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current));
+    const edit = {};
+    for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current), edit);
     return makeSet(entries);
   }
   // Object.equiv calls the receiver's IEquiv implementation directly, even
@@ -2361,14 +2514,14 @@
   function collectionEntryIndex(value, entries, key) {
     const comparator = sortedComparators.get(value);
     if (!comparator) {
-      const kind = mapKinds.get(value);
+      const kind = mapKinds.get(value) ?? setKinds.get(value);
       if (kind === "array-map") return entryIndex(entries, key, undefined, kind);
       // Hash-map nil slots are separate from the trie and never hash a query.
       if (kind === "hash-map") {
         if (key == null) return entries.findIndex(entry => entry.key == null);
         if (!entries.some(entry => entry.key != null)) return -1;
       }
-      return entryIndex(entries, key, hash(key), kind);
+      return hashEntryIndex(entries, key);
     }
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
@@ -2392,7 +2545,11 @@
       // it. Check existing keys before promotion, as canonical assoc does.
       const array = (coll == null || kind === "array-map") &&
         (entries.length < 8 || entryIndex(entries, key, undefined, "array-map") >= 0);
-      if (!array && kind === "array-map") for (const entry of entries) void entry.hash;
+      if (!array && kind === "array-map") {
+        const promoted = promoteEntries(entries, {});
+        entries.splice(0, entries.length, ...promoted);
+        hashRoots.set(entries, hashRoots.get(promoted));
+      }
       putEntry(entries, key, value, array ? "array-map" : undefined);
     }
   }
@@ -4935,7 +5092,8 @@
   builtinTypes.PersistentHashMap.EMPTY = makeMap([], "hash-map");
   builtinTypes.PersistentHashMap.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
-    for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1]);
+    const edit = {};
+    for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1], "hash-map", edit);
     return makeMap(entries, "hash-map");
   };
   function positionalFactory(Type, arity) {
