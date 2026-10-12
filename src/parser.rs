@@ -88,6 +88,11 @@ pub enum NodeKind {
         metadata: NodeId,
         target: NodeId,
     },
+    /// Only retained in the semantic reader's discard side table. The prefix
+    /// span preserves nested discard ownership before conditional selection.
+    Discard {
+        form: NodeId,
+    },
     Tagged {
         tag: NodeId,
         form: NodeId,
@@ -346,7 +351,9 @@ impl<'src> Parser<'src> {
             let form = self.required(depth + 1, in_collection, &prefix.span)?;
             // Discard the entire syntax subtree, keeping capacity for later nodes.
             if self.retain_discards {
-                self.discarded.push(form);
+                let end = self.nodes[form.0].span.end;
+                let discard = self.add(NodeKind::Discard { form }, prefix.span.start..end);
+                self.discarded.push(discard);
             } else {
                 self.nodes.truncate(mark);
             }

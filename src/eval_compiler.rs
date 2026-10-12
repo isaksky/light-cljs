@@ -151,21 +151,76 @@ impl InteractiveCompiler {
                     related: e.related.and_then(|span| source.span(span)),
                 }
             })?;
-            *cursor = parser.position();
-            let Some(root) = root else { return Ok(None) };
-            let mut discards = parser.discarded().to_vec();
-            let mut syntax = crate::SyntaxTree {
-                nodes: parser.into_nodes(),
-                roots: vec![root],
+            let Some(root) = root else {
+                *cursor = parser.position();
+                if input.file.ends_with(".cljc") {
+                    let mut discards = parser.discarded().to_vec();
+                    let mut syntax = crate::SyntaxTree {
+                        nodes: parser.into_nodes(),
+                        roots: vec![],
+                    };
+                    crate::compiler_reader::select_cljs(&input.source, &mut syntax, &mut discards)
+                        .map_err(|e| crate::compiler_data::ReadError {
+                            message: e.to_string(),
+                            span: source.span(e.span).unwrap(),
+                            related: None,
+                        })?;
+                }
+                return Ok(None);
             };
-            if input.file.ends_with(".cljc") {
-                crate::compiler_reader::select_cljs(&input.source, &mut syntax, &mut discards)
-                    .map_err(|e| crate::compiler_data::ReadError {
-                        message: e.to_string(),
-                        span: source.span(e.span).unwrap(),
-                        related: None,
-                    })?;
-            }
+            let (syntax, discards, next_cursor) = if input.file.ends_with(".cljc") {
+                let mut roots = vec![root];
+                loop {
+                    let mut discards = parser.discarded().to_vec();
+                    let mut syntax = crate::SyntaxTree {
+                        nodes: parser.nodes().to_vec(),
+                        roots: roots.clone(),
+                    };
+                    if let Err(e) =
+                        crate::compiler_reader::select_cljs(&input.source, &mut syntax, &mut discards)
+                    {
+                        // An inactive top-level conditional under a prefix may
+                        // require the next syntactic root. Do not cross a closed
+                        // collection boundary or eagerly read later source forms.
+                        if matches!(
+                            e.kind,
+                            crate::AnalysisErrorKind::InvalidForm(
+                                "reader prefix requires one selected form"
+                            )
+                        ) && e.span.end == parser.nodes()[roots.last().unwrap().0].span.end
+                            && let Some(next) =
+                                parser
+                                    .read_form()
+                                    .map_err(|e| crate::compiler_data::ReadError {
+                                        message: e.to_string(),
+                                        span: source.span(e.span).unwrap(),
+                                        related: e.related.and_then(|span| source.span(span)),
+                                    })?
+                        {
+                            roots.push(next);
+                            continue;
+                        }
+                        return Err(crate::compiler_data::ReadError {
+                            message: e.to_string(),
+                            span: source.span(e.span).unwrap(),
+                            related: None,
+                        });
+                    }
+                    break (syntax, discards, parser.position());
+                }
+            } else {
+                let position = parser.position();
+                let discards = parser.discarded().to_vec();
+                (
+                    crate::SyntaxTree {
+                        nodes: parser.into_nodes(),
+                        roots: vec![root],
+                    },
+                    discards,
+                    position,
+                )
+            };
+            *cursor = next_cursor;
             let Some(root) = syntax.roots.first().copied() else {
                 continue;
             };

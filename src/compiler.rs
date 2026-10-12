@@ -867,15 +867,22 @@ impl Loader {
                     name.replace('.', "/").replace('-', "_")
                 )));
             };
-        let mut syntax = parse(&source).map_err(|error| {
-            NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
-        })?;
         let cljc = path.extension().is_some_and(|ext| ext == "cljc");
+        let mut parser = crate::Parser::new(&source).retaining_discards();
+        let mut roots = Vec::new();
+        while let Some(root) = parser.read_form().map_err(|error| {
+            NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
+        })? {
+            roots.push(root);
+        }
+        let mut discards = parser.discarded().to_vec();
+        let mut syntax = SyntaxTree {
+            nodes: parser.into_nodes(),
+            roots,
+        };
         if cljc {
-            crate::compiler_reader::select_cljs(&source, &mut syntax, &mut vec![]).map_err(
-                |error| {
-                    NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
-                },
+            crate::compiler_reader::select_cljs(&source, &mut syntax, &mut discards).map_err(
+                |error| NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span),
             )?;
         }
         let mut file = NamespaceSource {

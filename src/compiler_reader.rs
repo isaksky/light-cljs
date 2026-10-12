@@ -10,6 +10,8 @@ pub(crate) fn select_cljs(
         source: &'a str,
         tree: &'a mut SyntaxTree,
         suppressed: Vec<std::ops::Range<usize>>,
+        discards: std::collections::VecDeque<NodeId>,
+        selected_discards: Vec<NodeId>,
     }
     impl Selection<'_> {
         fn error(&self, id: NodeId, message: &'static str) -> AnalysisError {
@@ -18,25 +20,81 @@ pub(crate) fn select_cljs(
                 kind: AnalysisErrorKind::InvalidForm(message),
             }
         }
-        fn one(&mut self, id: NodeId) -> Result<NodeId, AnalysisError> {
-            let nodes = self.form(id, false)?;
-            if nodes.len() != 1 {
-                return Err(self.error(id, "reader prefix requires one selected form"));
+        fn discard_before(
+            &mut self,
+            end: usize,
+            input: &mut std::collections::VecDeque<NodeId>,
+            collection: bool,
+        ) -> Result<(), AnalysisError> {
+            while let Some(&id) = self.discards.front() {
+                let span = self.tree.nodes[id.0].span.clone();
+                if span.start >= end {
+                    break;
+                }
+                self.discards.pop_front();
+                if self.suppressed.iter().any(|s| s.contains(&span.start)) {
+                    continue;
+                }
+                let NodeKind::Discard { form } = self.tree.nodes[id.0].kind else {
+                    unreachable!("parser retains discard prefix frames")
+                };
+                let selected = self.one(form, input, collection)?;
+                self.selected_discards.push(selected);
             }
-            Ok(nodes[0])
+            Ok(())
+        }
+        fn next(
+            &mut self,
+            input: &mut std::collections::VecDeque<NodeId>,
+            collection: bool,
+        ) -> Result<Option<NodeId>, AnalysisError> {
+            while let Some(&id) = input.front() {
+                self.discard_before(self.tree.nodes[id.0].span.start, input, collection)?;
+                let Some(id) = input.pop_front() else {
+                    break;
+                };
+                let nodes = self.form(id, input, collection)?;
+                if let Some((&first, rest)) = nodes.split_first() {
+                    // A splice shares the pending stream with the enclosing reader
+                    // prefix: that prefix owns its first value, not the whole splice.
+                    for &id in rest.iter().rev() {
+                        input.push_front(id);
+                    }
+                    return Ok(Some(first));
+                }
+            }
+            Ok(None)
+        }
+        fn one(
+            &mut self,
+            id: NodeId,
+            input: &mut std::collections::VecDeque<NodeId>,
+            collection: bool,
+        ) -> Result<NodeId, AnalysisError> {
+            input.push_front(id);
+            self.next(input, collection)?
+                .ok_or_else(|| self.error(id, "reader prefix requires one selected form"))
         }
         fn forms(
             &mut self,
             ids: &[NodeId],
             collection: bool,
+            end: usize,
         ) -> Result<Vec<NodeId>, AnalysisError> {
+            let mut input = ids.iter().copied().collect();
             let mut result = Vec::new();
-            for &id in ids {
-                result.extend(self.form(id, collection)?);
+            while let Some(id) = self.next(&mut input, collection)? {
+                result.push(id);
             }
+            self.discard_before(end, &mut input, collection)?;
             Ok(result)
         }
-        fn form(&mut self, id: NodeId, collection: bool) -> Result<Vec<NodeId>, AnalysisError> {
+        fn form(
+            &mut self,
+            id: NodeId,
+            input: &mut std::collections::VecDeque<NodeId>,
+            collection: bool,
+        ) -> Result<Vec<NodeId>, AnalysisError> {
             let kind = match self.tree.nodes[id.0].kind.clone() {
                 NodeKind::Conditional { splicing, branches } => {
                     let NodeKind::Collection { children, .. } =
@@ -50,14 +108,18 @@ pub(crate) fn select_cljs(
                         if selected.is_none() && matches!(feature, ":cljs" | ":default") {
                             selected = Some(pair[1]);
                         } else {
-                            self.suppressed
-                                .push(self.tree.nodes[pair[1].0].span.clone());
+                            // A branch's leading discards are read under the
+                            // same suppression as its retained value.
+                            self.suppressed.push(
+                                self.tree.nodes[pair[0].0].span.end
+                                    ..self.tree.nodes[pair[1].0].span.end,
+                            );
                         }
                     }
                     let Some(selected) = selected else {
                         return Ok(vec![]);
                     };
-                    let selected = self.one(selected)?;
+                    let selected = self.one(selected, &mut Default::default(), collection)?;
                     if !splicing {
                         return Ok(vec![selected]);
                     }
@@ -78,24 +140,28 @@ pub(crate) fn select_cljs(
                     };
                 }
                 NodeKind::Collection { kind, children } => {
-                    let children = self.forms(&children, true)?;
+                    let children = self.forms(&children, true, self.tree.nodes[id.0].span.end)?;
                     if kind == CollectionKind::Map && !children.len().is_multiple_of(2) {
                         return Err(self.error(id, "map requires an even number of selected forms"));
                     }
                     NodeKind::Collection { kind, children }
                 }
-                NodeKind::Prefix { kind, form } => NodeKind::Prefix {
-                    kind,
-                    form: self.one(form)?,
-                },
-                NodeKind::Metadata { metadata, target } => NodeKind::Metadata {
-                    metadata: self.one(metadata)?,
-                    target: self.one(target)?,
-                },
-                NodeKind::Tagged { tag, form } => NodeKind::Tagged {
-                    tag,
-                    form: self.one(form)?,
-                },
+                NodeKind::Prefix { kind, form } => {
+                    let form = self.one(form, input, collection)?;
+                    self.tree.nodes[id.0].span.end = self.tree.nodes[form.0].span.end;
+                    NodeKind::Prefix { kind, form }
+                }
+                NodeKind::Metadata { metadata, target } => {
+                    let metadata = self.one(metadata, &mut Default::default(), collection)?;
+                    let target = self.one(target, input, collection)?;
+                    self.tree.nodes[id.0].span.end = self.tree.nodes[target.0].span.end;
+                    NodeKind::Metadata { metadata, target }
+                }
+                NodeKind::Tagged { tag, form } => {
+                    let form = self.one(form, input, collection)?;
+                    self.tree.nodes[id.0].span.end = self.tree.nodes[form.0].span.end;
+                    NodeKind::Tagged { tag, form }
+                }
                 NodeKind::NamespacedMap {
                     auto_resolve,
                     namespace,
@@ -103,7 +169,7 @@ pub(crate) fn select_cljs(
                 } => NodeKind::NamespacedMap {
                     auto_resolve,
                     namespace,
-                    map: self.one(map)?,
+                    map: self.one(map, &mut Default::default(), collection)?,
                 },
                 kind => kind,
             };
@@ -112,23 +178,16 @@ pub(crate) fn select_cljs(
         }
     }
     let roots = tree.roots.clone();
+    discards.sort_by_key(|id| tree.nodes[id.0].span.start);
     let mut selection = Selection {
         source,
         tree,
         suppressed: vec![],
+        discards: discards.iter().copied().collect(),
+        selected_discards: vec![],
     };
-    selection.tree.roots = selection.forms(&roots, false)?;
-    let mut selected_discards = Vec::new();
-    for &id in discards.iter() {
-        if !selection
-            .suppressed
-            .iter()
-            .any(|span| span.contains(&selection.tree.nodes[id.0].span.start))
-        {
-            selected_discards.extend(selection.form(id, false)?);
-        }
-    }
-    *discards = selected_discards;
+    selection.tree.roots = selection.forms(&roots, false, source.len())?;
+    *discards = selection.selected_discards;
     Ok(())
 }
 
@@ -578,6 +637,10 @@ impl Lowerer<'_> {
                 namespace,
                 map,
             } => self.namespaced_map(*auto_resolve, namespace.clone(), *map, span, depth),
+            NodeKind::Discard { form } => {
+                input.pending.push_front(InputForm::Syntax(*form));
+                self.required(input, depth + 1, span)
+            }
             NodeKind::Tagged { tag, form } => self.tagged(*tag, *form, span, depth, input),
             NodeKind::Argument { rest, index } => self.argument(*rest, *index, span),
             kind => {
