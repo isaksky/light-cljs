@@ -326,7 +326,7 @@
     const treeSlots = publicCollectionSlots.get(value);
     if (maps.has(value) && treeSlots && "tree" in treeSlots) return treeSlots.cnt > 0
       ? treeMapSeqConstructor(null, treeMapPush(treeSlots.tree, null, true), true, treeSlots.cnt, null) : null;
-    const entries = maps.get(value);
+    const entries = mapTraversal(value);
     if (entries) return entries.length
       ? view(Object.freeze(entries.map(entry => {
           const pair = vector(entry.key, entry.value);
@@ -784,7 +784,7 @@
     if (collection == null) return init;
     // MapEntry has vector storage, but no IKVReduce implementation. Its
     // elements must go through the public IMapEntry sequence fallback.
-    const entries = maps.get(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) ? undefined : vectors.get(collection)?.map((value, key) => [key, value]));
+    const entries = mapTraversal(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) ? undefined : vectors.get(collection)?.map((value, key) => [key, value]));
     if (!entries) return reduce((result, entry) => rf.call(null, result, core.keyProtocol(entry), core.valProtocol(entry)), init, collection);
     for (const [key, value] of entries) {
       init = rf.call(null, init, key, value);
@@ -1068,11 +1068,16 @@
     }
     return hashRoots.get(entries);
   }
+  function mapTraversal(value) {
+    return collectionTraversal(maps.get(value), mapKinds.get(value));
+  }
   function setTraversal(value) {
-    const entries = sets.get(value);
-    // Small backing array maps, positional constants, and sorted sets retain
-    // their own storage order. Promotion stays observable after removals.
-    if (setKinds.get(value) !== "hash-map") return entries;
+    return collectionTraversal(sets.get(value), setKinds.get(value));
+  }
+  function collectionTraversal(entries, kind) {
+    // Array maps, positional constants, and sorted collections retain their
+    // storage order. Hash-map promotion stays observable after removals.
+    if (kind !== "hash-map") return entries;
     if (!hashTraversals.has(entries)) {
       const ordered = entries.filter(entry => entry.key == null);
       const visit = node => {
@@ -1967,7 +1972,7 @@
     const leftMap = maps.get(left);
     if (leftMap) {
       if (!predicates.isMap(right) || predicates.isRecord(right) || count(left) !== count(right)) return false;
-      return leftMap.every(entry => {
+      return mapTraversal(left).every(entry => {
         const found = get(right, entry.key, missing);
         return found !== missing && equalPair(entry.value, found);
       });
@@ -2085,9 +2090,9 @@
     const entries = maps.get(value);
     if (entries) {
       let result = 0;
-      for (const entry of entries) result = (result + mixCollectionHash((Math.imul(31, 31 + entry.hash) + hash(entry.value)) | 0, 2)) | 0;
+      for (const entry of mapTraversal(value)) result = (result + mixCollectionHash((Math.imul(31, 31 + hash(entry.key)) + hash(entry.value)) | 0, 2)) | 0;
       const resultHash = mixCollectionHash(result, entries.length);
-      if (publicCollectionSlots.has(value)) constructorHashes.set(value, resultHash);
+      constructorHashes.set(value, resultHash);
       return resultHash;
     }
     const members = sets.get(value);
@@ -2186,7 +2191,7 @@
         case "js-array": value = vectors.get(decode(a)).slice(); literals.set(value, "js-array"); break;
         case "js-object": {
           const payload = decode(a), pairs = [];
-          for (const e of maps.get(payload)) pairs.push(typeof e.key === "string" ? e.key : name(e.key), e.value);
+          for (const e of mapTraversal(payload)) pairs.push(typeof e.key === "string" ? e.key : name(e.key), e.value);
           value = jsObject(pairs); literals.set(value, "js-object"); break;
         }
         default: throw new Error("Unknown compiler form descriptor");
@@ -2227,7 +2232,7 @@
             a = n.namespace == null ? null : units(n.namespace); b = units(n.name);
           } else if (vectors.has(v)) { tag = "vector"; a = vectors.get(v).map((x, i) => visit(x, path + "[" + i + "]", depth + 1)); }
           else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
-            for (const e of maps.get(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
+            for (const e of mapTraversal(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
           } else if (sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
           else if (queues.has(v)) { tag = "queue"; a = visit(vectorFromArray(toArray(v)), path + ".payload", depth + 1); }
           else if (uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), path + ".payload", depth + 1); }
@@ -2327,7 +2332,7 @@
     if (items) return Object.freeze({kind: "vector", items});
     const entries = recordTypes.has(value)
       ? recordEntries(value, recordTypes.get(value)).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
-      : maps.get(value);
+      : mapTraversal(value);
     if (entries) return Object.freeze({kind: "map", entries: Object.freeze(entries.map(
       entry => Object.freeze([entry.key, entry.value]))), count: entries.length});
     const members = sets.get(value);
@@ -4701,7 +4706,7 @@
       return prSequentialWriter(writer, printWriter, start, " ", end, options, value);
     }
     const entries = maps.get(value);
-    if (entries) return printMapEntries(entries, writer, options);
+    if (entries) return printMapEntries(mapTraversal(value), writer, options);
     const members = sets.get(value);
     if (members) return prSequentialWriter(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value));
     if (Array.isArray(value)) return prSequentialWriter(writer, printWriter, "#js [", " ", "]", options, value);
