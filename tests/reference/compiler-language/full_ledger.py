@@ -591,7 +591,7 @@ def verified_library_dialects(document, current_evidence):
     return {row["obligation_id"]: row for row in verified["reconciliations"]}, document["local_evidence"]
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None, case_sci_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -636,7 +636,8 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         gap_sci_contexts.update(printing_contexts)
     for document, module_name, label in (
             (cljc_sci_context_evidence, 'sci_cljc_accepted_context', 'Exact CLJC reader'),
-            (lazy_sci_context_evidence, 'sci_lazy_context', 'Exact lazy/iteration/control')):
+            (lazy_sci_context_evidence, 'sci_lazy_context', 'Exact lazy/iteration/control'),
+            (case_sci_context_evidence, 'case_char_string_accepted', 'Exact character/string case')):
         if document is None:
             continue
         import importlib

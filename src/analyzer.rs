@@ -2607,6 +2607,7 @@ enum ReaderDatum {
     Bool(bool),
     Number(u8, String),
     ReaderLiteral(u8, String),
+    Character(u16),
     String(Vec<u16>),
     Named(bool, Option<Vec<u16>>, Vec<u16>),
     Sequential(Vec<ReaderDatum>),
@@ -4764,6 +4765,14 @@ impl Analyzer<'_> {
     // Read identity directly from owned source/Form nodes, without invoking the
     // native interpreter or reconstructing effectful children from map storage.
     fn reader_datum(&mut self, id: NodeId) -> Result<Option<ReaderDatum>, AnalysisError> {
+        self.reader_identity(id, false)
+    }
+
+    fn reader_identity(
+        &mut self,
+        id: NodeId,
+        canonical_numbers: bool,
+    ) -> Result<Option<ReaderDatum>, AnalysisError> {
         if self.macro_depth > 0 && self.analysis_depth >= 128 {
             return Err(self.error(
                 id,
@@ -4773,20 +4782,42 @@ impl Analyzer<'_> {
             ));
         }
         self.analysis_depth += 1;
-        let result = self.reader_datum_inner(id);
+        let result = self.reader_datum_inner(id, canonical_numbers);
         self.analysis_depth -= 1;
         result
     }
 
-    fn reader_datum_inner(&mut self, id: NodeId) -> Result<Option<ReaderDatum>, AnalysisError> {
+    fn reader_datum_inner(
+        &mut self,
+        id: NodeId,
+        canonical_numbers: bool,
+    ) -> Result<Option<ReaderDatum>, AnalysisError> {
         let node = self.syntax.nodes[id.0].clone();
+        // Owned macro forms lower characters to JavaScript strings, but reader
+        // identity still distinguishes them while validating case constants.
+        // Preserve that identity recursively before examining the lowered node.
+        if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref)
+            && let DatumView::Character(value) = form.data().inspect()
+        {
+            return Ok(Some(ReaderDatum::Character(value)));
+        }
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref)
             && let DatumView::CompilerLiteral(kind) = form.data().inspect()
         {
             let payload = form.data().compiler_literal_data().unwrap();
             return Ok(match (kind, payload.inspect()) {
                 (CompilerLiteralKind::BigInteger, DatumView::String(text)) => {
-                    Some(ReaderDatum::Number(0, String::from_utf16_lossy(&text)))
+                    let text = String::from_utf16_lossy(&text);
+                    if canonical_numbers {
+                        text.parse::<f64>().ok().map(|value| {
+                            ReaderDatum::Number(
+                                1,
+                                format!("{:x}", if value == 0.0 { 0 } else { value.to_bits() }),
+                            )
+                        })
+                    } else {
+                        Some(ReaderDatum::Number(0, text))
+                    }
                 }
                 (CompilerLiteralKind::Uuid, DatumView::String(text)) => Some(
                     ReaderDatum::ReaderLiteral(0, String::from_utf16_lossy(&text)),
@@ -4801,8 +4832,11 @@ impl Analyzer<'_> {
             NodeKind::Nil => ReaderDatum::Nil,
             NodeKind::Boolean(value) => ReaderDatum::Bool(value),
             NodeKind::Number(kind) => {
-                if self.generated.get(id.0).and_then(Option::as_ref).is_none()
-                    && let Some((category, spelling)) = crate::reader_literals::number_key(self.spelling(id), kind) {
+                if !canonical_numbers
+                    && self.generated.get(id.0).and_then(Option::as_ref).is_none()
+                    && let Some((category, spelling)) =
+                        crate::reader_literals::number_key(self.spelling(id), kind)
+                {
                     return Ok(Some(ReaderDatum::Number(category, spelling)));
                 }
                 let Some(value) = self
@@ -4814,6 +4848,14 @@ impl Analyzer<'_> {
                 else {
                     return Ok(None);
                 };
+                if canonical_numbers {
+                    // The source carrier preserves characters, while all numeric
+                    // spellings retain the shared JavaScript Number contract.
+                    return Ok(Some(ReaderDatum::Number(
+                        1,
+                        format!("{:x}", if value == 0.0 { 0 } else { value.to_bits() }),
+                    )));
+                }
                 ReaderDatum::Number(
                     u8::from(kind == NumberKind::Float),
                     if kind == NumberKind::Integer {
@@ -4831,6 +4873,7 @@ impl Analyzer<'_> {
                 )
             }
             NodeKind::String(value) => ReaderDatum::String(value.to_utf16(self.source)),
+            NodeKind::Character(value) => ReaderDatum::Character(value as u16),
             NodeKind::Keyword { auto_resolve } => {
                 let ExprKind::Keyword(name) = self.keyword(id, auto_resolve)? else {
                     unreachable!()
@@ -4847,7 +4890,7 @@ impl Analyzer<'_> {
                 kind: PrefixKind::Quote,
                 form,
             } => {
-                let Some(data) = self.reader_datum(form)? else {
+                let Some(data) = self.reader_identity(form, canonical_numbers)? else {
                     return Ok(None);
                 };
                 ReaderDatum::Sequential(vec![
@@ -4865,7 +4908,7 @@ impl Analyzer<'_> {
             } => {
                 let mut values = Vec::with_capacity(children.len());
                 for &child in children {
-                    let Some(data) = self.reader_datum(child)? else {
+                    let Some(data) = self.reader_identity(child, canonical_numbers)? else {
                         return Ok(None);
                     };
                     values.push(data);
@@ -8664,9 +8707,61 @@ impl Analyzer<'_> {
                 ),
             ));
         }
-        let raw = self
+        let mut raw = self
             .vector(args[1], "case* requires a test vector")?
             .to_vec();
+        if compiler_macro
+            && let Some(metadata) = self
+                .generated
+                .get(id.0)
+                .and_then(Option::as_ref)
+                .and_then(Form::metadata)
+            && let Some(source) = metadata
+                .children()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .find_map(|pair| {
+                    matches!(pair[0].data().inspect(), DatumView::Keyword(name)
+                    if name == crate::compiler_data::Name::new(Some("light-cljs"), "case-source"))
+                    .then(|| pair[1].clone())
+                })
+        {
+            // The core macro executes normally, but its scalar arguments cannot
+            // carry occurrence identity once both characters and strings have
+            // become JavaScript primitives. Recover constant groups from the
+            // unmodified borrowed whole source, preserving their reader identity
+            // and locations. Branches retain the executed macro's grouped shape.
+            let clauses = source.children();
+            let mut groups = Vec::new();
+            for pair in clauses.get(2..).unwrap_or_default().as_chunks::<2>().0 {
+                let tests = if matches!(
+                    pair[0].node().kind,
+                    FormKind::Collection {
+                        kind: CollectionKind::List,
+                        ..
+                    }
+                ) {
+                    pair[0].children()
+                } else {
+                    vec![pair[0].clone()]
+                };
+                let children = tests
+                    .iter()
+                    .map(|test| self.import_form(test))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let group = NodeId(self.syntax.nodes.len());
+                self.syntax.to_mut().nodes.push(crate::Node {
+                    kind: NodeKind::Collection {
+                        kind: CollectionKind::Vector,
+                        children,
+                    },
+                    span: pair[0].span().bytes(),
+                });
+                groups.push(group);
+            }
+            raw = groups;
+        }
         let (pairs, default_node) = {
             if !compiler_macro && !matches!(self.syntax.nodes[args[0].0].kind, NodeKind::Symbol) {
                 return Err(self.error(
@@ -8737,7 +8832,7 @@ impl Analyzer<'_> {
         let mut analyzed_branches = HashMap::new();
         for pair in pairs.as_chunks::<2>().0 {
             if compiler_macro
-                && let Some(data) = self.reader_datum(pair[0])?
+                && let Some(data) = self.reader_identity(pair[0], true)?
                 && !seen.insert(data)
             {
                 return Err(self.error(

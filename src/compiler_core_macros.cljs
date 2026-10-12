@@ -134,7 +134,11 @@
                          (if (seq? constants) (vec constants) [constants]))) pairs)
         thens (mapv second pairs)
         result (list 'compiler-case* value groups thens)]
-    (if (odd? (count clauses)) (concat result (list (last clauses))) result)))
+    ;; The complete borrowed source retains character/string reader identity;
+    ;; individual JavaScript macro arguments have already become strings.
+    (with-meta
+      (if (odd? (count clauses)) (concat result (list (last clauses))) result)
+      {:light-cljs/case-source &form})))
 
 (defmacro macro-while [test & body]
   (list 'loop* []
