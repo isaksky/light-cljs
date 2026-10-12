@@ -3163,3 +3163,48 @@ mod top_level_definition_groups {
         checked("(let [x 42] (defn a [] x)) (defmacro m [] (= 42 (a))) (m)", &mut host);
     }
 }
+
+#[test]
+fn demanded_record_initializers_restore_generation_views_after_nested_demand_and_failure() {
+    let mut host = MacroHost::new();
+    let source = r#"
+      (def hits (atom 0))
+      (defprotocol P (p [x]))
+      (defrecord R [x] P (p [_] x))
+      (def old (->R 3))
+      (declare current)
+      (def nested [(p old) (p current) (p (->R 4))])
+      (defn live [] (->R 2))
+      (def broken (do (swap! hits inc)
+                      (assert (= 5 (p (->R 5))))
+                      (throw (js/Error. "old-generation-failure"))))
+      (defrecord R [x] P (p [_] (+ 10 x)))
+      (def current (->R 7))
+      (defmacro probe []
+        (assert (= [3 17 4] nested))
+        (let [a (try broken (catch :default e e))
+              b (try broken (catch :default e e))]
+          (assert (identical? a b))
+          (assert (= "old-generation-failure" (subs (.-message a)
+                    (- (count (.-message a)) 22)))))
+        (assert (= 1 @hits))
+        (assert (= [3 17 12 16] [(p old) (p current) (p (live)) (p (->R 6))]))
+        42)
+      (probe)
+      (defonce broken 0)
+      (probe)
+      (def broken (->R 8))
+      (defmacro repaired [] (assert (= 18 (p broken))) (assert (= 1 @hits)) 42)
+      (repaired)"#;
+    // The deliberately throwing application initializer is never executed.
+    // These are actual macro assertions of sticky failure and current recovery.
+    let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
+    assert!(js.contains("return 42"));
+    assert_eq!(
+        result(&light_cljs::compile_with_macros(
+            "(defrecord R [x]) (defmacro clean [] (:x (->R 42))) (clean)",
+            &mut host,
+        ).unwrap()),
+        "42\n"
+    );
+}

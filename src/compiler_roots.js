@@ -2,12 +2,20 @@
 // retain their normal runtime brands; only global storage differs by phase.
 (() => {
   const slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
-  let frontier = Infinity;
+  let frontier = Infinity, declarationFrontier = Infinity;
+  // Initializers retain the declaration products visible at their source site.
+  // This is a dynamic execution view, not a closure capture: an escaped factory
+  // or record assoc method still reads the current constructor Var when called.
+  function declarationSlot(name) {
+    let slot = slots.get(name);
+    while (slot?.bundle && !slot.bundle.group && slot.bundle.order > declarationFrontier) slot = slot.bundle.previous.get(name);
+    return slot;
+  }
   function force(name) {
     if (overlays.has(name)) return overlays.get(name);
     const owner = installing.at(-1);
     if (owner?.group && owner.names.includes(name)) return forceSlot(name, {unit: -1, bundle: owner});
-    return forceSlot(name, slots.get(name));
+    return forceSlot(name, declarationSlot(name));
   }
   function forceSlot(name, slot) {
     if (!slot || slot.unit === null) throw new Error((slot?.location ? slot.location + ': ' : '') + 'unavailable definition: ' + name);
@@ -36,6 +44,8 @@
       if (slot.code === undefined) globalThis.__lightCompileUnit(slot.unit);
       throw new Error('root initialization cycle: ' + [...path, name].join(' -> '));
     }
+    const previousDeclarationFrontier = declarationFrontier;
+    declarationFrontier = slot.declarationFrontier;
     slot.state = 'initializing'; path.push(name);
     try {
       const source = globalThis.__lightCompileUnit(slot.unit);
@@ -45,7 +55,7 @@
     } catch (error) {
       if (error instanceof Error) error.message = slot.location + ': ' + name + ': ' + error.message;
       slot.state = 'failed'; slot.error = error; throw error;
-    } finally { path.pop(); }
+    } finally { declarationFrontier = previousDeclarationFrontier; path.pop(); }
   }
   // A conditional owner can finish without installing its advertised product.
   // Plain pending roots still count as definitions without forcing their value.
@@ -165,12 +175,12 @@
     if (overlays.has(name)) return overlays.get(name) !== undefined;
     const owner = installing.at(-1);
     return rootExists(name, owner?.group && owner.names.includes(name)
-      ? {unit: -1, bundle: owner} : slots.get(name));
+      ? {unit: -1, bundle: owner} : declarationSlot(name));
   };
   globalThis.__lightRegisterUnit = (name, unit, once, location) => {
     const old = slots.get(name);
     if (unit === null && old || once && old && old.unit !== null && !old.bundle?.group) return;
-    slots.set(name, {unit, location, state: 'pending', oncePrevious: once ? old : null});
+    slots.set(name, {unit, location, declarationFrontier: bundles.length, state: 'pending', oncePrevious: once ? old : null});
   };
   // Scope snapshots contain only overlays. Saving a pending/failed root must
   // neither demand nor replace it. Evaluate every initializer before installing.

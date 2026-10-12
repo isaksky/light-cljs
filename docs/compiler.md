@@ -1193,6 +1193,14 @@ same IR supplies compile-time and application emission. Demanding any product
 installs the whole bundle. Compiler-emitted descriptor/factory linking can use
 staged identity; ordinary unfinished value reads report a bundle cycle.
 
+Deferred ordinary initializers select declaration products from their source
+frontier, even when a later record/type declaration has already replaced the
+active products. Nested initializer demands restore the caller's view on both
+success and failure. This view lasts only while an initializer executes: saved
+record factories and generated assoc copies continue to read the active
+constructor Var on later invocation. Ordinary roots and conditional definition
+groups retain their live demand behavior; no initializer is replayed.
+
 Protocol invocation (including saved functions and higher-order calls), marker
 membership, applicable core operations and Object member access demand relevant
 source-visible extensions. Known descriptor/native selectors narrow that index.

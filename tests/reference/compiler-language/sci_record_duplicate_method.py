@@ -27,6 +27,8 @@ CONTROLS = {
     'fields-arities-effects': ('(def events (atom [])) (defprotocol P (p [x] [x n]) (q [x])) (defrecord R [v] P (p [_] (swap! events conj :discarded) 0) (p [_ n] (+ v n)) (q [_] (* v 2)) (p [_] (swap! events conj v) v)) (def old (->R 3)) (def current (->R 7)) [(p old) (p current) (p old 4) (q current) @events]', {'$vector': [3, 7, 7, 14, {'$vector': [3, 7]}]}),
     'deftype': ('(defprotocol P (p [x])) (deftype R [x] P (p [_] x) (p [_] 9)) (p (->R 3))', 9),
     'reify': ('(defprotocol P (p [x])) (p (reify P (p [_] 3) (p [_] 9)))', 9),
+    'nonduplicate-generations': ('(defprotocol P (p [x])) (defrecord R [x] P (p [_] x)) (def old (->R 3)) (def factory ->R) (defrecord R [x] P (p [_] (+ 10 x))) (def current (->R 7)) [(p old) (p current) (p (factory 5)) (p (assoc old :x 4))]', {'$vector': [3, 17, 15, 14]}),
+    'generation-identity-effects': ('(def events (atom [])) (defprotocol P (p [x])) (defrecord R [x] P (p [_] x)) (def old (do (swap! events conj :old) (->R 3))) (def ctor R) (def factory ->R) (def map-factory map->R) (defrecord R [x] P (p [_] (+ 10 x))) (def current (do (swap! events conj :current) (->R 7))) [(p old) (p old) (p current) (p current) (identical? ctor R) (instance? ctor old) (instance? R old) (identical? factory ->R) (p (factory 5)) (p (map-factory {:x 6})) (p (assoc old :x 4)) (:x old) @events]', {'$vector': [3, 3, 17, 17, False, True, False, False, 15, 16, 14, 3, {'$vector': [{'$keyword': {'namespace': None, 'name': 'old', 'spelling': 'old'}}, {'$keyword': {'namespace': None, 'name': 'current', 'spelling': 'current'}}]}]}),
     'generations': ('(defprotocol P (p [x])) (defrecord R [x] P (p [_] 0) (p [_] x)) (def old (->R 3)) (def factory ->R) (defrecord R [x] P (p [_] 0) (p [_] (+ 10 x))) (def current (->R 7)) [(p old) (p current) (p (factory 5)) (p (assoc old :x 4))]', {'$vector': [3, 17, 15, 14]}),
 }
 CASES = {'original': (ORIGINAL, 9), **CONTROLS}
@@ -72,13 +74,10 @@ def local_frames(root):
     if (root / 'original.cljs').read_text() != ORIGINAL: raise ValueError('Original source drift')
     if not (root / 'warmup.js').read_bytes(): raise ValueError('Missing reused-host warmup')
     directories = [p for p in root.iterdir() if p.is_dir()]
-    # The split redefinition setup is independently nonpassing phase evidence.
-    # Its complete sequential source/application still verifies generation roots.
-    if len(directories) != 28: raise ValueError('Incomplete actual-phase observations')
+    if len(directories) != len(CASES) * 6: raise ValueError('Incomplete actual-phase observations')
     for name, (source, value) in CASES.items():
         for lifecycle in ('fresh', 'reused'):
             for phase in ('application', 'top-level-macro', 'complete-macro'):
-                if name == 'generations' and phase == 'top-level-macro': continue
                 identity = f'{name}-{phase}-{lifecycle}'
                 directory = root / identity
                 if (directory / 'user.cljs').read_text() != module(source, phase): raise ValueError('Changed original setup/body/phase')

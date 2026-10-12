@@ -93,6 +93,8 @@ fn original_duplicate_method_executes_with_last_dispatch_in_both_phases() {
             "(defprotocol P (p [x])) (p (reify P (p [_] 3) (p [_] 9)))",
             "9",
         ),
+        ("generation-identity-effects", "(def events (atom [])) (defprotocol P (p [x])) (defrecord R [x] P (p [_] x)) (def old (do (swap! events conj :old) (->R 3))) (def ctor R) (def factory ->R) (def map-factory map->R) (defrecord R [x] P (p [_] (+ 10 x))) (def current (do (swap! events conj :current) (->R 7))) [(p old) (p old) (p current) (p current) (identical? ctor R) (instance? ctor old) (instance? R old) (identical? factory ->R) (p (factory 5)) (p (map-factory {:x 6})) (p (assoc old :x 4)) (:x old) @events]", r#"{"$vector":[3,3,17,17,false,true,false,false,15,16,14,3,{"$vector":[{"$keyword":{"namespace":null,"name":"old","spelling":"old"}},{"$keyword":{"namespace":null,"name":"current","spelling":"current"}}]}]}"#),
+        ("nonduplicate-generations", "(defprotocol P (p [x])) (defrecord R [x] P (p [_] x)) (def old (->R 3)) (def factory ->R) (defrecord R [x] P (p [_] (+ 10 x))) (def current (->R 7)) [(p old) (p current) (p (factory 5)) (p (assoc old :x 4))]", r#"{"$vector":[3,17,15,14]}"#),
         ("generations", GENERATIONS, r#"{"$vector":[3,17,15,14]}"#),
     ] {
         let syntax = light_cljs::parse(original).unwrap();
@@ -100,12 +102,6 @@ fn original_duplicate_method_executes_with_last_dispatch_in_both_phases() {
         let (setup, body) = (&original[..last.start], &original[last]);
         for reuse in [false, true] {
             for phase in ["application", "top-level-macro", "complete-macro"] {
-                // A separate existing phase-generation discrepancy affects the
-                // split redefinition setup. It receives no passing observation;
-                // the complete sequential source still verifies old/new roots.
-                if case == "generations" && phase == "top-level-macro" {
-                    continue;
-                }
                 let source = match phase {
                     "application" => format!("(ns user)\n{setup}(defn run [] {body})\n"),
                     "top-level-macro" => format!(

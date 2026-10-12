@@ -94,7 +94,7 @@ current analyzer hash; it grants no coverage.
 
 The complete generation source preserves old/current methods, saved factories
 and assoc copies in ordinary application and entire-source macro execution,
-fresh/reused. Its split top-level-setup macro adapter remains separately
+fresh/reused. In that historical receipt its split top-level-setup macro adapter was separately
 nonpassing: old instance method3 becomes13. The independent source without any
 repeated methods has the identical discrepancy, while both pins and complete
 sequential execution return `[3 17 15 14]`. This independent phase-root gap has
@@ -126,3 +126,13 @@ measurements with unpaired historical baselines, not improvement claims.
 python3 -B tests/reference/compiler-language/sci_record_duplicate_method.py \
   --output /tmp/light-cljs-record-last-method-fresh
 ```
+
+
+## Subsequent generation repair
+
+The original split-generation failures above remain retained, unchanged. The
+source-visible initializer generation repair now executes those exact sources
+without excluding the split adapter. See
+[sci-record-generation.md](sci-record-generation.md) and its separate receipt
+for current evidence. The older 165 receipt retains its original scope and
+zero credit for the formerly excluded frames.
