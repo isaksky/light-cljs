@@ -1164,3 +1164,127 @@ safety-review rejections citing possible cybersecurity risk. It was not retried,
 delegated, investigated or repaired; no cancellation or limit/limits suite ran.
 The unrelated `.DS_Store` change is preserved and excluded; owned bytecode side
 effects were restored, and no push or pull request was performed.
+
+
+## Independent source, printing and arity checkpoint at production 424d8e41
+
+This checkpoint adds twenty execution-backed operation links (four public,
+sixteen local) and twenty actual-phase witnesses, retaining all eight original
+complete source oracles and existing full cases. The exact driver supplies 64
+ordered application/macro lifecycle engine frames. Both required pins execute
+all eight original cases. The normal focused report at
+`/tmp/light-cljs-125-arity-focused-after171-final/report.json` exits 0, with
+all twenty new operation and macro columns passing; the exact command is
+`/tmp/light-cljs-125-arity-focused-after171-final-command.json`.
+Independent rows remain in this selected report and strict completion is false.
+`arity-after171.md` records the source/proof hashes and failed excluded trials.
+
+The fresh fourteen-source printing adapter verifies 112 original-source actual
+application/macro frames against both pins. All fourteen remain version
+differences with zero original SCI pass credit. The existing thirty-source
+collection/sequence/Atom adapter is refreshed against current production with
+240 frames, three original agreements and 27 differences. Accepted sidecars
+require fresh full execution and independently replay complete raw reference
+and phase artifacts, current source/producer/executable hashes and typed
+outcome/effect/output contracts. There is no stored passing fallback.
+The real `full_ledger.expand_report` integration at
+`/tmp/light-cljs-125-sci44-ledger-after171.json` confirms **three covered originals,
+41 explicit differences, 44 passed actual macro columns and zero missing rows
+within this exact 44-row cohort**, with strict completion false. The selected
+cohort does not hide other independent obligations. Source-specific failure
+accounting continues to reject actual failures and detached proof.
+
+Fresh full 50-source and 191-library producers execute local engines and both
+checked pins at `/tmp/light-cljs-125-source-after171-current/evidence.json` and
+`/tmp/light-cljs-125-library-after171-current/evidence.json`. Their refreshed
+receipt files retain each complete prior record. Source classifications remain
+35 original agreements, eight pin differences and seven unresolved; library
+classifications remain 163 original agreements, six pin differences and
+22 unresolved. Raw current locals are 50/50 and 180/191 original passes; release
+source/library counts are 40/50 and 163/191; checkout counts are 38/50 and
+169/191. Rejections and differing originals retain their original statuses.
+These source runs supply no automatic macro or broader gate acceptance.
+
+The sole exact inference optimizer body and complete invocation-emission module
+now follow the user's existing generated-JS/optimizer boundary. Genuine original
+compiler callers pass both pins: inference has three tests/67 assertions,
+including 65 shape predicates; invocation has eleven unchanged emission
+assertions per pin. The invoke program's deliberate uninitialized declared
+call raises TypeError in both pins and actual local lifecycle contexts, before
+its original record tail. No callback execution was invented. Exact helper
+hashes, bodies/callers and public-neighbor retention are guarded in the generator
+and manifest. These two dispositions supply zero semantic/local/macro credit.
+The inventory retains 97 files, 1,328 bodies, 4,728 original assertion sites,
+5,263 independent obligations and 1,327 intended public arities.
+
+Thirty complete original SCI reader conditionals are independently audited as
+`.cljc` with genuine `:cljs` selection: two original agreements, eighteen
+canonical differences, three public contrasts and seven unresolved cases.
+All thirty remain **diagnostic only with zero shared source/phase credit**;
+a robust accepted raw-artifact/executable proof adapter remains required.
+Both pins disagree with current locals for complete inactive conditional splice
+sources under discard, metadata and quote prefixes. Fresh live reader and
+conditional duplicate searches were empty; **light-cljs-172, Preserve canonical
+inactive reader-conditional handling under discard, metadata and quote prefixes**,
+now owns this coherent reader repair immediately before 125. Its description
+retains exact whole-source/both-pin/actual-macro proof and focused controls.
+No production reader repair or other Pellet implementation occurs here.
+`sci-cljc-source-probe.md` retains all observations and rejected/unexportable
+originals; no standard reader feature is retired.
+
+Current source-bound receipt hashes are:
+
+| Current artifact | SHA256 |
+| --- | --- |
+| Actual 44-row integration | `e349e247615ebf377dc6b16bcbbc98e2c9f523b3c657386977a17d1f18d2b4bd` |
+| 50-source fresh evidence | `5bd84da1ef2334c7943baf963ee71da3865e90bc2054dbc7ae2c19dc9e19e146` |
+| 191-library fresh evidence | `d671fc5bc35235f38636954bcc9a9bd2bf004f7978acd7c7c7b3c472088e357a` |
+| Focused normal arity report | `63c709802e1e344a0ba6eb4134d68d78de2e62f9e4dea82d1dee3ac1c4106a55` |
+
+The separate fresh 22-source library reconciliation also passed all 176
+ordered application/actual-macro lifecycle engine frames and both original
+191-context pin layers. Current sidecar:
+`/tmp/light-cljs-125-library-reconciliation-after171-current.json`, SHA256
+`d0703933e34f1f04e0a3d1d33cb99f24024622a67e4eeec662f8e695548dee1b`.
+Its original SCI mismatches, canonical/strict-EDN scope and literal outcomes
+remain separate. Exact command:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/sci_library_reconciliation.py --run-local /tmp/light-cljs-125-library-phase-after171-current --full-evidence /tmp/light-cljs-125-library-after171-current/evidence.json --output /tmp/light-cljs-125-library-reconciliation-after171-current.json
+```
+
+Verification: the complete compiler-language harness run executed 350 tests
+in 533.057 seconds, with 349 passing and one opt-in actual-control test initially
+skipped because no artifact directory was supplied. That exact control was then
+explicitly executed with a new artifact directory and both pins; it passed in
+20.529 seconds, retaining four true application/macro QuickJS/Node observations
+and both genuine reference results. All 350 distinct harness tests therefore
+passed across these runs. The skip is retained in the original log rather than
+rewritten as a pass.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests/reference/compiler-language -v
+# From tests/reference/compiler-language:
+LIGHT_LOCAL_API_REVIEW_CONTROLS=/tmp/light-cljs-125-local-api-controls-after171-final LIGHT_LOCAL_API_REVIEW_PINS=both PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest test_local_api_source_context.LocalApiOriginalContractTests.test_recursive_contract_controls_execute_in_application_and_actual_macro -v
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/extract_inventory.py --check
+rustfmt --edition 2024 --check tests/compiler_arity_after171.rs tests/compiler_invoke_program_scope.rs tests/compiler_sci_cljc_source_probe.rs
+git diff --check
+```
+
+The inventory, owned Rust formatting and whitespace checks pass. Every prior
+50-source/191-library receipt is exactly preserved under `prior_evidence`;
+full-inventory.jsonl, full-bodies.jsonl and support-sources.jsonl are byte-exact
+against the starting HEAD. Two independent read-only reviews found no actionable
+issues in the printing/common producer integration and exact optimizer scopes.
+The earlier failed synthetic-target guard run and printing mock-fixture attempt
+remain preserved in `/tmp` logs; corrected current runs pass without changing
+original semantic expectations. No broad cancellation or limit suite ran.
+125 stays incomplete: no post-integration comprehensive --run --strict,
+zero-missing acceptance, full regression/generative phase or normal performance
+completion is claimed. The previously recorded full gate and generative phase
+deadline remain historical and unresolved. The separate 156 asynchronous
+cancellation repair remains externally blocked: automatic approval review
+rejected its native crash repair twice, citing possible cybersecurity risk.
+It was not retried, delegated, investigated or repaired; no cancellation or
+limit/limits suite was run. The unrelated `.DS_Store` is preserved and excluded.
+No push or pull request was performed.

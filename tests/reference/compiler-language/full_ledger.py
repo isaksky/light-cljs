@@ -12,6 +12,8 @@ import subprocess
 
 import extract_inventory as inv
 import private_tap_scope
+import inference_optimizer_scope
+import invoke_program_scope
 
 HERE, ROOT = inv.HERE, inv.ROOT
 COLUMNS = ("parse", "analysis_lowering", "native", "canonical_js", "quickjs_macro", "execution_evidence")
@@ -407,6 +409,8 @@ def generate():
     local, local_sources = local_inventory()
     obligations = api + local
     bodies = [json.loads(line) for line in generated["bodies.jsonl"].splitlines()]
+    optimizer_scopes = {row['id']: row for row in inference_optimizer_scope.validate()}
+    invoke_scopes = {row['id']: row for row in invoke_program_scope.validate()}
     for body in bodies:
         if body["kind"] != "test" or body["assertions"]:
             continue
@@ -420,11 +424,17 @@ def generate():
             if body["source_span"]["sha256"] != exact[body["id"]]:
                 raise ValueError("JVM assertion-free analyzer boundary source drift")
             boundary, category, reason = "unrelated", "upstream-internals", "Exact JVM cljs.analyzer compiler environment/analyze-form-seq or parsed AST :renames contract; upstream analyzer API and representation are outside the adopted compiler API. Local quoted-source/Var/namespace/rename behavior remains independently required."
+        optimizer_scope = optimizer_scopes.get('body::' + body['id'])
+        if optimizer_scope:
+            if body['source_span']['sha256'] != optimizer_scope['body_sha256']:
+                raise ValueError('Exact optimizer body binding drift')
+            boundary, category, reason = 'unrelated', optimizer_scope['category'], optimizer_scope['reason']
         obligations.append({"id": "body::" + body["id"], "obligation_kind": "assertion-free-test-body", "name": body["name"],
                             "source": body["source"], "body_id": body["id"], "body_sha256": body["source_span"]["sha256"],
                             "source_span": body["source_span"], "disposition": "intended" if boundary == "in-scope" else "host",
                             "reason": "Complete assertion-free test body requires meaningful execution; it contributes no invented assertion/pass." if boundary == "in-scope" else reason,
-                            "family": family, "owner": owner})
+                            "family": family, "owner": owner,
+                            **({key: optimizer_scope[key] for key in ("category", "scope_basis", "scope_basis_record", "semantic_pass_credit", "local_execution_credit", "macro_phase_credit", "original_predicate_forms")} if optimizer_scope else {})})
     for entry in manifest["files"]:
         if entry["assertions"] or not Path(entry["path"]).stem.endswith("_test"):
             continue
@@ -433,11 +443,17 @@ def generate():
         if source.path == "src/test/cljs/cljs/array_access_test.cljc":
             family, owner = "public-residual", "light-cljs-125"
         boundary, category, reason = disposition_for(source.path, "source-language", "", None)
+        invoke_scope = invoke_scopes.get('program::' + source.path)
+        if invoke_scope:
+            if inv.digest(source.data) != invoke_scope['body_sha256']:
+                raise ValueError('Exact invocation optimizer program binding drift')
+            boundary, category, reason = 'unrelated', invoke_scope['category'], invoke_scope['reason']
         obligations.append({"id": "program::" + source.path, "obligation_kind": "source-program", "name": Path(source.path).stem,
                             "source": source.path, "body_id": "program::" + source.path, "body_sha256": inv.digest(source.data),
                             "source_span": source.span(0, len(source.text)), "disposition": "intended" if boundary == "in-scope" else "host",
                             "reason": "Complete assertion-free test module requires compiler/execution evidence; its calls/effects cannot disappear from accounting." if boundary == "in-scope" else reason,
-                            "family": family, "owner": owner})
+                            "family": family, "owner": owner,
+                            **({key: invoke_scope[key] for key in ("category", "scope_basis", "scope_basis_record", "semantic_pass_credit", "local_execution_credit", "macro_phase_credit", "original_caller", "original_caller_test", "original_caller_body_sha256", "original_emission_assertions")} if invoke_scope else {})})
     if len({r["id"] for r in obligations}) != len(obligations):
         raise ValueError("Duplicate independent obligation ID")
     support = []
@@ -451,6 +467,8 @@ def generate():
     support_bytes = inv.encode_jsonl(support)
     manifest.update(schema_version=2, scope="intended-language", generator_sha256=inv.digest(Path(__file__).read_bytes()),
                     private_tap_scope_sha256=inv.digest(Path(private_tap_scope.__file__).read_bytes()),
+                    inference_optimizer_scope_sha256=inv.digest(Path(inference_optimizer_scope.__file__).read_bytes()),
+                    invoke_program_scope_sha256=inv.digest(Path(invoke_program_scope.__file__).read_bytes()),
                     inventory_sha256=inv.digest(assertion_bytes), obligations_sha256=inv.digest(obligation_bytes),
                     api_sources=api_sources, local_sources=local_sources, support_sources=len(support), support_sha256=inv.digest(support_bytes), columns=list(COLUMNS),
                     status_policy="Inventory grants no pass. All intended source/name/arity obligations start missing. Native is removed; macro eligibility requires phase-specific execution evidence.")
@@ -472,10 +490,14 @@ def load():
     if manifest["revision"] != inv.REVISION or manifest["scope"] != "intended-language":
         raise ValueError("Full ledger source revision/scope mismatch")
     for filename, key in (("full_ledger.py", "generator_sha256"), ("extract_inventory.py", "extractor_sha256"),
-                          ('private_tap_scope.py', 'private_tap_scope_sha256')):
+                          ('private_tap_scope.py', 'private_tap_scope_sha256'),
+                          ('inference_optimizer_scope.py', 'inference_optimizer_scope_sha256'),
+                          ('invoke_program_scope.py', 'invoke_program_scope_sha256')):
         if inv.digest((HERE / filename).read_bytes()) != manifest[key]:
             raise ValueError(f"Full ledger generator drift: {filename}")
     private_tap_scope.validate()
+    inference_optimizer_scope.validate()
+    invoke_program_scope.validate()
     for entry in manifest["local_sources"]:
         if inv.digest((ROOT / entry["path"]).read_bytes()) != entry["sha256"]:
             raise ValueError(f"Local surface drift: {entry['path']}; regenerate and review")
@@ -569,7 +591,7 @@ def verified_library_dialects(document, current_evidence):
     return {row["obligation_id"]: row for row in verified["reconciliations"]}, document["local_evidence"]
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -603,6 +625,15 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
         for proof in gap_sci_contexts.values():
             if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
                 raise ValueError('Canonical gap context detached from fresh report execution')
+    if print_sci_context_evidence is not None:
+        import sci_print_context as printing
+        printing_contexts = printing.reconcile(print_sci_context_evidence)
+        if set(printing_contexts) & (set(gap_sci_contexts) | set(reviewed_sci_contexts) | set(source_context_mappings) | set(library_context_mappings) | set(sci_mappings)):
+            raise ValueError('Exact printing context overlaps another execution adapter')
+        for proof in printing_contexts.values():
+            if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
+                raise ValueError('Exact printing context detached from fresh report execution')
+        gap_sci_contexts.update(printing_contexts)
     library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
     selected = bool(features or identities)
     rows = []
@@ -792,6 +823,16 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             "inventory_counts": manifest["counts"], "evidence_policy": "Parser corpus acceptance, local metadata/name registration and historical/native evidence never establish public API/arity or macro completion."}
 
 
+def validate_arity_after171(result, filename, obligations):
+    import arity_after171 as cohort
+    target_ids = {row['id'] for row in obligations}
+    expected = [row for row in cohort.exports()[filename] if row['obligation_id'] in target_ids]
+    identities = {row['obligation_id'] for row in expected}
+    actual = [row for identity, row in result.items() if identity in identities]
+    if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
+        raise ValueError('Complete after171 arity cohort missing, changed or detached')
+
+
 def load_obligation_witnesses(obligations, assertions, witnesses):
     """Require source/arity identity and complete, execution-backed test bodies.
 
@@ -845,6 +886,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
             if any(value not in ids for value in body_ids[source["body_id"]]):
                 raise ValueError("Public witness cannot omit setup/body assertion paths")
         result[target["id"]] = item
+    validate_arity_after171(result, 'obligation-witnesses.jsonl', obligations)
     return result
 
 
@@ -886,6 +928,7 @@ def load_phase_witnesses(obligations):
                     or inv.digest((ROOT / support).read_bytes()) != digest):
                 raise ValueError("Macro phase witness detached from support source")
         result[target["id"]] = item
+    validate_arity_after171(result, 'phase-witnesses.jsonl', obligations)
     return result
 
 

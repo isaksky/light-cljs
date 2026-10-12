@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "profile": "exact-upstream-truth-optimizer-body-v1",
+  "scope_proposal": [
+    {
+      "id": "body::src/test/cljs/cljs/inference_test.cljs::test-cljs-2825",
+      "obligation_kind": "assertion-free-test-body",
+      "source": "src/test/cljs/cljs/inference_test.cljs",
+      "body_id": "src/test/cljs/cljs/inference_test.cljs::test-cljs-2825",
+      "body_sha256": "1f5d427a5971afda26215c00fa46166ecccbcec700f3e725ad610799eb9fa8bb",
+      "source_span": {
+        "start_line": 14,
+        "end_line": 80,
+        "start_byte": 596,
+        "end_byte": 1971,
+        "sha256": "1f5d427a5971afda26215c00fa46166ecccbcec700f3e725ad610799eb9fa8bb",
+        "text": "(deftest test-cljs-2825\n  (cljs.inference-util/truth_-not-called?\n    (not nil)\n    (object? nil)\n    (char? nil)\n    (any? nil)\n    (native-satisfies? ICounted nil)\n    (var? nil)\n    (iterable? nil)\n    (cloneable? nil)\n    (inst? nil)\n    (reduced? nil)\n    (counted? nil)\n    (indexed? nil)\n    (fn? nil)\n    (empty? nil)\n    (coll? nil)\n    (set? nil)\n    (associative? nil)\n    (ifind? nil)\n    (sequential? nil)\n    (sorted? nil)\n    (reduceable? nil)\n    (map? nil)\n    (record? nil)\n    (vector? nil)\n    (chunked-seq? nil)\n    (boolean? nil)\n    (seq? nil)\n    (seqable? nil)\n    (boolean nil)\n    (ifn? nil)\n    (integer? nil)\n    (int? nil)\n    (pos-int? nil)\n    (nat-int? nil)\n    (float? nil)\n    (double? nil)\n    (infinite? nil)\n    (contains? [] nil)\n    (list? nil)\n    (reversible? nil)\n    (keyword? nil)\n    (keyword-identical? :a :a)\n    (symbol-identical? 'a 'a)\n    (ident? nil)\n    (simple-ident? nil)\n    (qualified-ident? nil)\n    (simple-symbol? nil)\n    (qualified-symbol? nil)\n    (simple-keyword? nil)\n    (qualified-keyword? nil)\n    (every? any? [])\n    (not-every? any? [])\n    (not-any? any? [])\n    (even? 0)\n    (odd? 0)\n    (volatile? nil)\n    (equiv-map {} {})\n    (map-entry? nil)\n    (key-test :a :a)\n    (regexp? nil)\n    (print-meta? {} nil)\n    (delay? nil)\n    (uuid? nil)\n    (tagged-literal? nil)\n    (cljs.pprint/float? nil)))"
+      },
+      "disposition": "unrelated",
+      "category": "upstream-internals",
+      "reason": "The complete body uses the genuine JVM inference helper to check whether emitted conditional JavaScript calls upstream cljs.core/truth_, explicitly documented Internal - do not use. This is exact optimizer shape, outside the adopted compiler API scope. All 65 public predicate forms, neighboring public assertions and independent public/API/phase obligations stay retained and intended; no semantic or execution pass is supplied by this disposition.",
+      "scope_basis": "User-adopted compiler-language-completion group186 revision2: Exact upstream analyzer AST/cache shape, private hash-trie node/storage classes, generated JS spelling and optimizer shape are not compiler API goals.",
+      "scope_basis_record": {
+        "group": "compiler-language-completion",
+        "id": 186,
+        "revision": 2,
+        "context_sha256": "f3e25d6a72914bb406675ce959d086d5112288d036622c224d1fd38b1c2f151a"
+      },
+      "semantic_pass_credit": false,
+      "local_execution_credit": false,
+      "macro_phase_credit": false,
+      "original_predicate_forms": 65
+    }
+  ],
+  "references": {
+    "release": {
+      "reference_identity": "release 1.12.134",
+      "raw_stdout": "\nTesting cljs.inference-test\n\nRan 3 tests containing 67 assertions.\n0 failures, 0 errors.\n",
+      "whole_original_tests": 3,
+      "whole_original_assertions": 67,
+      "target_macro_generated_assertions": 65,
+      "settings": {
+        "optimizations": "none",
+        "static-fns": false,
+        "def-emits-var": false
+      },
+      "original_source_sha256": {
+        "src/test/cljs/cljs/inference_test.cljs": "59f26a8786c9c6144f442dd2846dd72b9199971b43bebf32b4b42c6126d51ea3",
+        "src/test/cljs/cljs/inference_util.clj": "288ada0c0d6e9452a53d6ce8ba96131684b9d1b766f798af48191af824c5c4ba"
+      },
+      "build_stdout_sha256": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "emitted_target_module_sha256": "020d3f1884b415df01d5d4bc594647bb2a279e18f1aa77fa322e5745c6c312b4",
+      "reference_javascript_sha256": "ac00fdb4859c7af7487c3a850a1f5de8c4f79b4387befc97866bce1834fe78a6",
+      "host_sha256": "0ee841e3d10cec647fff7df18b213d5a2d143698f7638f659b0aa2480641092d",
+      "oracle_sha256": "e512e4bc718f202170300ade0f52fd5324e6fee5ea05294f11e48f40c6580ad3"
+    },
+    "checkout": {
+      "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+      "raw_stdout": "\nTesting cljs.inference-test\n\nRan 3 tests containing 67 assertions.\n0 failures, 0 errors.\n",
+      "whole_original_tests": 3,
+      "whole_original_assertions": 67,
+      "target_macro_generated_assertions": 65,
+      "settings": {
+        "optimizations": "none",
+        "static-fns": false,
+        "def-emits-var": false
+      },
+      "original_source_sha256": {
+        "src/test/cljs/cljs/inference_test.cljs": "59f26a8786c9c6144f442dd2846dd72b9199971b43bebf32b4b42c6126d51ea3",
+        "src/test/cljs/cljs/inference_util.clj": "288ada0c0d6e9452a53d6ce8ba96131684b9d1b766f798af48191af824c5c4ba"
+      },
+      "build_stdout_sha256": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "emitted_target_module_sha256": "b06427d358fa62a16fca305828c5e0331f3a724c4ccbc6fb59e274a8c615d024",
+      "reference_javascript_sha256": "ac00fdb4859c7af7487c3a850a1f5de8c4f79b4387befc97866bce1834fe78a6",
+      "host_sha256": "0ee841e3d10cec647fff7df18b213d5a2d143698f7638f659b0aa2480641092d",
+      "oracle_sha256": "e512e4bc718f202170300ade0f52fd5324e6fee5ea05294f11e48f40c6580ad3"
+    }
+  },
+  "release_jar_sha256": "d019b73177e4805748f4ee995c4cfcd14ebf28bff685a84059813fbe4e8c878f",
+  "release_core_source_sha256": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+  "checkout_core_source_sha256": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+  "internal_truth_declaration": "(defn truth_\n  \"Internal - do not use!\"\n  [x]\n  (cljs.core/truth_ x))",
+  "internal_truth_sha256": "c0d998211ec06329661fdd0cf395211227a10202c142fbd86bec5a36d0cc2e75",
+  "original_release_tag": "c4295f303100bbf5afac449242d30bca1126f1a1",
+  "helper_sha256": "4ff63b2e4cf45f6b9aa9ba1ee273447a7dc071505e3d59a40b6c2068f15f795f",
+  "original_semantic_pass_credit": 0,
+  "local_execution_credit": 0,
+  "macro_phase_credit": 0
+}

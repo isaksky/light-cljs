@@ -1398,9 +1398,11 @@
     }
   ],
   "scope": "intended-language",
-  "generator_sha256": "bb897bca7590ae834636f14ffb608ad1c5f3200dbb105ecdda37a6913251071b",
+  "generator_sha256": "e985efe9e7b114c60314437490d5973e0ed2a54bc8d809d27fa09f1db40d487a",
   "private_tap_scope_sha256": "bd7eb9d69479681b3ad5924bb43c5a39e7da27114da0d9c3e15e94e93174d286",
-  "obligations_sha256": "b842c952d0725df07a0e263ba63f34fdb702a77ebfee3337433aeed61b93ee74",
+  "inference_optimizer_scope_sha256": "4ff63b2e4cf45f6b9aa9ba1ee273447a7dc071505e3d59a40b6c2068f15f795f",
+  "invoke_program_scope_sha256": "9a088865c8e2c0326e16240581da13692c1cb3ea431c1f363e4a06070cfb52f0",
+  "obligations_sha256": "2fd2357dbdec3634944770add21ed127ae385706e78d02d94f2c4bffb9138b5c",
   "api_sources": [
     {
       "path": "src/main/cljs/cljs/core.cljs",

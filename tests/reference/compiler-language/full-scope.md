@@ -419,3 +419,48 @@ contracts are guarded in `private_tap_scope.py`. All public tap APIs and
 `test-cljs-2552` remain intended; this disposition supplies zero semantic credit.
 The complete original self-hosted eval test and seven unresolved SCI source
 contexts remain separately documented diagnostics with unchanged expectations.
+
+
+## Further independent evidence at production 424d8e41
+
+Twenty additional demanded operation links cover four public signatures and
+sixteen local operations through eight unchanged complete oracles. Both ordinary
+and actual-phase catalogs have twenty guarded additions, with no new source
+assertion or full-case invention. Fresh and reused applications/actual macros
+run on QuickJS and Node, alongside both required pins. `arity-after171.md`
+records the normal focused report and exact source/proof bindings.
+
+Fourteen complete original printing sources now have an accepted fresh-only
+canonical adapter, retaining their historical SCI mismatches as explicit
+version differences. Its 112 actual phase/lifecycle frames and both pins must
+match fixed literals and current source/executable/raw-artifact proofs. The
+independent default thirty-source collection/sequence/Atom cohort is refreshed
+with 240 frames and now has three original agreements and 27 differences.
+The exact current integration has 44 passed macro columns and no missing row
+within those two cohorts. All other obligations and strict acceptance remain
+independent. Stored receipt files never grant fresh full-report credit.
+
+Only one exact inference optimizer body and the complete invoke_test.cljs
+optimizer fixture follow the user-adopted generated-JS/optimizer scope boundary.
+Both genuine upstream compiler callers execute unchanged in both pins. Original
+body/program bytes, all 65 inference shape predicates, eleven invoke emission
+predicates and the invoke fixture's original runtime failure are retained.
+The guarded dispositions supply no semantic/local/macro pass. Public truth_,
+IFn, invocation, declarations, records and neighboring source bodies remain
+intended. See `inference-optimizer-scope.md` and `invoke-program-scope.md`.
+
+Thirty complete historical reader-conditional sources have independent `.cljc`
+`:cljs` diagnostic proof without original branch rewriting. Two original
+agreements and eighteen canonical differences are diagnostic observations,
+with zero shared source/phase credit because an accepted fail-closed adapter
+remains required. Three both-pin public contrasts have focused live owner 172;
+seven other cases remain unresolved. `sci-cljc-source-probe.md` preserves full
+sources, lifecycle observations, pin settings, failures and ownership evidence.
+
+The 50-source and 191-library receipt files have fresh current production
+hashes and retain each prior complete record under `prior_evidence`. Their
+unchanged original classifications remain 35/8/7 and 163/6/22 for original
+agreement/pin difference/unresolved. They are provenance records rather than
+cached positive fallback. No blanket SCI, reader, optimizer or public API
+exclusion is introduced. Comprehensive acceptance, unexecuted broader checks
+and externally blocked cancellation work remain open under 125.

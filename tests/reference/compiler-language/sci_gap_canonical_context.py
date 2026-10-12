@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import shutil
+from types import SimpleNamespace
 import configured_source_context as runner
 import sci_gap_return_candidates as candidates
 import sci_execution as sci
@@ -22,6 +23,12 @@ DRIVER = ROOT/'tests/compiler_sci_gap_phase_probe.rs'
 TEST = 'original_gap_sources_execute_through_actual_macro_hosts'
 VARIANTS = ('application-fresh','macro-fresh','application-reused','macro-reused')
 PROFILE = 'exact-historical-gap-return-canonical-context-v1'
+
+
+def _cohort(cohort):
+    """Use an explicit immutable cohort; the original default stays frozen."""
+    return cohort if cohort is not None else SimpleNamespace(
+        load=load, snapshot=snapshot, candidates=candidates, PROFILE=PROFILE)
 
 
 def same(actual, expected, reason):
@@ -79,11 +86,11 @@ def ordinary_packet(observed, phase):
     return {'id': observed['id'],'outcome':outcome,'trace':trace['$vector'],'stdout':''}
 
 
-def parse_raw(text):
-    rows = load(); by_id={row['id']:row for row in rows}
+def parse_raw(text, *, cohort=None):
+    rows = _cohort(cohort).load(); by_id={row['id']:row for row in rows}
     records=[line.split('\t') for line in text.splitlines()]
     order=[(row['id'],variant,engine) for row in rows for variant in VARIANTS for engine in ('QuickJS','Node')]
-    if len(records)!=240 or any(len(r)!=7 for r in records) or [tuple(r[:3]) for r in records]!=order:
+    if len(records)!=len(rows)*8 or any(len(r)!=7 for r in records) or [tuple(r[:3]) for r in records]!=order:
         raise ValueError('Missing/duplicate/reordered actual source/phase frames')
     frames={row['id']:{} for row in rows}
     for identity,variant,engine,source_hex,unit_hex,raw_hex,warmup_hex in records:
@@ -121,14 +128,15 @@ def verify_warmup(warmup):
         raise ValueError('Invalid actual compiled warmup')
 
 
-def reference_proof(path):
+def reference_proof(path, *, cohort=None):
+    spec = _cohort(cohort)
     document=json.loads(Path(path).read_text())
-    same(document['cases'],candidates.load(),'Original reference source/expectation cohort drift')
-    same(document['producer_sha256'],candidates.snapshot(),'Original reference producer/compiler drift')
+    same(document['cases'],spec.candidates.load(),'Original reference source/expectation cohort drift')
+    same(document['producer_sha256'],spec.candidates.snapshot(),'Original reference producer/compiler drift')
     root=Path(path).parent
     manifest={str(p.relative_to(root)):sci.digest(p.read_bytes()) for p in sorted(root.rglob('*')) if p.is_file() and p!=Path(path)}
     same(document['artifact_sha256'],manifest,'Missing/extra/changed actual reference artifacts')
-    originals=candidates.load();by_id={row['id']:row for row in originals}
+    originals=spec.candidates.load();by_id={row['id']:row for row in originals}
     for kind in ('release','checkout'):
         pin=root/kind
         preflight=(pin/'preflight/analysis.tsv').read_text().splitlines()
@@ -151,7 +159,7 @@ def reference_proof(path):
                 raise ValueError('Unexpected reference source-bearing stderr')
             same(json.loads(stderr[0].removeprefix('CASE START ')),{'id':row['id'],'source':sci.REFERENCE_SETUP+row['source']},'Reference output detached from original source')
             same(json.loads(stderr[1].removeprefix('CASE END ')),{'id':row['id']},'Missing exact reference source end')
-    for row in load():
+    for row in spec.load():
         for kind in ('release','checkout'):
             layer=document['evidence'][row['id']][kind]
             same(layer.get('observed'),row['canonical_expected'],'Literal canonical pin contract drift')
@@ -161,14 +169,15 @@ def reference_proof(path):
     return document
 
 
-def verified_document(reference_path,phase_root):
+def verified_document(reference_path,phase_root, *, cohort=None):
     """Reconstruct a proof from current executable, source and raw artifacts."""
-    before=snapshot(); rows=load(); references=reference_proof(reference_path)
+    spec = _cohort(cohort)
+    before=spec.snapshot(); rows=spec.load(); references=reference_proof(reference_path, cohort=spec)
     phase_root=Path(phase_root).resolve()
     raw=phase_root/'observations.tsv'
-    frames=parse_raw(raw.read_text())
+    frames=parse_raw(raw.read_text(), cohort=spec)
     execution=json.loads((phase_root/'execution-binding.json').read_text())
-    same(execution['producer_source_sha256'],snapshot(),'Actual phase producer drift')
+    same(execution['producer_source_sha256'],spec.snapshot(),'Actual phase producer drift')
     required={'input.tsv','observations.tsv','warmup.js','build/stdout','build/stderr','build/command.json','audit/stdout','audit/stderr','audit/command.json'}
     manifest={str(p.relative_to(phase_root)):sci.digest(p.read_bytes()) for p in sorted(phase_root.rglob('*')) if p.is_file() and p.name!='execution-binding.json'}
     same(set(manifest),required,'Missing/extra actual phase build/audit artifacts')
@@ -205,8 +214,8 @@ def verified_document(reference_path,phase_root):
             'checked_pin_contract_status':{'release':'passed','checkout':'passed'},
             'actual_macro_contract_status':'passed' if agreeing else 'mismatch',
             'focused_owner':row.get('focused_owner')})
-    same(before,snapshot(),'Source/producer drift during receipt binding')
-    result={'schema_version':1,'profile':PROFILE,'source_bindings':rows,
+    same(before,spec.snapshot(),'Source/producer drift during receipt binding')
+    result={'schema_version':1,'profile':spec.PROFILE,'source_bindings':rows,
         'compiler_build_producer_source_sha256':before,'phase_driver_sha256':sci.digest(DRIVER.read_bytes()),
         'phase_execution_binding':execution,
         'reference_evidence_sha256':sci.digest(Path(reference_path).read_bytes()),
@@ -218,8 +227,8 @@ def verified_document(reference_path,phase_root):
     return result
 
 
-def _bind(reference_path,phase_root,output):
-    result=verified_document(reference_path,phase_root)
+def _bind(reference_path,phase_root,output, *, cohort=None):
+    result=verified_document(reference_path,phase_root, cohort=cohort)
     output=Path(output)
     output.write_text(json.dumps(result,indent=2)+'\n')
     summaries=result['summaries']
@@ -227,13 +236,14 @@ def _bind(reference_path,phase_root,output):
     return result
 
 
-def reconcile(document):
+def reconcile(document, *, cohort=None):
     """Replay raw current proofs; serialized passing statuses never grant credit."""
+    spec = _cohort(cohort)
     same(document.get('schema_version'),1,'Canonical reconciliation schema drift')
-    same(document.get('profile'),PROFILE,'Canonical reconciliation profile drift')
-    rows=load()
+    same(document.get('profile'),spec.PROFILE,'Canonical reconciliation profile drift')
+    rows=spec.load()
     same(document.get('source_bindings'),rows,'Original canonical cohort source drift')
-    same(document.get('compiler_build_producer_source_sha256'),snapshot(),'Current canonical producer drift')
+    same(document.get('compiler_build_producer_source_sha256'),spec.snapshot(),'Current canonical producer drift')
     reference_value=document.get('reference_artifacts_root')
     phase_value=document.get('phase_artifacts_root')
     if not isinstance(reference_value,str) or not isinstance(phase_value,str):
@@ -243,7 +253,7 @@ def reconcile(document):
             or reference_root.name!='originals' or phase_root.name!='phases'
             or reference_root.parent!=phase_root.parent):
         raise ValueError('Canonical artifacts detached from fresh producer layout')
-    replay=verified_document(reference_root/'evidence.json',phase_root)
+    replay=verified_document(reference_root/'evidence.json',phase_root, cohort=spec)
     same(document,replay,'Canonical supplied proof differs from current artifact replay')
     result={}
     for row in rows:
@@ -265,9 +275,10 @@ def reconcile(document):
     return result
 
 
-def execute(directory, timeout=300):
+def execute(directory, timeout=300, *, cohort=None):
     directory=Path(directory).resolve(); directory.mkdir(parents=True,exist_ok=False)
-    before=snapshot();rows=load()
+    spec = _cohort(cohort)
+    before=spec.snapshot();rows=spec.load()
     (directory/'input.tsv').write_text(''.join(row['id']+'\t'+row['source'].encode().hex()+'\n' for row in rows))
     build,_=runner.run(['cargo','test','--locked','--test',DRIVER.stem,'--no-run','--message-format=json'],directory/'build',timeout)
     artifacts=[json.loads(line) for line in build.splitlines() if line.startswith('{')]
@@ -278,8 +289,8 @@ def execute(directory, timeout=300):
     executables={str(path):sci.digest(path.read_bytes()) for path in (binary,node)}
     env={**os.environ,'LIGHT_SCI_GAP_PHASE_ROOT':str(directory),'NODE':str(node)}
     runner.run([str(binary),TEST,'--ignored','--exact','--nocapture'],directory/'audit',timeout,environment=env)
-    parse_raw((directory/'observations.tsv').read_text())
-    same(before,snapshot(),'Compiler/source/producer changed during actual phase audit')
+    parse_raw((directory/'observations.tsv').read_text(), cohort=spec)
+    same(before,spec.snapshot(),'Compiler/source/producer changed during actual phase audit')
     for path,digest in executables.items():same(sci.digest(Path(path).read_bytes()),digest,'Built audit binary drift')
     binding={'producer_source_sha256':before,'executables_sha256':executables,
         'artifact_sha256':{str(p.relative_to(directory)):sci.digest(p.read_bytes()) for p in sorted(directory.rglob('*')) if p.is_file()}}
@@ -287,14 +298,15 @@ def execute(directory, timeout=300):
     return binding
 
 
-def run(directory,timeout=600):
+def run(directory,timeout=600, *, cohort=None):
     """Only positive producer entry point: fresh local, both pins and phases."""
     directory=Path(directory).resolve();directory.mkdir(parents=True,exist_ok=False)
-    before=snapshot()
-    candidates.run(directory/'originals',timeout)
-    execute(directory/'phases',min(timeout,300))
-    result=_bind(directory/'originals/evidence.json',directory/'phases',directory/'evidence.json')
-    same(before,snapshot(),'Source/producer changed during fresh complete audit')
+    spec = _cohort(cohort)
+    before=spec.snapshot()
+    spec.candidates.run(directory/'originals',timeout)
+    execute(directory/'phases',min(timeout,300), cohort=spec)
+    result=_bind(directory/'originals/evidence.json',directory/'phases',directory/'evidence.json', cohort=spec)
+    same(before,spec.snapshot(),'Source/producer changed during fresh complete audit')
     return result
 
 

@@ -148,3 +148,18 @@ is owned by **light-cljs-170, Preserve public hash effects when hash-map branche
 collide**, immediately before 125; it receives no passing credit. Earlier
 sources, expectations, counts and receipts above remain historical. Externally
 blocked 156 remains untouched.
+
+
+## Current independent refresh after public find repair
+
+At production HEAD 424d8e41, the original thirty sources were freshly executed
+again with both pins and all 240 application/actual-macro lifecycle frames.
+`/tmp/light-cljs-125-sci-gap-after171-final/evidence.json`, SHA-256
+`f46de9ecef5ca633a8266869318b1bad16459eb783ce8c95f872f8bed495745b`,
+is the current byte-exact `sci-gap-canonical-receipt.json` copy. Earlier receipt
+versions remain in Git and the historical paths above. The cohort retains three
+original agreements, 27 explicit canonical differences and zero missing rows.
+All thirty macro columns are passing under exact current proof. The separately
+added fourteen printing rows use an explicit independent cohort; default
+contracts, source expectations and row identities remain frozen. No historical
+receipt grants current report acceptance.

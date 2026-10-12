@@ -1,0 +1,1 @@
+(= [true true] (do (def observations (atom []))  (do (swap! observations conj (boolean (zero? (hash-string nil)))) (swap! observations conj (boolean (not (zero? (hash-string "null")))))) @observations))
