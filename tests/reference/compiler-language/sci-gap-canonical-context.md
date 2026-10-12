@@ -15,9 +15,9 @@ five sources receive no canonical context credit. Their observations remain in
 the complete candidate evidence.
 
 Thirty sources have an explicit common literal canonical contract, retained in
-`sci-gap-canonical-contracts.jsonl`. Twenty-seven currently satisfy that contract
-in both engines, both pins and every actual phase context. Three still fail
-public ClojureScript behavior and have focused live owners:
+`sci-gap-canonical-contracts.jsonl`. In the retained pre-repair receipt, twenty-seven satisfy that contract
+in both engines, both pins and every actual phase context. Three fail
+public ClojureScript behavior under these focused owners:
 
 | Original source | Required canonical behavior | Focused owner |
 | --- | --- | --- |
@@ -75,8 +75,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/test_sci_
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/reference/compiler-language/test_sci_gap_return_candidates.py
 ```
 
-This adapter does not satisfy the comprehensive language gate. The three
-production discrepancies stay missing, other original SCI contexts remain
+This adapter does not satisfy the comprehensive language gate. That pre-repair receipt keeps the three
+production discrepancies missing; other original SCI contexts remain
 independent, and the separately blocked 156 cancellation work is untouched.
 
 The final fresh producer is
@@ -92,3 +92,21 @@ columns and three mismatching macro columns. It keeps strict completion false.
 Failure accounting rejects the three actual public gaps and only reconciles
 the exact verified original SCI mismatches; boolean/number or detached layers,
 missing pins, missing phases and unrelated errors remain failures.
+
+## Nested-entry repair and fresh evidence
+
+The three-gap counts above describe the retained pre-repair receipt. The
+focused 167 production repair restores MapEntry's public sequence fallback and
+IKVReduce membership, preserving ordinary vectors and explicit dispatch. Its
+complete original now passes every application/macro frame and both pins.
+The focused controls and verification are recorded in
+[`../compiler-reduce-kv-entries.md`](../compiler-reduce-kv-entries.md).
+
+Fresh current execution is retained at
+`/tmp/light-cljs-167-canonical-current/evidence.json`, SHA-256
+`ead8685d31a8a3875f83c70fc1fc03297da2bad68e89393be00f3ebcaff7538f`.
+Actual full-ledger integration at `/tmp/light-cljs-167-ledger.json` reports one
+covered original, 27 verified canonical differences, two missing contracts,
+28 passing macro columns and two mismatching macro columns. Strict completion
+remains false. Historical original/disposition rows, prior receipts and exact
+contract bindings remain unchanged; fresh producers continue to govern credit.

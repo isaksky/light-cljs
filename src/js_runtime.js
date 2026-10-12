@@ -780,7 +780,9 @@
     const method = publicMethod(collection, "IKVReduce/-kv-reduce", 3);
     if (method) return method.call(collection, collection, rf, init);
     if (collection == null) return init;
-    const entries = maps.get(collection)?.map(entry => [entry.key, entry.value]) ?? vectors.get(collection)?.map((value, key) => [key, value]);
+    // MapEntry has vector storage, but no IKVReduce implementation. Its
+    // elements must go through the public IMapEntry sequence fallback.
+    const entries = maps.get(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) ? undefined : vectors.get(collection)?.map((value, key) => [key, value]));
     if (!entries) return reduce((result, entry) => rf.call(null, result, core.keyProtocol(entry), core.valProtocol(entry)), init, collection);
     for (const [key, value] of entries) {
       init = rf.call(null, init, key, value);
@@ -2525,7 +2527,7 @@
     if (protocol === IChunkedNext) return ["range", "chunked-cons"].includes(cells.get(value)?.kind) || views.get(value)?.kind === "chunked";
     if (protocol === IDrop) return mapKinds.get(value) === "array-map" || cells.get(value)?.integer === true || cells.get(value)?.kind === "repeat" || vectors.has(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind);
     if (protocol === IReduce) return chunks.has(value) && !chunks.get(value).integer || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue");
-    if (protocol === IKVReduce) return vectors.has(value) || maps.has(value);
+    if (protocol === IKVReduce) return vectors.has(value) && !mapEntries.has(value) || maps.has(value);
     if (protocol === IPrintWithWriter || protocol === IHash || protocol === IEquiv) return ownedProtocolValue(value);
     if (protocol === IMapEntry) return mapEntries.has(value);
     if (protocol === IFind) return vectors.has(value) || (maps.has(value) && !recordTypes.has(value));
