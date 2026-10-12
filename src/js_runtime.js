@@ -24,6 +24,7 @@
   const vectorRoots = new WeakMap();
   const canonicalVectorRoots = new WeakMap();
   const metadataValues = new WeakMap();
+  const deferredVarMetadata = new WeakMap();
   const uuids = new WeakMap();
   const uuidHashes = new WeakMap();
   const vars = new WeakMap();
@@ -2387,6 +2388,12 @@
   function meta(value) {
     const method = value == null ? null : publicMethod(value, "IMeta/-meta", 1);
     if (method) return method.call(value, value);
+    const deferred = deferredVarMetadata.get(value);
+    if (deferred) {
+      const metadata = assoc(metadataValues.get(value), keyword(null, "test"), deferred());
+      metadataValues.set(value, metadata);
+      deferredVarMetadata.delete(value);
+    }
     return atoms.has(value) ? value.meta : metadataValues.has(value) ? metadataValues.get(value) : null;
   }
   function empty(value) {
@@ -3283,27 +3290,27 @@
       }
     } finally { tapQueue.length = 0; tapDraining = false; tapDelivered = 0; }
   }
-  function makeVar(get, symbol, metadata = null, deferred = false) {
+  function makeVar(get, symbol, metadata = null) {
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return get.call(null).call(null, ...args); };
     methods[21] = function (_self, ...args) { return apply(get.call(null), ...args); };
     const value = makeIFn(methods);
     Object.setPrototypeOf(value, varPrototype);
-    vars.set(value, Object.freeze({get, symbol, deferred, definitionMetadata: metadata}));
+    vars.set(value, Object.freeze({get, symbol}));
     metadataValues.set(value, metadata);
     return value;
   }
-  function definitionVar(get, symbol, metadata = null, deferred = false) {
-    const root = deferred ? null : get.call(null);
+  function definitionVar(get, symbol, metadata = null, deferredMetadata = null) {
+    const root = deferredMetadata ? null : get.call(null);
     const base = mapFromArray([keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)),
       keyword(null, "doc"), null, keyword(null, "file"), null, keyword(null, "line"), null, keyword(null, "column"), null, keyword(null, "arglists"), listFromArray([])]);
-    return makeVar(get, symbol, assoc(into(base, metadata), keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)), keyword(null, "test"), truth(root) ? root.cljs$lang$test : null), deferred);
+    const value = makeVar(get, symbol, assoc(into(base, metadata), keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)), keyword(null, "test"), truth(root) ? root.cljs$lang$test : null));
+    if (deferredMetadata) deferredVarMetadata.set(value, deferredMetadata);
+    return value;
   }
   function Var(get, symbol, metadata) { const value = makeVar(get, symbol, metadata); metadataValues.set(value, metadata); return value; }
   function test(value) {
-    const entry = vars.get(value), metadata = entry ? meta(value) : null;
-    const fn = entry ? (entry.deferred && metadata === entry.definitionMetadata
-      ? entry.get.call(null)?.cljs$lang$test : get(metadata, keyword(null, "test")))
+    const fn = vars.has(value) ? get(meta(value), keyword(null, "test"))
       : value == null ? null : value.cljs$lang$test;
     if (truth(fn)) { fn.call(null); return keyword(null, "ok"); }
     return keyword(null, "no-test");

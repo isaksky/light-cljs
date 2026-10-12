@@ -1,7 +1,7 @@
 // A compilation owns this registry. Canonical emitted functions and collections
 // retain their normal runtime brands; only global storage differs by phase.
 (() => {
-  const slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
+  const units = new Map(), slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
   let frontier = Infinity, declarationFrontier = Infinity;
   // Initializers retain the declaration products visible at their source site.
   // This is a dynamic execution view, not a closure capture: an escaped factory
@@ -177,10 +177,25 @@
     return rootExists(name, owner?.group && owner.names.includes(name)
       ? {unit: -1, bundle: owner} : declarationSlot(name));
   };
-  globalThis.__lightRegisterUnit = (name, unit, once, location) => {
+  globalThis.__lightRegisterUnit = (name, unit, once, location, test) => {
     const old = slots.get(name);
     if (unit === null && old || once && old && old.unit !== null && !old.bundle?.group) return;
-    slots.set(name, {unit, location, declarationFrontier: bundles.length, state: 'pending', oncePrevious: once ? old : null});
+    const slot = {unit, test, location, declarationFrontier: bundles.length, state: 'pending', oncePrevious: once ? old : null};
+    slots.set(name, slot);
+    if (unit !== null) units.set(unit, slot);
+  };
+  globalThis.__lightCompilerTest = unit => forceSlot('executable :test metadata', units.get(unit));
+  // Capture the source generation without demanding its root. The canonical
+  // Var materializes this metadata only when reflection actually requests it.
+  globalThis.__lightCompilerVarMetadata = name => {
+    const slot = declarationSlot(name);
+    if (overlays.has(name) || slot?.state === 'ready' || slot?.bundle?.products.has(name)) {
+      const root = overlays.has(name) ? overlays.get(name)
+        : slot.state === 'ready' ? slot.value : slot.bundle.products.get(name);
+      const test = root != null && root !== false ? root.cljs$lang$test : null;
+      return () => test;
+    }
+    return () => slot?.test == null ? null : globalThis.__lightCompilerTest(slot.test);
   };
   // Scope snapshots contain only overlays. Saving a pending/failed root must
   // neither demand nor replace it. Evaluate every initializer before installing.

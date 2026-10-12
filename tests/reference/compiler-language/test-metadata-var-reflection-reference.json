@@ -1,0 +1,147 @@
+{
+  "case_id": "metadata-test-var-reflection",
+  "complete_source": "(ns metadata.projection)\n(defn add {:test #(assert (= (add 2 3) 5))} [x y] (+ x y))\n(defn run [observe] (test add) (fn? (:test (meta #'add))))\nrun\n",
+  "complete_source_sha256": "4bfb0d55d7d55476c587d72a0e2e3562f37882abad31d630ba5137c065c9791f",
+  "case_sha256": "f9668c2add00a49971278ab49cb170d02cdd6075d133c0511a34ba4cd2965b38",
+  "expected": {
+    "id": "metadata-test-var-reflection",
+    "outcome": {
+      "status": "returned",
+      "value": true
+    },
+    "trace": [],
+    "stdout": ""
+  },
+  "reference_receipts": {
+    "release": {
+      "reference_identity": "release 1.12.134",
+      "build_command": [
+        "clojure",
+        "-Srepro",
+        "-Sdeps",
+        "{:paths [\"/private/tmp/light-cljs-190-reference/release/source\"] :deps {org.clojure/clojurescript {:mvn/version \"1.12.134\"}}}",
+        "-M",
+        "/private/tmp/light-cljs-190-reference/release/build.clj",
+        "release",
+        "1.12.134",
+        "-",
+        "/private/tmp/light-cljs-190-reference/release",
+        "/private/tmp/light-cljs-190-reference/release/source"
+      ],
+      "node_command": [
+        "node",
+        "-"
+      ],
+      "build_invocation_sha256": "1ffd4735ed92584beb802f70e5c6154ecb7d9296084f79b258da97a575d50a97",
+      "node_invocation_sha256": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "node_stdin_sha256": "d9253e6cf64620ada52a2de7dad56b09c5062717d66266db27a1741706a6d2ba",
+      "observations": {
+        "metadata-test-var-reflection": {
+          "status": "passed",
+          "observed": {
+            "id": "metadata-test-var-reflection",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      },
+      "original_case_sha256": {
+        "metadata-test-var-reflection": "f9668c2add00a49971278ab49cb170d02cdd6075d133c0511a34ba4cd2965b38"
+      },
+      "producer_source_sha256": {
+        "tests/reference/compiler-language/arity_after188_reference.py": "227108bfc97c23b9167d59434f17ea5838450bc2520287ec8d4a1301e61f862b",
+        "tests/reference/compiler-language/arity_after188.py": "36758e1610508f67f816c5e1765dc064ce9ef8c7e03f49618c3c69b4cc020b12",
+        "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+        "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+        "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+        "tests/reference/compiler-language/extract_inventory.py": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/compiler-language.tsv": "e4b393a10ff3de25c96d3446b2c290b5f79cc75d123a8dbe8475fa843bba06da",
+        "tests/reference/compiler-language/full-cases.jsonl": "7b642fffb287af7020fb558f172a64c3218841cfd0443d5e3da1111bc72ac10d"
+      },
+      "build_script_sha256": "4127f77b267a819d472ef338b775e834cdc6f5913da02dd4e5d82c05c490374d",
+      "build_stdout_sha256": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "reference_js_sha256": "57fb4be1919a082e2f7f657726dc168d193115510b9460a60a758301aedb2a87",
+      "raw_stdout_sha256": "b9b716190130570a24ee339ecac465e5d9ddd7cdcf4fe122771cf67811667960",
+      "source_file_sha256": {
+        "arityreference/host.cljs": "56ef9c6c12f9007325d62c2a948c07095920069d2788cdf4ed7e02fa93e13ddc",
+        "metadata/projection.cljs": "4bfb0d55d7d55476c587d72a0e2e3562f37882abad31d630ba5137c065c9791f"
+      }
+    },
+    "checkout": {
+      "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+      "build_command": [
+        "clojure",
+        "-Srepro",
+        "-Sdeps",
+        "{:paths [\"/private/tmp/light-cljs-190-reference/checkout/source\"] :deps {org.clojure/clojurescript {:local/root \"/Users/admin/src/light-cljs/research/clojurescript\"}}}",
+        "-M",
+        "/private/tmp/light-cljs-190-reference/checkout/build.clj",
+        "checkout",
+        "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+        "/Users/admin/src/light-cljs/research/clojurescript",
+        "/private/tmp/light-cljs-190-reference/checkout",
+        "/private/tmp/light-cljs-190-reference/checkout/source"
+      ],
+      "node_command": [
+        "node",
+        "-"
+      ],
+      "build_invocation_sha256": "62b227da96486bab4a77813fcb0046b52b787f4506e998aed372b278d4c86f98",
+      "node_invocation_sha256": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "node_stdin_sha256": "8993629d526accf60dc5295959b03fb0dea52f03d1c9ece2712905a484ef2c24",
+      "observations": {
+        "metadata-test-var-reflection": {
+          "status": "passed",
+          "observed": {
+            "id": "metadata-test-var-reflection",
+            "outcome": {
+              "status": "returned",
+              "value": true
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          }
+        }
+      },
+      "original_case_sha256": {
+        "metadata-test-var-reflection": "f9668c2add00a49971278ab49cb170d02cdd6075d133c0511a34ba4cd2965b38"
+      },
+      "producer_source_sha256": {
+        "tests/reference/compiler-language/arity_after188_reference.py": "227108bfc97c23b9167d59434f17ea5838450bc2520287ec8d4a1301e61f862b",
+        "tests/reference/compiler-language/arity_after188.py": "36758e1610508f67f816c5e1765dc064ce9ef8c7e03f49618c3c69b4cc020b12",
+        "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+        "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+        "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+        "tests/reference/compiler-language/extract_inventory.py": "8c0a650cd3a6106be21acd523942dbc4992e6205fcb1b95e7f11c32daac2b3eb",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/compiler-language.tsv": "e4b393a10ff3de25c96d3446b2c290b5f79cc75d123a8dbe8475fa843bba06da",
+        "tests/reference/compiler-language/full-cases.jsonl": "7b642fffb287af7020fb558f172a64c3218841cfd0443d5e3da1111bc72ac10d"
+      },
+      "build_script_sha256": "4127f77b267a819d472ef338b775e834cdc6f5913da02dd4e5d82c05c490374d",
+      "build_stdout_sha256": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "reference_js_sha256": "57fb4be1919a082e2f7f657726dc168d193115510b9460a60a758301aedb2a87",
+      "raw_stdout_sha256": "b9b716190130570a24ee339ecac465e5d9ddd7cdcf4fe122771cf67811667960",
+      "source_file_sha256": {
+        "arityreference/host.cljs": "56ef9c6c12f9007325d62c2a948c07095920069d2788cdf4ed7e02fa93e13ddc",
+        "metadata/projection.cljs": "4bfb0d55d7d55476c587d72a0e2e3562f37882abad31d630ba5137c065c9791f"
+      }
+    }
+  }
+}

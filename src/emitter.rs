@@ -1434,6 +1434,11 @@ impl Emitter<'_> {
                     },
                 });
             }
+            ExprKind::DefinitionTest { value, unit } => {
+                if self.demand_roots {
+                    write!(self.output, "globalThis.__lightCompilerTest({unit})").unwrap();
+                } else { self.value(*value); }
+            }
             ExprKind::WithMeta { value, metadata } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
                 self.output.push_str(if matches!(
@@ -1481,7 +1486,13 @@ impl Emitter<'_> {
                 }
                 if self.demand_roots && *definition {
                     if metadata.is_none() { self.output.push_str(", null"); }
-                    self.output.push_str(", true");
+                    self.output.push_str(", globalThis.__lightCompilerVarMetadata(");
+                    let namespace = literal.namespace
+                        .map(|id| String::from_utf16_lossy(&self.program.strings[id.0]))
+                        .unwrap_or_default();
+                    let name = String::from_utf16_lossy(&self.program.strings[literal.name.0]);
+                    self.string_units(&format!("{namespace}/{name}").encode_utf16().collect::<Vec<_>>());
+                    self.output.push(')');
                 }
                 self.output.push(')');
             }

@@ -360,6 +360,7 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             | LiteralMap(items)
             | LiteralSet(items)
             | Do(items) => self.exprs(items),
+            DefinitionTest { value, .. } => self.expr(value),
             WithMeta { value, metadata } => {
                 self.expr(value);
                 self.expr(metadata);

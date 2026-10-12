@@ -1,0 +1,62 @@
+{
+  "complete_source": "(ns metadata.projection)\n(defn add {:test #(assert (= (add 2 3) 5))} [x y] (+ x y))\n(defn run [observe] (test add) (fn? (:test (meta #'add))))\nrun\n",
+  "complete_source_sha256": "4bfb0d55d7d55476c587d72a0e2e3562f37882abad31d630ba5137c065c9791f",
+  "expected": true,
+  "actual": [
+    {
+      "phase": "application",
+      "compile_command": [
+        "/tmp/light-cljs-190-actual/acceptance-cli-executable",
+        "--compile",
+        "--entry",
+        "metadata.projection",
+        "--source-root",
+        "/tmp/light-cljs-190-actual/application"
+      ],
+      "quickjs_command": [
+        "/tmp/light-cljs-190-actual/acceptance-cli-executable",
+        "--eval",
+        "/tmp/light-cljs-190-actual/application/metadata/projection.cljs"
+      ],
+      "node_command": [
+        "node",
+        "-"
+      ],
+      "node_stdin_sha256": "66bad3c7cd513287aa737e48578517708456e5c5c0e7a31cc04bec2cdc5f692b",
+      "QuickJS": "\"true\"\n",
+      "Node": "true\n",
+      "source_sha256": "9e056b311db87c049be7dcbe85208e460728e30d0eb6099e50664ff839653da5",
+      "emitted_sha256": "6d79ef8cf658cb23a9000e8f18f95a54e4ff61623c7fb0fa6de9b7444f98ca42"
+    },
+    {
+      "phase": "macro",
+      "compile_command": [
+        "/tmp/light-cljs-190-actual/acceptance-cli-executable",
+        "--compile",
+        "--entry",
+        "metadata.projection",
+        "--source-root",
+        "/tmp/light-cljs-190-actual/macro"
+      ],
+      "quickjs_command": [
+        "/tmp/light-cljs-190-actual/acceptance-cli-executable",
+        "--eval",
+        "/tmp/light-cljs-190-actual/macro/metadata/projection.cljs"
+      ],
+      "node_command": [
+        "node",
+        "-"
+      ],
+      "node_stdin_sha256": "b2651f08b49b1454526550a431a2da0b7d9b0472cf9ab5961eb0a32468cdc8ac",
+      "QuickJS": "\"true\"\n",
+      "Node": "true\n",
+      "source_sha256": "4ce2f8a483bc5e2e4890ef5cafd216ce7f4cb4dcb69fb65919a05f3ef59f3d50",
+      "emitted_sha256": "d35a4f2ad0eebdfa7c3441c00d5a7d5205426cf8cbfb4d85403749b20e7a193b"
+    }
+  ],
+  "built_binary": "/Users/admin/src/light-cljs/target/debug/light-cljs",
+  "executed_binary_snapshot": "/tmp/light-cljs-190-actual/acceptance-cli-executable",
+  "binary_sha256": "f4d812e73619c5fa62a2eaa66bd6fa2c4115271d234ddf663e0914fa97164faf",
+  "reference_receipt_sha256": "6e3f132e37e55fc75595964d1134ee507326a93b0fd25350986bcc93df93a4fe",
+  "scope": "Direct Var :test reflection only. Existing189 original-source declaration/assertions remain unchanged and covered by compiler_test_metadata. No broader language or125 completion credit. Historical gap receipt preserved."
+}

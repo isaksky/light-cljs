@@ -2279,6 +2279,8 @@ pub enum ExprKind {
         /// Quoted #js data keeps its explicit compiler form brand on export.
         quoted: bool,
     },
+    /// One executable metadata value, cached independently in a demanded session.
+    DefinitionTest { value: ExprId, unit: usize },
     WithMeta {
         value: ExprId,
         metadata: ExprId,
@@ -3038,12 +3040,16 @@ fn analyze_input(
         roots = vec![analyzer.import_form(form)?];
     }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
-    if let Some(test) = snapshot.and_then(|s| s.definition_test.as_ref()) {
-        // Keep executable metadata in the same definition-site unit as its
-        // initializer. This ordinary let/property assignment lowering serves
-        // both emissions, without forcing a self-reference before publication.
-        let node = analyzer.import_form(test)?;
-        let test = analyzer.non_tail_form(node, ExprContext::Value)?;
+    if let Some(unit) = snapshot.and_then(|s| s.definition_test_unit) {
+        let session = analyzer.macro_host.session_handle().expect("compilation session");
+        let (program, warnings) = session.analyze(unit, engine).map_err(|message| AnalysisError {
+            span: analyzer.program.exprs[analyzer.program.root.0].span.clone(),
+            kind: AnalysisErrorKind::MacroExpansion(message),
+        })?;
+        let value = crate::program_fragment::append(&mut analyzer.program, &program);
+        analyzer.warnings.extend(warnings);
+        let test = analyzer.push(ExprKind::DefinitionTest { value, unit },
+            analyzer.program.exprs[value.0].span.clone(), ExprContext::Value);
         let span = analyzer.program.exprs[analyzer.program.root.0].span.clone();
         let local = LocalId(analyzer.program.locals.len());
         analyzer.program.locals.push(LocalBinding {
@@ -5439,6 +5445,7 @@ impl Analyzer<'_> {
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
             definition_test: None,
+            definition_test_unit: None,
             extension_frontier: self.macro_host.session_handle().map_or(0, |s| s.extension_frontier()),
         }
     }

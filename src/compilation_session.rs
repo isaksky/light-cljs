@@ -21,6 +21,7 @@ pub(crate) struct DefinitionSnapshot {
     pub source_index: usize,
     pub definition_name: Option<String>,
     pub definition_test: Option<Form>,
+    pub definition_test_unit: Option<usize>,
     pub extension_frontier: usize,
 }
 pub(crate) struct BundleRegistration<'a> {
@@ -59,7 +60,7 @@ enum AnalysisState {
 }
 #[derive(Clone)]
 enum Registration {
-    Root(String, Option<usize>, bool, String),
+    Root(String, Option<usize>, Option<usize>, bool, String),
     Bundle(String),
 }
 #[derive(Default)]
@@ -122,8 +123,8 @@ impl CompilationSession {
         };
         for registration in registrations {
             match registration {
-                Registration::Root(name, unit, once, location) => {
-                    Self::install(evaluator.as_ref(), &name, unit, once, &location)?
+                Registration::Root(name, unit, test, once, location) => {
+                    Self::install(evaluator.as_ref(), &name, unit, test, once, &location)?
                 }
                 Registration::Bundle(source) => {
                     let value = evaluator
@@ -236,6 +237,7 @@ impl CompilationSession {
         engine: &dyn MacroEvaluator,
         name: &str,
         unit: Option<usize>,
+        test: Option<usize>,
         once: bool,
         location: &str,
     ) -> Result<(), String> {
@@ -252,8 +254,9 @@ impl CompilationSession {
             .replace('\r', "\\r");
         let value = engine
             .evaluate_unit(&format!(
-                "rt => globalThis.__lightRegisterUnit(\"{name}\",{}, {once}, \"{location}\")",
-                unit.map_or("null".into(), |n| n.to_string())
+                "rt => globalThis.__lightRegisterUnit(\"{name}\",{}, {once}, \"{location}\", {})",
+                unit.map_or("null".into(), |n| n.to_string()),
+                test.map_or("null".into(), |n| n.to_string())
             ))
             .map_err(|e| e.to_string())?;
         engine.release(value).map_err(|e| e.to_string())
@@ -262,11 +265,21 @@ impl CompilationSession {
         &self,
         name: String,
         form: Option<Form>,
-        snapshot: DefinitionSnapshot,
+        mut snapshot: DefinitionSnapshot,
         host: MacroHost,
         once: bool,
         location: String,
     ) -> Result<Option<usize>, String> {
+        // Executable metadata has its own source-site unit and root state.
+        // Reflecting it cannot analyze or execute the ordinary initializer.
+        if let Some(test) = snapshot.definition_test.take().filter(|_| form.is_some()) {
+            let test_name = format!("{name} :test#{}", self.catalog.borrow().units.len());
+            snapshot.definition_test_unit = self.register(
+                test_name,
+                Some(test), snapshot.clone(), host.macro_analysis_frame(), false, location.clone(),
+            )?;
+        }
+        let test = snapshot.definition_test_unit;
         let (id, bootstrap) = {
             let mut c = self.catalog.borrow_mut();
             let next_var = VarId(c.bindings.len());
@@ -299,11 +312,11 @@ impl CompilationSession {
                 c.active.insert(name.clone(), id.is_some());
             }
             c.registrations
-                .push(Registration::Root(name.clone(), id, once, location.clone()));
+                .push(Registration::Root(name.clone(), id, test, once, location.clone()));
             (id, c.bootstrap.clone())
         };
         if let Some(bootstrap) = bootstrap {
-            Self::install(bootstrap.evaluator.as_ref(), &name, id, once, &location)?;
+            Self::install(bootstrap.evaluator.as_ref(), &name, id, test, once, &location)?;
         }
         Ok(id)
     }
@@ -427,6 +440,7 @@ impl Clone for DefinitionSnapshot {
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
             definition_test: self.definition_test.clone(),
+            definition_test_unit: self.definition_test_unit,
             extension_frontier: self.extension_frontier,
         }
     }
