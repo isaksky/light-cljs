@@ -8,7 +8,7 @@ import report
 
 IDS = {'syntax-context-namespace-header-context', 'syntax-context-namespace-nsstar-alias'}
 DRIVER = 'tests/compiler_syntax_context.rs'
-DRIVER_HASH = 'bd572ecd2ac504175707824acb5d20f9aab8477d75a155602ae619f2185fca99'
+DRIVER_HASH = '0e933f06788e7e54b366f92fd9e1542a5475802930a5dbec7db4e5ef63414bee'
 ENGINE_DRIVER = 'tests/compiler_language_namespace.rs'
 
 

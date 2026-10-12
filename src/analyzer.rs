@@ -2855,18 +2855,18 @@ pub fn analyze_named_with_warnings(
         &mut host,
         options,
         warnings,
-        None,
-        Some((
-            "cljs.user",
-            &[],
-            &[],
-            NamespaceResolution {
-                source_name: Some(name.to_owned()),
-                ..Default::default()
-            },
-        )),
-        None,
-        None,
+        AnalysisInputState {
+            definition_view: Some(NamespaceAnalysisView {
+                namespace: "cljs.user",
+                aliases: &[],
+                requires: &[],
+                resolution: NamespaceResolution {
+                    source_name: Some(name.to_owned()),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        },
     )
 }
 
@@ -2877,7 +2877,10 @@ pub fn analyze_with_macro_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
-    analyze_input(source, syntax, macro_host, options, warnings, None, None, None, None)
+    analyze_input(
+        source, syntax, macro_host, options, warnings,
+        AnalysisInputState::default(),
+    )
 }
 
 /// Start a standalone compilation from an immutable compiler form. Generated
@@ -2894,10 +2897,10 @@ pub fn analyze_compiler_form(form: &Form) -> Result<Program, AnalysisError> {
         &mut MacroHost::new(),
         AnalysisOptions::default(),
         &mut Vec::new(),
-        Some(form),
-        None,
-        None,
-        None,
+        AnalysisInputState {
+            owned_form: Some(form),
+            ..Default::default()
+        },
     )
 }
 
@@ -2923,17 +2926,36 @@ pub(crate) fn analyze_deferred_form(
         host,
         snapshot.options,
         &mut warnings,
-        Some(form),
-        Some((
-            &snapshot.namespace,
-            &snapshot.aliases,
-            &snapshot.requires,
-            snapshot.resolution.clone(),
-        )),
-        Some(snapshot),
-        engine,
+        AnalysisInputState {
+            owned_form: Some(form),
+            definition_view: Some(NamespaceAnalysisView {
+                namespace: &snapshot.namespace,
+                aliases: &snapshot.aliases,
+                requires: &snapshot.requires,
+                resolution: snapshot.resolution.clone(),
+            }),
+            snapshot: Some(snapshot),
+            engine,
+            previous: None,
+        },
     )?;
     Ok((program, warnings))
+}
+
+pub(crate) struct NamespaceAnalysisView<'a> {
+    pub namespace: &'a str,
+    pub aliases: &'a [(String, String)],
+    pub requires: &'a [String],
+    pub resolution: NamespaceResolution,
+}
+
+#[derive(Default)]
+struct AnalysisInputState<'a> {
+    owned_form: Option<&'a Form>,
+    definition_view: Option<NamespaceAnalysisView<'a>>,
+    snapshot: Option<&'a crate::compilation_session::DefinitionSnapshot>,
+    engine: Option<&'a dyn crate::evaluator::MacroEvaluator>,
+    previous: Option<&'a Program>,
 }
 
 fn analyze_input(
@@ -2942,26 +2964,11 @@ fn analyze_input(
     macro_host: &mut MacroHost,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
-    owned_form: Option<&Form>,
-    definition_view: Option<(&str, &[(String, String)], &[String], NamespaceResolution)>,
-    snapshot: Option<&crate::compilation_session::DefinitionSnapshot>,
-    engine: Option<&dyn crate::evaluator::MacroEvaluator>,
+    state: AnalysisInputState<'_>,
 ) -> Result<Program, AnalysisError> {
-    analyze_input_state(source, syntax, macro_host, options, warnings, owned_form, definition_view, snapshot, engine, None)
-}
-
-fn analyze_input_state(
-    source: &str,
-    syntax: &SyntaxTree,
-    macro_host: &mut MacroHost,
-    options: AnalysisOptions,
-    warnings: &mut Vec<AnalysisWarning>,
-    owned_form: Option<&Form>,
-    definition_view: Option<(&str, &[(String, String)], &[String], NamespaceResolution)>,
-    snapshot: Option<&crate::compilation_session::DefinitionSnapshot>,
-    engine: Option<&dyn crate::evaluator::MacroEvaluator>,
-    previous: Option<&Program>,
-) -> Result<Program, AnalysisError> {
+    let AnalysisInputState {
+        owned_form, definition_view, snapshot, engine, previous,
+    } = state;
     if definition_view.is_none() && previous.is_none() {
         macro_host.begin_compilation();
     }
@@ -2974,8 +2981,13 @@ fn analyze_input_state(
         compiler_syntax(source, syntax)
     };
     let mut roots = syntax.roots.clone();
-    let (namespace, aliases, requires, resolution) =
-        definition_view.unwrap_or(("cljs.user", &[], &[], NamespaceResolution::default()));
+    let NamespaceAnalysisView { namespace, aliases, requires, resolution } =
+        definition_view.unwrap_or(NamespaceAnalysisView {
+            namespace: "cljs.user",
+            aliases: &[],
+            requires: &[],
+            resolution: NamespaceResolution::default(),
+        });
     let mut analyzer = Analyzer {
         source,
         syntax,
@@ -4000,12 +4012,11 @@ impl Analyzer<'_> {
                     || self.resolution.refers.iter().any(|(name, _, _)| {
                         name == &operator_name && imported_intrinsic.is_none()
                     }));
-            if !shadowed && self.lookup(&operator_name).is_none() {
-                if let Some(value) =
+            if !shadowed && self.lookup(&operator_name).is_none()
+                && let Some(value) =
                     self.intrinsic_form(id, operator, args, context, intrinsic, &operator_name)?
-                {
-                    return Ok(value);
-                }
+            {
+                return Ok(value);
             }
             if let Some(constructor) = operator_name.strip_suffix('.')
                 && !constructor.is_empty()
@@ -4110,30 +4121,30 @@ impl Analyzer<'_> {
         operator_name: &str,
     ) -> Result<Option<ExprId>, AnalysisError> {
         match intrinsic {
-            "defmacro" => return self.macro_declaration(id, context).map(Some),
+            "defmacro" => self.macro_declaration(id, context).map(Some),
             "delay" | "lazy-seq" => {
-                return self
+                self
                     .deferred_form(id, args, context, intrinsic == "delay")
-                    .map(Some);
+                    .map(Some)
             }
-            "defonce" => return self.definition(id, args, context, true).map(Some),
-            "declare" => return self.declare_form(id, args, context).map(Some),
-            "binding" | "with-redefs" => return self.binding_form(id, args, context).map(Some),
-            "resolve" => return self.resolve_form(id, args, context).map(Some),
+            "defonce" => self.definition(id, args, context, true).map(Some),
+            "declare" => self.declare_form(id, args, context).map(Some),
+            "binding" | "with-redefs" => self.binding_form(id, args, context).map(Some),
+            "resolve" => self.resolve_form(id, args, context).map(Some),
             "require-macros" | "use-macros" => {
-                return Err(self.error(operator, AnalysisErrorKind::Unsupported(
+                Err(self.error(operator, AnalysisErrorKind::Unsupported(
                     "legacy macro imports are retired; import macros and functions with ordinary :require from .cljs/.cljc sources".into(),
-                )));
+                )))
             }
             "require" => {
-                return Err(self.error(
+                Err(self.error(
                     operator,
                     AnalysisErrorKind::InvalidForm(
                         "Calls to `require` must appear at the top-level.",
                     ),
-                ));
+                ))
             }
-            "exists?" => return self.exists_form(id, args, context).map(Some),
+            "exists?" => self.exists_form(id, args, context).map(Some),
             "with-out-str" => {
                 let previous = self.recur_target.take();
                 let body = self.body(
@@ -4143,33 +4154,33 @@ impl Analyzer<'_> {
                 );
                 self.recur_target = previous;
                 let body = body?;
-                return Ok(Some(self.push(
+                Ok(Some(self.push(
                     ExprKind::WithOutStr(body),
                     self.syntax.nodes[id.0].span.clone(),
                     context,
-                )));
+                )))
             }
-            "this-as" => return self.this_as(id, args, context).map(Some),
+            "this-as" => self.this_as(id, args, context).map(Some),
             "js-arguments" if args.is_empty() => {
-                return Ok(Some(self.push(
+                Ok(Some(self.push(
                     ExprKind::JsArguments,
                     self.syntax.nodes[id.0].span.clone(),
                     context,
-                )));
+                )))
             }
             "copy-arguments" if args.len() == 1 => {
                 let dest = self.non_tail_form(args[0], ExprContext::Value)?;
-                return Ok(Some(self.push(
+                Ok(Some(self.push(
                     ExprKind::CopyArguments(dest),
                     self.syntax.nodes[id.0].span.clone(),
                     context,
-                )));
+                )))
             }
-            "reify" => return self.reify_form(id, args, context).map(Some),
+            "reify" => self.reify_form(id, args, context).map(Some),
             "satisfies?" | "implements?" => {
-                return self
+                self
                     .protocol_predicate_form(id, args, context, intrinsic == "implements?")
-                    .map(Some);
+                    .map(Some)
             }
             "defmulti" | "defmethod" => {
                 if let Some(expanded) = self.expand_macro(id, operator, context)? {
@@ -4190,27 +4201,27 @@ impl Analyzer<'_> {
             }
             "defprotocol" => {
                 let expr = self.defprotocol_form(id, args, context)?;
-                return self.catalog_bundle(id, expr).map(Some);
+                self.catalog_bundle(id, expr).map(Some)
             }
             "extend-type" => {
                 let expr = self.extend_type_form(id, args, context)?;
-                return self.catalog_bundle(id, expr).map(Some);
+                self.catalog_bundle(id, expr).map(Some)
             }
             "extend-protocol" => {
                 let expr = self.extend_protocol_form(id, args, context)?;
-                return self.catalog_bundle(id, expr).map(Some);
+                self.catalog_bundle(id, expr).map(Some)
             }
             "specify!" | "specify" => {
-                return self
+                self
                     .specify_form(id, args, context, operator_name == "specify")
-                    .map(Some);
+                    .map(Some)
             }
             "deftype" | "defrecord" => {
                 let expr = self.type_form(id, args, context, intrinsic == "defrecord")?;
-                return self.catalog_bundle(id, expr).map(Some);
+                self.catalog_bundle(id, expr).map(Some)
             }
-            "assert" => return self.assert_form(id, args, context).map(Some),
-            _ => return Ok(None),
+            "assert" => self.assert_form(id, args, context).map(Some),
+            _ => Ok(None),
         }
     }
 
@@ -6349,9 +6360,8 @@ impl Analyzer<'_> {
                 // Function/method bodies install definitions on invocation, not
                 // when the enclosing function or object is constructed.
                 ExprKind::Fn { .. } | ExprKind::Reify { .. } | ExprKind::DefType { .. } | ExprKind::ExtendType { .. } => continue,
-                ExprKind::Def { global, init: Some(_), .. } => {
-                    if !products.contains(global) { products.push(*global); }
-                }
+                ExprKind::Def { global, init: Some(_), .. }
+                    if !products.contains(global) => { products.push(*global); }
                 _ => (),
             }
             pending.extend(crate::program_fragment::children(&self.program, value));
@@ -6361,10 +6371,14 @@ impl Analyzer<'_> {
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
         session.register_bundle(
-            &self.program, &products, &[], false, form, self.definition_snapshot(),
-            self.macro_host.macro_analysis_frame(),
-            format!("{}:{}:{}", loc.source, loc.line, loc.column),
-            Some(crate::program_fragment::expression_snapshot(&self.program, Some(expr))),
+            &self.program,
+            crate::compilation_session::BundleRegistration {
+                products: &products, extensions: &[], once: false, form,
+                snapshot: self.definition_snapshot(),
+                host: self.macro_host.macro_analysis_frame(),
+                location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
+                analyzed: Some(crate::program_fragment::expression_snapshot(&self.program, Some(expr))),
+            },
         ).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         Ok(expr)
     }
@@ -6484,14 +6498,13 @@ impl Analyzer<'_> {
         let unit = session
             .register_bundle(
                 &self.program,
-                &products,
-                &extensions,
-                once,
-                form,
-                self.definition_snapshot(),
-                self.macro_host.macro_analysis_frame(),
-                format!("{}:{}:{}", loc.source, loc.line, loc.column),
-                None,
+                crate::compilation_session::BundleRegistration {
+                    products: &products, extensions: &extensions, once, form,
+                    snapshot: self.definition_snapshot(),
+                    host: self.macro_host.macro_analysis_frame(),
+                    location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
+                    analyzed: None,
+                },
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         self.program.exprs[expr.0].kind = ExprKind::Nil;
@@ -7958,7 +7971,7 @@ impl Analyzer<'_> {
                     self.requires,
                     location,
                 )
-                .map_err(&error)?;
+                .map_err(error)?;
             let env = self.array_environment(env).map_err(error)?;
             let result = self
                 .macro_host
@@ -7973,10 +7986,10 @@ impl Analyzer<'_> {
             None if !shadow_core => Some(target),
             _ => None,
         };
-        if let Some(operation @ ("macroexpand" | "macroexpand-1")) = source_expander {
-            if let Some(expanded) = self.expand_quoted_source(call, operation)? {
-                return Ok(Some(expanded));
-            }
+        if let Some(operation @ ("macroexpand" | "macroexpand-1")) = source_expander
+            && let Some(expanded) = self.expand_quoted_source(call, operation)?
+        {
+            return Ok(Some(expanded));
         }
         let core_name = self
             .macro_host
@@ -8053,7 +8066,7 @@ impl Analyzer<'_> {
                     self.requires,
                     location,
                 )
-                .map_err(&error)?;
+                .map_err(error)?;
             let environment = self.array_environment(environment).map_err(error)?;
             let expanded = self
                 .macro_host
@@ -9615,12 +9628,22 @@ pub(crate) fn munge_js_member(name: &str) -> String {
 
 /// Advance explicit interactive symbol state without restarting compilation roots.
 pub(crate) fn analyze_interactive_form(
-    form: &Form, host: &mut MacroHost, previous: Option<&Program>,
-    namespace: &str, aliases: &[(String, String)], requires: &[String],
-    resolution: NamespaceResolution, options: AnalysisOptions,
+    form: &Form,
+    host: &mut MacroHost,
+    previous: Option<&Program>,
+    definition_view: NamespaceAnalysisView<'_>,
+    options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
-    analyze_input_state(form.span().source().text(), &SyntaxTree { nodes: vec![], roots: vec![] },
-        host, options, warnings, Some(form), Some((namespace, aliases, requires, resolution)),
-        None, None, previous)
+    analyze_input(
+        form.span().source().text(),
+        &SyntaxTree { nodes: vec![], roots: vec![] },
+        host, options, warnings,
+        AnalysisInputState {
+            owned_form: Some(form),
+            definition_view: Some(definition_view),
+            previous,
+            ..Default::default()
+        },
+    )
 }

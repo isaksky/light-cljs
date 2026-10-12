@@ -521,7 +521,7 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
            (= (second (read-string "`local")) 'reader.app/local)
            (= (second (read-string "`map")) 'reader.app/map)
            (= (second (read-string "`inc")) `inc))"##).unwrap();
-    let js = light_cljs::compile_namespace("reader.app", &[root.clone()]).unwrap();
+    let js = light_cljs::compile_namespace("reader.app", std::slice::from_ref(&root)).unwrap();
     let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     assert_eq!(e.string(e.evaluate_js(&format!("String({js})")).unwrap()).unwrap(), "true");
     assert_eq!(run(&js), "true\n");

@@ -190,10 +190,10 @@ impl MacroHost {
             }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
-        if engine.is_none() {
-            if let Some(session) = self.session_handle() {
-                session.attach(&bootstrap)?;
-            }
+        if engine.is_none()
+            && let Some(session) = self.session_handle()
+        {
+            session.attach(&bootstrap)?;
         }
         let declaration = bootstrap
             .functions

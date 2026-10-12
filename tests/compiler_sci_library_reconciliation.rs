@@ -36,7 +36,7 @@ fn unhex(value: &str) -> String {
     String::from_utf8(
         value
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -89,7 +89,7 @@ fn exact_library_contexts_execute_in_both_phases_and_host_lifecycles() {
                 let mut fresh_host = MacroHost::new();
                 let javascript = light_cljs::compile_namespace_with_macros(
                     "user",
-                    &[root.clone()],
+                    std::slice::from_ref(&root),
                     if reused {
                         &mut reused_host
                     } else {

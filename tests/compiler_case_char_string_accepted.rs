@@ -12,7 +12,7 @@ fn hex(s: &str) -> String {
 fn unhex(s: &str) -> String {
     String::from_utf8(
         s.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -102,7 +102,7 @@ fn accepted_case_constants_execute_in_fresh_and_reused_macro_hosts() {
                 let mut fresh = MacroHost::new();
                 match light_cljs::compile_namespace_with_macros(
                     "user",
-                    &[sources.clone()],
+                    std::slice::from_ref(&sources),
                     if reuse { &mut reused } else { &mut fresh },
                 ) {
                     Err(e) => {
@@ -172,7 +172,7 @@ fn accepted_case_constants_execute_in_fresh_and_reused_macro_hosts() {
                 let mut fresh = MacroHost::new();
                 let host = if reuse { &mut reused } else { &mut fresh };
                 let error =
-                    light_cljs::compile_namespace_with_macros("user", &[folder.clone()], host)
+                    light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&folder), host)
                         .unwrap_err()
                         .to_string();
                 fs::write(folder.join("rejection.txt"), &error).unwrap();

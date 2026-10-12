@@ -45,7 +45,7 @@ fn original_case_char_string_rejection_and_actual_macro_recovery() {
             fs::write(folder.join("user.cljs"), &source).unwrap();
             let mut fresh = MacroHost::new();
             let host = if reuse { &mut reused } else { &mut fresh };
-            let error = light_cljs::compile_namespace_with_macros("user", &[folder.clone()], host)
+            let error = light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&folder), host)
                 .unwrap_err()
                 .to_string();
             assert!(

@@ -76,7 +76,7 @@ pub fn wire(data: &Datum) -> Result<Value, String> {
                         return Err("odd map bridge output".into());
                     }
                     let mut entries: Vec<_> = values
-                        .chunks_exact(2)
+                        .as_chunks::<2>().0.iter()
                         .map(|p| (p[0].clone(), p[1].clone()))
                         .collect();
                     entries.sort_by_key(|(k, v)| format!("(entry {} {})", k.wire(), v.wire()));

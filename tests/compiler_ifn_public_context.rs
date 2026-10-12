@@ -7,7 +7,7 @@ const FIXTURE: &str = include_str!("fixtures/compiler-ifn-public-context.tsv");
 fn unhex(text: &str) -> String {
     String::from_utf8(
         text.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|part| u8::from_str_radix(std::str::from_utf8(part).unwrap(), 16).unwrap())
             .collect(),
     )

@@ -137,7 +137,7 @@ fn inert(program: &Program, id: ExprId) -> bool {
         }
         Do(items) | List(items) | Vector(items) => items.iter().all(|id| inert(program, *id)),
         Map(items) | LiteralMap(items) => items
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .all(|pair| scalar(program, pair[0]) && inert(program, pair[1])),
         Set(items) | LiteralSet(items) => items.iter().all(|id| scalar(program, *id)),
         // Non-scalar hashing, reader literals, metadata and unknown operations
@@ -205,7 +205,7 @@ fn dynamic(program: &Program, g: GlobalId) -> bool {
     let ExprKind::Map(items) = &program.exprs[id.0].kind else {
         return true;
     };
-    items.chunks_exact(2).any(|pair| {
+    items.as_chunks::<2>().0.iter().any(|pair| {
         let ExprKind::Keyword(name) = program.exprs[pair[0].0].kind else {
             return false;
         };

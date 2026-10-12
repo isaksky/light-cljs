@@ -145,7 +145,7 @@ pub(crate) fn string_hash(units: &[u16]) -> u32 {
 
 pub(crate) fn named_hash(keyword: bool, namespace: Option<&[u16]>, name: &[u16]) -> u32 {
     let mut hash = 0;
-    for pair in name.chunks_exact(2) {
+    for pair in name.as_chunks::<2>().0 {
         hash = mix_hash(hash, u32::from(pair[0]) | (u32::from(pair[1]) << 16));
     }
     if name.len() % 2 == 1 {

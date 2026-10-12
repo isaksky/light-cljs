@@ -1,0 +1,369 @@
+{
+  "schema_version": 1,
+  "pellet": "light-cljs-187",
+  "starting_head": "fbfa9364e51d5414db3b2e54d46aef8af9736919",
+  "compiler": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)",
+  "clippy_command": "cargo clippy --locked --all-targets -- -D warnings",
+  "before": {
+    "distinct_library_errors_per_build": 56,
+    "error_observations": 112,
+    "code_message_file_classes": 21,
+    "diagnostics": [
+      {
+        "code": "clippy::type_complexity",
+        "message": "very complex type used. Consider factoring parts into `type` definitions",
+        "file": "src/analyzer.rs",
+        "observations": 4,
+        "primary_lines": [
+          2946,
+          2960
+        ]
+      },
+      {
+        "code": "clippy::too_many_arguments",
+        "message": "this function has too many arguments (9/7)",
+        "file": "src/analyzer.rs",
+        "observations": 4,
+        "primary_lines": [
+          2939,
+          9617
+        ]
+      },
+      {
+        "code": "clippy::too_many_arguments",
+        "message": "this function has too many arguments (10/7)",
+        "file": "src/analyzer.rs",
+        "observations": 2,
+        "primary_lines": [
+          2953
+        ]
+      },
+      {
+        "code": "clippy::collapsible_if",
+        "message": "this `if` statement can be collapsed",
+        "file": "src/analyzer.rs",
+        "observations": 4,
+        "primary_lines": [
+          4003,
+          7976
+        ]
+      },
+      {
+        "code": "clippy::needless_return",
+        "message": "unneeded `return` statement",
+        "file": "src/analyzer.rs",
+        "observations": 44,
+        "primary_lines": [
+          4113,
+          4115,
+          4119,
+          4120,
+          4121,
+          4122,
+          4124,
+          4129,
+          4136,
+          4146,
+          4152,
+          4154,
+          4162,
+          4168,
+          4170,
+          4193,
+          4197,
+          4201,
+          4204,
+          4210,
+          4212,
+          4213
+        ]
+      },
+      {
+        "code": "clippy::collapsible_match",
+        "message": "this `if` can be collapsed into the outer `match`",
+        "file": "src/analyzer.rs",
+        "observations": 2,
+        "primary_lines": [
+          6353
+        ]
+      },
+      {
+        "code": "clippy::needless_borrows_for_generic_args",
+        "message": "the borrowed expression implements the required traits",
+        "file": "src/analyzer.rs",
+        "observations": 4,
+        "primary_lines": [
+          7961,
+          8056
+        ]
+      },
+      {
+        "code": "clippy::chunks_exact_to_as_chunks",
+        "message": "using `chunks_exact` with a constant chunk size",
+        "file": "src/application.rs",
+        "observations": 4,
+        "primary_lines": [
+          140,
+          208
+        ]
+      },
+      {
+        "code": "clippy::needless_question_mark",
+        "message": "enclosing `Ok` and `?` operator are unneeded",
+        "file": "src/compiler_binding_macros.rs",
+        "observations": 6,
+        "primary_lines": [
+          45,
+          75,
+          333
+        ]
+      },
+      {
+        "code": "clippy::too_many_arguments",
+        "message": "this function has too many arguments (10/7)",
+        "file": "src/compilation_session.rs",
+        "observations": 2,
+        "primary_lines": [
+          144
+        ]
+      },
+      {
+        "code": "clippy::infallible_destructuring_match",
+        "message": "you seem to be trying to use `match` to destructure a single infallible pattern",
+        "file": "src/compiler_reader.rs",
+        "observations": 2,
+        "primary_lines": [
+          335
+        ]
+      },
+      {
+        "code": "clippy::collapsible_if",
+        "message": "this `if` statement can be collapsed",
+        "file": "src/evaluator.rs",
+        "observations": 4,
+        "primary_lines": [
+          271,
+          749
+        ]
+      },
+      {
+        "code": "clippy::type_complexity",
+        "message": "very complex type used. Consider factoring parts into `type` definitions",
+        "file": "src/evaluator.rs",
+        "observations": 2,
+        "primary_lines": [
+          541
+        ]
+      },
+      {
+        "code": "clippy::needless_borrow",
+        "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+        "file": "src/evaluator.rs",
+        "observations": 6,
+        "primary_lines": [
+          857,
+          866,
+          881
+        ]
+      },
+      {
+        "code": "clippy::clone_on_copy",
+        "message": "using `clone` on type `MacroLimits` which implements the `Copy` trait",
+        "file": "src/eval_session.rs",
+        "observations": 2,
+        "primary_lines": [
+          210
+        ]
+      },
+      {
+        "code": "clippy::collapsible_if",
+        "message": "this `if` statement can be collapsed",
+        "file": "src/eval_session.rs",
+        "observations": 2,
+        "primary_lines": [
+          681
+        ]
+      },
+      {
+        "code": "clippy::type_complexity",
+        "message": "very complex type used. Consider factoring parts into `type` definitions",
+        "file": "src/eval_compiler.rs",
+        "observations": 6,
+        "primary_lines": [
+          19,
+          518,
+          573
+        ]
+      },
+      {
+        "code": "clippy::collapsible_if",
+        "message": "this `if` statement can be collapsed",
+        "file": "src/macro_host.rs",
+        "observations": 6,
+        "primary_lines": [
+          229,
+          243,
+          352
+        ]
+      },
+      {
+        "code": "clippy::needless_borrow",
+        "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+        "file": "src/macro_host.rs",
+        "observations": 2,
+        "primary_lines": [
+          662
+        ]
+      },
+      {
+        "code": "clippy::chunks_exact_to_as_chunks",
+        "message": "using `chunks_exact` with a constant chunk size",
+        "file": "src/reader_literals.rs",
+        "observations": 2,
+        "primary_lines": [
+          148
+        ]
+      },
+      {
+        "code": "clippy::collapsible_if",
+        "message": "this `if` statement can be collapsed",
+        "file": "src/compiler_bootstrap.rs",
+        "observations": 2,
+        "primary_lines": [
+          193
+        ]
+      }
+    ]
+  },
+  "after": {
+    "success": true,
+    "diagnostic_observations": 0,
+    "compiler_artifacts": 166
+  },
+  "compiler_benchmark": {
+    "command": "cargo bench --locked --bench compiler -- --samples 9 --iterations 32",
+    "validated_scenario_phase_pairs": 47,
+    "samples_per_pair": 9,
+    "iterations_per_sample": 32,
+    "timing_rows": 423
+  },
+  "regressions": {
+    "production_and_harness_targets": {
+      "targets": 20,
+      "passed": 166,
+      "failed": 1,
+      "ignored": 5,
+      "filtered_out": 6
+    },
+    "ordinary_numeric_macro": {
+      "targets": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 114
+    },
+    "current_witness_bindings": {
+      "status": "passed",
+      "targets": 8,
+      "passed": 23,
+      "failed": 0,
+      "ignored": 1,
+      "initial_combined_run": {
+        "targets": 9,
+        "passed": 23,
+        "failed": 1,
+        "ignored": 1,
+        "filtered_out": 0
+      },
+      "resolved_accounting_drift": "The complete namespace guard still pins the exact driver hash. Its hash was rebound after both fresh namespace tests passed; the subsequent full accounting check passed."
+    },
+    "inventory_accounting": {
+      "targets": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0
+    }
+  },
+  "unchanged_baseline_failure": {
+    "owner": "light-cljs-188",
+    "test": "evaluator::compiler_units_execute_with_identical_expected_results_in_quickjs_and_node",
+    "original_source": "[{:a 1} #{2 3} (apply (fn [a b] (+ a b)) [4 5])]",
+    "expected_print": "[{:a 1} #{2 3} 9]",
+    "baseline_and_after_print": "[{:a 1} #{3 2} 9]",
+    "independent_archive_head": "fbfa9364e51d5414db3b2e54d46aef8af9736919",
+    "archive_path_file": "/tmp/light-cljs-187-baseline-path"
+  },
+  "language_evidence_invariants": {
+    "changed_test_support_files_with_identical_string_literals": 50,
+    "current_witness_rows_rebound": {
+      "obligation-witnesses.jsonl": 287,
+      "phase-witnesses.jsonl": 288
+    },
+    "witness_edits": "Exact before/after Rust test-source hashes only; row order and all other data preserved.",
+    "full_manifest_edit": "Only src/analyzer.rs local_sources source hash changed.",
+    "generated_inventory_bodies_obligations_expectations": "Byte-identical",
+    "historical_receipts": "Unchanged; no historical execution is relabeled and no new language-completion credit is claimed.",
+    "inventory_check": "python3 -B tests/reference/compiler-language/extract_inventory.py --check passed",
+    "namespace_guard_edit": "Only DRIVER_HASH changed to the current compiler_syntax_context.rs digest. Original source/result equality and exact test-name/hash validation remain strict."
+  },
+  "limits": [
+    "Cancellation/resource-limit execution suites excluded;156 not retried or repaired.",
+    "One ordinary evaluator fixture failure predates this lint cleanup and has focused owner188.",
+    "This is not a full language-completion execution or whole cargo test pass."
+  ],
+  "raw_artifacts": [
+    {
+      "path": "/tmp/light-cljs-187-before-clippy.jsonl",
+      "sha256": "e828d9d62575d157967ced5fff7dd3187d9661113588944cc7647418c9986759"
+    },
+    {
+      "path": "/tmp/light-cljs-187-before-clippy-summary.json",
+      "sha256": "b3d959b8ed851b257767e7bcdff462ccddc9290db3add9dac173e8b7e5f436bb"
+    },
+    {
+      "path": "/tmp/light-cljs-187-final-clippy.jsonl",
+      "sha256": "cc47bca71620f6c1d611af58f3681c26564cb30e9a63d6fe62d4d6b9657c6769"
+    },
+    {
+      "path": "/tmp/light-cljs-187-tests-final.stdout",
+      "sha256": "4cef5e204758a4eba0939f9e30de2a14fab479147d32343259c9bd0d8830d2e3"
+    },
+    {
+      "path": "/tmp/light-cljs-187-tests-final.stderr",
+      "sha256": "984abec3c9dc123a2c6b3e44d115ad324b6b53c46950ab2bd0cce967846a17b4"
+    },
+    {
+      "path": "/tmp/light-cljs-187-baseline-evaluator.stdout",
+      "sha256": "6e2ff8521dc369ca11229925f4bbe28443efdbcd51a67812365aecc130f90275"
+    },
+    {
+      "path": "/tmp/light-cljs-187-baseline-evaluator.stderr",
+      "sha256": "74875dbd5f0140a5f3f6c8078f0a0a63c016732a89de2cbafad06d9461958d47"
+    },
+    {
+      "path": "/tmp/light-cljs-187-compiler-bench.csv",
+      "sha256": "50090c8e96355dec37b0127f16703c89cde0ea63663e1ef672fb1690a168510c"
+    },
+    {
+      "path": "/tmp/light-cljs-187-macro-test.stdout",
+      "sha256": "8a711913d04a88d7b288c813a587bbb616ce55c89827e52387cd3d197d88519a"
+    },
+    {
+      "path": "/tmp/light-cljs-187-binding-tests.stdout",
+      "sha256": "97732b444580ece8b5636c96d64a9ae69c43385a126a6dc385044874383f75cc"
+    },
+    {
+      "path": "/tmp/light-cljs-187-binding-tests.stderr",
+      "sha256": "7ec1890d3b9e65d2e0f551e29d44662882ad04fca5b1c9d0cd6befcc0eb021da"
+    },
+    {
+      "path": "/tmp/light-cljs-187-accounting-final.stdout",
+      "sha256": "bda568ca781e5e44f7ede33a8adfd2dfad417a8ffdaf064f3d1f89cc6c687b78"
+    },
+    {
+      "path": "/tmp/light-cljs-187-accounting-final.stderr",
+      "sha256": "eb12b3322fa668d0a01ceade66d85dbc9af897fdbfffff30c4c9f15a4e91a555"
+    }
+  ]
+}

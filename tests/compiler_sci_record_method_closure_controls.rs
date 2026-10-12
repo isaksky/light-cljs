@@ -30,7 +30,7 @@ fn original_closure_and_ownership_controls() {
             fs::create_dir(&directory).unwrap();
             fs::write(directory.join("user.cljs"), &source).unwrap();
             let mut fresh = MacroHost::new();
-            let result = light_cljs::compile_namespace_with_macros("user", &[directory.clone()], if reuse { &mut reused } else { &mut fresh });
+            let result = light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&directory), if reuse { &mut reused } else { &mut fresh });
             match (result, rejection) {
                 (Err(error), Some(expected)) => {
                     let error = error.to_string();

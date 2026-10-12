@@ -207,7 +207,7 @@ impl EvalSession {
         let namespace_update = engine
             .evaluate_js("name => { rt.core.currentNs = rt.core.createNs(name); return null; }")?;
         let mut host = crate::MacroHost::new();
-        host.limits = options.compiler.clone();
+        host.limits = options.compiler;
         host.evaluator_options = options.engine.clone();
         host.interactive_control = Some(engine.control());
         for (tag, source) in &options.data_readers {
@@ -678,10 +678,10 @@ impl EvalSession {
         Ok(self.engine.lookup(&name, core)?)
     }
     fn binding_target(&self, name: &str) -> (String, bool) {
-        if let Some(("cljs.core" | "clojure.core", local)) = name.split_once('/') {
-            if let Some(core) = crate::CoreFnId::resolve(local) {
-                return (core.runtime_name().into(), true);
-            }
+        if let Some(("cljs.core" | "clojure.core", local)) = name.split_once('/')
+            && let Some(core) = crate::CoreFnId::resolve(local)
+        {
+            return (core.runtime_name().into(), true);
         }
         (
             if name.contains('/') {

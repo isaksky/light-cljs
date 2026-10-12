@@ -10,7 +10,7 @@ fn unhex(value: &str) -> String {
     String::from_utf8(
         value
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|part| u8::from_str_radix(std::str::from_utf8(part).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -135,7 +135,7 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
         std::fs::write(root.join("syntax/header.cljs"), source).unwrap();
         let javascript = light_cljs::compile_namespace_with_macros(
             "syntax.header",
-            &[root.clone()],
+            std::slice::from_ref(&root),
             &mut MacroHost::new(),
         )
         .unwrap();

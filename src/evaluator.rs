@@ -268,10 +268,10 @@ impl Evaluator {
                 .catch(&ctx)
                 .map_err(|error| EvalError(error.to_string()))
         });
-        if let Err(error) = self.control.poll() {
-            if result.is_ok() || self.control.0.terminal.load(Ordering::Relaxed) != 4 {
-                return Err(error);
-            }
+        if let Err(error) = self.control.poll()
+            && (result.is_ok() || self.control.0.terminal.load(Ordering::Relaxed) != 4)
+        {
+            return Err(error);
         }
         // Engine failures poison this operation. Never retry through a native path.
         if result.is_err() && !self.preserve_language_errors {
@@ -538,7 +538,7 @@ impl Evaluator {
         &self,
         name: &str,
         arity: HostArity,
-        callback: Rc<dyn for<'a, 'js> Fn(&HostCall<'a, 'js>, &[ValueId]) -> Result<ValueId, EvalError>>,
+        callback: crate::eval_session::HostCallback,
     ) -> Result<ValueId, EvalError> {
         let control = self.control.clone();
         let generation = self.generation;
@@ -746,10 +746,10 @@ impl<'js> ActiveEvaluator<'_, 'js> {
             .map_err(|error| EvalError(error.to_string()));
         // Preserve the owned original diagnostic while nested scopes unwind a
         // poisoned session; cancellation/resource limits still take precedence.
-        if let Err(error) = self.control.poll() {
-            if result.is_ok() || self.control.0.terminal.load(Ordering::Relaxed) != 4 {
-                return Err(error);
-            }
+        if let Err(error) = self.control.poll()
+            && (result.is_ok() || self.control.0.terminal.load(Ordering::Relaxed) != 4)
+        {
+            return Err(error);
         }
         if result.is_err() && !self.preserve_language_errors {
             self.control.invalidate();
@@ -854,7 +854,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
             let descriptor = self
                 .bridge
                 .borrow_mut()
-                .encode(&ctx, data, &self.control, limits)?;
+                .encode(&ctx, data, self.control, limits)?;
             let f: Function = ctx.eval("__lightEvaluator.importForm")?;
             let index: u64 = f.call((descriptor,))?;
             // Snapshot canonical payloads so mutable host literals are never reused
@@ -863,7 +863,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
             let snapshot: Array = export.call((index, limits.nodes, limits.depth))?;
             self.bridge
                 .borrow_mut()
-                .decode(snapshot, &self.control, limits, true)?;
+                .decode(snapshot, self.control, limits, true)?;
             Ok(index)
         })?;
         Ok(ValueId {
@@ -878,7 +878,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
             let descriptor: Array = f.call((id, limits.nodes, limits.depth))?;
             self.bridge
                 .borrow_mut()
-                .decode(descriptor, &self.control, limits, false)
+                .decode(descriptor, self.control, limits, false)
         })
     }
     pub fn export_form(

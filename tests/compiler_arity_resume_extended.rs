@@ -94,7 +94,7 @@ fn complete_core_helpers_execute_in_actual_phases_and_lifecycles() {
                 } else {
                     &mut reused
                 };
-                let javascript = compile_namespace_with_macros("user", &[root.clone()], host)
+                let javascript = compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
                     .unwrap_or_else(|error| panic!("{id} {lifecycle} {phase}: {error}"));
                 std::fs::write(root.join("compiled.js"), &javascript).unwrap();
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

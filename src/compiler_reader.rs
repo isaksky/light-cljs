@@ -332,9 +332,7 @@ impl Lowerer<'_> {
             let Some(next) = input.pending.pop_front() else {
                 return Ok(None);
             };
-            let id = match next {
-                InputForm::Syntax(id) => id,
-            };
+            let InputForm::Syntax(id) = next;
             let span = self.syntax.nodes()[id.0].span.clone();
             if self
                 .discarded

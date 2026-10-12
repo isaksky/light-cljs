@@ -13,7 +13,7 @@ fn hex(s: &str) -> String {
 fn unhex(s: &str) -> String {
     String::from_utf8(
         s.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
             .collect(),
     )

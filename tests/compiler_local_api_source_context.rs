@@ -12,7 +12,7 @@ fn unhex(value: &str) -> String {
     String::from_utf8(
         value
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -81,7 +81,7 @@ fn original_local_api_sources_execute_in_both_phases_and_host_lifecycles(start: 
                 } else {
                     &mut reused
                 };
-                let javascript = compile_namespace_with_macros("user", &[root.clone()], host)
+                let javascript = compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
                     .unwrap_or_else(|error| panic!("{id} {host_kind} {phase}: {error}"));
                 std::fs::write(root.join("compiled.js"), &javascript).unwrap();
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

@@ -22,6 +22,16 @@ pub(crate) struct DefinitionSnapshot {
     pub definition_name: Option<String>,
     pub extension_frontier: usize,
 }
+pub(crate) struct BundleRegistration<'a> {
+    pub products: &'a [crate::analyzer::GlobalId],
+    pub extensions: &'a [(String, Option<String>, String)],
+    pub once: bool,
+    pub form: Form,
+    pub snapshot: DefinitionSnapshot,
+    pub host: MacroHost,
+    pub location: String,
+    pub analyzed: Option<Program>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VarId(usize);
 #[derive(Clone, Copy, Debug)]
@@ -144,15 +154,11 @@ impl CompilationSession {
     pub fn register_bundle(
         &self,
         program: &Program,
-        products: &[crate::analyzer::GlobalId],
-        extensions: &[(String, Option<String>, String)],
-        once: bool,
-        form: Form,
-        snapshot: DefinitionSnapshot,
-        host: MacroHost,
-        location: String,
-        analyzed: Option<Program>,
+        registration: BundleRegistration<'_>,
     ) -> Result<usize, String> {
+        let BundleRegistration {
+            products, extensions, once, form, snapshot, host, location, analyzed,
+        } = registration;
         fn quoted(s: &str) -> String {
             let mut out = String::from("\"");
             for c in s.encode_utf16() {

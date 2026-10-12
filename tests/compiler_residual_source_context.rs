@@ -73,7 +73,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                 }
                 let javascript = light_cljs::compile_namespace_with_macros(
                     fields[1],
-                    &[root.clone()],
+                    std::slice::from_ref(&root),
                     if reused {
                         &mut reused_host
                     } else {

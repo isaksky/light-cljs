@@ -130,7 +130,7 @@ fn complete_arity_oracles_execute_in_actual_phases_and_lifecycles() {
                 } else {
                     &mut reused
                 };
-                let js = compile_namespace_with_macros(namespace, &[root.clone()], host)
+                let js = compile_namespace_with_macros(namespace, std::slice::from_ref(&root), host)
                     .unwrap_or_else(|e| panic!("{id} {lifecycle} {phase}: {e}"));
                 std::fs::write(root.join("compiled.js"), &js).unwrap();
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

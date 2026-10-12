@@ -104,8 +104,7 @@ fn failed_extension_demand_recovers_without_hiding_real_cycles() {
         ),
     ] {
         let error = light_cljs::compile_with_macros(source, &mut host)
-            .err()
-            .expect("invalid demand must fail")
+            .expect_err("invalid demand must fail")
             .to_string();
         assert!(error.contains(diagnostic), "{error}");
         if diagnostic == "cycle" {

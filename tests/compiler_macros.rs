@@ -1362,7 +1362,7 @@ mod javascript_form_bridge {
              (js/isNaN (literal ##NaN)) (infinite? (literal ##Inf))
              (infinite? (literal ##-Inf)) (inspect 1)]"#;
         let mut host = MacroHost::new();
-        let p = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
+        let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
             e.print(e.evaluate(&p).unwrap()).unwrap(),

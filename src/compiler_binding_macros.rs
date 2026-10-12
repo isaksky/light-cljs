@@ -42,7 +42,7 @@ pub(crate) fn call(c: &DataBuilder, name: &str, args: &[Datum]) -> Result<Datum,
         c.symbol(Name::new(Some("clojure.core"), name))
     }];
     forms.extend_from_slice(args);
-    Ok(c.list(&forms)?)
+    c.list(&forms)
 }
 pub(crate) fn fresh(c: &DataBuilder) -> Datum {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -72,7 +72,7 @@ impl<'a> Expander<'a> {
         Ok(Self { c })
     }
     fn entries(&self, map: &Datum) -> Result<Vec<(Datum, Datum)>, String> {
-        Ok(map.entries()?)
+        map.entries()
     }
 
     fn bindings(&self, bindings: &Datum) -> Result<Vec<Datum>, String> {
@@ -330,7 +330,7 @@ impl<'a> Expander<'a> {
                     if !matches!(v.inspect(), DatumView::List(_)) {
                         return Err(invalid("function requires method lists"));
                     }
-                    Ok(v.elements()?)
+                    v.elements()
                 })
                 .collect::<Result<Vec<_>, String>>()?
         };

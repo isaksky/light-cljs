@@ -5,6 +5,12 @@ use crate::compiler_data::{DatumKind, Form, Name, Source};
 use crate::source_provider::SourceInput;
 use crate::{AnalysisError, AnalysisErrorKind, ExprContext, MacroHost, Program};
 
+type NamespaceContext = (Vec<(String, String)>, Vec<String>, NamespaceResolution);
+type NamespaceDirective = (
+    Vec<crate::source_provider::LoadRequest>,
+    Option<crate::compiler::SessionNamespaceDirective>,
+);
+
 pub(crate) struct InteractiveCompiler {
     pub(crate) host: MacroHost,
     program: Option<Program>,
@@ -16,10 +22,7 @@ pub(crate) struct InteractiveCompiler {
     pub(crate) warnings: Vec<AnalysisWarning>,
     pub(crate) policy: NamePolicy,
     exposed: std::collections::HashSet<Name>,
-    contexts: std::collections::HashMap<
-        String,
-        (Vec<(String, String)>, Vec<String>, NamespaceResolution),
-    >,
+    contexts: std::collections::HashMap<String, NamespaceContext>,
 }
 impl InteractiveCompiler {
     #[cfg(test)]
@@ -286,10 +289,12 @@ impl InteractiveCompiler {
             form,
             &mut self.host,
             self.program.as_ref(),
-            &self.namespace,
-            &self.aliases,
-            &requires,
-            resolution,
+            crate::analyzer::NamespaceAnalysisView {
+                namespace: &self.namespace,
+                aliases: &self.aliases,
+                requires: &requires,
+                resolution,
+            },
             self.options,
             &mut self.warnings,
         )?;
@@ -515,13 +520,7 @@ impl InteractiveCompiler {
     pub(crate) fn directive(
         &mut self,
         form: &Form,
-    ) -> Result<
-        Option<(
-            Vec<crate::source_provider::LoadRequest>,
-            Option<crate::compiler::SessionNamespaceDirective>,
-        )>,
-        crate::EvalDiagnostic,
-    > {
+    ) -> Result<Option<NamespaceDirective>, crate::EvalDiagnostic> {
         let children = form.children();
         if matches!(
             form.data().kind(),
@@ -570,7 +569,7 @@ impl InteractiveCompiler {
     fn directive_inner(
         &mut self,
         form: &Form,
-    ) -> Result<Option<(Vec<crate::source_provider::LoadRequest>, Option<crate::compiler::SessionNamespaceDirective>)>, String> {
+    ) -> Result<Option<NamespaceDirective>, String> {
         use crate::source_provider::{LoadRequest, Reload};
         fn text(form: &Form) -> Option<String> {
             match form.data().kind() {

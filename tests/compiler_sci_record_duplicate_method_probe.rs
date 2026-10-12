@@ -118,7 +118,7 @@ fn original_duplicate_method_executes_with_last_dispatch_in_both_phases() {
                 let mut fresh = MacroHost::new();
                 let host = if reuse { &mut reused } else { &mut fresh };
                 let javascript =
-                    light_cljs::compile_namespace_with_macros("user", &[directory.clone()], host)
+                    light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&directory), host)
                         .unwrap_or_else(|e| panic!("{name}: {e}"));
                 fs::write(directory.join("compiled.js"), &javascript).unwrap();
                 execute(&javascript, expected, &directory);

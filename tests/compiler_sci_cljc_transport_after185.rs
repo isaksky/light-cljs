@@ -12,7 +12,7 @@ fn hex(s: &str) -> String {
 fn unhex(s: &str) -> String {
     String::from_utf8(
         s.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -97,7 +97,7 @@ fn original_cljc_transport_values_execute_in_both_phases_and_host_lifecycles() {
                 let mut fresh = MacroHost::new();
                 let unit = light_cljs::compile_namespace_with_macros(
                     "user",
-                    &[folder.clone()],
+                    std::slice::from_ref(&folder),
                     if reuse { &mut reused } else { &mut fresh },
                 )
                 .unwrap();

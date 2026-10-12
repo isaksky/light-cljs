@@ -71,7 +71,7 @@ fn unchanged_invoke_fixture_preserves_its_original_declared_call_failure() {
             &mut reused
         };
         let javascript =
-            compile_namespace_with_macros("cljs.invoke-test", &[sources.clone()], host).unwrap();
+            compile_namespace_with_macros("cljs.invoke-test", std::slice::from_ref(&sources), host).unwrap();
         std::fs::write(sources.join("compiled.js"), &javascript).unwrap();
         // Observe the whole original program. The final record forms remain present
         // and unexecuted after the original deliberately undefined declared call.

@@ -226,10 +226,10 @@ impl MacroHost {
         let unit = crate::emitter::emit_js_unit(&program);
         let mut readers = self.compiler_data_readers.borrow_mut();
         readers.units.insert(tag.clone(), unit);
-        if let Some(id) = readers.functions.remove(&tag) {
-            if let Some(evaluator) = &readers.evaluator {
-                let _ = evaluator.release(id);
-            }
+        if let Some(id) = readers.functions.remove(&tag)
+            && let Some(evaluator) = &readers.evaluator
+        {
+            let _ = evaluator.release(id);
         }
         Ok(())
     }
@@ -240,8 +240,10 @@ impl MacroHost {
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
         let mut readers = self.compiler_data_readers.borrow_mut();
         readers.default_unit = Some(crate::emitter::emit_js_unit(&program));
-        if let Some(id) = readers.default_function.take() {
-            if let Some(evaluator) = &readers.evaluator { let _ = evaluator.release(id); }
+        if let Some(id) = readers.default_function.take()
+            && let Some(evaluator) = &readers.evaluator
+        {
+            let _ = evaluator.release(id);
         }
         Ok(())
     }
@@ -349,10 +351,10 @@ impl MacroHost {
     pub(crate) fn set_interactive_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
         let current = self.imports.entry(caller.to_owned()).or_default();
         for import in imports {
-            if let Some(alias) = &import.alias {
-                if current.iter().any(|old| old.alias.as_ref() == Some(alias) && old.namespace != import.namespace) {
-                    return Err(format!("conflicting namespace alias: {alias}"));
-                }
+            if let Some(alias) = &import.alias
+                && current.iter().any(|old| old.alias.as_ref() == Some(alias) && old.namespace != import.namespace)
+            {
+                return Err(format!("conflicting namespace alias: {alias}"));
             }
             if let Some(old) = current.iter_mut().find(|old| old.namespace == import.namespace && old.alias == import.alias) {
                 for name in import.refers { if !old.refers.contains(&name) { old.refers.push(name); } }
@@ -659,7 +661,7 @@ impl MacroHost {
         name: &Name,
     ) -> Result<Option<Form>, String> {
         let builder = crate::compiler_data::DataBuilder;
-        let extended = crate::compiler_destructuring::expand(&builder, form, &name)?;
+        let extended = crate::compiler_destructuring::expand(&builder, form, name)?;
         let parts = form.data().elements()?;
         let operation = String::from_utf16_lossy(name.name());
         let minimum = match operation.as_ref() {

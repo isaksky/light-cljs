@@ -261,7 +261,7 @@ fn checked_options_reset_between_loaded_files_and_capture_definitions() {
     let mut warnings = Vec::new();
     let js = light_cljs::compiler::compile_namespace_with_warnings(
         "scope.alpha",
-        &[root.clone()],
+        std::slice::from_ref(&root),
         AnalysisOptions {
             array_checks: CheckedArrays::Error,
             ..Default::default()
