@@ -13,14 +13,13 @@ fn program(source: &str) -> light_cljs::Program {
     analyze(source, &parse(source).unwrap()).unwrap()
 }
 
+const COLLECTION_SOURCE: &str = "[{:a 1} #{2 3} (apply (fn [a b] (+ a b)) [4 5])]";
+
 #[test]
 fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() {
     let cases = [
         ("(+ 20 22)", "42"),
-        (
-            "[{:a 1} #{2 3} (apply (fn [a b] (+ a b)) [4 5])]",
-            "[{:a 1} #{2 3} 9]",
-        ),
+        (COLLECTION_SOURCE, "[{:a 1} #{3 2} 9]"),
         ("(let [a (atom 1)] (swap! a inc) @a)", "2"),
         (
             "(try (throw (js/Error. \"boom\")) (catch :default e (.-message e)))",
@@ -60,6 +59,41 @@ fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() 
             "Node: {source}"
         );
     }
+}
+
+#[test]
+fn complete_collection_fixture_preserves_typed_values_and_printing_in_both_engines() {
+    // Both pinned references establish the complete value and exact set order;
+    // see reference/evaluator-collection-contract.md for the historical failure.
+    let p = program(COLLECTION_SOURCE);
+    let observer = include_str!("support/evaluator_collection_observation.js");
+    let expected = include_str!("fixtures/evaluator-collection-observation.json").trim();
+    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+    let value = evaluator.evaluate(&p).unwrap();
+    let observe = evaluator
+        .evaluate_js(&format!(
+            "value => ({observer})(rt.inspect, rt.core.prStr, value)"
+        ))
+        .unwrap();
+    let observation = evaluator.call(observe, &[value]).unwrap();
+    assert_eq!(evaluator.string(observation).unwrap(), expected, "QuickJS");
+    let script = format!(
+        "const rt = {}; console.log(({})(rt.inspect, rt.core.prStr, ({})(rt)));",
+        light_cljs::evaluator::RUNTIME_SOURCE,
+        observer,
+        emit_js_unit(&p)
+    );
+    let out = Command::new("node").args(["-e", &script]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        expected,
+        "Node"
+    );
 }
 #[test]
 fn units_share_brands_and_functions_but_sessions_reject_foreign_ids() {

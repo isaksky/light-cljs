@@ -1,0 +1,1 @@
+{"printed":"[{:a 1} #{3 2} 9]","value":{"$vector":[{"$map":[[{"$keyword":{"namespace":null,"name":"a","spelling":"a"}},1]],"count":1},{"$set":[3,2],"count":2},9]}}
