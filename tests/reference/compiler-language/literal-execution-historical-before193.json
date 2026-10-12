@@ -1,0 +1,154 @@
+{
+  "starting_head": "4b8a24f7599b3f3b575691faad6c96c89a718530",
+  "historical_complete_test_bodies": {
+    "map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics": "#[test]\nfn map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics() {\n    // Deliberate bounded-compiler semantics: upstream sometimes inlines hash-map\n    // into separate key/value arrays, or trusts reader-distinct numeric constants\n    // in unchecked literal arrays. Our constructor consistently uses JS equality\n    // after evaluating all owned source children in their original order.\n    let cases = [\n        Case {\n            id: \"map-literal-number-collision\".into(),\n            source: \"(let* [m {1 :int 1.0 :float}] [(count m) (= (get m 1) :float)])\".into(),\n            outcome: r#\"{\"status\":\"returned\",\"value\":{\"$vector\":[1,true]}}\"#.into(),\n            trace: \"[]\".into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n        Case {\n            id: \"map-direct-constructor-order\".into(),\n            source: \"(get (hash-map (observe 1) (observe 2) (observe 3) (observe 4)) 3)\".into(),\n            outcome: r#\"{\"status\":\"returned\",\"value\":4}\"#.into(),\n            trace: \"[1,2,3,4]\".into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n        Case {\n            id: \"map-literal-children-order\".into(),\n            source: \"(get {(observe 1) (observe 2) (observe 3) (observe 4)} 3)\".into(),\n            outcome: r#\"{\"status\":\"returned\",\"value\":4}\"#.into(),\n            trace: \"[1,2,3,4]\".into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n    ];\n    let actual = compiled_cases(&cases);\n    let actual = outcomes(&actual, &cases).unwrap();\n    for (case, actual) in cases.iter().zip(actual) {\n        assert_eq!(\n            actual,\n            format!(\n                \"{{\\\"id\\\":{},\\\"outcome\\\":{},\\\"trace\\\":{},\\\"stdout\\\":{}}}\",\n                json_string(&case.id),\n                case.outcome,\n                case.trace,\n                case.stdout\n            )\n        );\n    }\n}\n",
+    "set_reader_rejection_and_distinct_operand_effects_stay_separate": "#[test]\nfn set_reader_rejection_and_distinct_operand_effects_stay_separate() {\n    for source in [\n        \"(count #{(observe 1) (observe 1)})\",\n        \"(let* [x [1 2]] (count #{x x}))\",\n    ] {\n        assert!(\n            compile(&format!(\"(fn* [observe] {source})\"))\n                .unwrap_err()\n                .to_string()\n                .contains(\"duplicate set member\")\n        );\n    }\n    let cases = [\n        Case {\n            id: \"set-literal-discard-order\".into(),\n            source: \"(do #{(observe 1) (observe 2)} 3)\".into(),\n            outcome: r#\"{\"status\":\"returned\",\"value\":3}\"#.into(),\n            trace: \"[1,2]\".into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n        Case {\n            id: \"set-literal-return-order\".into(),\n            source: \"((fn* [] #{(observe 1) (observe 2)}))\".into(),\n            outcome: r#\"{\"status\":\"returned\",\"value\":{\"$set\":[1,2],\"count\":2}}\"#.into(),\n            trace: \"[1,2]\".into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n        Case {\n            id: \"set-literal-failure-order\".into(),\n            source: \"#{(observe 1) (js/lightHost.fail \\\"type\\\") (observe 3)}\".into(),\n            outcome: r#\"{\"status\":\"threw\",\"error\":{\"category\":\"type-error\"}}\"#.into(),\n            trace: r#\"[1,[\"throw\",\"type\"]]\"#.into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n        Case {\n            id: \"set-direct-number-deduplication\".into(),\n            source: \"[(count (hash-set 1 1.0)) (count (hash-set 0 -0.0))]\".into(),\n            outcome: r#\"{\"status\":\"returned\",\"value\":{\"$vector\":[1,1]}}\"#.into(),\n            trace: \"[]\".into(),\n            stdout: \"\\\"\\\"\".into(),\n        },\n    ];\n    let output = compiled_cases(&cases);\n    let actual = outcomes(&output, &cases).unwrap();\n    for (case, actual) in cases.iter().zip(actual) {\n        assert_eq!(\n            actual,\n            format!(\n                \"{{\\\"id\\\":{},\\\"outcome\\\":{},\\\"trace\\\":{},\\\"stdout\\\":{}}}\",\n                json_string(&case.id),\n                case.outcome,\n                case.trace,\n                case.stdout,\n            )\n        );\n    }\n}\n"
+  },
+  "sources": [
+    {
+      "id": "map-literal-number-collision",
+      "source": "(let* [m {1 :int 1.0 :float}] [(count m) (= (get m 1) :float)])",
+      "source_sha256": "aa8e1450b8bdafc852c65a4ab1b52263f4d083fd229977b6f94b6f02f84fe1df",
+      "historical_expected": {
+        "id": "map-literal-number-collision",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              1,
+              true
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-direct-constructor-order",
+      "source": "(get (hash-map (observe 1) (observe 2) (observe 3) (observe 4)) 3)",
+      "source_sha256": "672cd4095c6516ed20173f502a433728a86fd3f5a605fc43643964a8e2175f11",
+      "historical_expected": {
+        "id": "map-direct-constructor-order",
+        "outcome": {
+          "status": "returned",
+          "value": 4
+        },
+        "trace": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "map-literal-children-order",
+      "source": "(get {(observe 1) (observe 2) (observe 3) (observe 4)} 3)",
+      "source_sha256": "a3672499605a62592307fbb2face75e95d07dc29c7c7425b4fd748ceed476d2c",
+      "historical_expected": {
+        "id": "map-literal-children-order",
+        "outcome": {
+          "status": "returned",
+          "value": 4
+        },
+        "trace": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "set-literal-discard-order",
+      "source": "(do #{(observe 1) (observe 2)} 3)",
+      "source_sha256": "02e2cae92ddbb935eb4e442e21e28d2a21e3365826d755b6b329249a6b367b58",
+      "historical_expected": {
+        "id": "set-literal-discard-order",
+        "outcome": {
+          "status": "returned",
+          "value": 3
+        },
+        "trace": [
+          1,
+          2
+        ],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "set-literal-return-order",
+      "source": "((fn* [] #{(observe 1) (observe 2)}))",
+      "source_sha256": "934dcfd093831d57814c660ee43cb661d8f30861a4b51596d739ac65050e7a2d",
+      "historical_expected": {
+        "id": "set-literal-return-order",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$set": [
+              1,
+              2
+            ],
+            "count": 2
+          }
+        },
+        "trace": [
+          1,
+          2
+        ],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "set-literal-failure-order",
+      "source": "#{(observe 1) (js/lightHost.fail \"type\") (observe 3)}",
+      "source_sha256": "61d791ad33ef6bb229a8552286fb9b5eea3ba84e41759e718f975abdf37a5076",
+      "historical_expected": {
+        "id": "set-literal-failure-order",
+        "outcome": {
+          "status": "threw",
+          "error": {
+            "category": "type-error"
+          }
+        },
+        "trace": [
+          1,
+          [
+            "throw",
+            "type"
+          ]
+        ],
+        "stdout": ""
+      }
+    },
+    {
+      "id": "set-direct-number-deduplication",
+      "source": "[(count (hash-set 1 1.0)) (count (hash-set 0 -0.0))]",
+      "source_sha256": "1f2a16b2fab05b7e17754b587aeb4f9569227f692fc2f04303fca4a366241296",
+      "historical_expected": {
+        "id": "set-direct-number-deduplication",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              1,
+              1
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      }
+    }
+  ],
+  "reject_sources": [
+    "(count #{(observe 1) (observe 1)})",
+    "(let* [x [1 2]] (count #{x x}))"
+  ],
+  "pins": {},
+  "strict_complete": false,
+  "original_site_credit": 0
+}

@@ -193,6 +193,10 @@ fn compiled_cases(cases: &[Case]) -> String {
 }
 
 fn compiled_batch(cases: &[Case], first_index: usize) -> String {
+    node(&compiled_batch_script(cases, first_index))
+}
+
+fn compiled_batch_script(cases: &[Case], first_index: usize) -> String {
     let mut script = String::from(
         "globalThis.lightRuntimeRegistry = [];\n\
          globalThis.lightInspectValue = value => {\n\
@@ -242,7 +246,52 @@ fn compiled_batch(cases: &[Case], first_index: usize) -> String {
     }
     script.push_str("];\n");
     script.push_str(include_str!("support/execution.js"));
-    node(&script)
+    script
+}
+
+fn literal_cases_in_both_engines(cases: &[Case], label: &str) -> String {
+    let script = compiled_batch_script(cases, 0);
+    let node_output = node(&script);
+    // These exact literal cases use the shared observer's empty text stream.
+    // Reject byte writes here: this is not a Node Buffer/IO compatibility layer.
+    let prelude = r#"
+        globalThis.literalOutput = "";
+        globalThis.process = {
+            stdout: {write: text => { literalOutput += text; return true; }},
+            stderr: {write: () => true}
+        };
+        globalThis.Buffer = {
+            isBuffer: () => false,
+            from: text => {
+                if (typeof text !== "string") throw new Error("Unexpected literal byte output");
+                return text;
+            },
+            concat: chunks => ({toString: () => chunks.join("")})
+        };
+        globalThis.console = {log: (...xs) => process.stdout.write(xs.join(" ") + "\n")};
+    "#;
+    let runtime = rquickjs::Runtime::new().unwrap();
+    let context = rquickjs::Context::full(&runtime).unwrap();
+    let quickjs_input = format!("{prelude}\n{script}\nliteralOutput");
+    let quickjs_output =
+        context.with(|ctx| ctx.eval::<String, _>(quickjs_input.as_bytes()).unwrap());
+    if let Some(root) = std::env::var_os("LIGHT_LITERAL_EXECUTION_AUDIT_ROOT") {
+        let directory = PathBuf::from(root).join(label);
+        fs::create_dir_all(&directory).unwrap();
+        for (name, value) in [
+            ("node.stdin", &script),
+            ("node.stdout", &node_output),
+            ("quickjs.stdin", &quickjs_input),
+            ("quickjs.stdout", &quickjs_output),
+        ] {
+            fs::write(directory.join(name), value).unwrap();
+        }
+    }
+    assert_eq!(
+        quickjs_output, node_output,
+        "Complete literal packets differ between engines"
+    );
+    node_output
 }
 
 fn outcomes<'a>(output: &'a str, cases: &[Case]) -> Result<Vec<&'a str>, String> {
@@ -1329,15 +1378,15 @@ fn map_encoder_checks_count_duplicates_types_and_unordered_entries_independently
 
 #[test]
 fn map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics() {
-    // Deliberate bounded-compiler semantics: upstream sometimes inlines hash-map
-    // into separate key/value arrays, or trusts reader-distinct numeric constants
-    // in unchecked literal arrays. Our constructor consistently uses JS equality
-    // after evaluating all owned source children in their original order.
+    // Both canonical pins preserve reader-distinct numeric literal entries.
+    // Direct hash-map groups keys before values; a small source map interleaves
+    // each key and value. Whole original sources and old packets are retained in
+    // reference/compiler-language/literal-execution-historical-before193.json.
     let cases = [
         Case {
             id: "map-literal-number-collision".into(),
             source: "(let* [m {1 :int 1.0 :float}] [(count m) (= (get m 1) :float)])".into(),
-            outcome: r#"{"status":"returned","value":{"$vector":[1,true]}}"#.into(),
+            outcome: r#"{"status":"returned","value":{"$vector":[2,false]}}"#.into(),
             trace: "[]".into(),
             stdout: "\"\"".into(),
         },
@@ -1345,7 +1394,7 @@ fn map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics
             id: "map-direct-constructor-order".into(),
             source: "(get (hash-map (observe 1) (observe 2) (observe 3) (observe 4)) 3)".into(),
             outcome: r#"{"status":"returned","value":4}"#.into(),
-            trace: "[1,2,3,4]".into(),
+            trace: "[1,3,2,4]".into(),
             stdout: "\"\"".into(),
         },
         Case {
@@ -1356,7 +1405,7 @@ fn map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics
             stdout: "\"\"".into(),
         },
     ];
-    let actual = compiled_cases(&cases);
+    let actual = literal_cases_in_both_engines(&cases, "map");
     let actual = outcomes(&actual, &cases).unwrap();
     for (case, actual) in cases.iter().zip(actual) {
         assert_eq!(
@@ -1421,6 +1470,8 @@ fn set_encoder_preserves_tags_checks_duplicates_and_sorts_only_members() {
 
 #[test]
 fn set_reader_rejection_and_distinct_operand_effects_stay_separate() {
+    // Reader traversal controls effects even when a set is discarded or throws.
+    // Small direct hash-set retains reader-distinct positional Number entries.
     for source in [
         "(count #{(observe 1) (observe 1)})",
         "(let* [x [1 2]] (count #{x x}))",
@@ -1437,32 +1488,32 @@ fn set_reader_rejection_and_distinct_operand_effects_stay_separate() {
             id: "set-literal-discard-order".into(),
             source: "(do #{(observe 1) (observe 2)} 3)".into(),
             outcome: r#"{"status":"returned","value":3}"#.into(),
-            trace: "[1,2]".into(),
+            trace: "[2,1]".into(),
             stdout: "\"\"".into(),
         },
         Case {
             id: "set-literal-return-order".into(),
             source: "((fn* [] #{(observe 1) (observe 2)}))".into(),
             outcome: r#"{"status":"returned","value":{"$set":[1,2],"count":2}}"#.into(),
-            trace: "[1,2]".into(),
+            trace: "[2,1]".into(),
             stdout: "\"\"".into(),
         },
         Case {
             id: "set-literal-failure-order".into(),
             source: "#{(observe 1) (js/lightHost.fail \"type\") (observe 3)}".into(),
             outcome: r#"{"status":"threw","error":{"category":"type-error"}}"#.into(),
-            trace: r#"[1,["throw","type"]]"#.into(),
+            trace: r#"[["throw","type"]]"#.into(),
             stdout: "\"\"".into(),
         },
         Case {
             id: "set-direct-number-deduplication".into(),
             source: "[(count (hash-set 1 1.0)) (count (hash-set 0 -0.0))]".into(),
-            outcome: r#"{"status":"returned","value":{"$vector":[1,1]}}"#.into(),
+            outcome: r#"{"status":"returned","value":{"$vector":[2,2]}}"#.into(),
             trace: "[]".into(),
             stdout: "\"\"".into(),
         },
     ];
-    let output = compiled_cases(&cases);
+    let output = literal_cases_in_both_engines(&cases, "set");
     let actual = outcomes(&output, &cases).unwrap();
     for (case, actual) in cases.iter().zip(actual) {
         assert_eq!(
