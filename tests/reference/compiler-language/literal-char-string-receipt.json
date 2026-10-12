@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "profile": "canonical-literal-char-string-v1",
-  "artifacts_root": "/private/tmp/light-cljs-177-char-followthrough-v1",
+  "artifacts_root": "/private/tmp/light-cljs-178-char-string-delivery",
   "source_bindings": [
     {
       "id": "literal-char-string-original",
@@ -2863,7 +2863,7 @@
         "stdout": ""
       },
       "two_pin_agreement": true,
-      "canonical_acceptance": false,
+      "canonical_acceptance": true,
       "local_expected": {
         "id": "literal-char-string-quoted-inner-quote-set-order-difference",
         "outcome": {
@@ -2876,7 +2876,7 @@
               {
                 "$vector": [
                   "a",
-                  "a",
+                  "b",
                   {
                     "$list": [
                       {
@@ -2889,7 +2889,7 @@
                       "b"
                     ]
                   },
-                  "b"
+                  "a"
                 ]
               }
             ]
@@ -3305,7 +3305,7 @@
   ],
   "execution_binding": {
     "producer_source_sha256": {
-      "src/analyzer.rs": "0b389492b41c5604fac0766467286cded059329d4321b72b087271658bb899f4",
+      "src/analyzer.rs": "2b2d48a798d3600b4dbf9d16c2774fa59f0404683f04165a58d39667ff82f496",
       "src/application.rs": "d49776f4a080a80d5ea193255f295287e4c86247243ffff5bffb9430a7f3934f",
       "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
       "src/compilation_session.rs": "36ef734d1426bbecd024cb855c3688b12a9a8b8afb262eb0e8a78a77c8b02aae",
@@ -3340,7 +3340,7 @@
       "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
       "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
       "src/program_fragment.rs": "e6f2aefdc477ddba724c3156c3564750fe9f1d565fea3c0e75c927843e64c86e",
-      "src/reader_literals.rs": "411e5a3478d11fdf7d208cf43f607c57d531fe7028eeec85af66ae432ed66236",
+      "src/reader_literals.rs": "79f4210a5f8f430a1d109841ddbab1ae608ce4902ab312669c4673f7678b8e43",
       "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
       "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
       "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
@@ -3463,10 +3463,10 @@
       "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/cognitect/transit.clj": "dbaa62dfdaeac431a25230fdc3a0dd66ca25e0453f25cc9cbaa69bc7edf36ebc",
       "/Users/admin/src/light-cljs/research/clojurescript/deps.edn": "97c2bc5db8daa0b5e5bea7dbb3289d057ddac283977e06d58f6b42ed81d06020",
       "/Users/admin/.m2/repository/org/clojure/clojurescript/1.12.134/clojurescript-1.12.134.jar": "d019b73177e4805748f4ee995c4cfcd14ebf28bff685a84059813fbe4e8c878f",
-      "tests/reference/compiler-language/literal_char_string.py": "263f48c7c940b3e8aa41e3f4d36e0c0be1d5f622301b9dc7de63280ec8a61efd",
-      "tests/compiler_literal_char_string.rs": "73932c676d54e2c990727a5b9f1ffec784b088e09b7c2a22face48a6b0ecd173",
+      "tests/reference/compiler-language/literal_char_string.py": "35add274d0afe19b4d81509bca4b9fa7550e0c1888d07133fda0340c217d3f2b",
+      "tests/compiler_literal_char_string.rs": "c0f5487b781a2b55262c2eb8d66ce5b952746bd7377f63fc9def412737543c20",
       "tests/reference/compiler-language/literal-char-string-contracts.json": "e77840fcef2218413abecf911c84d48f8e6e91402511f7dc3fe05a8a315e8432",
-      "tests/reference/compiler-language/test_literal_char_string.py": "0cf76a1cc6db3bf5654ffb3af9ea75ad929a69da17de62a885dc45f9fe20e04d"
+      "tests/reference/compiler-language/test_literal_char_string.py": "8c752da54451356ade3ca93f635c74d1f613bddc72d87d468f644f7a05e1e752"
     },
     "programs": {
       "node": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node",
@@ -3477,108 +3477,108 @@
       "/opt/homebrew/Cellar/node@24/24.18.0/bin/node": "b423af50c2fb0f4d79da9b8bd7df7279f6e4ee4221421dc26d26cca999f19615",
       "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure": "a266aa4f011e27ccbaac2cd359b72a3077ec26facf115904fefe6056eba74a15",
       "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo": "35152b6c4de025e32d70be80fdf70fd4bf42cdb69d630c0fe92ebe6901e340a9",
-      "/Users/admin/src/light-cljs/target/debug/deps/compiler_literal_char_string-0630f8842fe9cb13": "8d64bd62c0a2be1058ce65c2fd789aaeb434f5901f030118533cee16772fde17"
+      "/Users/admin/src/light-cljs/target/debug/deps/compiler_literal_char_string-0630f8842fe9cb13": "5cad8675ed146bb22204242062f13e0a4b3a97d94fbba0b498c0b63ccad9a06e"
     },
     "audit_executable": "/Users/admin/src/light-cljs/target/debug/deps/compiler_literal_char_string-0630f8842fe9cb13",
     "audit_environment": {
-      "LIGHT_SCI_CLJC_ACCEPTED_ROOT": "/private/tmp/light-cljs-177-char-followthrough-v1/phases",
+      "LIGHT_SCI_CLJC_ACCEPTED_ROOT": "/private/tmp/light-cljs-178-char-string-delivery/phases",
       "NODE": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node"
     },
     "artifact_sha256": {
-      "checkout/build/command.json": "6086acfffb48aef37611f403693fbc1b888821fd048f2cf0fef8b7b4400f1403",
-      "checkout/build/stderr": "cb37100904df3de4aaa2517d9e38aeef63ca97ab7ccaecdbeb2bf838fb3ae8b7",
+      "checkout/build/command.json": "5c63220df4a8316d16eb36d6ba958ab4bc8c0983b58cff66f14de941eb7536ec",
+      "checkout/build/stderr": "df3d9b9dabb6774d01f6b5d5aab03246cda457c92199ad32f69a07c358a2e9c0",
       "checkout/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
       "checkout/contexts.js": "006f2d835dc4b92ecb16310c07b4ce9f79745df70bbf0f2b030e9d234b6afa34",
       "checkout/contexts.tsv": "99cec1cb4c8a5dc13e08a915688d78f87e4665492916d1ef4b6047dba12ef9df",
       "checkout/input.tsv": "4ab168688d9103969fb75f25ee25d2bb7887dae19f40e93fd60d5f2bf4274578",
-      "checkout/node/literal-char-string-dynamic-map/command.json": "246634c148bf10e3c579e8f82264252a4e5c323d993291a1bfcce3c83bf82166",
+      "checkout/node/literal-char-string-dynamic-map/command.json": "05467c2ce582a734cbc22a71f5f822a06150b1f08e44fdaa20f93975b4e7d8a6",
       "checkout/node/literal-char-string-dynamic-map/stderr": "15abb0b9065162960d77b049522f6b14f32f0dbb5619e56f590c641cffd68fd6",
       "checkout/node/literal-char-string-dynamic-map/stdout": "9635d32f8d08d7af9623e1a53c4c9b07024759e390c876ad28ba91623d12b074",
-      "checkout/node/literal-char-string-dynamic-set-distinct/command.json": "49988cef17d9748222a97cd5ffa170338f86bc59cf6c6d3abcb4f56e29694e4c",
+      "checkout/node/literal-char-string-dynamic-set-distinct/command.json": "2e772c3184ac86a147ba9ad685c478c55a9261e56607c8b21840a52ba456eec4",
       "checkout/node/literal-char-string-dynamic-set-distinct/stderr": "457c41c50315f5ef118c2f11f8c459ebb07197394d5683385b8c7c5df18eb7e0",
       "checkout/node/literal-char-string-dynamic-set-distinct/stdout": "fc3057d75931cf4a6bfe8a52b3d64c8041fd5598562a1c6af38b071263f041bc",
-      "checkout/node/literal-char-string-dynamic-set-duplicate-difference/command.json": "0fb0652c8e1e605515940ac04e66606cbde4c75be153a629a2b8ff8f41e9806d",
+      "checkout/node/literal-char-string-dynamic-set-duplicate-difference/command.json": "35e821ff3f91ba4b31eb79cd19a1f42af61f78f2eb8c37265d03b29fdf9e67fa",
       "checkout/node/literal-char-string-dynamic-set-duplicate-difference/stderr": "fb425cffc9ee4626089d00d085900888dbd9610462e17814a310aea302ac184e",
       "checkout/node/literal-char-string-dynamic-set-duplicate-difference/stdout": "64b37a9aeb40702587797924410e6fab8536149c81efc3cf81f42cc535319b91",
-      "checkout/node/literal-char-string-map-effects/command.json": "a651d776b387175a860c983eccdd0a8f2a939e9873a0f1b10b5dece29cb73c73",
+      "checkout/node/literal-char-string-map-effects/command.json": "53807c47a13ec72e5902daeb741b6e8d22195d4404538a3ce251a961a56a9e1e",
       "checkout/node/literal-char-string-map-effects/stderr": "60493f480c9a3b28e0475a0c130d8be75f5aa1d2e08f46978b6b7e9a6f2987ed",
       "checkout/node/literal-char-string-map-effects/stdout": "86255d3693c16ad57da70904095a6109d08af34b4a653c057360d253486cdf75",
-      "checkout/node/literal-char-string-map-eight-pairs/command.json": "142c8182e52913a3f65f84b260baaca750b02e2c426464411b0d708b8d0abac8",
+      "checkout/node/literal-char-string-map-eight-pairs/command.json": "fb300d5764df859cce20ba2e53e6a330851b41880963dd032ae66e46688b0137",
       "checkout/node/literal-char-string-map-eight-pairs/stderr": "3b27a29b59d614da4229211ae427371a7adc7920faeca01dae780a95245512bb",
       "checkout/node/literal-char-string-map-eight-pairs/stdout": "262f5e545a6321d1e3df3c7ed6ffe2fe8a89cb9defbc7d6b1b7503fe7dcc3ff3",
-      "checkout/node/literal-char-string-map-nine-pairs/command.json": "dca84ae48cee335627499ea546d2f47bb85c8d1e05fe69265ebb8cbc1fe8b298",
+      "checkout/node/literal-char-string-map-nine-pairs/command.json": "22ec819c8c8f39cb3019a6036e08a41c784730470fd3c7e413640e73073eb4fe",
       "checkout/node/literal-char-string-map-nine-pairs/stderr": "71de96ba2eabd22a39a75be14464fa1db9cee6590b4044fae7b9c740f2093432",
       "checkout/node/literal-char-string-map-nine-pairs/stdout": "90e7c571b9e88aab421bc5b8ff9d82ce4ab1ec439d645fd0105976e274ce87a0",
-      "checkout/node/literal-char-string-map-order-lookup/command.json": "50a88df282ef52953f6bd02077976706f39cb48d2b71a7948d766f8633b39efe",
+      "checkout/node/literal-char-string-map-order-lookup/command.json": "8231039f17d0b782625912e7f2dd6bde5d1c89b8a5d0f5d94de008f45dea8ec5",
       "checkout/node/literal-char-string-map-order-lookup/stderr": "3b58d36cec569768e7dc84b56fafbbe9015155a72c6cf306c3c9bad70533e9eb",
       "checkout/node/literal-char-string-map-order-lookup/stdout": "87f3dafc5f134a6102e5017c14165148b317c2b9ee664afe7105b13c1842e408",
-      "checkout/node/literal-char-string-map-reverse-order/command.json": "304341296b2fbe828556160461891c03088046d7c909623939304f20b6052ae3",
+      "checkout/node/literal-char-string-map-reverse-order/command.json": "3f89d3710d4ac028a2b6d09c22451f1ae95cdff92dbd5ec911dfbc652b0da549",
       "checkout/node/literal-char-string-map-reverse-order/stderr": "8c9798003d843df5f1398bc010db71b8c03846d515d98d16fd1eaf313e701e8b",
       "checkout/node/literal-char-string-map-reverse-order/stdout": "df9fcc2486c05b8e15629d0c01816233223e6d58e675250a38803fee19a01e0e",
-      "checkout/node/literal-char-string-named-spelling/command.json": "aaaacdfb975327ef70e4bce27c98b20d7b3692c8e41da9d16857191e57a239fd",
+      "checkout/node/literal-char-string-named-spelling/command.json": "b5585628d01196eef27abcc7c2926847b0f870b18f63e378430e0f7bdcadcd07",
       "checkout/node/literal-char-string-named-spelling/stderr": "2fe80890d115aabd3dceb853d732370325e9baa0e93daade6f5f55eaeef17365",
       "checkout/node/literal-char-string-named-spelling/stdout": "7a2f393153b0f2d055c8344aae11356f1feb16b3ff2bed0eaed5e7baf0180185",
-      "checkout/node/literal-char-string-nested-literals/command.json": "34d4317ba001119bdd39955d62d8bfe8d413b6dd1585fb2e62bfc01b6995d410",
+      "checkout/node/literal-char-string-nested-literals/command.json": "bb54adb8a3e2768b2fc1e734682026ecd14d46bda28745b82f057cf4c7955558",
       "checkout/node/literal-char-string-nested-literals/stderr": "f93d353f65844cfab71bb71265f37e65d5c39584fd01a49bd653df577f092993",
       "checkout/node/literal-char-string-nested-literals/stdout": "785d6e7cbd59438410cb2442811e5007ee77d7fcaf5555e0195451de309b31f4",
-      "checkout/node/literal-char-string-numeric-literals/command.json": "be642cf9175dc5ba5da3020820dcee20075eec6db9a1d6d435ef18fc303dcdb1",
+      "checkout/node/literal-char-string-numeric-literals/command.json": "20a45dc48863a8d4aeb72fe3b75fd643364639479f0b8d5359cf3b7382bd6830",
       "checkout/node/literal-char-string-numeric-literals/stderr": "a60ca7cb9adb8fc9d6e3a9ca75c335e1fda835338aca327fe454e29022c36520",
       "checkout/node/literal-char-string-numeric-literals/stdout": "fea0fef08748e043c5a861d0afb8389a0b5940d544931a3486efa55631b35c78",
-      "checkout/node/literal-char-string-original/command.json": "088286907aafa7d4c552096899cee0d53da73fe304f1c590c78752b1418abf3c",
+      "checkout/node/literal-char-string-original/command.json": "eda479cf3b9a58378b689f64dcf9ba29e9e0b170bf8d7d1b6549a8283ef9275d",
       "checkout/node/literal-char-string-original/stderr": "61099161f0c9d9d13e1e12e82778edcb80c83755133fcc3ac4a98c85ae3dd4ed",
       "checkout/node/literal-char-string-original/stdout": "02016de95cc6b5175528721e437510aa1cec54522772238b7d43ddc5ee0f8efb",
-      "checkout/node/literal-char-string-quoted/command.json": "9bedce92f200bbc7d5bf59dbf608a107bcbcc771d70cc72a024e5e741a48cdee",
+      "checkout/node/literal-char-string-quoted/command.json": "0cfc5b560ae58113236727b4e14b6b8fd1b58b14203c36887eb65930653f3c75",
       "checkout/node/literal-char-string-quoted/stderr": "97b2a0a2ee08a29e22b3b6f1d176900ce89bd45e7f7aea947773ec4ef668fd96",
       "checkout/node/literal-char-string-quoted/stdout": "53c63d2ff5b28fb3e0ffada690d8deb560646905b81bad0f748ca15950453969",
-      "checkout/node/literal-char-string-quoted-composite-map-keys/command.json": "153aac1981c7e26ff93dba036f38a51a09cdac23bec3430774e43a750b7d06e9",
+      "checkout/node/literal-char-string-quoted-composite-map-keys/command.json": "f123486ef3a01f48ff14802a4e720ce226400cec93a3af2319abbc1001e303f7",
       "checkout/node/literal-char-string-quoted-composite-map-keys/stderr": "d2ee11c868bc1f013fc2858546b224d9366208885dc490305d64c64b227b542c",
       "checkout/node/literal-char-string-quoted-composite-map-keys/stdout": "22d07c1c6b737b9af679007300ee82727a2d8742d94cd66533228a051c5017e2",
-      "checkout/node/literal-char-string-quoted-composite-set-members/command.json": "ec40a7fb508541d2185247cf419d1928cea3aa8a173edcf8fa8cffa7731eb3e7",
+      "checkout/node/literal-char-string-quoted-composite-set-members/command.json": "6e19a16494c2d482ec1ec9436f694a848284004fff2e2fb07e91e8ed65495a74",
       "checkout/node/literal-char-string-quoted-composite-set-members/stderr": "b81699b26a8ca86a5383f3fa6f16a4d8f67fa189884c0738e615bca6a866f2d7",
       "checkout/node/literal-char-string-quoted-composite-set-members/stdout": "bdf0214b2df2c2f7ef493ac11c73e36f6881e300cf23c2343035ad105d454a47",
-      "checkout/node/literal-char-string-quoted-inner-quote-map/command.json": "234caf3d83d39fe8409a62ae0ffd855a122e3ebd5ef40822f6e2e34835d0ce60",
+      "checkout/node/literal-char-string-quoted-inner-quote-map/command.json": "439f9e7b8e4ca299187a2f5ef299d7abcf51703a008f3966d7723c4ad6b6f34d",
       "checkout/node/literal-char-string-quoted-inner-quote-map/stderr": "d3e428949a6db3701ec71f13ed687a10b602eec5eb74074e0734c53e28e27493",
       "checkout/node/literal-char-string-quoted-inner-quote-map/stdout": "e5c93b0c6468150e459e5d040487ce96662c9b91e7780056d66a0883f87b2c9b",
-      "checkout/node/literal-char-string-quoted-inner-quote-set/command.json": "fc6fbde29b18dd2b349bdbf2c6eed10209d57186c5f8c2b11f9647e81e160d8e",
+      "checkout/node/literal-char-string-quoted-inner-quote-set/command.json": "06515b3322ef65213d6beb69841999f44c37f257786e1fbc32165af6df1e7c06",
       "checkout/node/literal-char-string-quoted-inner-quote-set/stderr": "dcbd740f6bf27fa6f82e6cfe0d2b833ddc5e418a8d87360e0c96e200969771c1",
       "checkout/node/literal-char-string-quoted-inner-quote-set/stdout": "0e5e09cf4db9c6e49d9cc6ea7ac40e05a30361e7e8443a1ed78433f3a25eecb1",
-      "checkout/node/literal-char-string-quoted-inner-quote-set-order-difference/command.json": "f8db307243993bb4e65869227d939a1ae4154d13f442f17fb5b664c1c2bb771f",
+      "checkout/node/literal-char-string-quoted-inner-quote-set-order-difference/command.json": "967bd85db133ae5600bb72bc3abdbaf32a734759c556d01a6ee32f19a74208fc",
       "checkout/node/literal-char-string-quoted-inner-quote-set-order-difference/stderr": "d86c28b55226593a12852f64c3ce4eaa91d64f9d813d199df02aca3f2507dd40",
       "checkout/node/literal-char-string-quoted-inner-quote-set-order-difference/stdout": "ff930ce6a6c4450976f886213093f753d3a128f4be1b60f940264a545d6cf284",
-      "checkout/node/literal-char-string-quoted-nested/command.json": "d2fa288691c9ec2cef3bcb09c9bec6a2f554fa1650b6537dff98214e6b910a20",
+      "checkout/node/literal-char-string-quoted-nested/command.json": "68442a83890e93555ea3650e79661917ebcbcdc39bb01f704c6243ed5397edb3",
       "checkout/node/literal-char-string-quoted-nested/stderr": "ebfae70ea392ee12810b9d9ac1fa08db53440bfc7c150d1992c8061d68eaeb71",
       "checkout/node/literal-char-string-quoted-nested/stdout": "fcf6b634f02881c88bad70fb61f786a6dce74ec4202c00c661ff528ce93248e7",
-      "checkout/node/literal-char-string-quoted-vector-map-keys/command.json": "daf13a0c25ef5e243ae35af424f03307e39fb7cd42e557bc06754078bde95c9a",
+      "checkout/node/literal-char-string-quoted-vector-map-keys/command.json": "aa9e55bc3af795c0c6d7a2a1d347f3e41f55ae28563c0bca0087eb1d7cdbcdb9",
       "checkout/node/literal-char-string-quoted-vector-map-keys/stderr": "0c096f228c6aa8231dcc8d168814f63425b766945b4aefc9303eed279fd1189f",
       "checkout/node/literal-char-string-quoted-vector-map-keys/stdout": "f096bd75139c41b2f143328afab17d3d530f2be1547699f9195b12c42a53b16a",
-      "checkout/node/literal-char-string-quoted-vector-set-members/command.json": "4d6e288996b19401d4c0c66822cbbf85a49ba69acb3fad67683740d185e0603b",
+      "checkout/node/literal-char-string-quoted-vector-set-members/command.json": "20da8b1fe471e1ebe8ba23391e333ac8b2c037277c673f09f58741af0bb5bd56",
       "checkout/node/literal-char-string-quoted-vector-set-members/stderr": "2b62c78e3b8dc23d6bf736ed59884fb39cc617aafdd62b77e508b2b0cbca9429",
       "checkout/node/literal-char-string-quoted-vector-set-members/stdout": "22b17e15577ae0ee82e4a959a999c0967c1cd2b103a845003ee23d36e295a729",
-      "checkout/node/literal-char-string-runtime-constructors/command.json": "35f255512cdd570723feab6b90e9f614363cd954313df1c33a663ec0cb3566f6",
+      "checkout/node/literal-char-string-runtime-constructors/command.json": "c2d25a7201bf77162a46bf31c07cb4ada723170e88f79e248b7c29a69ee4da47",
       "checkout/node/literal-char-string-runtime-constructors/stderr": "6cd7a77445edb42f5ff09c4dc59d9fbd5b8fa10fbb6c2be5340d292f2e4a3750",
       "checkout/node/literal-char-string-runtime-constructors/stdout": "7b90f372d1384bbb3895e5fccf7a379c254063475c174a2e4a6043b083e7921e",
-      "checkout/node/literal-char-string-runtime-small-constructor-difference/command.json": "4f0abd3d989901fb54816a59555971134dbba4ddf084b538395791bc84b3519a",
+      "checkout/node/literal-char-string-runtime-small-constructor-difference/command.json": "0525f807efd68f66d2c22928aff44c561c3a9776d5a59f841d9748784a73e5f7",
       "checkout/node/literal-char-string-runtime-small-constructor-difference/stderr": "ccc070232543a598c73fa47a896c278db69de437c420b4420d99711abd597371",
       "checkout/node/literal-char-string-runtime-small-constructor-difference/stdout": "dd14287c10c05c1d44e86c9c86171f7fd640ee83d1d7571a05f9ee094f9f0ca5",
-      "checkout/node/literal-char-string-set-order-membership/command.json": "42de126952783dd415932419c48b5cfba76404187851a14ea06bf132b60807a4",
+      "checkout/node/literal-char-string-set-order-membership/command.json": "268f61f9141074f0fddf9d327f199ed88448ddf37f298fa19d17408eccea3197",
       "checkout/node/literal-char-string-set-order-membership/stderr": "44d259f9897b066e6843455f0b82d5bedb171dda7139354caab29d2f4f2d3e99",
       "checkout/node/literal-char-string-set-order-membership/stdout": "718ed79559bb3e028d2a139830e987572349b7f31fd041588243bdba9dd07b3f",
-      "checkout/node/literal-char-string-set-reverse-order/command.json": "f6d9eea2ff2812a71a8b404338bdbb877a8b18414248be426be7ef57999d513a",
+      "checkout/node/literal-char-string-set-reverse-order/command.json": "e91039956ae2c6471a7c95e5cdc71e5984b46d89ea8dc6a7ff24456405404127",
       "checkout/node/literal-char-string-set-reverse-order/stderr": "9b85f45c8e12c3d698b589d4a0c2365a33710bf28a20e780b6925bf82804cb43",
       "checkout/node/literal-char-string-set-reverse-order/stdout": "16fee3fe78a29ab7ea4205d186639dfb0b3c1b5395586a648d2dc854e97f9920",
-      "checkout/node/literal-char-string-set-ten-scalars/command.json": "956c636fc6f6fe1b4af25e7c35344223f22993f0d5e9a246604ee05101123546",
+      "checkout/node/literal-char-string-set-ten-scalars/command.json": "0254a4dd86c6cc5913dc0e082585695d9cf4cc5dfbe5dbde12f606ca7523f844",
       "checkout/node/literal-char-string-set-ten-scalars/stderr": "8896e74cf07425d238b3df19ae6bc622a5e9147a6b398cc358e197c350f1c11b",
       "checkout/node/literal-char-string-set-ten-scalars/stdout": "84fbf5176893e2d916faf4ddb280043e9d6c9bb0a6ef00ab109812f7fb6f2f8d",
-      "checkout/node/literal-char-string-unicode-spelling/command.json": "6a76a2ca9414d71baf2a285fe14a8d8ae81122557f11c307949830d1cd6e57c7",
+      "checkout/node/literal-char-string-unicode-spelling/command.json": "cd2340b865f6b6ce665484e41fb6a4c8350bbc6fd1f724d1a3090a0ff048cfb2",
       "checkout/node/literal-char-string-unicode-spelling/stderr": "2d21216c68531974782a00f3c819ba20bc564e18cef06b7c662ce638666a93d9",
       "checkout/node/literal-char-string-unicode-spelling/stdout": "a0d0f724a37a9e5ea4d54aba22524972103fda9327d1efbfb7a3c16c84a9191a",
-      "checkout/node/literal-char-string-vector-map-keys/command.json": "a7518e1175cd9ad05a589ef988d2fa05e59151e064a0765e158da478cb0ba1b7",
+      "checkout/node/literal-char-string-vector-map-keys/command.json": "b98427bed921928c06229f29c747830c3d202f1d58caa21edb0cc035c478bd08",
       "checkout/node/literal-char-string-vector-map-keys/stderr": "261836f8513a68fb7c1a4798976b94dc92744ac6d33a68ab7fc5ea086b9146e1",
       "checkout/node/literal-char-string-vector-map-keys/stdout": "67f95a34bf4d9af5ea7f46f54258b500bf0921ea0b93ab7b463c89919a686372",
-      "checkout/node/literal-char-string-vector-set-distinct/command.json": "e05368556b8f65586ba139888014c4854db7bf735a0e2296d38771886e9235ca",
+      "checkout/node/literal-char-string-vector-set-distinct/command.json": "4c44c5cff4525185284a506392130256f44b510ef1cd10d4a2a9b5d1f061fc1e",
       "checkout/node/literal-char-string-vector-set-distinct/stderr": "f1178108b969c086dd7ed4b2712c092592d4eafecb55dd088c6eb9734b449ba7",
       "checkout/node/literal-char-string-vector-set-distinct/stdout": "a00e8478f3e54401d11f5cf70e217c50ba836b42bc4b51a30b3e9c90c4e7470c",
-      "checkout/node/literal-char-string-vector-set-duplicate-difference/command.json": "b4878734d79e5097882cccd31783a762391e50d4044b1406c68ed21cbb9b2e3a",
+      "checkout/node/literal-char-string-vector-set-duplicate-difference/command.json": "eebdf250156340620a9cb380e73369accfe57a83ba929805caadf6b9a83c6d69",
       "checkout/node/literal-char-string-vector-set-duplicate-difference/stderr": "845c87ea85fb7242ac83a71a55c96568259e98f4542db5363128e1ce41b95f66",
       "checkout/node/literal-char-string-vector-set-duplicate-difference/stdout": "8d9b0e3718d70e07fa73940152ed17159679762b53657caf281e421f66cfdea9",
       "checkout/original-sources/literal-char-string-dynamic-map/compiled.js": "29179997c884c71384c5972d0758f3ccce172f686a62a28f9aeb12b8a9ed6834",
@@ -3665,11 +3665,11 @@
       "checkout/original-sources/literal-rejection-set-unclosed/sci-original.cljc": "f060ffea73e4d1be342b4c7a326ded05501a3dc76d5d544c42c2f135c013ee7f",
       "checkout/out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
       "checkout/out/cljs/core.js": "f64140587ab89d0e10b2a64a3ba2dca59309011b52eefee5c28571a26d8585a3",
-      "checkout/out/cljs/core.js.map": "9a1e914c6261fb97420d87eb799fcdbe8f2b2910ba8cc29b136053745c334aaf",
+      "checkout/out/cljs/core.js.map": "e973b696ebb0c1129f9c186dc6710762a9c57ec6d9d1948c91b8827caafce7c4",
       "checkout/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
       "checkout/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
       "checkout/out/cljs_deps.js": "ab85ca4b9a77b51956334fe2e4f5ed1b030a9e8182b4b3894d3e352c9d7fe8c5",
-      "checkout/out/cljsc_opts.edn": "3f220549ac3365df4fec0eb49bd9af2b270105464ad64f430cfe712c1c653813",
+      "checkout/out/cljsc_opts.edn": "31a5a59e8011b2fedb2acae276bff05931532cdcf52bd0c51270ef59d4c46664",
       "checkout/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
       "checkout/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
       "checkout/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
@@ -3716,15 +3716,15 @@
       "checkout/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
       "checkout/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
       "checkout/out/nodejs.js": "9c63a58575d1ff43964f7e3f6eef9aa432bcadef2008d8da5f81b4d18a608733",
-      "checkout/out/nodejs.js.map": "0fa6c9278748db94331171b74a6a553f3e22f2578e27c731773fcc9e978b976c",
+      "checkout/out/nodejs.js.map": "7ef7caec3672e2df698d59b426bc0b3de7face63418e2c0b3209b1dfdeb421c0",
       "checkout/out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
-      "checkout/out/nodejscli.js.map": "f54d0f8670e0214bfc8c9d54b8d0bacea2d3c9f70e92645abfe35ba2697150a7",
+      "checkout/out/nodejscli.js.map": "031d4c81e7abbd94d6d4d0181a1291609ca6b3681516d067737688d67c3c846b",
       "checkout/out/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
       "checkout/out/semantic/reference.js": "a6f7bb2e52b92fa64ddbc6524fc72d3e50861f1251f204941b06acf727e2d785",
-      "checkout/out/semantic/reference.js.map": "fd2b55df96ec39f150670678f9954dacf8e891bbd6c5c441ec2c3ae27a05152b",
+      "checkout/out/semantic/reference.js.map": "e01c820de17df0a858eb2eccee0465e66f442d1fa74bf877d00bfb7b3739ff1d",
       "checkout/out/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1",
       "checkout/out/user.js": "b47be5b1b16f3f5547eb5692183c529f5c854154c9b78eedb44362d19bbf9d6f",
-      "checkout/out/user.js.map": "3eccb436aa1d9968cb97422c411927bda396bcd595cb86645ad70bed30136e5b",
+      "checkout/out/user.js.map": "b565338b19ad571f4dfffcea61bcade7e1ffb343ff4e7e7deb763337a0c810f7",
       "checkout/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
       "checkout/src/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
       "checkout/src/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1",
@@ -3736,7 +3736,7 @@
       "diagnostics/literal-rejection-map-character/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character/application-fresh/rejection.txt": "d1b40e87efcb2751ec069bc9795ade546271ef28f64b40e0393994e22660a6f2",
+      "diagnostics/literal-rejection-map-character/application-fresh/rejection.txt": "c1fd699814e5e80c79ba08c49ef4b7f4539ebc952e17c909b648698ff0107a6e",
       "diagnostics/literal-rejection-map-character/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character/application-fresh/user.cljc": "fe26bbe0ec291295996a853699581aaf0173773590b2f6748407f69f33a909b8",
       "diagnostics/literal-rejection-map-character/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3746,7 +3746,7 @@
       "diagnostics/literal-rejection-map-character/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character/application-reused/rejection.txt": "cba9dc1ba2b254ea376f3140607281a602567de97dfffe5e20e9c092666747ed",
+      "diagnostics/literal-rejection-map-character/application-reused/rejection.txt": "824f101cdc400ad70e5355a097ea116347390ff8798a16a4e8efafa082ad94c5",
       "diagnostics/literal-rejection-map-character/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character/application-reused/user.cljc": "fe26bbe0ec291295996a853699581aaf0173773590b2f6748407f69f33a909b8",
       "diagnostics/literal-rejection-map-character/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3756,7 +3756,7 @@
       "diagnostics/literal-rejection-map-character/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character/macro-fresh/rejection.txt": "e0a711e7b415ccef2a18afc1d572015645758cee7b165970508b32b905cc409a",
+      "diagnostics/literal-rejection-map-character/macro-fresh/rejection.txt": "a890c383f40f2033b082a6d197b79684f66ad05765a081937d1068b06b791816",
       "diagnostics/literal-rejection-map-character/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character/macro-fresh/user.cljc": "e1093cb6b1c4416c53a1f0bc1aaba42df54b446094d066151740fb1e2b045968",
       "diagnostics/literal-rejection-map-character/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3766,7 +3766,7 @@
       "diagnostics/literal-rejection-map-character/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character/macro-reused/rejection.txt": "ea1bd8d057c15b3495a49f77bf8417d79edb4d2016bc9b73eb350ccfde4cd14b",
+      "diagnostics/literal-rejection-map-character/macro-reused/rejection.txt": "438aeff927fa8bf54b69472fd9ec3ce06f97b4083bddef7b2a4079201079dd70",
       "diagnostics/literal-rejection-map-character/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character/macro-reused/user.cljc": "e1093cb6b1c4416c53a1f0bc1aaba42df54b446094d066151740fb1e2b045968",
       "diagnostics/literal-rejection-map-character-spelling/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3776,7 +3776,7 @@
       "diagnostics/literal-rejection-map-character-spelling/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character-spelling/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character-spelling/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character-spelling/application-fresh/rejection.txt": "adec58fab0ec147ebd8f1c9715410b2be549d7952327861d6857345ff5877464",
+      "diagnostics/literal-rejection-map-character-spelling/application-fresh/rejection.txt": "a716eba68e46031870a61e26c41a1b1ee25885415e8a19977634310076993f92",
       "diagnostics/literal-rejection-map-character-spelling/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character-spelling/application-fresh/user.cljc": "3654b7458c2fa3be7972e1466e2be2910d6aa6cc59231ae62df38191b69c7909",
       "diagnostics/literal-rejection-map-character-spelling/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3786,7 +3786,7 @@
       "diagnostics/literal-rejection-map-character-spelling/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character-spelling/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character-spelling/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character-spelling/application-reused/rejection.txt": "c0fc4dc211ed5d6d1d65ddac14705133a1df41980f40384e2a92f28e729c5181",
+      "diagnostics/literal-rejection-map-character-spelling/application-reused/rejection.txt": "a3368d330e4acf1af5cb3756d3fbb06846a122f56e554eb8fe36e03b0fc71048",
       "diagnostics/literal-rejection-map-character-spelling/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character-spelling/application-reused/user.cljc": "3654b7458c2fa3be7972e1466e2be2910d6aa6cc59231ae62df38191b69c7909",
       "diagnostics/literal-rejection-map-character-spelling/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3796,7 +3796,7 @@
       "diagnostics/literal-rejection-map-character-spelling/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character-spelling/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character-spelling/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character-spelling/macro-fresh/rejection.txt": "fbaed545ee929f058ab7e1aba154d7fcc7254d4d631eb332c0dc9714500ec23d",
+      "diagnostics/literal-rejection-map-character-spelling/macro-fresh/rejection.txt": "36e61524ebc5d6ff141a0968060488d91e329ab44b967a6634a942bc92c37701",
       "diagnostics/literal-rejection-map-character-spelling/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character-spelling/macro-fresh/user.cljc": "4fbb1bdedadc126b609bbec91559faed7a467529f9e043082de4b9e7a04736f1",
       "diagnostics/literal-rejection-map-character-spelling/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3806,7 +3806,7 @@
       "diagnostics/literal-rejection-map-character-spelling/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-character-spelling/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-character-spelling/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-character-spelling/macro-reused/rejection.txt": "401bc84501ad267f659aba3245aea97997a9aa1e9d14d31f67589d4076e456ab",
+      "diagnostics/literal-rejection-map-character-spelling/macro-reused/rejection.txt": "c74255a1c472b1240891b27fe9179ff39877126e66af784a512aefda115b5488",
       "diagnostics/literal-rejection-map-character-spelling/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-character-spelling/macro-reused/user.cljc": "4fbb1bdedadc126b609bbec91559faed7a467529f9e043082de4b9e7a04736f1",
       "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3816,7 +3816,7 @@
       "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/rejection.txt": "151778412668a559c6b704965eb030ad60f87667dd6d907ed9c8ebe9ecfbcf77",
+      "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/rejection.txt": "956760ef18e4a840edb6c4c85fe4b681b4d3d3e7c2d6d44f5204ae86bc545356",
       "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-nested-duplicate/application-fresh/user.cljc": "47eb3c9e89d83f54f0e44b261140993f00a9d240f8d4b5d21e4863bd80f73cc8",
       "diagnostics/literal-rejection-map-nested-duplicate/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3826,7 +3826,7 @@
       "diagnostics/literal-rejection-map-nested-duplicate/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-nested-duplicate/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-nested-duplicate/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-nested-duplicate/application-reused/rejection.txt": "97af07d6e983c5d9f78af557d3c54e4b0b359753c99a36af01a4078a2d52bf29",
+      "diagnostics/literal-rejection-map-nested-duplicate/application-reused/rejection.txt": "0e2d5d1e4cac244a1a6fe0ccc9ef2fa3ea9c29f281638442f4ea4a559e947a6a",
       "diagnostics/literal-rejection-map-nested-duplicate/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-nested-duplicate/application-reused/user.cljc": "47eb3c9e89d83f54f0e44b261140993f00a9d240f8d4b5d21e4863bd80f73cc8",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3836,7 +3836,7 @@
       "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/rejection.txt": "bc5f716404a25cf7e040d9b03b7ce1d4e8aa9622881b805a82762f85dd74d822",
+      "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/rejection.txt": "7a7c1e4093523b453b4780315fec05f9217f79299708e1745a8d15a846ea8ef1",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/user.cljc": "5a50fb3a233e28cf7c94b38468bde499a45ba19c1d6500091f940175d9d99966",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3846,7 +3846,7 @@
       "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/rejection.txt": "ca002c30bfcd46db81473a481158216ba2ac3600511af850d9bf364d4b523a22",
+      "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/rejection.txt": "b0009bb055a859e1574bccba412cb87ee25c29395d685d8585406ee1cfbb6504",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-nested-duplicate/macro-reused/user.cljc": "5a50fb3a233e28cf7c94b38468bde499a45ba19c1d6500091f940175d9d99966",
       "diagnostics/literal-rejection-map-odd/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3856,7 +3856,7 @@
       "diagnostics/literal-rejection-map-odd/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-odd/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-odd/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-odd/application-fresh/rejection.txt": "9c70ac2998fe340d8c962b8cfe1918eb965ef726bfa2e50b3afe54361db8fc4c",
+      "diagnostics/literal-rejection-map-odd/application-fresh/rejection.txt": "abe22c5bcd506ab441ac9a42a430078536bb0d9c26d18a2c8096fbbbfa997f29",
       "diagnostics/literal-rejection-map-odd/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-odd/application-fresh/user.cljc": "b615d70a20072930a8e460bddf6e652c0d01ee25166e8b892609faab62442d94",
       "diagnostics/literal-rejection-map-odd/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3866,7 +3866,7 @@
       "diagnostics/literal-rejection-map-odd/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-odd/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-odd/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-odd/application-reused/rejection.txt": "64b28ba566fee9cb901d0cbc079a32f7f39568bc41bec728259077427bcf452d",
+      "diagnostics/literal-rejection-map-odd/application-reused/rejection.txt": "b2aef325aa69aac52c0b7b257e45bca66376875d562f07616269a48506353c1a",
       "diagnostics/literal-rejection-map-odd/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-odd/application-reused/user.cljc": "b615d70a20072930a8e460bddf6e652c0d01ee25166e8b892609faab62442d94",
       "diagnostics/literal-rejection-map-odd/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3876,7 +3876,7 @@
       "diagnostics/literal-rejection-map-odd/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-odd/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-odd/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-odd/macro-fresh/rejection.txt": "db9c4cf33229fca30cb07e71d863969d19ec2ad454063f52479d1b58150a92dd",
+      "diagnostics/literal-rejection-map-odd/macro-fresh/rejection.txt": "728c6fd39f9098d5edd40a50613ad8615c1dad4a7da44c2c5da111ad025bfbf2",
       "diagnostics/literal-rejection-map-odd/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-odd/macro-fresh/user.cljc": "d80f340fac521263ca82411b0621dc5a9919dbde783c8191517f6165ec72168c",
       "diagnostics/literal-rejection-map-odd/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3886,7 +3886,7 @@
       "diagnostics/literal-rejection-map-odd/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-odd/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-odd/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-odd/macro-reused/rejection.txt": "ad9768ea7bd1bf7d5558f2846493a4c24bbe7423eaa5081eb63570775139affd",
+      "diagnostics/literal-rejection-map-odd/macro-reused/rejection.txt": "b033881ff2325e752714a587144a687435684d1d08a6ff093216a9e82f7cc29b",
       "diagnostics/literal-rejection-map-odd/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-odd/macro-reused/user.cljc": "d80f340fac521263ca82411b0621dc5a9919dbde783c8191517f6165ec72168c",
       "diagnostics/literal-rejection-map-string/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3896,7 +3896,7 @@
       "diagnostics/literal-rejection-map-string/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-string/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-string/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-string/application-fresh/rejection.txt": "8d541f43250618573d1089974ebf8ff66fb3cbc672c80f2c857ca598d0d15c0e",
+      "diagnostics/literal-rejection-map-string/application-fresh/rejection.txt": "b15182e819eadef3b9a6e6b081e0e0b1a1e1dd378f0519a740ff59bdbf99c62d",
       "diagnostics/literal-rejection-map-string/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-string/application-fresh/user.cljc": "8e0061690f0d182a8e6bcb3453a88ccb87a2a6ba542a65d83d6ff93d6e6806c2",
       "diagnostics/literal-rejection-map-string/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3906,7 +3906,7 @@
       "diagnostics/literal-rejection-map-string/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-string/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-string/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-string/application-reused/rejection.txt": "0b9617d208a34bb83bff6d422c3cd1b887e3e8c370d5c6244e7a52b4c6f5d5dd",
+      "diagnostics/literal-rejection-map-string/application-reused/rejection.txt": "e62ef507c819498c3da4efb0372e970a793f7f63a61649d78aaa5a94211c5ff0",
       "diagnostics/literal-rejection-map-string/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-string/application-reused/user.cljc": "8e0061690f0d182a8e6bcb3453a88ccb87a2a6ba542a65d83d6ff93d6e6806c2",
       "diagnostics/literal-rejection-map-string/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3916,7 +3916,7 @@
       "diagnostics/literal-rejection-map-string/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-string/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-string/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-string/macro-fresh/rejection.txt": "67cb5cd097da6979708c10d306a814ee609b6d796e2bde47967303d549ca7a04",
+      "diagnostics/literal-rejection-map-string/macro-fresh/rejection.txt": "d32108443afde93538b6e2bbe3159dd072128e55c01c5433c7b486fbaaaff87f",
       "diagnostics/literal-rejection-map-string/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-string/macro-fresh/user.cljc": "05aaaa4ed2e3c8d5668ea5f919fcb14af097f88ca002e1ca46d58f4ff1903b25",
       "diagnostics/literal-rejection-map-string/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3926,7 +3926,7 @@
       "diagnostics/literal-rejection-map-string/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-string/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-string/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-string/macro-reused/rejection.txt": "8461223f4ccae9f5e5d349a06c55d57e969495c9cd43ea4d3b5cf30350589afe",
+      "diagnostics/literal-rejection-map-string/macro-reused/rejection.txt": "343a47daffc8e6830fd219e44c5dec518387f63fbd0aea3979687227dedacead",
       "diagnostics/literal-rejection-map-string/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-string/macro-reused/user.cljc": "05aaaa4ed2e3c8d5668ea5f919fcb14af097f88ca002e1ca46d58f4ff1903b25",
       "diagnostics/literal-rejection-map-unclosed/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3936,7 +3936,7 @@
       "diagnostics/literal-rejection-map-unclosed/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-unclosed/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-unclosed/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-unclosed/application-fresh/rejection.txt": "8d48f2b43e991fe676a7145b41e1d45f17e33f1e6fafd14f354c1b36a33162c4",
+      "diagnostics/literal-rejection-map-unclosed/application-fresh/rejection.txt": "1e51f503135327bc544e74beb306b82fabcced2825e14a26fc7e4d3304663a45",
       "diagnostics/literal-rejection-map-unclosed/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-unclosed/application-fresh/user.cljc": "1d3b9582b2f10dc6af6cf2b7981ee114cb7cd846f435e71f696ab9fcfb47ea02",
       "diagnostics/literal-rejection-map-unclosed/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3946,7 +3946,7 @@
       "diagnostics/literal-rejection-map-unclosed/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-unclosed/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-unclosed/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-unclosed/application-reused/rejection.txt": "5ae7a868a8ca57890ab5637fe82b55ae96e8048b4600a780a183e2e1687624e7",
+      "diagnostics/literal-rejection-map-unclosed/application-reused/rejection.txt": "b441e706696e17fb7d1062b5f5b388d4e7631fc11364293c1d02ecfeec804e5a",
       "diagnostics/literal-rejection-map-unclosed/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-unclosed/application-reused/user.cljc": "1d3b9582b2f10dc6af6cf2b7981ee114cb7cd846f435e71f696ab9fcfb47ea02",
       "diagnostics/literal-rejection-map-unclosed/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3956,7 +3956,7 @@
       "diagnostics/literal-rejection-map-unclosed/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-unclosed/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-unclosed/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-unclosed/macro-fresh/rejection.txt": "83d58bf4d25b41538fcd95dafe441fd1c79743b38734cfb3ac9cd0835a528a28",
+      "diagnostics/literal-rejection-map-unclosed/macro-fresh/rejection.txt": "1bd3b28b52e86f012a08ded6ed11b47f14a4613125e8ae2f0835802c443ed0ae",
       "diagnostics/literal-rejection-map-unclosed/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-unclosed/macro-fresh/user.cljc": "fdb3ee1f43e1dc70bdb3e39e177637d4bc0350f17142085c50e8f0f4f1bce16e",
       "diagnostics/literal-rejection-map-unclosed/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3966,7 +3966,7 @@
       "diagnostics/literal-rejection-map-unclosed/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-map-unclosed/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-map-unclosed/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-map-unclosed/macro-reused/rejection.txt": "ef7c368ae457cd5983a77c414c9b79d6cdd1ad98337c5789306d5918f2fbff94",
+      "diagnostics/literal-rejection-map-unclosed/macro-reused/rejection.txt": "5fbf7c0c9b8d5e4cd27496e7ec63cf4ba25c5ff748f3cf6696c31b76ac4e13ab",
       "diagnostics/literal-rejection-map-unclosed/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-map-unclosed/macro-reused/user.cljc": "fdb3ee1f43e1dc70bdb3e39e177637d4bc0350f17142085c50e8f0f4f1bce16e",
       "diagnostics/literal-rejection-set-character/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3976,7 +3976,7 @@
       "diagnostics/literal-rejection-set-character/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character/application-fresh/rejection.txt": "ff5e4ee5a8ecebc79ebf38a53054ebb7b8815587e95aecb2ff5abffa70d3c06b",
+      "diagnostics/literal-rejection-set-character/application-fresh/rejection.txt": "4d05e14782a962b99f5513e5475ebd75a0c35eb14cdf4a19381c6127530d20e8",
       "diagnostics/literal-rejection-set-character/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character/application-fresh/user.cljc": "0dafd2eeb8845a680aa02586a43ac085f324e4da1e7ded3c3ecb4dff4ae6e6af",
       "diagnostics/literal-rejection-set-character/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3986,7 +3986,7 @@
       "diagnostics/literal-rejection-set-character/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character/application-reused/rejection.txt": "67a30d7b7cfea2489e5b734fcd931542cb564eb0aeff953be812f771a5831c7b",
+      "diagnostics/literal-rejection-set-character/application-reused/rejection.txt": "fa0e693fd8c9b6ec0aed50b3a752339f42043eaa99a87abe5563a8ea4c743c1d",
       "diagnostics/literal-rejection-set-character/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character/application-reused/user.cljc": "0dafd2eeb8845a680aa02586a43ac085f324e4da1e7ded3c3ecb4dff4ae6e6af",
       "diagnostics/literal-rejection-set-character/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -3996,7 +3996,7 @@
       "diagnostics/literal-rejection-set-character/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character/macro-fresh/rejection.txt": "e6a00f105076ca5c22310ea4624ad93d3d46c26b297737766cab1725b974e27a",
+      "diagnostics/literal-rejection-set-character/macro-fresh/rejection.txt": "deb50a7aa4810ad0230b621f4b18cf6d40522c5fec4379f566d48c3ac64625be",
       "diagnostics/literal-rejection-set-character/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character/macro-fresh/user.cljc": "82dd6d2fa623a564da135b3604c249624df6b8337865a1f6b9d51f66d76155b9",
       "diagnostics/literal-rejection-set-character/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4006,7 +4006,7 @@
       "diagnostics/literal-rejection-set-character/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character/macro-reused/rejection.txt": "2d7dcf9101ec6ed40ab53633b83427883583170388b3098bfebbdcc5170435dd",
+      "diagnostics/literal-rejection-set-character/macro-reused/rejection.txt": "f376b3c065a910191afd81b5892ca3be9aba8fad76473cdcb537e032de2d30a2",
       "diagnostics/literal-rejection-set-character/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character/macro-reused/user.cljc": "82dd6d2fa623a564da135b3604c249624df6b8337865a1f6b9d51f66d76155b9",
       "diagnostics/literal-rejection-set-character-spelling/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4016,7 +4016,7 @@
       "diagnostics/literal-rejection-set-character-spelling/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character-spelling/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character-spelling/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character-spelling/application-fresh/rejection.txt": "67aef029d70abb94af9a87b4ad1326e1c234577174e9183af0943655eca1cb8a",
+      "diagnostics/literal-rejection-set-character-spelling/application-fresh/rejection.txt": "db6fbe5abd84b912357b352ad2b73232d9c8b5f936e227104b1120a7fe01e52e",
       "diagnostics/literal-rejection-set-character-spelling/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character-spelling/application-fresh/user.cljc": "5cfc57abe59679153bf30b71ce6fc1d103cef95c29062ec999c5819e9a805700",
       "diagnostics/literal-rejection-set-character-spelling/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4026,7 +4026,7 @@
       "diagnostics/literal-rejection-set-character-spelling/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character-spelling/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character-spelling/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character-spelling/application-reused/rejection.txt": "a9006619c83d1788f9275feb24bf04e8a5a39fa742ade70f183fd302da8c7317",
+      "diagnostics/literal-rejection-set-character-spelling/application-reused/rejection.txt": "d52ba1562a7545c330fc8637d548ebc1c8a17ecf61c1037a627fde8fb183dccd",
       "diagnostics/literal-rejection-set-character-spelling/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character-spelling/application-reused/user.cljc": "5cfc57abe59679153bf30b71ce6fc1d103cef95c29062ec999c5819e9a805700",
       "diagnostics/literal-rejection-set-character-spelling/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4036,7 +4036,7 @@
       "diagnostics/literal-rejection-set-character-spelling/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character-spelling/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character-spelling/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character-spelling/macro-fresh/rejection.txt": "eb516cfaecc2c3c8cd8f04d06963d9738aff33dd19a45b1b3bdd058fe55ffd5a",
+      "diagnostics/literal-rejection-set-character-spelling/macro-fresh/rejection.txt": "bb6aa597879273bafef0356e4281ac64668eb2d9199d984eb6d0e58d8e4aaf5b",
       "diagnostics/literal-rejection-set-character-spelling/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character-spelling/macro-fresh/user.cljc": "5cba5eeda39c9e58b684c37479ab6dd91628cc4dc546e6d2b3eef602260b67a9",
       "diagnostics/literal-rejection-set-character-spelling/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4046,7 +4046,7 @@
       "diagnostics/literal-rejection-set-character-spelling/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-character-spelling/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-character-spelling/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-character-spelling/macro-reused/rejection.txt": "a360f60e52db9b8f93be4d315b73062ee8d6ee9c7c83e62e13b0d3b3f1bdb3ea",
+      "diagnostics/literal-rejection-set-character-spelling/macro-reused/rejection.txt": "bbd4e9fe7deb660322fbdc7bbbcce2a488a30f62fc442ab799a6727216b21c92",
       "diagnostics/literal-rejection-set-character-spelling/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-character-spelling/macro-reused/user.cljc": "5cba5eeda39c9e58b684c37479ab6dd91628cc4dc546e6d2b3eef602260b67a9",
       "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4056,7 +4056,7 @@
       "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/rejection.txt": "c0c787bb71ae7a9a046f4db634daa9912108d4cf11c1822b7ab48313706dd9fc",
+      "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/rejection.txt": "57920fc9f3f6de04a64c073957c5872e9ad63eb7f48f302d753811d2e7318b22",
       "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-nested-duplicate/application-fresh/user.cljc": "2703ebfdf0991259809c47d15a9da4d0dede4a714706bbbafc84ff9cc8eafec1",
       "diagnostics/literal-rejection-set-nested-duplicate/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4066,7 +4066,7 @@
       "diagnostics/literal-rejection-set-nested-duplicate/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-nested-duplicate/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-nested-duplicate/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-nested-duplicate/application-reused/rejection.txt": "d3675a77e99382bdd4e46efac98a065af18bfb43633ef448606d7145dbe18d68",
+      "diagnostics/literal-rejection-set-nested-duplicate/application-reused/rejection.txt": "dc673f94e5b16dfe7261e5475da27f86bfba5681b0e3a6ae4fea38e16a0191e8",
       "diagnostics/literal-rejection-set-nested-duplicate/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-nested-duplicate/application-reused/user.cljc": "2703ebfdf0991259809c47d15a9da4d0dede4a714706bbbafc84ff9cc8eafec1",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4076,7 +4076,7 @@
       "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/rejection.txt": "052ff1aa6d5cd418efc84be41306975f7def016bc7bfa49555f47baf2dc7e92d",
+      "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/rejection.txt": "35ef8f576b073881494b163f2bde3d65cc5ef2be97bae8e843b45d378efb83d3",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/user.cljc": "3f1d4049b8745b753e4ab4c65ee701db13b27f5598ab55904cb0b5b5269520f3",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4086,7 +4086,7 @@
       "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/rejection.txt": "06449fe4c197dfa1f84449f488d33ff1fcb350357e099cadfce12a1da603287d",
+      "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/rejection.txt": "365577fdc73f31762f8c3ce8282ab55c4d5262086fe9b9618a2c6b782ef62413",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-nested-duplicate/macro-reused/user.cljc": "3f1d4049b8745b753e4ab4c65ee701db13b27f5598ab55904cb0b5b5269520f3",
       "diagnostics/literal-rejection-set-string/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4096,7 +4096,7 @@
       "diagnostics/literal-rejection-set-string/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-string/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-string/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-string/application-fresh/rejection.txt": "d594196516be1f82df9e814f3c27ffacca7e22c2b12248ecfa27ebd4578ee84e",
+      "diagnostics/literal-rejection-set-string/application-fresh/rejection.txt": "b6c9fb223c3d2d3bf615d3a2c89aab2a5fd0eaec139d5f48c7e8404717ae6b13",
       "diagnostics/literal-rejection-set-string/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-string/application-fresh/user.cljc": "4329838b982f868ab3c2919c8c55923026da21603680b2002773d25f7b7b47bf",
       "diagnostics/literal-rejection-set-string/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4106,7 +4106,7 @@
       "diagnostics/literal-rejection-set-string/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-string/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-string/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-string/application-reused/rejection.txt": "832ac35107d76d0f1b07a1c84bd388ef3fa9d887404790e665058264d2114b63",
+      "diagnostics/literal-rejection-set-string/application-reused/rejection.txt": "55912346b1feef4d38a04a3905e958363e4e3feaddf8ab0871946afc907919bf",
       "diagnostics/literal-rejection-set-string/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-string/application-reused/user.cljc": "4329838b982f868ab3c2919c8c55923026da21603680b2002773d25f7b7b47bf",
       "diagnostics/literal-rejection-set-string/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4116,7 +4116,7 @@
       "diagnostics/literal-rejection-set-string/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-string/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-string/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-string/macro-fresh/rejection.txt": "23aac288b3f8ac248e1b7c35359ea61603333771280b8c507b25ec1c7da58c8d",
+      "diagnostics/literal-rejection-set-string/macro-fresh/rejection.txt": "9db65871b5a29cf415567827b55faeb4ae2edd5ff8aa1a73cfd251d241aeb72b",
       "diagnostics/literal-rejection-set-string/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-string/macro-fresh/user.cljc": "c2d206640f72dff7623410b15638163616952553498bb1c5fe838796c94adb3f",
       "diagnostics/literal-rejection-set-string/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4126,7 +4126,7 @@
       "diagnostics/literal-rejection-set-string/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-string/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-string/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-string/macro-reused/rejection.txt": "ec456b7e06eb7f7f0b5844938ba5f529ca83f64a765a4a4a35616684123d6f41",
+      "diagnostics/literal-rejection-set-string/macro-reused/rejection.txt": "4bfda2b25a0dd21e6947a59b0d5dbc2835414cc4899c3d14040a64566f99c6b4",
       "diagnostics/literal-rejection-set-string/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-string/macro-reused/user.cljc": "c2d206640f72dff7623410b15638163616952553498bb1c5fe838796c94adb3f",
       "diagnostics/literal-rejection-set-unclosed/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4136,7 +4136,7 @@
       "diagnostics/literal-rejection-set-unclosed/application-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-unclosed/application-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-unclosed/application-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-unclosed/application-fresh/rejection.txt": "ca02134ffcd92a174ca41f624c79b85700a5a8bb32f0fb6e8f0088a5b8336fce",
+      "diagnostics/literal-rejection-set-unclosed/application-fresh/rejection.txt": "5b898d34ae36afc50df8c49929f46e8930702652df07c105537c68e6eff731b2",
       "diagnostics/literal-rejection-set-unclosed/application-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-unclosed/application-fresh/user.cljc": "8758a7b43cc3502fd64546e43f0b8fb32fd1e877cd6d7946a918192c77bbbaec",
       "diagnostics/literal-rejection-set-unclosed/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4146,7 +4146,7 @@
       "diagnostics/literal-rejection-set-unclosed/application-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-unclosed/application-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-unclosed/application-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-unclosed/application-reused/rejection.txt": "39784925a463d8168f5ac44c5cb8b5a685e2a56a5d2b256b173b739d58772dfe",
+      "diagnostics/literal-rejection-set-unclosed/application-reused/rejection.txt": "dd09613bab294a521081f4ee87905fcd4c8889ace7ee3ce5694d5be9f35cd3a6",
       "diagnostics/literal-rejection-set-unclosed/application-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-unclosed/application-reused/user.cljc": "8758a7b43cc3502fd64546e43f0b8fb32fd1e877cd6d7946a918192c77bbbaec",
       "diagnostics/literal-rejection-set-unclosed/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4156,7 +4156,7 @@
       "diagnostics/literal-rejection-set-unclosed/macro-fresh/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-unclosed/macro-fresh/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-unclosed/macro-fresh/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-unclosed/macro-fresh/rejection.txt": "6ff3163346e179cf64bb5b2bc50d31cee62db4281806b71fb261bbf43c20e90f",
+      "diagnostics/literal-rejection-set-unclosed/macro-fresh/rejection.txt": "088d3afa9b5b28944a17194c6af3467e945f244978ce32ee77a60513e9a057eb",
       "diagnostics/literal-rejection-set-unclosed/macro-fresh/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-unclosed/macro-fresh/user.cljc": "0aa77e855758c7536d0ae072c3e03014176e67ab7514832102504b46ba8dfbef",
       "diagnostics/literal-rejection-set-unclosed/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4166,16 +4166,16 @@
       "diagnostics/literal-rejection-set-unclosed/macro-reused/quickjs.raw": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
       "diagnostics/literal-rejection-set-unclosed/macro-reused/recovery.cljs": "9b7cb81d008a3374a8186f2416096861de5ab28f0103ee3a4e5b0428364ba385",
       "diagnostics/literal-rejection-set-unclosed/macro-reused/recovery.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "diagnostics/literal-rejection-set-unclosed/macro-reused/rejection.txt": "b7f0b11df52a48c90833dedb1127073d9423d9670991d1213388d9d4f3b09ad4",
+      "diagnostics/literal-rejection-set-unclosed/macro-reused/rejection.txt": "297f768c9e07e3a320c97bec907252cd4f58038f5b7395e122746667ad868fe6",
       "diagnostics/literal-rejection-set-unclosed/macro-reused/script.js": "03b91655c425e44a794c0ab826137e28510609b1f1a9d4bd548130b150505495",
       "diagnostics/literal-rejection-set-unclosed/macro-reused/user.cljc": "0aa77e855758c7536d0ae072c3e03014176e67ab7514832102504b46ba8dfbef",
-      "diagnostics/observations.tsv": "95417163e6998824d700868ab416206ef5c2e2d26933ca561e5e9d417d96897a",
-      "phases/audit/command.json": "2314421270635c6c35712f6338d04d4bd804ff5e802c3520ba7b99675a050510",
+      "diagnostics/observations.tsv": "1306e83eb11037d11a1d3524a0c18d3453aad7804d3c48dfce95337c6d78f07d",
+      "phases/audit/command.json": "ada14414a092803d7fa6a9f131b94e78f367652890d9a37063ac45783f0ad6de",
       "phases/audit/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/audit/stdout": "b8d40667e80ca91a1b95136508dd047a37436de5c76df80454b9a9a874514d86",
+      "phases/audit/stdout": "e00c361d71da882c5306219c526fab03259633b79bb198712c943d4863c9a6ed",
       "phases/build/command.json": "6f2e76169b419513189992325852557a285cfcedca784b7178e210d4a9b0a71b",
-      "phases/build/stderr": "58a0be85e7c1cb5968d601a657d991f20178f4439be197ffd7694b6ecceaedf1",
-      "phases/build/stdout": "38ec0deeada1a75adf5eacbe3238f04e46ae3b4691b88d2b7f3b64b8a8af555d",
+      "phases/build/stderr": "3be63a270c1475ea545697ad53d42d734acbfff283f0af9d1d518cc2dca9992c",
+      "phases/build/stdout": "0740d81d7465c588f80058d18e6d90293debd2d3b23322b2588df7cff466f8a1",
       "phases/input.tsv": "3397dc5694aa44eb683a79fd4d201611ad8bf84fea61c535e1fe328515826357",
       "phases/literal-char-string-dynamic-map/application-fresh/compiled.js": "e6b641d41b1e885f70da39c44bf7a7333e34f4959edb5ccb8d80e7886230b483",
       "phases/literal-char-string-dynamic-map/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4593,21 +4593,21 @@
       "phases/literal-char-string-quoted/macro-reused/quickjs.raw": "a4be94526bcc411384e5a09db4c94497e0758b8749c4251c08b4fd2e0a1fd2ee",
       "phases/literal-char-string-quoted/macro-reused/script.js": "9ff631648de882a9e3473d2c971f5e3d9ebe74156c44f936c7e48e4b6acfabf0",
       "phases/literal-char-string-quoted/macro-reused/user.cljc": "4de38da9321b962205f2cf549f4af79c3988d0163259bde4d0f3f715a2fbf166",
-      "phases/literal-char-string-quoted-composite-map-keys/application-fresh/compiled.js": "a993948fdf4978c7fdb302aec655fb2d7df6993038cb0de550fdbd5c76cc20d5",
+      "phases/literal-char-string-quoted-composite-map-keys/application-fresh/compiled.js": "7f5404d44d3e5392ec092b97389ccafd6c3b3d36e64ae414a3dcf2aedbbf6eeb",
       "phases/literal-char-string-quoted-composite-map-keys/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-composite-map-keys/application-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-composite-map-keys/application-fresh/node.stdin": "c3a0a194ef4cfe862930307b8c311c5e66efd213aa2754d4f9192b4914ce4c2e",
+      "phases/literal-char-string-quoted-composite-map-keys/application-fresh/node.stdin": "6172edf9a0d445210a970f3dc272181a648f0530f61fad6b5eb75a81c80a7e00",
       "phases/literal-char-string-quoted-composite-map-keys/application-fresh/node.stdout": "22d07c1c6b737b9af679007300ee82727a2d8742d94cd66533228a051c5017e2",
       "phases/literal-char-string-quoted-composite-map-keys/application-fresh/quickjs.raw": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
-      "phases/literal-char-string-quoted-composite-map-keys/application-fresh/script.js": "08f72cc33fb8668b3d02eeba4559d61376502bbf73a57d994b208963b8468d94",
+      "phases/literal-char-string-quoted-composite-map-keys/application-fresh/script.js": "3e04f9ca2b6be2c5e15ff431d7cb8cd2c70a3d577a3fcc2c0020412caf663ae7",
       "phases/literal-char-string-quoted-composite-map-keys/application-fresh/user.cljc": "8d06b4275f1fcb8ed6e66954557a15e3bd1540a2d0bb121ea28e772647b4af4d",
-      "phases/literal-char-string-quoted-composite-map-keys/application-reused/compiled.js": "a993948fdf4978c7fdb302aec655fb2d7df6993038cb0de550fdbd5c76cc20d5",
+      "phases/literal-char-string-quoted-composite-map-keys/application-reused/compiled.js": "7f5404d44d3e5392ec092b97389ccafd6c3b3d36e64ae414a3dcf2aedbbf6eeb",
       "phases/literal-char-string-quoted-composite-map-keys/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-composite-map-keys/application-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-composite-map-keys/application-reused/node.stdin": "c3a0a194ef4cfe862930307b8c311c5e66efd213aa2754d4f9192b4914ce4c2e",
+      "phases/literal-char-string-quoted-composite-map-keys/application-reused/node.stdin": "6172edf9a0d445210a970f3dc272181a648f0530f61fad6b5eb75a81c80a7e00",
       "phases/literal-char-string-quoted-composite-map-keys/application-reused/node.stdout": "22d07c1c6b737b9af679007300ee82727a2d8742d94cd66533228a051c5017e2",
       "phases/literal-char-string-quoted-composite-map-keys/application-reused/quickjs.raw": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
-      "phases/literal-char-string-quoted-composite-map-keys/application-reused/script.js": "08f72cc33fb8668b3d02eeba4559d61376502bbf73a57d994b208963b8468d94",
+      "phases/literal-char-string-quoted-composite-map-keys/application-reused/script.js": "3e04f9ca2b6be2c5e15ff431d7cb8cd2c70a3d577a3fcc2c0020412caf663ae7",
       "phases/literal-char-string-quoted-composite-map-keys/application-reused/user.cljc": "8d06b4275f1fcb8ed6e66954557a15e3bd1540a2d0bb121ea28e772647b4af4d",
       "phases/literal-char-string-quoted-composite-map-keys/macro-fresh/compiled.js": "fbfef9bcc5fb5957a33a0576110a44dc3b8b090f028c7be9a3c602f99f53764c",
       "phases/literal-char-string-quoted-composite-map-keys/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4625,21 +4625,21 @@
       "phases/literal-char-string-quoted-composite-map-keys/macro-reused/quickjs.raw": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
       "phases/literal-char-string-quoted-composite-map-keys/macro-reused/script.js": "2decceb7a9b037951c80232a93b7164046d9929dcfd4d7bb0be26bbf43c475aa",
       "phases/literal-char-string-quoted-composite-map-keys/macro-reused/user.cljc": "1361933d61ffd1f286d1bc25222e39763e4fb33fcc2188837acce5914e64495d",
-      "phases/literal-char-string-quoted-composite-set-members/application-fresh/compiled.js": "b1bdd1d76009b03c799a04af44fcac31e997947605414adb81a72841d5d590d7",
+      "phases/literal-char-string-quoted-composite-set-members/application-fresh/compiled.js": "5f614cb6155a6d7d0ee242433b350f4487557a0f4e0b0aa398e6a99cb89a91d2",
       "phases/literal-char-string-quoted-composite-set-members/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-composite-set-members/application-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-composite-set-members/application-fresh/node.stdin": "a5851e8ce80eacffcc2def7a243e83f803bd12899b0d82509f289142432c39c3",
+      "phases/literal-char-string-quoted-composite-set-members/application-fresh/node.stdin": "14652274c5293fd56ff00cbafc762ab45cae8c2d06e0dbc100cafd65d5261de6",
       "phases/literal-char-string-quoted-composite-set-members/application-fresh/node.stdout": "bdf0214b2df2c2f7ef493ac11c73e36f6881e300cf23c2343035ad105d454a47",
       "phases/literal-char-string-quoted-composite-set-members/application-fresh/quickjs.raw": "9ec60c0d7f580243a09bb077b25183013a974614c4ae26279f1d860ec45e0809",
-      "phases/literal-char-string-quoted-composite-set-members/application-fresh/script.js": "28c243a8f8b42c665851a0212c83f6ec37f0df090fff5945102aae3379f5b243",
+      "phases/literal-char-string-quoted-composite-set-members/application-fresh/script.js": "16233e833aa7a027555cb9c4623ecb35cd00a04304cc2be675ed0517354dbc50",
       "phases/literal-char-string-quoted-composite-set-members/application-fresh/user.cljc": "f1407ac3c2755c6954a2db6cea8696b4881a155641ab9d617b88669dddd340b0",
-      "phases/literal-char-string-quoted-composite-set-members/application-reused/compiled.js": "b1bdd1d76009b03c799a04af44fcac31e997947605414adb81a72841d5d590d7",
+      "phases/literal-char-string-quoted-composite-set-members/application-reused/compiled.js": "5f614cb6155a6d7d0ee242433b350f4487557a0f4e0b0aa398e6a99cb89a91d2",
       "phases/literal-char-string-quoted-composite-set-members/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-composite-set-members/application-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-composite-set-members/application-reused/node.stdin": "a5851e8ce80eacffcc2def7a243e83f803bd12899b0d82509f289142432c39c3",
+      "phases/literal-char-string-quoted-composite-set-members/application-reused/node.stdin": "14652274c5293fd56ff00cbafc762ab45cae8c2d06e0dbc100cafd65d5261de6",
       "phases/literal-char-string-quoted-composite-set-members/application-reused/node.stdout": "bdf0214b2df2c2f7ef493ac11c73e36f6881e300cf23c2343035ad105d454a47",
       "phases/literal-char-string-quoted-composite-set-members/application-reused/quickjs.raw": "9ec60c0d7f580243a09bb077b25183013a974614c4ae26279f1d860ec45e0809",
-      "phases/literal-char-string-quoted-composite-set-members/application-reused/script.js": "28c243a8f8b42c665851a0212c83f6ec37f0df090fff5945102aae3379f5b243",
+      "phases/literal-char-string-quoted-composite-set-members/application-reused/script.js": "16233e833aa7a027555cb9c4623ecb35cd00a04304cc2be675ed0517354dbc50",
       "phases/literal-char-string-quoted-composite-set-members/application-reused/user.cljc": "f1407ac3c2755c6954a2db6cea8696b4881a155641ab9d617b88669dddd340b0",
       "phases/literal-char-string-quoted-composite-set-members/macro-fresh/compiled.js": "f64fdad3f484a6822e13500079df403209620f2c38baf8c40cddf1e982020616",
       "phases/literal-char-string-quoted-composite-set-members/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4689,21 +4689,21 @@
       "phases/literal-char-string-quoted-inner-quote-map/macro-reused/quickjs.raw": "b3686f5cb45b00e2b4e11097431c57bd763efe1f5fab79cf0132f84a9e3ddd51",
       "phases/literal-char-string-quoted-inner-quote-map/macro-reused/script.js": "811306e9d76fa5089ca7b685d29a6007a5c7a43ca28e98b1b4b72c37ca8ae9d8",
       "phases/literal-char-string-quoted-inner-quote-map/macro-reused/user.cljc": "1b7033c2f5b2cec23160fe34f619f8397e5c4f369e3b7a7408c3d8d51156652a",
-      "phases/literal-char-string-quoted-inner-quote-set/application-fresh/compiled.js": "5d3a5fb1c37413c63f5d18c9ddd66457fe8add384347ca0d0d1dd809a4935fd0",
+      "phases/literal-char-string-quoted-inner-quote-set/application-fresh/compiled.js": "62e9ffad12aebccf091a1a7641ccc90ef0391b3148d4aa9c3fdccc359601a974",
       "phases/literal-char-string-quoted-inner-quote-set/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-inner-quote-set/application-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-inner-quote-set/application-fresh/node.stdin": "b98f919fb213a7b9878ed029dcafd2182d366a37db94cf69cbc9160481a66168",
+      "phases/literal-char-string-quoted-inner-quote-set/application-fresh/node.stdin": "59515d7cbc93eaec807852eb5eb5b21fa89dc5381ce8877a8bbe39df20380a8d",
       "phases/literal-char-string-quoted-inner-quote-set/application-fresh/node.stdout": "0e5e09cf4db9c6e49d9cc6ea7ac40e05a30361e7e8443a1ed78433f3a25eecb1",
       "phases/literal-char-string-quoted-inner-quote-set/application-fresh/quickjs.raw": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
-      "phases/literal-char-string-quoted-inner-quote-set/application-fresh/script.js": "fb46175e4764942ddde8fee65e7f1cc5d78dc39c820ce3dfc08a6fcaa5b1b50d",
+      "phases/literal-char-string-quoted-inner-quote-set/application-fresh/script.js": "9e4abaad1981ed0966696cea683817211d9ad0687d8208253c5344e9684c46a8",
       "phases/literal-char-string-quoted-inner-quote-set/application-fresh/user.cljc": "f413eaa395d037ef6168b8217578fa7ea3dff209fa919b8f1bbd67fd6eccf4fc",
-      "phases/literal-char-string-quoted-inner-quote-set/application-reused/compiled.js": "5d3a5fb1c37413c63f5d18c9ddd66457fe8add384347ca0d0d1dd809a4935fd0",
+      "phases/literal-char-string-quoted-inner-quote-set/application-reused/compiled.js": "62e9ffad12aebccf091a1a7641ccc90ef0391b3148d4aa9c3fdccc359601a974",
       "phases/literal-char-string-quoted-inner-quote-set/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-inner-quote-set/application-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-inner-quote-set/application-reused/node.stdin": "b98f919fb213a7b9878ed029dcafd2182d366a37db94cf69cbc9160481a66168",
+      "phases/literal-char-string-quoted-inner-quote-set/application-reused/node.stdin": "59515d7cbc93eaec807852eb5eb5b21fa89dc5381ce8877a8bbe39df20380a8d",
       "phases/literal-char-string-quoted-inner-quote-set/application-reused/node.stdout": "0e5e09cf4db9c6e49d9cc6ea7ac40e05a30361e7e8443a1ed78433f3a25eecb1",
       "phases/literal-char-string-quoted-inner-quote-set/application-reused/quickjs.raw": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
-      "phases/literal-char-string-quoted-inner-quote-set/application-reused/script.js": "fb46175e4764942ddde8fee65e7f1cc5d78dc39c820ce3dfc08a6fcaa5b1b50d",
+      "phases/literal-char-string-quoted-inner-quote-set/application-reused/script.js": "9e4abaad1981ed0966696cea683817211d9ad0687d8208253c5344e9684c46a8",
       "phases/literal-char-string-quoted-inner-quote-set/application-reused/user.cljc": "f413eaa395d037ef6168b8217578fa7ea3dff209fa919b8f1bbd67fd6eccf4fc",
       "phases/literal-char-string-quoted-inner-quote-set/macro-fresh/compiled.js": "cecf1ede527bd217201ef8f5c3e995b8537c147609e2913cbc74427826988c08",
       "phases/literal-char-string-quoted-inner-quote-set/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4721,37 +4721,37 @@
       "phases/literal-char-string-quoted-inner-quote-set/macro-reused/quickjs.raw": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
       "phases/literal-char-string-quoted-inner-quote-set/macro-reused/script.js": "bec536049d3454608c3c565f6c2f5f3cd488d9e9f9dffc8eb95bf9f003b29fd6",
       "phases/literal-char-string-quoted-inner-quote-set/macro-reused/user.cljc": "e28686cb9b29512c8911a388a1a8a51c81530989b26da82c59280170cf9ff31c",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/compiled.js": "7e98f04b0bebd2b05624b345d264329a78c58ad63f196c3abe4765876e9d1bdd",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/compiled.js": "cd1d2e610daf6a303d53450d0fb282c80a449c2bc4f7a810b9ea1f9ec15f72a1",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/node.stdin": "81a1538acde93a476691d6a7312aff77e1d79895b374f4aaf763e04a08be55f5",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/node.stdout": "9760f2d2fd57e79c763342a9e44a22598da957dc66e3ca590332d2c252c948fd",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/quickjs.raw": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/script.js": "7cf50ee14e61c60b8c7669dacf1027d0b402a4a2bdb8997cb48b2a2d97861a0c",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/node.stdin": "c7baf6bd9ac6ac636d8219060aa41734f26ba03f8b8f2ec0d3d8556236d08819",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/node.stdout": "ff930ce6a6c4450976f886213093f753d3a128f4be1b60f940264a545d6cf284",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/quickjs.raw": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/script.js": "7508ace2cfa74c8ba9f13e9d84fe94ac79b59d1ce5d3083b1380ccb969928f22",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-fresh/user.cljc": "3dc9eb365906254d810ac6021faa14efaac793c30555d8a823547bea657b0056",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/compiled.js": "7e98f04b0bebd2b05624b345d264329a78c58ad63f196c3abe4765876e9d1bdd",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/compiled.js": "cd1d2e610daf6a303d53450d0fb282c80a449c2bc4f7a810b9ea1f9ec15f72a1",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/node.stdin": "81a1538acde93a476691d6a7312aff77e1d79895b374f4aaf763e04a08be55f5",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/node.stdout": "9760f2d2fd57e79c763342a9e44a22598da957dc66e3ca590332d2c252c948fd",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/quickjs.raw": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/script.js": "7cf50ee14e61c60b8c7669dacf1027d0b402a4a2bdb8997cb48b2a2d97861a0c",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/node.stdin": "c7baf6bd9ac6ac636d8219060aa41734f26ba03f8b8f2ec0d3d8556236d08819",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/node.stdout": "ff930ce6a6c4450976f886213093f753d3a128f4be1b60f940264a545d6cf284",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/quickjs.raw": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/script.js": "7508ace2cfa74c8ba9f13e9d84fe94ac79b59d1ce5d3083b1380ccb969928f22",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/application-reused/user.cljc": "3dc9eb365906254d810ac6021faa14efaac793c30555d8a823547bea657b0056",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/compiled.js": "71307a6d7176f87e930f0f90b44f1dc327b51f71eca6ced64ac3848436c19d79",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/compiled.js": "36b101c0d9519d8e10b5bd0ca1bc638191cdcb063a1d2392324fbeb95a468c39",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/node.stdin": "f44ccb7efa4fe9a941113d3db335645fd1bcbdc61eef2228aa1b34040c7040aa",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/node.stdout": "9760f2d2fd57e79c763342a9e44a22598da957dc66e3ca590332d2c252c948fd",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/quickjs.raw": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/script.js": "edfd11373b6b93a870b12620af63994e53e3b6b9a6e1e7c0df5e7ce79e6d1662",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/node.stdin": "2061501e1091c9a29fe916147e3f3208b138f3e83ecfeb7af3ba1e1211f5c344",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/node.stdout": "ff930ce6a6c4450976f886213093f753d3a128f4be1b60f940264a545d6cf284",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/quickjs.raw": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/script.js": "c8239fc2f8851eea9b62643d8c187bc6a456841bf5dadb5cde25290d5051a9ba",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-fresh/user.cljc": "4c8bcc0313bc7c8eb92f65516c847fcf0a050608901de64f5c359a246afb0ad5",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/compiled.js": "71307a6d7176f87e930f0f90b44f1dc327b51f71eca6ced64ac3848436c19d79",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/compiled.js": "36b101c0d9519d8e10b5bd0ca1bc638191cdcb063a1d2392324fbeb95a468c39",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/node.stdin": "f44ccb7efa4fe9a941113d3db335645fd1bcbdc61eef2228aa1b34040c7040aa",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/node.stdout": "9760f2d2fd57e79c763342a9e44a22598da957dc66e3ca590332d2c252c948fd",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/quickjs.raw": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
-      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/script.js": "edfd11373b6b93a870b12620af63994e53e3b6b9a6e1e7c0df5e7ce79e6d1662",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/node.stdin": "2061501e1091c9a29fe916147e3f3208b138f3e83ecfeb7af3ba1e1211f5c344",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/node.stdout": "ff930ce6a6c4450976f886213093f753d3a128f4be1b60f940264a545d6cf284",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/quickjs.raw": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
+      "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/script.js": "c8239fc2f8851eea9b62643d8c187bc6a456841bf5dadb5cde25290d5051a9ba",
       "phases/literal-char-string-quoted-inner-quote-set-order-difference/macro-reused/user.cljc": "4c8bcc0313bc7c8eb92f65516c847fcf0a050608901de64f5c359a246afb0ad5",
       "phases/literal-char-string-quoted-nested/application-fresh/compiled.js": "74f115bd7ad1e1c2626f47296c47deae025d14da0b86f3989b82899dd90b169e",
       "phases/literal-char-string-quoted-nested/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -4977,21 +4977,21 @@
       "phases/literal-char-string-set-reverse-order/macro-reused/quickjs.raw": "f89bdc2cab2926316f5097d1b2dcac327d4876a8712bf031820da003a4e9412e",
       "phases/literal-char-string-set-reverse-order/macro-reused/script.js": "a5b2d4e906e4f52eac4222b4de62df944e9ac6af302d0118aa8828c09824a9ee",
       "phases/literal-char-string-set-reverse-order/macro-reused/user.cljc": "75972947f2830223df79a3fc13064d8cce6e2e6a01914eb86dd788c2b1e05cff",
-      "phases/literal-char-string-set-ten-scalars/application-fresh/compiled.js": "ebfc28841d6265d8014ee4562aef6b31f9abcf7804fbcd9ef32b2fca524f1e7a",
+      "phases/literal-char-string-set-ten-scalars/application-fresh/compiled.js": "690e4ac7d0634738b9c8abfee24b34a9b9885622c9d742d4cdc966329574e454",
       "phases/literal-char-string-set-ten-scalars/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-set-ten-scalars/application-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-set-ten-scalars/application-fresh/node.stdin": "2430a0a134e72a7ad5be9b5bccdd26e6d86fdf01d716eb8babb1f0bd3d78b0fa",
+      "phases/literal-char-string-set-ten-scalars/application-fresh/node.stdin": "6f8f95fd9c51cacaebd268caae48be1b442a1f80df79c9695b42cae71e28e7cb",
       "phases/literal-char-string-set-ten-scalars/application-fresh/node.stdout": "84fbf5176893e2d916faf4ddb280043e9d6c9bb0a6ef00ab109812f7fb6f2f8d",
       "phases/literal-char-string-set-ten-scalars/application-fresh/quickjs.raw": "f9a1833789b4e24bb0da03a86ba7ad97ffc7a0df45270933831f4bbfe06f9000",
-      "phases/literal-char-string-set-ten-scalars/application-fresh/script.js": "4aeffef78b9bb0a207e6110dba2ac4e112c2d412cc22e0ad9da751a9c0deb5b2",
+      "phases/literal-char-string-set-ten-scalars/application-fresh/script.js": "febd92ca3f13c146a51040927a6a1c0122ff56b15811161ac961faed5cb3562b",
       "phases/literal-char-string-set-ten-scalars/application-fresh/user.cljc": "8437cb734a8df2fbd5b90e67435c3da8e664e3455de709e7bff885c35e76a818",
-      "phases/literal-char-string-set-ten-scalars/application-reused/compiled.js": "ebfc28841d6265d8014ee4562aef6b31f9abcf7804fbcd9ef32b2fca524f1e7a",
+      "phases/literal-char-string-set-ten-scalars/application-reused/compiled.js": "690e4ac7d0634738b9c8abfee24b34a9b9885622c9d742d4cdc966329574e454",
       "phases/literal-char-string-set-ten-scalars/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-set-ten-scalars/application-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-set-ten-scalars/application-reused/node.stdin": "2430a0a134e72a7ad5be9b5bccdd26e6d86fdf01d716eb8babb1f0bd3d78b0fa",
+      "phases/literal-char-string-set-ten-scalars/application-reused/node.stdin": "6f8f95fd9c51cacaebd268caae48be1b442a1f80df79c9695b42cae71e28e7cb",
       "phases/literal-char-string-set-ten-scalars/application-reused/node.stdout": "84fbf5176893e2d916faf4ddb280043e9d6c9bb0a6ef00ab109812f7fb6f2f8d",
       "phases/literal-char-string-set-ten-scalars/application-reused/quickjs.raw": "f9a1833789b4e24bb0da03a86ba7ad97ffc7a0df45270933831f4bbfe06f9000",
-      "phases/literal-char-string-set-ten-scalars/application-reused/script.js": "4aeffef78b9bb0a207e6110dba2ac4e112c2d412cc22e0ad9da751a9c0deb5b2",
+      "phases/literal-char-string-set-ten-scalars/application-reused/script.js": "febd92ca3f13c146a51040927a6a1c0122ff56b15811161ac961faed5cb3562b",
       "phases/literal-char-string-set-ten-scalars/application-reused/user.cljc": "8437cb734a8df2fbd5b90e67435c3da8e664e3455de709e7bff885c35e76a818",
       "phases/literal-char-string-set-ten-scalars/macro-fresh/compiled.js": "4b86942e616b3d9eef7acf2296e97b0f8a3d532018c78b18fa3bd5056c364141",
       "phases/literal-char-string-set-ten-scalars/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -5073,21 +5073,21 @@
       "phases/literal-char-string-vector-map-keys/macro-reused/quickjs.raw": "933b760c3bf8eaff0135f86cb3dd443f1efc3b95969036f7bb4c9585ba52f563",
       "phases/literal-char-string-vector-map-keys/macro-reused/script.js": "a5299b35107dc1b59fc2a3da5ebdb92d2cc6c70e91c25b19735b543b806b88c6",
       "phases/literal-char-string-vector-map-keys/macro-reused/user.cljc": "42eadad234033cf5cd7de7c0dd5c14b72671567a060b33927d70341621fd7017",
-      "phases/literal-char-string-vector-set-distinct/application-fresh/compiled.js": "a04c95e551cf723c629362e460e1e2b106e9f91e8a399fc03d66e0244d82764f",
+      "phases/literal-char-string-vector-set-distinct/application-fresh/compiled.js": "ea76b4aa131f7bf24644b475b48764df49d31f00c5bc811188bd5315f22fa4f1",
       "phases/literal-char-string-vector-set-distinct/application-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-vector-set-distinct/application-fresh/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-vector-set-distinct/application-fresh/node.stdin": "8c901f07d27d17fb9ff0df916488df76a032687a6128f833446e53b0c7d68035",
+      "phases/literal-char-string-vector-set-distinct/application-fresh/node.stdin": "aebb28546cba561069f19aef493c152650fb73518daf1a7129427cf9d8823114",
       "phases/literal-char-string-vector-set-distinct/application-fresh/node.stdout": "a00e8478f3e54401d11f5cf70e217c50ba836b42bc4b51a30b3e9c90c4e7470c",
       "phases/literal-char-string-vector-set-distinct/application-fresh/quickjs.raw": "4c3cda1146ab31a355b1e341700a644d98b74e8bf53428255c0e5eef24f35931",
-      "phases/literal-char-string-vector-set-distinct/application-fresh/script.js": "60950bc87f4bbe71796fe23b5b9f90e3f12d04be434c14a214b2c80d23ddfea9",
+      "phases/literal-char-string-vector-set-distinct/application-fresh/script.js": "2e726d2688b9f1f2311bb1b8e663f6929adb314bb91cecf7c15572c1ed5bafdb",
       "phases/literal-char-string-vector-set-distinct/application-fresh/user.cljc": "95b033095b2a4660da2ba10bbaf75ae3ed7489c6440388996d1f550ce8a8c353",
-      "phases/literal-char-string-vector-set-distinct/application-reused/compiled.js": "a04c95e551cf723c629362e460e1e2b106e9f91e8a399fc03d66e0244d82764f",
+      "phases/literal-char-string-vector-set-distinct/application-reused/compiled.js": "ea76b4aa131f7bf24644b475b48764df49d31f00c5bc811188bd5315f22fa4f1",
       "phases/literal-char-string-vector-set-distinct/application-reused/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
       "phases/literal-char-string-vector-set-distinct/application-reused/node.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "phases/literal-char-string-vector-set-distinct/application-reused/node.stdin": "8c901f07d27d17fb9ff0df916488df76a032687a6128f833446e53b0c7d68035",
+      "phases/literal-char-string-vector-set-distinct/application-reused/node.stdin": "aebb28546cba561069f19aef493c152650fb73518daf1a7129427cf9d8823114",
       "phases/literal-char-string-vector-set-distinct/application-reused/node.stdout": "a00e8478f3e54401d11f5cf70e217c50ba836b42bc4b51a30b3e9c90c4e7470c",
       "phases/literal-char-string-vector-set-distinct/application-reused/quickjs.raw": "4c3cda1146ab31a355b1e341700a644d98b74e8bf53428255c0e5eef24f35931",
-      "phases/literal-char-string-vector-set-distinct/application-reused/script.js": "60950bc87f4bbe71796fe23b5b9f90e3f12d04be434c14a214b2c80d23ddfea9",
+      "phases/literal-char-string-vector-set-distinct/application-reused/script.js": "2e726d2688b9f1f2311bb1b8e663f6929adb314bb91cecf7c15572c1ed5bafdb",
       "phases/literal-char-string-vector-set-distinct/application-reused/user.cljc": "95b033095b2a4660da2ba10bbaf75ae3ed7489c6440388996d1f550ce8a8c353",
       "phases/literal-char-string-vector-set-distinct/macro-fresh/compiled.js": "ae3716bcf777e46d040dd05b29f163206f3be8cc277c78583aac6c08cd454f11",
       "phases/literal-char-string-vector-set-distinct/macro-fresh/node.exit": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
@@ -5137,102 +5137,102 @@
       "phases/literal-char-string-vector-set-duplicate-difference/macro-reused/quickjs.raw": "c609d5216df958b416c8bda1690590bcfe5da9ca50ee9bd3c2709ce5ab37bf5a",
       "phases/literal-char-string-vector-set-duplicate-difference/macro-reused/script.js": "9d0091b53fe4c8b1b0efbc39dd01f28a4cb60f7fb108303fb6a17f88be647a05",
       "phases/literal-char-string-vector-set-duplicate-difference/macro-reused/user.cljc": "4320bafa3b8d62a42d7831cb9cab88a4d82e8db9b07b753c1540fc88a59538fa",
-      "phases/observations.tsv": "c5c0e52b6f18ec82cb925cba0e11ef35a879c0d02275a43742d12cf9d4bcc78e",
+      "phases/observations.tsv": "ae0d3ba3ea9a5ae6d5fe289a337157aae5fa6f1e8c9f55f8399066115749d792",
       "phases/warmup.js": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
-      "release/build/command.json": "5f76cf858dba1dacbb90e973863f726a7b089cb45a3fe2581116b0814a0f57c0",
-      "release/build/stderr": "12d5acaa60939e2a8e8cdbda26d56eb8453fefa5efa5e42e1d19d79c890e680f",
+      "release/build/command.json": "b5207e4139941b459826014f442cf5ef34a678805b938bec44937f525941c10d",
+      "release/build/stderr": "f45f725822c3826dad78fe990e28b26a6e55c88705f31918eab1db077a5899c5",
       "release/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
       "release/contexts.js": "436a2c5b291d6b217d1d49f5525371b29859bf6d0b345b2d1e5976d23e135a55",
       "release/contexts.tsv": "99cec1cb4c8a5dc13e08a915688d78f87e4665492916d1ef4b6047dba12ef9df",
       "release/input.tsv": "4ab168688d9103969fb75f25ee25d2bb7887dae19f40e93fd60d5f2bf4274578",
-      "release/node/literal-char-string-dynamic-map/command.json": "f504dfdbc58308d0408e643bd392dce6e2f09d9f64291f5b5883d43d54a4150e",
+      "release/node/literal-char-string-dynamic-map/command.json": "d0d14c56fdd633ffdbae201b80cfdd2ef5ef1ac099b4590a3401b52de38da191",
       "release/node/literal-char-string-dynamic-map/stderr": "15abb0b9065162960d77b049522f6b14f32f0dbb5619e56f590c641cffd68fd6",
       "release/node/literal-char-string-dynamic-map/stdout": "9635d32f8d08d7af9623e1a53c4c9b07024759e390c876ad28ba91623d12b074",
-      "release/node/literal-char-string-dynamic-set-distinct/command.json": "baeb2f26ff8b6222dd1a1f1350a6fae924ce789bf0f837aabe655b23347d91c2",
+      "release/node/literal-char-string-dynamic-set-distinct/command.json": "d6787c584b65406a8c5eda267c8dbe2c821ec34cd3dfc470f95e52206b877cb4",
       "release/node/literal-char-string-dynamic-set-distinct/stderr": "457c41c50315f5ef118c2f11f8c459ebb07197394d5683385b8c7c5df18eb7e0",
       "release/node/literal-char-string-dynamic-set-distinct/stdout": "fc3057d75931cf4a6bfe8a52b3d64c8041fd5598562a1c6af38b071263f041bc",
-      "release/node/literal-char-string-dynamic-set-duplicate-difference/command.json": "1482b2f6f68e216cbcc0e8ba4f274cea63c3473d65cff19c3f8fda61009f79af",
+      "release/node/literal-char-string-dynamic-set-duplicate-difference/command.json": "dd76d08bd1c8fa82f2c2260b2cc9b5ac38db520b9ca8523ba62b6517e93ecd86",
       "release/node/literal-char-string-dynamic-set-duplicate-difference/stderr": "fb425cffc9ee4626089d00d085900888dbd9610462e17814a310aea302ac184e",
       "release/node/literal-char-string-dynamic-set-duplicate-difference/stdout": "38b0f74ec709268511ae2d28406b204cbd25306a9af9e2ba22e3112aeae87b1a",
-      "release/node/literal-char-string-map-effects/command.json": "fde97c20b225494eeb6d49a60714daf05d8b51d42123bab04a311a49194ea600",
+      "release/node/literal-char-string-map-effects/command.json": "97bbe35b4252b7a0c58b7e498cc757b2d14384f9d93c54b957c6a98c94f96870",
       "release/node/literal-char-string-map-effects/stderr": "60493f480c9a3b28e0475a0c130d8be75f5aa1d2e08f46978b6b7e9a6f2987ed",
       "release/node/literal-char-string-map-effects/stdout": "86255d3693c16ad57da70904095a6109d08af34b4a653c057360d253486cdf75",
-      "release/node/literal-char-string-map-eight-pairs/command.json": "124ebbb12cf4fda4ddd4abdc89f77a7e7dde3d56d9f0d48680459ea8d4cf43ec",
+      "release/node/literal-char-string-map-eight-pairs/command.json": "43d73e094ca5b636e33e9fc7721e59c4dd664c3b49719be47529e9764434d8a5",
       "release/node/literal-char-string-map-eight-pairs/stderr": "3b27a29b59d614da4229211ae427371a7adc7920faeca01dae780a95245512bb",
       "release/node/literal-char-string-map-eight-pairs/stdout": "262f5e545a6321d1e3df3c7ed6ffe2fe8a89cb9defbc7d6b1b7503fe7dcc3ff3",
-      "release/node/literal-char-string-map-nine-pairs/command.json": "cd35622f481a401c7444a67a1469318f4ac8739984c5bb95a693d5761ddd361a",
+      "release/node/literal-char-string-map-nine-pairs/command.json": "5e11a19871bc64ac5e76d9cb5599b7699864d96271e5199a4513b89ee7d9b0f8",
       "release/node/literal-char-string-map-nine-pairs/stderr": "71de96ba2eabd22a39a75be14464fa1db9cee6590b4044fae7b9c740f2093432",
       "release/node/literal-char-string-map-nine-pairs/stdout": "90e7c571b9e88aab421bc5b8ff9d82ce4ab1ec439d645fd0105976e274ce87a0",
-      "release/node/literal-char-string-map-order-lookup/command.json": "2b282c1c5edf850877f24426a4f0eb11d76574568650c01053c5c99c240884fc",
+      "release/node/literal-char-string-map-order-lookup/command.json": "d4763f3af6de6f491d8745ba264279f2e1211440803deca6d9b58ec2d724c5b6",
       "release/node/literal-char-string-map-order-lookup/stderr": "3b58d36cec569768e7dc84b56fafbbe9015155a72c6cf306c3c9bad70533e9eb",
       "release/node/literal-char-string-map-order-lookup/stdout": "87f3dafc5f134a6102e5017c14165148b317c2b9ee664afe7105b13c1842e408",
-      "release/node/literal-char-string-map-reverse-order/command.json": "95253d6cf561483da85e1fcc1e393178da2a522597433de428bec7129cab2984",
+      "release/node/literal-char-string-map-reverse-order/command.json": "be3d96fe703619c5fa07ca151e4016fce7a162c241cb0f3483b670a2b13c2f20",
       "release/node/literal-char-string-map-reverse-order/stderr": "8c9798003d843df5f1398bc010db71b8c03846d515d98d16fd1eaf313e701e8b",
       "release/node/literal-char-string-map-reverse-order/stdout": "df9fcc2486c05b8e15629d0c01816233223e6d58e675250a38803fee19a01e0e",
-      "release/node/literal-char-string-named-spelling/command.json": "380ba324758f5b59f3aeb5f0078190f900cad6b597a5ff5638de43acd5d60e19",
+      "release/node/literal-char-string-named-spelling/command.json": "466713ec9a1f63eaf5dc4bedf41df522767ecd3a42dd706eb16dac7edc980597",
       "release/node/literal-char-string-named-spelling/stderr": "2fe80890d115aabd3dceb853d732370325e9baa0e93daade6f5f55eaeef17365",
       "release/node/literal-char-string-named-spelling/stdout": "7a2f393153b0f2d055c8344aae11356f1feb16b3ff2bed0eaed5e7baf0180185",
-      "release/node/literal-char-string-nested-literals/command.json": "6cf7d9d070240e5d41a2e2fce99e4f215e01732b43e621c5aadbe2c31ee44c12",
+      "release/node/literal-char-string-nested-literals/command.json": "089354a82b99923b3e4fd3273efda60fc36f5757de87a5c5688ee54e7506227e",
       "release/node/literal-char-string-nested-literals/stderr": "f93d353f65844cfab71bb71265f37e65d5c39584fd01a49bd653df577f092993",
       "release/node/literal-char-string-nested-literals/stdout": "785d6e7cbd59438410cb2442811e5007ee77d7fcaf5555e0195451de309b31f4",
-      "release/node/literal-char-string-numeric-literals/command.json": "68e231a8f5890749801f2df14a1cec9224db08d717224dfffbf006280c524c8f",
+      "release/node/literal-char-string-numeric-literals/command.json": "f224e0bfbe27353d10639be0dfb1cde90f07df8ce8317e61061ab253a8f7a052",
       "release/node/literal-char-string-numeric-literals/stderr": "a60ca7cb9adb8fc9d6e3a9ca75c335e1fda835338aca327fe454e29022c36520",
       "release/node/literal-char-string-numeric-literals/stdout": "fea0fef08748e043c5a861d0afb8389a0b5940d544931a3486efa55631b35c78",
-      "release/node/literal-char-string-original/command.json": "57352b8395010ca88caa1877a19b2110205e83f2e4792ccf382cfaf9b96326dd",
+      "release/node/literal-char-string-original/command.json": "c20cbea6277169909da53dba22149c29a529a4c463f0fff7e479a25c95763dfa",
       "release/node/literal-char-string-original/stderr": "61099161f0c9d9d13e1e12e82778edcb80c83755133fcc3ac4a98c85ae3dd4ed",
       "release/node/literal-char-string-original/stdout": "02016de95cc6b5175528721e437510aa1cec54522772238b7d43ddc5ee0f8efb",
-      "release/node/literal-char-string-quoted/command.json": "975dc2821308948bb893b21b86b60a5b438f8c1071e004ac3d1253e1eff080fd",
+      "release/node/literal-char-string-quoted/command.json": "92b971e66229fbda90d56ea03218dbf2d1462cb604e163347cbc8716ac271a18",
       "release/node/literal-char-string-quoted/stderr": "97b2a0a2ee08a29e22b3b6f1d176900ce89bd45e7f7aea947773ec4ef668fd96",
       "release/node/literal-char-string-quoted/stdout": "53c63d2ff5b28fb3e0ffada690d8deb560646905b81bad0f748ca15950453969",
-      "release/node/literal-char-string-quoted-composite-map-keys/command.json": "4d633566f5002358e84291614cfc64deb94078aef5338b51a13eab0de00d401d",
+      "release/node/literal-char-string-quoted-composite-map-keys/command.json": "bb0c06c855400583f78d35c9d050a28fd10f400c56bad02d75ba42a6b7e0ae9b",
       "release/node/literal-char-string-quoted-composite-map-keys/stderr": "d2ee11c868bc1f013fc2858546b224d9366208885dc490305d64c64b227b542c",
       "release/node/literal-char-string-quoted-composite-map-keys/stdout": "22d07c1c6b737b9af679007300ee82727a2d8742d94cd66533228a051c5017e2",
-      "release/node/literal-char-string-quoted-composite-set-members/command.json": "a63d7773eacd8c14984390dc5c7490424d324528d227d3fa4943a2f75f6464af",
+      "release/node/literal-char-string-quoted-composite-set-members/command.json": "2a77ce250200dc6922655b9fea272050621e763f44c87ef695071ddc0ee9d8bb",
       "release/node/literal-char-string-quoted-composite-set-members/stderr": "b81699b26a8ca86a5383f3fa6f16a4d8f67fa189884c0738e615bca6a866f2d7",
       "release/node/literal-char-string-quoted-composite-set-members/stdout": "bdf0214b2df2c2f7ef493ac11c73e36f6881e300cf23c2343035ad105d454a47",
-      "release/node/literal-char-string-quoted-inner-quote-map/command.json": "5e352932b586c46518902c49ab5cec54e7aa48a771672530f37526006ffbd0ab",
+      "release/node/literal-char-string-quoted-inner-quote-map/command.json": "defb722375a5319b1e3edbdce8ed7f30c348f6185ea7808e21d9fd3ab30b3dfc",
       "release/node/literal-char-string-quoted-inner-quote-map/stderr": "d3e428949a6db3701ec71f13ed687a10b602eec5eb74074e0734c53e28e27493",
       "release/node/literal-char-string-quoted-inner-quote-map/stdout": "e5c93b0c6468150e459e5d040487ce96662c9b91e7780056d66a0883f87b2c9b",
-      "release/node/literal-char-string-quoted-inner-quote-set/command.json": "c433835a40b36f97c774df13df99dcce42fe22b9498391fe125444a9541e9083",
+      "release/node/literal-char-string-quoted-inner-quote-set/command.json": "af7d36910c36fa54ee350ffa1eb223a2fced64142e6d5eed9d81c7497ade5457",
       "release/node/literal-char-string-quoted-inner-quote-set/stderr": "dcbd740f6bf27fa6f82e6cfe0d2b833ddc5e418a8d87360e0c96e200969771c1",
       "release/node/literal-char-string-quoted-inner-quote-set/stdout": "0e5e09cf4db9c6e49d9cc6ea7ac40e05a30361e7e8443a1ed78433f3a25eecb1",
-      "release/node/literal-char-string-quoted-inner-quote-set-order-difference/command.json": "fef9416c27cbdbcd3da0da6c0f18d85dbf71fdfb7f339c1b85ca01076e5fed19",
+      "release/node/literal-char-string-quoted-inner-quote-set-order-difference/command.json": "4c56cdbe5e5850883f562bbec82e6b417d8a3405599df1b827520e326e9f1799",
       "release/node/literal-char-string-quoted-inner-quote-set-order-difference/stderr": "d86c28b55226593a12852f64c3ce4eaa91d64f9d813d199df02aca3f2507dd40",
       "release/node/literal-char-string-quoted-inner-quote-set-order-difference/stdout": "ff930ce6a6c4450976f886213093f753d3a128f4be1b60f940264a545d6cf284",
-      "release/node/literal-char-string-quoted-nested/command.json": "6400a7d581396fa47641fa4ec8a802483faa1c8d44798c965088722c410442f4",
+      "release/node/literal-char-string-quoted-nested/command.json": "6b130fbc409145faba2341acd7157dd4dfa53a17f136b55dc78d544da4bce08c",
       "release/node/literal-char-string-quoted-nested/stderr": "ebfae70ea392ee12810b9d9ac1fa08db53440bfc7c150d1992c8061d68eaeb71",
       "release/node/literal-char-string-quoted-nested/stdout": "fcf6b634f02881c88bad70fb61f786a6dce74ec4202c00c661ff528ce93248e7",
-      "release/node/literal-char-string-quoted-vector-map-keys/command.json": "721b5eb94a285c6a460dcf39668c2fa76cd7df58eee446e4a3b871755f63298b",
+      "release/node/literal-char-string-quoted-vector-map-keys/command.json": "18d8c41c51e642de068308ffff7b1dc058f3e835e470eb5f594898b60a6df854",
       "release/node/literal-char-string-quoted-vector-map-keys/stderr": "0c096f228c6aa8231dcc8d168814f63425b766945b4aefc9303eed279fd1189f",
       "release/node/literal-char-string-quoted-vector-map-keys/stdout": "f096bd75139c41b2f143328afab17d3d530f2be1547699f9195b12c42a53b16a",
-      "release/node/literal-char-string-quoted-vector-set-members/command.json": "f078bb9da6e608c99f962d54c44abf1fcac62aae33c13dc1b887afc96cbe8596",
+      "release/node/literal-char-string-quoted-vector-set-members/command.json": "019c857144df3a975e78bfac5f10a49651c33b2a59eed5f3f22080cf479e45a8",
       "release/node/literal-char-string-quoted-vector-set-members/stderr": "2b62c78e3b8dc23d6bf736ed59884fb39cc617aafdd62b77e508b2b0cbca9429",
       "release/node/literal-char-string-quoted-vector-set-members/stdout": "22b17e15577ae0ee82e4a959a999c0967c1cd2b103a845003ee23d36e295a729",
-      "release/node/literal-char-string-runtime-constructors/command.json": "cd072224bfc4b35360943f9dc0f0d4afd3212168b5ecf7e69edb42cf7d5a1029",
+      "release/node/literal-char-string-runtime-constructors/command.json": "6d77e536fbb2bae362d6bff3032719a6899cc7f868509099755bedf2a0a8107e",
       "release/node/literal-char-string-runtime-constructors/stderr": "6cd7a77445edb42f5ff09c4dc59d9fbd5b8fa10fbb6c2be5340d292f2e4a3750",
       "release/node/literal-char-string-runtime-constructors/stdout": "7b90f372d1384bbb3895e5fccf7a379c254063475c174a2e4a6043b083e7921e",
-      "release/node/literal-char-string-runtime-small-constructor-difference/command.json": "9eae081e4f1c8c5aa7bb26b5aca23a1ab745eeb038f93f47eaa94f3552973184",
+      "release/node/literal-char-string-runtime-small-constructor-difference/command.json": "53572ee9779c604eb3203e71831108d8e509807613195f7d79ed710c3a59ef80",
       "release/node/literal-char-string-runtime-small-constructor-difference/stderr": "ccc070232543a598c73fa47a896c278db69de437c420b4420d99711abd597371",
       "release/node/literal-char-string-runtime-small-constructor-difference/stdout": "dd14287c10c05c1d44e86c9c86171f7fd640ee83d1d7571a05f9ee094f9f0ca5",
-      "release/node/literal-char-string-set-order-membership/command.json": "a29e34c43b385598298a7a347bb7638c5ece64b78e5fef14ae22fc87ce3b73cd",
+      "release/node/literal-char-string-set-order-membership/command.json": "cc9a9b5b29de09c97cf1be097fad19415d70b61a63b3ce882c271659941ca915",
       "release/node/literal-char-string-set-order-membership/stderr": "44d259f9897b066e6843455f0b82d5bedb171dda7139354caab29d2f4f2d3e99",
       "release/node/literal-char-string-set-order-membership/stdout": "718ed79559bb3e028d2a139830e987572349b7f31fd041588243bdba9dd07b3f",
-      "release/node/literal-char-string-set-reverse-order/command.json": "216a79b68c2c12f0849059e1fa55b24263267ee25653e774ccdc49108f8c92aa",
+      "release/node/literal-char-string-set-reverse-order/command.json": "0c8e9b2b9cbdce7349b9be1bfa20d54e954ddfe7b7355108a3bbe1b876b50637",
       "release/node/literal-char-string-set-reverse-order/stderr": "9b85f45c8e12c3d698b589d4a0c2365a33710bf28a20e780b6925bf82804cb43",
       "release/node/literal-char-string-set-reverse-order/stdout": "16fee3fe78a29ab7ea4205d186639dfb0b3c1b5395586a648d2dc854e97f9920",
-      "release/node/literal-char-string-set-ten-scalars/command.json": "a4c0341588db539cd543b40699802ccded8534b932e9285b32ea8db96ef82adf",
+      "release/node/literal-char-string-set-ten-scalars/command.json": "e9499e1cb114c01309551688fd2bcb989493be85e5905bf676454e2263942506",
       "release/node/literal-char-string-set-ten-scalars/stderr": "8896e74cf07425d238b3df19ae6bc622a5e9147a6b398cc358e197c350f1c11b",
       "release/node/literal-char-string-set-ten-scalars/stdout": "84fbf5176893e2d916faf4ddb280043e9d6c9bb0a6ef00ab109812f7fb6f2f8d",
-      "release/node/literal-char-string-unicode-spelling/command.json": "61f5030c867e7ef857991b1bcb9bb2758f18a9f7db7fc12759e8932bdcd035e3",
+      "release/node/literal-char-string-unicode-spelling/command.json": "3ee5a663d62ff805a5de2a9769b55fd26ca3693917c3430315a52ccc58352dd4",
       "release/node/literal-char-string-unicode-spelling/stderr": "2d21216c68531974782a00f3c819ba20bc564e18cef06b7c662ce638666a93d9",
       "release/node/literal-char-string-unicode-spelling/stdout": "a0d0f724a37a9e5ea4d54aba22524972103fda9327d1efbfb7a3c16c84a9191a",
-      "release/node/literal-char-string-vector-map-keys/command.json": "cb281cea8359bd57c8e3b027a2a60e3730614c4de4cf0a88e4c839f59e38f05c",
+      "release/node/literal-char-string-vector-map-keys/command.json": "ac8be14a7140e01a930525f8dfad8a59c12a8fecd68a3840502cfd511bf57ede",
       "release/node/literal-char-string-vector-map-keys/stderr": "261836f8513a68fb7c1a4798976b94dc92744ac6d33a68ab7fc5ea086b9146e1",
       "release/node/literal-char-string-vector-map-keys/stdout": "67f95a34bf4d9af5ea7f46f54258b500bf0921ea0b93ab7b463c89919a686372",
-      "release/node/literal-char-string-vector-set-distinct/command.json": "b512e283a5d85297d6923e77da9badc18342cb48636bade10a705409f87cc356",
+      "release/node/literal-char-string-vector-set-distinct/command.json": "fff51116e0c19af6f7feec1ddfd2d40cb71ac95f1b75ef622d58d80320a957b9",
       "release/node/literal-char-string-vector-set-distinct/stderr": "f1178108b969c086dd7ed4b2712c092592d4eafecb55dd088c6eb9734b449ba7",
       "release/node/literal-char-string-vector-set-distinct/stdout": "a00e8478f3e54401d11f5cf70e217c50ba836b42bc4b51a30b3e9c90c4e7470c",
-      "release/node/literal-char-string-vector-set-duplicate-difference/command.json": "1e71f7e063c7fa10e98ec1ed351cde5ea7bc6b048a7935c6af07f7084332dc76",
+      "release/node/literal-char-string-vector-set-duplicate-difference/command.json": "2a98f82a477a8ae94f91a51cb519b51e7b3abd4b4edac0a6be51cdf95e0805f9",
       "release/node/literal-char-string-vector-set-duplicate-difference/stderr": "845c87ea85fb7242ac83a71a55c96568259e98f4542db5363128e1ce41b95f66",
       "release/node/literal-char-string-vector-set-duplicate-difference/stdout": "8dd2f5b2f54dd95b1b78b3804632d1d2c251511b14bd82f8f7e90ee976c5d091",
       "release/original-sources/literal-char-string-dynamic-map/compiled.js": "29179997c884c71384c5972d0758f3ccce172f686a62a28f9aeb12b8a9ed6834",
@@ -5319,11 +5319,11 @@
       "release/original-sources/literal-rejection-set-unclosed/sci-original.cljc": "f060ffea73e4d1be342b4c7a326ded05501a3dc76d5d544c42c2f135c013ee7f",
       "release/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
       "release/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
-      "release/out/cljs/core.js.map": "13645641cb42e54ff97e6af9a8ab83603eb5ee93b2132e8d5df4e856aa221e19",
+      "release/out/cljs/core.js.map": "849c1fa2949f2a9671878d989b2dbc3b14eb7fe4d739977305aa387aca5d417c",
       "release/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
       "release/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
       "release/out/cljs_deps.js": "d8779c7ead8442c98cf2754c12120cdc4b9bf4cf4fdaecf0f06144c0b140371e",
-      "release/out/cljsc_opts.edn": "00cad296f3a80526464ff555f1ae90fae4db06720fdd1a13381be252942db0b5",
+      "release/out/cljsc_opts.edn": "780b4fb6f36f120d2e9812f6d60e599d721e35ef8c33f805ea8afdd6322ecb16",
       "release/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
       "release/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
       "release/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
@@ -5370,22 +5370,22 @@
       "release/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
       "release/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
       "release/out/nodejs.js": "3cd5b745903ac58df683dc9c8d2655ec476108755e3ee159054a8108add6042c",
-      "release/out/nodejs.js.map": "711b60bf5031841fc68778155185a817f1bd8eff8a2d71c355b219b3137bee23",
+      "release/out/nodejs.js.map": "fd775bbd7133eeb499a3dd8e1ccb0506c23fca7c6bed9763561a73caaafb8e5e",
       "release/out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
-      "release/out/nodejscli.js.map": "34bd55fc73142c591647dea144e95c5203d48888fb87b2296d31e33289a51a7c",
+      "release/out/nodejscli.js.map": "ff5bafaa03aa74748de677885c8a17b5898c557af18e74ffab4202e1ee07f346",
       "release/out/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
       "release/out/semantic/reference.js": "be7cd9735c1d6b0d220110fda456a16cb5ef3a26b641ef0b7c8af0e19299f2c7",
-      "release/out/semantic/reference.js.map": "6c66f18e626b5885c946a1b2f4325913415ea75b2e3f20aeb368642bb8cd792e",
+      "release/out/semantic/reference.js.map": "34709a42bda30b445bf2690a7c787fd5917ee8576707bfe80d2376c79bf520de",
       "release/out/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1",
       "release/out/user.js": "d13cdfde37223cf190cd6533a636168ce925a913045c590317115dcd449c517f",
-      "release/out/user.js.map": "568f06afd6b558317d14fb36d0b7b47758b63861a47b9f2f761f47408dafb382",
+      "release/out/user.js.map": "d75c4bdad4da7d8f9683ceeee84c37b8dd79b36ff74556a9e842fad3844de12c",
       "release/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
       "release/src/semantic/reference.cljs": "1c232cbf2603e78ca0fcd6dbee78a5be319294ded53045ce4dd83669020df6d7",
       "release/src/user.cljs": "ea98c99bfa09c553b39db5557de52c7ee38bd98b35e97016ace789d02af052b1"
     }
   },
   "compiler_build_producer_source_sha256": {
-    "src/analyzer.rs": "0b389492b41c5604fac0766467286cded059329d4321b72b087271658bb899f4",
+    "src/analyzer.rs": "2b2d48a798d3600b4dbf9d16c2774fa59f0404683f04165a58d39667ff82f496",
     "src/application.rs": "d49776f4a080a80d5ea193255f295287e4c86247243ffff5bffb9430a7f3934f",
     "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
     "src/compilation_session.rs": "36ef734d1426bbecd024cb855c3688b12a9a8b8afb262eb0e8a78a77c8b02aae",
@@ -5420,7 +5420,7 @@
     "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
     "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
     "src/program_fragment.rs": "e6f2aefdc477ddba724c3156c3564750fe9f1d565fea3c0e75c927843e64c86e",
-    "src/reader_literals.rs": "411e5a3478d11fdf7d208cf43f607c57d531fe7028eeec85af66ae432ed66236",
+    "src/reader_literals.rs": "79f4210a5f8f430a1d109841ddbab1ae608ce4902ab312669c4673f7678b8e43",
     "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
     "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
     "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
@@ -5543,10 +5543,10 @@
     "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/cognitect/transit.clj": "dbaa62dfdaeac431a25230fdc3a0dd66ca25e0453f25cc9cbaa69bc7edf36ebc",
     "/Users/admin/src/light-cljs/research/clojurescript/deps.edn": "97c2bc5db8daa0b5e5bea7dbb3289d057ddac283977e06d58f6b42ed81d06020",
     "/Users/admin/.m2/repository/org/clojure/clojurescript/1.12.134/clojurescript-1.12.134.jar": "d019b73177e4805748f4ee995c4cfcd14ebf28bff685a84059813fbe4e8c878f",
-    "tests/reference/compiler-language/literal_char_string.py": "263f48c7c940b3e8aa41e3f4d36e0c0be1d5f622301b9dc7de63280ec8a61efd",
-    "tests/compiler_literal_char_string.rs": "73932c676d54e2c990727a5b9f1ffec784b088e09b7c2a22face48a6b0ecd173",
+    "tests/reference/compiler-language/literal_char_string.py": "35add274d0afe19b4d81509bca4b9fa7550e0c1888d07133fda0340c217d3f2b",
+    "tests/compiler_literal_char_string.rs": "c0f5487b781a2b55262c2eb8d66ce5b952746bd7377f63fc9def412737543c20",
     "tests/reference/compiler-language/literal-char-string-contracts.json": "e77840fcef2218413abecf911c84d48f8e6e91402511f7dc3fe05a8a315e8432",
-    "tests/reference/compiler-language/test_literal_char_string.py": "0cf76a1cc6db3bf5654ffb3af9ea75ad929a69da17de62a885dc45f9fe20e04d"
+    "tests/reference/compiler-language/test_literal_char_string.py": "8c752da54451356ade3ca93f635c74d1f613bddc72d87d468f644f7a05e1e752"
   },
   "references": {
     "release": {
@@ -12705,7 +12705,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8437cb734a8df2fbd5b90e67435c3da8e664e3455de709e7bff885c35e76a818",
-        "compiled_js_sha256": "ebfc28841d6265d8014ee4562aef6b31f9abcf7804fbcd9ef32b2fca524f1e7a",
+        "compiled_js_sha256": "690e4ac7d0634738b9c8abfee24b34a9b9885622c9d742d4cdc966329574e454",
         "raw_observation_sha256": "f9a1833789b4e24bb0da03a86ba7ad97ffc7a0df45270933831f4bbfe06f9000",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -12730,7 +12730,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8437cb734a8df2fbd5b90e67435c3da8e664e3455de709e7bff885c35e76a818",
-        "compiled_js_sha256": "ebfc28841d6265d8014ee4562aef6b31f9abcf7804fbcd9ef32b2fca524f1e7a",
+        "compiled_js_sha256": "690e4ac7d0634738b9c8abfee24b34a9b9885622c9d742d4cdc966329574e454",
         "raw_observation_sha256": "f9a1833789b4e24bb0da03a86ba7ad97ffc7a0df45270933831f4bbfe06f9000",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -12805,7 +12805,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8437cb734a8df2fbd5b90e67435c3da8e664e3455de709e7bff885c35e76a818",
-        "compiled_js_sha256": "ebfc28841d6265d8014ee4562aef6b31f9abcf7804fbcd9ef32b2fca524f1e7a",
+        "compiled_js_sha256": "690e4ac7d0634738b9c8abfee24b34a9b9885622c9d742d4cdc966329574e454",
         "raw_observation_sha256": "f9a1833789b4e24bb0da03a86ba7ad97ffc7a0df45270933831f4bbfe06f9000",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -12830,7 +12830,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8437cb734a8df2fbd5b90e67435c3da8e664e3455de709e7bff885c35e76a818",
-        "compiled_js_sha256": "ebfc28841d6265d8014ee4562aef6b31f9abcf7804fbcd9ef32b2fca524f1e7a",
+        "compiled_js_sha256": "690e4ac7d0634738b9c8abfee24b34a9b9885622c9d742d4cdc966329574e454",
         "raw_observation_sha256": "f9a1833789b4e24bb0da03a86ba7ad97ffc7a0df45270933831f4bbfe06f9000",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -13599,7 +13599,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "95b033095b2a4660da2ba10bbaf75ae3ed7489c6440388996d1f550ce8a8c353",
-        "compiled_js_sha256": "a04c95e551cf723c629362e460e1e2b106e9f91e8a399fc03d66e0244d82764f",
+        "compiled_js_sha256": "ea76b4aa131f7bf24644b475b48764df49d31f00c5bc811188bd5315f22fa4f1",
         "raw_observation_sha256": "4c3cda1146ab31a355b1e341700a644d98b74e8bf53428255c0e5eef24f35931",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -13624,7 +13624,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "95b033095b2a4660da2ba10bbaf75ae3ed7489c6440388996d1f550ce8a8c353",
-        "compiled_js_sha256": "a04c95e551cf723c629362e460e1e2b106e9f91e8a399fc03d66e0244d82764f",
+        "compiled_js_sha256": "ea76b4aa131f7bf24644b475b48764df49d31f00c5bc811188bd5315f22fa4f1",
         "raw_observation_sha256": "4c3cda1146ab31a355b1e341700a644d98b74e8bf53428255c0e5eef24f35931",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -13699,7 +13699,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "95b033095b2a4660da2ba10bbaf75ae3ed7489c6440388996d1f550ce8a8c353",
-        "compiled_js_sha256": "a04c95e551cf723c629362e460e1e2b106e9f91e8a399fc03d66e0244d82764f",
+        "compiled_js_sha256": "ea76b4aa131f7bf24644b475b48764df49d31f00c5bc811188bd5315f22fa4f1",
         "raw_observation_sha256": "4c3cda1146ab31a355b1e341700a644d98b74e8bf53428255c0e5eef24f35931",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -13724,7 +13724,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "95b033095b2a4660da2ba10bbaf75ae3ed7489c6440388996d1f550ce8a8c353",
-        "compiled_js_sha256": "a04c95e551cf723c629362e460e1e2b106e9f91e8a399fc03d66e0244d82764f",
+        "compiled_js_sha256": "ea76b4aa131f7bf24644b475b48764df49d31f00c5bc811188bd5315f22fa4f1",
         "raw_observation_sha256": "4c3cda1146ab31a355b1e341700a644d98b74e8bf53428255c0e5eef24f35931",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -14108,7 +14108,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8d06b4275f1fcb8ed6e66954557a15e3bd1540a2d0bb121ea28e772647b4af4d",
-        "compiled_js_sha256": "a993948fdf4978c7fdb302aec655fb2d7df6993038cb0de550fdbd5c76cc20d5",
+        "compiled_js_sha256": "7f5404d44d3e5392ec092b97389ccafd6c3b3d36e64ae414a3dcf2aedbbf6eeb",
         "raw_observation_sha256": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -14134,7 +14134,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8d06b4275f1fcb8ed6e66954557a15e3bd1540a2d0bb121ea28e772647b4af4d",
-        "compiled_js_sha256": "a993948fdf4978c7fdb302aec655fb2d7df6993038cb0de550fdbd5c76cc20d5",
+        "compiled_js_sha256": "7f5404d44d3e5392ec092b97389ccafd6c3b3d36e64ae414a3dcf2aedbbf6eeb",
         "raw_observation_sha256": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -14212,7 +14212,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8d06b4275f1fcb8ed6e66954557a15e3bd1540a2d0bb121ea28e772647b4af4d",
-        "compiled_js_sha256": "a993948fdf4978c7fdb302aec655fb2d7df6993038cb0de550fdbd5c76cc20d5",
+        "compiled_js_sha256": "7f5404d44d3e5392ec092b97389ccafd6c3b3d36e64ae414a3dcf2aedbbf6eeb",
         "raw_observation_sha256": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -14238,7 +14238,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "8d06b4275f1fcb8ed6e66954557a15e3bd1540a2d0bb121ea28e772647b4af4d",
-        "compiled_js_sha256": "a993948fdf4978c7fdb302aec655fb2d7df6993038cb0de550fdbd5c76cc20d5",
+        "compiled_js_sha256": "7f5404d44d3e5392ec092b97389ccafd6c3b3d36e64ae414a3dcf2aedbbf6eeb",
         "raw_observation_sha256": "fe056a52290538d5adf36fc0e004917b4dd060ef57b22af06ef6d293eb1f33cc",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -14318,7 +14318,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f1407ac3c2755c6954a2db6cea8696b4881a155641ab9d617b88669dddd340b0",
-        "compiled_js_sha256": "b1bdd1d76009b03c799a04af44fcac31e997947605414adb81a72841d5d590d7",
+        "compiled_js_sha256": "5f614cb6155a6d7d0ee242433b350f4487557a0f4e0b0aa398e6a99cb89a91d2",
         "raw_observation_sha256": "9ec60c0d7f580243a09bb077b25183013a974614c4ae26279f1d860ec45e0809",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -14344,7 +14344,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f1407ac3c2755c6954a2db6cea8696b4881a155641ab9d617b88669dddd340b0",
-        "compiled_js_sha256": "b1bdd1d76009b03c799a04af44fcac31e997947605414adb81a72841d5d590d7",
+        "compiled_js_sha256": "5f614cb6155a6d7d0ee242433b350f4487557a0f4e0b0aa398e6a99cb89a91d2",
         "raw_observation_sha256": "9ec60c0d7f580243a09bb077b25183013a974614c4ae26279f1d860ec45e0809",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -14422,7 +14422,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f1407ac3c2755c6954a2db6cea8696b4881a155641ab9d617b88669dddd340b0",
-        "compiled_js_sha256": "b1bdd1d76009b03c799a04af44fcac31e997947605414adb81a72841d5d590d7",
+        "compiled_js_sha256": "5f614cb6155a6d7d0ee242433b350f4487557a0f4e0b0aa398e6a99cb89a91d2",
         "raw_observation_sha256": "9ec60c0d7f580243a09bb077b25183013a974614c4ae26279f1d860ec45e0809",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -14448,7 +14448,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f1407ac3c2755c6954a2db6cea8696b4881a155641ab9d617b88669dddd340b0",
-        "compiled_js_sha256": "b1bdd1d76009b03c799a04af44fcac31e997947605414adb81a72841d5d590d7",
+        "compiled_js_sha256": "5f614cb6155a6d7d0ee242433b350f4487557a0f4e0b0aa398e6a99cb89a91d2",
         "raw_observation_sha256": "9ec60c0d7f580243a09bb077b25183013a974614c4ae26279f1d860ec45e0809",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -15197,7 +15197,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f413eaa395d037ef6168b8217578fa7ea3dff209fa919b8f1bbd67fd6eccf4fc",
-        "compiled_js_sha256": "5d3a5fb1c37413c63f5d18c9ddd66457fe8add384347ca0d0d1dd809a4935fd0",
+        "compiled_js_sha256": "62e9ffad12aebccf091a1a7641ccc90ef0391b3148d4aa9c3fdccc359601a974",
         "raw_observation_sha256": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -15222,7 +15222,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f413eaa395d037ef6168b8217578fa7ea3dff209fa919b8f1bbd67fd6eccf4fc",
-        "compiled_js_sha256": "5d3a5fb1c37413c63f5d18c9ddd66457fe8add384347ca0d0d1dd809a4935fd0",
+        "compiled_js_sha256": "62e9ffad12aebccf091a1a7641ccc90ef0391b3148d4aa9c3fdccc359601a974",
         "raw_observation_sha256": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
@@ -15297,7 +15297,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f413eaa395d037ef6168b8217578fa7ea3dff209fa919b8f1bbd67fd6eccf4fc",
-        "compiled_js_sha256": "5d3a5fb1c37413c63f5d18c9ddd66457fe8add384347ca0d0d1dd809a4935fd0",
+        "compiled_js_sha256": "62e9ffad12aebccf091a1a7641ccc90ef0391b3148d4aa9c3fdccc359601a974",
         "raw_observation_sha256": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -15322,7 +15322,7 @@
         },
         "original_status": "passed",
         "phase_source_sha256": "f413eaa395d037ef6168b8217578fa7ea3dff209fa919b8f1bbd67fd6eccf4fc",
-        "compiled_js_sha256": "5d3a5fb1c37413c63f5d18c9ddd66457fe8add384347ca0d0d1dd809a4935fd0",
+        "compiled_js_sha256": "62e9ffad12aebccf091a1a7641ccc90ef0391b3148d4aa9c3fdccc359601a974",
         "raw_observation_sha256": "472644fe9caad242b518f2019826dd4ba3030d782cb475ebe121436241b4cf91",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
@@ -15381,7 +15381,7 @@
     },
     "literal-char-string-quoted-inner-quote-set-order-difference": {
       "application-fresh/QuickJS": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15394,7 +15394,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15407,7 +15407,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15416,16 +15416,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "3dc9eb365906254d810ac6021faa14efaac793c30555d8a823547bea657b0056",
-        "compiled_js_sha256": "7e98f04b0bebd2b05624b345d264329a78c58ad63f196c3abe4765876e9d1bdd",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "cd1d2e610daf6a303d53450d0fb282c80a449c2bc4f7a810b9ea1f9ec15f72a1",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "application-fresh/Node": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15438,7 +15438,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15451,7 +15451,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15460,16 +15460,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "3dc9eb365906254d810ac6021faa14efaac793c30555d8a823547bea657b0056",
-        "compiled_js_sha256": "7e98f04b0bebd2b05624b345d264329a78c58ad63f196c3abe4765876e9d1bdd",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "cd1d2e610daf6a303d53450d0fb282c80a449c2bc4f7a810b9ea1f9ec15f72a1",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "macro-fresh/QuickJS": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15482,7 +15482,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15495,7 +15495,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15504,16 +15504,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "4c8bcc0313bc7c8eb92f65516c847fcf0a050608901de64f5c359a246afb0ad5",
-        "compiled_js_sha256": "71307a6d7176f87e930f0f90b44f1dc327b51f71eca6ced64ac3848436c19d79",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "36b101c0d9519d8e10b5bd0ca1bc638191cdcb063a1d2392324fbeb95a468c39",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "macro-fresh/Node": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15526,7 +15526,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15539,7 +15539,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15548,16 +15548,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "4c8bcc0313bc7c8eb92f65516c847fcf0a050608901de64f5c359a246afb0ad5",
-        "compiled_js_sha256": "71307a6d7176f87e930f0f90b44f1dc327b51f71eca6ced64ac3848436c19d79",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "36b101c0d9519d8e10b5bd0ca1bc638191cdcb063a1d2392324fbeb95a468c39",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": null,
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "application-reused/QuickJS": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15570,7 +15570,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15583,7 +15583,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15592,16 +15592,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "3dc9eb365906254d810ac6021faa14efaac793c30555d8a823547bea657b0056",
-        "compiled_js_sha256": "7e98f04b0bebd2b05624b345d264329a78c58ad63f196c3abe4765876e9d1bdd",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "cd1d2e610daf6a303d53450d0fb282c80a449c2bc4f7a810b9ea1f9ec15f72a1",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "application-reused/Node": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15614,7 +15614,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15627,7 +15627,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15636,16 +15636,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "3dc9eb365906254d810ac6021faa14efaac793c30555d8a823547bea657b0056",
-        "compiled_js_sha256": "7e98f04b0bebd2b05624b345d264329a78c58ad63f196c3abe4765876e9d1bdd",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "cd1d2e610daf6a303d53450d0fb282c80a449c2bc4f7a810b9ea1f9ec15f72a1",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "macro-reused/QuickJS": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15658,7 +15658,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15671,7 +15671,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15680,16 +15680,16 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "4c8bcc0313bc7c8eb92f65516c847fcf0a050608901de64f5c359a246afb0ad5",
-        "compiled_js_sha256": "71307a6d7176f87e930f0f90b44f1dc327b51f71eca6ced64ac3848436c19d79",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "36b101c0d9519d8e10b5bd0ca1bc638191cdcb063a1d2392324fbeb95a468c39",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       },
       "macro-reused/Node": {
-        "status": "canonical-mismatch",
+        "status": "passed",
         "observed": {
           "id": "literal-char-string-quoted-inner-quote-set-order-difference",
           "outcome": {
@@ -15702,7 +15702,7 @@
                 {
                   "$vector": [
                     "a",
-                    "a",
+                    "b",
                     {
                       "$list": [
                         {
@@ -15715,7 +15715,7 @@
                         "b"
                       ]
                     },
-                    "b"
+                    "a"
                   ]
                 }
               ]
@@ -15724,13 +15724,13 @@
           "trace": [],
           "stdout": ""
         },
-        "original_status": "mismatch",
+        "original_status": "passed",
         "phase_source_sha256": "4c8bcc0313bc7c8eb92f65516c847fcf0a050608901de64f5c359a246afb0ad5",
-        "compiled_js_sha256": "71307a6d7176f87e930f0f90b44f1dc327b51f71eca6ced64ac3848436c19d79",
-        "raw_observation_sha256": "a5ac0b3e97df2c08d788255cf5673117ff56c1488e3a94a860ea20da484b8c5c",
+        "compiled_js_sha256": "36b101c0d9519d8e10b5bd0ca1bc638191cdcb063a1d2392324fbeb95a468c39",
+        "raw_observation_sha256": "8a3028542a48f19204fa166ed18fa44b56befc62624f828b67463e4676c1d3f0",
         "warmup_compiled_js_sha256": "6207d53a4a4f086bd19155fa123a714fc76ddffd33636fd125f7f3328f0fad16",
         "local_regression_status": "passed",
-        "two_pin_agreement_credit": 0
+        "two_pin_agreement_credit": 1
       }
     },
     "literal-char-string-quoted-inner-quote-map": {
@@ -16302,7 +16302,7 @@
     "literal-rejection-map-character": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/application-fresh/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..47)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/application-fresh/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..47)",
         "phase_source_sha256": "fe26bbe0ec291295996a853699581aaf0173773590b2f6748407f69f33a909b8",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16313,7 +16313,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/macro-fresh/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..63)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/macro-fresh/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..63)",
         "phase_source_sha256": "e1093cb6b1c4416c53a1f0bc1aaba42df54b446094d066151740fb1e2b045968",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16324,7 +16324,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/application-reused/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..47)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/application-reused/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..47)",
         "phase_source_sha256": "fe26bbe0ec291295996a853699581aaf0173773590b2f6748407f69f33a909b8",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16335,7 +16335,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character/macro-reused/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..63)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character/macro-reused/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..63)",
         "phase_source_sha256": "e1093cb6b1c4416c53a1f0bc1aaba42df54b446094d066151740fb1e2b045968",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16348,7 +16348,7 @@
     "literal-rejection-map-character-spelling": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/application-fresh/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..51)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/application-fresh/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..51)",
         "phase_source_sha256": "3654b7458c2fa3be7972e1466e2be2910d6aa6cc59231ae62df38191b69c7909",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16359,7 +16359,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/macro-fresh/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..67)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/macro-fresh/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..67)",
         "phase_source_sha256": "4fbb1bdedadc126b609bbec91559faed7a467529f9e043082de4b9e7a04736f1",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16370,7 +16370,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/application-reused/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..51)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/application-reused/user.cljc:2:31: Lower(DuplicateMapKey) (bytes 10..51)",
         "phase_source_sha256": "3654b7458c2fa3be7972e1466e2be2910d6aa6cc59231ae62df38191b69c7909",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16381,7 +16381,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-character-spelling/macro-reused/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..67)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-character-spelling/macro-reused/user.cljc:2:46: Lower(DuplicateMapKey) (bytes 10..67)",
         "phase_source_sha256": "4fbb1bdedadc126b609bbec91559faed7a467529f9e043082de4b9e7a04736f1",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16394,7 +16394,7 @@
     "literal-rejection-map-string": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/application-fresh/user.cljc:2:32: Lower(DuplicateMapKey) (bytes 10..49)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/application-fresh/user.cljc:2:32: Lower(DuplicateMapKey) (bytes 10..49)",
         "phase_source_sha256": "8e0061690f0d182a8e6bcb3453a88ccb87a2a6ba542a65d83d6ff93d6e6806c2",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16405,7 +16405,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/macro-fresh/user.cljc:2:47: Lower(DuplicateMapKey) (bytes 10..65)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/macro-fresh/user.cljc:2:47: Lower(DuplicateMapKey) (bytes 10..65)",
         "phase_source_sha256": "05aaaa4ed2e3c8d5668ea5f919fcb14af097f88ca002e1ca46d58f4ff1903b25",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16416,7 +16416,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/application-reused/user.cljc:2:32: Lower(DuplicateMapKey) (bytes 10..49)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/application-reused/user.cljc:2:32: Lower(DuplicateMapKey) (bytes 10..49)",
         "phase_source_sha256": "8e0061690f0d182a8e6bcb3453a88ccb87a2a6ba542a65d83d6ff93d6e6806c2",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16427,7 +16427,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-string/macro-reused/user.cljc:2:47: Lower(DuplicateMapKey) (bytes 10..65)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-string/macro-reused/user.cljc:2:47: Lower(DuplicateMapKey) (bytes 10..65)",
         "phase_source_sha256": "05aaaa4ed2e3c8d5668ea5f919fcb14af097f88ca002e1ca46d58f4ff1903b25",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16440,7 +16440,7 @@
     "literal-rejection-set-character": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character/application-fresh/user.cljc:2:30: duplicate set member (bytes 39..41)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character/application-fresh/user.cljc:2:30: duplicate set member (bytes 39..41)",
         "phase_source_sha256": "0dafd2eeb8845a680aa02586a43ac085f324e4da1e7ded3c3ecb4dff4ae6e6af",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16451,7 +16451,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..60)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..60)",
         "phase_source_sha256": "82dd6d2fa623a564da135b3604c249624df6b8337865a1f6b9d51f66d76155b9",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16462,7 +16462,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character/application-reused/user.cljc:2:30: duplicate set member (bytes 39..41)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character/application-reused/user.cljc:2:30: duplicate set member (bytes 39..41)",
         "phase_source_sha256": "0dafd2eeb8845a680aa02586a43ac085f324e4da1e7ded3c3ecb4dff4ae6e6af",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16473,7 +16473,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..60)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..60)",
         "phase_source_sha256": "82dd6d2fa623a564da135b3604c249624df6b8337865a1f6b9d51f66d76155b9",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16486,7 +16486,7 @@
     "literal-rejection-set-character-spelling": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character-spelling/application-fresh/user.cljc:2:30: duplicate set member (bytes 39..45)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character-spelling/application-fresh/user.cljc:2:30: duplicate set member (bytes 39..45)",
         "phase_source_sha256": "5cfc57abe59679153bf30b71ce6fc1d103cef95c29062ec999c5819e9a805700",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16497,7 +16497,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character-spelling/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character-spelling/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
         "phase_source_sha256": "5cba5eeda39c9e58b684c37479ab6dd91628cc4dc546e6d2b3eef602260b67a9",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16508,7 +16508,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character-spelling/application-reused/user.cljc:2:30: duplicate set member (bytes 39..45)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character-spelling/application-reused/user.cljc:2:30: duplicate set member (bytes 39..45)",
         "phase_source_sha256": "5cfc57abe59679153bf30b71ce6fc1d103cef95c29062ec999c5819e9a805700",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16519,7 +16519,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-character-spelling/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-character-spelling/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
         "phase_source_sha256": "5cba5eeda39c9e58b684c37479ab6dd91628cc4dc546e6d2b3eef602260b67a9",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16532,7 +16532,7 @@
     "literal-rejection-set-string": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-string/application-fresh/user.cljc:2:31: duplicate set member (bytes 40..43)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-string/application-fresh/user.cljc:2:31: duplicate set member (bytes 40..43)",
         "phase_source_sha256": "4329838b982f868ab3c2919c8c55923026da21603680b2002773d25f7b7b47bf",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16543,7 +16543,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-string/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..62)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-string/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..62)",
         "phase_source_sha256": "c2d206640f72dff7623410b15638163616952553498bb1c5fe838796c94adb3f",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16554,7 +16554,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-string/application-reused/user.cljc:2:31: duplicate set member (bytes 40..43)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-string/application-reused/user.cljc:2:31: duplicate set member (bytes 40..43)",
         "phase_source_sha256": "4329838b982f868ab3c2919c8c55923026da21603680b2002773d25f7b7b47bf",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16565,7 +16565,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-string/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..62)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-string/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..62)",
         "phase_source_sha256": "c2d206640f72dff7623410b15638163616952553498bb1c5fe838796c94adb3f",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16578,7 +16578,7 @@
     "literal-rejection-map-nested-duplicate": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/application-fresh/user.cljc:2:35: Lower(DuplicateMapKey) (bytes 10..56)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/application-fresh/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/application-fresh/user.cljc:2:35: Lower(DuplicateMapKey) (bytes 10..56)",
         "phase_source_sha256": "47eb3c9e89d83f54f0e44b261140993f00a9d240f8d4b5d21e4863bd80f73cc8",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16589,7 +16589,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/user.cljc:2:50: Lower(DuplicateMapKey) (bytes 10..72)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/macro-fresh/user.cljc:2:50: Lower(DuplicateMapKey) (bytes 10..72)",
         "phase_source_sha256": "5a50fb3a233e28cf7c94b38468bde499a45ba19c1d6500091f940175d9d99966",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16600,7 +16600,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/application-reused/user.cljc:2:35: Lower(DuplicateMapKey) (bytes 10..56)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/application-reused/user.cljc:2:1: macro expansion: while expanding defn: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/application-reused/user.cljc:2:35: Lower(DuplicateMapKey) (bytes 10..56)",
         "phase_source_sha256": "47eb3c9e89d83f54f0e44b261140993f00a9d240f8d4b5d21e4863bd80f73cc8",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16611,7 +16611,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-nested-duplicate/macro-reused/user.cljc:2:50: Lower(DuplicateMapKey) (bytes 10..72)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/macro-reused/user.cljc:2:1: macro expansion: /private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-nested-duplicate/macro-reused/user.cljc:2:50: Lower(DuplicateMapKey) (bytes 10..72)",
         "phase_source_sha256": "5a50fb3a233e28cf7c94b38468bde499a45ba19c1d6500091f940175d9d99966",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16624,7 +16624,7 @@
     "literal-rejection-set-nested-duplicate": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-nested-duplicate/application-fresh/user.cljc:2:32: duplicate set member (bytes 41..44)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-nested-duplicate/application-fresh/user.cljc:2:32: duplicate set member (bytes 41..44)",
         "phase_source_sha256": "2703ebfdf0991259809c47d15a9da4d0dede4a714706bbbafc84ff9cc8eafec1",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16635,7 +16635,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-nested-duplicate/macro-fresh/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
         "phase_source_sha256": "3f1d4049b8745b753e4ab4c65ee701db13b27f5598ab55904cb0b5b5269520f3",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16646,7 +16646,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-nested-duplicate/application-reused/user.cljc:2:32: duplicate set member (bytes 41..44)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-nested-duplicate/application-reused/user.cljc:2:32: duplicate set member (bytes 41..44)",
         "phase_source_sha256": "2703ebfdf0991259809c47d15a9da4d0dede4a714706bbbafc84ff9cc8eafec1",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16657,7 +16657,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-nested-duplicate/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-nested-duplicate/macro-reused/user.cljc:2:1: macro expansion: duplicate set member (bytes 10..64)",
         "phase_source_sha256": "3f1d4049b8745b753e4ab4c65ee701db13b27f5598ab55904cb0b5b5269520f3",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16670,7 +16670,7 @@
     "literal-rejection-map-odd": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-odd/application-fresh/user.cljc:2:25: map requires an even number of forms (bytes 34..44)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-odd/application-fresh/user.cljc:2:25: map requires an even number of forms (bytes 34..44)",
         "phase_source_sha256": "b615d70a20072930a8e460bddf6e652c0d01ee25166e8b892609faab62442d94",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16681,7 +16681,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-odd/macro-fresh/user.cljc:2:40: map requires an even number of forms (bytes 49..59)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-odd/macro-fresh/user.cljc:2:40: map requires an even number of forms (bytes 49..59)",
         "phase_source_sha256": "d80f340fac521263ca82411b0621dc5a9919dbde783c8191517f6165ec72168c",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16692,7 +16692,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-odd/application-reused/user.cljc:2:25: map requires an even number of forms (bytes 34..44)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-odd/application-reused/user.cljc:2:25: map requires an even number of forms (bytes 34..44)",
         "phase_source_sha256": "b615d70a20072930a8e460bddf6e652c0d01ee25166e8b892609faab62442d94",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16703,7 +16703,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-odd/macro-reused/user.cljc:2:40: map requires an even number of forms (bytes 49..59)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-odd/macro-reused/user.cljc:2:40: map requires an even number of forms (bytes 49..59)",
         "phase_source_sha256": "d80f340fac521263ca82411b0621dc5a9919dbde783c8191517f6165ec72168c",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16716,7 +16716,7 @@
     "literal-rejection-map-unclosed": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-unclosed/application-fresh/user.cljc:2:36: expected }, found ) (bytes 45..46)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-unclosed/application-fresh/user.cljc:2:36: expected }, found ) (bytes 45..46)",
         "phase_source_sha256": "1d3b9582b2f10dc6af6cf2b7981ee114cb7cd846f435e71f696ab9fcfb47ea02",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16727,7 +16727,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-unclosed/macro-fresh/user.cljc:2:51: expected }, found ) (bytes 60..61)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-unclosed/macro-fresh/user.cljc:2:51: expected }, found ) (bytes 60..61)",
         "phase_source_sha256": "fdb3ee1f43e1dc70bdb3e39e177637d4bc0350f17142085c50e8f0f4f1bce16e",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16738,7 +16738,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-unclosed/application-reused/user.cljc:2:36: expected }, found ) (bytes 45..46)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-unclosed/application-reused/user.cljc:2:36: expected }, found ) (bytes 45..46)",
         "phase_source_sha256": "1d3b9582b2f10dc6af6cf2b7981ee114cb7cd846f435e71f696ab9fcfb47ea02",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16749,7 +16749,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-map-unclosed/macro-reused/user.cljc:2:51: expected }, found ) (bytes 60..61)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-map-unclosed/macro-reused/user.cljc:2:51: expected }, found ) (bytes 60..61)",
         "phase_source_sha256": "fdb3ee1f43e1dc70bdb3e39e177637d4bc0350f17142085c50e8f0f4f1bce16e",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16762,7 +16762,7 @@
     "literal-rejection-set-unclosed": {
       "application-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-unclosed/application-fresh/user.cljc:2:33: expected }, found ) (bytes 42..43)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-unclosed/application-fresh/user.cljc:2:33: expected }, found ) (bytes 42..43)",
         "phase_source_sha256": "8758a7b43cc3502fd64546e43f0b8fb32fd1e877cd6d7946a918192c77bbbaec",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16773,7 +16773,7 @@
       },
       "macro-fresh": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-unclosed/macro-fresh/user.cljc:2:48: expected }, found ) (bytes 57..58)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-unclosed/macro-fresh/user.cljc:2:48: expected }, found ) (bytes 57..58)",
         "phase_source_sha256": "0aa77e855758c7536d0ae072c3e03014176e67ab7514832102504b46ba8dfbef",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16784,7 +16784,7 @@
       },
       "application-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-unclosed/application-reused/user.cljc:2:33: expected }, found ) (bytes 42..43)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-unclosed/application-reused/user.cljc:2:33: expected }, found ) (bytes 42..43)",
         "phase_source_sha256": "8758a7b43cc3502fd64546e43f0b8fb32fd1e877cd6d7946a918192c77bbbaec",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16795,7 +16795,7 @@
       },
       "macro-reused": {
         "status": "rejected",
-        "detail": "/private/tmp/light-cljs-177-char-followthrough-v1/diagnostics/literal-rejection-set-unclosed/macro-reused/user.cljc:2:48: expected }, found ) (bytes 57..58)",
+        "detail": "/private/tmp/light-cljs-178-char-string-delivery/diagnostics/literal-rejection-set-unclosed/macro-reused/user.cljc:2:48: expected }, found ) (bytes 57..58)",
         "phase_source_sha256": "0aa77e855758c7536d0ae072c3e03014176e67ab7514832102504b46ba8dfbef",
         "same_host_actual_macro_recovery": {
           "source": "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)",
@@ -16809,8 +16809,8 @@
   "canonical_contract_status": "passed",
   "actual_macro_contract_status": "passed",
   "status": "passed",
-  "accepted_source_count": 27,
-  "accepted_engine_frame_count": 216,
-  "nonpassing_neighbor_count": 3,
+  "accepted_source_count": 28,
+  "accepted_engine_frame_count": 224,
+  "nonpassing_neighbor_count": 2,
   "original_semantic_pass_credit": 0
 }

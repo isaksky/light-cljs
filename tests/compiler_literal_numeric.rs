@@ -301,7 +301,7 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
         (
             r###"literal-numeric-collision-and-nan"###,
             r###"(let [m {1 :int 1.0 :float ##NaN :nan} s #{1 1.0 ##NaN}] [(count m) (get m 1) (count s) (vec (seq s)) (contains? s ##NaN)])"###,
-            r###"{"id":"literal-numeric-collision-and-nan","outcome":{"status":"returned","value":{"$vector":[3,{"$keyword":{"namespace":null,"name":"int","spelling":"int"}},3,{"$vector":[1,1,{"$number":"NaN"}]},false]}},"trace":[],"stdout":""}"###,
+            r###"{"id":"literal-numeric-collision-and-nan","outcome":{"status":"returned","value":{"$vector":[3,{"$keyword":{"namespace":null,"name":"int","spelling":"int"}},3,{"$vector":[1,{"$number":"NaN"},1]},false]}},"trace":[],"stdout":""}"###,
         ),
         (
             r###"literal-numeric-map-effects"###,
@@ -386,7 +386,7 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
         (
             r###"literal-numeric-set-traversal-gap"###,
             r###"(let [s '#{1 1.0 '2 2}] [(count s) (contains? s 2) (contains? s '(quote 2)) (vec (seq s))])"###,
-            r###"{"id":"literal-numeric-set-traversal-gap","outcome":{"status":"returned","value":{"$vector":[4,true,true,{"$vector":[1,1,{"$list":[{"$symbol":{"namespace":null,"name":"quote","spelling":"quote"}},2]},2]}]}},"trace":[],"stdout":""}"###,
+            r###"{"id":"literal-numeric-set-traversal-gap","outcome":{"status":"returned","value":{"$vector":[4,true,true,{"$vector":[1,{"$list":[{"$symbol":{"namespace":null,"name":"quote","spelling":"quote"}},2]},1,2]}]}},"trace":[],"stdout":""}"###,
         ),
         (
             r###"literal-numeric-collision-and-nan-count"###,

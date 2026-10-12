@@ -108,6 +108,57 @@ pub(crate) fn number_hash(category: u8, key: &str) -> Option<u32> {
     }
 }
 
+// Clojure's reader uses hasheq before constants are lowered to JavaScript.
+// These hashes belong exclusively to compiler source traversal, not runtime
+// equality or the public cljs.core/hash implementation.
+fn mix_key(key: u32) -> u32 {
+    key.wrapping_mul(0xcc9e2d51).rotate_left(15).wrapping_mul(0x1b873593)
+}
+
+fn mix_hash(hash: u32, key: u32) -> u32 {
+    (hash ^ mix_key(key)).rotate_left(13).wrapping_mul(5).wrapping_add(0xe6546b64)
+}
+
+fn finish_hash(mut hash: u32, length: u32) -> u32 {
+    hash ^= length;
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x85ebca6b);
+    hash ^= hash >> 13;
+    hash = hash.wrapping_mul(0xc2b2ae35);
+    hash ^ (hash >> 16)
+}
+
+pub(crate) fn collection_hash(hash: u32, count: usize) -> u32 {
+    finish_hash(mix_hash(0, hash), count as u32)
+}
+
+fn java_string_hash(units: &[u16]) -> u32 {
+    units.iter().fold(0u32, |hash, unit| hash.wrapping_mul(31).wrapping_add(u32::from(*unit)))
+}
+
+pub(crate) fn string_hash(units: &[u16]) -> u32 {
+    match java_string_hash(units) {
+        0 => 0,
+        hash => finish_hash(mix_hash(0, hash), 4),
+    }
+}
+
+pub(crate) fn named_hash(keyword: bool, namespace: Option<&[u16]>, name: &[u16]) -> u32 {
+    let mut hash = 0;
+    for pair in name.chunks_exact(2) {
+        hash = mix_hash(hash, u32::from(pair[0]) | (u32::from(pair[1]) << 16));
+    }
+    if name.len() % 2 == 1 {
+        hash ^= mix_key(u32::from(*name.last().unwrap()));
+    }
+    let seed = finish_hash(hash, (name.len() * 2) as u32);
+    let hash = seed ^ namespace.map_or(0, java_string_hash)
+        .wrapping_add(0x9e3779b9)
+        .wrapping_add(seed << 6)
+        .wrapping_add(((seed as i32) >> 2) as u32);
+    if keyword { hash.wrapping_add(0x9e3779b9) } else { hash }
+}
+
 pub(crate) fn uuid(text: &str) -> Option<String> {
     // java.util.UUID/fromString accepts abbreviated groups and canonicalizes.
     let widths = [8, 4, 4, 4, 12];

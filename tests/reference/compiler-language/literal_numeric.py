@@ -10,7 +10,7 @@ PROFILE='canonical-literal-numeric-v1'
 DRIVER=ROOT/'tests/compiler_literal_numeric.rs'
 TEST='literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts'
 CONTRACTS=Path(__file__).with_name('literal-numeric-contracts.json')
-CONTRACTS_SHA256='681d6da8e289e9325aa5bd3ae3e2767b6aa663dde9a5a260c31bd37b5aed51fe'
+CONTRACTS_SHA256='790d4fcddf3f6353bc46784950ff1d2ab2cda530ab8c8df7af1f86621135bab7'
 ORIGINAL='[(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq #{1 1.0}))]'
 CONTROLS = (
     ('original', '[(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq #{1 1.0}))]'),
@@ -123,7 +123,7 @@ def load():
     proof.same(rows[0]['source'],ORIGINAL,'Original numeric literal source drift')
     keyword={'$keyword':{'namespace':None,'name':'int','spelling':'int'}}
     proof.same(rows[0]['canonical_expected']['outcome']['value'],{'$vector':[2,keyword,2,{'$vector':[1,1]}]},'Original numeric literal result drift')
-    proof.same([sum(r['canonical_acceptance'] for r in rows),sum(not r['two_pin_agreement'] for r in rows)],[38,2],'Missing numeric accepted/gap coverage')
+    proof.same([sum(r['canonical_acceptance'] for r in rows),sum(not r['two_pin_agreement'] for r in rows)],[40,2],'Missing numeric accepted/gap coverage')
     for row in negative:
         row['canonical_diagnostic_agreement']=row['id'] not in frozen['diagnostic_gaps']
         row['nonpassing_reason']=frozen['diagnostic_gaps'].get(row['id'])

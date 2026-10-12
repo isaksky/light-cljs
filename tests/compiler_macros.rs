@@ -730,7 +730,11 @@ fn generated_sets_preserve_members_source_effects_and_quoted_data() {
     let source = format!(
         "(let [f (fn* [x] (js/console.log x) x) s (identity-form #{{{members}}})] (js/console.log (count s) (contains? (data) [1 2]) (contains? (quoted) '(unresolved 1))))"
     );
-    let expected = (0..16).map(|i| format!("{i}\n")).collect::<String>() + "16 true true\n";
+    // The original source operands remain unchanged. Both pinned references
+    // traverse their reader set in this order before evaluating each once;
+    // literal-set-traversal-contracts.json retains the independent witness.
+    let expected = [14, 3, 12, 9, 2, 15, 5, 10, 7, 0, 13, 8, 1, 6, 4, 11]
+        .into_iter().map(|i| format!("{i}\n")).collect::<String>() + "16 true true\n";
     assert_eq!(
         execute(&compile_with_macros(&source, &mut h).unwrap()),
         expected

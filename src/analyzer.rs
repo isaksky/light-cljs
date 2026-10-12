@@ -2620,6 +2620,46 @@ enum ReaderDatum {
 }
 
 impl ReaderDatum {
+    fn reader_hash(&self) -> Option<u32> {
+        use crate::reader_literals::{collection_hash, named_hash, number_hash, string_hash};
+        Some(match self {
+            Self::Nil => 0,
+            Self::Bool(value) => if *value { 1231 } else { 1237 },
+            Self::Number(category, spelling) => number_hash(*category, spelling)?,
+            Self::NonreflexiveNumber(_) => 0x7ff80000,
+            Self::Character(value) => u32::from(*value),
+            Self::String(units) => string_hash(units),
+            Self::Named(keyword, namespace, name) => named_hash(*keyword, namespace.as_deref(), name),
+            Self::Sequential(items) => {
+                let mut hash = 1u32;
+                for item in items { hash = hash.wrapping_mul(31).wrapping_add(item.reader_hash()?); }
+                collection_hash(hash, items.len())
+            }
+            Self::Map(items) => {
+                let mut hash = 0u32;
+                for (key, value) in items {
+                    let entry = 31u32.wrapping_add(key.reader_hash()?).wrapping_mul(31).wrapping_add(value.reader_hash()?);
+                    hash = hash.wrapping_add(collection_hash(entry, 2));
+                }
+                collection_hash(hash, items.len())
+            }
+            Self::Set(items) => {
+                let mut hash = 0u32;
+                for item in items { hash = hash.wrapping_add(item.reader_hash()?); }
+                collection_hash(hash, items.len())
+            }
+            Self::ReaderLiteral(0, uuid) => {
+                let bits = u128::from_str_radix(&uuid.replace('-', ""), 16).ok()?;
+                (bits ^ (bits >> 32) ^ (bits >> 64) ^ (bits >> 96)) as u32
+            }
+            Self::ReaderLiteral(1, millis) => {
+                let bits = millis.parse::<i64>().ok()? as u64;
+                (bits ^ (bits >> 32)) as u32
+            }
+            Self::ReaderLiteral(_, _) => return None,
+        })
+    }
+
     fn lowered_constants(self) -> Self {
         match self {
             Self::Character(value) => Self::String(vec![value]),
@@ -3809,7 +3849,8 @@ impl Analyzer<'_> {
             } => {
                 self.check_set_members(children, false)?;
                 let direct = self.source_constant_collision(children.iter().copied(), false)?;
-                let items = children
+                let ordered = self.source_set_order(id, children)?;
+                let items = ordered
                     .iter()
                     .map(|&child| self.non_tail_form(child, ExprContext::Value))
                     .collect::<Result<_, _>>()?;
@@ -4817,6 +4858,26 @@ impl Analyzer<'_> {
         Ok(ordered)
     }
 
+    fn source_set_order(&mut self, id: NodeId, children: &[NodeId]) -> Result<Vec<NodeId>, AnalysisError> {
+        // A macro-computed set already has its own runtime traversal. Only
+        // source reader sets acquire JVM reader traversal before lowering.
+        if self.generated.get(id.0).and_then(Option::as_ref)
+            .is_some_and(|form| !matches!(form.node().origin, Origin::Source))
+        {
+            return Ok(children.to_vec());
+        }
+        let mut entries = Vec::with_capacity(children.len());
+        for &child in children {
+            let Some(data) = self.reader_datum(child)? else { return Ok(children.to_vec()); };
+            let Some(hash) = data.reader_hash() else { return Ok(children.to_vec()); };
+            entries.push((child, matches!(data, ReaderDatum::Nil), hash));
+        }
+        // The nil entry precedes the hash trie. Trie nodes walk consecutive
+        // five-bit partitions; equal-hash collision nodes retain insertion order.
+        entries.sort_by_key(|(_, nil, hash)| (!*nil, std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31)));
+        Ok(entries.into_iter().map(|(child, _, _)| child).collect())
+    }
+
     fn source_constant_collision(
         &mut self,
         nodes: impl Iterator<Item = NodeId>,
@@ -5210,6 +5271,8 @@ impl Analyzer<'_> {
                 }
                 let ordered = if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Map, .. }) {
                     self.source_numeric_map_order(children)?
+                } else if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Set, .. }) {
+                    self.source_set_order(id, children)?
                 } else {
                     children.clone()
                 };
@@ -5246,11 +5309,9 @@ impl Analyzer<'_> {
                         ..
                     }
                 ) {
-                    if self.source_constant_collision(children.iter().copied(), true)? {
-                        ExprKind::LiteralSet(items)
-                    } else {
-                        ExprKind::Set(items)
-                    }
+                    // Quoted reader members are distinct constants even when
+                    // JavaScript lowering makes two of their values equal.
+                    ExprKind::LiteralSet(items)
                 } else {
                     ExprKind::Vector(items)
                 }

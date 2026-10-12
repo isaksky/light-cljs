@@ -171,3 +171,23 @@ The previous receipt is preserved byte-exact as `literal-char-string-historical-
 historical originals, outcomes and the strict full-language criteria survive.
 The constructor follow-through does not provide original-body or full-language
 completion credit.
+
+
+## Reader traversal reconciliation after 178
+
+Fresh complete two-pin and executable-bound delivery at
+`/private/tmp/light-cljs-178-char-string-delivery` retains all 30 original
+sources and compares all 240 actual fresh/reused application/demanded-macro
+QuickJS/Node frames, including exact effects and stdout. The corrected reader
+set traversal controls now pass; 28 sources grant 224 scoped
+canonical frames. The two dynamic/executable duplicate-set pin differences
+remain explicitly nonpassing with zero canonical credit. All 88
+same-host diagnostic recovery outcomes are retained. Numeric reduced-ratio
+diagnostic differences remain nonpassing.
+
+Current receipt SHA-256: `e228d4df63de811b6d5e3f45d8c57ad1a66108de02575b9ab7a6614972e85c7d`. The previous receipt is byte-exact in
+`literal-char-string-historical-before178-receipt.json`; earlier observations above
+remain historical, not current traversal failures. The complete original
+sequences are compared directly without sorting or normalization. No original
+upstream/SCI obligation, body, public arity, or full-language credit is inferred.
+See `literal-set-traversal.md` for the focused reader-order proof.

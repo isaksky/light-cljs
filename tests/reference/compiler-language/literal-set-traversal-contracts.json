@@ -1,0 +1,1081 @@
+{
+  "schema_version": 1,
+  "profile": "canonical-literal-set-traversal-v1",
+  "derivation_root": "/private/tmp/light-cljs-178-independent-derivation-v9",
+  "pins": {
+    "release": "1.12.134",
+    "checkout": "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e"
+  },
+  "sources": [
+    {
+      "id": "literal-set-traversal-original-count-membership",
+      "source": "(let [s '#{\\a \"a\" '\\b \\b}] [(count s) (contains? s \\b) (contains? s '(quote \\b))])",
+      "source_sha256": "ba4c168d9b37d079ba8ff53d84c695b9bbe66dd2f69794d174e4acb7e0b5696e"
+    },
+    {
+      "id": "literal-set-traversal-original-full-sequence",
+      "source": "(let [s '#{\\a \"a\" '\\b \\b}] [(count s) (contains? s \\b) (contains? s '(quote \\b)) (vec (seq s))])",
+      "source_sha256": "83bfc04030f834b656df6bf82aa8e1be13cf27ceb54706b5bf00f12150ac5374"
+    },
+    {
+      "id": "literal-set-traversal-numeric-heterogeneous",
+      "source": "(let [s '#{1 1.0 '2 2}] [(count s) (contains? s 2) (contains? s '(quote 2)) (vec (seq s))])",
+      "source_sha256": "0bdf3bbb59b8f665b9831d63554478010364edbd2ae4d09f66d7e15b69843044"
+    },
+    {
+      "id": "literal-set-traversal-scalar-mix",
+      "source": "(let [s '#{nil false true 3 :key x \"x\" \\x}] [(count s) (contains? s :key) (contains? s 'x) (vec (seq s))])",
+      "source_sha256": "a1e514fde990a07d046b514476e003683be9d97df9a62b46433e488c851ea008"
+    },
+    {
+      "id": "literal-set-traversal-quote-list",
+      "source": "(let [s '#{'x (quote y) (1 2) (3 \"z\")}] [(count s) (contains? s '(quote y)) (contains? s '(1 2)) (vec (seq s))])",
+      "source_sha256": "afa39e8e64572a149f393ad4c91d5580c42aa5f3c5d972954a43e7b333297761"
+    },
+    {
+      "id": "literal-set-traversal-vectors",
+      "source": "(let [s '#{[1 \"a\"] [\\a 2] [:k [3 4]]}] [(count s) (contains? s [1 \"a\"]) (vec (seq s))])",
+      "source_sha256": "7d0d69c17acf8af91cf4ce9592f8b7a7bee3388718b81e905611463788a5c249"
+    },
+    {
+      "id": "literal-set-traversal-maps",
+      "source": "(let [s '#{{:a 1} {\\a \"a\"} {:nest [1 2]}}] [(count s) (contains? s {:a 1}) (vec (seq s))])",
+      "source_sha256": "0048a9ee802998aac7d907b9e449e9fb1c0876d33005ff8ac1d8e274b03da1b2"
+    },
+    {
+      "id": "literal-set-traversal-nested-sets",
+      "source": "(let [s '#{#{1 2} #{:a :b} #{:k :v}}] [(count s) (contains? s #{1 2}) (vec (seq s))])",
+      "source_sha256": "5a9e332beada6fde21167b2e42b3b3462c5537d5187221b2462bffd20ea8f9e7"
+    },
+    {
+      "id": "literal-set-traversal-all-composites",
+      "source": "(let [s '#{1 \"a\" \\b '(1 2) [3 4] {:x 5} #{6 7}}] [(count s) (contains? s [3 4]) (contains? s {:x 5}) (contains? s #{6 7}) (vec (seq s))])",
+      "source_sha256": "acf7fa453d05a3191796b68c983f733f9314851a0adcc0696951c369600926e6"
+    },
+    {
+      "id": "literal-set-traversal-large-nil-first",
+      "source": "(let [s '#{nil false true -2 1.5 :ns/key 'ns/name \"Aa\" \"BB\" \\z [1] {:x 2}}] [(count s) (contains? s nil) (contains? s :ns/key) (contains? s '(quote ns/name)) (vec (seq s))])",
+      "source_sha256": "96ff2c3b6bd5f783628bf8495e337cb3f5f6d7fd2592b41234d64a1fa9234b3f"
+    },
+    {
+      "id": "literal-set-traversal-same-hash-strings",
+      "source": "(let [s '#{\"Aa\" \"BB\" :marker \\a 9}] [(count s) (contains? s \"Aa\") (contains? s \"BB\") (vec (seq s))])",
+      "source_sha256": "f8dc8f0b03f5a9768d91a25e7225b544b4d82363f3575a72e09ea00b388fc835"
+    },
+    {
+      "id": "literal-set-traversal-negative-float-scalars",
+      "source": "(let [s '#{-0.0 0 1.5 -2 :p}] [(count s) (contains? s -0.0) (contains? s 0) (vec (seq s))])",
+      "source_sha256": "b8cdae1d6aa6790a91b7a295734992ef28d4c8fe64e245ee1a1cf857892a405a"
+    },
+    {
+      "id": "literal-set-traversal-nested-quoted-data",
+      "source": "(let [x '({:s #{\\a \"a\" '[1 2] {:k 3}}}) s (:s (first x))] [(count s) (contains? s '[1 2]) (vec (seq s))])",
+      "source_sha256": "a4aa2b2f3ca0d040a0c4ce5f45b2cba70cdbca47aa74b37d27f5d7944718dacd"
+    },
+    {
+      "id": "literal-set-traversal-effects",
+      "source": "(let [events (atom []) s #{(do (swap! events conj :first) 1) (do (swap! events conj :second) \"a\") (do (swap! events conj :third) \\b)} output (with-out-str (println (count s)))] [(count s) (vec (seq s)) @events output])",
+      "source_sha256": "a2b4dd47792149685b0d1756afd28929db386cdb0b444a27851819a9bb0529f6"
+    },
+    {
+      "id": "literal-set-traversal-parse-int-source-spans",
+      "source": "(vec (seq #{(js/parseInt \"1\") (js/parseInt \"2\")}))",
+      "source_sha256": "053d322104c1e3f977ac0f5f8c46877823b897ee42649eec8309487f5e9e025d"
+    },
+    {
+      "id": "literal-set-traversal-sixteen-effect-members",
+      "source": "(let [events (atom []) f (fn* [x] (swap! events conj x) x) s #{(f 0) (f 1) (f 2) (f 3) (f 4) (f 5) (f 6) (f 7) (f 8) (f 9) (f 10) (f 11) (f 12) (f 13) (f 14) (f 15)} output (with-out-str (println (count s)))] [(count s) (contains? s 0) (contains? s 15) @events output])",
+      "source_sha256": "f6e3eba00a385b3a04a949869000316087601509054fe51f7f8c8eef74c1aa87"
+    },
+    {
+      "id": "literal-set-traversal-sixteen-sequence-nonpassing",
+      "source": "(let [events (atom []) f (fn* [x] (swap! events conj x) x) s #{(f 0) (f 1) (f 2) (f 3) (f 4) (f 5) (f 6) (f 7) (f 8) (f 9) (f 10) (f 11) (f 12) (f 13) (f 14) (f 15)} output (with-out-str (println (count s)))] [(count s) (contains? s 0) (contains? s 15) (vec (seq s)) @events output])",
+      "source_sha256": "c504629d6f08855041ae1df0d756a68ca4cc11b0a563dafaafe954560a6fbcd2"
+    },
+    {
+      "id": "literal-set-traversal-runtime-only-sequence-nonpassing",
+      "source": "(vec (seq (set [14 3 12 9 2 15 5 10 7 0 13 8 1 6 4 11])))",
+      "source_sha256": "15c0b46902a457451e6ddc825619fbbcdb67a63b258050ad8a5aac04275f91fa"
+    },
+    {
+      "id": "literal-set-traversal-dynamic-duplicate",
+      "source": "(let [a \\a b \"a\"] (try [(count #{a b}) (vec (seq #{a b}))] (catch :default e [:duplicate])))",
+      "source_sha256": "20a88d065438e31fc651a28ecb2ce236c0769fb5efb1d580fe82201f426f2425"
+    },
+    {
+      "id": "literal-set-traversal-dynamic-vector-duplicate",
+      "source": "(let [a [\\a] b [\"a\"]] (try [(count #{a b}) (vec (seq #{a b}))] (catch :default e [:duplicate])))",
+      "source_sha256": "80228fca179c6f8f82ebb7c9663fc79172eca596d3ff8d805fb0e87aefe0c623"
+    }
+  ],
+  "canonical_expected": [
+    {
+      "id": "literal-set-traversal-original-count-membership",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            true,
+            true
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-original-full-sequence",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            true,
+            true,
+            {
+              "$vector": [
+                "a",
+                "b",
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    "b"
+                  ]
+                },
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-numeric-heterogeneous",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            true,
+            true,
+            {
+              "$vector": [
+                1,
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    2
+                  ]
+                },
+                1,
+                2
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-scalar-mix",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            8,
+            true,
+            true,
+            {
+              "$vector": [
+                null,
+                {
+                  "$symbol": {
+                    "namespace": null,
+                    "name": "x",
+                    "spelling": "x"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "key",
+                    "spelling": "key"
+                  }
+                },
+                "x",
+                true,
+                3,
+                false,
+                "x"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-quote-list",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            true,
+            true,
+            {
+              "$vector": [
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "y",
+                        "spelling": "y"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "$list": [
+                    3,
+                    "z"
+                  ]
+                },
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "x",
+                        "spelling": "x"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "$list": [
+                    1,
+                    2
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-vectors",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            3,
+            true,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a",
+                    2
+                  ]
+                },
+                {
+                  "$vector": [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "k",
+                        "spelling": "k"
+                      }
+                    },
+                    {
+                      "$vector": [
+                        3,
+                        4
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "$vector": [
+                    1,
+                    "a"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-maps",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            3,
+            true,
+            {
+              "$vector": [
+                {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "a",
+                          "spelling": "a"
+                        }
+                      },
+                      1
+                    ]
+                  ],
+                  "count": 1
+                },
+                {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "nest",
+                          "spelling": "nest"
+                        }
+                      },
+                      {
+                        "$vector": [
+                          1,
+                          2
+                        ]
+                      }
+                    ]
+                  ],
+                  "count": 1
+                },
+                {
+                  "$map": [
+                    [
+                      "a",
+                      "a"
+                    ]
+                  ],
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-nested-sets",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            3,
+            true,
+            {
+              "$vector": [
+                {
+                  "$set": [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "k",
+                        "spelling": "k"
+                      }
+                    },
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "v",
+                        "spelling": "v"
+                      }
+                    }
+                  ],
+                  "count": 2
+                },
+                {
+                  "$set": [
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "a",
+                        "spelling": "a"
+                      }
+                    },
+                    {
+                      "$keyword": {
+                        "namespace": null,
+                        "name": "b",
+                        "spelling": "b"
+                      }
+                    }
+                  ],
+                  "count": 2
+                },
+                {
+                  "$set": [
+                    1,
+                    2
+                  ],
+                  "count": 2
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-all-composites",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            7,
+            true,
+            true,
+            true,
+            {
+              "$vector": [
+                "b",
+                {
+                  "$set": [
+                    6,
+                    7
+                  ],
+                  "count": 2
+                },
+                1,
+                {
+                  "$vector": [
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      5
+                    ]
+                  ],
+                  "count": 1
+                },
+                "a",
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    {
+                      "$list": [
+                        1,
+                        2
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-large-nil-first",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            12,
+            true,
+            true,
+            true,
+            {
+              "$vector": [
+                null,
+                1.5,
+                {
+                  "$keyword": {
+                    "namespace": "ns",
+                    "name": "key",
+                    "spelling": "ns/key"
+                  }
+                },
+                -2,
+                true,
+                "Aa",
+                "BB",
+                {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "x",
+                          "spelling": "x"
+                        }
+                      },
+                      2
+                    ]
+                  ],
+                  "count": 1
+                },
+                false,
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    {
+                      "$symbol": {
+                        "namespace": "ns",
+                        "name": "name",
+                        "spelling": "ns/name"
+                      }
+                    }
+                  ]
+                },
+                "z",
+                {
+                  "$vector": [
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-same-hash-strings",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            5,
+            true,
+            true,
+            {
+              "$vector": [
+                "a",
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "marker",
+                    "spelling": "marker"
+                  }
+                },
+                "Aa",
+                "BB",
+                9
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-negative-float-scalars",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            5,
+            true,
+            true,
+            {
+              "$vector": [
+                {
+                  "$number": "-0"
+                },
+                0,
+                1.5,
+                -2,
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "p",
+                    "spelling": "p"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-nested-quoted-data",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            4,
+            false,
+            {
+              "$vector": [
+                "a",
+                {
+                  "$map": [
+                    [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "k",
+                          "spelling": "k"
+                        }
+                      },
+                      3
+                    ]
+                  ],
+                  "count": 1
+                },
+                "a",
+                {
+                  "$list": [
+                    {
+                      "$symbol": {
+                        "namespace": null,
+                        "name": "quote",
+                        "spelling": "quote"
+                      }
+                    },
+                    {
+                      "$vector": [
+                        1,
+                        2
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-effects",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            3,
+            {
+              "$vector": [
+                "b",
+                1,
+                "a"
+              ]
+            },
+            {
+              "$vector": [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "third",
+                    "spelling": "third"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "first",
+                    "spelling": "first"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "second",
+                    "spelling": "second"
+                  }
+                }
+              ]
+            },
+            "3\n"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-parse-int-source-spans",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            2,
+            1
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-sixteen-effect-members",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            16,
+            true,
+            true,
+            {
+              "$vector": [
+                14,
+                3,
+                12,
+                9,
+                2,
+                15,
+                5,
+                10,
+                7,
+                0,
+                13,
+                8,
+                1,
+                6,
+                4,
+                11
+              ]
+            },
+            "16\n"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-sixteen-sequence-nonpassing",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            16,
+            true,
+            true,
+            {
+              "$vector": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            },
+            {
+              "$vector": [
+                14,
+                3,
+                12,
+                9,
+                2,
+                15,
+                5,
+                10,
+                7,
+                0,
+                13,
+                8,
+                1,
+                6,
+                4,
+                11
+              ]
+            },
+            "16\n"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-runtime-only-sequence-nonpassing",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-dynamic-duplicate",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            {
+              "$vector": [
+                "a"
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    {
+      "id": "literal-set-traversal-dynamic-vector-duplicate",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            1,
+            {
+              "$vector": [
+                {
+                  "$vector": [
+                    "a"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  ],
+  "checkout_expected": {
+    "literal-set-traversal-dynamic-duplicate": {
+      "id": "literal-set-traversal-dynamic-duplicate",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "duplicate",
+                "spelling": "duplicate"
+              }
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "literal-set-traversal-dynamic-vector-duplicate": {
+      "id": "literal-set-traversal-dynamic-vector-duplicate",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "duplicate",
+                "spelling": "duplicate"
+              }
+            }
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  },
+  "local_expected": {
+    "literal-set-traversal-sixteen-sequence-nonpassing": {
+      "id": "literal-set-traversal-sixteen-sequence-nonpassing",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            16,
+            true,
+            true,
+            {
+              "$vector": [
+                14,
+                3,
+                12,
+                9,
+                2,
+                15,
+                5,
+                10,
+                7,
+                0,
+                13,
+                8,
+                1,
+                6,
+                4,
+                11
+              ]
+            },
+            {
+              "$vector": [
+                14,
+                3,
+                12,
+                9,
+                2,
+                15,
+                5,
+                10,
+                7,
+                0,
+                13,
+                8,
+                1,
+                6,
+                4,
+                11
+              ]
+            },
+            "16\n"
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "literal-set-traversal-runtime-only-sequence-nonpassing": {
+      "id": "literal-set-traversal-runtime-only-sequence-nonpassing",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            14,
+            3,
+            12,
+            9,
+            2,
+            15,
+            5,
+            10,
+            7,
+            0,
+            13,
+            8,
+            1,
+            6,
+            4,
+            11
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    }
+  },
+  "nonpassing_neighbors": {
+    "literal-set-traversal-sixteen-sequence-nonpassing": "Runtime set iteration retains insertion order after hash-map promotion; both pins iterate hash-set order. Separate runtime owner.",
+    "literal-set-traversal-runtime-only-sequence-nonpassing": "Runtime-only set iteration retains vector insertion order; both pins iterate hash-set order. Separate runtime owner.",
+    "literal-set-traversal-dynamic-duplicate": "Dynamic duplicate-set release/checkout version difference: release retains one value; checkout catches duplicate construction.",
+    "literal-set-traversal-dynamic-vector-duplicate": "Dynamic duplicate-set release/checkout version difference: release retains one value; checkout catches duplicate construction."
+  }
+}

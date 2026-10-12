@@ -1703,78 +1703,11 @@
       },
       "trace": [],
       "stdout": ""
-    },
-    "literal-numeric-collision-and-nan": {
-      "id": "literal-numeric-collision-and-nan",
-      "outcome": {
-        "status": "returned",
-        "value": {
-          "$vector": [
-            3,
-            {
-              "$keyword": {
-                "namespace": null,
-                "name": "int",
-                "spelling": "int"
-              }
-            },
-            3,
-            {
-              "$vector": [
-                1,
-                1,
-                {
-                  "$number": "NaN"
-                }
-              ]
-            },
-            false
-          ]
-        }
-      },
-      "trace": [],
-      "stdout": ""
-    },
-    "literal-numeric-set-traversal-gap": {
-      "id": "literal-numeric-set-traversal-gap",
-      "outcome": {
-        "status": "returned",
-        "value": {
-          "$vector": [
-            4,
-            true,
-            true,
-            {
-              "$vector": [
-                1,
-                1,
-                {
-                  "$list": [
-                    {
-                      "$symbol": {
-                        "namespace": null,
-                        "name": "quote",
-                        "spelling": "quote"
-                      }
-                    },
-                    2
-                  ]
-                },
-                2
-              ]
-            }
-          ]
-        }
-      },
-      "trace": [],
-      "stdout": ""
     }
   },
   "nonpassing_neighbors": {
     "literal-numeric-dynamic-set": "release/checkout disagreement for dynamic equal lowered members",
-    "literal-numeric-vector-set-members": "release/checkout disagreement for executable equal lowered vector members",
-    "literal-numeric-collision-and-nan": "178: reader hash traversal differs from local insertion order; separate accepted count/membership control",
-    "literal-numeric-set-traversal-gap": "178: heterogeneous quoted set traversal differs from local insertion order"
+    "literal-numeric-vector-set-members": "release/checkout disagreement for executable equal lowered vector members"
   },
   "diagnostics": {
     "release": {

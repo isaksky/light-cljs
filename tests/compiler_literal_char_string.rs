@@ -349,7 +349,7 @@ fn canonical_literal_constants_and_same_host_diagnostic_recovery() {
         (
             r###"literal-char-string-quoted-inner-quote-set-order-difference"###,
             r###"(let [s '#{\a "a" '\b \b}] [(count s) (contains? s \b) (contains? s '(quote \b)) (vec (seq s))])"###,
-            r###"{"id":"literal-char-string-quoted-inner-quote-set-order-difference","outcome":{"status":"returned","value":{"$vector":[4,true,true,{"$vector":["a","a",{"$list":[{"$symbol":{"namespace":null,"name":"quote","spelling":"quote"}},"b"]},"b"]}]}},"trace":[],"stdout":""}"###,
+            r###"{"id":"literal-char-string-quoted-inner-quote-set-order-difference","outcome":{"status":"returned","value":{"$vector":[4,true,true,{"$vector":["a","b",{"$list":[{"$symbol":{"namespace":null,"name":"quote","spelling":"quote"}},"b"]},"a"]}]}},"trace":[],"stdout":""}"###,
         ),
         (
             r###"literal-char-string-quoted-inner-quote-map"###,

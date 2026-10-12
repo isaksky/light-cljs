@@ -836,7 +836,10 @@ fn sets_lower_owned_values_and_reject_duplicate_readable_forms_with_spans() {
         })
         .unwrap();
     assert_eq!(items.len(), 2);
-    assert!(program.exprs[items[0].0].span.start < program.exprs[items[1].0].span.start);
+    // Both pinned readers traverse these two original forms in reverse source
+    // order. Keep their original locations while lowering in reader order.
+    assert_eq!(&source[program.exprs[items[0].0].span.clone()], "(js/parseInt \"2\")");
+    assert_eq!(&source[program.exprs[items[1].0].span.clone()], "(js/parseInt \"1\")");
     let source = "{#{1 2} 1 #{2 1} 2}";
     assert_eq!(
         analyze(source, &parse(source).unwrap()).unwrap_err().kind,
