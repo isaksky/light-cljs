@@ -336,7 +336,7 @@
         })), 0, false, mapKinds.get(value)) : null;
     const members = sets.get(value);
     if (members) return members.length
-      ? view(Object.freeze(members.map(entry => entry.key)), 0, false, "set") : null;
+      ? view(Object.freeze(setTraversal(value).map(entry => entry.key)), 0, false, "set") : null;
     if (value[Symbol.iterator] != null) return iteratorSeq(value[Symbol.iterator]());
     throw new Error(String(value) + " is not ISeqable");
   }
@@ -959,9 +959,10 @@
   });
 
   // Routing nodes preserve observable key tests and rehashes at trie splits.
-  // Entry storage still owns iteration; immutable nodes can be shared by old
-  // maps and transient copies. Transient capacity affects expansion timing.
+  // Immutable nodes can be shared by old collections and transient copies.
+  // Transient capacity affects expansion timing.
   const hashRoots = new WeakMap();
+  const hashTraversals = new WeakMap();
   function copyEntries(entries) {
     const copy = entries.slice();
     if (hashRoots.has(entries)) hashRoots.set(copy, hashRoots.get(entries));
@@ -1066,6 +1067,27 @@
       hashRoots.set(entries, root);
     }
     return hashRoots.get(entries);
+  }
+  function setTraversal(value) {
+    const entries = sets.get(value);
+    // Small backing array maps, positional constants, and sorted sets retain
+    // their own storage order. Promotion stays observable after removals.
+    if (setKinds.get(value) !== "hash-map") return entries;
+    if (!hashTraversals.has(entries)) {
+      const ordered = entries.filter(entry => entry.key == null);
+      const visit = node => {
+        if (!node) return;
+        if (node.kind === "collision") { ordered.push(...node.entries); return; }
+        for (const slot of node.slots) {
+          if (slot?.node) visit(slot.node);
+          else if (slot?.entry) ordered.push(slot.entry);
+        }
+      };
+      // Walk retained routing nodes without hashing or comparing keys again.
+      visit(ensureHashRoot(entries));
+      hashTraversals.set(entries, Object.freeze(ordered));
+    }
+    return hashTraversals.get(entries);
   }
   function hashEntryIndex(entries, key, keyHash) {
     if (key == null) return entries.findIndex(entry => entry.key == null);
@@ -2206,7 +2228,7 @@
           } else if (vectors.has(v)) { tag = "vector"; a = vectors.get(v).map((x, i) => visit(x, path + "[" + i + "]", depth + 1)); }
           else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
             for (const e of maps.get(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
-          } else if (sets.has(v)) { tag = "set"; a = sets.get(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
+          } else if (sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
           else if (queues.has(v)) { tag = "queue"; a = visit(vectorFromArray(toArray(v)), path + ".payload", depth + 1); }
           else if (uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), path + ".payload", depth + 1); }
           else if (literals.has(v)) {
@@ -2310,7 +2332,7 @@
       entry => Object.freeze([entry.key, entry.value]))), count: entries.length});
     const members = sets.get(value);
     if (members) return Object.freeze({kind: "set",
-      items: Object.freeze(members.map(entry => entry.key)), count: members.length});
+      items: Object.freeze(setTraversal(value).map(entry => entry.key)), count: members.length});
     if (cells.has(value) || views.has(value)) {
       const items = [];
       for (let current = seq(value); current !== null; current = next(current)) items.push(first(current));
@@ -4681,7 +4703,7 @@
     const entries = maps.get(value);
     if (entries) return printMapEntries(entries, writer, options);
     const members = sets.get(value);
-    if (members) return prSequentialWriter(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, members);
+    if (members) return prSequentialWriter(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value));
     if (Array.isArray(value)) return prSequentialWriter(writer, printWriter, "#js [", " ", "]", options, value);
     if (typeof value === "object" && Object.getPrototypeOf(value) === null) return write(writer, "#object[Object]");
     if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(k => ({key: /^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? keyword(null, k) : k, value: value[k]})), writer, options, "#js ");
