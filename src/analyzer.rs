@@ -3038,6 +3038,29 @@ fn analyze_input(
         roots = vec![analyzer.import_form(form)?];
     }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
+    if let Some(test) = snapshot.and_then(|s| s.definition_test.as_ref()) {
+        // Keep executable metadata in the same definition-site unit as its
+        // initializer. This ordinary let/property assignment lowering serves
+        // both emissions, without forcing a self-reference before publication.
+        let node = analyzer.import_form(test)?;
+        let test = analyzer.non_tail_form(node, ExprContext::Value)?;
+        let span = analyzer.program.exprs[analyzer.program.root.0].span.clone();
+        let local = LocalId(analyzer.program.locals.len());
+        analyzer.program.locals.push(LocalBinding {
+            name: "definition-value".into(),
+            span: span.clone(),
+            source_index: analyzer.source_index,
+        });
+        let value = analyzer.push(ExprKind::Local(local), span.clone(), ExprContext::Value);
+        let target = analyzer.push(ExprKind::Property {
+            receiver: value, property: "cljs$lang$test".into(),
+        }, span.clone(), ExprContext::Value);
+        let assignment = analyzer.push(ExprKind::SetGlobal { target, value: test }, span.clone(), ExprContext::Discard);
+        let body = analyzer.push(ExprKind::Do(vec![assignment, value]), span.clone(), ExprContext::Return);
+        analyzer.program.root = analyzer.push(ExprKind::Let {
+            bindings: vec![(local, analyzer.program.root)], body,
+        }, span, ExprContext::Return);
+    }
     analyzer.program.reader_contexts.get_mut(namespace).unwrap().macros = analyzer.macro_host.source_macro_names(namespace);
     analyzer.read_discards_before(source.len())?;
     analyzer.drain_deferred()?;
@@ -5415,6 +5438,7 @@ impl Analyzer<'_> {
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
+            definition_test: None,
             extension_frontier: self.macro_host.session_handle().map_or(0, |s| s.extension_frontier()),
         }
     }
@@ -5613,7 +5637,11 @@ impl Analyzer<'_> {
             let session = self.macro_host.session_handle().expect("compilation session");
             let unit = session.register(
                 format!("{}/{}", self.namespace, self.program.globals[global.0].name),
-                form, self.definition_snapshot(), self.macro_host.macro_analysis_frame(), once,
+                form, {
+                    let mut snapshot = self.definition_snapshot();
+                    snapshot.definition_test = test_form.clone();
+                    snapshot
+                }, self.macro_host.macro_analysis_frame(), once,
                 {
                     let form = self.compiler_read_form(args[0]).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
                     let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
@@ -5637,7 +5665,9 @@ impl Analyzer<'_> {
         {
             self.program.macro_functions.insert(init);
         }
-        let test = test_form
+        // Deferred units attach the callback while initializing the root in
+        // either phase. Attaching it again here would evaluate metadata twice.
+        let test = test_form.filter(|_| !(top_level && self.macro_host.defers_source_units()))
             .map(|f| {
                 let node = self.import_form(&f)?;
                 self.non_tail_form(node, ExprContext::Value)

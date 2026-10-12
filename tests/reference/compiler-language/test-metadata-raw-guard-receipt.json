@@ -1,0 +1,60 @@
+{
+  "receipt_path": "/Users/admin/src/light-cljs/tests/reference/compiler-language/test-metadata-receipt.json",
+  "receipt_sha256": "1645dc93026799120e50460cc0b2480727708b6f8b029e57ccdda941052f037a",
+  "raw_guard_source_sha256": "637e35231cb54192009e738810cddfeabf480c952a19fe5422790ee54139081e",
+  "rejected_mutations": [
+    {
+      "mutation": "original-callback-source",
+      "status": "rejected",
+      "reason": "original complete metadata callback contract drift"
+    },
+    {
+      "mutation": "actual-phase-observation",
+      "status": "rejected",
+      "reason": "complete original actual phase/engine observations drift"
+    },
+    {
+      "mutation": "identical-host-recovery",
+      "status": "rejected",
+      "reason": "same-host recovery observations drift"
+    },
+    {
+      "mutation": "actual-macro-emitted-input",
+      "status": "rejected",
+      "reason": "actual original executed source/emitted binding drift"
+    },
+    {
+      "mutation": "actual-macro-whole-source",
+      "status": "rejected",
+      "reason": "unchanged complete source/declaration/assertions/callback/phase drift"
+    },
+    {
+      "mutation": "canonical-release-output",
+      "status": "rejected",
+      "reason": "actual canonical input/output/build drift"
+    },
+    {
+      "mutation": "canonical-checkout-whole-source",
+      "status": "rejected",
+      "reason": "original whole canonical source drift"
+    },
+    {
+      "mutation": "actual-test-executable",
+      "status": "rejected",
+      "reason": "actual executed binary snapshot content drift"
+    },
+    {
+      "mutation": "recovery-emitted-input",
+      "status": "rejected",
+      "reason": "actual recovery executed source/emitted binding drift"
+    },
+    {
+      "mutation": "missing-actual-macro-emission",
+      "status": "rejected",
+      "reason": "complete source/module artifact census drift"
+    }
+  ],
+  "restored_pristine_proof": "passed",
+  "operation_credit_added": 0,
+  "strict_complete": false
+}

@@ -20,6 +20,7 @@ pub(crate) struct DefinitionSnapshot {
     pub unchecked_arrays: bool,
     pub source_index: usize,
     pub definition_name: Option<String>,
+    pub definition_test: Option<Form>,
     pub extension_frontier: usize,
 }
 pub(crate) struct BundleRegistration<'a> {
@@ -425,6 +426,7 @@ impl Clone for DefinitionSnapshot {
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
             definition_name: self.definition_name.clone(),
+            definition_test: self.definition_test.clone(),
             extension_frontier: self.extension_frontier,
         }
     }

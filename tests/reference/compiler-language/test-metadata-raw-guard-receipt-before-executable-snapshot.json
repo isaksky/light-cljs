@@ -1,0 +1,60 @@
+{
+  "receipt_path": "/Users/admin/src/light-cljs/tests/reference/compiler-language/test-metadata-receipt.json",
+  "receipt_sha256": "e9bbe7d756006621ff94e7c2ecd6ea056a569db403af0f14024e3d343e260efb",
+  "raw_guard_source_sha256": "baa92d857574f13cb271aaf91a3f2ba8d14ca5269e203fa7251a08727f301b8c",
+  "rejected_mutations": [
+    {
+      "mutation": "original-callback-source",
+      "status": "rejected",
+      "reason": "original complete metadata callback contract drift"
+    },
+    {
+      "mutation": "actual-phase-observation",
+      "status": "rejected",
+      "reason": "complete original actual phase/engine observations drift"
+    },
+    {
+      "mutation": "identical-host-recovery",
+      "status": "rejected",
+      "reason": "same-host recovery observations drift"
+    },
+    {
+      "mutation": "actual-macro-emitted-input",
+      "status": "rejected",
+      "reason": "actual original executed source/emitted binding drift"
+    },
+    {
+      "mutation": "actual-macro-whole-source",
+      "status": "rejected",
+      "reason": "unchanged complete source/declaration/assertions/callback/phase drift"
+    },
+    {
+      "mutation": "canonical-release-output",
+      "status": "rejected",
+      "reason": "actual canonical input/output/build drift"
+    },
+    {
+      "mutation": "canonical-checkout-whole-source",
+      "status": "rejected",
+      "reason": "original whole canonical source drift"
+    },
+    {
+      "mutation": "actual-test-executable",
+      "status": "rejected",
+      "reason": "raw replay differs from saved exact acceptance receipt"
+    },
+    {
+      "mutation": "recovery-emitted-input",
+      "status": "rejected",
+      "reason": "actual recovery executed source/emitted binding drift"
+    },
+    {
+      "mutation": "missing-actual-macro-emission",
+      "status": "rejected",
+      "reason": "complete source/module artifact census drift"
+    }
+  ],
+  "restored_pristine_proof": "passed",
+  "operation_credit_added": 0,
+  "strict_complete": false
+}
