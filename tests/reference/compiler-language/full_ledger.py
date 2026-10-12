@@ -591,7 +591,7 @@ def verified_library_dialects(document, current_evidence):
     return {row["obligation_id"]: row for row in verified["reconciliations"]}, document["local_evidence"]
 
 
-def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None):
+def expand_report(historical, witnesses, evidence, *, features=(), identities=(), phase_evidence=None, sci_evidence=None, library_dialect_evidence=None, reviewed_sci_context_evidence=None, gap_sci_context_evidence=None, print_sci_context_evidence=None, cljc_sci_context_evidence=None, lazy_sci_context_evidence=None):
     import report as runner
     assertions, obligations, manifest = load()
     obligation_witnesses = load_obligation_witnesses(obligations, assertions, witnesses)
@@ -634,6 +634,19 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
                 raise ValueError('Exact printing context detached from fresh report execution')
         gap_sci_contexts.update(printing_contexts)
+    for document, module_name, label in (
+            (cljc_sci_context_evidence, 'sci_cljc_accepted_context', 'Exact CLJC reader'),
+            (lazy_sci_context_evidence, 'sci_lazy_context', 'Exact lazy/iteration/control')):
+        if document is None:
+            continue
+        import importlib
+        contexts = importlib.import_module(module_name).reconcile(document)
+        if set(contexts) & (set(gap_sci_contexts) | set(reviewed_sci_contexts) | set(source_context_mappings) | set(library_context_mappings) | set(sci_mappings)):
+            raise ValueError(label + ' context overlaps another execution adapter')
+        for proof in contexts.values():
+            if not runner.same_json(proof['layers'], sci_evidence.get(proof['id'])):
+                raise ValueError(label + ' context detached from fresh report execution')
+        gap_sci_contexts.update(contexts)
     library_dialects, library_phase_document = verified_library_dialects(library_dialect_evidence, sci_evidence)
     selected = bool(features or identities)
     rows = []
@@ -791,7 +804,7 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
                 'actual_phase': 'macro', 'hosts': ['fresh', 'reused'], 'engines': ['QuickJS', 'Node'],
                 'source_context_profile': binding['source_context_profile'],
                 'frames': [{'variant': key, **value} for key, value in frames.items() if key.startswith('macro-')]}
-        gap_reason = ('Fresh whole original source and literal canonical result/effects checked in both pins and all application/macro lifecycles; original SCI differences and current production discrepancies stay separate.' if gap_sci_context else None)
+        gap_reason = (('Fresh whole original source observations retained; this original source/phase contract remains unresolved.' if status == 'missing' else 'Fresh whole original source and literal canonical result/effects checked in both pins and all application/macro lifecycles; original SCI differences and current production discrepancies stay separate.') if gap_sci_context else None)
         if gap_sci_context:
             binding = gap_sci_context['source_binding']
             frames = gap_sci_context['actual_phase_frames']
@@ -823,14 +836,23 @@ def expand_report(historical, witnesses, evidence, *, features=(), identities=()
             "inventory_counts": manifest["counts"], "evidence_policy": "Parser corpus acceptance, local metadata/name registration and historical/native evidence never establish public API/arity or macro completion."}
 
 
-def validate_arity_after171(result, filename, obligations):
-    import arity_after171 as cohort
+def validate_arity_cohort(result, filename, obligations, module_name):
+    import importlib
+    cohort = importlib.import_module(module_name)
     target_ids = {row['id'] for row in obligations}
     expected = [row for row in cohort.exports()[filename] if row['obligation_id'] in target_ids]
     identities = {row['obligation_id'] for row in expected}
     actual = [row for identity, row in result.items() if identity in identities]
     if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
-        raise ValueError('Complete after171 arity cohort missing, changed or detached')
+        raise ValueError('Complete ' + module_name + ' cohort missing, changed or detached')
+
+
+def validate_arity_after171(result, filename, obligations):
+    validate_arity_cohort(result, filename, obligations, 'arity_after171')
+
+
+def validate_arity_after172(result, filename, obligations):
+    validate_arity_cohort(result, filename, obligations, 'arity_after172')
 
 
 def load_obligation_witnesses(obligations, assertions, witnesses):
@@ -887,6 +909,7 @@ def load_obligation_witnesses(obligations, assertions, witnesses):
                 raise ValueError("Public witness cannot omit setup/body assertion paths")
         result[target["id"]] = item
     validate_arity_after171(result, 'obligation-witnesses.jsonl', obligations)
+    validate_arity_after172(result, 'obligation-witnesses.jsonl', obligations)
     return result
 
 
@@ -929,6 +952,7 @@ def load_phase_witnesses(obligations):
                 raise ValueError("Macro phase witness detached from support source")
         result[target["id"]] = item
     validate_arity_after171(result, 'phase-witnesses.jsonl', obligations)
+    validate_arity_after172(result, 'phase-witnesses.jsonl', obligations)
     return result
 
 

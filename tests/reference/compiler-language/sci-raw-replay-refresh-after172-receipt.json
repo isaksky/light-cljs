@@ -1,0 +1,51 @@
+{
+  "cohorts": [
+    {
+      "cohort": "sci-gap-canonical",
+      "rows": 30,
+      "counts": {
+        "version-difference": 27,
+        "covered": 3
+      },
+      "actual_frames": 240,
+      "original_semantic_pass_credit": 3,
+      "current_artifact_path": "/private/tmp/light-cljs-125-sci-gap-raw-replay-after172-v2/evidence.json",
+      "current_receipt": "/Users/admin/src/light-cljs/tests/reference/compiler-language/sci-gap-canonical-receipt.json",
+      "current_sha256": "3cfedcfc53db239d566cb9d875cfe40bfc1ada510a62b36468cab6f4d01f22c7",
+      "historical_receipt": "/Users/admin/src/light-cljs/tests/reference/compiler-language/sci-gap-canonical-after171-historical-receipt.json",
+      "historical_sha256": "f46de9ecef5ca633a8266869318b1bad16459eb783ce8c95f872f8bed495745b",
+      "source_bindings_unchanged": true
+    },
+    {
+      "cohort": "sci-print-canonical",
+      "rows": 14,
+      "counts": {
+        "version-difference": 14
+      },
+      "actual_frames": 112,
+      "original_semantic_pass_credit": 0,
+      "current_artifact_path": "/private/tmp/light-cljs-125-sci-print-raw-replay-after172-v2/evidence.json",
+      "current_receipt": "/Users/admin/src/light-cljs/tests/reference/compiler-language/sci-print-canonical-receipt.json",
+      "current_sha256": "71246eae3075f93a617c03c6698a46eb6211417e789b403fc97b08c79a3a3ce6",
+      "historical_receipt": "/Users/admin/src/light-cljs/tests/reference/compiler-language/sci-print-canonical-after171-historical-receipt.json",
+      "historical_sha256": "e4278f6c18f16803f82a88acedcbbea55941234a11b3f0da810d95223f31f7b4",
+      "source_bindings_unchanged": true
+    }
+  ],
+  "total_rows": 44,
+  "total_actual_frames": 352,
+  "counts": {
+    "version-difference": 41,
+    "covered": 3
+  },
+  "original_semantic_pass_credit": 3,
+  "strict_complete": false,
+  "source_producer_sha256": {
+    "sci_gap_canonical_context.py": "82b91dfea3f7a5065213f1c7a682f37178ab3bc8c0c6176ed810ff21a0b568a6",
+    "test_sci_pin_raw_replay_guard.py": "29c91689e3dffd90c8bf48967f8ab2dbfc7afdd04281e619ca063adf26acc41a"
+  },
+  "historical_v1_artifacts_no_current_credit": [
+    "/tmp/light-cljs-125-sci-gap-raw-replay-after172-v1",
+    "/tmp/light-cljs-125-sci-print-raw-replay-after172-v1"
+  ]
+}

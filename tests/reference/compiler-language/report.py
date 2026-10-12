@@ -1216,6 +1216,8 @@ def main(argv=None):
         reviewed_sci_context_evidence = None
         gap_sci_context_evidence = None
         print_sci_context_evidence = None
+        cljc_sci_context_evidence = None
+        lazy_sci_context_evidence = None
         artifacts = None
         binary_identity = None
         if args.run:
@@ -1349,10 +1351,24 @@ def main(argv=None):
                         if proof['id'] in sci_evidence:
                             raise ValueError('Exact printing context overlaps another fresh execution adapter')
                         sci_evidence[proof['id']] = proof['layers']
+                    import sci_cljc_accepted_context
+                    cljc_sci_context_evidence = sci_cljc_accepted_context.run(
+                        artifacts / 'cljc-sci-context', max(240, args.reference_timeout))
+                    for proof in sci_cljc_accepted_context.reconcile(cljc_sci_context_evidence).values():
+                        if proof['id'] in sci_evidence:
+                            raise ValueError('Exact CLJC reader context overlaps another fresh execution adapter')
+                        sci_evidence[proof['id']] = proof['layers']
+                    import sci_lazy_context
+                    lazy_sci_context_evidence = sci_lazy_context.run(
+                        artifacts / 'lazy-sci-context', max(240, args.reference_timeout))
+                    for proof in sci_lazy_context.reconcile(lazy_sci_context_evidence).values():
+                        if proof['id'] in sci_evidence:
+                            raise ValueError('Exact lazy/iteration/control context overlaps another fresh execution adapter')
+                        sci_evidence[proof['id']] = proof['layers']
         report = assemble(historical_inventory, historical_witnesses, evidence, **historical_filters, boundary_evidence=boundary_evidence)
         report["scope"] = "historical-selected"
         if args.scope == "intended-language":
-            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence, reviewed_sci_context_evidence=reviewed_sci_context_evidence, gap_sci_context_evidence=gap_sci_context_evidence, print_sci_context_evidence=print_sci_context_evidence)
+            report = expand_report(report, witnesses, evidence, features=args.feature, identities=args.id, phase_evidence=phase_evidence, sci_evidence=sci_evidence, library_dialect_evidence=library_dialect_evidence, reviewed_sci_context_evidence=reviewed_sci_context_evidence, gap_sci_context_evidence=gap_sci_context_evidence, print_sci_context_evidence=print_sci_context_evidence, cljc_sci_context_evidence=cljc_sci_context_evidence, lazy_sci_context_evidence=lazy_sci_context_evidence)
         report["execution_selection"] = {"fixture_ids": args.fixture, "all_selected_fixtures": not args.fixture}
         if artifacts:
             report["artifacts"] = str(artifacts)

@@ -163,3 +163,7 @@ All thirty macro columns are passing under exact current proof. The separately
 added fourteen printing rows use an explicit independent cohort; default
 contracts, source expectations and row identities remain frozen. No historical
 receipt grants current report acceptance.
+
+## Guarded refresh after172
+
+The after171 current-receipt references above are now historical. Their original bytes remain in the explicitly named historical copies; active durable receipts contain the final guarded fresh producer proofs described in [sci-raw-replay-refresh-after172.md](sci-raw-replay-refresh-after172.md). Original sources, expectations and dialect distinctions remain unchanged.

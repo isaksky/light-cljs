@@ -52,3 +52,7 @@ required pins, actual phases, stale/failed evidence and distinct original SCI
 mismatch accounting. An independent read-only review found no actionable issues
 in this cohort, its reusable proof, or normal report integration. This is focused
 evidence; it does not establish comprehensive strict acceptance.
+
+## Guarded refresh after172
+
+The after171 current-receipt references above are now historical. Their original bytes remain in the explicitly named historical copies; active durable receipts contain the final guarded fresh producer proofs described in [sci-raw-replay-refresh-after172.md](sci-raw-replay-refresh-after172.md). Original sources, expectations and dialect distinctions remain unchanged.

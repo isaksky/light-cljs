@@ -112,7 +112,8 @@ def parse_raw(text, *, cohort=None):
 
 
 def snapshot():
-    paths=[Path(__file__),Path(__file__).with_name('test_sci_gap_canonical_context.py'),CONTRACTS,DRIVER,Path(candidates.__file__),Path(sci.__file__),
+    paths=[Path(__file__),Path(__file__).with_name('test_sci_gap_canonical_context.py'),
+        Path(__file__).with_name('test_sci_pin_raw_replay_guard.py'),CONTRACTS,DRIVER,Path(candidates.__file__),Path(sci.__file__),
         Path(context.__file__),Path(packets.__file__),ROOT/'tests/support/sci_execution_observation.js',
         ROOT/'tests/support/execution.js',ROOT/'tests/reference/execution.clj',ROOT/'tests/reference/compiler-language/report.py',
         Path(runner.__file__),ROOT/'tests/reference/compiler-language/sci-analysis.clj',
@@ -143,7 +144,12 @@ def reference_proof(path, *, cohort=None):
         analysis=[line.split('\t') for line in preflight]
         same([line[0] for line in analysis],[row['id'] for row in originals],'Missing/reordered actual pin analysis')
         same((pin/'preflight/cases.tsv').read_text(),''.join(row['id']+'\texpr\t\t(fn* [observe] '+sci.REFERENCE_SETUP+row['source']+')\t\n' for row in originals),'Changed reference original analysis sources')
+        if any(len(line) < 2 for line in analysis):
+            raise ValueError('Malformed actual canonical pin analysis')
         accepted=[by_id[line[0]] for line in analysis if line[1] in {'accepted','warning'}]
+        positive_ids = {row['id'] for row in spec.load()}
+        if positive_ids - {row['id'] for row in accepted}:
+            raise ValueError('Every canonical-positive source requires accepted pin analysis and raw execution')
         same((pin/'execution/cases.tsv').read_text(),''.join(row['id']+'\t'+sci.REFERENCE_SETUP+row['source']+'\n' for row in accepted),'Changed original accepted reference sources')
         build=(pin/'execution/build/stdout').read_text()
         identity=kind+' '+(sci.report_module().RELEASE if kind=='release' else sci.report_module().REVISION)
