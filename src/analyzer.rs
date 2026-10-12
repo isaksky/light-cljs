@@ -2609,6 +2609,7 @@ enum ReaderDatum {
     Nil,
     Bool(bool),
     Number(u8, String),
+    NonreflexiveNumber(usize),
     ReaderLiteral(u8, String),
     Character(u16),
     String(Vec<u16>),
@@ -2619,16 +2620,30 @@ enum ReaderDatum {
 }
 
 impl ReaderDatum {
-    fn lowered_characters(self) -> Self {
+    fn lowered_constants(self) -> Self {
         match self {
             Self::Character(value) => Self::String(vec![value]),
-            Self::Sequential(items) => Self::Sequential(
-                items.into_iter().map(Self::lowered_characters).collect(),
-            ),
+            Self::Number(category, spelling) => {
+                let value = if category == 1 {
+                    u64::from_str_radix(&spelling, 16).ok().map(f64::from_bits)
+                } else {
+                    spelling.parse::<f64>().ok()
+                };
+                match value {
+                    Some(value) => Self::Number(
+                        1,
+                        format!("{:x}", if value == 0.0 { 0 } else { value.to_bits() }),
+                    ),
+                    None => Self::Number(category, spelling),
+                }
+            }
+            Self::Sequential(items) => {
+                Self::Sequential(items.into_iter().map(Self::lowered_constants).collect())
+            }
             Self::Map(items) => {
                 let mut items = items
                     .into_iter()
-                    .map(|(key, value)| (key.lowered_characters(), value.lowered_characters()))
+                    .map(|(key, value)| (key.lowered_constants(), value.lowered_constants()))
                     .collect::<Vec<_>>();
                 items.sort();
                 Self::Map(items)
@@ -2636,7 +2651,7 @@ impl ReaderDatum {
             Self::Set(items) => {
                 let mut items = items
                     .into_iter()
-                    .map(Self::lowered_characters)
+                    .map(Self::lowered_constants)
                     .collect::<Vec<_>>();
                 items.sort();
                 Self::Set(items)
@@ -3777,7 +3792,8 @@ impl Analyzer<'_> {
                 self.check_map_keys(children)?;
                 let direct = children.len() <= 16
                     && self.source_constant_collision(children.iter().step_by(2).copied(), false)?;
-                let items = children
+                let ordered = self.source_numeric_map_order(children)?;
+                let items = ordered
                     .iter()
                     .map(|&child| self.non_tail_form(child, ExprContext::Value))
                     .collect::<Result<_, _>>()?;
@@ -4743,6 +4759,41 @@ impl Analyzer<'_> {
         Ok(())
     }
 
+    fn source_numeric_map_order(
+        &mut self,
+        children: &[NodeId],
+    ) -> Result<Vec<NodeId>, AnalysisError> {
+        let mut ordered = children.to_vec();
+        if children.len() <= 16 {
+            return Ok(ordered);
+        }
+        let mut groups = std::collections::BTreeMap::<ReaderDatum, Vec<(usize, u32)>>::new();
+        for (index, pair) in children.as_chunks::<2>().0.iter().enumerate() {
+            if let Some(data) = self.reader_datum(pair[0])?
+                && let ReaderDatum::Number(category, spelling) = &data
+                && let Some(hash) = crate::reader_literals::number_hash(*category, spelling)
+            {
+                groups
+                    .entry(data.lowered_constants())
+                    .or_default()
+                    .push((index, hash));
+            }
+        }
+        for group in groups.values_mut().filter(|group| group.len() > 1) {
+            let positions = group.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+            // PersistentHashMap walks successive five-bit hash partitions. Equal
+            // hashes retain reader insertion order; stable sorting preserves it.
+            group.sort_by_key(|(_, hash)| {
+                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31)
+            });
+            for (position, (original, _)) in positions.into_iter().zip(group.iter()) {
+                ordered[position * 2] = children[original * 2];
+                ordered[position * 2 + 1] = children[original * 2 + 1];
+            }
+        }
+        Ok(ordered)
+    }
+
     fn source_constant_collision(
         &mut self,
         nodes: impl Iterator<Item = NodeId>,
@@ -4768,7 +4819,12 @@ impl Analyzer<'_> {
                 }
                 _ => quoted_collection,
             };
-            if !quoted && !matches!(
+            let compiler_integer = self.generated.get(id.0).and_then(Option::as_ref)
+                .is_some_and(|form| matches!(
+                    form.data().inspect(),
+                    DatumView::CompilerLiteral(CompilerLiteralKind::BigInteger)
+                ));
+            if !quoted && !compiler_integer && !matches!(
                 self.syntax.nodes[id.0].kind,
                 NodeKind::Nil | NodeKind::Boolean(_) | NodeKind::Number(_)
                     | NodeKind::SymbolicValue(_) | NodeKind::Character(_)
@@ -4780,13 +4836,13 @@ impl Analyzer<'_> {
             let Some(identity) = self.reader_identity(id, false)? else {
                 return Ok(false);
             };
-            collision |= !lowered.insert(identity.clone().lowered_characters());
+            collision |= !lowered.insert(identity.clone().lowered_constants());
             if !seen.insert(identity) {
                 return Ok(false);
             }
         }
-        // Preserve established builders unless lowering actually collapses
-        // source identity. Numeric-only distinctions retain existing construction.
+        // Preserve positional source entries when character or numeric lowering
+        // collapses reader identity. Dynamic operands retain runtime construction.
         Ok(collision)
     }
 
@@ -4914,25 +4970,21 @@ impl Analyzer<'_> {
                 // Source decimal forms become Doubles in the macro bridge. The
                 // borrowed source occurrence still carries the JVM reader key,
                 // including decimal scale normalization and exact integer digits.
-                let source_number = if case_numbers {
-                    generated
-                        .filter(|form| matches!(form.node().origin, Origin::Source))
-                        .map(|form| {
-                            let text = form.span().text().to_owned();
-                            let kind = if text.ends_with('M') {
-                                NumberKind::Decimal
-                            } else if text.ends_with('N') && !text.starts_with("##") {
-                                NumberKind::BigInteger
-                            } else if text.contains('/') {
-                                NumberKind::Ratio
-                            } else {
-                                kind
-                            };
-                            (text, kind)
-                        })
-                } else {
-                    None
-                };
+                let source_number = generated
+                    .filter(|form| matches!(form.node().origin, Origin::Source))
+                    .map(|form| {
+                        let text = form.span().text().to_owned();
+                        let kind = if text.ends_with('M') {
+                            NumberKind::Decimal
+                        } else if text.ends_with('N') && !text.starts_with("##") {
+                            NumberKind::BigInteger
+                        } else if text.contains('/') {
+                            NumberKind::Ratio
+                        } else {
+                            kind
+                        };
+                        (text, kind)
+                    });
                 if let Some((category, spelling)) = source_number
                     .as_ref()
                     .and_then(|(text, kind)| crate::reader_literals::number_key(text, *kind))
@@ -4956,8 +5008,12 @@ impl Analyzer<'_> {
                 };
                 // NaN is nonreflexive in the pinned reader's case validation,
                 // so repeated NaN constants (including nested ones) can coexist.
-                if case_numbers && value.is_nan() {
-                    return Ok(None);
+                if value.is_nan() {
+                    return Ok(if case_numbers {
+                        None
+                    } else {
+                        Some(ReaderDatum::NonreflexiveNumber(id.0))
+                    });
                 }
                 ReaderDatum::Number(
                     u8::from(kind == NumberKind::Float),
@@ -4975,6 +5031,21 @@ impl Analyzer<'_> {
                     },
                 )
             }
+            NodeKind::SymbolicValue(value) => match value {
+                crate::SymbolicValue::NaN => {
+                    return Ok(if case_numbers {
+                        None
+                    } else {
+                        Some(ReaderDatum::NonreflexiveNumber(id.0))
+                    });
+                }
+                crate::SymbolicValue::Infinity => {
+                    ReaderDatum::Number(1, format!("{:x}", f64::INFINITY.to_bits()))
+                }
+                crate::SymbolicValue::NegativeInfinity => {
+                    ReaderDatum::Number(1, format!("{:x}", f64::NEG_INFINITY.to_bits()))
+                }
+            },
             NodeKind::String(value) => ReaderDatum::String(value.to_utf16(self.source)),
             NodeKind::Character(value) => ReaderDatum::Character(value as u16),
             NodeKind::Keyword { auto_resolve } => {
@@ -5114,7 +5185,12 @@ impl Analyzer<'_> {
                 ) {
                     self.check_set_members(children, true)?;
                 }
-                let items = children
+                let ordered = if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Map, .. }) {
+                    self.source_numeric_map_order(children)?
+                } else {
+                    children.clone()
+                };
+                let items = ordered
                     .iter()
                     .map(|&child| self.datum(child, ExprContext::Value))
                     .collect::<Result<_, _>>()?;

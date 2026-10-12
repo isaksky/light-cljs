@@ -1137,9 +1137,9 @@
   function hashMap(...pairs) { return mapFromArray(pairs, "hash-map"); }
   function arrayMap(...pairs) { return mapFromArray(pairs, "array-map"); }
 
-  // The analyzer has checked distinct source constants. Characters and strings
-  // can become equal JS strings, so canonical literal storage retains every
-  // positional entry and uses the array map's first-match lookup.
+  // The analyzer has checked distinct source constants. Character/string and
+  // numeric reader categories can lower to equal JS values, so literal storage
+  // retains positional entries and the array map's first-match lookup.
   function constantMapFromArray(pairs) {
     return PersistentArrayMapValue(null, pairs.length / 2, pairs, null);
   }

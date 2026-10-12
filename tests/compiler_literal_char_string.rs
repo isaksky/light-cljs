@@ -359,7 +359,7 @@ fn canonical_literal_constants_and_same_host_diagnostic_recovery() {
         (
             r###"literal-char-string-numeric-literals"###,
             r###"[(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq #{1 1.0}))]"###,
-            r###"{"id":"literal-char-string-numeric-literals","outcome":{"status":"returned","value":{"$vector":[1,{"$keyword":{"namespace":null,"name":"float","spelling":"float"}},1,{"$vector":[1]}]}},"trace":[],"stdout":""}"###,
+            r###"{"id":"literal-char-string-numeric-literals","outcome":{"status":"returned","value":{"$vector":[2,{"$keyword":{"namespace":null,"name":"int","spelling":"int"}},2,{"$vector":[1,1]}]}},"trace":[],"stdout":""}"###,
         ),
     ];
     for (id, source, expected) in controls {

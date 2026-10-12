@@ -83,14 +83,12 @@ def load():
         row['original_expected']=copy.deepcopy(expected)
         row['checkout_expected']=frozen['checkout_expected'].get(row['id'],copy.deepcopy(expected))
         row['two_pin_agreement']=expected==row['checkout_expected']
-        row['canonical_acceptance']=not row['id'].endswith(('-difference','-numeric-literals'))
+        row['canonical_acceptance']=not row['id'].endswith('-difference')
         row['local_expected']=copy.deepcopy(expected)
         if row['id'].endswith('quoted-inner-quote-set-order-difference'):
             row['local_expected']['outcome']['value']['$vector'][-1]={'$vector':['a','a',{'$list':[{'$symbol':{'namespace':None,'name':'quote','spelling':'quote'}},'b']},'b']}
         elif row['id'].endswith('runtime-small-constructor-difference'):
             row['local_expected']['outcome']['value']={'$vector':[1,2,1]}
-        elif row['id'].endswith('numeric-literals'):
-            row['local_expected']['outcome']['value']={'$vector':[1,{'$keyword':{'namespace':None,'name':'float','spelling':'float'}},1,{'$vector':[1]}]}
         elif row['id'].endswith('set-duplicate-difference'):
             row['local_expected']=copy.deepcopy(row['checkout_expected'])
     proof.same(rows[0]['canonical_expected']['outcome']['value'],{'$vector':[2,1,2,True]},'Original literal result drift')

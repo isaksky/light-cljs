@@ -9,7 +9,7 @@ class LiteralSourceGuards(unittest.TestCase):
         self.assertEqual(literal.ORIGINAL,rows[0]['source'])
         self.assertEqual({'$vector':[2,1,2,True]},rows[0]['canonical_expected']['outcome']['value'])
         self.assertEqual(30,len(rows));self.assertEqual(11,len(negative))
-        self.assertEqual(25,sum(row['canonical_acceptance'] for row in rows))
+        self.assertEqual(26,sum(row['canonical_acceptance'] for row in rows))
         for row in rows:
             self.assertEqual(literal.sci.digest(row['source']),row['source_sha256'])
             for phase in ('application','macro'):
@@ -20,12 +20,13 @@ class LiteralSourceGuards(unittest.TestCase):
 
     def test_pin_and_constructor_differences_are_nonpassing(self):
         rows,_=literal.load();different=[row for row in rows if not row['canonical_acceptance']]
-        self.assertEqual(5,len(different))
+        self.assertEqual(4,len(different))
         self.assertEqual(2,sum(not row['two_pin_agreement'] for row in rows))
         for row in different:
             self.assertNotEqual(row['canonical_expected'],row['local_expected'])
         numeric=next(row for row in rows if row['id'].endswith('numeric-literals'))
-        self.assertTrue(numeric['two_pin_agreement']);self.assertFalse(numeric['canonical_acceptance'])
+        self.assertTrue(numeric['two_pin_agreement']);self.assertTrue(numeric['canonical_acceptance'])
+        self.assertEqual(numeric['canonical_expected'],numeric['local_expected'])
 
     def test_reviewed_contract_hash_fails_closed(self):
         with patch.object(literal,'CONTRACTS_SHA256','0'*64):

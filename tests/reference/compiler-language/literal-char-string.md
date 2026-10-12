@@ -142,3 +142,9 @@ The new Rust driver formatting and `git diff --check` pass. The unrelated
 `.DS_Store` is preserved and excluded. Blocked 156 was not retried, delegated,
 investigated or repaired; no cancellation or singular/plural limit suites ran.
 No push or pull request was performed.
+
+## Numeric source literal follow-through (176)
+
+The exact numeric neighbor `[(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq #{1 1.0}))]` now agrees with both independent pins: `[2 :int 2 [1 1]]`. The source and canonical packets remain unchanged. The previous 174 receipt is preserved byte-for-byte as `literal-char-string-historical-174-receipt.json` (SHA-256 `1b3b04c33553cb5f3c1502af37a85e3d9a836195334913c77c554a252875a94d`), retaining its nonpassing numeric frame and historical local `[1 :float 1 [1]]` outcome.
+
+The current receipt comes from fresh raw production in `/private/tmp/light-cljs-176-literal-char-current`: both pins, 240 actual execution frames, and 88 same-host diagnostic recovery outcomes. There are now 26 accepted sources (208 accepted engine frames) and four retained nonpassing neighbors. Runtime small constructors remain owned by 177; set traversal remains owned by 178. The pins' two existing dynamic/executable set version differences retain their separate outcomes. Original SCI/full-language completion credit remains zero for these controls. The updated receipt SHA-256 is `7158cc3fd915cc4db76dc43c830954f3acdc03ad74c421f4baf10d9eb1446aa4`.

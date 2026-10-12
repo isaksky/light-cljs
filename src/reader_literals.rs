@@ -41,6 +41,73 @@ pub(crate) fn number_key(text: &str, kind: crate::NumberKind) -> Option<(u8, Str
     }
 }
 
+/// JVM reader hash ordering determines the surviving Number representative when
+/// a source map crosses the array-map threshold. This is compiler evidence only;
+/// runtime Number equality and hashing keep their ordinary JavaScript semantics.
+pub(crate) fn number_hash(category: u8, key: &str) -> Option<u32> {
+    fn bigint(text: &str) -> Option<u32> {
+        let mut words = vec![0u32];
+        for digit in text.trim_start_matches('-').bytes() {
+            let mut carry = u64::from(digit.checked_sub(b'0').filter(|n| *n <= 9)?);
+            for word in &mut words {
+                let next = u64::from(*word) * 10 + carry;
+                *word = next as u32;
+                carry = next >> 32;
+            }
+            if carry != 0 {
+                words.push(carry as u32);
+            }
+        }
+        let hash = words
+            .into_iter()
+            .rev()
+            .fold(0u32, |h, word| h.wrapping_mul(31).wrapping_add(word));
+        Some(if text.starts_with('-') {
+            hash.wrapping_neg()
+        } else {
+            hash
+        })
+    }
+    fn mix(h: u32, k: u32) -> u32 {
+        let k = k
+            .wrapping_mul(0xcc9e2d51)
+            .rotate_left(15)
+            .wrapping_mul(0x1b873593);
+        (h ^ k)
+            .rotate_left(13)
+            .wrapping_mul(5)
+            .wrapping_add(0xe6546b64)
+    }
+    match category {
+        0 => match key.parse::<i64>() {
+            Ok(0) => Some(0),
+            Ok(value) => {
+                let bits = value as u64;
+                let mut h = mix(mix(0, bits as u32), (bits >> 32) as u32) ^ 8;
+                h ^= h >> 16;
+                h = h.wrapping_mul(0x85ebca6b);
+                h ^= h >> 13;
+                h = h.wrapping_mul(0xc2b2ae35);
+                Some(h ^ (h >> 16))
+            }
+            Err(_) => bigint(key),
+        },
+        1 => {
+            let bits = u64::from_str_radix(key, 16).ok()?;
+            Some((bits ^ (bits >> 32)) as u32)
+        }
+        2 => {
+            if key == "0" {
+                return Some(0);
+            }
+            let (digits, exponent) = key.split_once('e')?;
+            let scale = exponent.parse::<i32>().ok()?.wrapping_neg();
+            Some(bigint(digits)?.wrapping_mul(31).wrapping_add(scale as u32))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn uuid(text: &str) -> Option<String> {
     // java.util.UUID/fromString accepts abbreviated groups and canonicalizes.
     let widths = [8, 4, 4, 4, 12];

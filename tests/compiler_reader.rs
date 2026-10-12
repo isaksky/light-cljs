@@ -358,13 +358,16 @@ fn host_types_and_lazy_regex_tails_have_direct_runtime_observations() {
         r#"(= (first ^:x [10000000000000000000000000000000000000000/2]) 5000000000000000000000000000000000000000)"#,
         "true",
     );
+    // Historical Number-collapsing counts were 1. Both complete source forms
+    // now independently return 2 in both pins; literal-numeric-contracts.json
+    // retains their original expected packets alongside canonical outcomes.
     check(
         r#"(count ^:x {1000000000000000000000 1 1000000000000000000001 2})"#,
-        "1",
+        "2",
     );
     check(
         r#"(count ^:x #{1000000000000000000000 1000000000000000000001})"#,
-        "1",
+        "2",
     );
     check(r#"(= (with-meta nil {:x true}) nil)"#, "true");
     check(r#"(def x 1) (let* [x 2] @#'x)"#, "1");
