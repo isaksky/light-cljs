@@ -15,6 +15,11 @@ names/arities and every runtime test/support file. Select
 subsets do not establish full language completion; standard transients,
 transducers, sorted collections and multimethods stay intended in the full ledger.
 
+The [after-190 evidence checkpoint](after190-integration.md) adds current paired
+arity and actual phase witnesses, complete original SCI contrasts, and separately
+bounded whole-source predicate and record-tag reference checks. Its unfiltered
+baseline remains incomplete; focused passing receipts cannot close Pellet 125.
+
 ```sh
 python3 tests/reference/compiler-language/extract_inventory.py
 python3 tests/reference/compiler-language/extract_inventory.py --check

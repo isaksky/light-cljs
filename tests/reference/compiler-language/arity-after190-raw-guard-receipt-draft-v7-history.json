@@ -1,0 +1,58 @@
+{
+  "receipt_path": "/private/tmp/light-cljs-125-arity-after190-draft-v7/receipt.json",
+  "receipt_sha256": "2c1e0c45e6179f3536516a97909f6af3c156eeaafd84da84f8124e108d9573a6",
+  "mutations": [
+    {
+      "mutation": "actual-frame",
+      "result": "rejected",
+      "reason": "nonpassing actual whole-oracle frame"
+    },
+    {
+      "mutation": "actual-input-hash",
+      "result": "rejected",
+      "reason": "complete actual source/emitted input hash frames required"
+    },
+    {
+      "mutation": "module-source",
+      "result": "rejected",
+      "reason": "saved artifacts differ from actual executed source/emitted input"
+    },
+    {
+      "mutation": "emitted-input",
+      "result": "rejected",
+      "reason": "saved artifacts differ from actual executed source/emitted input"
+    },
+    {
+      "mutation": "release-stdout",
+      "result": "rejected",
+      "reason": "actual raw reference output/build drift"
+    },
+    {
+      "mutation": "checkout-source",
+      "result": "rejected",
+      "reason": "actual canonical source files drift"
+    },
+    {
+      "mutation": "release-build",
+      "result": "rejected",
+      "reason": "actual raw reference output/build drift"
+    },
+    {
+      "mutation": "checkout-identity",
+      "result": "rejected",
+      "reason": "actual pin build identities/settings unavailable"
+    },
+    {
+      "mutation": "release-emitted",
+      "result": "rejected",
+      "reason": "actual raw reference output/build drift"
+    },
+    {
+      "mutation": "missing-emitted-input",
+      "result": "rejected",
+      "reason": "saved artifacts differ from actual executed source/emitted input"
+    }
+  ],
+  "restored_pristine_replay": "passed",
+  "strict_complete": false
+}

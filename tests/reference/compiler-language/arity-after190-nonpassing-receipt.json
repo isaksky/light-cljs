@@ -1,0 +1,52 @@
+{
+  "head": "36467b77888564f7b2dfc638bb246275e0ed37bc",
+  "oracle": {
+    "case_sha256": "0414fa7c2feb54a2bf7dc7b1c32562823ea2c6547079e360ab3b903cff9405b3",
+    "fixture": "tests/fixtures/arity-after190/cljs-extra-core-test-req-.cljs",
+    "id": "cljs-extra-core-test-req-",
+    "invoke": "",
+    "namespace": "user",
+    "source_sha256": "6d6116cfaec7f524d28472971a191afc7c4ebd4731a40dc19990c0b2c34bb741"
+  },
+  "excluded_links": [
+    {
+      "body_sha256": "cb8729345da0a12c4e20269b6599805880ca180dcb9568e1f9623544ad30014b",
+      "call_name": "req!",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct",
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::req!::arity-1",
+      "signature_sha256": "543c6ae0242e840397dbcef8ac8b9a1cc846865ce7e3d1f79c4567524a777a80",
+      "workflow": "cljs-extra-core-test-req-"
+    },
+    {
+      "body_sha256": "c8419628299b44d3715e71ff428481e9b6bea8a6ff32673dd6a342314c1a8f63",
+      "call_name": "req!",
+      "direct_arities": [
+        2
+      ],
+      "evidence_mode": "direct",
+      "obligation_id": "local::src/core_var_metadata.tsv::req!",
+      "signature_sha256": null,
+      "workflow": "cljs-extra-core-test-req-"
+    }
+  ],
+  "semantic_credit": 0,
+  "classification": "release-reference version difference, not demonstrated production omission",
+  "release_raw_stdout": "/tmp/light-cljs-125-arity-after190-pins/release/node/stdout",
+  "release_build_stdout": "/tmp/light-cljs-125-arity-after190-pins/release/build/stdout",
+  "actual_log": "/tmp/light-cljs-125-arity-after190-actual.log",
+  "checkout_receipt": "/tmp/light-cljs-125-arity-after190-pins/checkout/receipt.json",
+  "expected_retained": "returned true, empty trace/stdout",
+  "release_observed": "threw type-error, empty trace/stdout",
+  "release_build_stderr": "/tmp/light-cljs-125-arity-after190-pins/release/build/stderr",
+  "release_diagnostic": "Five undeclared Var arityreference.case1/req! warnings; the unchanged full body threw type-error.",
+  "artifact_sha256": {
+    "/tmp/light-cljs-125-arity-after190-pins/release/node/stdout": "7042cdaca745e7fcdbb9ed26fbe6c93ea3f14bb667eb94c3caa5027a4283c17d",
+    "/tmp/light-cljs-125-arity-after190-pins/release/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+    "/tmp/light-cljs-125-arity-after190-actual.log": "e5d8bc5460ab49e44f9eafecbd3853e17a961d6903dd31e695bd2124d2755b77",
+    "/tmp/light-cljs-125-arity-after190-pins/checkout/receipt.json": "477c21094d63013934a2e1c9a8996092ec5821f7e2129b70b8f5b4971c94b9fd",
+    "/tmp/light-cljs-125-arity-after190-pins/release/build/stderr": "cb97222430c76cd3ddfd0115d5ba94fbc8bb0d0b1ed4dd2e7f8e3655bb2ce559"
+  }
+}

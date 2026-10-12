@@ -1,0 +1,2229 @@
+{
+  "scope": "Historical grouped failure and individually isolated whole-original metadata audit; no current source/phase/ledger credit",
+  "original_semantic_pass_credit": 0,
+  "observations": {
+    "metadata-inspection": {
+      "schema_version": 1,
+      "scope": "Read-only complete unadapted original record inspection; no current source/phase/ledger credit",
+      "original_semantic_pass_credit": 0,
+      "producer_source_sha256": {
+        "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+        "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+        "src/analyzer.rs": "88973715550fa3f85face0779799e51090373e125265b9983bfd0fc0a2dc0c00",
+        "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+        "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+        "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+        "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+        "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+        "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+        "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+        "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+        "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+        "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+        "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+        "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+        "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+        "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+        "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+        "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+        "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+        "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+        "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+        "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+        "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+        "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+        "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+        "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+        "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+        "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+        "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+        "src/js_runtime.js": "bb10805cc1d78cb650847286707787b98e9bcc12f2698f973d3923544b1c8e24",
+        "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+        "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+        "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+        "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+        "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+        "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+        "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+        "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+        "tests/compiler_sci_execution.rs": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+        "tests/fixtures/sci-outcomes.tsv": "8dd8718da0639dc11ff1cc0d6186284a6b2f70e57919b47c34f3c5269db869e5",
+        "tests/reference/analysis_boundaries.clj": "d83ee980a408f9a07a4f54ae1a706307715bda635ef3806241a7bf6338e2dca0",
+        "tests/reference/compiler-language/configured_source_context.py": "c77dd9cc5fc597a540cfd850999b705c8cfb2db303de8217d8d7d32c9448db3e",
+        "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+        "tests/reference/compiler-language/sci-analysis.clj": "c5bd1f97423a8845269cd2eabbfb02837ab3d1600ac1164b8f32a64af9e62944",
+        "tests/reference/compiler-language/sci_execution.py": "aeb085a2a34ba3a67ca9443598ef6dc8f33898992571d98c6caa302b6e7160c0",
+        "tests/reference/compiler-language/sci_gap_return_candidates.py": "9e47550aa802d4a96390b9e609e5c67eb04e57014cf020967cd134ecd515394e",
+        "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+        "tests/reference/sci/evaluator-dispositions.tsv": "186d9e391aa8e468981a1f972d7fd4f5433971400587665fbbece65c305cd429",
+        "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+        "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+      },
+      "reference_execution_binding": {
+        "programs": {
+          "node": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node",
+          "clojure": "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+          "cargo": "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo"
+        },
+        "executables_sha256": {
+          "/opt/homebrew/Cellar/node@24/24.18.0/bin/node": "b423af50c2fb0f4d79da9b8bd7df7279f6e4ee4221421dc26d26cca999f19615",
+          "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure": "a266aa4f011e27ccbaac2cd359b72a3077ec26facf115904fefe6056eba74a15",
+          "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo": "35152b6c4de025e32d70be80fdf70fd4bf42cdb69d630c0fe92ebe6901e340a9"
+        }
+      },
+      "script_sha256": "e0375e37c53726b359ae05d28a314d360f48ae141ed331cf9cd9472cf382d80a",
+      "source_bindings": [
+        {
+          "id": "sci-execution-sci-var-definition-meta-order",
+          "sci_id": "sci-var-definition-meta-order",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-definition-meta-order",
+          "body_sha256": "f1d898aab77d0173827369b7a1891cdf95489fd29ae07c5bd281deb1f8ff88db",
+          "original_row_sha256": "2f4fde46ff984d46ccdf9676312f558e80de3c0e6f51af1881a35c7b407a56c3",
+          "source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+          "original_source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+          "source": "(def x 1) (def ^{:m (observe x)} x (observe 2)) [x (get (meta #'x) :m)]",
+          "original_fields": [
+            "sci-var-definition-meta-order",
+            "portable",
+            "(def x 1) (def ^{:m (observe x)} x (observe 2)) [x (get (meta #'x) :m)]",
+            "(return (vector (int 2) (int 1)))",
+            "(vector (int 2) (int 1))",
+            "(string u)",
+            "(string u)"
+          ],
+          "expected": {
+            "id": "sci-execution-sci-var-definition-meta-order",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  2,
+                  1
+                ]
+              }
+            },
+            "trace": [
+              2,
+              1
+            ],
+            "stdout": ""
+          },
+          "isolated": true,
+          "reference_isolated": true,
+          "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+        },
+        {
+          "id": "sci-execution-sci-var-reserved-metadata-effects",
+          "sci_id": "sci-var-reserved-metadata-effects",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-reserved-metadata-effects",
+          "body_sha256": "cdd5c745efb0d096a3ba63e77faa7dd3a335e03af1e53198d46b8a6398dd9c9b",
+          "original_row_sha256": "f79e3d7c366ad5ccb3982f09b06ab77d305342090a7d7921e4d17f6bfb4da522",
+          "source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+          "original_source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+          "source": "(declare ^{:declared (observe :declared)} y) (def ^{:name (observe :name) :file (observe :file) :ns (observe :ns) :line (observe :line) :column (observe :column) :doc (observe :doc)} x \"new\" 1) [(get (meta #'y) :declared) (get (meta #'x) :doc)]",
+          "original_fields": [
+            "sci-var-reserved-metadata-effects",
+            "portable",
+            "(declare ^{:declared (observe :declared)} y) (def ^{:name (observe :name) :file (observe :file) :ns (observe :ns) :line (observe :line) :column (observe :column) :doc (observe :doc)} x \"new\" 1) [(get (meta #'y) :declared) (get (meta #'x) :doc)]",
+            "(return (vector (bool true) (string u006e00650077)))",
+            "(vector (keyword - u006e0061006d0065) (keyword - u00660069006c0065))",
+            "(string u)",
+            "(string u)"
+          ],
+          "expected": {
+            "id": "sci-execution-sci-var-reserved-metadata-effects",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  true,
+                  "new"
+                ]
+              }
+            },
+            "trace": [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "name",
+                  "spelling": "name"
+                }
+              },
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "file",
+                  "spelling": "file"
+                }
+              }
+            ],
+            "stdout": ""
+          },
+          "isolated": true,
+          "reference_isolated": true,
+          "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+        },
+        {
+          "id": "sci-execution-sci-binding-defn-meta-effects",
+          "sci_id": "sci-binding-defn-meta-effects",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-binding-defn-meta-effects",
+          "body_sha256": "0fced1cfc978d6e453a05df8d76abc8e51cfb1259d894551aa38d06c2346dc88",
+          "original_row_sha256": "041a929e9fcd44bd906472c03945bb1152b067d76695d177b01b3231a86cd19e",
+          "source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+          "original_source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+          "source": "(defn ^{:v (observe :old)} f {:v (observe :new)} [x] x) [(:v (meta #'f)) (f 1)]",
+          "original_fields": [
+            "sci-binding-defn-meta-effects",
+            "portable",
+            "(defn ^{:v (observe :old)} f {:v (observe :new)} [x] x) [(:v (meta #'f)) (f 1)]",
+            "(return (vector (keyword - u006e00650077) (int 1)))",
+            "(vector (keyword - u006e00650077))",
+            "(string u)",
+            "(string u)"
+          ],
+          "expected": {
+            "id": "sci-execution-sci-binding-defn-meta-effects",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "new",
+                      "spelling": "new"
+                    }
+                  },
+                  1
+                ]
+              }
+            },
+            "trace": [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "new",
+                  "spelling": "new"
+                }
+              }
+            ],
+            "stdout": ""
+          },
+          "isolated": true,
+          "reference_isolated": true,
+          "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+        }
+      ],
+      "evidence": {
+        "sci-execution-sci-var-definition-meta-order": {
+          "local": {
+            "status": "mismatch",
+            "engines": {
+              "Node": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-definition-meta-order",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        2,
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "x",
+                                "spelling": "x"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "trace": [
+                    2
+                  ],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              },
+              "QuickJS": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-definition-meta-order",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        2,
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "x",
+                                "spelling": "x"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "trace": [
+                    2
+                  ],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              }
+            },
+            "source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+            "test_file": "tests/compiler_sci_execution.rs",
+            "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+            "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+            "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          },
+          "release": {
+            "status": "failed",
+            "detail": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-metadata-inspection-after190-v1/release/execution/src/semantic/case0.cljs\nExecution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-1030048521744159128.edn\n",
+            "source_sha256": "4f2a87970d691dafacb38fa9422b7ae77a47461d16c6c14b275b6b0170f13358",
+            "original_source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+            "isolated": true
+          },
+          "checkout": {
+            "status": "failed",
+            "detail": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-metadata-inspection-after190-v1/checkout/execution/src/semantic/case0.cljs\nExecution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-15622075287848510029.edn\n",
+            "source_sha256": "4f2a87970d691dafacb38fa9422b7ae77a47461d16c6c14b275b6b0170f13358",
+            "original_source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+            "isolated": true
+          }
+        },
+        "sci-execution-sci-var-reserved-metadata-effects": {
+          "local": {
+            "status": "mismatch",
+            "engines": {
+              "Node": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-reserved-metadata-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        true,
+                        "new"
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              },
+              "QuickJS": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-reserved-metadata-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        true,
+                        "new"
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              }
+            },
+            "source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+            "test_file": "tests/compiler_sci_execution.rs",
+            "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+            "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+            "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          },
+          "release": {
+            "status": "failed",
+            "detail": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-metadata-inspection-after190-v1/release/execution/src/semantic/case0.cljs\nExecution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-1030048521744159128.edn\n",
+            "source_sha256": "d5612df82b19a2eb79da914497f810f9f869c92817412ac638c9bf815ce95097",
+            "original_source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+            "isolated": true
+          },
+          "checkout": {
+            "status": "failed",
+            "detail": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-metadata-inspection-after190-v1/checkout/execution/src/semantic/case0.cljs\nExecution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-15622075287848510029.edn\n",
+            "source_sha256": "d5612df82b19a2eb79da914497f810f9f869c92817412ac638c9bf815ce95097",
+            "original_source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+            "isolated": true
+          }
+        },
+        "sci-execution-sci-binding-defn-meta-effects": {
+          "local": {
+            "status": "mismatch",
+            "engines": {
+              "Node": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-binding-defn-meta-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$keyword": {
+                                "namespace": null,
+                                "name": "new",
+                                "spelling": "new"
+                              }
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              },
+              "QuickJS": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-binding-defn-meta-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$keyword": {
+                                "namespace": null,
+                                "name": "new",
+                                "spelling": "new"
+                              }
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              }
+            },
+            "source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+            "test_file": "tests/compiler_sci_execution.rs",
+            "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+            "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+            "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          },
+          "release": {
+            "status": "failed",
+            "detail": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-metadata-inspection-after190-v1/release/execution/src/semantic/case0.cljs\nExecution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-1030048521744159128.edn\n",
+            "source_sha256": "a23199db9756547cd6aed9b02b07abdffee0c53140593a6506d31f1b9419937c",
+            "original_source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+            "isolated": true
+          },
+          "checkout": {
+            "status": "failed",
+            "detail": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-metadata-inspection-after190-v1/checkout/execution/src/semantic/case0.cljs\nExecution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-15622075287848510029.edn\n",
+            "source_sha256": "a23199db9756547cd6aed9b02b07abdffee0c53140593a6506d31f1b9419937c",
+            "original_source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+            "isolated": true
+          }
+        }
+      },
+      "artifact_sha256": {
+        "checkout/execution/build/invocation.json": "f314bb50b8291862bf5d5340b3575377cffc10c257f15ed3aaea36aba1994df2",
+        "checkout/execution/build/stderr": "3d5c1118076f4624c929dbe1c7cfa2d64dd1809ecf2890ad182b5f94037a4f37",
+        "checkout/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/execution/build/stdout": "7ff34063f1e7cb21d187705b8d5085536efbe71472390ca0bddcf532adf5fa71",
+        "checkout/execution/cases.tsv": "a9b8cfb81762771e06a096e88d8d7138d8f96b0db2163075b953e950482e650a",
+        "checkout/execution/out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+        "checkout/execution/out/cljs/core.js.map": "33a59eebb1624c932005b8de3a1a25d451205da7fe13e63130a20ca5bda63ebf",
+        "checkout/execution/out/semantic/case0.js": "dc48ae9947da0ed33456c96f391ceabc057165e54956557b3c74ddef9c50a261",
+        "checkout/execution/out/semantic/case0.js.map": "bbae64f9fbf9be3fcf6e3629bb7e263d5226aa3b5e367f104c17a158707d9494",
+        "checkout/execution/out/semantic/case1.js": "f39b8c82e30b39a2de7bc6f6596c636f329e380c8adbcb7578786b1f7bfcb57d",
+        "checkout/execution/out/semantic/case2.js": "22b3eec1c91671ba459d27becab886093b8f2bf27a5965564c2dd28d8e5cdce2",
+        "checkout/execution/out/semantic/case2.js.map": "907b5686537ca83b4822f0e2f86c5b764a9d0f05f7c50a8d8eea6f4380284eed",
+        "checkout/execution/src/semantic/case0.cljs": "cb7dfb615e237bdbe7f65f3c212b45e8b5c7e9ac929052a410290d052e402234",
+        "checkout/execution/src/semantic/case1.cljs": "3276206ce5acc3c78abfc74cba08e977b234f8574b0c6e2cc11d61af4530974f",
+        "checkout/execution/src/semantic/case2.cljs": "b64a92b53d8b1a4d2aaf5ce94cddd038047da6bb2b378c48bae3e997f8d4228d",
+        "checkout/execution/src/semantic/reference.cljs": "0600b265c1abdd47d09d5f96fce23fa60c30d11a4c309a19e498987660e722e2",
+        "checkout/preflight/analysis.tsv": "d8910634c7d501883799bff8d203cff9ebf26704a3135340c48fc7341fd73f02",
+        "checkout/preflight/build/invocation.json": "0a5ae36cc6e5bb8ca6d63acc84a277d6d46b588c5ab47ab4464a757e151fcefa",
+        "checkout/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/preflight/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "checkout/preflight/cases.tsv": "915cffc232fd7f02bfc1552e623fff960d1dedcf3331d8a5e8a480d5704db934",
+        "local/cargo.stderr": "aec1706a6ca3a430b5c47edf754e7c2663dbd613b4247508236200a3427a1ef9",
+        "local/cargo.stdout": "f58104a6224696f2bc3ab3b65e25283d3e527f92940db21af7b88892d686fe71",
+        "local/input.tsv": "fb775c56401b4ade7b744f8a3a3f7265bceeca6a3a84346fe14c4b4933fc39da",
+        "local/observations.tsv": "d35d69bd48f9248f122c1807aa318f53c08afa20e37030714ab4677bae14ea78",
+        "release/execution/build/invocation.json": "37aaac7d1efd36aab87817a85647a9bda4f27d4c8488980bfbce46c9e1a1b2fd",
+        "release/execution/build/stderr": "8c046d187d58f08cb0ca212be5c57dca814208a3da163b851f27c916405b7790",
+        "release/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/execution/build/stdout": "f4b5fee37df6bf7c35ebe1394bf26b29aea067045760a0fefc6b1362f2b4c551",
+        "release/execution/cases.tsv": "a9b8cfb81762771e06a096e88d8d7138d8f96b0db2163075b953e950482e650a",
+        "release/execution/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+        "release/execution/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+        "release/execution/out/cljs/core.js.map": "ab70020bdb1a605f60e77772ef2cebea6a9fed9778f25f810107b83e591d6b30",
+        "release/execution/out/semantic/case0.js": "9f6fe65f3638bc430f682bf2d2077647d8edd2978704d42f4f60df45289c87a9",
+        "release/execution/out/semantic/case0.js.map": "f06a075a6b64349fc371ece74e13f0221a9f5fb3b98159bdf0b2b1a15191e78e",
+        "release/execution/out/semantic/case1.js": "6d527e7e64f0aa6fadefacf17df19b9a33039acf839684ec32d1812378a557e6",
+        "release/execution/out/semantic/case2.js": "1c77d7dbb8a2116b3299d3e773a8c9c530cf32cbe282104bdea9715946c694c5",
+        "release/execution/out/semantic/case2.js.map": "e0fde3d4d746abdb14101558acfe3e963324dc0f5bd69eaa85ba2242f3182d75",
+        "release/execution/src/semantic/case0.cljs": "cb7dfb615e237bdbe7f65f3c212b45e8b5c7e9ac929052a410290d052e402234",
+        "release/execution/src/semantic/case1.cljs": "3276206ce5acc3c78abfc74cba08e977b234f8574b0c6e2cc11d61af4530974f",
+        "release/execution/src/semantic/case2.cljs": "b64a92b53d8b1a4d2aaf5ce94cddd038047da6bb2b378c48bae3e997f8d4228d",
+        "release/execution/src/semantic/reference.cljs": "0600b265c1abdd47d09d5f96fce23fa60c30d11a4c309a19e498987660e722e2",
+        "release/preflight/analysis.tsv": "d8910634c7d501883799bff8d203cff9ebf26704a3135340c48fc7341fd73f02",
+        "release/preflight/build/invocation.json": "104b0393c0d28fb760279c157f8a2d1f0d9d64c1497dc78ec51d1608f6760fb3",
+        "release/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/preflight/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "release/preflight/cases.tsv": "915cffc232fd7f02bfc1552e623fff960d1dedcf3331d8a5e8a480d5704db934",
+        "sources.json": "755ce4ee6d5aac50bb0f42a794aebfdab153297a0a50b7082d491138379811b8"
+      }
+    },
+    "metadata-isolated-inspection": {
+      "schema_version": 1,
+      "scope": "Read-only complete unadapted original record inspection; no current source/phase/ledger credit",
+      "original_semantic_pass_credit": 0,
+      "producer_source_sha256": {
+        "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+        "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+        "src/analyzer.rs": "88973715550fa3f85face0779799e51090373e125265b9983bfd0fc0a2dc0c00",
+        "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+        "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+        "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+        "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+        "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+        "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+        "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+        "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+        "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+        "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+        "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+        "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+        "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+        "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+        "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+        "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+        "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+        "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+        "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+        "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+        "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+        "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+        "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+        "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+        "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+        "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+        "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+        "src/js_runtime.js": "bb10805cc1d78cb650847286707787b98e9bcc12f2698f973d3923544b1c8e24",
+        "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+        "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+        "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+        "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+        "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+        "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+        "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+        "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+        "tests/compiler_sci_execution.rs": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+        "tests/fixtures/sci-outcomes.tsv": "8dd8718da0639dc11ff1cc0d6186284a6b2f70e57919b47c34f3c5269db869e5",
+        "tests/reference/analysis_boundaries.clj": "d83ee980a408f9a07a4f54ae1a706307715bda635ef3806241a7bf6338e2dca0",
+        "tests/reference/compiler-language/configured_source_context.py": "c77dd9cc5fc597a540cfd850999b705c8cfb2db303de8217d8d7d32c9448db3e",
+        "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+        "tests/reference/compiler-language/sci-analysis.clj": "c5bd1f97423a8845269cd2eabbfb02837ab3d1600ac1164b8f32a64af9e62944",
+        "tests/reference/compiler-language/sci_execution.py": "aeb085a2a34ba3a67ca9443598ef6dc8f33898992571d98c6caa302b6e7160c0",
+        "tests/reference/compiler-language/sci_gap_return_candidates.py": "9e47550aa802d4a96390b9e609e5c67eb04e57014cf020967cd134ecd515394e",
+        "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+        "tests/reference/sci/evaluator-dispositions.tsv": "186d9e391aa8e468981a1f972d7fd4f5433971400587665fbbece65c305cd429",
+        "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+        "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+      },
+      "reference_execution_binding": {
+        "programs": {
+          "node": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node",
+          "clojure": "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+          "cargo": "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo"
+        },
+        "executables_sha256": {
+          "/opt/homebrew/Cellar/node@24/24.18.0/bin/node": "b423af50c2fb0f4d79da9b8bd7df7279f6e4ee4221421dc26d26cca999f19615",
+          "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure": "a266aa4f011e27ccbaac2cd359b72a3077ec26facf115904fefe6056eba74a15",
+          "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo": "35152b6c4de025e32d70be80fdf70fd4bf42cdb69d630c0fe92ebe6901e340a9"
+        }
+      },
+      "script_sha256": "90566d1c5231715cab2bac8e4ced045d8927203780d798148a8eb2543ce3868e",
+      "source_bindings": [
+        {
+          "id": "sci-execution-sci-var-definition-meta-order",
+          "sci_id": "sci-var-definition-meta-order",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-definition-meta-order",
+          "body_sha256": "f1d898aab77d0173827369b7a1891cdf95489fd29ae07c5bd281deb1f8ff88db",
+          "original_row_sha256": "2f4fde46ff984d46ccdf9676312f558e80de3c0e6f51af1881a35c7b407a56c3",
+          "source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+          "original_source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+          "source": "(def x 1) (def ^{:m (observe x)} x (observe 2)) [x (get (meta #'x) :m)]",
+          "original_fields": [
+            "sci-var-definition-meta-order",
+            "portable",
+            "(def x 1) (def ^{:m (observe x)} x (observe 2)) [x (get (meta #'x) :m)]",
+            "(return (vector (int 2) (int 1)))",
+            "(vector (int 2) (int 1))",
+            "(string u)",
+            "(string u)"
+          ],
+          "expected": {
+            "id": "sci-execution-sci-var-definition-meta-order",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  2,
+                  1
+                ]
+              }
+            },
+            "trace": [
+              2,
+              1
+            ],
+            "stdout": ""
+          },
+          "isolated": true,
+          "reference_isolated": true,
+          "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+        },
+        {
+          "id": "sci-execution-sci-var-reserved-metadata-effects",
+          "sci_id": "sci-var-reserved-metadata-effects",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-reserved-metadata-effects",
+          "body_sha256": "cdd5c745efb0d096a3ba63e77faa7dd3a335e03af1e53198d46b8a6398dd9c9b",
+          "original_row_sha256": "f79e3d7c366ad5ccb3982f09b06ab77d305342090a7d7921e4d17f6bfb4da522",
+          "source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+          "original_source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+          "source": "(declare ^{:declared (observe :declared)} y) (def ^{:name (observe :name) :file (observe :file) :ns (observe :ns) :line (observe :line) :column (observe :column) :doc (observe :doc)} x \"new\" 1) [(get (meta #'y) :declared) (get (meta #'x) :doc)]",
+          "original_fields": [
+            "sci-var-reserved-metadata-effects",
+            "portable",
+            "(declare ^{:declared (observe :declared)} y) (def ^{:name (observe :name) :file (observe :file) :ns (observe :ns) :line (observe :line) :column (observe :column) :doc (observe :doc)} x \"new\" 1) [(get (meta #'y) :declared) (get (meta #'x) :doc)]",
+            "(return (vector (bool true) (string u006e00650077)))",
+            "(vector (keyword - u006e0061006d0065) (keyword - u00660069006c0065))",
+            "(string u)",
+            "(string u)"
+          ],
+          "expected": {
+            "id": "sci-execution-sci-var-reserved-metadata-effects",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  true,
+                  "new"
+                ]
+              }
+            },
+            "trace": [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "name",
+                  "spelling": "name"
+                }
+              },
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "file",
+                  "spelling": "file"
+                }
+              }
+            ],
+            "stdout": ""
+          },
+          "isolated": true,
+          "reference_isolated": true,
+          "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+        },
+        {
+          "id": "sci-execution-sci-binding-defn-meta-effects",
+          "sci_id": "sci-binding-defn-meta-effects",
+          "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-binding-defn-meta-effects",
+          "body_sha256": "0fced1cfc978d6e453a05df8d76abc8e51cfb1259d894551aa38d06c2346dc88",
+          "original_row_sha256": "041a929e9fcd44bd906472c03945bb1152b067d76695d177b01b3231a86cd19e",
+          "source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+          "original_source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+          "source": "(defn ^{:v (observe :old)} f {:v (observe :new)} [x] x) [(:v (meta #'f)) (f 1)]",
+          "original_fields": [
+            "sci-binding-defn-meta-effects",
+            "portable",
+            "(defn ^{:v (observe :old)} f {:v (observe :new)} [x] x) [(:v (meta #'f)) (f 1)]",
+            "(return (vector (keyword - u006e00650077) (int 1)))",
+            "(vector (keyword - u006e00650077))",
+            "(string u)",
+            "(string u)"
+          ],
+          "expected": {
+            "id": "sci-execution-sci-binding-defn-meta-effects",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "new",
+                      "spelling": "new"
+                    }
+                  },
+                  1
+                ]
+              }
+            },
+            "trace": [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "new",
+                  "spelling": "new"
+                }
+              }
+            ],
+            "stdout": ""
+          },
+          "isolated": true,
+          "reference_isolated": true,
+          "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+        }
+      ],
+      "evidence": {
+        "sci-execution-sci-var-definition-meta-order": {
+          "local": {
+            "status": "mismatch",
+            "engines": {
+              "Node": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-definition-meta-order",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        2,
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "x",
+                                "spelling": "x"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "trace": [
+                    2
+                  ],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              },
+              "QuickJS": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-definition-meta-order",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        2,
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "x",
+                                "spelling": "x"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "trace": [
+                    2
+                  ],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              }
+            },
+            "source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+            "test_file": "tests/compiler_sci_execution.rs",
+            "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+            "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+            "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          },
+          "release": {
+            "status": "mismatch",
+            "observed": {
+              "id": "sci-execution-sci-var-definition-meta-order",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$vector": [
+                    2,
+                    {
+                      "$list": [
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "observe",
+                            "spelling": "observe"
+                          }
+                        },
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "x",
+                            "spelling": "x"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "trace": [
+                2
+              ],
+              "stdout": ""
+            },
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+            "stderr": "",
+            "source_sha256": "4f2a87970d691dafacb38fa9422b7ae77a47461d16c6c14b275b6b0170f13358",
+            "original_source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+            "isolated": true
+          },
+          "checkout": {
+            "status": "mismatch",
+            "observed": {
+              "id": "sci-execution-sci-var-definition-meta-order",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$vector": [
+                    2,
+                    {
+                      "$list": [
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "observe",
+                            "spelling": "observe"
+                          }
+                        },
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "x",
+                            "spelling": "x"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "trace": [
+                2
+              ],
+              "stdout": ""
+            },
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+            "stderr": "",
+            "source_sha256": "4f2a87970d691dafacb38fa9422b7ae77a47461d16c6c14b275b6b0170f13358",
+            "original_source_sha256": "fdb521ca26ac0f03f8e0cfce25c84c2fabcc32a00a212030e7355e7f6262e3cb",
+            "isolated": true
+          }
+        },
+        "sci-execution-sci-var-reserved-metadata-effects": {
+          "local": {
+            "status": "mismatch",
+            "engines": {
+              "Node": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-reserved-metadata-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        true,
+                        "new"
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              },
+              "QuickJS": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-var-reserved-metadata-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        true,
+                        "new"
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              }
+            },
+            "source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+            "test_file": "tests/compiler_sci_execution.rs",
+            "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+            "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+            "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          },
+          "release": {
+            "status": "failed",
+            "detail": "Execution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-8011221695992102394.edn\n",
+            "source_sha256": "d5612df82b19a2eb79da914497f810f9f869c92817412ac638c9bf815ce95097",
+            "original_source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+            "isolated": true
+          },
+          "checkout": {
+            "status": "failed",
+            "detail": "Execution error (ClassCastException) at cljs.compiler/emit$fn (compiler.cljc:200).\nclass clojure.lang.PersistentList cannot be cast to class java.lang.Number (clojure.lang.PersistentList is in unnamed module of loader 'app'; java.lang.Number is in module java.base of loader 'bootstrap')\n\nFull report at:\n/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/clojure-12975248990686068391.edn\n",
+            "source_sha256": "d5612df82b19a2eb79da914497f810f9f869c92817412ac638c9bf815ce95097",
+            "original_source_sha256": "96569660eac9c6c5fd492755c949ad5d7c0a21a1b742d48d54501dc4bb8121dd",
+            "isolated": true
+          }
+        },
+        "sci-execution-sci-binding-defn-meta-effects": {
+          "local": {
+            "status": "mismatch",
+            "engines": {
+              "Node": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-binding-defn-meta-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$keyword": {
+                                "namespace": null,
+                                "name": "new",
+                                "spelling": "new"
+                              }
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              },
+              "QuickJS": {
+                "status": "mismatch",
+                "observed": {
+                  "id": "sci-execution-sci-binding-defn-meta-effects",
+                  "outcome": {
+                    "status": "returned",
+                    "value": {
+                      "$vector": [
+                        {
+                          "$list": [
+                            {
+                              "$symbol": {
+                                "namespace": null,
+                                "name": "observe",
+                                "spelling": "observe"
+                              }
+                            },
+                            {
+                              "$keyword": {
+                                "namespace": null,
+                                "name": "new",
+                                "spelling": "new"
+                              }
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  },
+                  "trace": [],
+                  "stdout": ""
+                },
+                "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+              }
+            },
+            "source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+            "test_file": "tests/compiler_sci_execution.rs",
+            "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+            "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+            "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+          },
+          "release": {
+            "status": "mismatch",
+            "observed": {
+              "id": "sci-execution-sci-binding-defn-meta-effects",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$vector": [
+                    {
+                      "$list": [
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "observe",
+                            "spelling": "observe"
+                          }
+                        },
+                        {
+                          "$keyword": {
+                            "namespace": null,
+                            "name": "new",
+                            "spelling": "new"
+                          }
+                        }
+                      ]
+                    },
+                    1
+                  ]
+                }
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "reference_identity": "release 1.12.134",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+            "stderr": "",
+            "source_sha256": "a23199db9756547cd6aed9b02b07abdffee0c53140593a6506d31f1b9419937c",
+            "original_source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+            "isolated": true
+          },
+          "checkout": {
+            "status": "mismatch",
+            "observed": {
+              "id": "sci-execution-sci-binding-defn-meta-effects",
+              "outcome": {
+                "status": "returned",
+                "value": {
+                  "$vector": [
+                    {
+                      "$list": [
+                        {
+                          "$symbol": {
+                            "namespace": null,
+                            "name": "observe",
+                            "spelling": "observe"
+                          }
+                        },
+                        {
+                          "$keyword": {
+                            "namespace": null,
+                            "name": "new",
+                            "spelling": "new"
+                          }
+                        }
+                      ]
+                    },
+                    1
+                  ]
+                }
+              },
+              "trace": [],
+              "stdout": ""
+            },
+            "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+            "settings": {
+              "optimizations": "none",
+              "static-fns": false,
+              "def-emits-var": false
+            },
+            "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+            "stderr": "",
+            "source_sha256": "a23199db9756547cd6aed9b02b07abdffee0c53140593a6506d31f1b9419937c",
+            "original_source_sha256": "6ce7290d3a5cde51d9b876275334ba47827bb1240346b567d095a6bf3c1e461c",
+            "isolated": true
+          }
+        }
+      },
+      "artifact_sha256": {
+        "checkout/0/execution/build/invocation.json": "309b05fb30a89caa701f489cb5a8d90620a3272cff344a9c1b2a1bbbb5c8d993",
+        "checkout/0/execution/build/stderr": "2a2ff021d1a2f760a216fcc48debaeab2d12b8313e72b44c841853e6f7766814",
+        "checkout/0/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/0/execution/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "checkout/0/execution/cases.tsv": "64fc4f9f075eb4a2636cfd2066b11d9ab933184df7a9e338ef8b7f3874ed24ea",
+        "checkout/0/execution/node-0/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+        "checkout/0/execution/node-0/stderr": "e395d900c882e727dbd072f77c80c59b51b74debd9aa0c832dd684a40df94256",
+        "checkout/0/execution/node-0/stdin": "5b89e4e9e824866d9e750db434d2f9ae90db5e187eb97bc9fc2efd76b14016c3",
+        "checkout/0/execution/node-0/stdout": "901e3d6f1e0ad65349b5c6a5bd7d0706e175837c42104a785df9f65e3680c9b8",
+        "checkout/0/execution/out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+        "checkout/0/execution/out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+        "checkout/0/execution/out/cljs/core.js.map": "e27ec7e53553b76ef85fcc696ff73e5d483c6335ca1b8b3ba5ad9c5c0a16ab8c",
+        "checkout/0/execution/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+        "checkout/0/execution/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+        "checkout/0/execution/out/cljs_deps.js": "3b73a0145452e60c5f2629fe5d2c5ae5306c3a5ff7dc0927aaf0bc1e98837a70",
+        "checkout/0/execution/out/cljsc_opts.edn": "909d15898c1a16cb10d8569b0fba4134c7eac9c0ce9cb10fa06d815c8660b63b",
+        "checkout/0/execution/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+        "checkout/0/execution/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+        "checkout/0/execution/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+        "checkout/0/execution/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+        "checkout/0/execution/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+        "checkout/0/execution/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+        "checkout/0/execution/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+        "checkout/0/execution/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+        "checkout/0/execution/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+        "checkout/0/execution/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+        "checkout/0/execution/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+        "checkout/0/execution/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+        "checkout/0/execution/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+        "checkout/0/execution/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+        "checkout/0/execution/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+        "checkout/0/execution/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+        "checkout/0/execution/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+        "checkout/0/execution/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+        "checkout/0/execution/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+        "checkout/0/execution/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+        "checkout/0/execution/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+        "checkout/0/execution/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+        "checkout/0/execution/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+        "checkout/0/execution/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+        "checkout/0/execution/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+        "checkout/0/execution/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+        "checkout/0/execution/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+        "checkout/0/execution/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+        "checkout/0/execution/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+        "checkout/0/execution/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+        "checkout/0/execution/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+        "checkout/0/execution/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+        "checkout/0/execution/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+        "checkout/0/execution/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+        "checkout/0/execution/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+        "checkout/0/execution/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+        "checkout/0/execution/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+        "checkout/0/execution/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+        "checkout/0/execution/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+        "checkout/0/execution/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+        "checkout/0/execution/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+        "checkout/0/execution/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+        "checkout/0/execution/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+        "checkout/0/execution/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+        "checkout/0/execution/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+        "checkout/0/execution/out/nodejs.js": "086fe34ea6c8f243fa48d2015a0f55218c77de12d91472d579095fe2fc8b6fcd",
+        "checkout/0/execution/out/nodejs.js.map": "cc9c0c76c551130bb91d7d54cbf5f28c50db43b02a6ec16d43a1ad907ed69285",
+        "checkout/0/execution/out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+        "checkout/0/execution/out/nodejscli.js.map": "e72f9528a7ce0f33f4fb4e16c00d2f0d0d26889489def371892e810b77346412",
+        "checkout/0/execution/out/semantic/case0.cljs": "cb7dfb615e237bdbe7f65f3c212b45e8b5c7e9ac929052a410290d052e402234",
+        "checkout/0/execution/out/semantic/case0.js": "23feeae04644878d85d520f18d00cc3b1443ad75e4cf6c1262a4a3e026c5f33f",
+        "checkout/0/execution/out/semantic/case0.js.map": "2ac84d0ee9c0d4f588afccac8d977f785a2b21704b31067f38dcce21dacfd34b",
+        "checkout/0/execution/out/semantic/reference.cljs": "02ae3954bbe7a97a4e406e90cc1e1295f7483ac62592fe13ec60fe9b105494f5",
+        "checkout/0/execution/out/semantic/reference.js": "8076d9e78ee066c8f13eb636dc347d67f9b05750bc4ab4f32780d716008d4006",
+        "checkout/0/execution/out/semantic/reference.js.map": "f41f910ee5e2da7558d0a05b8597c550ef667a4992ce90db046c2f36ce0e0c1d",
+        "checkout/0/execution/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+        "checkout/0/execution/src/semantic/case0.cljs": "cb7dfb615e237bdbe7f65f3c212b45e8b5c7e9ac929052a410290d052e402234",
+        "checkout/0/execution/src/semantic/reference.cljs": "02ae3954bbe7a97a4e406e90cc1e1295f7483ac62592fe13ec60fe9b105494f5",
+        "checkout/0/preflight/analysis.tsv": "99cdcb573d5ef39c8116521f910c3ea3c8eded5dbd12f7e4396a552006a4fff6",
+        "checkout/0/preflight/build/invocation.json": "42f7627a630531d5605a0aa06f600a0cf2d47f94107cce0564b1b0b158d0153c",
+        "checkout/0/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/0/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/0/preflight/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "checkout/0/preflight/cases.tsv": "fab0eabaadfdc326330ec3ea779e180907c262f4eafda78cb8d11d14810ae5a4",
+        "checkout/1/execution/build/invocation.json": "28cdbd0bb7d312338190ff59d226025e8772c2281e5d20d51dd58f0b900d90ac",
+        "checkout/1/execution/build/stderr": "ad2bfd1337b799813f2f94a81df1698c7d146895323fba053db653c1aea5bc9d",
+        "checkout/1/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/1/execution/build/stdout": "7ff34063f1e7cb21d187705b8d5085536efbe71472390ca0bddcf532adf5fa71",
+        "checkout/1/execution/cases.tsv": "1fe822d1bc8072c088a5aa0bb7968e533386b45415e8d67def2ecef12b587eb2",
+        "checkout/1/execution/out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+        "checkout/1/execution/out/cljs/core.js.map": "56f1f87b5f4d34b318e8e0999307aef5b78fa668ce0c8a0644bc7e9b3d9c7ea5",
+        "checkout/1/execution/out/semantic/case0.js": "7867b02ad4e17122c892942a926f9ffcd74fc4f9cf0f3a26597ce80fa9a470d8",
+        "checkout/1/execution/src/semantic/case0.cljs": "0b38d6aa9b7df0ea88e15e78b42f527d1fa232998a0cc63ce5fa58136199810c",
+        "checkout/1/execution/src/semantic/reference.cljs": "02a75ba77daca1cf79b9a1a3ee381021ceec2f67360ead658d848b2c6d448397",
+        "checkout/1/preflight/analysis.tsv": "7b59de5a1e5ab3886b671bef30a8137b588cbfa74b4f20d642cbbc792efa097e",
+        "checkout/1/preflight/build/invocation.json": "fbce1caa16f0dd8ad2871fea3bfecf5d3eff177085d8b10428083d91bba85e3a",
+        "checkout/1/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/1/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/1/preflight/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "checkout/1/preflight/cases.tsv": "a258524ada607c04707fad8532f1b839ef46d614e5145fe082153443946c4a2e",
+        "checkout/2/execution/build/invocation.json": "7bb6b0a152840c242edd9e5c986e6a1ff74c8cf6fde6e78018462d398a2c35f5",
+        "checkout/2/execution/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/2/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/2/execution/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "checkout/2/execution/cases.tsv": "12bfa426db134fb0bf990820514f26444cce952b77d84d0c5d178fee9ea2036a",
+        "checkout/2/execution/node-0/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+        "checkout/2/execution/node-0/stderr": "af38f63fa312fd01510d02c662b034ca2b13ba27bed3eeef08bf91770fdacb57",
+        "checkout/2/execution/node-0/stdin": "eae57d09437123fe5d814cd5b01a049acc5ff0b51a482031213c29e04190a350",
+        "checkout/2/execution/node-0/stdout": "6d4f367de6ff85ca7174fa67cb6499932fcd54809b6878276e75f539f2017e0a",
+        "checkout/2/execution/out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+        "checkout/2/execution/out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+        "checkout/2/execution/out/cljs/core.js.map": "088435363a65ad61255e7d030d66eed4d00278995560ffefb44d9969d3a331ca",
+        "checkout/2/execution/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+        "checkout/2/execution/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+        "checkout/2/execution/out/cljs_deps.js": "3b73a0145452e60c5f2629fe5d2c5ae5306c3a5ff7dc0927aaf0bc1e98837a70",
+        "checkout/2/execution/out/cljsc_opts.edn": "e5586caedf755313a62fa1b5af803944f85c8c396a8e6e7029d816b11c328991",
+        "checkout/2/execution/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+        "checkout/2/execution/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+        "checkout/2/execution/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+        "checkout/2/execution/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+        "checkout/2/execution/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+        "checkout/2/execution/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+        "checkout/2/execution/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+        "checkout/2/execution/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+        "checkout/2/execution/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+        "checkout/2/execution/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+        "checkout/2/execution/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+        "checkout/2/execution/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+        "checkout/2/execution/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+        "checkout/2/execution/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+        "checkout/2/execution/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+        "checkout/2/execution/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+        "checkout/2/execution/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+        "checkout/2/execution/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+        "checkout/2/execution/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+        "checkout/2/execution/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+        "checkout/2/execution/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+        "checkout/2/execution/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+        "checkout/2/execution/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+        "checkout/2/execution/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+        "checkout/2/execution/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+        "checkout/2/execution/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+        "checkout/2/execution/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+        "checkout/2/execution/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+        "checkout/2/execution/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+        "checkout/2/execution/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+        "checkout/2/execution/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+        "checkout/2/execution/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+        "checkout/2/execution/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+        "checkout/2/execution/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+        "checkout/2/execution/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+        "checkout/2/execution/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+        "checkout/2/execution/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+        "checkout/2/execution/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+        "checkout/2/execution/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+        "checkout/2/execution/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+        "checkout/2/execution/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+        "checkout/2/execution/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+        "checkout/2/execution/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+        "checkout/2/execution/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+        "checkout/2/execution/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+        "checkout/2/execution/out/nodejs.js": "086fe34ea6c8f243fa48d2015a0f55218c77de12d91472d579095fe2fc8b6fcd",
+        "checkout/2/execution/out/nodejs.js.map": "a2c9a332191647c59b08d07a1315bf0d14ed47179ab19a7c6d46140bf92488b6",
+        "checkout/2/execution/out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+        "checkout/2/execution/out/nodejscli.js.map": "9109724a9e810b8a39da14ab25da3dd1c6d3f15ecef4403c1e2f3d0acb3a3c7f",
+        "checkout/2/execution/out/semantic/case0.cljs": "cff99757169d38d526bcc6790959b6d597ecb338e3acea13df05513581b8c0ab",
+        "checkout/2/execution/out/semantic/case0.js": "ce9325b4e4673110bcf5647edaa6ee8f0f234f916564fb88e2c234a3710c5637",
+        "checkout/2/execution/out/semantic/case0.js.map": "af8dc8e2ee05b2644fcf6503eed06d313750a04cf37de6b28edbc0eb161fc3c3",
+        "checkout/2/execution/out/semantic/reference.cljs": "f42e21ed96092eba718a3c846bdb065f8d3afb176dde9a7730899ecea3f0390a",
+        "checkout/2/execution/out/semantic/reference.js": "c82c9a6a60a924ba362598749916aa915869e21f5e58017f33732515a220396c",
+        "checkout/2/execution/out/semantic/reference.js.map": "26fcb345c28290e44add81617d28c4686ce4908c2f09d88c583667d826cdc5a7",
+        "checkout/2/execution/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+        "checkout/2/execution/src/semantic/case0.cljs": "cff99757169d38d526bcc6790959b6d597ecb338e3acea13df05513581b8c0ab",
+        "checkout/2/execution/src/semantic/reference.cljs": "f42e21ed96092eba718a3c846bdb065f8d3afb176dde9a7730899ecea3f0390a",
+        "checkout/2/preflight/analysis.tsv": "e3f2414b1bd5d1bf5cc63913ef7fca7e2942288402355f92fd30e6f265316fd0",
+        "checkout/2/preflight/build/invocation.json": "b73052824875e8e9d08a31e3ce3fea3dbc298dcfad7bd0f2921cb0672e2272c3",
+        "checkout/2/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/2/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "checkout/2/preflight/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+        "checkout/2/preflight/cases.tsv": "25a3e4a1ab9fec1ce571f52370ac79268a75ff67df2c0e7145d79c13f8bb5753",
+        "local/cargo.stderr": "0cbc3ee2009e25bdbf9e4e8e96da94d2619d9e85a6719881c848cca1764e8be7",
+        "local/cargo.stdout": "bcf733217405676d6e525542137b3151110f848cdd723ba8ce2c8bce2c873929",
+        "local/input.tsv": "fb775c56401b4ade7b744f8a3a3f7265bceeca6a3a84346fe14c4b4933fc39da",
+        "local/observations.tsv": "d35d69bd48f9248f122c1807aa318f53c08afa20e37030714ab4677bae14ea78",
+        "release/0/execution/build/invocation.json": "d6fcbc4a94e124ced50922463affb060df13d7fe80e7e8227608a5067d4d630b",
+        "release/0/execution/build/stderr": "7164f09245d6320214af7630e4ada61b2b4dee0426be79bceb1a80ff6600bbb7",
+        "release/0/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/0/execution/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "release/0/execution/cases.tsv": "64fc4f9f075eb4a2636cfd2066b11d9ab933184df7a9e338ef8b7f3874ed24ea",
+        "release/0/execution/node-0/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+        "release/0/execution/node-0/stderr": "e395d900c882e727dbd072f77c80c59b51b74debd9aa0c832dd684a40df94256",
+        "release/0/execution/node-0/stdin": "7d620ad6d717749b1fc8f0f21dc6c90cda1d659d93be9e5e0f2efc0fd933a380",
+        "release/0/execution/node-0/stdout": "901e3d6f1e0ad65349b5c6a5bd7d0706e175837c42104a785df9f65e3680c9b8",
+        "release/0/execution/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+        "release/0/execution/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+        "release/0/execution/out/cljs/core.js.map": "7fa0d313bb5a17007cde1e31c552f25c8175e3ac892f7afd9477728c7eece958",
+        "release/0/execution/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+        "release/0/execution/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+        "release/0/execution/out/cljs_deps.js": "c7c221d7ac988231b1cac85703fae78145beb8c6e1bf7ffe7146ee3153c49a6c",
+        "release/0/execution/out/cljsc_opts.edn": "0c459236f180325d3520e43fe7ae63ae889345fc0e3a0b790ca85a547c6fec39",
+        "release/0/execution/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+        "release/0/execution/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+        "release/0/execution/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+        "release/0/execution/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+        "release/0/execution/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+        "release/0/execution/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+        "release/0/execution/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+        "release/0/execution/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+        "release/0/execution/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+        "release/0/execution/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+        "release/0/execution/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+        "release/0/execution/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+        "release/0/execution/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+        "release/0/execution/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+        "release/0/execution/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+        "release/0/execution/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+        "release/0/execution/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+        "release/0/execution/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+        "release/0/execution/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+        "release/0/execution/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+        "release/0/execution/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+        "release/0/execution/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+        "release/0/execution/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+        "release/0/execution/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+        "release/0/execution/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+        "release/0/execution/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+        "release/0/execution/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+        "release/0/execution/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+        "release/0/execution/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+        "release/0/execution/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+        "release/0/execution/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+        "release/0/execution/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+        "release/0/execution/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+        "release/0/execution/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+        "release/0/execution/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+        "release/0/execution/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+        "release/0/execution/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+        "release/0/execution/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+        "release/0/execution/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+        "release/0/execution/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+        "release/0/execution/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+        "release/0/execution/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+        "release/0/execution/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+        "release/0/execution/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+        "release/0/execution/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+        "release/0/execution/out/nodejs.js": "b74ffa73ec976719e04e20d1025a0757c9a9e9e861b8c1ea5bb7835fd438829f",
+        "release/0/execution/out/nodejs.js.map": "116cde4a1f72980438390f7fcfddbc639eb6a4b783f549cd9e3aeaeb0a7ef882",
+        "release/0/execution/out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+        "release/0/execution/out/nodejscli.js.map": "2e7761839991afa9e271c6952ef1b1fae1acb3c4ec40dce5b451277ba211740c",
+        "release/0/execution/out/semantic/case0.cljs": "cb7dfb615e237bdbe7f65f3c212b45e8b5c7e9ac929052a410290d052e402234",
+        "release/0/execution/out/semantic/case0.js": "7335557000861e603236f198b3b356c0f39019a932b308a20005f31a880c9a28",
+        "release/0/execution/out/semantic/case0.js.map": "75c07079d6946cd154e67c9da6350054b81b33929412b7958c3c7489371ffeb4",
+        "release/0/execution/out/semantic/reference.cljs": "02ae3954bbe7a97a4e406e90cc1e1295f7483ac62592fe13ec60fe9b105494f5",
+        "release/0/execution/out/semantic/reference.js": "2d68ecb7225118e240b4934a538c53d9494e14f8829c0b711eb188a5adb28b15",
+        "release/0/execution/out/semantic/reference.js.map": "3d41014d4197a871c18d4cf78ed7dac0581ac4c0133424b10c3431b7a21b9328",
+        "release/0/execution/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+        "release/0/execution/src/semantic/case0.cljs": "cb7dfb615e237bdbe7f65f3c212b45e8b5c7e9ac929052a410290d052e402234",
+        "release/0/execution/src/semantic/reference.cljs": "02ae3954bbe7a97a4e406e90cc1e1295f7483ac62592fe13ec60fe9b105494f5",
+        "release/0/preflight/analysis.tsv": "99cdcb573d5ef39c8116521f910c3ea3c8eded5dbd12f7e4396a552006a4fff6",
+        "release/0/preflight/build/invocation.json": "819cd1e95974be5536bd8b4c60d67209373381db7b0f2714930dec434b836986",
+        "release/0/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/0/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/0/preflight/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "release/0/preflight/cases.tsv": "fab0eabaadfdc326330ec3ea779e180907c262f4eafda78cb8d11d14810ae5a4",
+        "release/1/execution/build/invocation.json": "72abc62f5ed6eace97420e132bf12cfcf9921bcb356058ae6d8d98c129a31691",
+        "release/1/execution/build/stderr": "295db31fdb9cf7e5db84e7ca21e740d3e54bb7a202d41b506e1c7e393183e792",
+        "release/1/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/1/execution/build/stdout": "f4b5fee37df6bf7c35ebe1394bf26b29aea067045760a0fefc6b1362f2b4c551",
+        "release/1/execution/cases.tsv": "1fe822d1bc8072c088a5aa0bb7968e533386b45415e8d67def2ecef12b587eb2",
+        "release/1/execution/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+        "release/1/execution/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+        "release/1/execution/out/cljs/core.js.map": "eb97427b6d08d5a65c22d844d242ecc482352f3f159f5321bcb7abe97d304925",
+        "release/1/execution/out/semantic/case0.js": "36ea3e1dd0d2ab98d5b0ab7baedcda9d5bf560ce8ab47e513c412425f3315f28",
+        "release/1/execution/src/semantic/case0.cljs": "0b38d6aa9b7df0ea88e15e78b42f527d1fa232998a0cc63ce5fa58136199810c",
+        "release/1/execution/src/semantic/reference.cljs": "02a75ba77daca1cf79b9a1a3ee381021ceec2f67360ead658d848b2c6d448397",
+        "release/1/preflight/analysis.tsv": "7b59de5a1e5ab3886b671bef30a8137b588cbfa74b4f20d642cbbc792efa097e",
+        "release/1/preflight/build/invocation.json": "d67bfb0321a81a770dcc361c5ba5154786d2596c09f023b65ad9baa74915662e",
+        "release/1/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/1/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/1/preflight/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "release/1/preflight/cases.tsv": "a258524ada607c04707fad8532f1b839ef46d614e5145fe082153443946c4a2e",
+        "release/2/execution/build/invocation.json": "09891a014055051521d20b76d788ece7cbfb65394ce259e3a04c25b56c2e1f42",
+        "release/2/execution/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/2/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/2/execution/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "release/2/execution/cases.tsv": "12bfa426db134fb0bf990820514f26444cce952b77d84d0c5d178fee9ea2036a",
+        "release/2/execution/node-0/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+        "release/2/execution/node-0/stderr": "af38f63fa312fd01510d02c662b034ca2b13ba27bed3eeef08bf91770fdacb57",
+        "release/2/execution/node-0/stdin": "dd98656a3e54097495e9fe03ff26bd2f48ce96681f680abcba8ea26b672a23f8",
+        "release/2/execution/node-0/stdout": "6d4f367de6ff85ca7174fa67cb6499932fcd54809b6878276e75f539f2017e0a",
+        "release/2/execution/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+        "release/2/execution/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+        "release/2/execution/out/cljs/core.js.map": "f8ca36038f3c57c9bf68db559a46ea5c75d276ee92f3cd3c59b287063c8e9bf9",
+        "release/2/execution/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+        "release/2/execution/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+        "release/2/execution/out/cljs_deps.js": "c7c221d7ac988231b1cac85703fae78145beb8c6e1bf7ffe7146ee3153c49a6c",
+        "release/2/execution/out/cljsc_opts.edn": "06f474faf4e93175b218d68fc74d842a5b7dd820acb1ff9168bc712a07e92c7d",
+        "release/2/execution/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+        "release/2/execution/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+        "release/2/execution/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+        "release/2/execution/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+        "release/2/execution/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+        "release/2/execution/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+        "release/2/execution/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+        "release/2/execution/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+        "release/2/execution/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+        "release/2/execution/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+        "release/2/execution/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+        "release/2/execution/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+        "release/2/execution/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+        "release/2/execution/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+        "release/2/execution/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+        "release/2/execution/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+        "release/2/execution/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+        "release/2/execution/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+        "release/2/execution/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+        "release/2/execution/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+        "release/2/execution/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+        "release/2/execution/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+        "release/2/execution/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+        "release/2/execution/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+        "release/2/execution/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+        "release/2/execution/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+        "release/2/execution/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+        "release/2/execution/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+        "release/2/execution/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+        "release/2/execution/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+        "release/2/execution/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+        "release/2/execution/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+        "release/2/execution/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+        "release/2/execution/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+        "release/2/execution/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+        "release/2/execution/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+        "release/2/execution/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+        "release/2/execution/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+        "release/2/execution/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+        "release/2/execution/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+        "release/2/execution/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+        "release/2/execution/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+        "release/2/execution/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+        "release/2/execution/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+        "release/2/execution/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+        "release/2/execution/out/nodejs.js": "b74ffa73ec976719e04e20d1025a0757c9a9e9e861b8c1ea5bb7835fd438829f",
+        "release/2/execution/out/nodejs.js.map": "72cf918bd1a07356c2fd5f0a7928be63a9f57a378723c368c7677de5d29d7909",
+        "release/2/execution/out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+        "release/2/execution/out/nodejscli.js.map": "75c0e1bcce7e33c75c35860094e4c34160a8262f58c5dc2434d681afa9b16fec",
+        "release/2/execution/out/semantic/case0.cljs": "cff99757169d38d526bcc6790959b6d597ecb338e3acea13df05513581b8c0ab",
+        "release/2/execution/out/semantic/case0.js": "c3e51e0be9321e298d6a9e0486b16dce444ab0aa89080352643898f8c056d7fe",
+        "release/2/execution/out/semantic/case0.js.map": "ddd42bbdfe262a7fd119b86cc9c450f8fc9f30213676ec882182e9a189cac2a5",
+        "release/2/execution/out/semantic/reference.cljs": "f42e21ed96092eba718a3c846bdb065f8d3afb176dde9a7730899ecea3f0390a",
+        "release/2/execution/out/semantic/reference.js": "0ae13e950abbf5f2e938b1cf47fbb895effeb48810019774365e5ec2141e7ea5",
+        "release/2/execution/out/semantic/reference.js.map": "b489169d5c3c2428186ff8e9a46bba3b2e95442c6d70caa68c190508f027f544",
+        "release/2/execution/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+        "release/2/execution/src/semantic/case0.cljs": "cff99757169d38d526bcc6790959b6d597ecb338e3acea13df05513581b8c0ab",
+        "release/2/execution/src/semantic/reference.cljs": "f42e21ed96092eba718a3c846bdb065f8d3afb176dde9a7730899ecea3f0390a",
+        "release/2/preflight/analysis.tsv": "e3f2414b1bd5d1bf5cc63913ef7fca7e2942288402355f92fd30e6f265316fd0",
+        "release/2/preflight/build/invocation.json": "3f119fad84d5b2e0eb424349f43934952f6da2a2c366131c16e3bbc5acf52ba3",
+        "release/2/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/2/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "release/2/preflight/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+        "release/2/preflight/cases.tsv": "25a3e4a1ab9fec1ce571f52370ac79268a75ff67df2c0e7145d79c13f8bb5753",
+        "sources.json": "755ce4ee6d5aac50bb0f42a794aebfdab153297a0a50b7082d491138379811b8"
+      }
+    }
+  },
+  "independent_emitted_replay": {
+    "schema_version": 1,
+    "scope": "Read-only emitted-unit replay diagnostic only; no source acceptance/credit",
+    "original_semantic_pass_credit": 0,
+    "snapshot": {
+      "src/analyzer.rs": "88973715550fa3f85face0779799e51090373e125265b9983bfd0fc0a2dc0c00",
+      "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+      "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+      "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+      "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+      "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+      "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+      "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+      "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+      "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+      "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+      "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+      "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+      "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+      "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+      "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+      "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+      "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+      "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+      "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+      "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+      "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+      "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+      "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+      "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+      "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+      "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+      "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+      "src/js_runtime.js": "bb10805cc1d78cb650847286707787b98e9bcc12f2698f973d3923544b1c8e24",
+      "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+      "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+      "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+      "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+      "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+      "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+      "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+      "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+      "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+      "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+      "tests/reference/compiler-language/sci_gap_canonical_context.py": "82b91dfea3f7a5065213f1c7a682f37178ab3bc8c0c6176ed810ff21a0b568a6",
+      "tests/reference/compiler-language/test_sci_gap_canonical_context.py": "9a351ccb4ecf31a7fa0e2f64afe0a19acaf412c3d54b2eeb148455f50f49050b",
+      "tests/reference/compiler-language/test_sci_pin_raw_replay_guard.py": "29c91689e3dffd90c8bf48967f8ab2dbfc7afdd04281e619ca063adf26acc41a",
+      "tests/reference/compiler-language/sci-gap-canonical-contracts.jsonl": "b748c64d6da9a46efc752eda17e1106050c2d83b02fdf48c8b3ebbee398c6ec9",
+      "tests/compiler_sci_gap_phase_probe.rs": "8ff4562cc38ceb90d274a971e3c3f8b11522c67df4bf67d03b30d864cff4fa70",
+      "tests/reference/compiler-language/sci_gap_return_candidates.py": "9e47550aa802d4a96390b9e609e5c67eb04e57014cf020967cd134ecd515394e",
+      "tests/reference/compiler-language/sci_execution.py": "aeb085a2a34ba3a67ca9443598ef6dc8f33898992571d98c6caa302b6e7160c0",
+      "tests/reference/compiler-language/sci_source_context.py": "a45e790566cba1d19a2613fffa1748d7858b0a21324c318438d49443937f3b03",
+      "tests/reference/compiler-language/sci_symbol_keyword_context.py": "0987c78bb427aadf5e248124de4eb7e476aa36828155483a8d0a547335166aad",
+      "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240",
+      "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+      "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+      "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+      "tests/reference/compiler-language/configured_source_context.py": "c77dd9cc5fc597a540cfd850999b705c8cfb2db303de8217d8d7d32c9448db3e",
+      "tests/reference/compiler-language/sci-analysis.clj": "c5bd1f97423a8845269cd2eabbfb02837ab3d1600ac1164b8f32a64af9e62944",
+      "tests/reference/analysis_boundaries.clj": "d83ee980a408f9a07a4f54ae1a706307715bda635ef3806241a7bf6338e2dca0",
+      "tests/compiler_sci_execution.rs": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+      "tests/fixtures/sci-outcomes.tsv": "8dd8718da0639dc11ff1cc0d6186284a6b2f70e57919b47c34f3c5269db869e5",
+      "tests/reference/sci/evaluator-dispositions.tsv": "186d9e391aa8e468981a1f972d7fd4f5433971400587665fbbece65c305cd429",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/analyzer/passes/and_or.cljc": "c18ef78a3cb9d2dec92934f6f9010e2dad3a14747129c757ecaaa16161cc50e2",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/analyzer/passes/lite.cljc": "4a24f1f26e586d44f9959937a260875e6521779e951b7fb369e53df963438772",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/analyzer/passes.cljc": "316abbc4f141cc1c36e2ae459cb75fcb2d6ebc3a2b11917da80661259107d843",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/bootstrap_nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/core/specs/alpha.cljc": "72326e1378a96b612d13c716313caf8768b1a83b6cf239d128be9f64567aea1a",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/core/specs/alpha.cljs": "dc6820a5933db9fa58463f7c3c180a98ca65112de757b282daabb0da3235402f",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/externs.js": "50b5fb604e4ee9b88737118d585deb2363ceadc3eac2f482310759d180cdfaea",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/imul.js": "5064422ecea6c91bbd3f506e21be0fb856e3851d98900a21a79448e86ea17e88",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/js.clj": "d78412163f57680f6031ac7c816baf379d5028aedc35c97db095906a3221bc31",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/js.cljs": "0d10635389d1d636d4fc3520bbf9f0cf161cc5308dbf30507fdd69aa2fb7b4bb",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/loader.cljs": "dfd2c9ea63f4248ddecef05c2b6fef1a6fa3ed426694284dee2e27b1e7e92692",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/main.clj": "679576edd9db391b397c4903a0e18e55f88f37c0e2a5bce39428fb89cc0a78c7",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/math.cljs": "24e91a6c3e49baef6d6d99f408dc914f809216c47010a93bb6364c1cf00e4b65",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/module_deps.js": "2a15002d06e12177404b8a9ce2e7d3aeb8e547dbc96f962ca14416ecb7325d26",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/nodejs_externs.js": "ddd6a2047609c5e2604e181e57e0339d68c70848a96e67ddc781580ffd004c5f",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/pprint.cljc": "219459a9f4a6e6ff3d7f43b5f668b5831cb2b18d31b8b9815235aa3d4acaeea2",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/pprint.cljs": "6b858b38744642dfa5ce32762ef955490a0a32796812587a977339a10360fe5a",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/proxy/impl.cljs": "49280c8bdcfbb0d99132fca968455904ff6fc9f90a5ce4742943681537def8c8",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/proxy.cljs": "77f6d64b0964203e3acaf296553bce14aa5bd51a707287351913d3673af7db28",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/reader.clj": "8d48e94abad39e3d87801c4a663ad538ba14d0fe429fd22b1d8f2d42e3915eb3",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/reader.cljs": "d9aa17d301aa952bc1a1fb617432bb11eb77b9bbf74e907f73672e607851fb8b",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/repl.cljs": "69a5ec0a352a9b05dc9617d38d466d190d2d526501688e08ad247a08a965e49d",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/source_map/base64.cljs": "e34432af7fb10bbd89d1733e8f7ef79b8cc35e800ffa2bd93266b3a7fc95de16",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/source_map/base64_vlq.cljs": "b855dd80ed0fba6670f558b40cbaf15707af04c2d23b541ba0393e6d059269b5",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/source_map.cljs": "c905cddade4215f90110465900d012811cefb5d46c1b68cc5b235ba14f60d2ad",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/spec/alpha.cljc": "0f792b3c779a564b688d6135a692da1a8be98d6a69502d8f38d6bfbb9c5980e7",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/spec/alpha.cljs": "f6d60eba41f09cf91092a0672a71fd022f74e282e2b997fba3d45f42f25c7d2e",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/spec/gen/alpha.cljc": "3e3c6aab3f6c9af2e566aaaa9516fe120e793e59fda132a187744c3c0fdd96f1",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/spec/gen/alpha.cljs": "04fb35a8a3c6e3ec8a6606b7a1c1c324e86344ebe897afda4d3892fb1fde4072",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/spec/test/alpha.cljc": "98b4eb89e774fe6ebb6d21366c7b7d867dec35467a8655eb2754d4d72fc60f44",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/spec/test/alpha.cljs": "057397986b5924166f2af1d1995de331b1875d065aceecd1ae221d426ea3ffae",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/stacktrace.cljc": "eecd34535d24639595e04eb9d797814628201744d89cc9e704470e2e97daeae5",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/test.cljc": "752e68d6c69e05861c786683a31f440860e57a7ef3d9391586f7eff17fcc9e94",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/cljs/test.cljs": "6fa6e511aeda23c0a55d6126f5fe67e831993b27c2edbde7a51de0e30a76d8e3",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/browser/dom.cljs": "293c26ad0016d5d4ca9fe73a843c3c90903ca76fd943672c7a1555ab4572922b",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/browser/event.cljs": "226d8b415bd922cddc02cac8258242d51f431a1e8a75711abe99ec15bacf57a1",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/browser/net.cljs": "4d21cdda5c9b4801f58a91334e0269952b59ebfea30e8e72ffa1ac7fd084df50",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/browser/repl/preload.cljs": "6998661ec15af6e68c3199df6fcf992ff75d7dcf8e96f68b132e8afbb06e6416",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/browser/repl.cljs": "fa97ad8e507b9ed2838dc395a72326eb01ce0d6c70940f416c7147d1bf6f156e",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/core/protocols.cljs": "36547f2fea0d20b4a2f1ff18db56c1acd074a6dbd741938e6a09f5eacd012254",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/core/reducers.cljs": "bb222bf95b4344abeee7024bb7f77ab0a673a5cec0b4c3ff66235ccacd19c76e",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/data.cljs": "df4d00849997cf85e3befc8267713f664d455a94d039434bd92508668f86039a",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/datafy.cljs": "128a78a8b1e04e0bfd04a3fb41cda0e5000cb1be743302d4d89aafe59cba2803",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/edn.cljs": "89c799bf10b499972c4c0baf1db5d89966097f21789a59a3d6ded17747ce022f",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/reflect.cljs": "74e8cf6fd2416b0689da440b8c5d2bf69b882e122868e7d8b0e089d5515946bd",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/set.cljs": "80ff15422b2036766b64cc5a1e0ab605edf15d86417bc98ac92f3c578498eb1e",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/string.cljs": "1e7f6e091262ea4c6cf69c52195876f3eb4e3aab9a9d2f90349bbf84252722ff",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/walk.cljs": "52d33a5c841ce959eb2cb10aacb76b2d1bf06e93ef3ae8d30a05dc69ceb34378",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/clojure/zip.cljs": "7f8ea25f3772f647a1867df954daed0f200093e7548a8f3666ec1ddda17454e9",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/cljs/process/env.cljs": "08a35bf2f745f20ee377df3dc9eccc36240b52bd65d0aa256786c0fdf3aa71cb",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/analyzer/api.cljc": "33d2b89df6e6bbcd4b2da596040d69b6d5e88ffbe81bd04b3af0960c9a30758c",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/analyzer/impl/namespaces.cljc": "8ebfb401c0f6546dc66982fbb7e992fffc71af27afec6f7c723bab5826139db1",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/analyzer/impl.cljc": "e45896e5397773686e589f846a0f127546dd1c188ee75bd41a44c8b4b3a1cd5b",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/analyzer/macros.clj": "7bc075809011218cbfb8e69d60bdbe7d637f8c05a517e23ccf26c12a03383bd0",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/analyzer/utils.clj": "087b55aa8920f472c048795ce5dd3e494b8e55cf917a4d6042e445c1ae539d45",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/analyzer.cljc": "020d15b751f539ca675e0ff8a32b8018632dab0e23ad58f1899e18f1b5197c53",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/build/api.clj": "6626fcd07c63e389b7d45f3703bbe84aa4351b8f38d98308a5282ec76695af9b",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/cli.clj": "0792c6728e4d2cad6b8d6ef08b8ad6667205459b75857986bf46fdab381f87fb",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/closure.clj": "c88f8809a4e1c2e110f03b3d0f83831e167384c1192b607e21ae09316c364506",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/compiler/api.clj": "c725c909ddd30c0a3610388f24c405ee7b076cf99d56c5a6dffa170db0de4672",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/compiler/macros.clj": "fcde34837e6ac15b2521b0b8d8f97e2d69b9c9589fd6a584b843643b719a61bd",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/compiler.cljc": "3e9377814fdb2dfe54a7396c62346fe8fae180935fc63acb2428b03c2df00fe0",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/core/macros.clj": "fb3423ecedb8f0ec963ac1229f8f2817d9b16e4b04e079c58218bc1483a1d305",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/core/server.clj": "39e32cac1c4dc6b1a3b60838c64435a86b60785720b38ac0cdfbbab7a73ce159",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/core.cljc": "b18861e444180c95b0189e5302faf5f9d237269f508821c2567b1b34fff84b89",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/env/macros.clj": "7143d5714205acae9b6ebb59e4a36dc7200bb6a9b04755c53eb9934a390fa850",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/env.cljc": "1a48cb56f567d14867aa1e1a38cfb660c3a8bd398934aa8d256e3eaad9b2ba1b",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/externs.clj": "38f63fdf39c17a771cf4cf7ed3cf2936bdda5e8c801f9776c8cafa591cf5bdf1",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/foreign/node.clj": "451bf8bab334898557ee4398908162fc5046329e11e5b330ffc40ed51b759016",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/instant.clj": "34342a934bbcc89278f8002d32be6cfeaf1cc4a382bdddf578a4920f63c3316f",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/js_deps.cljc": "c7f0e40a2767ac3300a4bcb92c665d052f514c78d17f839e42a5a5fc1bc237c4",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/module_graph.cljc": "c289caba6cecfedc6b71861b2e7a857b1779af72e9d4302daecd7f76a7ca6332",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl/bootstrap.clj": "ee0fbc0c0284213d9e13710148b2747f28d96f7a23caebf017e41150357774c4",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl/browser.clj": "7ebb76217ac2ca728deb12ecfd14ae40f8376f02709a47e07ac80a3c60151574",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl/node.clj": "4dec182ef12118004892120e243f992a428b84982228b58f488717f918bfdf40",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl/node_repl.js": "d8a9f4f98de7b22314619d4206ab398bb632b08073131a7aa42f79ef5dbcdaef",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl/reflect.clj": "c4e37955e1cad0fd966f8d6a24c022b902b6533c627027ae98d677d772f64ab1",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl/server.clj": "9f249a3a78b831a1cd3089305fd778032f9cc75df9f58bdc43c5de30d026a660",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/repl.cljc": "350e8b1f6ff51fd3dfd28b045f95d73e0399195d604b1e5f57791c422029c2ba",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/server/browser.clj": "6f4d537b257f185a09fd9d203a35074e0aebaac2fd054fcee6bcaabeab970532",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/server/node.clj": "43c036b17bd7b6abafe4869dfb20ef7fdc8cfe03252563ddbeb9457b67977ea6",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/source_map/base64.clj": "8e50434a795cebff76c7b6e154f07a2fb9c7b7c5ee108350aae0bfbc9b5cd315",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/source_map/base64_vlq.clj": "38b254b380790b9c93307afc4029536c5c86b54b09562e4e41a28fdcb5b45a1f",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/source_map.clj": "89b06840a1f096f4b600d8d3ede188307a4f5382af5525760d659f83a183b1f9",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/support.cljc": "36b15fe0942c2f3d8dc80f7abc07adc9b380bb6e83cd5edcedb1abe9257663dd",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/tagged_literals.cljc": "1aec43354642c0fbbec79f5611aafa72c4de37ee5a3479729040b1c919331161",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/util.cljc": "bd8c3315490b8171bfb1906686a1d5f8c733d68d480b08f272bf0c856623c87e",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/bridge.clj": "b1d8046a6e59b62740e771e2375375eb100be1ac2a94f912cdc71dbf2349c8ba",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/data/json.clj": "57a90a1b005879398154ffb7efcd79cef4e8658c2f2407e5fd9130a57610ce85",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/default_data_readers.clj": "48dcae90f7958732e694b7bf716f25c64554281416eb74f41a438012ddbaf326",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/edn.clj": "0199039cdc4751543b8dcea7128535a1433c395ce9d1726c83fbfa2bc63e49b4",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/impl/commons.clj": "94a7112eddecf87ae25ce792fba1c4bcd7b8e8cfac4ca3e0747ce8f0dba33495",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/impl/errors.clj": "fb9b1a1971dd11e85c42bc0308a7caa803f5659d20471932b3a318f47f408308",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/impl/inspect.clj": "a097c6161415d0a3b9c64f8689961b547b4fc68a635232bf112c9aa9f6c028d9",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/impl/utils.clj": "545d2fadbff07e4140506a1844afa22e5b311869b6c22ce5ebba0eb8423290c6",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader/reader_types.clj": "7e3ee7b735f586950cbaece17b7e5ceadd4201952bebf8606297d1bfeb0b433c",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/clojure/tools/reader.clj": "614e857a4d92e22edbaf38e4e87c3f499e8703fb7f930c23e1df136535cc4597",
+      "/Users/admin/src/light-cljs/research/clojurescript/src/main/clojure/cljs/vendor/cognitect/transit.clj": "dbaa62dfdaeac431a25230fdc3a0dd66ca25e0453f25cc9cbaa69bc7edf36ebc",
+      "/Users/admin/src/light-cljs/research/clojurescript/deps.edn": "97c2bc5db8daa0b5e5bea7dbb3289d057ddac283977e06d58f6b42ed81d06020",
+      "/Users/admin/.m2/repository/org/clojure/clojurescript/1.12.134/clojurescript-1.12.134.jar": "d019b73177e4805748f4ee995c4cfcd14ebf28bff685a84059813fbe4e8c878f",
+      "tests/reference/compiler-language/sci_originals_after190_candidates.py": "39175eb4fd257a3690fd8a6bd7fa9a0686ce0fad1d91fe1e2d08d3dc9824c5d7",
+      "tests/reference/compiler-language/sci-originals-after190-sources.json": "3a8229fdb1384c8db1f57ad2777759039b7fa56177145445e9726623016a0ffc",
+      "tests/reference/compiler-language/sci_cljc_accepted_context.py": "f8c4de60ac32333c61e6fdab4d971953792b3b0c0d152409e3acf4e1e30a165f",
+      "tests/reference/compiler-language/sci_originals_after190.py": "604d468ff99d4b04493e3eb5a9f8a98991de5a43d3a73e196a98d29b2885a808",
+      "tests/reference/compiler-language/sci-originals-after190-contracts.json": "befa44edbea54b50bf000b92113a7089dc7fa2bfcdd3bb1c41a8df883dec79df",
+      "tests/reference/compiler-language/test_sci_originals_after190.py": "e4e4093d89d8b474fc88a0166c20a56ba6047d773415f6da254fc8e0590509f1",
+      "tests/reference/compiler-language/sci_finite_after185_context.py": "de788e130cfd1b3d3dd116d47772e8accc528791a059d9773b421dbf71518591",
+      "tests/reference/compiler-language/full_ledger.py": "8e0e10d6ad33cfc18f4cd26c9d427397d81051a341ee98a4b129937d30a41105"
+    },
+    "reference_execution_binding": {
+      "programs": {
+        "node": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node",
+        "clojure": "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+        "cargo": "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo"
+      },
+      "executables_sha256": {
+        "/opt/homebrew/Cellar/node@24/24.18.0/bin/node": "b423af50c2fb0f4d79da9b8bd7df7279f6e4ee4221421dc26d26cca999f19615",
+        "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure": "a266aa4f011e27ccbaac2cd359b72a3077ec26facf115904fefe6056eba74a15",
+        "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo": "35152b6c4de025e32d70be80fdf70fd4bf42cdb69d630c0fe92ebe6901e340a9"
+      }
+    },
+    "script_sha256": "16db0bd07d097cd8a0e6ac98b5918cc33d987e476c988bd082223c2aaa4fd8f8",
+    "evidence": {
+      "release/0": {
+        "command": [
+          "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+          "-Srepro",
+          "-Sdeps",
+          "{:paths [] :deps {org.clojure/clojurescript {:mvn/version \"1.12.134\"}}}",
+          "-M",
+          "tests/reference/execution.clj",
+          "release",
+          "1.12.134",
+          "-",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/release-0-independent-location-replay",
+          "program",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/release/0/execution/src",
+          "semantic.reference"
+        ],
+        "original_emitted_units_sha256": {
+          "out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+          "out/cljs_deps.js": "c7c221d7ac988231b1cac85703fae78145beb8c6e1bf7ffe7146ee3153c49a6c",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "b74ffa73ec976719e04e20d1025a0757c9a9e9e861b8c1ea5bb7835fd438829f",
+          "out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+          "out/semantic/case0.js": "7335557000861e603236f198b3b356c0f39019a932b308a20005f31a880c9a28",
+          "out/semantic/reference.js": "2d68ecb7225118e240b4934a538c53d9494e14f8829c0b711eb188a5adb28b15",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "independent_emitted_units_sha256": {
+          "out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+          "out/cljs_deps.js": "c7c221d7ac988231b1cac85703fae78145beb8c6e1bf7ffe7146ee3153c49a6c",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "b74ffa73ec976719e04e20d1025a0757c9a9e9e861b8c1ea5bb7835fd438829f",
+          "out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+          "out/semantic/case0.js": "7335557000861e603236f198b3b356c0f39019a932b308a20005f31a880c9a28",
+          "out/semantic/reference.js": "2d68ecb7225118e240b4934a538c53d9494e14f8829c0b711eb188a5adb28b15",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "differences": {}
+      },
+      "release/2": {
+        "command": [
+          "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+          "-Srepro",
+          "-Sdeps",
+          "{:paths [] :deps {org.clojure/clojurescript {:mvn/version \"1.12.134\"}}}",
+          "-M",
+          "tests/reference/execution.clj",
+          "release",
+          "1.12.134",
+          "-",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/release-2-independent-location-replay",
+          "program",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/release/2/execution/src",
+          "semantic.reference"
+        ],
+        "original_emitted_units_sha256": {
+          "out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+          "out/cljs_deps.js": "c7c221d7ac988231b1cac85703fae78145beb8c6e1bf7ffe7146ee3153c49a6c",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "b74ffa73ec976719e04e20d1025a0757c9a9e9e861b8c1ea5bb7835fd438829f",
+          "out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+          "out/semantic/case0.js": "c3e51e0be9321e298d6a9e0486b16dce444ab0aa89080352643898f8c056d7fe",
+          "out/semantic/reference.js": "0ae13e950abbf5f2e938b1cf47fbb895effeb48810019774365e5ec2141e7ea5",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "independent_emitted_units_sha256": {
+          "out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+          "out/cljs_deps.js": "c7c221d7ac988231b1cac85703fae78145beb8c6e1bf7ffe7146ee3153c49a6c",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "b74ffa73ec976719e04e20d1025a0757c9a9e9e861b8c1ea5bb7835fd438829f",
+          "out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+          "out/semantic/case0.js": "c3e51e0be9321e298d6a9e0486b16dce444ab0aa89080352643898f8c056d7fe",
+          "out/semantic/reference.js": "0ae13e950abbf5f2e938b1cf47fbb895effeb48810019774365e5ec2141e7ea5",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "differences": {}
+      },
+      "checkout/0": {
+        "command": [
+          "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+          "-Srepro",
+          "-Sdeps",
+          "{:paths [] :deps {org.clojure/clojurescript {:local/root \"/Users/admin/src/light-cljs/research/clojurescript\"}}}",
+          "-M",
+          "tests/reference/execution.clj",
+          "checkout",
+          "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "/Users/admin/src/light-cljs/research/clojurescript",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/checkout-0-independent-location-replay",
+          "program",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/checkout/0/execution/src",
+          "semantic.reference"
+        ],
+        "original_emitted_units_sha256": {
+          "out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+          "out/cljs_deps.js": "3b73a0145452e60c5f2629fe5d2c5ae5306c3a5ff7dc0927aaf0bc1e98837a70",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "086fe34ea6c8f243fa48d2015a0f55218c77de12d91472d579095fe2fc8b6fcd",
+          "out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+          "out/semantic/case0.js": "23feeae04644878d85d520f18d00cc3b1443ad75e4cf6c1262a4a3e026c5f33f",
+          "out/semantic/reference.js": "8076d9e78ee066c8f13eb636dc347d67f9b05750bc4ab4f32780d716008d4006",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "independent_emitted_units_sha256": {
+          "out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+          "out/cljs_deps.js": "3b73a0145452e60c5f2629fe5d2c5ae5306c3a5ff7dc0927aaf0bc1e98837a70",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "086fe34ea6c8f243fa48d2015a0f55218c77de12d91472d579095fe2fc8b6fcd",
+          "out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+          "out/semantic/case0.js": "23feeae04644878d85d520f18d00cc3b1443ad75e4cf6c1262a4a3e026c5f33f",
+          "out/semantic/reference.js": "8076d9e78ee066c8f13eb636dc347d67f9b05750bc4ab4f32780d716008d4006",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "differences": {}
+      },
+      "checkout/2": {
+        "command": [
+          "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+          "-Srepro",
+          "-Sdeps",
+          "{:paths [] :deps {org.clojure/clojurescript {:local/root \"/Users/admin/src/light-cljs/research/clojurescript\"}}}",
+          "-M",
+          "tests/reference/execution.clj",
+          "checkout",
+          "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "/Users/admin/src/light-cljs/research/clojurescript",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/checkout-2-independent-location-replay",
+          "program",
+          "/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1/checkout/2/execution/src",
+          "semantic.reference"
+        ],
+        "original_emitted_units_sha256": {
+          "out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+          "out/cljs_deps.js": "3b73a0145452e60c5f2629fe5d2c5ae5306c3a5ff7dc0927aaf0bc1e98837a70",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "086fe34ea6c8f243fa48d2015a0f55218c77de12d91472d579095fe2fc8b6fcd",
+          "out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+          "out/semantic/case0.js": "ce9325b4e4673110bcf5647edaa6ee8f0f234f916564fb88e2c234a3710c5637",
+          "out/semantic/reference.js": "c82c9a6a60a924ba362598749916aa915869e21f5e58017f33732515a220396c",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "independent_emitted_units_sha256": {
+          "out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+          "out/cljs_deps.js": "3b73a0145452e60c5f2629fe5d2c5ae5306c3a5ff7dc0927aaf0bc1e98837a70",
+          "out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+          "out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+          "out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+          "out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+          "out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+          "out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+          "out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+          "out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+          "out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+          "out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+          "out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+          "out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+          "out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+          "out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+          "out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+          "out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+          "out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+          "out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+          "out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+          "out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+          "out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+          "out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+          "out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+          "out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+          "out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+          "out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+          "out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+          "out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+          "out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+          "out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+          "out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+          "out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+          "out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+          "out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+          "out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+          "out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+          "out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+          "out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+          "out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+          "out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+          "out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+          "out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+          "out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+          "out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+          "out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+          "out/nodejs.js": "086fe34ea6c8f243fa48d2015a0f55218c77de12d91472d579095fe2fc8b6fcd",
+          "out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+          "out/semantic/case0.js": "ce9325b4e4673110bcf5647edaa6ee8f0f234f916564fb88e2c234a3710c5637",
+          "out/semantic/reference.js": "c82c9a6a60a924ba362598749916aa915869e21f5e58017f33732515a220396c",
+          "reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f"
+        },
+        "differences": {}
+      }
+    }
+  },
+  "scripts": {
+    "light-sci-after190-metadata-inspection.py": {
+      "source_text": "from pathlib import Path\nimport sys,json\nsys.path.insert(0,'/Users/admin/src/light-cljs/tests/reference/compiler-language')\nimport sci_execution as sci\nimport sci_originals_after190_candidates as current\nimport sci_gap_return_candidates as historical\nIDS=('sci-var-definition-meta-order','sci-var-reserved-metadata-effects','sci-binding-defn-meta-effects')\nroot=Path('/private/tmp/light-cljs-125-metadata-inspection-after190-v1');root.mkdir(exist_ok=False)\noriginals=sci.rows(sci.CORPUS);dispositions=sci.rows(sci.DISPOSITIONS);cases=[]\nfor identity in IDS:\n line,fields=dispositions[identity];oldline,old=originals[identity]\n if fields[:7]!=old or fields[2]!=fields[8] or fields[1]!='portable' or fields[7]!='gap':raise ValueError('Unadapted original record source/profile drift')\n cases.append({'id':'sci-execution-'+identity,'sci_id':identity,'obligation_id':'local::tests/reference/sci/evaluator-dispositions.tsv::'+identity,'body_sha256':sci.digest(line),'original_row_sha256':sci.digest(oldline),'source_sha256':sci.digest(old[2]),'original_source_sha256':sci.digest(old[2]),'source':old[2],'original_fields':old,'expected':sci.expected(old),'isolated':True,'reference_isolated':True,'setup':'Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness.'})\n(root/'sources.json').write_text(json.dumps(cases,indent=2)+'\\n');before=historical.snapshot();bindings=current.reference_execution_binding();evidence={r['id']:{} for r in cases}\nfor kind in ('local','release','checkout'):\n layers=sci.local_cases(cases,root/kind,300) if kind=='local' else sci.reference_cases(cases,kind,sci.ROOT/'research/clojurescript',root/kind,600)\n for identity,layer in layers.items():evidence[identity][kind]=layer\n print(kind,{identity:layer['status'] for identity,layer in layers.items()},flush=True)\nif before!=historical.snapshot() or bindings!=current.reference_execution_binding():raise ValueError('Read-only record inspection input/compiler/executable drift')\nreceipt={'schema_version':1,'scope':'Read-only complete unadapted original record inspection; no current source/phase/ledger credit','original_semantic_pass_credit':0,'producer_source_sha256':before,'reference_execution_binding':bindings,'script_sha256':sci.digest(Path(__file__).read_bytes()),'source_bindings':cases,'evidence':evidence,'artifact_sha256':{str(p.relative_to(root)):sci.digest(p.read_bytes()) for p in sorted(root.rglob('*')) if p.is_file()}}\n(root/'evidence.json').write_text(json.dumps(receipt,indent=2)+'\\n')\n",
+      "sha256": "e0375e37c53726b359ae05d28a314d360f48ae141ed331cf9cd9472cf382d80a"
+    },
+    "light-sci-after190-metadata-isolated-inspection.py": {
+      "source_text": "from pathlib import Path\nimport sys,json\nsys.path.insert(0,'/Users/admin/src/light-cljs/tests/reference/compiler-language')\nimport sci_execution as sci\nimport sci_originals_after190_candidates as current\nimport sci_gap_return_candidates as historical\nIDS=('sci-var-definition-meta-order','sci-var-reserved-metadata-effects','sci-binding-defn-meta-effects')\nroot=Path('/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1');root.mkdir(exist_ok=False)\noriginals=sci.rows(sci.CORPUS);dispositions=sci.rows(sci.DISPOSITIONS);cases=[]\nfor identity in IDS:\n line,fields=dispositions[identity];oldline,old=originals[identity]\n if fields[:7]!=old or fields[2]!=fields[8] or fields[1]!='portable' or fields[7]!='gap':raise ValueError('Unadapted original record source/profile drift')\n cases.append({'id':'sci-execution-'+identity,'sci_id':identity,'obligation_id':'local::tests/reference/sci/evaluator-dispositions.tsv::'+identity,'body_sha256':sci.digest(line),'original_row_sha256':sci.digest(oldline),'source_sha256':sci.digest(old[2]),'original_source_sha256':sci.digest(old[2]),'source':old[2],'original_fields':old,'expected':sci.expected(old),'isolated':True,'reference_isolated':True,'setup':'Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness.'})\n(root/'sources.json').write_text(json.dumps(cases,indent=2)+'\\n');before=historical.snapshot();bindings=current.reference_execution_binding();evidence={r['id']:{} for r in cases}\nfor kind in ('local','release','checkout'):\n layers=sci.local_cases(cases,root/kind,300) if kind=='local' else {identity:layer for index,row in enumerate(cases) for identity,layer in sci.reference_cases([row],kind,sci.ROOT/'research/clojurescript',root/kind/str(index),600).items()}\n for identity,layer in layers.items():evidence[identity][kind]=layer\n print(kind,{identity:layer['status'] for identity,layer in layers.items()},flush=True)\nif before!=historical.snapshot() or bindings!=current.reference_execution_binding():raise ValueError('Read-only record inspection input/compiler/executable drift')\nreceipt={'schema_version':1,'scope':'Read-only complete unadapted original record inspection; no current source/phase/ledger credit','original_semantic_pass_credit':0,'producer_source_sha256':before,'reference_execution_binding':bindings,'script_sha256':sci.digest(Path(__file__).read_bytes()),'source_bindings':cases,'evidence':evidence,'artifact_sha256':{str(p.relative_to(root)):sci.digest(p.read_bytes()) for p in sorted(root.rglob('*')) if p.is_file()}}\n(root/'evidence.json').write_text(json.dumps(receipt,indent=2)+'\\n')\n",
+      "sha256": "90566d1c5231715cab2bac8e4ced045d8927203780d798148a8eb2543ce3868e"
+    },
+    "light-sci-after190-metadata-replay-inspection.py": {
+      "source_text": "from pathlib import Path\nfrom concurrent.futures import ThreadPoolExecutor\nimport sys,json,difflib\nsys.path.insert(0,'/Users/admin/src/light-cljs/tests/reference/compiler-language')\nimport sci_originals_after190 as proof\nimport sci_originals_after190_candidates as current\nimport sci_execution as sci\nroot=Path('/private/tmp/light-cljs-125-metadata-isolated-inspection-after190-v1')\nbefore=proof.snapshot();programs=current.reference_execution_binding()['programs']\ndef replay(kind):\n pin,index=kind.split('/'); original=root/pin/index/'execution'; rebuilt=root/(pin+'-'+index+'-independent-location-replay')\n command=proof.checked_location_compile(original,rebuilt,pin,programs)\n a=proof.compiled_pin_units(original);b=proof.compiled_pin_units(rebuilt)\n differences={name:{'original_sha256':a.get(name),'independent_sha256':b.get(name),'diff':''.join(difflib.unified_diff((original/name).read_text().splitlines(True),(rebuilt/name).read_text().splitlines(True),fromfile=str(original/name),tofile=str(rebuilt/name)))} for name in sorted(set(a)|set(b)) if a.get(name)!=b.get(name)}\n print(kind, 'byte-identical' if not differences else list(differences),flush=True)\n return {'command':command,'original_emitted_units_sha256':a,'independent_emitted_units_sha256':b,'differences':differences}\nwith ThreadPoolExecutor(max_workers=2) as pool:\n tasks={kind:pool.submit(replay,kind) for kind in ('release/0','release/2','checkout/0','checkout/2')}\n evidence={kind:future.result() for kind,future in tasks.items()}\nif before!=proof.snapshot():raise ValueError('Inspection snapshot drift')\nreceipt={'schema_version':1,'scope':'Read-only emitted-unit replay diagnostic only; no source acceptance/credit','original_semantic_pass_credit':0,'snapshot':before,'reference_execution_binding':current.reference_execution_binding(),'script_sha256':sci.digest(Path(__file__).read_bytes()),'evidence':evidence}\n(root/'replay-evidence.json').write_text(json.dumps(receipt,indent=2)+'\\n')\n",
+      "sha256": "16db0bd07d097cd8a0e6ac98b5918cc33d987e476c988bd082223c2aaa4fd8f8"
+    }
+  }
+}

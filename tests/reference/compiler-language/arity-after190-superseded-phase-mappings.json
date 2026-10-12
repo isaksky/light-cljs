@@ -1,0 +1,845 @@
+{
+  "schema_version": 1,
+  "scope": "Eight existing actual phase mappings superseded by coherent paired complete unchanged source evidence; prior rows and complete baseline evidence preserved; no duplicate obligation mappings.",
+  "baseline_report_sha256": "968a2be5a9c3a182b56ab7233d2de592e58f2899c3c267de7234c4d5215d449a",
+  "prior_rows": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::IEditableCollection::arity-1",
+      "body_sha256": "224e74ae2594ed199e6d75284f2c50578243b4721ab906c4e1050ff88025857e",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_transients.rs",
+      "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+      "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669",
+      "rationale": "The complete canonical macro contract executes the public name at its declared fixed/variadic arity, saved higher-order calls, or exact transient protocol dispatch/identity; it asserts ownership, values, hash, metadata and failure effects before returning persistent expansion data."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::IMultiFn::arity-1",
+      "body_sha256": "b8d01df32f4a96966b38cbbef68e64fdbed78d2e578a7a2f05b1d49f59c58761",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_multimethods.rs",
+      "test_name": "public_api_arities_execute_in_macro_phase",
+      "test_source_sha256": "ff3eff85ff1e7d4bed431b04a20cf6c26386e3de9fcb1dd6b16fce3fd93470e3",
+      "rationale": "The complete local test executes this exact public arity during QuickJS macro expansion: both global/explicit hierarchy query and mutation arities, native bases/supers, eight-field MultiFn construction, IMultiFn satisfaction, method operations and accessors. Replayed defmulti/defmethod setup supplies the macro-invoked dispatch function. Literal assertions verify results; source registration alone is not evidence."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ISorted::arity-1",
+      "body_sha256": "b1e207d553f428b54033a078b2093aa2b18babcd27020f13607938b070b0c7d1",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_sorted_contracts.rs",
+      "test_name": "sorted_contract_executes_in_application_and_macro_phases",
+      "test_source_sha256": "6ea98ec0dd05a15edcb8eefecf297908db9725a2dec62566399e03242f1a1060",
+      "rationale": "The complete canonical application/macro contract executes this public name at its exact declared constructor/fixed/variadic arity before returning expansion data. It retains saved constructor/range/comparator callbacks, direct ISorted calls, comparator identity and equality classes, metadata, immutable updates, hash/equality, numeric key behavior and visible error paths. Public TreeMap/TreeSet/TreeMapSeq constructor arities retain meaningful collection operations with canonical empty or singleton public entry setup; no private red-black node storage claim is made."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientAssociative::arity-1",
+      "body_sha256": "4a125d21134326f4d165048296682b8e94d9b99fb5dc3ee7f6bf9170f1a05d60",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_transients.rs",
+      "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+      "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669",
+      "rationale": "The complete canonical macro contract executes the public name at its declared fixed/variadic arity, saved higher-order calls, or exact transient protocol dispatch/identity; it asserts ownership, values, hash, metadata and failure effects before returning persistent expansion data."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientCollection::arity-1",
+      "body_sha256": "8da0a1d06ad99fd6f778f1eb5ab53be6a50cb7a9927f286e29fa4c02fcbb4c5d",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_transients.rs",
+      "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+      "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669",
+      "rationale": "The complete canonical macro contract executes the public name at its declared fixed/variadic arity, saved higher-order calls, or exact transient protocol dispatch/identity; it asserts ownership, values, hash, metadata and failure effects before returning persistent expansion data."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientMap::arity-1",
+      "body_sha256": "9aedbc443395aee3bb157f3fbeab91205c89ec8c5234f55ad2b671122b765bfb",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_transients.rs",
+      "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+      "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669",
+      "rationale": "The complete canonical macro contract executes the public name at its declared fixed/variadic arity, saved higher-order calls, or exact transient protocol dispatch/identity; it asserts ownership, values, hash, metadata and failure effects before returning persistent expansion data."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientSet::arity-1",
+      "body_sha256": "ccae9ee350c3e7bbb71d98b0af1b5736d4f0a2cff9f9bf0a90e964175786d2e1",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_transients.rs",
+      "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+      "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669",
+      "rationale": "The complete canonical macro contract executes the public name at its declared fixed/variadic arity, saved higher-order calls, or exact transient protocol dispatch/identity; it asserts ownership, values, hash, metadata and failure effects before returning persistent expansion data."
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientVector::arity-1",
+      "body_sha256": "1664c2f3b4eabe68c2ab11e4f0c05ec1d2e343421f489c3551a2fd3b944e704d",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_transients.rs",
+      "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+      "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669",
+      "rationale": "The complete canonical macro contract executes the public name at its declared fixed/variadic arity, saved higher-order calls, or exact transient protocol dispatch/identity; it asserts ownership, values, hash, metadata and failure effects before returning persistent expansion data."
+    }
+  ],
+  "baseline_rows": [
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::IEditableCollection::arity-1",
+      "obligation_kind": "public-api",
+      "name": "IEditableCollection",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::IEditableCollection",
+      "body_sha256": "224e74ae2594ed199e6d75284f2c50578243b4721ab906c4e1050ff88025857e",
+      "source_span": {
+        "start_line": 831,
+        "end_line": 834,
+        "start_byte": 24832,
+        "end_byte": 25037,
+        "sha256": "224e74ae2594ed199e6d75284f2c50578243b4721ab906c4e1050ff88025857e",
+        "text": "(defprotocol IEditableCollection\n  \"Protocol for collections which can transformed to transients.\"\n  (^clj -as-transient [coll]\n    \"Returns a new, transient version of the collection, in constant time.\"))"
+      },
+      "container_span": {
+        "start_line": 831,
+        "end_line": 834,
+        "start_byte": 24832,
+        "end_byte": 25037,
+        "sha256": "224e74ae2594ed199e6d75284f2c50578243b4721ab906c4e1050ff88025857e",
+        "text": "(defprotocol IEditableCollection\n  \"Protocol for collections which can transformed to transients.\"\n  (^clj -as-transient [coll]\n    \"Returns a new, transient version of the collection, in constant time.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "transient-collections",
+      "owner": "light-cljs-117",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 809,
+        "arm_sha256": "9b823a119e2ec5016946d4ff52b184f19eed62fc84a11af61750cbb9bc61cf56",
+        "status": "static-registration-only"
+      },
+      "feature": "transient-collections",
+      "test": "IEditableCollection",
+      "line": 831,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_transients.rs",
+          "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+          "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::IMultiFn::arity-1",
+      "obligation_kind": "public-api",
+      "name": "IMultiFn",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::IMultiFn",
+      "body_sha256": "b8d01df32f4a96966b38cbbef68e64fdbed78d2e578a7a2f05b1d49f59c58761",
+      "source_span": {
+        "start_line": 11487,
+        "end_line": 11496,
+        "start_byte": 325357,
+        "end_byte": 325648,
+        "sha256": "b8d01df32f4a96966b38cbbef68e64fdbed78d2e578a7a2f05b1d49f59c58761",
+        "text": "(defprotocol IMultiFn\n  (-reset [mf])\n  (-add-method [mf dispatch-val method])\n  (-remove-method [mf dispatch-val])\n  (-prefer-method [mf dispatch-val dispatch-val-y])\n  (-get-method [mf dispatch-val])\n  (-methods [mf])\n  (-prefers [mf])\n  (-default-dispatch-val [mf])\n  (-dispatch-fn [mf]))"
+      },
+      "container_span": {
+        "start_line": 11487,
+        "end_line": 11496,
+        "start_byte": 325357,
+        "end_byte": 325648,
+        "sha256": "b8d01df32f4a96966b38cbbef68e64fdbed78d2e578a7a2f05b1d49f59c58761",
+        "text": "(defprotocol IMultiFn\n  (-reset [mf])\n  (-add-method [mf dispatch-val method])\n  (-remove-method [mf dispatch-val])\n  (-prefer-method [mf dispatch-val dispatch-val-y])\n  (-get-method [mf dispatch-val])\n  (-methods [mf])\n  (-prefers [mf])\n  (-default-dispatch-val [mf])\n  (-dispatch-fn [mf]))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "multimethods-hierarchies",
+      "owner": "light-cljs-47",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 736,
+        "arm_sha256": "ee668cae50065344ca6fa46a3c7ce74b9c3f6443db76c79d7d1168c8294d564d",
+        "status": "static-registration-only"
+      },
+      "feature": "multimethods-hierarchies",
+      "test": "IMultiFn",
+      "line": 11487,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_multimethods.rs",
+          "test_name": "public_api_arities_execute_in_macro_phase",
+          "test_source_sha256": "ff3eff85ff1e7d4bed431b04a20cf6c26386e3de9fcb1dd6b16fce3fd93470e3"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::ISorted::arity-1",
+      "obligation_kind": "public-api",
+      "name": "ISorted",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::ISorted",
+      "body_sha256": "b1e207d553f428b54033a078b2093aa2b18babcd27020f13607938b070b0c7d1",
+      "source_span": {
+        "start_line": 783,
+        "end_line": 798,
+        "start_byte": 22697,
+        "end_byte": 23487,
+        "sha256": "b1e207d553f428b54033a078b2093aa2b18babcd27020f13607938b070b0c7d1",
+        "text": "(defprotocol ISorted\n  \"Protocol for a collection which can represent their items\n  in a sorted manner. \"\n  (^clj -sorted-seq [coll ascending?]\n    \"Returns a sorted seq from coll in either ascending or descending order.\")\n  (^clj -sorted-seq-from [coll k ascending?]\n    \"Returns a sorted seq from coll in either ascending or descending order.\n     If ascending is true, the result should contain all items which are > or >=\n     than k. If ascending is false, the result should contain all items which\n     are < or <= than k, e.g.\n     (-sorted-seq-from (sorted-set 1 2 3 4 5) 3 true) => (3 4 5)\n     (-sorted-seq-from (sorted-set 1 2 3 4 5) 3 false) => (3 2 1)\")\n  (-entry-key [coll entry]\n    \"Returns the key for entry.\")\n  (-comparator [coll]\n    \"Returns the comparator for coll.\"))"
+      },
+      "container_span": {
+        "start_line": 783,
+        "end_line": 798,
+        "start_byte": 22697,
+        "end_byte": 23487,
+        "sha256": "b1e207d553f428b54033a078b2093aa2b18babcd27020f13607938b070b0c7d1",
+        "text": "(defprotocol ISorted\n  \"Protocol for a collection which can represent their items\n  in a sorted manner. \"\n  (^clj -sorted-seq [coll ascending?]\n    \"Returns a sorted seq from coll in either ascending or descending order.\")\n  (^clj -sorted-seq-from [coll k ascending?]\n    \"Returns a sorted seq from coll in either ascending or descending order.\n     If ascending is true, the result should contain all items which are > or >=\n     than k. If ascending is false, the result should contain all items which\n     are < or <= than k, e.g.\n     (-sorted-seq-from (sorted-set 1 2 3 4 5) 3 true) => (3 4 5)\n     (-sorted-seq-from (sorted-set 1 2 3 4 5) 3 false) => (3 2 1)\")\n  (-entry-key [coll entry]\n    \"Returns the key for entry.\")\n  (-comparator [coll]\n    \"Returns the comparator for coll.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "sorted-collections",
+      "owner": "light-cljs-119",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 1048,
+        "arm_sha256": "a84c354b907e440a63956cf3d6d50939178c286b940a593e80c2819016423013",
+        "status": "static-registration-only"
+      },
+      "feature": "sorted-collections",
+      "test": "ISorted",
+      "line": 783,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_sorted_contracts.rs",
+          "test_name": "sorted_contract_executes_in_application_and_macro_phases",
+          "test_source_sha256": "6ea98ec0dd05a15edcb8eefecf297908db9725a2dec62566399e03242f1a1060"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::ITransientAssociative::arity-1",
+      "obligation_kind": "public-api",
+      "name": "ITransientAssociative",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::ITransientAssociative",
+      "body_sha256": "4a125d21134326f4d165048296682b8e94d9b99fb5dc3ee7f6bf9170f1a05d60",
+      "source_span": {
+        "start_line": 843,
+        "end_line": 847,
+        "start_byte": 25321,
+        "end_byte": 25552,
+        "sha256": "4a125d21134326f4d165048296682b8e94d9b99fb5dc3ee7f6bf9170f1a05d60",
+        "text": "(defprotocol ITransientAssociative\n  \"Protocol for adding associativity to transient collections.\"\n  (^clj -assoc! [tcoll key val]\n    \"Returns a new transient collection of tcoll with a mapping from key to\n     val added to it.\"))"
+      },
+      "container_span": {
+        "start_line": 843,
+        "end_line": 847,
+        "start_byte": 25321,
+        "end_byte": 25552,
+        "sha256": "4a125d21134326f4d165048296682b8e94d9b99fb5dc3ee7f6bf9170f1a05d60",
+        "text": "(defprotocol ITransientAssociative\n  \"Protocol for adding associativity to transient collections.\"\n  (^clj -assoc! [tcoll key val]\n    \"Returns a new transient collection of tcoll with a mapping from key to\n     val added to it.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "transient-collections",
+      "owner": "light-cljs-117",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 811,
+        "arm_sha256": "a782befa3ea33867c59f1522fe9c56c9cd3a35633ebaf6c7debb56c2594f354e",
+        "status": "static-registration-only"
+      },
+      "feature": "transient-collections",
+      "test": "ITransientAssociative",
+      "line": 843,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_transients.rs",
+          "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+          "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::ITransientCollection::arity-1",
+      "obligation_kind": "public-api",
+      "name": "ITransientCollection",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::ITransientCollection",
+      "body_sha256": "8da0a1d06ad99fd6f778f1eb5ab53be6a50cb7a9927f286e29fa4c02fcbb4c5d",
+      "source_span": {
+        "start_line": 836,
+        "end_line": 841,
+        "start_byte": 25039,
+        "end_byte": 25319,
+        "sha256": "8da0a1d06ad99fd6f778f1eb5ab53be6a50cb7a9927f286e29fa4c02fcbb4c5d",
+        "text": "(defprotocol ITransientCollection\n  \"Protocol for adding basic functionality to transient collections.\"\n  (^clj -conj! [tcoll val]\n    \"Adds value val to tcoll and returns tcoll.\")\n  (^clj -persistent! [tcoll]\n    \"Creates a persistent data structure from tcoll and returns it.\"))"
+      },
+      "container_span": {
+        "start_line": 836,
+        "end_line": 841,
+        "start_byte": 25039,
+        "end_byte": 25319,
+        "sha256": "8da0a1d06ad99fd6f778f1eb5ab53be6a50cb7a9927f286e29fa4c02fcbb4c5d",
+        "text": "(defprotocol ITransientCollection\n  \"Protocol for adding basic functionality to transient collections.\"\n  (^clj -conj! [tcoll val]\n    \"Adds value val to tcoll and returns tcoll.\")\n  (^clj -persistent! [tcoll]\n    \"Creates a persistent data structure from tcoll and returns it.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "transient-collections",
+      "owner": "light-cljs-117",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 810,
+        "arm_sha256": "951c0da5158afc00948bfcf0f2121f44826ff1771d678ef5b173eda2716a79c9",
+        "status": "static-registration-only"
+      },
+      "feature": "transient-collections",
+      "test": "ITransientCollection",
+      "line": 836,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_transients.rs",
+          "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+          "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::ITransientMap::arity-1",
+      "obligation_kind": "public-api",
+      "name": "ITransientMap",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::ITransientMap",
+      "body_sha256": "9aedbc443395aee3bb157f3fbeab91205c89ec8c5234f55ad2b671122b765bfb",
+      "source_span": {
+        "start_line": 849,
+        "end_line": 852,
+        "start_byte": 25554,
+        "end_byte": 25762,
+        "sha256": "9aedbc443395aee3bb157f3fbeab91205c89ec8c5234f55ad2b671122b765bfb",
+        "text": "(defprotocol ITransientMap\n  \"Protocol for adding mapping functionality to transient collections.\"\n  (^clj -dissoc! [tcoll key]\n    \"Returns a new transient collection of tcoll without the mapping for key.\"))"
+      },
+      "container_span": {
+        "start_line": 849,
+        "end_line": 852,
+        "start_byte": 25554,
+        "end_byte": 25762,
+        "sha256": "9aedbc443395aee3bb157f3fbeab91205c89ec8c5234f55ad2b671122b765bfb",
+        "text": "(defprotocol ITransientMap\n  \"Protocol for adding mapping functionality to transient collections.\"\n  (^clj -dissoc! [tcoll key]\n    \"Returns a new transient collection of tcoll without the mapping for key.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "transient-collections",
+      "owner": "light-cljs-117",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 812,
+        "arm_sha256": "bcb5c192e545028070fbb348862d14a790a5bf2af65dda57fa1f3c62fa495904",
+        "status": "static-registration-only"
+      },
+      "feature": "transient-collections",
+      "test": "ITransientMap",
+      "line": 849,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_transients.rs",
+          "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+          "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::ITransientSet::arity-1",
+      "obligation_kind": "public-api",
+      "name": "ITransientSet",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::ITransientSet",
+      "body_sha256": "ccae9ee350c3e7bbb71d98b0af1b5736d4f0a2cff9f9bf0a90e964175786d2e1",
+      "source_span": {
+        "start_line": 861,
+        "end_line": 864,
+        "start_byte": 26035,
+        "end_byte": 26191,
+        "sha256": "ccae9ee350c3e7bbb71d98b0af1b5736d4f0a2cff9f9bf0a90e964175786d2e1",
+        "text": "(defprotocol ITransientSet\n  \"Protocol for adding set functionality to a transient collection.\"\n  (^clj -disjoin! [tcoll v]\n    \"Returns tcoll without v.\"))"
+      },
+      "container_span": {
+        "start_line": 861,
+        "end_line": 864,
+        "start_byte": 26035,
+        "end_byte": 26191,
+        "sha256": "ccae9ee350c3e7bbb71d98b0af1b5736d4f0a2cff9f9bf0a90e964175786d2e1",
+        "text": "(defprotocol ITransientSet\n  \"Protocol for adding set functionality to a transient collection.\"\n  (^clj -disjoin! [tcoll v]\n    \"Returns tcoll without v.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "transient-collections",
+      "owner": "light-cljs-117",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 814,
+        "arm_sha256": "c30ffca3f70944421c063d7031ed76283538d0832d44a56e14b5bf8bf4d96f5f",
+        "status": "static-registration-only"
+      },
+      "feature": "transient-collections",
+      "test": "ITransientSet",
+      "line": 861,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_transients.rs",
+          "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+          "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    },
+    {
+      "id": "api::src/main/cljs/cljs/core.cljs::ITransientVector::arity-1",
+      "obligation_kind": "public-api",
+      "name": "ITransientVector",
+      "declaration": "defprotocol",
+      "signature": {
+        "kind": "value",
+        "minimum": null,
+        "parameters": []
+      },
+      "source": "src/main/cljs/cljs/core.cljs",
+      "body_id": "src/main/cljs/cljs/core.cljs::ITransientVector",
+      "body_sha256": "1664c2f3b4eabe68c2ab11e4f0c05ec1d2e343421f489c3551a2fd3b944e704d",
+      "source_span": {
+        "start_line": 854,
+        "end_line": 859,
+        "start_byte": 25764,
+        "end_byte": 26033,
+        "sha256": "1664c2f3b4eabe68c2ab11e4f0c05ec1d2e343421f489c3551a2fd3b944e704d",
+        "text": "(defprotocol ITransientVector\n  \"Protocol for adding vector functionality to transient collections.\"\n  (^clj -assoc-n! [tcoll n val]\n    \"Returns tcoll with value val added at position n.\")\n  (^clj -pop! [tcoll]\n    \"Returns tcoll with the last item removed from it.\"))"
+      },
+      "container_span": {
+        "start_line": 854,
+        "end_line": 859,
+        "start_byte": 25764,
+        "end_byte": 26033,
+        "sha256": "1664c2f3b4eabe68c2ab11e4f0c05ec1d2e343421f489c3551a2fd3b944e704d",
+        "text": "(defprotocol ITransientVector\n  \"Protocol for adding vector functionality to transient collections.\"\n  (^clj -assoc-n! [tcoll n val]\n    \"Returns tcoll with value val added at position n.\")\n  (^clj -pop! [tcoll]\n    \"Returns tcoll with the last item removed from it.\"))"
+      },
+      "disposition": "intended",
+      "reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence.",
+      "family": "transient-collections",
+      "owner": "light-cljs-117",
+      "dialect_contract": null,
+      "local_registration": {
+        "source": "src/analyzer.rs",
+        "line": 813,
+        "arm_sha256": "dfaecf95c01d94a0b7fae1255cd69f8020437c8ab4e237964e9395b1a90e892d",
+        "status": "static-registration-only"
+      },
+      "feature": "transient-collections",
+      "test": "ITransientVector",
+      "line": 854,
+      "status": "missing",
+      "fixture_id": null,
+      "layers": {},
+      "columns": {
+        "parse": {
+          "status": "not-run"
+        },
+        "analysis_lowering": {
+          "status": "not-run"
+        },
+        "native": {
+          "status": "removed",
+          "reason": "Native evaluator removed in light-cljs-115; retained native evidence is historical."
+        },
+        "canonical_js": {
+          "status": "not-run"
+        },
+        "quickjs_macro": {
+          "status": "passed",
+          "detail": "Exact single macro phase execution test; zero-test/skipped runs fail.",
+          "test_file": "tests/compiler_transients.rs",
+          "test_name": "transient_api_arities_protocols_and_macro_phase_execute",
+          "test_source_sha256": "cd307de6dc6bf53eeff78e5c04c8eff8e67c5743260347487572685a6c68f669"
+        },
+        "execution_evidence": {
+          "status": "not-run",
+          "references": {
+            "release": {
+              "status": "not-run"
+            },
+            "checkout": {
+              "status": "not-run"
+            }
+          }
+        }
+      },
+      "completion_reason": "Public upstream name independently retained; mapped local spelling is not arity/execution evidence."
+    }
+  ],
+  "replacement_rows": [
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::IEditableCollection::arity-1",
+      "body_sha256": "224e74ae2594ed199e6d75284f2c50578243b4721ab906c4e1050ff88025857e",
+      "rationale": "The original complete transient body preserves all vector/map/set mutation, persistent conversion, saved/applied calls, original persistence errors and metadata/hash controls. Its custom reify receiver implements the actual named transient protocols, each corresponding method is directly invoked and the complete independent ordered event vector is asserted. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-transient.cljs": "b82b28e41eb87ad82cf154cb698e54b5a1c5444a1f07656dc942e08acf4da312"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::IMultiFn::arity-1",
+      "body_sha256": "b8d01df32f4a96966b38cbbef68e64fdbed78d2e578a7a2f05b1d49f59c58761",
+      "rationale": "The original complete cohort constructs five MultiFn receivers; every receiver is called and its retrieved method is invoked with nil against literal 41. The actual IMultiFn receiver check and dispatch-fn identity assertion follow demanded method execution and preserve original fields and default value. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/cljs-public-gate-core-factory-multifn.cljs": "1ce4500d472c752bb9a52dc982c69278c31ea7af712e879692bd2b45c30b4201"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ISorted::arity-1",
+      "body_sha256": "b1e207d553f428b54033a078b2093aa2b18babcd27020f13607938b070b0c7d1",
+      "rationale": "The complete original sorted-map/set body retains named ISorted receiver assertions and actual comparator, sorted-seq, sorted-seq-from and entry-key dispatch. Original equality/hash/metadata, competing-key identity, reduction and early completion, subseq/rsubseq loops, public constructors and all original error paths remain unchanged. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-sorted-full.cljs": "dc24ea48b6a2338cd7920d58d9445e3880df41c5bc7223156d2083dabe66b04c"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientAssociative::arity-1",
+      "body_sha256": "4a125d21134326f4d165048296682b8e94d9b99fb5dc3ee7f6bf9170f1a05d60",
+      "rationale": "The original complete transient body preserves all vector/map/set mutation, persistent conversion, saved/applied calls, original persistence errors and metadata/hash controls. Its custom reify receiver implements the actual named transient protocols, each corresponding method is directly invoked and the complete independent ordered event vector is asserted. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-transient.cljs": "b82b28e41eb87ad82cf154cb698e54b5a1c5444a1f07656dc942e08acf4da312"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientCollection::arity-1",
+      "body_sha256": "8da0a1d06ad99fd6f778f1eb5ab53be6a50cb7a9927f286e29fa4c02fcbb4c5d",
+      "rationale": "The original complete transient body preserves all vector/map/set mutation, persistent conversion, saved/applied calls, original persistence errors and metadata/hash controls. Its custom reify receiver implements the actual named transient protocols, each corresponding method is directly invoked and the complete independent ordered event vector is asserted. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-transient.cljs": "b82b28e41eb87ad82cf154cb698e54b5a1c5444a1f07656dc942e08acf4da312"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientMap::arity-1",
+      "body_sha256": "9aedbc443395aee3bb157f3fbeab91205c89ec8c5234f55ad2b671122b765bfb",
+      "rationale": "The original complete transient body preserves all vector/map/set mutation, persistent conversion, saved/applied calls, original persistence errors and metadata/hash controls. Its custom reify receiver implements the actual named transient protocols, each corresponding method is directly invoked and the complete independent ordered event vector is asserted. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-transient.cljs": "b82b28e41eb87ad82cf154cb698e54b5a1c5444a1f07656dc942e08acf4da312"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientSet::arity-1",
+      "body_sha256": "ccae9ee350c3e7bbb71d98b0af1b5736d4f0a2cff9f9bf0a90e964175786d2e1",
+      "rationale": "The original complete transient body preserves all vector/map/set mutation, persistent conversion, saved/applied calls, original persistence errors and metadata/hash controls. Its custom reify receiver implements the actual named transient protocols, each corresponding method is directly invoked and the complete independent ordered event vector is asserted. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-transient.cljs": "b82b28e41eb87ad82cf154cb698e54b5a1c5444a1f07656dc942e08acf4da312"
+      }
+    },
+    {
+      "obligation_id": "api::src/main/cljs/cljs/core.cljs::ITransientVector::arity-1",
+      "body_sha256": "1664c2f3b4eabe68c2ab11e4f0c05ec1d2e343421f489c3551a2fd3b944e704d",
+      "rationale": "The original complete transient body preserves all vector/map/set mutation, persistent conversion, saved/applied calls, original persistence errors and metadata/hash controls. Its custom reify receiver implements the actual named transient protocols, each corresponding method is directly invoked and the complete independent ordered event vector is asserted. The entire unchanged original oracle, setup, body, loops, literals, effects and errors execute through the exact driver in fresh/reused actual MacroHost applications and macro computations, observed by QuickJS and Node. Both required public pins execute the exact same existing oracle. Declaration, source registration, function identity and undemanded callback paths provide no credit. Local mappings cross-check the operation, with no complete metadata-value claim.",
+      "signature_sha256": "1213ea8939d9097389fda65beeee9b719ea267aacfc57a7ae4fb6eb42d73a382",
+      "test_file": "tests/compiler_arity_after190.rs",
+      "test_name": "new_arity_oracles_execute_in_actual_phases_and_lifecycles",
+      "test_source_sha256": "b55e4d3a5c39e7d859dfa4495b09f8da12694b4ea591e7a55019101735631bcb",
+      "support_source_sha256": {
+        "tests/reference/compiler-language/arity_after190.py": "fbc71e0eb8ebc99a682f8c991e7d8a4804063d3ab60b2d81cf836146156aac2b",
+        "tests/reference/compiler-language/arity_resume_candidates.py": "31457848fe6d2f08e92b3ad5b4a6f99362a97be66e4819c9d45cf3a1b9ecbcc3",
+        "tests/fixtures/arity-after190/arity-receiver-transient.cljs": "b82b28e41eb87ad82cf154cb698e54b5a1c5444a1f07656dc942e08acf4da312"
+      }
+    }
+  ],
+  "baseline_semantic_status": "All eight were missing in the comprehensive baseline without a paired ordinary witness; previous actual phase tests remain valid historical evidence.",
+  "strict_complete": false
+}

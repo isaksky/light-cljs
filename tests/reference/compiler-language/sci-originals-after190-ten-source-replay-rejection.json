@@ -1,0 +1,619 @@
+{
+  "schema_version": 1,
+  "status": "independent-pin-emitted-tree-replay-rejected",
+  "accepted_current_credit": 0,
+  "production_semantics_gap_confirmed": false,
+  "reason": "Independent complete pin compiler replay changed generated gensym identifiers only. No normalization or success rebinding is accepted. This entire development producer is nonpassing despite80 matching actual frames.",
+  "failed_producer_root": "/private/tmp/light-cljs-125-original-sci-after190-development-ten-v1",
+  "independent_pin_replay_root": "/private/tmp/light-cljs-125-protocol-emission-after190-replay-v1",
+  "source_bindings": [
+    {
+      "id": "sci-execution-sci-seq-reduce-callback-error",
+      "sci_id": "sci-seq-reduce-callback-error",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-seq-reduce-callback-error",
+      "body_sha256": "2fcafae49ddcae91f6df153f14da35b40526d2ae1fe9ca261cdbabdbe768b3ff",
+      "original_row_sha256": "3c5941a3bccfea9f3257665b178541bf6bb4c5f81c80c880d7b6c8e0141368ac",
+      "source_sha256": "46ded6671c178439d7bbccc2dd025a1efdd2f17ead56dedc38f67571763dbd95",
+      "original_source_sha256": "46ded6671c178439d7bbccc2dd025a1efdd2f17ead56dedc38f67571763dbd95",
+      "source": "(reduce (fn* [a x] (observe x) (/ a (- x 2))) 8 [1 2 3])",
+      "original_fields": [
+        "sci-seq-reduce-callback-error",
+        "portable",
+        "(reduce (fn* [a x] (observe x) (/ a (- x 2))) 8 [1 2 3])",
+        "(error execution arithmetic)",
+        "(vector (int 1) (int 2))",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-seq-reduce-callback-error",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [
+          1,
+          2
+        ],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-seq-mapv-error",
+      "sci_id": "sci-seq-mapv-error",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-seq-mapv-error",
+      "body_sha256": "0f85476b96723454a4bdbcbff3a726567ec5f1d865f719862c87f4e3c0bbee46",
+      "original_row_sha256": "0950e3bdd49532314d7e726f74fe991d05d17c19d6a8d3b6aa9c0f24d04304ef",
+      "source_sha256": "985a65f874f8a76ea2fece9815aa08be5cd4fb4550a072ffe19bad6bdf1f23bc",
+      "original_source_sha256": "985a65f874f8a76ea2fece9815aa08be5cd4fb4550a072ffe19bad6bdf1f23bc",
+      "source": "(mapv (fn* [x] (observe x) (/ 4 x)) [2 0 1])",
+      "original_fields": [
+        "sci-seq-mapv-error",
+        "portable",
+        "(mapv (fn* [x] (observe x) (/ 4 x)) [2 0 1])",
+        "(error execution arithmetic)",
+        "(vector (int 2) (int 0))",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-seq-mapv-error",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [
+          2,
+          0
+        ],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-seq-filterv-error",
+      "sci_id": "sci-seq-filterv-error",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-seq-filterv-error",
+      "body_sha256": "fb9b38ef4c1b064f5dd43095f3fe0492a9a952db6d9037aa0470566c50f413b5",
+      "original_row_sha256": "31666e95c113ffb2e011cdfca1f9b1a55cd41f3a5dd9019f2b6f54d7e84ef244",
+      "source_sha256": "925be3cff08f7a376b421a5f681ef0de82ffa9e5192afa593c6869af9e4642f6",
+      "original_source_sha256": "925be3cff08f7a376b421a5f681ef0de82ffa9e5192afa593c6869af9e4642f6",
+      "source": "(filterv (fn* [x] (observe x) (/ 2 x)) [1 0 3])",
+      "original_fields": [
+        "sci-seq-filterv-error",
+        "portable",
+        "(filterv (fn* [x] (observe x) (/ 2 x)) [1 0 3])",
+        "(error execution arithmetic)",
+        "(vector (int 1) (int 0))",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-seq-filterv-error",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [
+          1,
+          0
+        ],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-seq-juxt-error",
+      "sci_id": "sci-seq-juxt-error",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-seq-juxt-error",
+      "body_sha256": "d77460e466c30cb723526a1f28f60cc5f7d60a95cd03a3b2cbabaa658ab3e8e2",
+      "original_row_sha256": "4b28ef166d31a93010eccd7448cfd44a8108a4f2529daca226bd18d5364aee39",
+      "source_sha256": "974b9f552b53a1fcc682bd3647b9c08c4966fb5398e5bc0a279eebb58234e371",
+      "original_source_sha256": "974b9f552b53a1fcc682bd3647b9c08c4966fb5398e5bc0a279eebb58234e371",
+      "source": "((juxt observe (fn* [x] (/ x 0)) observe) 2)",
+      "original_fields": [
+        "sci-seq-juxt-error",
+        "portable",
+        "((juxt observe (fn* [x] (/ x 0)) observe) 2)",
+        "(error execution arithmetic)",
+        "(vector (int 2))",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-seq-juxt-error",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [
+          2
+        ],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-coll-nth-range",
+      "sci_id": "sci-coll-nth-range",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-coll-nth-range",
+      "body_sha256": "77ed5b605e3babd5b4d0db87dd22a7ac27ed6930cc07689fb55d9a1bd116a20d",
+      "original_row_sha256": "658d605911ddbd2639af0a00560c6eb40de7296e676eff1aa604ee0aa60e1aaa",
+      "source_sha256": "af4adc7c2c17b66fab7fa5261954ac534bcab328a422936459eacc74b5df4f72",
+      "original_source_sha256": "af4adc7c2c17b66fab7fa5261954ac534bcab328a422936459eacc74b5df4f72",
+      "source": "(nth [1] 4294967296 :missing)",
+      "original_fields": [
+        "sci-coll-nth-range",
+        "portable",
+        "(nth [1] 4294967296 :missing)",
+        "(error execution arithmetic)",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-coll-nth-range",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-xf-bounds-underflow-take",
+      "sci_id": "sci-xf-bounds-underflow-take",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-xf-bounds-underflow-take",
+      "body_sha256": "a5a5d3cd9ecae0a3ae021b80bf63f3aa6f292600cf062ba6786466f9c2ca559e",
+      "original_row_sha256": "d9e4c62f5bc23d94ea51a73a521ee64eac77976dfbeb81303f4bdf20bf06564b",
+      "source_sha256": "635617fff1abb2086bf2709a4f26e1360f1a52343209d441cf99f24634399d99",
+      "original_source_sha256": "635617fff1abb2086bf2709a4f26e1360f1a52343209d441cf99f24634399d99",
+      "source": "(into [] (take -9223372036854775808) [1])",
+      "original_fields": [
+        "sci-xf-bounds-underflow-take",
+        "portable",
+        "(into [] (take -9223372036854775808) [1])",
+        "(error execution arithmetic)",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-xf-bounds-underflow-take",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-xf-bounds-underflow-drop",
+      "sci_id": "sci-xf-bounds-underflow-drop",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-xf-bounds-underflow-drop",
+      "body_sha256": "447c88dd231ebac1abd255b5237e39e4d147c3a72286bac40e141555c5e10af8",
+      "original_row_sha256": "d0a196046446f4bdf2d37ecd305550de201cb28518b2f73c7dabd13e1a2ca6c4",
+      "source_sha256": "32e1eec0cc92b7c2f47cae260e2d308d66640a88f9ee32a06b4254d465160431",
+      "original_source_sha256": "32e1eec0cc92b7c2f47cae260e2d308d66640a88f9ee32a06b4254d465160431",
+      "source": "(into [] (drop -9223372036854775808) [1])",
+      "original_fields": [
+        "sci-xf-bounds-underflow-drop",
+        "portable",
+        "(into [] (drop -9223372036854775808) [1])",
+        "(error execution arithmetic)",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-xf-bounds-underflow-drop",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-xf-bounds-underflow-drop-after-forward",
+      "sci_id": "sci-xf-bounds-underflow-drop-after-forward",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-xf-bounds-underflow-drop-after-forward",
+      "body_sha256": "95e5c54e60edeb2acffea8d90697ce65a13bb2cb07ccabc979ae866b69ee214d",
+      "original_row_sha256": "aebef2593fd874e66ceab3308423c3d9dcdad434c905c3cb491041462376f62c",
+      "source_sha256": "9394012d3b7584e1112e10a43ea314e15fb5861cd67b32759fff78fbcfc6a4d0",
+      "original_source_sha256": "9394012d3b7584e1112e10a43ea314e15fb5861cd67b32759fff78fbcfc6a4d0",
+      "source": "(transduce (drop -9223372036854775807) (fn ([a] (observe :complete) a) ([a x] (observe x) (conj a x))) [] [1 2])",
+      "original_fields": [
+        "sci-xf-bounds-underflow-drop-after-forward",
+        "portable",
+        "(transduce (drop -9223372036854775807) (fn ([a] (observe :complete) a) ([a x] (observe x) (conj a x))) [] [1 2])",
+        "(error execution arithmetic)",
+        "(vector (int 1))",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-xf-bounds-underflow-drop-after-forward",
+        "outcome": {
+          "status": "sci-error",
+          "phase": "execution",
+          "category": "arithmetic"
+        },
+        "trace": [
+          1
+        ],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-exception-accessors",
+      "sci_id": "sci-exception-accessors",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-exception-accessors",
+      "body_sha256": "8bedffd865ecc6f3a0f5ddee29e16f289298019ca67b2e638b9fb914ed9a48ca",
+      "original_row_sha256": "4b518314885889c8b52701f42dbbf9962130345a0d39e321b56dac86af040a98",
+      "source_sha256": "88bb32977f0a21fdf111779791f549fc419951ae275c63d88c728aa3ca215b80",
+      "original_source_sha256": "88bb32977f0a21fdf111779791f549fc419951ae275c63d88c728aa3ca215b80",
+      "source": "[(ex-message (ex-info nil nil)) (ex-data (ex-info nil nil)) (ex-cause (ex-info \"x\" {} nil)) (ex-message 1) (ex-data {}) (ex-cause nil)]",
+      "original_fields": [
+        "sci-exception-accessors",
+        "portable",
+        "[(ex-message (ex-info nil nil)) (ex-data (ex-info nil nil)) (ex-cause (ex-info \"x\" {} nil)) (ex-message 1) (ex-data {}) (ex-cause nil)]",
+        "(return (vector nil (map) nil nil nil nil))",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-exception-accessors",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              null,
+              {
+                "$map": [],
+                "count": 0
+              },
+              null,
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    },
+    {
+      "id": "sci-execution-sci-protocol-marker-return",
+      "sci_id": "sci-protocol-marker-return",
+      "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-protocol-marker-return",
+      "body_sha256": "774713a61cdae4bf95aa8ef852e915b27eea2e685f94ce9ef758940520505cba",
+      "original_row_sha256": "f2f7e1bd040542a309c9e46d185117362ddafe593bd5ba5930b60bc5ec0810f4",
+      "source_sha256": "c80d7ea143741fdec45717e8b43b90e57ea7b66f2cc52fcde6065b5ab0947f6e",
+      "original_source_sha256": "c80d7ea143741fdec45717e8b43b90e57ea7b66f2cc52fcde6065b5ab0947f6e",
+      "source": "[(= 'Marker (defprotocol Marker)) (satisfies? Marker nil) (satisfies? Marker {})]",
+      "original_fields": [
+        "sci-protocol-marker-return",
+        "portable",
+        "[(= 'Marker (defprotocol Marker)) (satisfies? Marker nil) (satisfies? Marker {})]",
+        "(return (vector (bool true) (bool false) (bool false)))",
+        "(vector)",
+        "(string u)",
+        "(string u)"
+      ],
+      "expected": {
+        "id": "sci-execution-sci-protocol-marker-return",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              true,
+              false,
+              false
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "isolated": true,
+      "reference_isolated": true
+    }
+  ],
+  "literal_contracts": [
+    {
+      "sci_id": "sci-seq-reduce-callback-error",
+      "body_sha256": "2fcafae49ddcae91f6df153f14da35b40526d2ae1fe9ca261cdbabdbe768b3ff",
+      "original_row_sha256": "3c5941a3bccfea9f3257665b178541bf6bb4c5f81c80c880d7b6c8e0141368ac",
+      "source_sha256": "46ded6671c178439d7bbccc2dd025a1efdd2f17ead56dedc38f67571763dbd95",
+      "canonical_expected": {
+        "id": "sci-execution-sci-seq-reduce-callback-error",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$number": "-Infinity"
+          }
+        },
+        "trace": [
+          1,
+          2,
+          3
+        ],
+        "stdout": ""
+      },
+      "reason": "Both pinned ClojureScript contexts return the complete Number result and continue all ordered callbacks after division by zero; the unchanged SCI original stops with arithmetic error and a shorter trace.",
+      "scope_basis": "Adopted ECMAScript Number arithmetic; native exact integer/ratio/BigDecimal tower is expressly outside the intended dialect. This complete source retains reduction/mapv/filterv/juxt public semantics and all callback effects.",
+      "setup": "Unchanged complete portable source. Lexical observe records ordered effects; captured streaming stdout and empty stderr. No reader, namespace, library, external host or cancellation setup."
+    },
+    {
+      "sci_id": "sci-seq-mapv-error",
+      "body_sha256": "0f85476b96723454a4bdbcbff3a726567ec5f1d865f719862c87f4e3c0bbee46",
+      "original_row_sha256": "0950e3bdd49532314d7e726f74fe991d05d17c19d6a8d3b6aa9c0f24d04304ef",
+      "source_sha256": "985a65f874f8a76ea2fece9815aa08be5cd4fb4550a072ffe19bad6bdf1f23bc",
+      "canonical_expected": {
+        "id": "sci-execution-sci-seq-mapv-error",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              2,
+              {
+                "$number": "+Infinity"
+              },
+              4
+            ]
+          }
+        },
+        "trace": [
+          2,
+          0,
+          1
+        ],
+        "stdout": ""
+      },
+      "reason": "Both pinned ClojureScript contexts return the complete Number result and continue all ordered callbacks after division by zero; the unchanged SCI original stops with arithmetic error and a shorter trace.",
+      "scope_basis": "Adopted ECMAScript Number arithmetic; native exact integer/ratio/BigDecimal tower is expressly outside the intended dialect. This complete source retains reduction/mapv/filterv/juxt public semantics and all callback effects.",
+      "setup": "Unchanged complete portable source. Lexical observe records ordered effects; captured streaming stdout and empty stderr. No reader, namespace, library, external host or cancellation setup."
+    },
+    {
+      "sci_id": "sci-seq-filterv-error",
+      "body_sha256": "fb9b38ef4c1b064f5dd43095f3fe0492a9a952db6d9037aa0470566c50f413b5",
+      "original_row_sha256": "31666e95c113ffb2e011cdfca1f9b1a55cd41f3a5dd9019f2b6f54d7e84ef244",
+      "source_sha256": "925be3cff08f7a376b421a5f681ef0de82ffa9e5192afa593c6869af9e4642f6",
+      "canonical_expected": {
+        "id": "sci-execution-sci-seq-filterv-error",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              1,
+              0,
+              3
+            ]
+          }
+        },
+        "trace": [
+          1,
+          0,
+          3
+        ],
+        "stdout": ""
+      },
+      "reason": "Both pinned ClojureScript contexts return the complete Number result and continue all ordered callbacks after division by zero; the unchanged SCI original stops with arithmetic error and a shorter trace.",
+      "scope_basis": "Adopted ECMAScript Number arithmetic; native exact integer/ratio/BigDecimal tower is expressly outside the intended dialect. This complete source retains reduction/mapv/filterv/juxt public semantics and all callback effects.",
+      "setup": "Unchanged complete portable source. Lexical observe records ordered effects; captured streaming stdout and empty stderr. No reader, namespace, library, external host or cancellation setup."
+    },
+    {
+      "sci_id": "sci-seq-juxt-error",
+      "body_sha256": "d77460e466c30cb723526a1f28f60cc5f7d60a95cd03a3b2cbabaa658ab3e8e2",
+      "original_row_sha256": "4b28ef166d31a93010eccd7448cfd44a8108a4f2529daca226bd18d5364aee39",
+      "source_sha256": "974b9f552b53a1fcc682bd3647b9c08c4966fb5398e5bc0a279eebb58234e371",
+      "canonical_expected": {
+        "id": "sci-execution-sci-seq-juxt-error",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              2,
+              {
+                "$number": "+Infinity"
+              },
+              2
+            ]
+          }
+        },
+        "trace": [
+          2,
+          2
+        ],
+        "stdout": ""
+      },
+      "reason": "Both pinned ClojureScript contexts return the complete Number result and continue all ordered callbacks after division by zero; the unchanged SCI original stops with arithmetic error and a shorter trace.",
+      "scope_basis": "Adopted ECMAScript Number arithmetic; native exact integer/ratio/BigDecimal tower is expressly outside the intended dialect. This complete source retains reduction/mapv/filterv/juxt public semantics and all callback effects.",
+      "setup": "Unchanged complete portable source. Lexical observe records ordered effects; captured streaming stdout and empty stderr. No reader, namespace, library, external host or cancellation setup."
+    },
+    {
+      "sci_id": "sci-coll-nth-range",
+      "body_sha256": "77ed5b605e3babd5b4d0db87dd22a7ac27ed6930cc07689fb55d9a1bd116a20d",
+      "original_row_sha256": "658d605911ddbd2639af0a00560c6eb40de7296e676eff1aa604ee0aa60e1aaa",
+      "source_sha256": "af4adc7c2c17b66fab7fa5261954ac534bcab328a422936459eacc74b5df4f72",
+      "canonical_expected": {
+        "id": "sci-execution-sci-coll-nth-range",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$keyword": {
+              "namespace": null,
+              "name": "missing",
+              "spelling": "missing"
+            }
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reason": "Both pins independently return the complete Number-index/transducer result, with all ordered source and completion effects, instead of the original SCI arithmetic error.",
+      "scope_basis": "Adopted ECMAScript Number semantics; native exact integer/ratio/BigDecimal tower excluded. Complete finite indexed lookup, take/drop transformation, callback and completion behavior remain intended.",
+      "setup": "Unchanged complete portable source; lexical observe callback, streaming captured stdout, empty stderr. No external namespace/reader/library/host fixture. Declaration name Marker remains local to its complete isolated source."
+    },
+    {
+      "sci_id": "sci-xf-bounds-underflow-take",
+      "body_sha256": "a5a5d3cd9ecae0a3ae021b80bf63f3aa6f292600cf062ba6786466f9c2ca559e",
+      "original_row_sha256": "d9e4c62f5bc23d94ea51a73a521ee64eac77976dfbeb81303f4bdf20bf06564b",
+      "source_sha256": "635617fff1abb2086bf2709a4f26e1360f1a52343209d441cf99f24634399d99",
+      "canonical_expected": {
+        "id": "sci-execution-sci-xf-bounds-underflow-take",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": []
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reason": "Both pins independently return the complete Number-index/transducer result, with all ordered source and completion effects, instead of the original SCI arithmetic error.",
+      "scope_basis": "Adopted ECMAScript Number semantics; native exact integer/ratio/BigDecimal tower excluded. Complete finite indexed lookup, take/drop transformation, callback and completion behavior remain intended.",
+      "setup": "Unchanged complete portable source; lexical observe callback, streaming captured stdout, empty stderr. No external namespace/reader/library/host fixture. Declaration name Marker remains local to its complete isolated source."
+    },
+    {
+      "sci_id": "sci-xf-bounds-underflow-drop",
+      "body_sha256": "447c88dd231ebac1abd255b5237e39e4d147c3a72286bac40e141555c5e10af8",
+      "original_row_sha256": "d0a196046446f4bdf2d37ecd305550de201cb28518b2f73c7dabd13e1a2ca6c4",
+      "source_sha256": "32e1eec0cc92b7c2f47cae260e2d308d66640a88f9ee32a06b4254d465160431",
+      "canonical_expected": {
+        "id": "sci-execution-sci-xf-bounds-underflow-drop",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              1
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reason": "Both pins independently return the complete Number-index/transducer result, with all ordered source and completion effects, instead of the original SCI arithmetic error.",
+      "scope_basis": "Adopted ECMAScript Number semantics; native exact integer/ratio/BigDecimal tower excluded. Complete finite indexed lookup, take/drop transformation, callback and completion behavior remain intended.",
+      "setup": "Unchanged complete portable source; lexical observe callback, streaming captured stdout, empty stderr. No external namespace/reader/library/host fixture. Declaration name Marker remains local to its complete isolated source."
+    },
+    {
+      "sci_id": "sci-xf-bounds-underflow-drop-after-forward",
+      "body_sha256": "95e5c54e60edeb2acffea8d90697ce65a13bb2cb07ccabc979ae866b69ee214d",
+      "original_row_sha256": "aebef2593fd874e66ceab3308423c3d9dcdad434c905c3cb491041462376f62c",
+      "source_sha256": "9394012d3b7584e1112e10a43ea314e15fb5861cd67b32759fff78fbcfc6a4d0",
+      "canonical_expected": {
+        "id": "sci-execution-sci-xf-bounds-underflow-drop-after-forward",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              1,
+              2
+            ]
+          }
+        },
+        "trace": [
+          1,
+          2,
+          {
+            "$keyword": {
+              "namespace": null,
+              "name": "complete",
+              "spelling": "complete"
+            }
+          }
+        ],
+        "stdout": ""
+      },
+      "reason": "Both pins independently return the complete Number-index/transducer result, with all ordered source and completion effects, instead of the original SCI arithmetic error.",
+      "scope_basis": "Adopted ECMAScript Number semantics; native exact integer/ratio/BigDecimal tower excluded. Complete finite indexed lookup, take/drop transformation, callback and completion behavior remain intended.",
+      "setup": "Unchanged complete portable source; lexical observe callback, streaming captured stdout, empty stderr. No external namespace/reader/library/host fixture. Declaration name Marker remains local to its complete isolated source."
+    },
+    {
+      "sci_id": "sci-exception-accessors",
+      "body_sha256": "8bedffd865ecc6f3a0f5ddee29e16f289298019ca67b2e638b9fb914ed9a48ca",
+      "original_row_sha256": "4b518314885889c8b52701f42dbbf9962130345a0d39e321b56dac86af040a98",
+      "source_sha256": "88bb32977f0a21fdf111779791f549fc419951ae275c63d88c728aa3ca215b80",
+      "canonical_expected": {
+        "id": "sci-execution-sci-exception-accessors",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reason": "Both pins independently return the complete canonical ExceptionInfo accessor/declaration packet; original SCI nil-data/declaration-return distinctions remain unchanged.",
+      "scope_basis": "Public ClojureScript ex-message/ex-data/ex-cause and defprotocol marker declaration/satisfies? semantics. Native SCI empty ex-data map and declaration symbol-return identity are historical contrasts, not weakened public semantics.",
+      "setup": "Unchanged complete portable source; lexical observe callback, streaming captured stdout, empty stderr. No external namespace/reader/library/host fixture. Declaration name Marker remains local to its complete isolated source."
+    },
+    {
+      "sci_id": "sci-protocol-marker-return",
+      "body_sha256": "774713a61cdae4bf95aa8ef852e915b27eea2e685f94ce9ef758940520505cba",
+      "original_row_sha256": "f2f7e1bd040542a309c9e46d185117362ddafe593bd5ba5930b60bc5ec0810f4",
+      "source_sha256": "c80d7ea143741fdec45717e8b43b90e57ea7b66f2cc52fcde6065b5ab0947f6e",
+      "canonical_expected": {
+        "id": "sci-execution-sci-protocol-marker-return",
+        "outcome": {
+          "status": "returned",
+          "value": {
+            "$vector": [
+              false,
+              false,
+              false
+            ]
+          }
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "reason": "Both pins independently return the complete canonical ExceptionInfo accessor/declaration packet; original SCI nil-data/declaration-return distinctions remain unchanged.",
+      "scope_basis": "Public ClojureScript ex-message/ex-data/ex-cause and defprotocol marker declaration/satisfies? semantics. Native SCI empty ex-data map and declaration symbol-return identity are historical contrasts, not weakened public semantics.",
+      "setup": "Unchanged complete portable source; lexical observe callback, streaming captured stdout, empty stderr. No external namespace/reader/library/host fixture. Declaration name Marker remains local to its complete isolated source."
+    }
+  ],
+  "original_module_sha256": "a74bcd5e75e15f7e60d58a26e13b030a54a8829feeaaf763e31df8e6cd9edfca",
+  "original_candidate_sha256": "7360ca14b423b23ae53ab5d36a659578eacaa449c75eaddf0b5663d775eefe82",
+  "raw_phase_sha256": "e246691ecec4035eec275a534acd504b164281415cca2922cab43249e2819f35",
+  "diff": "--- \n+++ \n@@ -21,33 +21,33 @@\n semantic.case9.Marker = function(){};\n \n })()\n-),(function (){var G__1350 = null;\n-if((!((G__1350 == null)))){\n-if(((false) || ((cljs.core.PROTOCOL_SENTINEL === G__1350.semantic$case9$Marker$)))){\n+),(function (){var G__1358 = null;\n+if((!((G__1358 == null)))){\n+if(((false) || ((cljs.core.PROTOCOL_SENTINEL === G__1358.semantic$case9$Marker$)))){\n return true;\n } else {\n-if((!G__1350.cljs$lang$protocol_mask$partition$)){\n-return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1350);\n+if((!G__1358.cljs$lang$protocol_mask$partition$)){\n+return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1358);\n } else {\n return false;\n }\n }\n } else {\n-return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1350);\n+return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1358);\n }\n-})(),(function (){var G__1351 = cljs.core.PersistentArrayMap.EMPTY;\n-if((!((G__1351 == null)))){\n-if(((false) || ((cljs.core.PROTOCOL_SENTINEL === G__1351.semantic$case9$Marker$)))){\n+})(),(function (){var G__1359 = cljs.core.PersistentArrayMap.EMPTY;\n+if((!((G__1359 == null)))){\n+if(((false) || ((cljs.core.PROTOCOL_SENTINEL === G__1359.semantic$case9$Marker$)))){\n return true;\n } else {\n-if((!G__1351.cljs$lang$protocol_mask$partition$)){\n-return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1351);\n+if((!G__1359.cljs$lang$protocol_mask$partition$)){\n+return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1359);\n } else {\n return false;\n }\n }\n } else {\n-return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1351);\n+return cljs.core.native_satisfies_QMARK_.call(null,semantic.case9.Marker,G__1359);\n }\n })()], null);\n });\n",
+  "original_unit_sha256": "486736b0e03ece992b51d6336d54bb8c7628c1c7623afafaaed9e467055e2c48",
+  "independently_compiled_unit_sha256": "8cb0ab34f04f1bd6ceb2249a46de5ea2ebda3ec45f41f3ce207bc231275b1900"
+}

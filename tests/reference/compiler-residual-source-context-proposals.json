@@ -43,7 +43,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_test.cljs": "ad38e35648b0f3a87b66cc3d39fa86c729718cb0af0981f521553fd3fc3cb944",
@@ -95,7 +95,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/syntax-quote/cljs/syntax_quote_test.cljs": "9cb089e6140b4afc686a0a392c67f837e6bb82fe02e79d93518de3e78b80b616",
@@ -162,7 +162,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
@@ -179,7 +179,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
@@ -250,7 +250,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/cljs-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
@@ -322,7 +322,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/foo-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
@@ -381,7 +381,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/top-level/cljs/top_level.cljs": "ecf36324188c46de092ddad498b959db3af3339a81a80fc97ee720b55d3ba5c5",
@@ -431,7 +431,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/js-keys/cljs/macro_test.cljs": "3782514a131be6ba1f6a06ddc953a5f99bfa2624a18020962be77ca52a179572",
@@ -496,7 +496,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -516,7 +516,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -536,7 +536,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -556,7 +556,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -623,7 +623,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
@@ -642,7 +642,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
@@ -661,7 +661,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
@@ -719,7 +719,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test.cljs": "62f941cd8dcba802c664c068ee0d6c1901bb98f62485edd533e4f4e9569b02d3",
@@ -771,7 +771,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/static/static/core_test.cljs": "746c42306c1fd4ca957cf2dd92196d46e90ba5bd4d9f2deadebbff66f3e560d9",
@@ -827,7 +827,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/tagged-runtime/cljs/tagged_literals_test.cljs": "4414eb7222cb6a88517fa70afd4ba1140299543b860c53b994a800aad41ae7e2",
@@ -884,7 +884,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/tagged-source/cljs/tagged_literals_test.cljs": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
@@ -957,7 +957,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/edn-stream/clojure/edn_test.cljs": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
@@ -1035,7 +1035,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -1052,7 +1052,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -1069,7 +1069,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -1086,7 +1086,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -1103,7 +1103,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -1120,7 +1120,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -1215,7 +1215,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -1233,7 +1233,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -1251,7 +1251,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -1269,7 +1269,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -1320,7 +1320,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/letfn/cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
@@ -1475,6 +1475,88 @@
         "profile": "original-repl-error-map-v1",
         "schema_version": 1
       }
+    },
+    {
+      "id": "cljs-original-configured-custom-reader-context",
+      "source": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n(ns data-readers-test.core)\n\n(def custom-identity identity)\n\n(assert (= 1 #test/custom-identity 1))\n\n(defn custom-form-cljs \n  \"a clojure and clojurescript function - in both cases targeting only cljs. \n  \n  returns a clojurescript form (from :clj branch, when compiling) \n  and executes js from :cljs branch when using cljs.reader/read\"\n  [x]\n  #?(:clj `(js/Array.of ~x)\n     :cljs (js/Array.of x)))\n\n#?(:cljs\n   (def result #test/custom-form\"foo\"))\n",
+      "source_sha256": "6c1fd2c66f39224f6ccaf9991c1195b244dfcd9723aa819759e6b40e9c6a55fe",
+      "module_source": "src/test/cljs/data_readers_test/core.cljc",
+      "configuration": {
+        "source": "src/test/cljs/data_readers.cljc",
+        "text": ";; Copyright (c) Rich Hickey. All rights reserved.\n;; The use and distribution terms for this software are covered by the\n;; Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)\n;; which can be found in the file epl-v10.html at the root of this distribution.\n;; By using this software in any fashion, you are agreeing to be bound by\n;; the terms of this license.\n;; You must not remove this notice, or any other, from this software.\n\n{cljs/tag clojure.core/identity\n cljs/inc clojure.core/inc\n cljs/union clojure.set/union\n test/custom-identity data-readers-test.core/custom-identity\n test/custom-form #?(:cljs data-readers-test.core/custom-form-cljs :clj clojure.core/identity)}\n",
+        "sha256": "344170f2e2b2b00dd8e21d4450f33b951eb48c9da62ef4857e175282a1f7f9d9"
+      },
+      "configured_readers": [
+        {
+          "tag": "test/custom-identity",
+          "source": "identity"
+        },
+        {
+          "tag": "test/custom-form",
+          "source": "(fn [x] `(js/Array.of ~x))",
+          "original_phase": "custom-form-cljs :clj source-compilation branch"
+        }
+      ],
+      "expected": {
+        "id": "cljs-original-configured-custom-reader-context",
+        "outcome": {
+          "status": "returned",
+          "value": true
+        },
+        "trace": [],
+        "stdout": ""
+      },
+      "source_context_profile": {
+        "schema_version": 1,
+        "profile": "original-custom-source-reader-form-v1"
+      },
+      "original_assertion": {
+        "id": "src/test/cljs/data_readers_test/core.cljc::top-level-003::assertion-001",
+        "source": "src/test/cljs/data_readers_test/core.cljc",
+        "test": "top-level-003",
+        "ordinal": 1,
+        "body_id": "src/test/cljs/data_readers_test/core.cljc::top-level-003",
+        "body_sha256": "9af4a87d9b1f8d7b3bddb165279a6c533021f22c8b01b355603b502a0128dddd",
+        "feature": "core-helpers",
+        "features": [
+          "core-helpers"
+        ],
+        "disposition": "in-scope",
+        "category": "source-language",
+        "reason": "Complete source-language obligation; no execution inferred from inventory.",
+        "status": "missing",
+        "active": true,
+        "inactive_reason": null,
+        "context": [],
+        "kind": "assert",
+        "assertion": {
+          "start_line": 13,
+          "end_line": 13,
+          "start_byte": 518,
+          "end_byte": 556,
+          "sha256": "9af4a87d9b1f8d7b3bddb165279a6c533021f22c8b01b355603b502a0128dddd",
+          "text": "(assert (= 1 #test/custom-identity 1))"
+        },
+        "obligation_kind": "source-assertion",
+        "family": "public-residual",
+        "owner": "light-cljs-125",
+        "historical_scope": false,
+        "dialect_contract": null
+      },
+      "prospective_original_assertion_credit": 1,
+      "complete_original_module_sha256": "6c1fd2c66f39224f6ccaf9991c1195b244dfcd9723aa819759e6b40e9c6a55fe",
+      "native_stdout": null,
+      "hosted_source_adapter": {
+        "schema_version": 1,
+        "profile": "original-custom-source-reader-form-v1"
+      },
+      "complete_original_provenance": [
+        {
+          "body_id": "src/test/cljs/data_readers_test/core.cljc::top-level-003",
+          "source_sha256": "9af4a87d9b1f8d7b3bddb165279a6c533021f22c8b01b355603b502a0128dddd"
+        }
+      ],
+      "reference_adaptation": "Complete unchanged original CLJC and data_readers.cljc configuration. Compiler embedding uses the genuine original custom-form-cljs :clj form-producing branch. The sole original assert and independently added Array.of result check execute in each phase."
     }
   ],
   "full-witnesses.jsonl": [
@@ -1849,6 +1931,12 @@
       "assertion_sha256": "499c2d7d887288d3fee0f63a58bdfed6888a940e2ed15346f31bc1a5418d5606",
       "fixture_id": "cljs-hosted-original-repl-context",
       "rationale": "Both complete original REPL bodies use the exact original Error->map source function and core Throwable->map dependency. Both references execute canonical cljs.repl. No entire cljs.repl namespace compatibility. Every original setup, assertion, expected value and failure path is retained; only the test assertion harness becomes assert."
+    },
+    {
+      "assertion_id": "src/test/cljs/data_readers_test/core.cljc::top-level-003::assertion-001",
+      "assertion_sha256": "9af4a87d9b1f8d7b3bddb165279a6c533021f22c8b01b355603b502a0128dddd",
+      "fixture_id": "cljs-original-configured-custom-reader-context",
+      "rationale": "Complete unchanged original CLJC and data_readers.cljc configuration. Compiler embedding uses the genuine original custom-form-cljs :clj form-producing branch. The sole original assert and independently added Array.of result check execute in each phase."
     }
   ],
   "complete-body-phase-mappings": [
@@ -1862,7 +1950,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/keyword/cljs/keyword_test.cljs": "ad38e35648b0f3a87b66cc3d39fa86c729718cb0af0981f521553fd3fc3cb944",
@@ -1881,7 +1969,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/syntax-quote/cljs/syntax_quote_test.cljs": "9cb089e6140b4afc686a0a392c67f837e6bb82fe02e79d93518de3e78b80b616",
@@ -1899,7 +1987,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
@@ -1916,7 +2004,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-foo/cljs/ns_test/foo.cljs": "dd485a6843c361cb6b28dafacc95146d44c45270d91fab526d197ad7c9a3450c",
@@ -1933,7 +2021,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/cljs-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
@@ -1951,7 +2039,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/foo-shadow/foo/ns_shadow_test.cljs": "7a1d1a674faadc0982f2c3d787ffe7e8466391699dda67068c99b68cffadb479",
@@ -1969,7 +2057,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/top-level/cljs/top_level.cljs": "ecf36324188c46de092ddad498b959db3af3339a81a80fc97ee720b55d3ba5c5",
@@ -1986,7 +2074,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/js-keys/cljs/macro_test.cljs": "3782514a131be6ba1f6a06ddc953a5f99bfa2624a18020962be77ca52a179572",
@@ -2003,7 +2091,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -2023,7 +2111,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -2043,7 +2131,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -2063,7 +2151,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/macro-source/cljs/macro_test.cljs": "bd06890332fd4241949ec9f323df6923137d271472e149e170137c92c58dc457",
@@ -2083,7 +2171,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
@@ -2102,7 +2190,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
@@ -2121,7 +2209,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-test/cljs/ns_test.cljs": "c4c8c0f34563027641104aa2e8107684a4e7ad7c7c4bfc1c93716702d9ac7a25",
@@ -2140,7 +2228,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/ns-exists/cljs/ns_test.cljs": "62f941cd8dcba802c664c068ee0d6c1901bb98f62485edd533e4f4e9569b02d3",
@@ -2159,7 +2247,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/static/static/core_test.cljs": "746c42306c1fd4ca957cf2dd92196d46e90ba5bd4d9f2deadebbff66f3e560d9",
@@ -2176,7 +2264,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/tagged-runtime/cljs/tagged_literals_test.cljs": "4414eb7222cb6a88517fa70afd4ba1140299543b860c53b994a800aad41ae7e2",
@@ -2193,7 +2281,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/edn-stream/clojure/edn_test.cljs": "9a9c0baea6512d9de2dcf44aeba59f2d3874a3a0f0f7787e83eddd7776fe4f2b",
@@ -2210,7 +2298,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2227,7 +2315,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2244,7 +2332,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2261,7 +2349,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2278,7 +2366,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2295,7 +2383,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2312,7 +2400,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -2330,7 +2418,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -2348,7 +2436,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -2366,7 +2454,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -2384,7 +2472,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/letfn/cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
@@ -2469,7 +2557,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
@@ -2486,7 +2574,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
@@ -2503,7 +2591,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
@@ -2520,7 +2608,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
@@ -2537,7 +2625,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/record-literals/data_readers_test/records.cljs": "d5674c46d5a5935d4be35d238ae047e41786d12529860186670c116bd8a4a7ee",
@@ -2596,7 +2684,7 @@
           "local_execution": {
             "test_file": "tests/compiler_residual_source_context.rs",
             "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-            "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+            "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
           },
           "support_source_sha256": {
             "tests/fixtures/compiler-residual-source-context/tagged-source/cljs/tagged_literals_test.cljs": "c930ca1c14e49238919acb92cbac85c0eae2c8f3674df99d6d277b48e95a777e",
@@ -2635,7 +2723,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "reference_fixture_id": "cljs-residual-source-context-apply",
       "reference_source_sha256": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
@@ -2650,7 +2738,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "reference_fixture_id": "cljs-residual-source-context-binding",
       "reference_source_sha256": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
@@ -2665,7 +2753,7 @@
       "local_execution": {
         "test_file": "tests/compiler_residual_source_context.rs",
         "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-        "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6"
+        "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5"
       },
       "reference_fixture_id": "cljs-residual-source-context-letfn",
       "reference_source_sha256": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
@@ -2680,7 +2768,7 @@
       "rationale": "Each of the six original function candidates executes this four-argument apply call inside the complete original doseq, asserting the literal range 0 through 9. The separate original multi-arity-variadic doseq repeats the call across all six candidates. All six complete active apply bodies, both original setup forms, every other argument path, errors and eager messages remain in the namespace oracle. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
       "test_file": "tests/compiler_residual_source_context.rs",
       "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-      "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6",
+      "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5",
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs": "c57862a28018871e133538c6319a8d3737878c8ff0662a585cd1ca3aadb9ddf7",
         "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"
@@ -2693,7 +2781,7 @@
       "rationale": "The complete original test-binding body executes binding with its original vector and body, asserts the cross-namespace value is 2 inside and restored to 1 afterward. The complete original parallel binding body asserts initializer visibility remains 2. The complete companion namespace and every original local setup form remain; separate redefs bodies also execute unchanged. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
       "test_file": "tests/compiler_residual_source_context.rs",
       "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-      "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6",
+      "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5",
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test.cljs": "6b0df864fd46e8c361e7d8cf898966a137cceeeab2ea4b6423bec79a18da48ad",
         "tests/fixtures/compiler-residual-source-context/binding/cljs/binding_test_other_ns.cljs": "bc77f0edc92840c734352be9232a0bbfbed9fd5e74774efdc3aee0775fac6554",
@@ -2707,7 +2795,7 @@
       "rationale": "The complete original test-letfn body executes the actual public letfn macro with its original vector of mutually recursive ev?/od? function specs and all eight original assertion body forms. Every recursive call and literal zero/even/odd result remains in lexical scope. This maps only the resolved defmacro signature; the distinct imported letfn declaration with unresolved signature receives no credit. The entire namespace returns literal true with empty trace/stdout in both identity/settings-checked pins, Node/QuickJS applications and actual macro computations using fresh/reused MacroHosts. Historical assertion witnesses remain byte-identical and are not duplicated. The declaration body/signature binding is source evidence; fresh execution remains required for report coverage.",
       "test_file": "tests/compiler_residual_source_context.rs",
       "test_name": "complete_residual_namespace_bodies_execute_in_both_phases",
-      "test_source_sha256": "bd373ad6347a03de56bea5200396c8e0b582f551d94cee1956c495ee6c2975c6",
+      "test_source_sha256": "3b0ef25759e1b0676fe34784d8d0093297a0a75c493a0281ca34c9f8adf5a7f5",
       "support_source_sha256": {
         "tests/fixtures/compiler-residual-source-context/letfn/cljs/letfn_test.cljs": "fd59d96c3cc22b0f9de3afd31012c7096d8939919c2d6e996e9d1b788962b4bd",
         "tests/fixtures/compiler-residual-source-context.tsv": "58de08f11a2f096844689763f2012909ca7cf3c04fe409205aecb2c3f19bb982"

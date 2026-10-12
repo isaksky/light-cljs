@@ -1,0 +1,1215 @@
+{
+  "schema_version": 1,
+  "scope": "New distinct complete original both-pin production declaration gap; diagnostic only, no repair/current contrast/original semantic credit",
+  "original_semantic_pass_credit": 0,
+  "source_binding": {
+    "id": "sci-execution-sci-var-declare-result",
+    "sci_id": "sci-var-declare-result",
+    "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-declare-result",
+    "body_sha256": "83d039fca2d9d14d6c5b58bc9b29c85d695bf2dffe32a7cebd16bf87bd2600df",
+    "original_row_sha256": "9efc2f2d1c53abdb6c2ab16685725f5fcf5adc279fe44944c1769529ae6f3e69",
+    "source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+    "original_source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+    "source": "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+    "original_fields": [
+      "sci-var-declare-result",
+      "portable",
+      "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+      "(return (vector (bool true) (symbol - u007a) nil))",
+      "(vector)",
+      "(string u)",
+      "(string u)"
+    ],
+    "expected": {
+      "id": "sci-execution-sci-var-declare-result",
+      "outcome": {
+        "status": "returned",
+        "value": {
+          "$vector": [
+            true,
+            {
+              "$symbol": {
+                "namespace": null,
+                "name": "z",
+                "spelling": "z"
+              }
+            },
+            null
+          ]
+        }
+      },
+      "trace": [],
+      "stdout": ""
+    },
+    "isolated": true,
+    "reference_isolated": true,
+    "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+  },
+  "expected_canonical_literal": {
+    "id": "sci-execution-sci-var-declare-result",
+    "outcome": {
+      "status": "returned",
+      "value": {
+        "$vector": [
+          false,
+          null,
+          null
+        ]
+      }
+    },
+    "trace": [],
+    "stdout": ""
+  },
+  "classification": "Both default canonical pins execute the unchanged complete declaration source and return[false,nil,nil]. Current local compiler rejects uninitialized declare in value position before either engine executes. No original SCI[true,z,nil] credit is asserted.",
+  "root": "/private/tmp/light-cljs-125-var-context-inspection-after190-v1",
+  "complete_discovery_receipt": {
+    "schema_version": 1,
+    "scope": "Read-only complete unadapted original record inspection; no current source/phase/ledger credit",
+    "original_semantic_pass_credit": 0,
+    "producer_source_sha256": {
+      "Cargo.lock": "6d74dd7010ccd891214e7d431002372fc6d6be403c918da5cc2ddfa20a631f94",
+      "Cargo.toml": "8f06ae789fa28e0da619daada10bacc8f3592ee544bf93e47985b4e96597215f",
+      "src/analyzer.rs": "88973715550fa3f85face0779799e51090373e125265b9983bfd0fc0a2dc0c00",
+      "src/application.rs": "8a01571f25ec47e3037ecd3650a16bf2094e765b34f9f6bb61d65a79fcd3f952",
+      "src/char_classes.rs": "7ee18f9e4aae373ee18f07594b8d138a7725e4271a82ba97af74d6497894c21b",
+      "src/compilation_session.rs": "3099c585f459370a7568fb105d7948d6f302efa8e34574579cc2c802a6c2ef24",
+      "src/compiler.rs": "3669f8d3ed86467d0a02efc7a2534c6f408ab7eadc76602a89b96329b531b86d",
+      "src/compiler_binding_macros.rs": "0bbee07b31add395fbab72c8dde00e5eb1d4933617920bd17a9985ec6825f65f",
+      "src/compiler_bootstrap.rs": "31a3fa0b2ef8aa5304cab6adabe5f9e1d98e736a25d2542c0d969e3e12af08ea",
+      "src/compiler_core_macros.cljs": "943373135bd624239096c9a3fc59dc32463b700904d329964391ad09e2f4240c",
+      "src/compiler_data.rs": "abba6c244bea0de6fd3174432c2c2eeecc16eaaacb6c021b1aa5bca8664673ff",
+      "src/compiler_destructuring.rs": "2501a3ed0b289ed6ee236d4f634aedf03fc43360e277a1c3c403666444cee85e",
+      "src/compiler_libraries/cljs/reader.cljs": "0796c0846d0e98308e3fbefba3ee9e73233bb56981c325305da871db09db9a2e",
+      "src/compiler_libraries/clojure/edn.cljs": "31184e3a6dae3e07a2885286641ffa9a04bcfb4aac055dfa67af1034655582f9",
+      "src/compiler_libraries/clojure/set.cljs": "338960b36b39c264c1bd5c306ae0637c00b9a59ab0ce3f1914436a5e6a7fc7ba",
+      "src/compiler_libraries/clojure/string.cljs": "d8df8db9304c68b46627872311c3e05f16109c55163315b6ad2390ffe5acf1db",
+      "src/compiler_libraries/clojure/walk.cljs": "b2d2e5ec37788fb34784c96357ff0b700004c16ed13c26c03a975009116b8b23",
+      "src/compiler_libraries.rs": "54c78713afc459b6a70f39a3fb61605c4687a9d8fb7cc1397623da21a9762c61",
+      "src/compiler_names.rs": "81922abefdcd9b5c43b74e03219d71cfb3b3b3856b48b9765ba3eebae65b309a",
+      "src/compiler_reader.rs": "11624dc9449d9a7e55c1060d5b579f6388c1fe1c7d33c27c67447527c26247ed",
+      "src/compiler_roots.js": "5e439b86530704d55327fd7a2a5903124127924547f8bc22ae1a604e1f45ea90",
+      "src/compiler_sequence_macros.cljs": "976cbc3245765bc7e539183841e114d2504e121bcb0b828118b64a0920e06cad",
+      "src/core_public_bindings.tsv": "11068090263b21b2a5728f149509aac5d503ee888f4944188b7112ed7f98643b",
+      "src/core_var_metadata.tsv": "3640d41f2851df7ce73e9006ca6d3b03c518cf54d24dbc3bbeb8bbbe3c67595f",
+      "src/emitter.rs": "8f26957b2d1ca7a24dd3ab11e68be0fb20bd788c36c78d5f0380c21304e4097e",
+      "src/eval_cli.rs": "0a939123cf4c4d86c0e31520dd585e7ecfdd4ab6c8a67e493e8a4ad3320af1d3",
+      "src/eval_compiler.rs": "86f86df09966a4e76b8502cee341dbe97f685bf668d7211a826efcb75194380d",
+      "src/eval_session.rs": "825839bfebf8417cf63ab37348ead0c94d8d62885406f795007137ed0fb15be1",
+      "src/evaluator.rs": "25912b22d79dd0badd6e706e3af07a6ef1e138a0bdd89ca29b415abd538f8eb7",
+      "src/form_bridge.rs": "825ec16b89cf80c269924d3710522981575dc8664c86288a0b0ae0a1250fdb78",
+      "src/js_runtime.js": "bb10805cc1d78cb650847286707787b98e9bcc12f2698f973d3923544b1c8e24",
+      "src/lib.rs": "8ac689148e7805e515a24c5dba8c453bb0238cc9d4ce3bf46d1a1974d89d116d",
+      "src/literals.rs": "dc4b65d551a312c4d0ab8ac19743efeb411175c93a358f7bda7b812020128c6b",
+      "src/macro_host.rs": "3837080fdae1d39b9345647dcd48d33184dd83a9f5a48cf6f828bfcd4ae05a80",
+      "src/main.rs": "dd0a83de0d1138a91e2102e5fff62bf2b4a1df47d92442eaef2fc2993d4974c8",
+      "src/parser.rs": "d55ae578810990a6938686473709cd28531d2e8d134e8dc097b579960b330511",
+      "src/program_fragment.rs": "a7e47553802bfb8d7afa3239335b3b4335c361ae1453ae38149021c6d13e6c28",
+      "src/reader_literals.rs": "36a431ee29a606370844a2f43fd2fcd21e92e39c9c8355f4b717fbe6239236ab",
+      "src/source_provider.rs": "474ef0b2b95b323e5ed350d380c9934e99d7e6fa4b0bee0355fb81defffaa5c7",
+      "tests/compiler_sci_execution.rs": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+      "tests/fixtures/sci-outcomes.tsv": "8dd8718da0639dc11ff1cc0d6186284a6b2f70e57919b47c34f3c5269db869e5",
+      "tests/reference/analysis_boundaries.clj": "d83ee980a408f9a07a4f54ae1a706307715bda635ef3806241a7bf6338e2dca0",
+      "tests/reference/compiler-language/configured_source_context.py": "c77dd9cc5fc597a540cfd850999b705c8cfb2db303de8217d8d7d32c9448db3e",
+      "tests/reference/compiler-language/report.py": "a6afb0bc8d92670ee65744d68acbcc40b1b7fd62c61e1bb567d3306d4ca974d3",
+      "tests/reference/compiler-language/sci-analysis.clj": "c5bd1f97423a8845269cd2eabbfb02837ab3d1600ac1164b8f32a64af9e62944",
+      "tests/reference/compiler-language/sci_execution.py": "aeb085a2a34ba3a67ca9443598ef6dc8f33898992571d98c6caa302b6e7160c0",
+      "tests/reference/compiler-language/sci_gap_return_candidates.py": "9e47550aa802d4a96390b9e609e5c67eb04e57014cf020967cd134ecd515394e",
+      "tests/reference/execution.clj": "b4ddffb33f0a26721ebb455c45a290617f70f50eb1bf30e2b0f4768cc3cecbf8",
+      "tests/reference/sci/evaluator-dispositions.tsv": "186d9e391aa8e468981a1f972d7fd4f5433971400587665fbbece65c305cd429",
+      "tests/support/execution.js": "d3ef06a53a7c894f98bd38c397dcb5f5c3783cee3016949e1d50fe66d46e4e99",
+      "tests/support/sci_execution_observation.js": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+    },
+    "reference_execution_binding": {
+      "programs": {
+        "node": "/opt/homebrew/Cellar/node@24/24.18.0/bin/node",
+        "clojure": "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure",
+        "cargo": "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo"
+      },
+      "executables_sha256": {
+        "/opt/homebrew/Cellar/node@24/24.18.0/bin/node": "b423af50c2fb0f4d79da9b8bd7df7279f6e4ee4221421dc26d26cca999f19615",
+        "/opt/homebrew/Cellar/clojure/1.12.4.1618/bin/clojure": "a266aa4f011e27ccbaac2cd359b72a3077ec26facf115904fefe6056eba74a15",
+        "/opt/homebrew/Cellar/rust/1.99.0/bin/cargo": "35152b6c4de025e32d70be80fdf70fd4bf42cdb69d630c0fe92ebe6901e340a9"
+      }
+    },
+    "script_sha256": "4576d3d9e09ca58886c1331cba610e473168b8aa1d07cb76a9e5efc786627cd1",
+    "source_bindings": [
+      {
+        "id": "sci-execution-sci-vars-dynamic-meta",
+        "sci_id": "sci-vars-dynamic-meta",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-vars-dynamic-meta",
+        "body_sha256": "d0f265f674c568ac342a21d9e857680ae47e70b264c1b62d6e4f0b84906a1eab",
+        "original_row_sha256": "63b669ac445afe714c79b57a2c89b6ab4de40ec2a5765cef3cea0fe51ed2a5e6",
+        "source_sha256": "295767b1bbde3305382d990528bb0236202ba666cf7d57db9d1fb534d23c445e",
+        "original_source_sha256": "295767b1bbde3305382d990528bb0236202ba666cf7d57db9d1fb534d23c445e",
+        "source": "(def ^{:dynamic (odd? 1)} x 1) [(:dynamic (meta #'x)) (binding [x 2] x)]",
+        "original_fields": [
+          "sci-vars-dynamic-meta",
+          "portable",
+          "(def ^{:dynamic (odd? 1)} x 1) [(:dynamic (meta #'x)) (binding [x 2] x)]",
+          "(return (vector (bool true) (int 2)))",
+          "(vector)",
+          "(string u)",
+          "(string u)"
+        ],
+        "expected": {
+          "id": "sci-execution-sci-vars-dynamic-meta",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                true,
+                2
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "isolated": true,
+        "reference_isolated": true,
+        "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+      },
+      {
+        "id": "sci-execution-sci-var-root-reference",
+        "sci_id": "sci-var-root-reference",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-root-reference",
+        "body_sha256": "9365d85a15c9e4f41712f005a60bb5c7fff99d478bc2296ee88d671f2565429f",
+        "original_row_sha256": "97e7499c89c3a4dbffc0673b7a754784b5f2c810ee43833b1cea29479ac0fcaf",
+        "source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+        "original_source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+        "source": "(def x 1) (def saved #'x) (def f (fn* [] x)) (def x 2) [(identical? saved #'x) (deref saved) (f)]",
+        "original_fields": [
+          "sci-var-root-reference",
+          "portable",
+          "(def x 1) (def saved #'x) (def f (fn* [] x)) (def x 2) [(identical? saved #'x) (deref saved) (f)]",
+          "(return (vector (bool true) (int 2) (int 2)))",
+          "(vector)",
+          "(string u)",
+          "(string u)"
+        ],
+        "expected": {
+          "id": "sci-execution-sci-var-root-reference",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                true,
+                2,
+                2
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "isolated": true,
+        "reference_isolated": true,
+        "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+      },
+      {
+        "id": "sci-execution-sci-var-defonce-meta-order",
+        "sci_id": "sci-var-defonce-meta-order",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-defonce-meta-order",
+        "body_sha256": "c4291515758dbedbed7133cc1183b8808062b8e04c795905a2af66767ddfbd74",
+        "original_row_sha256": "b0b81d35eb9e2514e9d2c2a61a001717e920cd81818669dd5b5ac7d1c4d18242",
+        "source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+        "original_source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+        "source": "(defonce ^{:m (observe :meta)} x (observe :init)) (defonce ^{:m (observe :next)} x (observe :skipped)) [x (get (meta #'x) :m)]",
+        "original_fields": [
+          "sci-var-defonce-meta-order",
+          "portable",
+          "(defonce ^{:m (observe :meta)} x (observe :init)) (defonce ^{:m (observe :next)} x (observe :skipped)) [x (get (meta #'x) :m)]",
+          "(return (vector (keyword - u0069006e00690074) (keyword - u006e006500780074)))",
+          "(vector (keyword - u006d006500740061) (keyword - u0069006e00690074) (keyword - u006d006500740061) (keyword - u006e006500780074))",
+          "(string u)",
+          "(string u)"
+        ],
+        "expected": {
+          "id": "sci-execution-sci-var-defonce-meta-order",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "init",
+                    "spelling": "init"
+                  }
+                },
+                {
+                  "$keyword": {
+                    "namespace": null,
+                    "name": "next",
+                    "spelling": "next"
+                  }
+                }
+              ]
+            }
+          },
+          "trace": [
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "meta",
+                "spelling": "meta"
+              }
+            },
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "init",
+                "spelling": "init"
+              }
+            },
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "meta",
+                "spelling": "meta"
+              }
+            },
+            {
+              "$keyword": {
+                "namespace": null,
+                "name": "next",
+                "spelling": "next"
+              }
+            }
+          ],
+          "stdout": ""
+        },
+        "isolated": true,
+        "reference_isolated": true,
+        "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+      },
+      {
+        "id": "sci-execution-sci-var-declare-result",
+        "sci_id": "sci-var-declare-result",
+        "obligation_id": "local::tests/reference/sci/evaluator-dispositions.tsv::sci-var-declare-result",
+        "body_sha256": "83d039fca2d9d14d6c5b58bc9b29c85d695bf2dffe32a7cebd16bf87bd2600df",
+        "original_row_sha256": "9efc2f2d1c53abdb6c2ab16685725f5fcf5adc279fe44944c1769529ae6f3e69",
+        "source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+        "original_source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+        "source": "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+        "original_fields": [
+          "sci-var-declare-result",
+          "portable",
+          "[(var? (declare x)) (get (meta (declare y z)) :name) (declare)]",
+          "(return (vector (bool true) (symbol - u007a) nil))",
+          "(vector)",
+          "(string u)",
+          "(string u)"
+        ],
+        "expected": {
+          "id": "sci-execution-sci-var-declare-result",
+          "outcome": {
+            "status": "returned",
+            "value": {
+              "$vector": [
+                true,
+                {
+                  "$symbol": {
+                    "namespace": null,
+                    "name": "z",
+                    "spelling": "z"
+                  }
+                },
+                null
+              ]
+            }
+          },
+          "trace": [],
+          "stdout": ""
+        },
+        "isolated": true,
+        "reference_isolated": true,
+        "setup": "Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness."
+      }
+    ],
+    "evidence": {
+      "sci-execution-sci-vars-dynamic-meta": {
+        "local": {
+          "status": "mismatch",
+          "engines": {
+            "Node": {
+              "status": "mismatch",
+              "observed": {
+                "id": "sci-execution-sci-vars-dynamic-meta",
+                "outcome": {
+                  "status": "returned",
+                  "value": {
+                    "$vector": [
+                      {
+                        "$list": [
+                          {
+                            "$symbol": {
+                              "namespace": null,
+                              "name": "odd?",
+                              "spelling": "odd?"
+                            }
+                          },
+                          1
+                        ]
+                      },
+                      2
+                    ]
+                  }
+                },
+                "trace": [],
+                "stdout": ""
+              },
+              "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+            },
+            "QuickJS": {
+              "status": "mismatch",
+              "observed": {
+                "id": "sci-execution-sci-vars-dynamic-meta",
+                "outcome": {
+                  "status": "returned",
+                  "value": {
+                    "$vector": [
+                      {
+                        "$list": [
+                          {
+                            "$symbol": {
+                              "namespace": null,
+                              "name": "odd?",
+                              "spelling": "odd?"
+                            }
+                          },
+                          1
+                        ]
+                      },
+                      2
+                    ]
+                  }
+                },
+                "trace": [],
+                "stdout": ""
+              },
+              "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+            }
+          },
+          "source_sha256": "295767b1bbde3305382d990528bb0236202ba666cf7d57db9d1fb534d23c445e",
+          "test_file": "tests/compiler_sci_execution.rs",
+          "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+          "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+          "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+        },
+        "release": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-vars-dynamic-meta",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  {
+                    "$list": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "odd?",
+                          "spelling": "odd?"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  2
+                ]
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "830462c068dbc64eb472ba1b87ef4308dab7579ca4b40dc3a8e8019c26a865bc",
+          "original_source_sha256": "295767b1bbde3305382d990528bb0236202ba666cf7d57db9d1fb534d23c445e",
+          "isolated": true
+        },
+        "checkout": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-vars-dynamic-meta",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  {
+                    "$list": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "odd?",
+                          "spelling": "odd?"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  2
+                ]
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "830462c068dbc64eb472ba1b87ef4308dab7579ca4b40dc3a8e8019c26a865bc",
+          "original_source_sha256": "295767b1bbde3305382d990528bb0236202ba666cf7d57db9d1fb534d23c445e",
+          "isolated": true
+        }
+      },
+      "sci-execution-sci-var-root-reference": {
+        "local": {
+          "status": "mismatch",
+          "engines": {
+            "Node": {
+              "status": "mismatch",
+              "observed": {
+                "id": "sci-execution-sci-var-root-reference",
+                "outcome": {
+                  "status": "returned",
+                  "value": {
+                    "$vector": [
+                      false,
+                      2,
+                      2
+                    ]
+                  }
+                },
+                "trace": [],
+                "stdout": ""
+              },
+              "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+            },
+            "QuickJS": {
+              "status": "mismatch",
+              "observed": {
+                "id": "sci-execution-sci-var-root-reference",
+                "outcome": {
+                  "status": "returned",
+                  "value": {
+                    "$vector": [
+                      false,
+                      2,
+                      2
+                    ]
+                  }
+                },
+                "trace": [],
+                "stdout": ""
+              },
+              "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+            }
+          },
+          "source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+          "test_file": "tests/compiler_sci_execution.rs",
+          "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+          "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+          "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+        },
+        "release": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-var-root-reference",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  false,
+                  2,
+                  2
+                ]
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "5b12d37a10488d3921ba9f89615d290bae56a762357a7ee4a5ace031d17bbcea",
+          "original_source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+          "isolated": true
+        },
+        "checkout": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-var-root-reference",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  false,
+                  2,
+                  2
+                ]
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "5b12d37a10488d3921ba9f89615d290bae56a762357a7ee4a5ace031d17bbcea",
+          "original_source_sha256": "6a0a9ed677d0bc4db7fef713d1d32af9888fa07b3f47a4e28a0d6dbaa13f0f9c",
+          "isolated": true
+        }
+      },
+      "sci-execution-sci-var-defonce-meta-order": {
+        "local": {
+          "status": "mismatch",
+          "engines": {
+            "Node": {
+              "status": "mismatch",
+              "observed": {
+                "id": "sci-execution-sci-var-defonce-meta-order",
+                "outcome": {
+                  "status": "returned",
+                  "value": {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "init",
+                          "spelling": "init"
+                        }
+                      },
+                      {
+                        "$list": [
+                          {
+                            "$symbol": {
+                              "namespace": null,
+                              "name": "observe",
+                              "spelling": "observe"
+                            }
+                          },
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "next",
+                              "spelling": "next"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "trace": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "init",
+                      "spelling": "init"
+                    }
+                  }
+                ],
+                "stdout": ""
+              },
+              "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+            },
+            "QuickJS": {
+              "status": "mismatch",
+              "observed": {
+                "id": "sci-execution-sci-var-defonce-meta-order",
+                "outcome": {
+                  "status": "returned",
+                  "value": {
+                    "$vector": [
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "init",
+                          "spelling": "init"
+                        }
+                      },
+                      {
+                        "$list": [
+                          {
+                            "$symbol": {
+                              "namespace": null,
+                              "name": "observe",
+                              "spelling": "observe"
+                            }
+                          },
+                          {
+                            "$keyword": {
+                              "namespace": null,
+                              "name": "next",
+                              "spelling": "next"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "trace": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "init",
+                      "spelling": "init"
+                    }
+                  }
+                ],
+                "stdout": ""
+              },
+              "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1"
+            }
+          },
+          "source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+          "test_file": "tests/compiler_sci_execution.rs",
+          "test_name": "retained_sci_sources_execute_in_node_and_quickjs",
+          "test_source_sha256": "dd993a0c22edcc0249559a67fbc4f69a658ded584812ec8d1a53157d6546418f",
+          "adapter_source_sha256": "8683da8f4ca1e0e8bbbae9180b1751ba8de25040d2995ab0fe3cbaa281bfc240"
+        },
+        "release": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-var-defonce-meta-order",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "init",
+                      "spelling": "init"
+                    }
+                  },
+                  {
+                    "$list": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "observe",
+                          "spelling": "observe"
+                        }
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "next",
+                          "spelling": "next"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "trace": [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "init",
+                  "spelling": "init"
+                }
+              }
+            ],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "fe4ba792dceb8a2a26ccd630825a7432b00424ae39f82a6ac330745819822725",
+          "original_source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+          "isolated": true
+        },
+        "checkout": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-var-defonce-meta-order",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  {
+                    "$keyword": {
+                      "namespace": null,
+                      "name": "init",
+                      "spelling": "init"
+                    }
+                  },
+                  {
+                    "$list": [
+                      {
+                        "$symbol": {
+                          "namespace": null,
+                          "name": "observe",
+                          "spelling": "observe"
+                        }
+                      },
+                      {
+                        "$keyword": {
+                          "namespace": null,
+                          "name": "next",
+                          "spelling": "next"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "trace": [
+              {
+                "$keyword": {
+                  "namespace": null,
+                  "name": "init",
+                  "spelling": "init"
+                }
+              }
+            ],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "fe4ba792dceb8a2a26ccd630825a7432b00424ae39f82a6ac330745819822725",
+          "original_source_sha256": "8805a3deed56fd5ec058b580fe87e5c606d34bc6d0cfe512b4280d499c48e383",
+          "isolated": true
+        }
+      },
+      "sci-execution-sci-var-declare-result": {
+        "local": {
+          "status": "rejected",
+          "detail": [
+            "\"AnalysisError { kind: Unsupported(\\\"uninitialized declare in a value position (the reference emits invalid JavaScript)\\\"), span: 22..33 }\""
+          ]
+        },
+        "release": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-var-declare-result",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  false,
+                  null,
+                  null
+                ]
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "release 1.12.134",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "203638199d7294bb2b38ac9f8bd22d1e868329cffd5bd303239665e35f4f3cb8",
+          "original_source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+          "isolated": true
+        },
+        "checkout": {
+          "status": "mismatch",
+          "observed": {
+            "id": "sci-execution-sci-var-declare-result",
+            "outcome": {
+              "status": "returned",
+              "value": {
+                "$vector": [
+                  false,
+                  null,
+                  null
+                ]
+              }
+            },
+            "trace": [],
+            "stdout": ""
+          },
+          "reference_identity": "checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e",
+          "settings": {
+            "optimizations": "none",
+            "static-fns": false,
+            "def-emits-var": false
+          },
+          "comparison_projection": "SCI Number/character/finite list-vs-seq projection v1",
+          "stderr": "",
+          "source_sha256": "203638199d7294bb2b38ac9f8bd22d1e868329cffd5bd303239665e35f4f3cb8",
+          "original_source_sha256": "1b3548b5e8872b3b44e00269e5e7ed7f23e5825409f7a099d47496d2ee4ef8e0",
+          "isolated": true
+        }
+      }
+    },
+    "artifact_sha256": {
+      "checkout/execution/build/invocation.json": "441409545a96e06ad33085af7a2f5a49127bc815310f745e28c6cdd25c9759d5",
+      "checkout/execution/build/stderr": "99adff4858c4437fe36c06e0b85b52f8f5e1ac38c76cfe1c869b28de5b89da84",
+      "checkout/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "checkout/execution/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "checkout/execution/cases.tsv": "08cee679f0647f08e12eca2d1c2e160851dec45b6b5cc7eedb396327416c4047",
+      "checkout/execution/node-0/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "checkout/execution/node-0/stderr": "080c198936712b055e3f824650978855208ac03901da041c492cbb9946df00bc",
+      "checkout/execution/node-0/stdin": "0050a13873ffbffe7476f2194148ee810e509a81358a80cce2d962d7a5d809eb",
+      "checkout/execution/node-0/stdout": "e55fa31ccf3818ce829f2e4837a50f00711e7a8056729e112a6deaf5d003a228",
+      "checkout/execution/node-1/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "checkout/execution/node-1/stderr": "eab099fdc2fe063ca52388aa5398ed1a67c61520fff573691243c39a024c50ec",
+      "checkout/execution/node-1/stdin": "5c60c179af8ab7604fa312807a09099febf6fe1d6db47f00e6feee60c22ea200",
+      "checkout/execution/node-1/stdout": "97400167b8806d1bd6cf1b1b519c57cedc1c97d90fdac930c309f4e97b5e55f2",
+      "checkout/execution/node-2/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "checkout/execution/node-2/stderr": "176469f827cc9b3ccc353eb3aa149f83fe2bdb136630deff90d986828e6db2eb",
+      "checkout/execution/node-2/stdin": "7eb00ba8a51239bc531b5ed2156288268619b0ece9041cbdb89b5e86cf8a81b7",
+      "checkout/execution/node-2/stdout": "92d1aa6e885d76357c76ed448f300e237580fce92fac35f51e87c7f137625fef",
+      "checkout/execution/node-3/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "checkout/execution/node-3/stderr": "a5cee8df6e2a846daecb3b4ffb0c4b41a941d97433e0ae2adde14da89990c4f8",
+      "checkout/execution/node-3/stdin": "f97eff6145c16bf5999783d708ce999b0f967019f10c3e5f8f5ee2db03847a3f",
+      "checkout/execution/node-3/stdout": "c6d256174414b28ca53c4dba4f67c158d77f6189322434ec9eff5ebe8e1a75d7",
+      "checkout/execution/out/cljs/core.cljs": "9734617a341b58f65bdf0786d895d920c83b5ca5b5ca4863e768ec65053927ca",
+      "checkout/execution/out/cljs/core.js": "c91bcca2de8db579e4a5cc815765f85b7628d6996a4847c4c7e8401c47717bcd",
+      "checkout/execution/out/cljs/core.js.map": "bb23460b30376494f2c318045806f6e2640edf48eaae49ef886b62310eef5f51",
+      "checkout/execution/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+      "checkout/execution/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+      "checkout/execution/out/cljs_deps.js": "80a598c89fbb790d481996ac8c27b9a490d61bb9aaacaadf0678e3c42b376c96",
+      "checkout/execution/out/cljsc_opts.edn": "c65b6e869470a8d74967cac1dfbd6f1d554cccbf7ff02a4873603d4611385abb",
+      "checkout/execution/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+      "checkout/execution/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+      "checkout/execution/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+      "checkout/execution/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+      "checkout/execution/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+      "checkout/execution/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+      "checkout/execution/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+      "checkout/execution/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+      "checkout/execution/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+      "checkout/execution/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+      "checkout/execution/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+      "checkout/execution/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+      "checkout/execution/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+      "checkout/execution/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+      "checkout/execution/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+      "checkout/execution/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+      "checkout/execution/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+      "checkout/execution/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+      "checkout/execution/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+      "checkout/execution/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+      "checkout/execution/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+      "checkout/execution/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+      "checkout/execution/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+      "checkout/execution/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+      "checkout/execution/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+      "checkout/execution/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+      "checkout/execution/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+      "checkout/execution/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+      "checkout/execution/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+      "checkout/execution/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+      "checkout/execution/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+      "checkout/execution/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+      "checkout/execution/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+      "checkout/execution/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+      "checkout/execution/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+      "checkout/execution/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+      "checkout/execution/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+      "checkout/execution/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+      "checkout/execution/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+      "checkout/execution/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+      "checkout/execution/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+      "checkout/execution/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+      "checkout/execution/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+      "checkout/execution/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+      "checkout/execution/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+      "checkout/execution/out/nodejs.js": "20614da71f8eccf719d9cb81f32c08aeb2c47e6b64ec77bab95e4bfbe7bf4612",
+      "checkout/execution/out/nodejs.js.map": "09d18a0f06692235c9f7305d1b25a2039ffb0f89d59e7e60fef1edca92346857",
+      "checkout/execution/out/nodejscli.js": "3dce6bf8983d5dae8db9d42d34d41be30a8f58073e766e837dda6f947254cc49",
+      "checkout/execution/out/nodejscli.js.map": "167d3d634005bdd2c27bb2776988efe6261604a6130fd710ecc79f7fb1ae17ff",
+      "checkout/execution/out/semantic/case0.cljs": "df3bcab80daf08d7c790263bdf20d6a9d0676172498ad5c8c0c09a72e822d45c",
+      "checkout/execution/out/semantic/case0.js": "75512c1d9861bddffec9ad9e531d8e955fbaade82913175462b2cd762ed1da52",
+      "checkout/execution/out/semantic/case0.js.map": "fd734a8ef26c436152fdcaa815df69fc5c0194082115fee7a720ad18f8e93ed7",
+      "checkout/execution/out/semantic/case1.cljs": "4202618b764517f9f39aba9686cee2b30cd9925704582686f7fa0d92057247c5",
+      "checkout/execution/out/semantic/case1.js": "7f1b47a3c9ec0c6aa31143f5e79e26e14940e98510884b7ab7bffd25a403ecc8",
+      "checkout/execution/out/semantic/case1.js.map": "374876fa05c94786c4a5d6f1f3729b0c2341e2dd5e5ba4308ae6cb64b1a0d0fe",
+      "checkout/execution/out/semantic/case2.cljs": "887069615a1aec8af8f2ac9108790a01ee19a7e6083c12523e9404ac06f844b3",
+      "checkout/execution/out/semantic/case2.js": "11a815332c52f2f97f641922c06cd716859fe8f017418d7ea3daa4bc6713ef7b",
+      "checkout/execution/out/semantic/case2.js.map": "bb7ef773aeabd241ae7fa005f250ba49b6a8f217a31c0d742c8d6a66540bbb67",
+      "checkout/execution/out/semantic/case3.cljs": "1dd53938b76b5dc1941ee5fa262c59f3d6ca5a3d35a5c537c0aa93e13212e1c2",
+      "checkout/execution/out/semantic/case3.js": "65b442de07114f58046106c8dbce4d8bdce40511196d06e4f4c55a366eb17063",
+      "checkout/execution/out/semantic/case3.js.map": "aac18722050196ddf281c30d4f3931bcd41550ec3e9cfa0a08f19cf037e8c940",
+      "checkout/execution/out/semantic/reference.cljs": "03ba963e71800eafa53c077f8bc991476a698167240ffde6fd08ec440ac32f0f",
+      "checkout/execution/out/semantic/reference.js": "83883d2fc0cf3084eaeadd143339f33679cab5db1f4596c6a9ac6d4ba8e0a775",
+      "checkout/execution/out/semantic/reference.js.map": "f6a7bedb9cfb689c48703b640d072dc26a94b0bf259eb2e143c0187ee85c5aea",
+      "checkout/execution/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+      "checkout/execution/src/semantic/case0.cljs": "df3bcab80daf08d7c790263bdf20d6a9d0676172498ad5c8c0c09a72e822d45c",
+      "checkout/execution/src/semantic/case1.cljs": "4202618b764517f9f39aba9686cee2b30cd9925704582686f7fa0d92057247c5",
+      "checkout/execution/src/semantic/case2.cljs": "887069615a1aec8af8f2ac9108790a01ee19a7e6083c12523e9404ac06f844b3",
+      "checkout/execution/src/semantic/case3.cljs": "1dd53938b76b5dc1941ee5fa262c59f3d6ca5a3d35a5c537c0aa93e13212e1c2",
+      "checkout/execution/src/semantic/reference.cljs": "03ba963e71800eafa53c077f8bc991476a698167240ffde6fd08ec440ac32f0f",
+      "checkout/preflight/analysis.tsv": "05feec2e427fc3b72b84d5c69425a134281806b60a45d5af43c7f9087eede63f",
+      "checkout/preflight/build/invocation.json": "be274bf1df58d3409cee72a88839578d5ce0a48ba980e055f7e060af32544289",
+      "checkout/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "checkout/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "checkout/preflight/build/stdout": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "checkout/preflight/cases.tsv": "c57edbd5c4cb5dae4e00f490240471dd487eb38845e461eb4c29154be1ac4c5d",
+      "local/cargo.stderr": "0cbc3ee2009e25bdbf9e4e8e96da94d2619d9e85a6719881c848cca1764e8be7",
+      "local/cargo.stdout": "c34d3ec985be65fd5680ea12a07a00bca37cd47c75df97121b4cf77991c2fc9e",
+      "local/input.tsv": "fccd15647729215d89bb8d7957b1a4b497f088f26223407f3d24b354fcf27f72",
+      "local/observations.tsv": "56e154ecd838541c3678dd8d028e919c2d6daf5419054002227e037a9fe82e49",
+      "release/execution/build/invocation.json": "8477515385d6bdabb0fc4e2d2d4d0184925ad6bc61f340ccf71046ca675666b0",
+      "release/execution/build/stderr": "c0b36479071f7dedf053a67f6c4b63ccc7c770d62551c74098ab96acdcbda5a2",
+      "release/execution/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "release/execution/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "release/execution/cases.tsv": "08cee679f0647f08e12eca2d1c2e160851dec45b6b5cc7eedb396327416c4047",
+      "release/execution/node-0/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "release/execution/node-0/stderr": "080c198936712b055e3f824650978855208ac03901da041c492cbb9946df00bc",
+      "release/execution/node-0/stdin": "c349bf3bd228e5e736f3c834e483685d0501674dd61fba4c3baa7c75f2048cfc",
+      "release/execution/node-0/stdout": "e55fa31ccf3818ce829f2e4837a50f00711e7a8056729e112a6deaf5d003a228",
+      "release/execution/node-1/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "release/execution/node-1/stderr": "eab099fdc2fe063ca52388aa5398ed1a67c61520fff573691243c39a024c50ec",
+      "release/execution/node-1/stdin": "4a67a3ed5fd0448f1ac4f33ae7f5e28125eeb2884629e4996103a1a4fff503b3",
+      "release/execution/node-1/stdout": "97400167b8806d1bd6cf1b1b519c57cedc1c97d90fdac930c309f4e97b5e55f2",
+      "release/execution/node-2/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "release/execution/node-2/stderr": "176469f827cc9b3ccc353eb3aa149f83fe2bdb136630deff90d986828e6db2eb",
+      "release/execution/node-2/stdin": "c8b25946aac85ccceaf466e4c47e3c589bc5b0f6d0f2bd0cc800dddf57c549db",
+      "release/execution/node-2/stdout": "92d1aa6e885d76357c76ed448f300e237580fce92fac35f51e87c7f137625fef",
+      "release/execution/node-3/invocation.json": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "release/execution/node-3/stderr": "a5cee8df6e2a846daecb3b4ffb0c4b41a941d97433e0ae2adde14da89990c4f8",
+      "release/execution/node-3/stdin": "9cb61ece6638ac395aeb5d019be428eacc85b9d01d7b4b6d9dcf7d035b155705",
+      "release/execution/node-3/stdout": "c6d256174414b28ca53c4dba4f67c158d77f6189322434ec9eff5ebe8e1a75d7",
+      "release/execution/out/cljs/core.cljs": "35344afe7d6a56a610d85dd759a96eb84a0aac398faa80d31eb81ecdbd127e80",
+      "release/execution/out/cljs/core.js": "f857f90005523ec4fab7b0585e3e0a25ba26429cdc847549fea76a6ef77f4f22",
+      "release/execution/out/cljs/core.js.map": "266ebe88281ec6024d939b2223480d7a66587d6aa874f33f1af8c65961ede92c",
+      "release/execution/out/cljs/nodejs.cljs": "e70c69debe10f7b816b86df10d3562c096ce828570d800269cef66fed90b9722",
+      "release/execution/out/cljs/nodejscli.cljs": "bc43e26b3c4f928962413fcf1b035d232568df456710c659340ab8fd2e235a95",
+      "release/execution/out/cljs_deps.js": "8be0fb7ac659edab4aa497f5ad99b9a2ad62e1a85f3b0c8193138111fa8cc0c6",
+      "release/execution/out/cljsc_opts.edn": "732f4035cf3114ac85e5f3d3583059135f16c46ed46fb8f128117320822da0b6",
+      "release/execution/out/goog/array/array.js": "c5801ad7abaa0db06d639e4f56cc91009cb077da7bac62f8e2467de76382f206",
+      "release/execution/out/goog/asserts/asserts.js": "d73a31c49c426b7c491bd443b6683044896ff6837df7a45063bf3281fd1d3869",
+      "release/execution/out/goog/asserts/dom.js": "2f467f2c5b82b05974808f4795e461e79e0b3c08e4a17c7cf4657310089cf623",
+      "release/execution/out/goog/base.js": "5f112f51631fb5b92ef39fabf1427f5c4a4b1f93d3fbf8c799e5cb9486e5c1fc",
+      "release/execution/out/goog/bootstrap/nodejs.js": "1f45d7c223461195c7bb245cca429cd156b18da40733cec5b6a7ff58b7a7a097",
+      "release/execution/out/goog/collections/maps.js": "e3e74e75c03892914046b81c55aa50e27db28d4f52f311d350f4ef3c2f48f608",
+      "release/execution/out/goog/debug/error.js": "749ac0c7d09cef8a6f6e523fb5150f6a52aabc031b820b903d647821b5cd49ed",
+      "release/execution/out/goog/deps.js": "ccf78ff0c40ec9765f4bf7d052ffc75051ecedd66b22951c6eaad22945fc0606",
+      "release/execution/out/goog/dom/asserts.js": "76087d972557378ed991dac68cb3f0b753a87eaae081a9b4f8e12548f368874c",
+      "release/execution/out/goog/dom/element.js": "0e65505f6cb1fc4d58ccfe15bdbd30c560876cb5d3f46f690a787bd795292ab5",
+      "release/execution/out/goog/dom/htmlelement.js": "cf1a9434d2b3946b1b1807cde42b28463fac9850aaa52d33998699ff0329c2b3",
+      "release/execution/out/goog/dom/nodetype.js": "b5cc73fda1b5028390b464d063a49a8b597c08718dd305fa260afa694704eaae",
+      "release/execution/out/goog/dom/safe.js": "b5675befdf24bfff6fb073a96752d55fcbc55afbd5349bced14f1ce5819c347f",
+      "release/execution/out/goog/dom/tagname.js": "2d222ccfb7995abc8b26e43c39ef343ba6bb44c0c208b1913767dbf7d709c7d7",
+      "release/execution/out/goog/dom/tags.js": "10ea2e14fda3ce15e9657f5fe74d80cedde2587364daa29dfe639fd5ac8f3f36",
+      "release/execution/out/goog/flags/flags.js": "2b74d13a34e9ff7132dc1c330bcf2fc87cc67533bd171c6b6930bc998376da64",
+      "release/execution/out/goog/fs/blob.js": "5275203107d776d54a2c6f2f220d2afc6fcfd02dfb249750d91c7a0da2067797",
+      "release/execution/out/goog/fs/url.js": "0741cda9bbe8e9b31ffdd3da78cbfd75647534298f72904ef7c6b7599812c154",
+      "release/execution/out/goog/functions/functions.js": "2e8e8b8423b818f8b98d6580e1ab0f8543cd80df2673731c226cdfd96cafae42",
+      "release/execution/out/goog/html/safehtml.js": "b44c67867a02b8909818c7c12676b728fd26ec2de710893ae2b0c71774ca0a36",
+      "release/execution/out/goog/html/safescript.js": "968f354755c76dabccc69542565ba6c58cc8c6c8f67756e30d1d664071ce828b",
+      "release/execution/out/goog/html/safestyle.js": "9e629b233701b6ebabe72510f3e555e2f5ce5ab2c6dcc464b90ee7cf18256bf2",
+      "release/execution/out/goog/html/safestylesheet.js": "13b611fc73bf6792f19f1dd56d47a7707198a6cb176ab47b5732e78254ae8af6",
+      "release/execution/out/goog/html/safeurl.js": "150448b36b9c24809a3ab3c75458515ef6f5b62d05f94311753ba36ca82b364d",
+      "release/execution/out/goog/html/trustedresourceurl.js": "2ef652b5abae6b7cc65f0777a93b67a0d57990fe9b2b7e44e9c7af6b10f11fb6",
+      "release/execution/out/goog/html/trustedtypes.js": "e46cca8038b5cc5d85d361c11ca8a77c64191782047bf989265db080051bfb90",
+      "release/execution/out/goog/html/uncheckedconversions.js": "ea7894ed9a3c2fe8faf48e5bac1bc10381bea2b3acb10a5a5633f2168d038073",
+      "release/execution/out/goog/labs/useragent/browser.js": "944b68a75800b1e361de97d36fc8fcd1763937e13ae803869a065c9d8d714e52",
+      "release/execution/out/goog/labs/useragent/chromium_rebrands.js": "d052b428e0b53c94de8685035d40a8de4623b14d8a3714ff40f85d26f12e126e",
+      "release/execution/out/goog/labs/useragent/highentropy/highentropydata.js": "1a98281c1aa7eaff5248618ea37da6c040e7ad5fd8c0918f2f2cec5d8d581a8e",
+      "release/execution/out/goog/labs/useragent/highentropy/highentropyvalue.js": "b3d8ad61582557ba5e80e5673b55410c24e10f3c6e57b6e4b565563886efa2b2",
+      "release/execution/out/goog/labs/useragent/useragent.js": "c35712078ff0db2a0b03c8df75f35d300d196f9d2f618c8e4f8b7e660831c6d7",
+      "release/execution/out/goog/labs/useragent/util.js": "8d49ab9c00d6788e819cbdb15226a562561159fb0aaefc8999b128c5918721f7",
+      "release/execution/out/goog/math/integer.js": "d4c01e0a2dfbbad292768445b109ac683b436394f9f3984b3550da96ddb7b28a",
+      "release/execution/out/goog/math/long.js": "9d74e2e306b5d5a0828911dce2653857702dd5ceecf641acded6eb49c2963153",
+      "release/execution/out/goog/object/object.js": "b2cc82b953231beed94d9f7a8ebd68566cf469375dfbae5173fb28752d16831f",
+      "release/execution/out/goog/reflect/reflect.js": "15912d9ee23634e6d21a0321563a0b2faf25e5e55746ce25b9289891534328b5",
+      "release/execution/out/goog/string/const.js": "27d46b49dda111da1836c6ef0cdf445d8124d2710058c7a9b12129072916d1b5",
+      "release/execution/out/goog/string/internal.js": "1306bb25b5e95158320003f1b9bef13f1a133cea97f742121350372e4e14353a",
+      "release/execution/out/goog/string/string.js": "44e6267e2dd3eab8708f78f00ada2058e031fc3926b24045a0ee012a6c36f921",
+      "release/execution/out/goog/string/stringbuffer.js": "7cfa64e99ff63943f3608ceb1de8def2f98660472c7ed288a68d0e37524ee969",
+      "release/execution/out/goog/string/typedstring.js": "962a1a6493f54282282a829aaf67bd3f4d0287684c3ac519d8bab76a91307b95",
+      "release/execution/out/goog/structs/structs.js": "48e617b5b342999db6cb38c8b9bed33499f9d61b63c93d493a8582325bcc6056",
+      "release/execution/out/goog/uri/uri.js": "df89a7876322c2fd408d71bc412e8d4facec3d7aab066190384d7a5cf41a1fbd",
+      "release/execution/out/goog/uri/utils.js": "1905cf183459b3a737b8f024899ec0a57745422931103204121c2ef0f7d3ebd6",
+      "release/execution/out/nodejs.js": "ec157daf27b0bc391d7cadb4961a292daee81198a07f817be3f50383ac4f89dd",
+      "release/execution/out/nodejs.js.map": "e4811b0cd8f07cfdfb44507bb7e0b8c244dfad18beddaa506e701947c7121790",
+      "release/execution/out/nodejscli.js": "c0bae44187abfc84479b4cd0323b82bfe8e593421226bdef4fb0514da3edac0c",
+      "release/execution/out/nodejscli.js.map": "b9068db28281caf25fbfc830e28f833be83399d3675e93faae516c564809021e",
+      "release/execution/out/semantic/case0.cljs": "df3bcab80daf08d7c790263bdf20d6a9d0676172498ad5c8c0c09a72e822d45c",
+      "release/execution/out/semantic/case0.js": "ecebe63a0c24d2ac0812423687325875d68e2fa5437659f2610a2bbbc4131d98",
+      "release/execution/out/semantic/case0.js.map": "598325a65ed294b7ad0639f78ae686fe4731ae3f081a1b6ced4ec6d877bb00ed",
+      "release/execution/out/semantic/case1.cljs": "4202618b764517f9f39aba9686cee2b30cd9925704582686f7fa0d92057247c5",
+      "release/execution/out/semantic/case1.js": "3f6f910e158c4e4ac45f4a9f0bed4ec46b0bc44bae6de210daf537d84c7e9872",
+      "release/execution/out/semantic/case1.js.map": "2a184856b9a028f435af57915c14a3dc09203be9e5ab6f160f6103b8081ff3cc",
+      "release/execution/out/semantic/case2.cljs": "887069615a1aec8af8f2ac9108790a01ee19a7e6083c12523e9404ac06f844b3",
+      "release/execution/out/semantic/case2.js": "a916c739b04bcc601482a85519580402a86cfb0680bd5e7157244e5debd0a12a",
+      "release/execution/out/semantic/case2.js.map": "427cc74f0dacbefb8545d778a2d4f5b461148dd02416775fdca7cc35a1af2ffa",
+      "release/execution/out/semantic/case3.cljs": "1dd53938b76b5dc1941ee5fa262c59f3d6ca5a3d35a5c537c0aa93e13212e1c2",
+      "release/execution/out/semantic/case3.js": "39f1d1e4256e34aff4c50412cd6696afacf803e709394dbf0a22dca4a93a5a90",
+      "release/execution/out/semantic/case3.js.map": "779317f340d95fb880a0e82570a5db03b79ab325a8cfd96a75858de0ee8ff0ca",
+      "release/execution/out/semantic/reference.cljs": "03ba963e71800eafa53c077f8bc991476a698167240ffde6fd08ec440ac32f0f",
+      "release/execution/out/semantic/reference.js": "5cabfc1021b9546b008165af2936aaddca94675d40eaa95d1398ff3a08cc8160",
+      "release/execution/out/semantic/reference.js.map": "881a22ac977faf24da494ad6a10d5c561e636b46669f8274cc25ef86e19ab00f",
+      "release/execution/reference.js": "0ba6b7e4011c3cbdbdf0511ad66b6014a0c7379425a18205887a76f8c736a91f",
+      "release/execution/src/semantic/case0.cljs": "df3bcab80daf08d7c790263bdf20d6a9d0676172498ad5c8c0c09a72e822d45c",
+      "release/execution/src/semantic/case1.cljs": "4202618b764517f9f39aba9686cee2b30cd9925704582686f7fa0d92057247c5",
+      "release/execution/src/semantic/case2.cljs": "887069615a1aec8af8f2ac9108790a01ee19a7e6083c12523e9404ac06f844b3",
+      "release/execution/src/semantic/case3.cljs": "1dd53938b76b5dc1941ee5fa262c59f3d6ca5a3d35a5c537c0aa93e13212e1c2",
+      "release/execution/src/semantic/reference.cljs": "03ba963e71800eafa53c077f8bc991476a698167240ffde6fd08ec440ac32f0f",
+      "release/preflight/analysis.tsv": "05feec2e427fc3b72b84d5c69425a134281806b60a45d5af43c7f9087eede63f",
+      "release/preflight/build/invocation.json": "7d37cb820b1f98f3114a7a39f84a9de186eff2f8d9ec7e540f4f6436a058ce90",
+      "release/preflight/build/stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "release/preflight/build/stdin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "release/preflight/build/stdout": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "release/preflight/cases.tsv": "c57edbd5c4cb5dae4e00f490240471dd487eb38845e461eb4c29154be1ac4c5d",
+      "sources.json": "5e01735a7137461fc0d6d92948ac0a109b50936922950c58ef50541ce8559f48"
+    }
+  },
+  "producer_script": {
+    "source_text": "from pathlib import Path\nimport sys,json\nsys.path.insert(0,'/Users/admin/src/light-cljs/tests/reference/compiler-language')\nimport sci_execution as sci\nimport sci_originals_after190_candidates as current\nimport sci_gap_return_candidates as historical\nIDS=('sci-vars-dynamic-meta','sci-var-root-reference','sci-var-defonce-meta-order','sci-var-declare-result')\nroot=Path('/private/tmp/light-cljs-125-var-context-inspection-after190-v1');root.mkdir(exist_ok=False)\noriginals=sci.rows(sci.CORPUS);dispositions=sci.rows(sci.DISPOSITIONS);cases=[]\nfor identity in IDS:\n line,fields=dispositions[identity];oldline,old=originals[identity]\n if fields[:7]!=old or fields[2]!=fields[8] or fields[1]!='portable' or fields[7]!='gap':raise ValueError('Unadapted original record source/profile drift')\n cases.append({'id':'sci-execution-'+identity,'sci_id':identity,'obligation_id':'local::tests/reference/sci/evaluator-dispositions.tsv::'+identity,'body_sha256':sci.digest(line),'original_row_sha256':sci.digest(oldline),'source_sha256':sci.digest(old[2]),'original_source_sha256':sci.digest(old[2]),'source':old[2],'original_fields':old,'expected':sci.expected(old),'isolated':True,'reference_isolated':True,'setup':'Unchanged complete portable declaration/method/constructor/recur source, lexical observe, captured streaming stdout and original empty stderr; no source-name alias, host/library/reader fixture or reduced witness.'})\n(root/'sources.json').write_text(json.dumps(cases,indent=2)+'\\n');before=historical.snapshot();bindings=current.reference_execution_binding();evidence={r['id']:{} for r in cases}\nfor kind in ('local','release','checkout'):\n layers=sci.local_cases(cases,root/kind,300) if kind=='local' else sci.reference_cases(cases,kind,sci.ROOT/'research/clojurescript',root/kind,600)\n for identity,layer in layers.items():evidence[identity][kind]=layer\n print(kind,{identity:layer['status'] for identity,layer in layers.items()},flush=True)\nif before!=historical.snapshot() or bindings!=current.reference_execution_binding():raise ValueError('Read-only record inspection input/compiler/executable drift')\nreceipt={'schema_version':1,'scope':'Read-only complete unadapted original record inspection; no current source/phase/ledger credit','original_semantic_pass_credit':0,'producer_source_sha256':before,'reference_execution_binding':bindings,'script_sha256':sci.digest(Path(__file__).read_bytes()),'source_bindings':cases,'evidence':evidence,'artifact_sha256':{str(p.relative_to(root)):sci.digest(p.read_bytes()) for p in sorted(root.rglob('*')) if p.is_file()}}\n(root/'evidence.json').write_text(json.dumps(receipt,indent=2)+'\\n')\n",
+    "sha256": "4576d3d9e09ca58886c1331cba610e473168b8aa1d07cb76a9e5efc786627cd1"
+  },
+  "repair_performed": false,
+  "local_execution_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--test",
+    "compiler_sci_execution",
+    "retained_sci_sources_execute_in_node_and_quickjs",
+    "--",
+    "--ignored",
+    "--exact",
+    "--nocapture"
+  ],
+  "local_execution_environment": {
+    "LIGHT_CLJS_SCI_EXECUTION_INPUT": "/private/tmp/light-cljs-125-var-context-inspection-after190-v1/local/input.tsv",
+    "LIGHT_CLJS_SCI_EXECUTION_OUTPUT": "/private/tmp/light-cljs-125-var-context-inspection-after190-v1/local/observations.tsv"
+  },
+  "exact_canonical_and_local_artifacts": {
+    "local/input.tsv": {
+      "sha256": "fccd15647729215d89bb8d7957b1a4b497f088f26223407f3d24b354fcf27f72",
+      "text": "sci-execution-sci-vars-dynamic-meta\t28646566205e7b3a64796e616d696320286f64643f2031297d2078203129205b283a64796e616d696320286d657461202327782929202862696e64696e67205b7820325d2078295d\nsci-execution-sci-var-root-reference\t28646566207820312920286465662073617665642023277829202864656620662028666e2a205b5d2078292920286465662078203229205b286964656e746963616c3f20736176656420232778292028646572656620736176656429202866295d\nsci-execution-sci-var-defonce-meta-order\t286465666f6e6365205e7b3a6d20286f627365727665203a6d657461297d207820286f627365727665203a696e6974292920286465666f6e6365205e7b3a6d20286f627365727665203a6e657874297d207820286f627365727665203a736b69707065642929205b78202867657420286d6574612023277829203a6d295d\nsci-execution-sci-var-declare-result\t5b287661723f20286465636c61726520782929202867657420286d65746120286465636c6172652079207a2929203a6e616d652920286465636c617265295d\n"
+    },
+    "local/observations.tsv": {
+      "sha256": "56e154ecd838541c3678dd8d028e919c2d6daf5419054002227e037a9fe82e49",
+      "text": "sci-execution-sci-vars-dynamic-meta\texecuted\t{\"id\":\"sci-execution-sci-vars-dynamic-meta\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[{\"$list\":[{\"$symbol\":{\"namespace\":null,\"name\":\"odd?\",\"spelling\":\"odd?\"}},1]},2]}},\"trace\":[],\"stdout\":\"\"}\t{\"id\":\"sci-execution-sci-vars-dynamic-meta\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[{\"$list\":[{\"$symbol\":{\"namespace\":null,\"name\":\"odd?\",\"spelling\":\"odd?\"}},1]},2]}},\"trace\":[],\"stdout\":\"\"}\nsci-execution-sci-var-root-reference\texecuted\t{\"id\":\"sci-execution-sci-var-root-reference\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[false,2,2]}},\"trace\":[],\"stdout\":\"\"}\t{\"id\":\"sci-execution-sci-var-root-reference\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[false,2,2]}},\"trace\":[],\"stdout\":\"\"}\nsci-execution-sci-var-defonce-meta-order\texecuted\t{\"id\":\"sci-execution-sci-var-defonce-meta-order\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[{\"$keyword\":{\"namespace\":null,\"name\":\"init\",\"spelling\":\"init\"}},{\"$list\":[{\"$symbol\":{\"namespace\":null,\"name\":\"observe\",\"spelling\":\"observe\"}},{\"$keyword\":{\"namespace\":null,\"name\":\"next\",\"spelling\":\"next\"}}]}]}},\"trace\":[{\"$keyword\":{\"namespace\":null,\"name\":\"init\",\"spelling\":\"init\"}}],\"stdout\":\"\"}\t{\"id\":\"sci-execution-sci-var-defonce-meta-order\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[{\"$keyword\":{\"namespace\":null,\"name\":\"init\",\"spelling\":\"init\"}},{\"$list\":[{\"$symbol\":{\"namespace\":null,\"name\":\"observe\",\"spelling\":\"observe\"}},{\"$keyword\":{\"namespace\":null,\"name\":\"next\",\"spelling\":\"next\"}}]}]}},\"trace\":[{\"$keyword\":{\"namespace\":null,\"name\":\"init\",\"spelling\":\"init\"}}],\"stdout\":\"\"}\nsci-execution-sci-var-declare-result\trejected\t\"AnalysisError { kind: Unsupported(\\\"uninitialized declare in a value position (the reference emits invalid JavaScript)\\\"), span: 22..33 }\"\n"
+    },
+    "local/cargo.stdout": {
+      "sha256": "c34d3ec985be65fd5680ea12a07a00bca37cd47c75df97121b4cf77991c2fc9e",
+      "text": "\nrunning 1 test\ntest retained_sci_sources_execute_in_node_and_quickjs ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s\n\n"
+    },
+    "local/cargo.stderr": {
+      "sha256": "0cbc3ee2009e25bdbf9e4e8e96da94d2619d9e85a6719881c848cca1764e8be7",
+      "text": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s\n     Running tests/compiler_sci_execution.rs (target/debug/deps/compiler_sci_execution-9db24a87a1358a43)\n"
+    },
+    "release/execution/build/invocation.json": {
+      "sha256": "8477515385d6bdabb0fc4e2d2d4d0184925ad6bc61f340ccf71046ca675666b0",
+      "text": "[\"clojure\", \"-Srepro\", \"-Sdeps\", \"{:paths [] :deps {org.clojure/clojurescript {:mvn/version \\\"1.12.134\\\"}}}\", \"-M\", \"tests/reference/execution.clj\", \"release\", \"1.12.134\", \"-\", \"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/release/execution\", \"cases\", \"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/release/execution/cases.tsv\"]"
+    },
+    "release/execution/build/stdin": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text": ""
+    },
+    "release/execution/build/stdout": {
+      "sha256": "bd875254ed410724c16e8fff9dbb2fecf2fe654c14c27a195da6081c8266d86b",
+      "text": "REFERENCE IDENTITY release 1.12.134\nREFERENCE RUNTIME {:clojurescript \"1.12.134\", :clojure \"1.12.4\", :java \"25.0.2\"}\nREFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}\nREFERENCE IDENTITY release 1.12.134\nREFERENCE RUNTIME {:clojurescript \"1.12.134\", :clojure \"1.12.4\", :java \"25.0.2\"}\n"
+    },
+    "release/execution/build/stderr": {
+      "sha256": "c0b36479071f7dedf053a67f6c4b63ccc7c770d62551c74098ab96acdcbda5a2",
+      "text": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-var-context-inspection-after190-v1/release/execution/src/semantic/case1.cljs\n"
+    },
+    "release/execution/node-3/invocation.json": {
+      "sha256": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "text": "[\"node\", \"-\"]"
+    },
+    "release/execution/node-3/stdin": {
+      "sha256": "9cb61ece6638ac395aeb5d019be428eacc85b9d01d7b4b6d9dcf7d035b155705",
+      "text": "process.chdir(\"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/release/execution\");\nrequire(\"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/release/execution/reference.js\");\nconst selected = [3];\nglobalThis.lightCases = selected.map(i => lightCases[i]);\nglobalThis.lightCaseMetadata = selected.map(i => lightCaseMetadata[i]);\n// Shared outcome protocol for both compilers. Harness/serialization failures\n// escape this runner; only exceptions from the compiled case are outcomes.\n(() => {\n  // Backends supply trusted, shallow readers. Never recognize language values\n  // by a public property or a tag-shaped host object; recursion stays shared.\n  const inspect = globalThis.lightInspectValue || (() => null);\n  if (typeof inspect !== \"function\") throw new Error(\"invalid outcome adapter\");\n\n  function encode(value, ancestors = new Set()) {\n    if (value === undefined) return { $value: \"undefined\" };\n    if (typeof value === \"number\") {\n      if (Object.is(value, -0)) return { $number: \"-0\" };\n      if (Number.isNaN(value)) return { $number: \"NaN\" };\n      if (value === Infinity) return { $number: \"+Infinity\" };\n      if (value === -Infinity) return { $number: \"-Infinity\" };\n      return value;\n    }\n    if (value === null || typeof value === \"boolean\" || typeof value === \"string\") return value;\n    if (typeof value !== \"object\" || ancestors.has(value)) {\n      throw new Error(\"unsupported or cyclic outcome value\");\n    }\n    ancestors.add(value);\n    let result;\n    const language = inspect(value);\n    if (language !== null) {\n      if (language.kind === \"opaque\") throw new Error(\"unsupported opaque outcome value\");\n      if ((language.kind === \"keyword\" || language.kind === \"symbol\") &&\n          (language.namespace == null || typeof language.namespace === \"string\") &&\n          typeof language.name === \"string\" && typeof language.spelling === \"string\") {\n        // Constructor strings with multiple slashes can share name/namespace\n        // while carrying distinct full spellings and equality identities.\n        result = { [\"$\" + language.kind]: { namespace: encode(language.namespace, ancestors), name: language.name, spelling: language.spelling } };\n      } else if ([\"vector\", \"list\", \"seq\"].includes(language.kind) && Array.isArray(language.items)) {\n        result = { [\"$\" + language.kind]: Array.from(language.items, item => encode(item, ancestors)) };\n      } else if (language.kind === \"set\" && Array.isArray(language.items) &&\n                 Number.isInteger(language.count) && language.count === language.items.length) {\n        const seen = new Set();\n        const items = Array.from(language.items, item => {\n          const encoded = encode(item, ancestors), key = JSON.stringify(encoded);\n          if (seen.has(key)) throw new Error(\"duplicate encoded set member\");\n          seen.add(key);\n          return encoded;\n        });\n        items.sort((a, b) => {\n          const x = JSON.stringify(a), y = JSON.stringify(b);\n          return x < y ? -1 : x > y ? 1 : 0;\n        });\n        result = { $set: items, count: language.count };\n      } else if (language.kind === \"map\" && Array.isArray(language.entries) &&\n                 Number.isInteger(language.count) && language.count === language.entries.length) {\n        const keys = new Set();\n        const entries = Array.from(language.entries, entry => {\n          if (!Array.isArray(entry) || entry.length !== 2) throw new Error(\"invalid map entry\");\n          const pair = Array.from(entry, item => encode(item, ancestors));\n          const key = JSON.stringify(pair[0]);\n          if (keys.has(key)) throw new Error(\"duplicate encoded map key\");\n          keys.add(key);\n          return pair;\n        });\n        entries.sort((a, b) => {\n          const x = JSON.stringify(a), y = JSON.stringify(b);\n          return x < y ? -1 : x > y ? 1 : 0;\n        });\n        result = { $map: entries, count: language.count };\n      } else {\n        throw new Error(\"invalid outcome adapter result\");\n      }\n    } else if (Array.isArray(value)) {\n      result = Array.from(value, item => encode(item, ancestors));\n    } else if (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) {\n      // Tag plain objects so a host object cannot impersonate a special value.\n      result = { $object: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encode(item, ancestors)])) };\n    } else {\n      throw new Error(\"unsupported outcome object\");\n    }\n    ancestors.delete(value);\n    return result;\n  }\n\n  function failure(error) {\n    // Native categories, never engine-specific messages, names, or stacks.\n    for (const [type, category] of [\n      [TypeError, \"type-error\"], [RangeError, \"range-error\"],\n      [ReferenceError, \"reference-error\"], [SyntaxError, \"syntax-error\"],\n      [URIError, \"uri-error\"], [EvalError, \"eval-error\"], [Error, \"error\"],\n    ]) {\n      if (error instanceof type) return { category };\n    }\n    return { category: \"thrown-value\", value: encode(error) };\n  }\n\n  const programs = globalThis.lightCases;\n  const metadata = globalThis.lightCaseMetadata;\n  if (!Array.isArray(programs) || programs.length === 0 ||\n      !Array.isArray(metadata) || programs.length !== metadata.length ||\n      Array.from(metadata).some(row => !Array.isArray(row) || row.length !== 2 || Array.from(row).some(value => typeof value !== \"string\")) ||\n      new Set(metadata.map(([id]) => id)).size !== programs.length ||\n      Array.from(programs).some(program => typeof program !== \"function\")) {\n    throw new Error(\"compiler produced missing, invalid, or duplicate executable cases\");\n  }\n\n  for (let index = 0; index < programs.length; index++) {\n    const [id, source] = metadata[index];\n    process.stderr.write(`CASE START ${JSON.stringify({ id, source })}\\n`);\n    const trace = [];\n    const stdout = [];\n    globalThis.lightHost = {\n      value: 40,\n      get method() {\n        trace.push(\"method-get\");\n        return function(a, b) { trace.push([\"call\", a, b]); return this.value; };\n      },\n      receiver() { trace.push(\"receiver\"); return this; },\n      get path() { trace.push(\"path\"); return this; },\n      boundary(name) {\n        return { nil: null, undefined, \"negative-zero\": -0, nan: NaN,\n          infinity: Infinity, \"negative-infinity\": -Infinity }[name];\n      },\n      fail(kind) {\n        trace.push([\"throw\", kind]);\n        if (kind === \"type\") throw new TypeError(\"host failure\");\n        if (kind === \"range\") throw new RangeError(\"host failure\");\n        if (kind === \"reference\") throw new ReferenceError(\"host failure\");\n        if (kind === \"nil\") throw null;\n        if (kind === \"undefined\") throw undefined;\n        throw new Error(\"host failure\");\n      },\n    };\n    const observe = value => { trace.push(value); return value; };\n    const write = process.stdout.write;\n    // Capture the stream, including console.log and direct host writes. Buffer\n    // chunks are joined before decoding so split UTF-8 characters survive.\n    process.stdout.write = function(chunk, encoding, callback) {\n      stdout.push(Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk, typeof encoding === \"string\" ? encoding : \"utf8\"));\n      if (typeof encoding === \"function\") encoding();\n      else if (typeof callback === \"function\") callback();\n      return true;\n    };\n    let returned = false, value, error, observation;\n    try {\n      try {\n        value = programs[index](observe);\n        returned = true;\n      } catch (thrown) {\n        error = thrown;\n      }\n      // Finite lazy values can print while the observation bridge realizes\n      // them. Keep those effects in this case's capture, including trace values.\n      const outcome = returned ? { status: \"returned\", value: encode(value) }\n        : { status: \"threw\", error: failure(error) };\n      const encodedTrace = encode(trace);\n      observation = { id, outcome, trace: encodedTrace, stdout: Buffer.concat(stdout).toString(\"utf8\") };\n    } finally {\n      process.stdout.write = write;\n    }\n    write.call(process.stdout, JSON.stringify(observation) + \"\\n\");\n    process.stderr.write(`CASE END ${JSON.stringify({ id })}\\n`);\n  }\n})();\n"
+    },
+    "release/execution/node-3/stdout": {
+      "sha256": "c6d256174414b28ca53c4dba4f67c158d77f6189322434ec9eff5ebe8e1a75d7",
+      "text": "{\"id\":\"sci-execution-sci-var-declare-result\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[false,null,null]}},\"trace\":[],\"stdout\":\"\"}\n"
+    },
+    "release/execution/node-3/stderr": {
+      "sha256": "a5cee8df6e2a846daecb3b4ffb0c4b41a941d97433e0ae2adde14da89990c4f8",
+      "text": "CASE START {\"id\":\"sci-execution-sci-var-declare-result\",\"source\":\"(set! *print-newline* true) (set-print-fn! (fn [text] (.write (.-stdout js/process) text))) (set-print-err-fn! (fn [text] (.write (.-stderr js/process) text))) [(var? (declare x)) (get (meta (declare y z)) :name) (declare)]\"}\nCASE END {\"id\":\"sci-execution-sci-var-declare-result\"}\n"
+    },
+    "checkout/execution/build/invocation.json": {
+      "sha256": "441409545a96e06ad33085af7a2f5a49127bc815310f745e28c6cdd25c9759d5",
+      "text": "[\"clojure\", \"-Srepro\", \"-Sdeps\", \"{:paths [] :deps {org.clojure/clojurescript {:local/root \\\"/Users/admin/src/light-cljs/research/clojurescript\\\"}}}\", \"-M\", \"tests/reference/execution.clj\", \"checkout\", \"a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e\", \"/Users/admin/src/light-cljs/research/clojurescript\", \"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/checkout/execution\", \"cases\", \"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/checkout/execution/cases.tsv\"]"
+    },
+    "checkout/execution/build/stdin": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text": ""
+    },
+    "checkout/execution/build/stdout": {
+      "sha256": "e0c96c8d59e5c62fd4eb4c5918b4d6015ab91d64e077d05e5a8d250daab80cc7",
+      "text": "REFERENCE IDENTITY checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e\nREFERENCE RUNTIME {:clojurescript \"0.0.135109660\", :clojure \"1.12.4\", :java \"25.0.2\"}\nREFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}\nREFERENCE IDENTITY checkout a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e\nREFERENCE RUNTIME {:clojurescript \"0.0.135109660\", :clojure \"1.12.4\", :java \"25.0.2\"}\n"
+    },
+    "checkout/execution/build/stderr": {
+      "sha256": "99adff4858c4437fe36c06e0b85b52f8f5e1ac38c76cfe1c869b28de5b89da84",
+      "text": "WARNING: x at line 3 is being replaced at line 3 /private/tmp/light-cljs-125-var-context-inspection-after190-v1/checkout/execution/src/semantic/case1.cljs\n"
+    },
+    "checkout/execution/node-3/invocation.json": {
+      "sha256": "b413540c9fb0f20fd285c19e9230b839731b8ed577a09d939e6d13dfff092cf4",
+      "text": "[\"node\", \"-\"]"
+    },
+    "checkout/execution/node-3/stdin": {
+      "sha256": "f97eff6145c16bf5999783d708ce999b0f967019f10c3e5f8f5ee2db03847a3f",
+      "text": "process.chdir(\"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/checkout/execution\");\nrequire(\"/private/tmp/light-cljs-125-var-context-inspection-after190-v1/checkout/execution/reference.js\");\nconst selected = [3];\nglobalThis.lightCases = selected.map(i => lightCases[i]);\nglobalThis.lightCaseMetadata = selected.map(i => lightCaseMetadata[i]);\n// Shared outcome protocol for both compilers. Harness/serialization failures\n// escape this runner; only exceptions from the compiled case are outcomes.\n(() => {\n  // Backends supply trusted, shallow readers. Never recognize language values\n  // by a public property or a tag-shaped host object; recursion stays shared.\n  const inspect = globalThis.lightInspectValue || (() => null);\n  if (typeof inspect !== \"function\") throw new Error(\"invalid outcome adapter\");\n\n  function encode(value, ancestors = new Set()) {\n    if (value === undefined) return { $value: \"undefined\" };\n    if (typeof value === \"number\") {\n      if (Object.is(value, -0)) return { $number: \"-0\" };\n      if (Number.isNaN(value)) return { $number: \"NaN\" };\n      if (value === Infinity) return { $number: \"+Infinity\" };\n      if (value === -Infinity) return { $number: \"-Infinity\" };\n      return value;\n    }\n    if (value === null || typeof value === \"boolean\" || typeof value === \"string\") return value;\n    if (typeof value !== \"object\" || ancestors.has(value)) {\n      throw new Error(\"unsupported or cyclic outcome value\");\n    }\n    ancestors.add(value);\n    let result;\n    const language = inspect(value);\n    if (language !== null) {\n      if (language.kind === \"opaque\") throw new Error(\"unsupported opaque outcome value\");\n      if ((language.kind === \"keyword\" || language.kind === \"symbol\") &&\n          (language.namespace == null || typeof language.namespace === \"string\") &&\n          typeof language.name === \"string\" && typeof language.spelling === \"string\") {\n        // Constructor strings with multiple slashes can share name/namespace\n        // while carrying distinct full spellings and equality identities.\n        result = { [\"$\" + language.kind]: { namespace: encode(language.namespace, ancestors), name: language.name, spelling: language.spelling } };\n      } else if ([\"vector\", \"list\", \"seq\"].includes(language.kind) && Array.isArray(language.items)) {\n        result = { [\"$\" + language.kind]: Array.from(language.items, item => encode(item, ancestors)) };\n      } else if (language.kind === \"set\" && Array.isArray(language.items) &&\n                 Number.isInteger(language.count) && language.count === language.items.length) {\n        const seen = new Set();\n        const items = Array.from(language.items, item => {\n          const encoded = encode(item, ancestors), key = JSON.stringify(encoded);\n          if (seen.has(key)) throw new Error(\"duplicate encoded set member\");\n          seen.add(key);\n          return encoded;\n        });\n        items.sort((a, b) => {\n          const x = JSON.stringify(a), y = JSON.stringify(b);\n          return x < y ? -1 : x > y ? 1 : 0;\n        });\n        result = { $set: items, count: language.count };\n      } else if (language.kind === \"map\" && Array.isArray(language.entries) &&\n                 Number.isInteger(language.count) && language.count === language.entries.length) {\n        const keys = new Set();\n        const entries = Array.from(language.entries, entry => {\n          if (!Array.isArray(entry) || entry.length !== 2) throw new Error(\"invalid map entry\");\n          const pair = Array.from(entry, item => encode(item, ancestors));\n          const key = JSON.stringify(pair[0]);\n          if (keys.has(key)) throw new Error(\"duplicate encoded map key\");\n          keys.add(key);\n          return pair;\n        });\n        entries.sort((a, b) => {\n          const x = JSON.stringify(a), y = JSON.stringify(b);\n          return x < y ? -1 : x > y ? 1 : 0;\n        });\n        result = { $map: entries, count: language.count };\n      } else {\n        throw new Error(\"invalid outcome adapter result\");\n      }\n    } else if (Array.isArray(value)) {\n      result = Array.from(value, item => encode(item, ancestors));\n    } else if (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) {\n      // Tag plain objects so a host object cannot impersonate a special value.\n      result = { $object: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encode(item, ancestors)])) };\n    } else {\n      throw new Error(\"unsupported outcome object\");\n    }\n    ancestors.delete(value);\n    return result;\n  }\n\n  function failure(error) {\n    // Native categories, never engine-specific messages, names, or stacks.\n    for (const [type, category] of [\n      [TypeError, \"type-error\"], [RangeError, \"range-error\"],\n      [ReferenceError, \"reference-error\"], [SyntaxError, \"syntax-error\"],\n      [URIError, \"uri-error\"], [EvalError, \"eval-error\"], [Error, \"error\"],\n    ]) {\n      if (error instanceof type) return { category };\n    }\n    return { category: \"thrown-value\", value: encode(error) };\n  }\n\n  const programs = globalThis.lightCases;\n  const metadata = globalThis.lightCaseMetadata;\n  if (!Array.isArray(programs) || programs.length === 0 ||\n      !Array.isArray(metadata) || programs.length !== metadata.length ||\n      Array.from(metadata).some(row => !Array.isArray(row) || row.length !== 2 || Array.from(row).some(value => typeof value !== \"string\")) ||\n      new Set(metadata.map(([id]) => id)).size !== programs.length ||\n      Array.from(programs).some(program => typeof program !== \"function\")) {\n    throw new Error(\"compiler produced missing, invalid, or duplicate executable cases\");\n  }\n\n  for (let index = 0; index < programs.length; index++) {\n    const [id, source] = metadata[index];\n    process.stderr.write(`CASE START ${JSON.stringify({ id, source })}\\n`);\n    const trace = [];\n    const stdout = [];\n    globalThis.lightHost = {\n      value: 40,\n      get method() {\n        trace.push(\"method-get\");\n        return function(a, b) { trace.push([\"call\", a, b]); return this.value; };\n      },\n      receiver() { trace.push(\"receiver\"); return this; },\n      get path() { trace.push(\"path\"); return this; },\n      boundary(name) {\n        return { nil: null, undefined, \"negative-zero\": -0, nan: NaN,\n          infinity: Infinity, \"negative-infinity\": -Infinity }[name];\n      },\n      fail(kind) {\n        trace.push([\"throw\", kind]);\n        if (kind === \"type\") throw new TypeError(\"host failure\");\n        if (kind === \"range\") throw new RangeError(\"host failure\");\n        if (kind === \"reference\") throw new ReferenceError(\"host failure\");\n        if (kind === \"nil\") throw null;\n        if (kind === \"undefined\") throw undefined;\n        throw new Error(\"host failure\");\n      },\n    };\n    const observe = value => { trace.push(value); return value; };\n    const write = process.stdout.write;\n    // Capture the stream, including console.log and direct host writes. Buffer\n    // chunks are joined before decoding so split UTF-8 characters survive.\n    process.stdout.write = function(chunk, encoding, callback) {\n      stdout.push(Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk, typeof encoding === \"string\" ? encoding : \"utf8\"));\n      if (typeof encoding === \"function\") encoding();\n      else if (typeof callback === \"function\") callback();\n      return true;\n    };\n    let returned = false, value, error, observation;\n    try {\n      try {\n        value = programs[index](observe);\n        returned = true;\n      } catch (thrown) {\n        error = thrown;\n      }\n      // Finite lazy values can print while the observation bridge realizes\n      // them. Keep those effects in this case's capture, including trace values.\n      const outcome = returned ? { status: \"returned\", value: encode(value) }\n        : { status: \"threw\", error: failure(error) };\n      const encodedTrace = encode(trace);\n      observation = { id, outcome, trace: encodedTrace, stdout: Buffer.concat(stdout).toString(\"utf8\") };\n    } finally {\n      process.stdout.write = write;\n    }\n    write.call(process.stdout, JSON.stringify(observation) + \"\\n\");\n    process.stderr.write(`CASE END ${JSON.stringify({ id })}\\n`);\n  }\n})();\n"
+    },
+    "checkout/execution/node-3/stdout": {
+      "sha256": "c6d256174414b28ca53c4dba4f67c158d77f6189322434ec9eff5ebe8e1a75d7",
+      "text": "{\"id\":\"sci-execution-sci-var-declare-result\",\"outcome\":{\"status\":\"returned\",\"value\":{\"$vector\":[false,null,null]}},\"trace\":[],\"stdout\":\"\"}\n"
+    },
+    "checkout/execution/node-3/stderr": {
+      "sha256": "a5cee8df6e2a846daecb3b4ffb0c4b41a941d97433e0ae2adde14da89990c4f8",
+      "text": "CASE START {\"id\":\"sci-execution-sci-var-declare-result\",\"source\":\"(set! *print-newline* true) (set-print-fn! (fn [text] (.write (.-stdout js/process) text))) (set-print-err-fn! (fn [text] (.write (.-stderr js/process) text))) [(var? (declare x)) (get (meta (declare y z)) :name) (declare)]\"}\nCASE END {\"id\":\"sci-execution-sci-var-declare-result\"}\n"
+    },
+    "release/execution/out/semantic/case3.js": {
+      "sha256": "39f1d1e4256e34aff4c50412cd6696afacf803e709394dbf0a22dca4a93a5a90",
+      "text": "// Compiled by ClojureScript 1.12.134 {:static-fns false, :target :nodejs, :nodejs-rt true, :optimizations :none}\ngoog.provide('semantic.case3');\ngoog.require('cljs.core');\ngoog.require('cljs.core');\nsemantic.case3.run = (function semantic$case3$run(observe){\n(cljs.core._STAR_print_newline_STAR_ = true);\n\ncljs.core.set_print_fn_BANG_.call(null,(function (text){\nreturn process.stdout.write(text);\n}));\n\ncljs.core.set_print_err_fn_BANG_.call(null,(function (text){\nreturn process.stderr.write(text);\n}));\n\nreturn new cljs.core.PersistentVector(null, 3, 5, cljs.core.PersistentVector.EMPTY_NODE, [cljs.core.var_QMARK_.call(null,),cljs.core.get.call(null,cljs.core.meta.call(null,(function (){\n\n})()\n),new cljs.core.Keyword(null,\"name\",\"name\",1843675177)),null], null);\n});\n\n//# sourceMappingURL=case3.js.map\n"
+    },
+    "checkout/execution/out/semantic/case3.js": {
+      "sha256": "65b442de07114f58046106c8dbce4d8bdce40511196d06e4f4c55a366eb17063",
+      "text": "// Compiled by ClojureScript 0.0.135109660 {:static-fns false, :target :nodejs, :nodejs-rt true, :optimizations :none}\ngoog.provide('semantic.case3');\ngoog.require('cljs.core');\ngoog.require('cljs.core');\nsemantic.case3.run = (function semantic$case3$run(observe){\n(cljs.core._STAR_print_newline_STAR_ = true);\n\ncljs.core.set_print_fn_BANG_.call(null,(function (text){\nreturn process.stdout.write(text);\n}));\n\ncljs.core.set_print_err_fn_BANG_.call(null,(function (text){\nreturn process.stderr.write(text);\n}));\n\nreturn new cljs.core.PersistentVector(null, 3, 5, cljs.core.PersistentVector.EMPTY_NODE, [cljs.core.var_QMARK_.call(null,),cljs.core.get.call(null,cljs.core.meta.call(null,(function (){\n\n})()\n),new cljs.core.Keyword(null,\"name\",\"name\",1843675177)),null], null);\n});\n\n//# sourceMappingURL=case3.js.map\n"
+    }
+  },
+  "production_error_location": {
+    "path": "src/analyzer.rs",
+    "line": 5743,
+    "source_sha256": "88973715550fa3f85face0779799e51090373e125265b9983bfd0fc0a2dc0c00"
+  },
+  "canonical_generated_javascript_detail": "Both pins emit cljs.core.var_QMARK_.call(null,) for (var? (declare x)); this runs in the current Node oracle and returns false. Exact emitted units and raw scripts/packets are retained; no unit normalization or repair is performed."
+}

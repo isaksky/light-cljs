@@ -1,0 +1,1 @@
+(binding [*print-meta* true *print-readably* false] (pr-str (with-meta ["x"] {:x true})))

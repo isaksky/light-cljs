@@ -1,0 +1,12 @@
+{
+  "semantic_credit": 0,
+  "failure": "saved artifacts differ from actual executed source/emitted input",
+  "cause": "New after190 driver still read copied LIGHT_ARITY_AFTER188_ARTIFACTS; the requested after190 module directory was empty and actual captures landed in the driver default temporary directory.",
+  "original_v4_wrong_environment_actual_log_retained": false,
+  "original_v4_wrong_environment_actual_log_disposition": "The rerun reused its log path; no claim is made that the overwritten raw file remains.",
+  "same_wrong_environment_v3_actual_log_retained": "/tmp/light-cljs-125-arity-after190-draft-v3-actual.log",
+  "same_wrong_environment_v3_actual_log_sha256": "1f34acd7c5d410bce79f9524723984c99d121273c5aa1c986e706fa8d6530d10",
+  "correction": "Only the new after190 driver and proof command now use LIGHT_ARITY_AFTER190_ARTIFACTS. Current proof requires a genuinely rerun actual test, complete saved modules and matching actual emitted/source hash packets.",
+  "corrected_rerun_actual_log": "/tmp/light-cljs-125-arity-after190-draft-v4-actual.log",
+  "corrected_rerun_actual_log_sha256": "600b499f8e1ad5a7c10b1ed9bffe0eb775a9f6d7f77044b70ed11711bd799b64"
+}
