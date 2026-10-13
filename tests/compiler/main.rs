@@ -48,6 +48,7 @@ mod core_extension_demand;
 mod core_factories;
 mod core_gate;
 mod core_helpers;
+mod core_operations;
 mod core_var_metadata;
 mod data_libraries;
 mod declare_values;

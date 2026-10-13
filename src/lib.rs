@@ -20,6 +20,7 @@ mod compiler_destructuring;
 mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
+pub mod core_operations;
 pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;

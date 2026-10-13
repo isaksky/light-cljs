@@ -4,9 +4,10 @@ Status: design, October 2026. Phase 0's optimization levels, size ratchet,
 differential test and runtime retention report are implemented (see "Phase 0
 extension points"), and so are Phase 1's unit manifest and advanced-mode
 runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
-extension points"); the rest is not. The work items are tracked as Pellets in
-the `advanced-optimization` group; this document is the shared context those
-pellets cite.
+extension points") and Phase 2's core operation table (see "Phase 2 core
+operation table extension points"); the rest is not. The work items are
+tracked as Pellets in the `advanced-optimization` group; this document is the
+shared context those pellets cite.
 
 ## Goal
 
@@ -452,6 +453,56 @@ keyed by names.
    functions under an explicit cost budget with early rejection; fold
    constant arithmetic and string concatenation; eliminate dead branches on
    known booleans; support build-time defines so debug code vanishes.
+
+#### Phase 2 core operation table extension points
+
+Step 2 is implemented (light-cljs-209). Later steps read it:
+
+- **Table.** `src/core_operations.tsv` has one row per `CoreFnId`, grouped
+  by kind: the variant, its Clojure name, the type of the core value, call
+  signatures by arity (`[seqable number] [seqable number any]`, rest as one
+  type after `&`), the result type within those signatures and otherwise,
+  purity (`pure`, `allocates`, `throws`, `effect`), the code the arguments
+  supply that it may run (`-`, `dispatch`, `invoke`) and its runtime units.
+  `src/core_operations.rs` defines the semantics; its module docs are the
+  contract, including the program-wide conditions a pass must check (no
+  `set!` of the operation, no extension of core protocols to runtime or host
+  types). `build.rs` derives `CoreFnId::ALL` and an exhaustive index from the
+  first column, so a new variant does not compile without a row; an unknown
+  row (`-`, `any`, `effect`, `invoke`) is safe.
+- **Lattice.** `core_operations::Type` is a bit set over fifteen classes
+  (`nil boolean number string keyword symbol fn seq vector map set list
+  record object host`); union is the join. `Type::parse` and `Display` use
+  the table syntax. Collection classes mean the runtime's own types; user
+  types are `object` or `record`.
+- **API.** `CoreFnId::operation()` returns the row. `Operation::call(&[Type])`
+  gives the result type, purity and calls for argument types: the row's
+  values when the arguments are within a signature, else the `otherwise`
+  type with `effect`/`invoke`. Inference (step 3) reads `returns`; pure
+  initializer removal (step 6) drops a call that is `pure` or `allocates`
+  when no argument can run code (`-`, or `dispatch` over plain data, or
+  `invoke` with pure function arguments); folding (step 8 and the constant
+  folder) needs `pure`. `Operation::runtime_units(manifest)` maps the units
+  column to `UnitId`s, the roots of a direct reference for slicing.
+- **Maintenance.** The `core_operations` suite in `tests/compiler/` requires
+  every named unit to exist and to be the unit that defines the operation's
+  value in the runtime `core` object (found by running an instrumented
+  runtime), so splitting the hub (Phase 1 step 3), install functions (step 4)
+  or compile-time units (step 5) fail it until the table follows: run
+  `LIGHT_CLJS_UPDATE_CORE_OPERATIONS=1 cargo test --test compiler core_operations::`
+  and review the `units` diff. The same suite calls every row with
+  signatures on sample arguments in QuickJS (functions that throw when
+  called, lazy sequences and sorted collections that throw when their code
+  runs) and fails on a result outside the annotated type, a `pure` or
+  `allocates` call that throws, a fresh result from a `pure` call, or
+  argument code run by a row that does not admit it. The table was seeded
+  from upstream's `^boolean` functions and `bool-expr` macros and the `:tag`
+  metadata in `src/core_var_metadata.tsv`. Every `^boolean` operation with a
+  signature returns `boolean` here, and every `number`-tagged one a number
+  (`alength` may also return `nil`; `unchecked-char` is the identity in this
+  runtime). Only the protocol method dispatchers (`-equiv`,
+  `-contains-key?`, `-count`, ...) stay unknown, since they return whatever
+  an implementation returns.
 
 ### Constant collection literals
 

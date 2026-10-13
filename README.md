@@ -37,7 +37,9 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 - **Analyzer** (`src/analyzer.rs`) resolves names to stable binding IDs and
   lowers forms into an expression arena (`Program`). Binding/destructuring
   macros are expanded in Rust (`compiler_binding_macros.rs`,
-  `compiler_destructuring.rs`).
+  `compiler_destructuring.rs`). Every core operation (`CoreFnId`) carries
+  parameter and return types, purity and its runtime units from
+  `src/core_operations.tsv` (`src/core_operations.rs`).
 - **Macros** run as JavaScript emitted by this same compiler, inside a separate
   QuickJS heap (`macro_host.rs`, `evaluator.rs`, `form_bridge.rs`). Core macros
   are bootstrapped from `src/compiler_core_macros.cljs` and
@@ -225,6 +227,8 @@ cargo clippy --all-targets -- -D warnings
 node tests/support/js_runtime.test.js              # runtime tests directly in Node
 # after editing src/js_runtime.js: rewrite its unit `requires:` headers, then review the diff
 LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::
+# after moving runtime code between units: rewrite the core operation table's units column
+LIGHT_CLJS_UPDATE_CORE_OPERATIONS=1 cargo test --test compiler core_operations::
 ```
 
 Integration tests are grouped into a few binaries so they build and link once:

@@ -623,3 +623,34 @@ bindings; an unreferenced namespace also keeps its registration and
 `currentNs` switches. Prepare removed 8-15
 definitions per program with all garbage and specialized 1-2 calls in six of
 the twelve programs, with or without garbage.
+
+## Core operation table — October 13, 2026
+
+light-cljs-209 annotated all 688 `CoreFnId` variants in
+[`src/core_operations.tsv`](../src/core_operations.tsv) with types, purity,
+the argument code they may run and their runtime units
+([`src/core_operations.rs`](../src/core_operations.rs)). It is compile-time
+data only: emitted output and the size ratchet are unchanged.
+
+| Rows | Count |
+| --- | ---: |
+| With call signatures | 417 |
+| of which `pure` / `allocates` / `throws` / `effect` | 182 / 108 / 42 / 85 |
+| Without (types, protocols, dynamic vars, protocol method dispatchers, compiler and reader services) | 271 |
+| Calls: none / `dispatch` / `invoke` (all rows) | 284 / 94 / 310 |
+
+The rows name 364 distinct units. 261 callable operations are defined by a
+unit of their own binding (`add` for `+`, `keywordCore` for `keyword`); the
+others live in shared units: `numeric` (73), `predicates` (46), the `core` hub
+literal itself (126 rows, 36 of them callable, such as `second`, `some`,
+`identical?` and `instance?`), `core.reader` (21) and
+`core.hostAndNamespaces` (3). Dismantling the hub (Phase 1 step 3) has to
+give those a binding before a direct reference can replace `rt.core.X`.
+Today 287 of the 364 units (563 of the 688 rows) still reach the whole
+334,504-byte unit closure; 77 units (125 rows) reach under 20 KB: protocol
+markers and leaf operations such as `subs`, `char`, `mod`, `parse-long`,
+`name`, `satisfies?` and `deref`. Reproduce the per-unit table with:
+
+```sh
+cargo test --test compiler core_operations::print_core_operation_units -- --ignored --nocapture
+```
