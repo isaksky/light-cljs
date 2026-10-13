@@ -85,8 +85,8 @@ const EXPECTED: [(GarbageTag, Class, &str); 7] = [
     ),
     (
         GarbageTag::UnusedPureDef,
-        Class::Survives,
-        "calls are never inert until pure core calls are (213)",
+        Class::Residue,
+        "advanced removes the def (213); `null;` and its name in the namespace bindings remain (206)",
     ),
     (
         GarbageTag::UnusedDefn,

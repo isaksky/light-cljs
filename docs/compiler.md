@@ -130,7 +130,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare` and embeds only the runtime units the program reaches (runtime slicing, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), and embeds only the runtime units the program reaches (runtime slicing, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -148,7 +148,8 @@ Below `Advanced`, any output that reads the runtime embeds all of it. At
 the runtime names the emitted code reads (`rt.keyword`, `rt.core.add`, ...)
 over the unit manifest in `src/runtime_manifest.rs`, in runtime order, and the
 runtime's export object lists only the exports the code reads. The program code
-is the same as at `Prepare`. While core operations are read through the
+is the same as at `Prepare` except for the definitions only `Advanced`
+removes. While core operations are read through the
 runtime's `core` object, a program that reads any of them keeps most of the
 runtime. `PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
@@ -164,10 +165,25 @@ their initializers are proven inert (primitive literals, function construction,
 core function values, inert lists/vectors, and maps/sets with scalar keys). Runtime
 references and escaped Vars retain their definitions transitively, including
 metadata and all source generations. Non-scalar hashing, reader literals, arbitrary
-calls, and metadata operations are conservatively effectful. Retained raw
-JavaScript prevents elimination and specialization; raw code inside an otherwise
+calls, and metadata operations are conservatively effectful. Below `Advanced`,
+retained raw JavaScript prevents elimination and specialization; raw code inside an otherwise
 discarded function is not a root. This is deliberately conservative reachability,
 not a general optimizer.
+
+`Advanced` also removes a discarded definition whose initializer binds locals,
+branches, adds metadata, calls core operations that the core operation table
+(`src/core_operations.tsv`) marks `pure` or `allocates` for the argument types
+without running code the arguments supply (`(str "n" (+ 1 2))`,
+`(hash-map :a 1)`, `(count [1 2])`), or constructs a program type with `new`
+or its positional factory after the type's only definition. Operations that may
+throw (`into`, `conj`, a `hash-map` call missing a value), that call function
+arguments (`mapv`) or that are called outside their documented argument types
+stay, as do calls of an operation the program `set!`s, `with-redefs` or passes to
+a `js*` hole, and every core call in a program that extends a core protocol to a
+type it does not define (`extend-type number IHash`, `PersistentVector`, `default`,
+`specify!`). Retained `js*` is an opaque leaf at `Advanced`: hygiene keeps raw
+text from naming compiler bindings, so it can reach only its `~{}` holes and
+host globals, and it no longer prevents elimination or specialization.
 
 Specialization covers eager top-level calls after a sole, non-dynamic
 initialization, with no value/Var escape or mutation: fixed entries of multi-arity

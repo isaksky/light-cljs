@@ -788,3 +788,36 @@ What the baseline shows:
   `:advanced` and 11–56 KB in lite mode. Upstream's 10,240-byte ceiling belongs to `(. js/console (log
   "Hello!"))`; `(println "hi")` measures 88,554 bytes. The Targets table in the
   [design](../docs/advanced-optimization.md) now carries these measured values.
+
+## Pure initializer removal — October 13, 2026
+
+light-cljs-213 makes `--optimize advanced` remove unused definitions whose
+initializers only call pure core operations, bind locals, branch, add metadata
+or construct program types, and stops retained `js*` from rooting every
+top-level form and disabling specialization (Phase 2 steps 6 and 7 of the
+[design](../docs/advanced-optimization.md)). `none` and `prepare` output is
+unchanged, except for programs that combine `js*` with `try`/`catch`, `case`,
+`binding` or `with-redefs`: hygiene now also renames `caught`, `caseValue` and
+`installed<n>` away from raw text. The nine earlier ratchet fixtures define
+nothing removable and keep their sizes. Two fixtures are new; "before" is
+advanced output at 95a5e92, raw and `gzip -9` bytes of
+`--compile --optimize LEVEL --text`:
+
+| Fixture | Removed none / prepare / advanced | Raw none / prepare | Advanced before raw / gzip | Advanced raw / gzip | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pure-defs | 0 / 1 / 6 | 352,356 / 352,278 | 342,431 / 81,861 | 341,693 / 81,691 | 342,000 |
+| raw-js | 0 / 0 / 1 | 351,766 / 351,766 | 336,081 / 80,251 | 336,036 / 80,239 | 337,000 |
+
+The saving is the removed definitions' own code (738 bytes for the five
+`pure-defs` initializers `prepare` keeps); while every program still reaches
+the runtime's `core` hub, no runtime unit goes with them.
+
+In the generated programs' twelve seeds, the 19 `unused-pure-def` items
+(`str`, `vector`, `hash-map` and `count` over literals and arithmetic) move from
+`survives` (142-279 bytes each) to `residue`: 24-25 bytes each, the `null;`
+statement and the name in the namespace bindings, like literal definitions.
+240 seeds (`LIGHT_CLJS_GENERATED_COUNT=240`) pass with the tightened row.
+`hash-map` and `array-map` rows in `src/core_operations.tsv` now list their
+even arities up to eight arguments as `allocates`, since only an odd count
+throws (110 `allocates` and 40 `throws` rows now); the `hash-map` macro's
+`PersistentHashMap.fromArrays` expansion is checked against that row.

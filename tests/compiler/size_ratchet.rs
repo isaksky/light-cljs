@@ -9,6 +9,9 @@
 //! set. Print the current table with
 //! `cargo nextest run --test compiler size_ratchet:: --no-capture`.
 //!
+//! Every fixture also pins `ApplicationStats::removed_definitions` per level, so
+//! a change in what preparation removes shows up next to the sizes.
+//!
 //! The same fixtures run in Node at every level and must print the same output
 //! as `OptimizationLevel::None`, the oracle.
 #[path = "../support/ratchet_fixtures.rs"]
@@ -83,6 +86,23 @@ fn emitted_sizes_stay_under_their_ceilings() {
          shrink the output or raise the ceiling with a reason (marked !):\n{table}",
         exceeded.join(", ")
     );
+}
+
+#[test]
+fn removed_definitions_match_each_fixture() {
+    for fixture in FIXTURES {
+        let program = program(fixture);
+        let removed = OptimizationLevel::ALL.map(|level| {
+            prepare_application(&program, ApplicationOptions::new(level))
+                .stats()
+                .removed_definitions
+        });
+        assert_eq!(
+            removed, fixture.removed,
+            "{}: removed definitions at none, prepare, advanced",
+            fixture.name
+        );
+    }
 }
 
 #[test]

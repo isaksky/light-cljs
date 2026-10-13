@@ -117,9 +117,10 @@ its default export (see [JavaScript packages](docs/compiler.md#javascript-packag
 builds, with or without `--esm`) picks the optimization level. `prepare`, the
 default, removes unused definitions with inert initializers and specializes
 top-level calls; `none` emits everything as analyzed; `advanced` is the release
-mode being built from [docs/advanced-optimization.md](docs/advanced-optimization.md)
-and so far differs from `prepare` only by embedding just the runtime units the
-program reaches (see
+mode being built from [docs/advanced-optimization.md](docs/advanced-optimization.md);
+so far it also removes unused definitions whose initializers only call pure core
+operations, does not let retained `js*` disable these passes, and embeds just
+the runtime units the program reaches (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each.
@@ -195,8 +196,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 - **No build tooling:** no per-namespace module output, source maps or advanced
   optimization; output is one JavaScript expression, or one ES module with `--esm`.
   A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md);
-  `--optimize advanced` so far only drops unreached runtime units, about 4% of
-  the output while every program still reaches the runtime's `core` hub.
+  `--optimize advanced` so far drops unreached runtime units, about 4% of
+  the output while every program still reaches the runtime's `core` hub, and
+  unused definitions with pure initializers.
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

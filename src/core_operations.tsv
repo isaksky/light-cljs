@@ -339,8 +339,8 @@ Namespace	namespace	fn	[keyword|symbol]	nil|string	any	pure	-	namespace
 ;; Collection construction
 Vector	vector	fn	[& any]	vector	vector	allocates	-	vector
 List	list	fn	[& any]	list	list	allocates	-	list
-HashMap	hash-map	fn	[& any]	map	any	throws	dispatch	hashMap
-ArrayMap	array-map	fn	[& any]	map	any	throws	dispatch	arrayMap
+HashMap	hash-map	fn	[] [any any] [any any any any] [any any any any any any] [any any any any any any any any]	map	map	allocates	dispatch	hashMap
+ArrayMap	array-map	fn	[] [any any] [any any any any] [any any any any any any] [any any any any any any any any]	map	map	allocates	dispatch	arrayMap
 HashSet	hash-set	fn	[& any]	set	set	allocates	dispatch	hashSet
 SortedMap	sorted-map	fn	[& any]	map	any	throws	dispatch	sortedMap
 SortedSet	sorted-set	fn	[& any]	set	any	throws	dispatch	sortedSet

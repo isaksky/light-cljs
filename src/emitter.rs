@@ -2326,6 +2326,10 @@ impl Emitter<'_> {
 
 // The compiler emits only quoted strings and ordinary identifier tokens outside
 // explicitly recorded raw segments; the runtime body is also excluded here.
+// Every name the emitted code binds must be renamed here, so raw text can name
+// only its holes and host globals: advanced preparation relies on that to treat
+// `js*` as an opaque leaf. `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
+// in tests/compiler checks it from raw text in each scope the emitter creates.
 fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
     raw.retain(|range| !range.is_empty());
     raw.sort_by_key(|range| range.start);
@@ -2385,6 +2389,7 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
                 "captures",
                 "self",
                 "recur",
+                "installed",
             ]
             .iter()
             .any(|head| {
@@ -2395,7 +2400,15 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
             if numbered
                 || matches!(
                     token,
-                    "rt" | "truth" | "host" | "pkg" | "f" | "text" | "savedPrint" | "savedNewline"
+                    "rt" | "truth"
+                        | "host"
+                        | "pkg"
+                        | "f"
+                        | "text"
+                        | "savedPrint"
+                        | "savedNewline"
+                        | "caught"
+                        | "caseValue"
                 )
             {
                 result.push_str(&prefix);

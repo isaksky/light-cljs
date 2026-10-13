@@ -299,3 +299,294 @@ fn mutable_escaped_dynamic_and_raw_targets_disable_fixed_entry_specialization() 
         assert_eq!(result(&on.emit_js()), "42\n", "{source}");
     }
 }
+
+/// Print the value of the expression `js`, or the message it throws, and then
+/// the JSON of `globalThis.trace`, which starts empty.
+fn traced(js: &str) -> String {
+    execute(&format!(
+        "globalThis.trace = [];\ntry {{ console.log({js}); }} catch (error) {{ console.log('threw', error.message); }}\nconsole.log(JSON.stringify(trace));"
+    ))
+}
+
+/// Phase 2 step 6 of docs/advanced-optimization.md: at `Advanced`, unread
+/// definitions whose initializers only call pure core operations on inert
+/// arguments, bind locals, branch, add metadata or construct program types are
+/// removed. `Prepare` keeps them, and its output is unchanged.
+#[test]
+fn advanced_removes_unused_definitions_with_pure_initializers() {
+    let source = r#"
+      (defrecord Point [x y])
+      (deftype Box [v])
+      (def label (str "PURE_STR" (+ 1 2)))
+      (def pair (vector "PURE_VECTOR" (inc 1)))
+      (def table (hash-map :a "PURE_HASH_MAP" :b (* 2 3)))
+      (def small (array-map :a "PURE_ARRAY_MAP"))
+      (def size (count ["PURE_COUNT" (- 5 1)]))
+      (def nested {:a (str "PURE_NESTED") :b [(inc 1)]})
+      (def bound (let [n (+ 1 2) s (str "PURE_LET" n)] (if (pos? n) s "no")))
+      (def tagged (with-meta ["PURE_META"] {:tag (inc 1)}))
+      (def origin (->Point "PURE_FACTORY" 0))
+      (def boxed (Box. "PURE_NEW"))
+      (def looked-up (get {:k "PURE_GET"} :k))
+      (def named (do (str "PURE_DO") (keyword "PURE_KEYWORD")))
+      (pr-str [(:x (->Point 1 2)) (.-v (Box. 3))])"#;
+    let p = program(source);
+    let sentinels = |js: &str| js.matches("\"PURE_").count();
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&p, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        let removed = if level.advanced() { 12 } else { 0 };
+        assert_eq!(prepared.stats().removed_definitions, removed, "{level}");
+        assert_eq!(
+            sentinels(&js),
+            if level.advanced() { 0 } else { 13 },
+            "{level}"
+        );
+        assert_eq!(result(&js), "[1 3]\n", "{level}");
+    }
+    assert_eq!(
+        emit_js(&p),
+        prepare_application(&p, ApplicationOptions::default()).emit_js()
+    );
+}
+
+/// The removal above never drops a throw, an effect, code that arguments
+/// supply, or a call of an operation the program replaces: these keep their
+/// sentinel at `Advanced` and print the same value and trace at every level.
+#[test]
+fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operations() {
+    for (source, expected) in [
+        // `throws` rows stay although this call returns.
+        (r#"(def unused (into {} [["KEPT_INTO" 1]])) 42"#, "42\n[]\n"),
+        // A `hash-map` call without a value for its last key throws.
+        (
+            r#"(def unused (hash-map "KEPT_ODD" 1 :b)) 42"#,
+            "threw No value supplied for key: :b\n[]\n",
+        ),
+        // `invoke` rows run their function arguments.
+        (
+            r#"(def unused (mapv (fn [x] (.push js/trace x) x) ["KEPT_MAPV"])) 42"#,
+            "42\n[\"KEPT_MAPV\"]\n",
+        ),
+        // Outside its domain an operation may do anything.
+        (r#"(def unused (inc "KEPT_DOMAIN")) 42"#, "42\n[]\n"),
+        // `set!` replaces a core operation everywhere.
+        (
+            r#"(set! cljs.core/vector (fn [& xs] (.push js/trace "replaced") xs))
+            (def unused (vector "KEPT_SET")) 42"#,
+            "42\n[\"replaced\"]\n",
+        ),
+        // A core protocol extended to a runtime type reaches program code.
+        (
+            r#"(extend-type PersistentVector ICounted
+                (-count [v] (.push js/trace "count") 99))
+            (def unused (count ["KEPT_EXTENSION"])) 42"#,
+            "42\n[\"count\"]\n",
+        ),
+        // A replaced type or positional factory is no longer a constructor.
+        (
+            r#"(deftype T [x]) (set! T (fn [x] (.push js/trace x)))
+            (def unused (T. "KEPT_TYPE")) 42"#,
+            "42\n[\"KEPT_TYPE\"]\n",
+        ),
+        (
+            r#"(defrecord R [x]) (set! ->R (fn [x] (.push js/trace x)))
+            (def unused (->R "KEPT_FACTORY")) 42"#,
+            "42\n[\"KEPT_FACTORY\"]\n",
+        ),
+    ] {
+        let p = program(source);
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&p, ApplicationOptions::new(level));
+            let js = prepared.emit_js();
+            assert!(js.contains("KEPT_"), "{level}: {source}");
+            assert_eq!(traced(&js), expected, "{level}: {source}");
+        }
+    }
+}
+
+/// Phase 2 step 7 of docs/advanced-optimization.md: at `Advanced`, retained raw
+/// JavaScript no longer roots every top-level form or disables specialization
+/// (see [`raw_js_names_resolve_only_to_holes_and_host_globals`]). Its holes are
+/// ordinary children, so a definition a hole reads is kept, and a global in a
+/// hole, which raw text could assign, is never specialized.
+#[test]
+fn advanced_treats_raw_javascript_as_an_opaque_leaf() {
+    let p = program(
+        r#"(def unused "RAW_UNUSED_SENTINEL")
+        (js* "void 0")
+        (defn f ([x] x) ([x y] (+ x y)))
+        (f 21 21)"#,
+    );
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&p, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        let advanced = usize::from(level.advanced());
+        assert_eq!(prepared.stats().removed_definitions, advanced, "{level}");
+        assert_eq!(prepared.stats().specialized_calls, advanced, "{level}");
+        assert_eq!(js.contains("RAW_UNUSED_SENTINEL"), !level.advanced());
+        assert_eq!(result(&js), "42\n", "{level}");
+    }
+    let p = program(
+        r#"(def kept "RAW_HOLE_SENTINEL")
+        (js* "trace.push(~{})" kept)
+        (defn f ([x] x) ([x y] (+ x y)))
+        (js* "~{} = function () { return 0; }" f)
+        (f 21 21)"#,
+    );
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&p, ApplicationOptions::new(level));
+        assert_eq!(prepared.stats().removed_definitions, 0, "{level}");
+        assert_eq!(prepared.stats().specialized_calls, 0, "{level}");
+        assert_eq!(
+            traced(&prepared.emit_js()),
+            "0\n[\"RAW_HOLE_SENTINEL\"]\n",
+            "{level}"
+        );
+    }
+}
+
+/// Raw `js*` text in `context`: report to the harness of
+/// [`raw_js_names_resolve_only_to_holes_and_host_globals`], with a direct eval
+/// that resolves names in the raw text's own scope.
+fn probe(context: &str) -> String {
+    format!("(js* \"__probe('{context}', (__probeCode) => eval(__probeCode))\")")
+}
+
+/// Advanced mode treats `js*` as an opaque leaf rather than an escape to every
+/// definition, because the hygiene pass renames every identifier the compiler
+/// emits away from raw text (docs/advanced-optimization.md, Phase 2 step 7).
+/// This checks that claim from inside raw text: in every scope where the emitter
+/// binds names (functions, arities, loops, closures, `try`, `case`, `binding`,
+/// `with-out-str`, type and `reify` methods, `letfn`, `this-as`, initializers and
+/// the top level), each identifier token of the whole output, with the hygiene
+/// prefix removed, must resolve exactly as it does at global scope. A new
+/// emitter construct that binds names should get a probe here.
+#[test]
+fn raw_js_names_resolve_only_to_holes_and_host_globals() {
+    let contexts = [
+        "deftype-method",
+        "record-method",
+        "fn",
+        "multi-arity-1",
+        "multi-arity-2",
+        "variadic",
+        "loop",
+        "loop-closure",
+        "catch",
+        "finally",
+        "keyword-case",
+        "number-case",
+        "string-case",
+        "binding",
+        "with-redefs",
+        "with-out-str",
+        "reify",
+        "letfn",
+        "this-as",
+        "let",
+        "initializer",
+        "top-level",
+    ];
+    let p = |context: &str| {
+        assert!(contexts.contains(&context), "{context}");
+        probe(context)
+    };
+    let source = format!(
+        r#"
+        (deftype T [x] Object (toString [this] {} "t"))
+        (defprotocol P (method [this a]))
+        (defrecord R [x] P (method [this a] {} (+ x a)))
+        (def ^:dynamic *d* 1)
+        (defn fixed [a b] {} (+ a b))
+        (defn multi ([a] {} a) ([a b] {} (+ a b)))
+        (defn variadic [a & more] {} (apply + a more))
+        (defn looping [n]
+          (loop [i 0 fs []]
+            (if (< i n)
+              (recur (inc i) (conj fs (fn [] {} i)))
+              (do {} (mapv #(%) fs)))))
+        (defn caught [] (try (throw (js/Error. "x")) (catch :default e {} (.-message e)) (finally {})))
+        (defn cases [k n s]
+          [(case k :a (do {} 1)) (case n 1 (do {} 2)) (case s "s" (do {} 3) 4)])
+        (defn bound [] (binding [*d* 2] {} *d*))
+        (defn redefined [] (with-redefs [fixed (fn [a b] 0)] {} (fixed 1 2)))
+        (defn printed [] (with-out-str {} (print "x")))
+        (defn reified [y] (str (reify Object (toString [_] {} (str y)))))
+        (defn letfns [] (letfn [(a [] {} 1) (b [] (a))] (b)))
+        (defn this-as-fn [] (this-as t {} 1))
+        (defn let-fn [] (let [x 1 y (inc x)] {} (+ x y)))
+        (def initialized (let [v (js/Math.max 1 2)] {} v))
+        {}
+        (pr-str [(str (T. 1)) (method (->R 1) 2) (fixed 1 2) (multi 1) (multi 1 2)
+                 (variadic 1 2 3) (looping 2) (caught) (cases :a 1 "s") (bound)
+                 (redefined) (printed) (reified 3) (letfns) (this-as-fn) (let-fn)
+                 initialized])"#,
+        p("deftype-method"),
+        p("record-method"),
+        p("fn"),
+        p("multi-arity-1"),
+        p("multi-arity-2"),
+        p("variadic"),
+        p("loop-closure"),
+        p("loop"),
+        p("catch"),
+        p("finally"),
+        p("keyword-case"),
+        p("number-case"),
+        p("string-case"),
+        p("binding"),
+        p("with-redefs"),
+        p("with-out-str"),
+        p("reify"),
+        p("letfn"),
+        p("this-as"),
+        p("let"),
+        p("initializer"),
+        p("top-level"),
+    );
+    let program = program(&source);
+    let ran = {
+        let mut contexts = contexts.to_vec();
+        contexts.sort_unstable();
+        format!("[\"{}\"]", contexts.join("\",\""))
+    };
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        // The names to try are the identifier tokens of the program's text.
+        // `arguments` and `this` are the raw text's own function context, and
+        // `__probeCode` is the probe's parameter. The harness's names are global.
+        let harness = format!(
+            r#"const program = () => (
+{js}
+);
+const names = [...new Set(program.toString().match(/[A-Za-z_$][\w$]*/g)
+  .map(name => name.replace(/^__light\d+_/, "")))]
+  .filter(name => !["arguments", "this", "__probeCode"].includes(name));
+const kind = (resolve) => {{ try {{ return resolve(); }} catch (error) {{ return error.name; }} }};
+const ran = new Set(), leaks = [];
+globalThis.__probe = (context, evalHere) => {{
+  ran.add(context);
+  for (const name of names) {{
+    const local = kind(() => evalHere("typeof " + name));
+    if (local !== kind(() => (0, eval)("typeof " + name))) leaks.push(context + ": " + name + " is " + local);
+  }}
+}};
+const value = program();
+console.log(JSON.stringify(leaks));
+console.log(JSON.stringify([...ran].sort()));
+console.log(value);"#
+        );
+        let output = execute(&harness);
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(
+            lines[0], "[]",
+            "raw text resolves compiler names at {level}"
+        );
+        assert_eq!(lines[1], ran, "probes that ran at {level}");
+        assert_eq!(
+            lines[2], r#"["t" 3 3 1 3 6 [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2]"#,
+            "{level}"
+        );
+    }
+}

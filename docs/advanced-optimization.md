@@ -158,7 +158,9 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
 - `src/application.rs` is the only optimizer: removal of discarded top-level
   defs with provably inert initializers (literals, `fn`, core values, scalar
   collections) and specialization of eager top-level calls to fixed arity
-  entries or core aliases. Any retained `js*` disables both.
+  entries or core aliases. Any retained `js*` disables both. (Since Phase 2
+  steps 6 and 7, `Advanced` also removes pure-call initializers and treats
+  `js*` as an opaque leaf.)
 - `src/emitter.rs:105-134` includes the whole runtime when any used
   expression is a keyword, symbol, collection, core reference, reader
   literal, `with-meta`, var, protocol or type form, a `case` with keyword or
@@ -246,8 +248,10 @@ retention report covers runtime units. Later phases plug in here:
   conservative preparation. Emission that depends on the level (runtime
   slicing, the constant table, terse emission) reads the level that
   `PreparedApplication` passes to `emit_application` in `src/emitter.rs`;
-  today only runtime slicing does, so `Advanced` output is `Prepare` output
-  with a smaller runtime factory.
+  today only runtime slicing does. `Advanced` preparation also removes more
+  definitions (pure initializers) and ignores the `js*` escape (Phase 2 steps
+  6 and 7), so its output is `Prepare` output minus those definitions, with a
+  smaller runtime factory.
 - **CLI.** `--optimize` is parsed in `src/main.rs` for single-file `--compile`
   and `--compile --entry`, with or without `--esm`. Namespace builds go through
   `compiler::analyze_namespace_entry` and `prepare_application`, so the CLI
@@ -255,10 +259,11 @@ retention report covers runtime units. Later phases plug in here:
   `--size-report` (the retention report, on stderr) does. `--eval` and
   `--repl` have no level.
 - **Ratchet.** `tests/support/ratchet_fixtures.rs` holds `FIXTURES`: the five
-  Targets rows, `(+ 1 2)`, `(fn [& xs] xs)`, a keyword `case` and a
-  `defrecord` with a protocol call, each with `ceilings: [none, prepare,
-  advanced]` in bytes of `emit_js()` output; `tests/compiler/size_ratchet.rs`
-  checks them. When output shrinks, lower the ceiling to the new size
+  Targets rows, `(+ 1 2)`, `(fn [& xs] xs)`, a keyword `case`, a
+  `defrecord` with a protocol call, unused pure definitions and retained
+  `js*`, each with `ceilings: [none, prepare, advanced]` in bytes of
+  `emit_js()` output and `removed: [none, prepare, advanced]` definitions;
+  `tests/compiler/size_ratchet.rs` checks them. When output shrinks, lower the ceiling to the new size
   rounded up to the next 100 bytes (next 1,000 from 10,000 up) and record
   the sizes in `benchmarks/compiler.md`. Add rows for new fixtures there.
   `--no-capture` prints the size table.
@@ -306,7 +311,7 @@ retention report covers runtime units. Later phases plug in here:
   `EXPECTED` in that file is the expected-survivor list: one class per tag
   with the pellet that should improve it. Today literal defs, defns, keywords
   and unreferenced namespaces leave `residue` (`null;` statements, binding
-  names and namespace registration, until 206); pure-call defs survive until
+  names and namespace registration, until 206), and so do pure-call defs since
   213; uninstantiated types and uncalled methods survive until 211. Every
   seed checks every tag exactly, so a pellet that removes more garbage fails
   the test until it moves that row toward `removed` in the same commit. If a
@@ -529,6 +534,54 @@ Step 2 is implemented (light-cljs-209). Later steps read it:
   `-contains-key?`, `-count`, ...) stay unknown, since they return whatever
   an implementation returns.
 
+#### Phase 2 pure initializer and `js*` extension points
+
+Steps 6 and 7 are implemented (light-cljs-213) in `src/application.rs`, at
+`Advanced` only; `Prepare` output is unchanged except for the hygiene renames
+under `js*` below.
+
+- **Inert initializers.** `Inert` decides which unread top-level definitions
+  `prepare_application` may drop. Below `Advanced` it accepts what `inert`
+  always did (literals, `fn`, core values, lists and vectors of inert values,
+  maps and sets with scalar keys). `Advanced` adds local reads, `let`, `if`
+  and `do` over inert parts, `with-meta` through its row, calls of core
+  operations whose row is `pure` or `allocates` for the argument types and
+  whose arguments run no code (`-` calls, or `dispatch` over plain data:
+  scalars and literal collections of plain data, never a call's collection
+  result), the `hash-map` macro's expansion `PersistentHashMap.fromArrays`
+  through the `hash-map` row, and `new T` or `->T` of a type defined once by a
+  top-level `deftype` or `defrecord` that runs earlier and is never
+  reassigned. `throws`, `effect` and `invoke` rows, calls outside a row's
+  domain, global reads, `map->T` and everything else stay effectful (an
+  `invoke` row needs the purity of its function arguments, which waits for
+  inference). Each expression gets a `Shape` (lattice type and plain-data
+  flag); a later inference pass (step 3) can replace it.
+- **Program-wide conditions.** `Inert::new` scans every expression once: a
+  core operation that is the target of `set!` or `with-redefs`, whose property
+  is assigned, or that appears as a `js*` hole (raw text may assign its holes)
+  is not trusted, and an `extend-type` or `specify!` of a core protocol (a
+  `Builtin` method or marker) on anything but a program type makes no core
+  call inert. Types and factories count their definitions (`Def`, `DefType`,
+  `DefProtocol`) and assignments the same way.
+- **Table rows.** `hash-map` and `array-map` list their even arities up to
+  eight arguments with `allocates`, since only an odd count throws; longer
+  calls stay unknown. Refining a row widens what is removable; the
+  `core_operations` suite checks it.
+- **`js*`.** Below `Advanced`, a retained `JsTemplate` still roots every
+  top-level form and disables specialization. At `Advanced` it is an opaque
+  leaf with `effect` purity: never inert itself, its holes ordinary children,
+  and a global in a hole counts as escaped for specialization (raw text may
+  assign it). `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
+  in `tests/compiler/` checks the hygiene claim from raw text in every scope
+  the emitter creates, trying each identifier of the output; it found and
+  now guards `caught`, `caseValue` and `installed<n>`, which `hygienic_js`
+  in `src/emitter.rs` renames since. A pellet that makes emitted code bind a
+  new name must add it there and give the test a probe in that scope.
+- **Measured.** The ratchet's `pure-defs` fixture removes 6 definitions at
+  `Advanced` (1 at `Prepare`) and `raw-js` 1 (none below), and the generated
+  programs' `unused-pure-def` garbage moves from `survives` to `residue`; see
+  `benchmarks/compiler.md`.
+
 ### Constant collection literals
 
 Tracked as Pellets 218-221 after keyword interning (208). Every literal is
@@ -617,8 +670,12 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Equal constant literals may be `identical?` because they share one pooled
   value.
 - `set!` on a core operation forces indirection for that operation only.
-- `js*` is opaque; raw text referencing compiler identifiers is already
-  unsupported by the hygiene pass.
+- `js*` is opaque: raw text can name only its `~{}` holes and host globals,
+  because the hygiene pass renames every name the compiler binds away from it.
+  Raw text that reaches compiler state another way (building a renamed
+  identifier for `eval`, patching host or runtime prototypes so that core
+  operations run program code) is unsupported, and a definition only such
+  text reads may be removed.
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification
