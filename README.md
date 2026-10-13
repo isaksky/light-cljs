@@ -122,7 +122,8 @@ so far it also removes unused definitions whose initializers only call pure core
 operations, does not let retained `js*` disable these passes, reads runtime
 functions directly, embeds just the runtime units the program reaches, and
 registers namespaces with the runtime only for programs that use reflection
-such as `*ns*`, `find-ns` or `read-string` (see
+such as `*ns*`, `find-ns` or `read-string`, and keeps the printer (and with it
+a printing `toString` on collections) only for programs that print (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each.
@@ -201,9 +202,10 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   `--optimize advanced` so far drops unused definitions with pure initializers
   and the runtime units a program does not reach, declares each keyword and
   symbol literal once, and leaves out the compiler's namespace registry unless
-  the program uses reflection. `(js/console.log (+ 1 2))` drops from about
-  360 KB to under 1 KB, but a program that builds a value still pulls in the
-  collection and printing machinery (133-160 KB).
+  the program uses reflection and the printer unless it prints.
+  `(js/console.log (+ 1 2))` drops from about 360 KB to under 1 KB, but a
+  program that builds a value still pulls in the collection machinery
+  (120-150 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

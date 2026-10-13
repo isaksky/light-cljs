@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword and quoted symbol literal once (the constant table, below), and registers its namespaces only when the program reaches reflection (below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword and quoted symbol literal once (the constant table, below), registers its namespaces only when the program reaches reflection, and gives collections a printing `toString` only when the program can print (below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -194,6 +194,20 @@ writes) through plain versions that the compiler replaces in the shared
 runtime, so application output carries neither. See "Phase 1 compile-time
 extension points" and "Advanced-mode contract" in
 [advanced-optimization.md](advanced-optimization.md).
+
+An `Advanced` application keeps the printer only when it can print: when it
+calls `str`, `pr-str`, `prn`, `print`, `println` or another operation that
+prints (`clj->js`, `gensym`, `munge`, `tagged-literal`, the reader). The
+printer installs the printing `toString` of collections and `ExceptionInfo`
+when it loads, so in a program that never prints `(.toString [1 2])` is
+`[object Object]` and an `ExceptionInfo` gives `Error: message`, like
+upstream's `:elide-to-string`. Error messages format values without the
+printer: those that show a collection (`No value supplied for key`, `No
+matching clause`, `assert` messages) do so through its `toString`, and
+multimethod errors print nil, booleans, numbers, strings, keywords and
+symbols as the printer does. With the printer every message is the same as
+at `None`; `[1 2 3]` alone is about 120 KB instead of 132 KB. See "Phase 1
+print extension points" in [advanced-optimization.md](advanced-optimization.md).
 
 `PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
@@ -858,7 +872,8 @@ undefined cause stays undefined. `ex-data` and `ex-cause` return fields only for
 that class; `ex-message` returns the message of any JavaScript Error, with nil for
 other inputs. Class identity survives syntax quoting and macro expansion.
 `instance?` supports direct calls and saved function values. `pr-str`, `str` and
-`.toString` print the CLJS `#error` form. `Throwable->map` exposes the cause chain,
+`.toString` print the CLJS `#error` form (at `Advanced`, `.toString` only in a
+program that can print). `Throwable->map` exposes the cause chain,
 type/message/data maps, root cause, optional phase and nil trace.
 
 ## Context, truthiness, and the macro boundary

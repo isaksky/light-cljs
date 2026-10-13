@@ -371,6 +371,7 @@ to under 1 KB and beat every upstream ceiling on its own.
    `print*` or `with-out-str` gets collections without `toString`. This is
    the advanced-mode counterpart of upstream `:elide-to-string` and must be
    documented as such.
+   Implemented; see "Phase 1 print extension points" below.
 7. **Constant table.** Hoist keyword and symbol literals into one interned
    table at the top of the output. `case` on keywords switches on identity.
    Collection literals with only constant parts may be hoisted the same way
@@ -583,7 +584,8 @@ loading that the manifest does not attach to the units needing it:
   operations (`seq`, `withMeta`, `conj`, `=`, `hash`, the printer behind
   `toString`) reference every collection constructor, so any program that
   builds a value keeps them and their members, about 326 units (132 KB); step
-  6 and rapid type analysis (Phase 2) shrink that core.
+  6 and rapid type analysis (Phase 2) shrink that core. (Since step 6 the
+  printer is not part of it: about 300 units, 119 KB.)
 - **Measured.** `(js/console.log (+ 1 2))` drops from 152,535 to 136,918
   bytes at `Advanced`. Its `add` root now keeps only `add`; the rest is the
   namespace registration (`registerReaderNamespace` reaches 338 units through
@@ -659,6 +661,66 @@ no compiler machinery unless the program reaches reflection:
   builds a value drops by 4.8-5.3 KB, the registry and the registration
   itself. The shared runtime grows by 583 bytes. Per-fixture sizes are in
   `benchmarks/compiler.md`.
+
+#### Phase 1 print extension points
+
+Step 6 is implemented (light-cljs-207). An `Advanced` program keeps the
+printer only when it can print:
+
+- **The printer and its install.** The printer is the `printWriterImpl` unit
+  and what it requires. Its install, the effect unit
+  `printWriterImpl.install`, travels with it: it sets
+  `ExceptionInfo.prototype.toString` and fills in `printHooks`, the printer
+  as seen from code that must not keep it. The frozen collection base
+  prototypes (`sequencePrototype`, `vectorPrototype`, `mapPrototype`,
+  `setPrototype`, `transientPrototype`) define `toString` as
+  `printHooks.collection(this)`, which is `print(value, true)` once the
+  printer is installed and `Object.prototype.toString`'s `[object Object]`
+  before. The install cannot add `toString` to the prototypes themselves:
+  they are frozen, and naming them would keep every collection type in a
+  program that prints.
+- **What reaches it.** The `print_install` suite in `tests/compiler/` pins
+  the core operations whose units reach the printer: the print functions,
+  `str` (a collection's text is its printed form), `-pr-writer`, `clj->js`
+  (map keys that are not scalars print), `gensym` and `munge` (they `str`
+  their argument), tagged literals (`TaggedLiteral` prints through `pr-str`)
+  and the reflection that keeps the reader or the namespace registry.
+  `with-out-str` reaches it only through what its body prints, and
+  `*print-fn*` is a cell. A core operation that starts reaching the printer
+  fails that suite until it is listed there.
+- **Error messages.** Error paths format values without the printer.
+  `displayStr` is `str` of one value with a collection formatted through its
+  `toString`; the runtime's `No value supplied for key`, `Duplicate key`,
+  `Missing required key`, `Cannot compare` and `Cannot create iterator from`
+  messages use it, and so do the emitter's `case` no-match (`condp` expands
+  to it) and `assert` messages through the `displayStr` export. Multimethod
+  and hierarchy errors, which print values non-readably, call
+  `printHooks.text`: before the install it formats nil, booleans, numbers,
+  strings, keywords and symbols as `print` does and any other value with
+  `String`. Where the printer is kept, every message is the one `none`
+  gives; see "Advanced-mode contract".
+- **Writers.** The `-pr-writer` methods of records and eductions call the
+  printer through `printHooks.writer` and `printHooks.sequentialWriter`,
+  which only the install sets: only the printer and the `-pr-writer`
+  dispatcher, which requires it, call such a method. A new runtime
+  `IPrintWithWriter` implementation, `toString` or message that formats a
+  value follows the same pattern instead of requiring the printer.
+- **Left for later.** `TaggedLiteral` keeps `pr-str` for its `toString`, so
+  `tagged-literal` and `tagged-literal?` keep the printer; only the reader,
+  which keeps it anyway, builds tagged literals implicitly. A program that
+  builds a value keeps about 300 units (119 KB): `seq`, `count`, `=`,
+  `hash`, `meta`, `conj` and `assoc` dispatch over every builtin collection,
+  so each references every collection constructor, whose prototype and
+  members reference the generic operations back. That is one strongly
+  connected component of the unit graph, which rapid type analysis
+  (Phase 2) has to cut.
+- **Measured.** `[1 2 3]` drops from 132,231 to 119,567 bytes at `Advanced`
+  (327 to 299 units); `(pr-str [1 2 3])` grows from 132,919 to 133,434. Every
+  fixture that builds a value and does not print drops by 10.1-12.7 KB, the
+  record and defmulti programs included. A program that prints grows by
+  about 500 bytes: `printHooks`, `printNumber`, `displayStr` and the install,
+  less `str`, which the error paths no longer keep. The shared runtime grows
+  by 1,084 bytes. Per-fixture sizes are in `benchmarks/compiler.md`.
 
 #### Phase 1 constant table extension points
 
@@ -1000,7 +1062,18 @@ upstream states that advanced mode is unsafe for certain patterns.
   quote resolves an unqualified symbol to the current namespace when it names
   one of its definitions; when that definition was removed and the name is
   also a `cljs.core` name, it resolves to `cljs.core` instead.
-- Collection `toString` exists only when printing is reachable.
+- Collection `toString` exists only when printing is reachable: when the
+  program calls `str`, `pr-str`, `prn`, `print`, `println` or another
+  operation that prints (light-cljs-207; see "Phase 1 print extension
+  points"). Otherwise a collection's `toString` gives `[object Object]`, as
+  `Object.prototype.toString` does, and `ExceptionInfo`'s is
+  `Error.prototype.toString` (`Error: message`). This is the counterpart of
+  upstream `:elide-to-string`. Error messages follow it: a message that
+  shows a collection (`No value supplied for key: [1]`, `No matching clause:
+  [1]`) shows `[object Object]` instead, and a multimethod or hierarchy error
+  shows a value that is not nil, a boolean, number, string, keyword or
+  symbol with its `toString`. Where printing is reachable every message is
+  the one `optimize: false` gives.
 - Equal constant literals may be `identical?` because they share one pooled
   value. Since light-cljs-208 this holds for quoted symbols; keyword
   literals are interned at every level, so their identity does not differ.

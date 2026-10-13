@@ -1073,3 +1073,59 @@ grows by 583 bytes, so the ceilings of eight fixtures rise by 1,000: the
 plain hooks and their one-line comments, the journaling versions that
 `declarationTransaction` installs, and `readerJsLiterals`. The `advanced`
 ceilings fall to the sizes above, rounded up.
+
+## Demand-driven printing — October 13, 2026
+
+light-cljs-207 implements Phase 1 step 6 of the
+[design](../docs/advanced-optimization.md): the printer installs collection
+and `ExceptionInfo` `toString` when it loads, so an `--optimize advanced`
+program keeps it only when it can print (`str`, `pr-str`, `prn`, `println`,
+`clj->js`, ...). Before, every collection prototype's `toString` required the
+printer, and so did the runtime's error messages that show a value (`No value
+supplied for key`, `Cannot compare`, multimethod errors), the emitter's `case`
+and `assert` messages, and the `-pr-writer` methods of records and eductions.
+Those now format values without it. Raw and `gzip -9` bytes of
+`--compile --optimize LEVEL --text` output; "before" is master `d94515b`:
+
+| Fixture | Prepare before | Prepare after | Advanced before | Advanced after | Saved | Units kept |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 360,411 / 85,677 | 361,495 / 86,022 | 713 / 431 | 713 / 431 | 0 | 1 |
+| println-hi | 360,298 / 85,607 | 361,382 / 85,951 | 134,321 / 30,773 | 134,836 / 30,947 | -515 | 339 |
+| vector-printed | 360,323 / 85,616 | 361,407 / 85,961 | 134,383 / 30,791 | 134,898 / 30,963 | -515 | 339 |
+| map-printed | 360,313 / 85,608 | 361,397 / 85,952 | 134,367 / 30,786 | 134,882 / 30,958 | -515 | 339 |
+| seq-pipeline | 360,642 / 85,725 | 361,726 / 86,070 | 150,769 / 34,680 | 138,105 / 31,675 | 12,664 | 343 |
+| add | 360,251 / 85,599 | 361,335 / 85,943 | 553 / 345 | 553 / 345 | 0 | 1 |
+| rest-fn | 360,595 / 85,735 | 361,679 / 86,078 | 132,583 / 30,462 | 119,919 / 27,408 | 12,664 | 299 |
+| keyword-case | 360,883 / 85,753 | 361,967 / 86,096 | 133,748 / 30,825 | 121,084 / 27,796 | 12,664 | 303 |
+| record-protocol | 361,204 / 85,925 | 362,288 / 86,268 | 159,603 / 36,509 | 149,461 / 33,808 | 10,142 | 352 |
+| pure-defs | 361,762 / 86,027 | 362,846 / 86,371 | 155,421 / 35,372 | 145,279 / 32,717 | 10,142 | 346 |
+| keyword-lookups | 361,375 / 85,857 | 362,459 / 86,200 | 143,721 / 33,084 | 131,057 / 30,087 | 12,664 | 319 |
+| raw-js | 361,250 / 85,851 | 362,334 / 86,193 | 1,404 / 582 | 1,404 / 582 | 0 | 1 |
+| `[1 2 3]` | 360,250 / 85,597 | 361,334 / 85,942 | 132,231 / 30,353 | 119,567 / 27,309 | 12,664 | 299 |
+| `(pr-str [1 2 3])` | 360,278 / 85,609 | 361,362 / 85,954 | 132,919 / 30,471 | 133,434 / 30,677 | -515 | 332 |
+| `(str [1 2 3])` | 360,276 / 85,609 | 361,360 / 85,954 | 132,252 / 30,365 | 133,014 / 30,610 | -762 | 330 |
+| `(defmulti m :t)`, one method, one call | 360,782 / 85,713 | 361,866 / 86,056 | 154,930 / 35,644 | 144,713 / 32,934 | 10,217 | 362 |
+| `ex-info` thrown and caught | 360,455 / 85,663 | 361,539 / 86,005 | 132,779 / 30,524 | 120,894 / 27,720 | 11,885 | 303 |
+
+`[1 2 3]` unprinted is 119,567 bytes and printed with `pr-str` 133,434: the
+printer is 33 units, 13.8 KB
+([unprinted](results/print-2026-10-13/vector-unprinted.txt) and
+[printed](results/print-2026-10-13/vector-printed.txt) retention reports).
+Records and defmulti programs save less because they shared some of the
+printer's units with their own. A program that prints grows by 515 bytes:
+`printHooks`, `printNumber`, `displayStr` and the install, less `str` and its
+variadic arity, which the error paths kept before. `(str [1 2 3])` keeps `str`
+again and grows by 762.
+
+What a value-building program still keeps, about 300 units (119 KB), is one
+strongly connected component: `seq`, `count`, `=`, `hash`, `meta`, `conj` and
+`assoc` dispatch over every builtin collection, so each references every
+collection constructor, whose prototype and members reference those
+operations back. Every one of them reaches the same 299 units. Cutting it
+needs rapid type analysis (Phase 2).
+
+The shared runtime that `none`, `prepare`, the REPL and the macro host embed
+grows by 1,084 bytes, so every fixture's `none` and `prepare` ceiling rises
+by 1,000: `printHooks` and `printNumber`, the install unit, `displayStr` and
+its export, and the longer `toString` and message call sites. The `advanced`
+ceilings fall to the sizes above, rounded up.

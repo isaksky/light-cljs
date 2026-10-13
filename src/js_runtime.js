@@ -93,10 +93,10 @@
   const reducedPrototype = Object.freeze({});
   //@unit Reduced.type effect: Reduced requires: builtinType, Reduced, reducedPrototype
   builtinType(Reduced, reducedPrototype);
-  //@unit sequencePrototype requires: count, objectEquiv, print, sequentialIndex
+  //@unit sequencePrototype requires: count, objectEquiv, printHooks, sequentialIndex
   const sequencePrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    toString() { return print(this, true); },
+    toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
   });
@@ -1333,7 +1333,7 @@
   }
 
   //@unit mapPrototype requires: contains, es6EntriesIterator, es6Iterator, get, invalidArity, keys,
-  //@ lookup, maps, objectEquiv, print, vals
+  //@ lookup, maps, objectEquiv, printHooks, vals
   const mapPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
@@ -1343,7 +1343,7 @@
     entries() { return es6EntriesIterator(this); },
     [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
-    toString() { return print(this, true); },
+    toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
       if (!maps.has(this)) throw new Error("Expected map");
       switch (arguments.length) {
@@ -1576,9 +1576,9 @@
     hashRoots.set(entries, root);
   }
 
-  //@unit mapFromArray requires: makeMap, putEntry, str
+  //@unit mapFromArray requires: displayStr, makeMap, putEntry
   function mapFromArray(pairs, kind = pairs.length <= 16 ? "array-map" : "hash-map") {
-    if (pairs.length % 2) throw new Error("No value supplied for key: " + str(pairs[pairs.length - 1]));
+    if (pairs.length % 2) throw new Error("No value supplied for key: " + displayStr(pairs[pairs.length - 1]));
     const entries = [];
     const edit = kind === "hash-map" ? {} : null;
     for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], kind, edit);
@@ -1660,7 +1660,7 @@
   }
 
   //@unit setPrototype requires: contains, es6EntriesIterator, es6Iterator, invalidArity, lookup,
-  //@ objectEquiv, print, sets
+  //@ objectEquiv, printHooks, sets
   const setPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
@@ -1669,7 +1669,7 @@
     entries() { return es6EntriesIterator(this, true); },
     [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
-    toString() { return print(this, true); },
+    toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
       if (!sets.has(this)) throw new Error("Expected set");
       switch (arguments.length) {
@@ -1717,13 +1717,13 @@
     return makeSet(entries);
   }
 
-  //@unit literalSetFromArray requires: makeSet, putMember, str
+  //@unit literalSetFromArray requires: displayStr, makeSet, putMember
   function literalSetFromArray(items) {
     const entries = [], edit = {};
     for (const item of items) {
       const before = entries.length;
       putMember(entries, item, edit);
-      if (entries.length === before) throw new Error("Duplicate key: " + str(item));
+      if (entries.length === before) throw new Error("Duplicate key: " + displayStr(item));
     }
     return makeSet(entries);
   }
@@ -1756,12 +1756,12 @@
     return preserveMeta(value, makeSet(entries, setKinds.get(value), sortedComparators.get(value)));
   }
 
-  //@unit transientPrototype requires: invalidArity, print, transientLookup
+  //@unit transientPrototype requires: invalidArity, printHooks, transientLookup
   // Transient payloads own a private mutable copy of canonical collection
   // storage. Persistence freezes that storage; no persistent alias can mutate it.
   const transientPrototype = Object.freeze({
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
-    toString() { return print(this, true); },
+    toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
       if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
       return transientLookup(this, key, arguments.length === 2 ? null : notFound);
@@ -1911,12 +1911,12 @@
   function popBang(value) { return popBangProtocol(value); }
 
   //@unit vectorPrototype requires: count, es6Iterator, invalidArity, mapEntries, missing,
-  //@ objectEquiv, outOfBounds, print, sequentialIndex, vectorNth, vectors
+  //@ objectEquiv, outOfBounds, printHooks, sequentialIndex, vectorNth, vectors
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     [Symbol.iterator]() { return es6Iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
-    toString() { return print(this, true); },
+    toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
     // The pinned fixed method accepts one index and ignores extra arguments.
@@ -2297,10 +2297,10 @@
   function someVals(value) {
     return reduceKv((result, key, item) => item == null ? result : assoc(result, key, item), null, value);
   }
-  //@unit requiredGet requires: get, missing, str
+  //@unit requiredGet requires: displayStr, get, missing
   function requiredGet(value, key) {
     const result = get(value, key, missing);
-    if (result === missing) throw new Error("Missing required key: " + str(key));
+    if (result === missing) throw new Error("Missing required key: " + displayStr(key));
     return result;
   }
   //@unit keyExtreme requires: first, next, seq
@@ -3116,12 +3116,12 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: builtin, keywords, str, symbols, uuids, vectors
+  //@unit compareKeys requires: builtin, displayStr, keywords, symbols, uuids, vectors
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
     if (b == null) return 1;
-    const cannotCompare = () => { throw new Error("Cannot compare " + str(a) + " to " + str(b)); };
+    const cannotCompare = () => { throw new Error("Cannot compare " + displayStr(a) + " to " + displayStr(b)); };
     if (typeof a === "number") return typeof b === "number" ? (a < b ? -1 : a > b ? 1 : 0) : cannotCompare();
     const method = builtin(a, "IComparable/-compare", 2);
     if (method) return method.call(a, a, b);
@@ -3634,7 +3634,7 @@
   //@unit descendants requires: hierarchyRel
   function descendants(h, tag) { return hierarchyRel("descendants", h, tag, arguments.length); }
   //@unit derive requires: assoc, conj, contains, deref, equalPair, get, getGlobalHierarchy,
-  //@ hierarchyPart, invalidArity, isIdent, keyword, mapFromArray, namespace, print, reset,
+  //@ hierarchyPart, invalidArity, isIdent, keyword, mapFromArray, namespace, printHooks, reset,
   //@ setFromArray, toArray
   function derive(h, tag, parent) {
     if (arguments.length === 2) {
@@ -3646,8 +3646,8 @@
     if (equalPair(tag, parent) || !(typeof tag === "function" || isIdent(tag)) || !isIdent(parent)) throw new Error("Assert failed: derive tags");
     const p = hierarchyPart(h, "parents"), a = hierarchyPart(h, "ancestors"), d = hierarchyPart(h, "descendants");
     if (contains(get(p, tag), parent)) return h;
-    if (contains(get(a, tag), parent)) throw new Error(print(tag, false) + "already has" + print(parent, false) + "as ancestor");
-    if (contains(get(a, parent), tag)) throw new Error("Cyclic derivation:" + print(parent, false) + "has" + print(tag, false) + "as ancestor");
+    if (contains(get(a, tag), parent)) throw new Error(printHooks.text(tag) + "already has" + printHooks.text(parent) + "as ancestor");
+    if (contains(get(a, parent), tag)) throw new Error("Cyclic derivation:" + printHooks.text(parent) + "has" + printHooks.text(tag) + "as ancestor");
     function closure(table, source, sources, target, targets) {
       let result = table;
       for (const key of [source, ...toArray(get(sources, source))]) result = assoc(result, key, setFromArray([...toArray(get(targets, key)), target, ...toArray(get(targets, target))]));
@@ -3667,7 +3667,7 @@
     for (const entry of toArray(updated)) for (const ancestor of toArray(nth(entry, 1))) result = derive(result, nth(entry, 0), ancestor);
     return result;
   }
-  //@unit MultiFn requires: getMethodProtocol, multiFns, print, truth
+  //@unit MultiFn requires: getMethodProtocol, multiFns, printHooks, truth
   class MultiFn {
     constructor(name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy) {
       this.name = name; this.dispatch_fn = dispatchFn; this.default_dispatch_val = defaultDispatchVal;
@@ -3677,7 +3677,7 @@
     }
     call(_self, ...args) {
       const dispatch = this.dispatch_fn.call(null, ...args), target = getMethodProtocol(this, dispatch);
-      if (!truth(target)) throw new Error("No method in multimethod '" + print(this.name, false) + "' for dispatch value: " + print(dispatch, false));
+      if (!truth(target)) throw new Error("No method in multimethod '" + printHooks.text(this.name) + "' for dispatch value: " + printHooks.text(dispatch));
       return target.call(null, ...args);
     }
     apply(_self, args) { return this.call(null, ...Array.from(args)); }
@@ -3722,16 +3722,16 @@
     return truth(get(get(deref(mf.prefer_table), x), y));
   }
   //@unit preferMethod requires: assoc, conj, demandMulti, deref, get, multiPrefers, multiState,
-  //@ print, resetMultiCache, setFromArray
+  //@ printHooks, resetMultiCache, setFromArray
   function preferMethod(mf, x, y) {
     demandMulti(mf);
-    if (multiPrefers(mf, y, x)) throw new Error("Preference conflict in multimethod '" + print(mf.name, false) + "': " + print(y, false) + " is already preferred to " + print(x, false));
+    if (multiPrefers(mf, y, x)) throw new Error("Preference conflict in multimethod '" + printHooks.text(mf.name) + "': " + printHooks.text(y) + " is already preferred to " + printHooks.text(x));
     const table = deref(mf.prefer_table);
     multiState(mf.prefer_table, assoc(table, x, conj(get(table, x, setFromArray([])), y)));
     return resetMultiCache(mf);
   }
   //@unit getMethod requires: assoc, demandMulti, deref, equalPair, get, isa, multiPrefers,
-  //@ multiState, nth, print, resetMultiCache, toArray, truth
+  //@ multiState, nth, printHooks, resetMultiCache, toArray, truth
   function getMethod(mf, dispatch) {
     demandMulti(mf);
     for (;;) {
@@ -3745,7 +3745,7 @@
         const key = nth(entry, 0);
         if (!isa(h, dispatch, key)) continue;
         const candidate = best === null || dominates(key, nth(best, 0)) ? entry : best;
-        if (!dominates(nth(candidate, 0), key)) throw new Error("Multiple methods in multimethod '" + print(mf.name, false) + "' match dispatch value: " + print(dispatch, false) + " -> " + print(key, false) + " and " + print(nth(candidate, 0), false) + ", and neither is preferred");
+        if (!dominates(nth(candidate, 0), key)) throw new Error("Multiple methods in multimethod '" + printHooks.text(mf.name) + "' match dispatch value: " + printHooks.text(dispatch) + " -> " + printHooks.text(key) + " and " + printHooks.text(nth(candidate, 0)) + ", and neither is preferred");
         best = candidate;
       }
       const target = best === null ? get(deref(mf.method_table), mf.default_dispatch_val) : nth(best, 1);
@@ -4356,8 +4356,8 @@
       return item;
     }};
   }
-  //@unit sequenceIterator requires: IIterable, isSeqable, iteratorInit, iteratorProtocol,
-  //@ satisfies, SeqIter, str
+  //@unit sequenceIterator requires: displayStr, IIterable, isSeqable, iteratorInit,
+  //@ iteratorProtocol, satisfies, SeqIter
   function sequenceIterator(value) {
     if (satisfies(IIterable, value)) return iteratorProtocol(value);
     if (value == null) return {hasNext() { return false; }, next() { return new Error("No such element"); }, remove() { return new Error("Unsupported operation"); }};
@@ -4366,7 +4366,7 @@
       return {hasNext() { return index < value.length; }, next() { return typeof value === "string" ? value.charAt(index++) : value[index++]; }, remove() { return new Error("Unsupported operation"); }};
     }
     if (isSeqable(value)) return new SeqIter(iteratorInit, value);
-    throw new Error("Cannot create iterator from " + str(value));
+    throw new Error("Cannot create iterator from " + displayStr(value));
   }
   //@unit transformedIterator requires: invalidArity, isReduced
   function transformedIterator(xform, sources) {
@@ -4740,9 +4740,8 @@
     return new Constructor(...Type.fieldNames.map(name => field(value, name)), metadata, extmap, cachedHash);
   }
   //@unit recordMethods requires: assoc, conj, contains, count, dissoc, equalPair, field, get, hash,
-  //@ into, isVector, iteratorInit, keyword, mapFromArray, nth, printWriter, prSequentialWriter,
-  //@ recordCopy, recordEntries, reduce, seq, SeqIter, stringHash, typeNames, vectorFromArray,
-  //@ withMeta
+  //@ into, isVector, iteratorInit, keyword, mapFromArray, nth, printHooks, recordCopy,
+  //@ recordEntries, reduce, seq, SeqIter, stringHash, typeNames, vectorFromArray, withMeta
   function recordMethods(Type) {
     const copy = (value, metadata, extmap, cachedHash) => recordCopy(value, Type, metadata, extmap, cachedHash);
     const fieldIndex = key => Type.fieldNames.findIndex(name => equalPair(key, keyword(null, name)));
@@ -4784,7 +4783,8 @@
       ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }],
       ["IIterable/-iterator", 1, function () { return new SeqIter(iteratorInit, this); }],
       ["IPrintWithWriter/-pr-writer", 3, function (_self, writer, options) {
-        return prSequentialWriter(writer, (entry, target, opts) => prSequentialWriter(target, printWriter, "", " ", "", opts, entry),
+        const {sequentialWriter, writer: printOne} = printHooks;
+        return sequentialWriter(writer, (entry, target, opts) => sequentialWriter(target, printOne, "", " ", "", opts, entry),
           "#" + (typeNames.get(Type) ?? "").replaceAll("/", ".") + "{", ", ", "}", options, recordEntries(this, Type));
       }],
       ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
@@ -5557,7 +5557,7 @@
   const exceptionMessages = new WeakMap();
   //@unit compilerExceptionMessage compile-time requires: exceptionMessages
   const compilerExceptionMessage = value => exceptionMessages.get(value);
-  //@unit ExceptionInfo effect requires: exceptionMessages, print, truth
+  //@unit ExceptionInfo effect requires: exceptionMessages
   function ExceptionInfo(message, data, cause) {
     const error = new Error(message);
     const target = this == null ? globalThis : Object(this);
@@ -5569,12 +5569,8 @@
       target[key] = error[key];
     return target;
   }
+  // The printer installs `toString`.
   Object.setPrototypeOf(ExceptionInfo.prototype, Error.prototype);
-  ExceptionInfo.prototype.toString = function () {
-    return "#error {:message " + print(this.message, true)
-      + (truth(this.data) ? ", :data " + print(this.data, true) : "")
-      + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
-  };
   //@unit exInfo requires: ExceptionInfo, invalidArity
   function exInfo(message, data, cause) {
     if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length);
@@ -5731,6 +5727,17 @@
       printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
     }, (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
+  //@unit printNumber
+  function printNumber(value) {
+    return Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value);
+  }
+  //@unit printHooks requires: printNumber
+  // The printer for code that must not keep it; `printWriterImpl.install`
+  // fills it in and adds the writers, which only the printer calls.
+  const printHooks = {
+    collection: value => Object.prototype.toString.call(value),
+    text: value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value)
+  };
   //@unit printWriter requires: assoc, get, keyword, printWriterImpl, truth
   function printWriter(value, writer, options) {
     const alt = get(options, keyword(null, "alt-impl"));
@@ -5738,7 +5745,7 @@
     return printWriterImpl(value, writer, options);
   }
   //@unit printWriterImpl requires: atoms, coreCells, delays, ExceptionInfo, freshKeyword, keywords,
-  //@ maps, mapTraversal, meta, printMapEntries, printMetaQ, printOption, printWriter,
+  //@ maps, mapTraversal, meta, printMapEntries, printMetaQ, printNumber, printOption, printWriter,
   //@ prSequentialWriter, publicMethod, queues, sequential, sets, setTraversal, symbols, transients,
   //@ truth, typeNames, uuids, vars, vectors, volatiles, write
   function printWriterImpl(value, writer, options, skipMetadata = false) {
@@ -5752,7 +5759,7 @@
       const escapes = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t'};
       return write(writer, readable ? '"' + value.replace(/[\\"\b\f\n\r\t]/g, ch => escapes[ch]) + '"' : value);
     }
-    if (typeof value === "number") return write(writer, Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value));
+    if (typeof value === "number") return write(writer, printNumber(value));
     if (typeof value === "boolean") return write(writer, String(value));
     if (typeof value === "function") return write(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(coreCells.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
     if (value instanceof ExceptionInfo) return write(writer, value.toString());
@@ -5807,6 +5814,20 @@
     try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
     finally { coreCells.printReadably = saved; }
   }
+  //@unit printWriterImpl.install effect: printWriterImpl requires: ExceptionInfo, print,
+  //@ printHooks, printWriter, prSequentialWriter, truth
+  // Only a program that can print has collection and ExceptionInfo `toString`.
+  Object.assign(printHooks, {
+    collection: value => print(value, true),
+    text: value => print(value, false),
+    writer: printWriter,
+    sequentialWriter: prSequentialWriter
+  });
+  ExceptionInfo.prototype.toString = function () {
+    return "#error {:message " + print(this.message, true)
+      + (truth(this.data) ? ", :data " + print(this.data, true) : "")
+      + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
+  };
   //@unit prStr requires: prStrWithOpts
   function prStr(...values) { return prStrWithOpts(values, null); }
   //@unit printForHost requires: prStr
@@ -5818,6 +5839,9 @@
   }
   //@unit str requires: maps, print, recordTypes, sequential, sets
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? print(value, true) : String(value)).join(""); }
+  //@unit displayStr
+  // `str` of one value for error messages, through `toString` for collections.
+  const displayStr = value => value == null ? "" : String(value);
 
   //@unit variadicCore mutator requires: fnApplyTo
   function variadicCore(fn, fixed, delegate) {
@@ -6349,8 +6373,8 @@
   });
   treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit Eduction.members effect: Eduction requires: completing, count, Eduction, eductions,
-  //@ es6Iterator, installMethods, printWriter, prSequentialWriter, seq, sequence, sequenceIterator,
-  //@ sequentialIndex, transduce, transformedIterator
+  //@ es6Iterator, installMethods, printHooks, seq, sequence, sequenceIterator, sequentialIndex,
+  //@ transduce, transformedIterator
   installMethods(Eduction.prototype, [
     ["ISequential", 0, null], ["IIterable", 0, null], ["ISeqable", 0, null], ["IReduce", 0, null], ["IPrintWithWriter", 0, null],
     ["IIterable/-iterator", 1, value => {
@@ -6371,7 +6395,7 @@
       return transduce(xform, completing(rf), init, coll);
     }],
     ["IPrintWithWriter/-pr-writer", 3, (value, writer, options) => {
-      return prSequentialWriter(writer, printWriter, "(", " ", ")", options, value);
+      return printHooks.sequentialWriter(writer, printHooks.writer, "(", " ", ")", options, value);
     }]
   ]);
   Object.defineProperties(Eduction.prototype, Object.getOwnPropertyDescriptors({
@@ -6441,8 +6465,8 @@
   //@ PersistentArrayMapValue
   PersistentArrayMapValue.EMPTY = makeMap([], "array-map");
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
-  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue requires: aclone, makeMap,
-  //@ PersistentHashMapValue, putEntry, str
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue requires: aclone,
+  //@ displayStr, makeMap, PersistentHashMapValue, putEntry
   PersistentHashMapValue.EMPTY = makeMap([], "hash-map");
   PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
@@ -6453,7 +6477,7 @@
   PersistentHashMapValue.fromArrays = (keys, values) => {
     const length = keys.length, entries = [], edit = {};
     for (let i = 0; i < length; i++) {
-      if (values.length <= i) throw new Error(str("No value supplied for key: ", keys[i]));
+      if (values.length <= i) throw new Error("No value supplied for key: " + displayStr(keys[i]));
       putEntry(entries, keys[i], values[i], "hash-map", edit);
     }
     return makeMap(entries, "hash-map");
@@ -7477,5 +7501,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

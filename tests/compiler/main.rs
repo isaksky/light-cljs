@@ -104,6 +104,7 @@ mod positional_constructors;
 mod predicate_macro;
 mod prim_seq;
 mod primitives;
+mod print_install;
 mod printing_completion;
 mod protocols;
 mod public_constructors;

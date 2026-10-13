@@ -1393,7 +1393,7 @@ impl<'a> Emitter<'a> {
                         self.keyword_case_name("\"\"");
                         self.output.push_str("));\n");
                     } else {
-                        self.rt(RuntimeName::core("str"));
+                        self.rt(RuntimeName::export("displayStr"));
                         self.output.push_str("(caseValue));\n");
                     }
                 }
@@ -1870,7 +1870,7 @@ impl<'a> Emitter<'a> {
                 self.output
                     .push_str(")) throw new Error(\"Assert failed: \" + ");
                 if let Some(message) = message {
-                    self.rt(RuntimeName::core("str"));
+                    self.rt(RuntimeName::export("displayStr"));
                     self.output.push('(');
                     self.value(*message);
                     self.output.push_str(") + \"\\n\" + ");
