@@ -1,0 +1,382 @@
+//! Rapid type analysis for the runtime's builtin types at `Advanced`
+//! (light-cljs-227; docs/advanced-optimization.md, "Phase 2 builtin types
+//! extension points").
+//!
+//! A generic operation reaches protocol machinery only through
+//! `protocolHooks`, which `installMethods` fills in, and each kind's branch
+//! only through `kindHooks`, which the units building the kind fill in. A
+//! program that builds a vector therefore keeps no map, set or protocol
+//! machinery. These tests run programs at every level, require every level
+//! to give what `None` gives, and check what the `Advanced` slice keeps:
+//! - each kind's branch of the generic operations, with and without protocol
+//!   implementations in the program (the hooks closed and open);
+//! - the host-facing methods of builtin prototypes (`equiv`, `indexOf`,
+//!   iteration, `call`) on the kinds a small program builds;
+//! - seqs of host iterables, which the generic operations know natively;
+//! - the collection corpora of the other suites, printed with `pr-str`.
+use super::optimization::execute;
+use light_cljs::runtime_manifest::RuntimeManifest;
+use light_cljs::{
+    ApplicationOptions, OptimizationLevel, PreparedApplication, Program, analyze, parse,
+    prepare_application,
+};
+
+fn program(source: &str) -> Program {
+    analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
+}
+
+fn advanced(source: &str) -> PreparedApplication {
+    prepare_application(
+        &program(source),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+}
+
+/// The program prints `expected` (its value, through `console.log`) at every
+/// level.
+fn every_level(source: &str, expected: &str) {
+    let program = program(source);
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            execute(&format!("console.log({js});")),
+            format!("{expected}\n"),
+            "at {level}: {source}"
+        );
+    }
+}
+
+/// The runtime units an `Advanced` program embeds.
+fn units(source: &str) -> Vec<&'static str> {
+    advanced(source)
+        .retention()
+        .units
+        .iter()
+        .map(|unit| RuntimeManifest::embedded().unit(unit.unit).name)
+        .collect()
+}
+
+/// The protocol machinery a program without protocol implementations drops.
+const PROTOCOL_MACHINERY: [&str; 7] = [
+    "installMethods",
+    "builtin",
+    "publicMethod",
+    "satisfies",
+    "implementsProtocol",
+    "builtinCoreImplementation",
+    "protocolHooks.install",
+];
+
+fn assert_keeps_none(source: &str, absent: &[&str]) -> Vec<&'static str> {
+    let units = units(source);
+    for unit in absent {
+        assert!(!units.contains(unit), "{source} keeps `{unit}`: {units:?}");
+    }
+    units
+}
+
+#[test]
+fn a_vector_keeps_no_map_set_or_protocol_machinery() {
+    let source = "(js/console.log [1 2 3])";
+    let units = assert_keeps_none(
+        source,
+        &[
+            "makeMap",
+            "makeSet",
+            "PersistentArrayMapValue",
+            "PersistentHashMapValue",
+            "PersistentHashSetValue",
+            "treeMapConstructor",
+            "hash",
+            "makeMap.seq",
+            "makeMap.equiv",
+            "makeTransient.nth",
+        ],
+    );
+    for unit in PROTOCOL_MACHINERY {
+        assert!(!units.contains(&unit), "{unit}: {units:?}");
+    }
+    // Its own branches and the seqs it builds stay.
+    for unit in ["makeVector.seq", "makeVector.equiv", "ChunkedSeqValue"] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
+}
+
+#[test]
+fn a_keyword_keeps_no_collection() {
+    let units = assert_keeps_none(
+        "(js/console.log :a)",
+        &[
+            "makeVector",
+            "makeMap",
+            "makeSet",
+            "view",
+            "seq",
+            "count",
+            "hash",
+            "emptyList",
+        ],
+    );
+    for unit in PROTOCOL_MACHINERY {
+        assert!(!units.contains(&unit), "{unit}: {units:?}");
+    }
+    assert!(units.contains(&"get") && units.contains(&"objectEquiv"));
+}
+
+#[test]
+fn an_empty_map_keeps_only_its_own_map_type() {
+    let units = assert_keeps_none(
+        "(js/console.log {})",
+        &[
+            "PersistentHashMapValue",
+            "treeMapConstructor",
+            "PersistentHashMapValue.traversal",
+            "PersistentHashMapValue.put",
+            "hashNodeAssoc",
+            "hash",
+            "makeSet",
+        ],
+    );
+    for unit in PROTOCOL_MACHINERY {
+        assert!(!units.contains(&unit), "{unit}: {units:?}");
+    }
+    assert!(units.contains(&"makeMap.seq") && units.contains(&"makeMap.lookup"));
+}
+
+#[test]
+fn a_program_type_opens_the_protocol_hooks() {
+    // `installMethods` keeps the protocol machinery and its install, so the
+    // generic operations dispatch to program types.
+    let units = units("(deftype T [] ICounted (-count [_] 7)) (count (T.))");
+    for unit in ["installMethods", "publicMethod", "protocolHooks.install"] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
+    every_level("(deftype T [] ICounted (-count [_] 7)) (count (T.))", "7");
+}
+
+#[test]
+fn host_facing_methods_of_builtin_prototypes() {
+    every_level(
+        "(let [v [1 2 3 2]]
+           (array (.indexOf v 2) (.lastIndexOf v 2) (.indexOf v 9) (.equiv v [1 2 3 2])
+                  (.equiv v '(1 2 3 2)) (.equiv v [1 2]) (.call v nil 1) (.-length (js/Array.from v))
+                  (.join (js/Array.from v) \"\")))",
+        "[\n  1,    3,    -1,\n  true, true, false,\n  2,    4,    '1232'\n]",
+    );
+    every_level(
+        "(let [v (vec (range 40))]
+           (array (.indexOf v 33) (.join (.slice (js/Array.from v) 30 35) \",\")
+                  (.equiv v (range 40)) (.equiv v (range 41))))",
+        "[ 33, '30,31,32,33,34', true, false ]",
+    );
+    every_level(
+        "(array (.equiv :a :a) (.equiv :a :b) (.call :a nil {:a 1}) (.call :b nil {:a 1} 5)
+                (.call :a nil nil) (.call :a nil #js [1]) (.equiv 'x 'x) (.call 'x nil {'x 2}))",
+        "[\n  true, false, 1,\n  5,    null,  null,\n  true, 2\n]",
+    );
+    every_level(
+        "(let [m {:a 1 :b 2}]
+           (array (.get m :a) (.get m :c 3) (.has m :b) (.has m :c) (.equiv m {:b 2 :a 1})
+                  (.-length (js/Array.from (.keys m))) (.-length (js/Array.from (.values m)))
+                  (.join (.map (js/Array.from (.entries m)) (fn [e] (aget e 1))) \"\")
+                  (.call m nil :b) (.equiv m {:a 1})))",
+        "[\n  1,     3,    true,\n  false, true, 0,\n  0,     '',   2,\n  false\n]",
+    );
+    every_level(
+        "(let [s #{1 2}]
+           (array (.has s 1) (.has s 3) (.equiv s #{2 1}) (.call s nil 2) (.call s nil 3 :none)
+                  (.-length (js/Array.from s))))",
+        "[ true, false, true, 2, KeywordValue {}, 2 ]",
+    );
+}
+
+#[test]
+fn each_kind_branch_of_the_generic_operations() {
+    // seq, first, rest, next, count, nth and equality over every kind.
+    every_level(
+        "(let [kinds [[1 2 3] (vec (range 40)) '(1 2 3) (cons 0 [1 2]) (lazy-seq [1 2])
+                      (range 3) (range 0.5 3) (seq (vec (range 40))) {:a 1} (into {} (map vector (range 20) (range 20)))
+                      (sorted-map 2 :b 1 :a) #{1 2} (sorted-set 3 1 2) (repeat 3 :x) (take 3 (cycle [1 2]))
+                      (take 3 (iterate inc 0)) (subvec [1 2 3 4] 1 3) (conj cljs.core.PersistentQueue.EMPTY 1 2)
+                      (keys {:a 1 :b 2}) (vals {:a 1 :b 2}) (rseq [1 2 3]) (drop 1 (vec (range 40)))]]
+           (array (pr-str (map first kinds)) (pr-str (map count kinds)) (pr-str (map (comp first rest) kinds))
+                  (pr-str (map #(nth (seq %) 1 :none) kinds)) (pr-str (map #(= % (seq %)) kinds))
+                  (pr-str (map #(= (hash %) (hash (into (empty %) %))) kinds))))",
+        "[\n  '(1 0 1 0 1 0 0.5 0 [:a 1] [0 0] [1 :a] 1 1 :x 1 0 2 1 :a 1 3 1)',\n  '(3 40 3 3 2 3 3 40 1 20 2 2 3 3 3 3 2 2 2 2 3 39)',\n  '(2 1 2 1 2 1 1.5 1 nil [1 1] [2 :b] 2 2 :x 2 1 3 2 :b 2 2 2)',\n  '(2 1 2 1 2 1 1.5 1 :none [1 1] [2 :b] 2 2 :x 2 1 3 2 :b 2 2 2)',\n  '(true true true true true true true true false false false false false true true true true true true true true true)',\n  '(true true false false false false false false true true true true true true true false true true false false false false)'\n]",
+    );
+    // Equality across kinds and with host values.
+    every_level(
+        "(array (= [1 2] '(1 2)) (= [1 2] (lazy-seq [1 2])) (= (range 3) [0 1 2]) (= {:a 1} (hash-map :a 1))
+                (= {:a 1} (sorted-map :a 1)) (= #{1} (sorted-set 1)) (= [1 2] #js [1 2]) (= :a :a) (= 'x 'x)
+                (= [1 [2 {:a #{3}}]] [1 [2 {:a #{3}}]]) (= {:a 1} {:a 2}) (= #{1} #{2}) (= [] '()) (= {} []))",
+        "[\n  true,  true,  true,\n  true,  true,  true,\n  false, true,  true,\n  true,  false, false,\n  true,  false\n]",
+    );
+}
+
+#[test]
+fn transients_chunks_and_entries_through_the_generic_operations() {
+    every_level(
+        "(let [tv (transient [1 2 3]) tm (transient {:a 1}) chunk (chunk-first (seq (vec (range 40))))]
+           (array (nth tv 1) (count tv) (get tm :a) (count tm) (nth chunk 3) (count chunk)
+                  (key (first {:a 1})) (val (first {:a 1})) (pr-str (keys {:a 1})) (pr-str (find {:a 1} :a))
+                  (count (persistent! (reduce conj! (transient {}) (map vector (range 9) (range 9)))))))",
+        "[ 2, 3, 1, 1, 3, 32, KeywordValue {}, 1, '(:a)', '[:a 1]', 9 ]",
+    );
+    // A projection of entries that are not map entries fails as `-key` does.
+    every_level(
+        "(try (first (keys [[1 2]])) (catch :default e (.-message e)))",
+        "No protocol method IMapEntry/-key defined for this value",
+    );
+}
+
+#[test]
+fn seqs_of_host_iterables() {
+    // An ES6IteratorSeq: ISeqable and ISeq, not ISequential, equal only to
+    // itself, reprobing a nil tail.
+    every_level(
+        "(let [s (seq (js/Set. #js [1 2 3])) t (seq (.values #js [4 5]))]
+           (array (first s) (count s) (nth s 2) (seq? s) (seqable? s) (sequential? s) (counted? s)
+                  (= s [1 2 3]) (= s s) (pr-str s) (pr-str (rest t)) (pr-str (next (rest t)))
+                  (identical? s (seq s)) (pr-str (cons 0 s)) (reduce + s)))",
+        "[\n  1,        3,\n  3,        true,\n  true,     false,\n  false,    false,\n  true,     '#js {}',\n  '#js {}', 'nil',\n  true,     '(0 1 2 3)',\n  6\n]",
+    );
+    // Small programs keep the native path: no protocol machinery.
+    every_level(
+        "(let [s (seq (js/Set. #js [1 2 3]))] (array (first s) (first (rest s)) (count s)))",
+        "[ 1, 2, 3 ]",
+    );
+    for unit in PROTOCOL_MACHINERY {
+        assert!(
+            !units(
+                "(let [s (seq (js/Set. #js [1 2 3]))] (array (first s) (first (rest s)) (count s)))"
+            )
+            .contains(&unit),
+            "{unit}"
+        );
+    }
+}
+
+#[test]
+fn protocol_extensions_of_builtin_and_host_types_reach_the_generic_operations() {
+    every_level(
+        "(extend-type PersistentVector ICounted (-count [_] 42))
+         (extend-type object ISeqable (-seq [o] (list :obj)))
+         (extend-type number IHash (-hash [n] 5))
+         (array (count [1 2]) (pr-str (seq #js {})) (= (hash 1) (hash 2)) (count '(1 2)))",
+        "[ 42, '(:obj)', false, 2 ]",
+    );
+    every_level(
+        "(deftype Pair [a b] ISeqable (-seq [_] (list a b)) ICounted (-count [_] 2)
+           IIndexed (-nth [_ i] (if (zero? i) a b)) (-nth [_ i d] (case i 0 a 1 b d)))
+         (let [p (Pair. :x :y)] (array (pr-str (seq p)) (count p) (nth p 1) (pr-str (into [] p)) (= [:x :y] (vec p))))",
+        "[ '(:x :y)', 2, KeywordValue {}, '[:x :y]', true ]",
+    );
+    every_level(
+        "(def s (seq (js/Set. #js [1 2])))
+         (specify! s ICounted (-count [_] 10))
+         (array (count s) (first s) (seq? s))",
+        "[ 10, 1, true ]",
+    );
+}
+
+#[test]
+fn conj_assoc_and_with_meta_over_every_kind() {
+    every_level(
+        "(defrecord R [a])
+         (let [kinds [[1] (subvec [1 2 3] 1) (cljs.core/Subvec. nil [1 2 3] 0 2 nil) {:a 1} (sorted-map :a 1) #{1}
+                      (sorted-set 1) (cljs.core/PersistentHashSet. nil {1 nil} nil) '(1) (cons 1 nil) (lazy-seq [1])
+                      (conj cljs.core.PersistentQueue.EMPTY 1) (range 2) (seq [1 2]) nil (->R 1)]
+               item #(if (or (map? %) (record? %)) [:k 9] 5)
+               metas (map #(pr-str (meta (with-meta % {:m 1}))) (remove nil? kinds))]
+           (array (pr-str (map #(conj % (item %)) kinds)) (pr-str (map #(count (conj % (item %) (item %))) kinds))
+                  (pr-str metas)
+                  (pr-str (map #(meta (with-meta % {:m 2})) [(range 2.5) (repeat 2 :x) (iterate inc 0) (cycle [1])
+                                                               (rest (seq (vec (range 40)))) (chunk-cons (chunk-first (seq (vec (range 40)))) nil)]))
+                  (pr-str (assoc [1 2] 2 3)) (pr-str (assoc (cljs.core/Subvec. nil [1 2 3] 0 2 nil) 0 :x))
+                  (pr-str (assoc (cljs.core/PersistentArrayMap. nil 8 (to-array (range 16)) nil) :new 1))
+                  (pr-str (assoc (->R 1) :a 2 :b 3)) (pr-str (assoc nil :a 1)) (pr-str (into {} [[:a 1] {:b 2}]))
+                  (try (conj {} [1]) (catch :default e (.-message e)))))",
+        "[\n  '([1 5] [2 3 5] [1 2 5] {:a 1, :k 9} {:a 1, :k 9} #{1 5} #{1 5} #{1 5} (5 1) (5 1) (5 1) #queue [1 5] (5 0 1) (5 1 2) (5) #cljs.user.R{:a 1, :k 9})',\n  '(3 4 4 2 2 2 2 2 3 3 3 3 4 4 2 2)',\n  '(\"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\" \"{:m 1}\")',\n  '({:m 2} {:m 2} {:m 2} {:m 2} {:m 2} {:m 2})',\n  '[1 2 3]',\n  '[:x 2]',\n  '{0 1, 2 3, 4 5, 6 7, 8 9, :new 1, 10 11, 12 13, 14 15}',\n  '#cljs.user.R{:a 2, :b 3}',\n  '{:a 1}',\n  '{:a 1, :b 2}',\n  'Index out of bounds'\n]",
+    );
+    every_level(
+        "(let [f (with-meta (fn [& xs] (apply + xs)) {:m 1}) g (with-meta f {:m 2})]
+           (array (f 1 2) (g 3 4) (pr-str (meta g)) (apply f 1 [2 3]) (apply + 1 2 [3 4 5])
+                  (apply + (range 30)) (apply max (repeat 3 7)) (apply str (seq (js/Set. #js [\"a\" \"b\"])))))",
+        "[ 3, 7, '{:m 2}', 6, 15, 435, 7, 'ab' ]",
+    );
+}
+
+#[test]
+fn metadata_through_the_generic_operations() {
+    every_level(
+        "(defn ^{:test (fn [] :ok)} f [] 1)
+         (array (pr-str (meta (with-meta [1] {:a 1}))) (some? (:test (meta #'f))) (.-meta (with-meta [1] {:a 2}))
+                (pr-str (meta (conj (with-meta [1] {:b 1}) 2))) (nil? (.-meta [1])))",
+        "[ '{:a 1}', true, PersistentArrayMapValue {}, '{:b 1}', true ]",
+    );
+}
+
+/// Each row of a fixture corpus (`id<TAB>source<TAB>...`) prints, with
+/// `pr-str` or as an error message, what it prints at `None`.
+fn corpus(fixture: &str, range: std::ops::Range<usize>) {
+    let rows: Vec<(&str, &str)> = fixture
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let mut columns = line.split('\t');
+            (columns.next().unwrap(), columns.next().unwrap())
+        })
+        .collect();
+    for (id, source) in &rows[rows.len().min(range.start)..rows.len().min(range.end)] {
+        let wrapped = format!(
+            "(try (pr-str (do {source})) (catch :default e (str \"error: \" (.-message e))))"
+        );
+        let program = analyze(&wrapped, &parse(&wrapped).unwrap())
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let outputs = OptimizationLevel::ALL.map(|level| {
+            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            execute(&format!("console.log({js});"))
+        });
+        for (level, output) in OptimizationLevel::ALL.iter().zip(&outputs).skip(1) {
+            assert_eq!(output, &outputs[0], "{id} at {level}");
+        }
+    }
+}
+
+const EQUALITY: &str = include_str!("../fixtures/compiler-equality.tsv");
+const SEQUENCE_CONTRACTS: &str = include_str!("../fixtures/compiler-sequence-contracts.tsv");
+const SEQUENCE_COMPLETION: &str = include_str!("../fixtures/compiler-sequence-completion.tsv");
+const TRANSIENTS: &str = include_str!("../fixtures/compiler-transients.tsv");
+const SORTED: &str = include_str!("../fixtures/compiler-sorted-collections.tsv");
+const OBJECT_EQUIV: &str = include_str!("../fixtures/compiler_object_equiv.tsv");
+const SEQUENCE_OBJECT_EQUIV: &str = include_str!("../fixtures/compiler_sequence_object_equiv.tsv");
+const REDUCE_KV: &str = include_str!("../fixtures/compiler-reduce-kv-entries.tsv");
+const HASH_BRANCHES: &str = include_str!("../fixtures/compiler-hash-branch-effects.tsv");
+const FIND_EFFECTS: &str = include_str!("../fixtures/compiler-find-effects.tsv");
+const PUBLIC_CONSTRUCTORS: &str = include_str!("../fixtures/compiler-public-constructors.tsv");
+const CORE_HELPERS: &str = include_str!("../fixtures/compiler-core-helpers.tsv");
+const LANGUAGE: &str = include_str!("../fixtures/compiler-language.tsv");
+
+row_tests!(corpus;
+    equality_corpus(EQUALITY, 0..100),
+    sequence_contracts_corpus(SEQUENCE_CONTRACTS, 0..100),
+    sequence_completion_corpus(SEQUENCE_COMPLETION, 0..100),
+    transients_corpus(TRANSIENTS, 0..100),
+    sorted_collections_corpus(SORTED, 0..100),
+    object_equiv_corpus(OBJECT_EQUIV, 0..100),
+    sequence_object_equiv_corpus(SEQUENCE_OBJECT_EQUIV, 0..100),
+    reduce_kv_corpus(REDUCE_KV, 0..100),
+    hash_branches_corpus_00(HASH_BRANCHES, 0..35),
+    hash_branches_corpus_35(HASH_BRANCHES, 35..100),
+    find_effects_corpus(FIND_EFFECTS, 0..100),
+    public_constructors_corpus(PUBLIC_CONSTRUCTORS, 0..100),
+    core_helpers_corpus(CORE_HELPERS, 0..100),
+    language_corpus_000(LANGUAGE, 0..100),
+    language_corpus_100(LANGUAGE, 100..200),
+    language_corpus_200(LANGUAGE, 200..300),
+    language_corpus_300(LANGUAGE, 300..400),
+    language_corpus_400(LANGUAGE, 400..500),
+    language_corpus_500(LANGUAGE, 500..600),
+    language_corpus_600(LANGUAGE, 600..700),
+    language_corpus_700(LANGUAGE, 700..800),
+);

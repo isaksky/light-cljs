@@ -26,7 +26,7 @@
 //!
 //! ```text
 //! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...[ when: <binding>, ...]] | install: <binding>, ...][ requires: <binding>, ...]
-//! //@ <binding>, ...                    continues the requires list
+//! //@ <binding>, ...                    continues the header (any list wraps)
 //! //@exports
 //! ```
 //!
@@ -70,9 +70,16 @@
 //!   methods. Each record method (`recordMethods.hash`) belongs to
 //!   `recordMethods`, which only a program with records keeps, and is needed
 //!   only where an operation that dispatches its protocol method is kept
-//!   (`when: hash, hashProtocol`). The `runtime_manifest` suite checks that
-//!   the `when:` list of a method unit names every unit whose body dispatches
-//!   one of its methods' keys.
+//!   (`when: hash, hashProtocol`). The same holds for a generic operation's
+//!   branch for one kind of value, which belongs to the units that build the
+//!   kind and is needed where the operation is kept: `makeVector.seq effect:
+//!   makeVector when: seq` fills in `kindHooks.seqVector`; and for the
+//!   protocol machinery the generic operations reach through `protocolHooks`,
+//!   which belongs to `installMethods`. The `runtime_manifest` suite checks
+//!   that the `when:` list of a method unit names every unit whose body
+//!   dispatches one of its methods' keys, that of a hook install every unit
+//!   reading the hook, and that a kind hook's targets are every unit writing
+//!   to its kind's store.
 //! - `install: a, b` is an effect that only adds properties to the targets'
 //!   values for code that receives them, such as the variadic arity ABI of a
 //!   core function (`add.variadic`), which `apply` reads. It is kept once a
@@ -923,38 +930,49 @@ impl<'a> RuntimeManifest<'a> {
             if unit.mutator {
                 words.push("mutator".into());
             }
+            // A keyword, then its list's items with their commas.
+            let mut list = |keyword: &str, items: &[&str]| {
+                words.push(keyword.into());
+                for (position, item) in items.iter().enumerate() {
+                    words.push(if position + 1 < items.len() {
+                        format!("{item},")
+                    } else {
+                        item.to_string()
+                    });
+                }
+            };
             match &unit.effect {
-                Some(effect) if effect.targets.is_empty() => words.push("effect".into()),
+                Some(effect) if effect.targets.is_empty() => list("effect", &[]),
                 Some(effect) => {
-                    words.push(format!(
-                        "{}: {}",
-                        if effect.install { "install" } else { "effect" },
-                        effect.targets.join(", ")
-                    ));
+                    list(
+                        if effect.install {
+                            "install:"
+                        } else {
+                            "effect:"
+                        },
+                        &effect.targets,
+                    );
                     if !effect.when.is_empty() {
-                        words.push(format!("when: {}", effect.when.join(", ")));
+                        list("when:", &effect.when);
                     }
                 }
                 None => {}
             }
             let required = self.computed_requires(UnitId(index));
-            let mut line = format!("{indent}{}", words.join(" "));
             if !required.is_empty() {
-                line.push_str(" requires:");
-                for (position, binding) in required.iter().enumerate() {
-                    let item = if position + 1 < required.len() {
-                        format!("{binding},")
-                    } else {
-                        binding.to_string()
-                    };
-                    if line.len() + 1 + item.len() > 100 && !line.trim_end().ends_with(':') {
-                        text.push_str(&line);
-                        text.push('\n');
-                        line = format!("{indent}//@");
-                    }
-                    line.push(' ');
-                    line.push_str(&item);
+                list("requires:", &required);
+            }
+            // Wrap before a word that would pass column 100, but never right
+            // after a keyword.
+            let mut line = format!("{indent}{}", words[0]);
+            for word in &words[1..] {
+                if line.len() + 1 + word.len() > 100 && !line.trim_end().ends_with(':') {
+                    text.push_str(&line);
+                    text.push('\n');
+                    line = format!("{indent}//@");
                 }
+                line.push(' ');
+                line.push_str(word);
             }
             text.push_str(&line);
             text.push('\n');
@@ -1114,10 +1132,38 @@ fn is_identifier(word: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
+/// The words of a header that end its lists.
+const HEADER_KEYWORDS: [&str; 4] = ["effect:", "install:", "when:", "requires:"];
+
+/// A comma-separated header list: items up to one without a trailing comma,
+/// across continuation lines.
+fn header_list<'a>(
+    words: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+    name: &str,
+    what: &str,
+) -> Result<Vec<&'a str>, String> {
+    let mut items = Vec::new();
+    while let Some(word) = words.next_if(|word| !HEADER_KEYWORDS.contains(word)) {
+        for item in word.split(',').filter(|item| !item.is_empty()) {
+            if !is_identifier(item) {
+                return Err(format!("unit `{name}`: invalid {what} `{item}`"));
+            }
+            items.push(item);
+        }
+        if !word.ends_with(',') {
+            break;
+        }
+    }
+    Ok(items)
+}
+
 fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header<'a>, String> {
-    let mut rest = first.trim();
-    let name_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    let name = &rest[..name_end];
+    // Continuation lines continue the header, so that any list can wrap.
+    let mut words = std::iter::once(first)
+        .chain(continued.iter().copied())
+        .flat_map(str::split_whitespace)
+        .peekable();
+    let name = words.next().unwrap_or_default();
     if name.is_empty()
         || !name
             .chars()
@@ -1125,117 +1171,49 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     {
         return Err(format!("invalid unit name `{name}`"));
     }
-    rest = rest[name_end..].trim_start();
-    let compile_time = rest
-        .strip_prefix("compile-time")
-        .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
-    if compile_time {
-        rest = rest["compile-time".len()..].trim_start();
-    }
-    let mutator = rest
-        .strip_prefix("mutator")
-        .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
-    if mutator {
-        rest = rest["mutator".len()..].trim_start();
-    }
+    let compile_time = words.next_if_eq(&"compile-time").is_some();
+    let mutator = words.next_if_eq(&"mutator").is_some();
     let mut effect = None;
-    let keyword = if rest.starts_with("install:") {
-        Some("install")
-    } else {
-        rest.strip_prefix("effect")
-            .filter(|after| {
-                after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || c == ':')
-            })
-            .map(|_| "effect")
-    };
-    if let Some(keyword) = keyword {
-        let install = keyword == "install";
-        let mut targets = Vec::new();
-        rest = rest[keyword.len()..].trim_start();
-        if let Some(after) = rest.strip_prefix(':') {
-            rest = after;
-            loop {
-                rest = rest.trim_start();
-                if rest.starts_with("requires:") || rest.starts_with("when:") {
-                    break;
-                }
-                let end = rest
-                    .find(|c: char| c == ',' || c.is_whitespace())
-                    .unwrap_or(rest.len());
-                let target = &rest[..end];
-                if !is_identifier(target) {
-                    return Err(format!(
-                        "unit `{name}`: invalid {keyword} target `{target}`"
-                    ));
-                }
-                targets.push(target);
-                rest = rest[end..].trim_start();
-                match rest.strip_prefix(',') {
-                    Some(after) => rest = after,
-                    None => break,
-                }
-            }
-            if targets.is_empty() {
-                return Err(format!("unit `{name}`: `{keyword}:` names no binding"));
-            }
-        }
-        let mut when = Vec::new();
-        if let Some(after) = rest.strip_prefix("when:") {
-            if install || targets.is_empty() {
-                return Err(format!(
-                    "unit `{name}`: `when:` needs `effect:` with a target"
-                ));
-            }
-            rest = after;
-            loop {
-                rest = rest.trim_start();
-                let end = rest
-                    .find(|c: char| c == ',' || c.is_whitespace())
-                    .unwrap_or(rest.len());
-                let binding = &rest[..end];
-                if !is_identifier(binding) {
-                    return Err(format!(
-                        "unit `{name}`: invalid `when:` binding `{binding}`"
-                    ));
-                }
-                when.push(binding);
-                rest = rest[end..].trim_start();
-                match rest.strip_prefix(',') {
-                    Some(after) => rest = after,
-                    None => break,
-                }
-            }
+    if words.next_if_eq(&"effect").is_some() {
+        effect = Some(Effect {
+            targets: Vec::new(),
+            install: false,
+            when: Vec::new(),
+        });
+    } else if let Some(keyword) = words.next_if(|word| matches!(*word, "effect:" | "install:")) {
+        let install = keyword == "install:";
+        let keyword = &keyword[..keyword.len() - 1];
+        let targets = header_list(&mut words, name, &format!("{keyword} target"))?;
+        if targets.is_empty() {
+            return Err(format!("unit `{name}`: `{keyword}:` names no binding"));
         }
         effect = Some(Effect {
             targets,
             install,
-            when,
+            when: Vec::new(),
         });
     }
-    let mut requires = Vec::new();
-    if let Some(after) = rest.strip_prefix("requires:") {
-        for item in std::iter::once(after)
-            .chain(continued.iter().copied())
-            .flat_map(|line| line.split(','))
-        {
-            let item = item.trim();
-            if item.is_empty() {
-                continue;
+    if words.next_if_eq(&"when:").is_some() {
+        match &mut effect {
+            Some(effect) if !effect.install && !effect.targets.is_empty() => {
+                effect.when = header_list(&mut words, name, "`when:` binding")?;
             }
-            if !is_identifier(item) {
-                return Err(format!("unit `{name}`: invalid required binding `{item}`"));
+            _ => {
+                return Err(format!(
+                    "unit `{name}`: `when:` needs `effect:` with a target"
+                ));
             }
-            requires.push(item);
         }
-        rest = "";
-    } else if !continued.is_empty() {
-        return Err(format!(
-            "unit `{name}`: continuation lines continue a `requires:` list"
-        ));
     }
+    let mut requires = Vec::new();
+    if words.next_if_eq(&"requires:").is_some() {
+        requires = header_list(&mut words, name, "required binding")?;
+    }
+    let rest = words.collect::<Vec<_>>();
     if !rest.is_empty() {
         return Err(format!(
-            "unit `{name}`: unexpected `{rest}`; expected `compile-time`, `mutator`, `effect`, `install:` or `requires:`"
+            "unit `{name}`: unexpected `{}`; expected `compile-time`, `mutator`, `effect`, `install:` or `requires:`",
+            rest.join(" ")
         ));
     }
     Ok(Header::Unit {

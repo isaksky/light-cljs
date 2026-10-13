@@ -25,12 +25,18 @@
   const sets = new WeakMap();
   //@unit setKinds
   const setKinds = new WeakMap();
+  //@unit mapTypes
+  // The type of each map kind that a kept map type builds, for building a map
+  // of an existing map's kind; `setTypes` likewise for sorted sets.
+  const mapTypes = {}, setTypes = {};
   //@unit transients
   const transients = new WeakMap();
   //@unit cells
   const cells = new WeakMap();
   //@unit views
   const views = new WeakMap();
+  //@unit iteratorSeqs
+  const iteratorSeqs = new WeakMap();
   //@unit reducedValues
   const reducedValues = new WeakMap();
   //@unit constructorHashes
@@ -69,6 +75,12 @@
   const typeNames = new WeakMap();
   //@unit typeFields
   const typeFields = new WeakMap(), recordTypes = new WeakMap(), reifyValues = new WeakSet();
+  //@unit protocolHooks
+  // Generic operations' protocol dispatch, empty unless `installMethods` is kept.
+  const protocolHooks = {};
+  //@unit kindHooks
+  // Generic operations' branches for one kind, installed by the kind's builders.
+  const kindHooks = {};
   //@unit builtinType mutator
   // Called once per type, before any of its values exist. Extension prototypes
   // are public and mutable; immutable collection payloads and their base
@@ -282,7 +294,7 @@
   }
   //@unit ChunkedSeqValue requires: constructorSlots, view
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
-    const value = view(node, offset, false, "chunked");
+    const value = view(ChunkedSeqValue, node, offset, false, "chunked");
     return constructorSlots(value, {vec: source, node, i: index, off: offset}, metadata, cachedHash);
   }
   //@unit PersistentQueueValue requires: constructorSlots, queueFromArray
@@ -290,25 +302,25 @@
     const value = queueFromArray([]);
     return constructorSlots(value, {count: cnt, front, rear}, metadata, cachedHash);
   }
-  //@unit PersistentArrayMapValue requires: constructorSlots, hash, makeMap
+  //@unit PersistentArrayMapValue requires: constructorSlots, entryHashing, makeMap
   function PersistentArrayMapValue(metadata, cnt, array, cachedHash) {
     const entries = [];
     // Positional arrays retain duplicate keys and their first-match lookup.
-    for (let i = 0; i < array.length; i += 2) entries.push(Object.freeze({get key() { return array[i]; }, get value() { return array[i + 1]; }, get hash() { return hash(array[i]); }}));
-    return constructorSlots(makeMap(entries, "array-map"), {cnt, arr: array}, metadata, cachedHash);
+    for (let i = 0; i < array.length; i += 2) entries.push(Object.freeze({get key() { return array[i]; }, get value() { return array[i + 1]; }, get hash() { return entryHashing.hash(array[i]); }}));
+    return constructorSlots(makeMap(PersistentArrayMapValue, entries, "array-map"), {cnt, arr: array}, metadata, cachedHash);
   }
   //@unit PersistentHashMapValue requires: constructorSlots, hashRoots, makeMap, maps
   function PersistentHashMapValue(metadata, cnt, root, hasNil, nilValue, cachedHash) {
     const entries = root == null ? [] : (maps.get(root) ?? []).filter(e => e.key != null).slice();
     if (root != null && hashRoots.has(maps.get(root))) hashRoots.set(entries, hashRoots.get(maps.get(root)));
     if (hasNil) entries.unshift(Object.freeze({key: null, value: nilValue, hash: 0}));
-    return constructorSlots(makeMap(entries, "hash-map"), {cnt, root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
+    return constructorSlots(makeMap(PersistentHashMapValue, entries, "hash-map"), {cnt, root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
   }
   //@unit PersistentHashSetValue requires: constructorSlots, ensureHashRoot, makeSet, mapKinds, maps
   function PersistentHashSetValue(metadata, source, cachedHash) {
     const entries = (maps.get(source) ?? []).map(e => Object.freeze({key: e.key, hash: e.hash}));
     if (mapKinds.get(source) === "hash-map") ensureHashRoot(entries);
-    return constructorSlots(makeSet(entries, mapKinds.get(source)), {"hash-map": source}, metadata, cachedHash);
+    return constructorSlots(makeSet(PersistentHashSetValue, entries, mapKinds.get(source)), {"hash-map": source}, metadata, cachedHash);
   }
 
   //@unit Reduced requires: invalidArity, reduced
@@ -387,11 +399,11 @@
   //@unit macroexpand1 requires: expansionService
   const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
 
-  //@unit cons requires: cells, Cons, count, implementsProtocol, ISeq, ListValue, seq
+  //@unit cons requires: cells, Cons, count, ISeq, ListValue, protocolHooks, seq, seqValue
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
-      else if (!implementsProtocol(ISeq, tail)) tail = seq(tail);
+      else if (!(protocolHooks.implementsProtocol?.(ISeq, tail) ?? seqValue(tail))) tail = seq(tail);
     }
     const value = Object.create((kind === "list" ? ListValue : Cons).prototype);
     cells.set(value, Object.freeze({kind, head, tail, ...(kind === "list" ? {count: count(tail) + 1} : {})}));
@@ -408,81 +420,109 @@
   //@unit list requires: listFromArray
   function list(...items) { return listFromArray(items); }
 
-  //@unit view requires: ChunkedSeqValue, IndexedSeqValue, NodeSeqType, treeMapSeqConstructor, views
-  function view(storage, offset, indexed, kind = "indexed", tail = null) {
-    const value = Object.create((kind === "indexed" ? IndexedSeqValue : kind === "chunked" ? ChunkedSeqValue : kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? treeMapSeqConstructor : IndexedSeqValue).prototype);
-    views.set(value, Object.freeze({storage, offset, indexed, kind, tail}));
+  //@unit view requires: views
+  // A seq over `storage` from `offset`, of the type the caller builds
+  // (IndexedSeq, ChunkedSeq, NodeSeq or PersistentTreeMapSeq for `kind`), so
+  // that a caller keeps only the types it can build. A view rebuilt further
+  // on reads its type from the view.
+  function view(Type, storage, offset, indexed, kind = "indexed", tail = null) {
+    const value = Object.create(Type.prototype);
+    views.set(value, Object.freeze({storage, offset, indexed, kind, tail, Type}));
     return value;
   }
 
-  //@unit seq requires: cells, concat, deferredValue, iteratorSeq, lazyValues, mapEntries,
-  //@ MapEntryType, mapKinds, maps, mapTraversal, publicCollectionSlots, publicMethod, queues, sets,
-  //@ setTraversal, subvecSources, treeMapPush, treeMapSeqConstructor, vector, vectors, view, views
+  //@unit seq requires: cells, IndexedSeqValue, iteratorSeq, iteratorSeqs, kindHooks, lazyValues,
+  //@ maps, protocolHooks, publicCollectionSlots, queues, sets, vectors, view, views
   function seq(value) {
     if (value == null) return null;
-    const method = publicMethod(value, "ISeqable/-seq", 1, true);
+    const method = protocolHooks.publicMethod?.(value, "ISeqable/-seq", 1, true);
     if (method) return method.call(value, value);
     if (value == null || (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value))) return null;
     const lazy = lazyValues.get(value);
-    if (lazy) {
-      let current = deferredValue(lazy, true);
-      // Flatten nested LazySeq results iteratively, retaining the raw final
-      // value. CLJS calls seq on that raw value again on each traversal.
-      while (lazyValues.has(current)) {
-        current = deferredValue(lazyValues.get(current), true);
-        // Compress as we advance, so discarded wrappers and their captured
-        // source heads can be collected even through a long empty prefix.
-        lazy.value = current;
-      }
-      lazy.value = current;
-      return seq(current);
-    }
+    if (lazy) return kindHooks.seqLazy(lazy);
     const queue = queues.get(value);
-    if (queue && publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
-    if (queue) return queue.length ? view(queue, 0, false, "queue") : null;
-    if (Array.isArray(value)) return value.length ? view(value, 0, true) : null;
+    if (queue) return kindHooks.seqQueue(value, queue);
+    if (Array.isArray(value)) return value.length ? view(IndexedSeqValue, value, 0, true) : null;
     if (cells.has(value)) return value;
     if (views.has(value)) { const v = views.get(value); return v.offset < v.storage.length ? value : null; }
     const items = vectors.get(value);
-    if (items && publicCollectionSlots.has(value) && !subvecSources.has(value)) { const slots = publicCollectionSlots.get(value); if (slots.cnt === 0) return null; if (slots.cnt <= 32) return view(slots.tail, 0, true); }
-    if (items) return items.length ? view(items, 0, items.length <= 32, items.length <= 32 ? "indexed" : "chunked") : null;
-    if (typeof value === "string") return value.length ? view(value, 0, true) : null;
-    const treeSlots = publicCollectionSlots.get(value);
-    if (maps.has(value) && treeSlots && "tree" in treeSlots) return treeSlots.cnt > 0
-      ? treeMapSeqConstructor(null, treeMapPush(treeSlots.tree, null, true), true, treeSlots.cnt, null) : null;
-    const entries = mapTraversal(value);
-    if (entries) return entries.length
-      ? view(Object.freeze(entries.map(entry => {
-          const pair = vector(entry.key, entry.value);
-          Object.setPrototypeOf(pair, MapEntryType.prototype);
-          mapEntries.add(pair);
-          return pair;
-        })), 0, false, mapKinds.get(value)) : null;
+    if (items) return kindHooks.seqVector(value, items);
+    if (typeof value === "string") return value.length ? view(IndexedSeqValue, value, 0, true) : null;
+    if (maps.has(value)) return kindHooks.seqMap(value);
     const members = sets.get(value);
-    if (members) return members.length
-      ? view(Object.freeze(setTraversal(value).map(entry => entry.key)), 0, false, "set") : null;
+    if (members) return kindHooks.seqSet(value, members);
+    if (iteratorSeqs.has(value)) return value;
     if (value[Symbol.iterator] != null) return iteratorSeq(value[Symbol.iterator]());
     throw new Error(String(value) + " is not ISeqable");
   }
+  //@unit LazySeq.seq effect: LazySeq when: seq requires: deferredValue, kindHooks, lazyValues, seq
+  kindHooks.seqLazy = lazy => {
+    let current = deferredValue(lazy, true);
+    // Flatten nested LazySeq results iteratively, retaining the raw final
+    // value. CLJS calls seq on that raw value again on each traversal.
+    while (lazyValues.has(current)) {
+      current = deferredValue(lazyValues.get(current), true);
+      // Compress as we advance, so discarded wrappers and their captured
+      // source heads can be collected even through a long empty prefix.
+      lazy.value = current;
+    }
+    lazy.value = current;
+    return seq(current);
+  };
+  //@unit queueFromArray.seq effect: queueFromArray when: seq requires: concat, IndexedSeqValue,
+  //@ kindHooks, publicCollectionSlots, seq, view
+  kindHooks.seqQueue = (value, queue) => {
+    if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
+    return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
+  };
+  //@unit makeVector.seq effect: makeVector when: seq requires: ChunkedSeqValue, IndexedSeqValue,
+  //@ kindHooks, publicCollectionSlots, subvecSources, view
+  kindHooks.seqVector = (value, items) => {
+    if (publicCollectionSlots.has(value) && !subvecSources.has(value)) { const slots = publicCollectionSlots.get(value); if (slots.cnt === 0) return null; if (slots.cnt <= 32) return view(IndexedSeqValue, slots.tail, 0, true); }
+    return !items.length ? null : items.length <= 32 ? view(IndexedSeqValue, items, 0, true) : view(ChunkedSeqValue, items, 0, false, "chunked");
+  };
+  //@unit makeMap.seq effect: makeMap, treeMapConstructor, makeType when: seq requires: IndexedSeqValue,
+  //@ kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType, publicCollectionSlots, view
+  kindHooks.seqMap = value => {
+    const treeSlots = publicCollectionSlots.get(value);
+    if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
+    const entries = mapTraversal(value), kind = mapKinds.get(value);
+    return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq : IndexedSeqValue,
+      Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
+  };
+  //@unit treeMapConstructor.seq effect: treeMapConstructor when: seq requires: kindHooks,
+  //@ treeMapPush, treeMapSeqConstructor
+  // Only the sorted-map operations, which keep its constructor, build a map
+  // of that kind or with a tree.
+  kindHooks.seqTree = slots => slots.cnt > 0 ? treeMapSeqConstructor(null, treeMapPush(slots.tree, null, true), true, slots.cnt, null) : null;
+  kindHooks.sortedMapSeq = treeMapSeqConstructor;
+  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq requires: IndexedSeqValue,
+  //@ kindHooks, setTraversal, view
+  kindHooks.seqSet = (value, members) => members.length
+    ? view(IndexedSeqValue, Object.freeze(setTraversal(value).map(entry => entry.key)), 0, false, "set") : null;
 
-  //@unit iteratorSeq requires: installMethods
-  // CLJS reprobes a nil tail; only successful nonempty tails are memoized.
+  //@unit iteratorSeq requires: iteratorSeqs
+  // A host iterator's seq (upstream's ES6IteratorSeq: ISeqable and ISeq, not
+  // ISequential) is a plain object that `seq`, `first`, `rest` and
+  // `builtinCoreImplementation` know from `iteratorSeqs`, without protocol
+  // methods. CLJS reprobes a nil tail; only successful nonempty tails are
+  // memoized.
   function iteratorSeq(iterator) {
     const item = iterator.next();
     if (item.done) return null;
-    return installMethods({}, [["ISeqable", 0, null], ["ISeq", 0, null],
-      ["ISeqable/-seq", 1, function () { return this; }],
-      ["ISeq/-first", 1, () => item.value],
-      ["ISeq/-rest", 1, (() => { let tail = null; return () => {
-        if (tail === null) tail = iteratorSeq(iterator);
-        return tail;
-      }; })()]]);
+    const value = {};
+    let tail = null;
+    iteratorSeqs.set(value, {first: item.value, rest() {
+      if (tail === null) tail = iteratorSeq(iterator);
+      return tail;
+    }});
+    return value;
   }
-  //@unit first requires: builtin, cells, chunks, implementsProtocol, ISeq, lazyValues,
-  //@ publicCollectionSlots, publicMethod, queues, seq, views
+  //@unit first requires: cells, chunks, ISeq, iteratorSeqs, lazyValues, protocolHooks,
+  //@ publicCollectionSlots, queues, seq, views
   function first(value) {
     if (value == null) return null;
-    const method = implementsProtocol(ISeq, value) ? publicMethod(value, "ISeq/-first", 1) : null;
+    const method = protocolHooks.implementsProtocol?.(ISeq, value) ? protocolHooks.publicMethod(value, "ISeq/-first", 1) : null;
     if (method) return method.call(value, value);
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (chunks.get(value)?.integer) return chunks.get(value).start;
@@ -493,17 +533,18 @@
     if (cell) return cell.head;
     const slice = views.get(current);
     if (slice) return slice.storage[slice.offset];
-    const firstMethod = builtin(current, "ISeq/-first", 1);
+    const own = iteratorSeqs.get(current);
+    if (own) return own.first;
+    const firstMethod = protocolHooks.builtin?.(current, "ISeq/-first", 1);
     if (firstMethod) return firstMethod.call(current, current);
     throw new Error("ISeq.-first not supported on this type");
   }
 
-  //@unit rest requires: builtin, cells, ChunkedSeqValue, emptyList, implementsProtocol, ISeq,
-  //@ lazyValues, meta, ownedChunkRest, publicCollectionSlots, publicMethod, seq, view, views,
-  //@ withMeta
+  //@unit rest requires: cells, emptyList, ISeq, iteratorSeqs, kindHooks, lazyValues, protocolHooks,
+  //@ publicCollectionSlots, seq, view, views
   function rest(value) {
     if (value == null) return emptyList;
-    const method = implementsProtocol(ISeq, value) ? publicMethod(value, "ISeq/-rest", 1) : null;
+    const method = protocolHooks.implementsProtocol?.(ISeq, value) ? protocolHooks.publicMethod(value, "ISeq/-rest", 1) : null;
     if (method) return method.call(value, value);
     if (lazyValues.has(value)) { seq(value); return rest(lazyValues.get(value).value); }
     const current = seq(value);
@@ -512,23 +553,31 @@
     if (cell) return cell.kind === "list" ? cell.count === 1 ? emptyList : cell.tail : cell.tail ?? emptyList;
     const slice = views.get(current);
     const slots = publicCollectionSlots.get(current);
-    if (slice && slots?.vec) return slice.offset + 1 < slice.storage.length
-      ? ChunkedSeqValue(slots.vec, slots.node, slots.i, slice.offset + 1, null, null) : ownedChunkRest(current);
+    if (slice && slots?.vec) return kindHooks.restChunkedSeq(current, slice, slots);
     if (!slice) {
-      const restMethod = builtin(current, "ISeq/-rest", 1);
+      const own = iteratorSeqs.get(current);
+      if (own) return own.rest();
+      const restMethod = protocolHooks.builtin?.(current, "ISeq/-rest", 1);
       if (restMethod) return restMethod.call(current, current);
       throw new Error("ISeq.-rest not supported on this type");
     }
     const tail = slice.offset + 1 < slice.storage.length
-      ? view(slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
-    return slice.kind === "queue" ? withMeta(tail, meta(current)) : tail;
+      ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
+    return slice.kind === "queue" ? kindHooks.restQueue(tail, current) : tail;
   }
+  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest requires: ChunkedSeqValue,
+  //@ chunkedVectorRest, kindHooks
+  // A view with the `vec` slot is a ChunkedSeq its public constructor built.
+  kindHooks.restChunkedSeq = (current, slice, slots) => slice.offset + 1 < slice.storage.length
+    ? ChunkedSeqValue(slots.vec, slots.node, slots.i, slice.offset + 1, null, null) : chunkedVectorRest(slots);
+  //@unit queueFromArray.rest effect: queueFromArray when: rest requires: collectionWithMeta,
+  //@ kindHooks, meta
+  kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
-  //@unit next requires: cells, implementsProtocol, INext, lazyValues, publicCollectionSlots,
-  //@ publicMethod, rest, seq
+  //@unit next requires: cells, INext, lazyValues, protocolHooks, publicCollectionSlots, rest, seq
   function next(value) {
     if (value == null) return null;
-    const method = implementsProtocol(INext, value) ? publicMethod(value, "INext/-next", 1) : null;
+    const method = protocolHooks.implementsProtocol?.(INext, value) ? protocolHooks.publicMethod(value, "INext/-next", 1) : null;
     if (method) return method.call(value, value);
     if (lazyValues.has(value)) { seq(value); return next(lazyValues.get(value).value); }
     const cell = cells.get(value);
@@ -562,10 +611,10 @@
   function unreduced(value) { return isReduced(value) ? reducedValues.get(value) : value; }
   //@unit deref requires: derefProtocol
   function deref(value) { return derefProtocol(value); }
-  //@unit derefProtocol requires: atoms, builtin, deferredValue, delays, isReduced, reducedValues,
-  //@ vars, volatiles
+  //@unit derefProtocol requires: atoms, deferredValue, delays, isReduced, protocolHooks,
+  //@ reducedValues, vars, volatiles
   function derefProtocol(value) {
-    const method = builtin(value, "IDeref/-deref", 1);
+    const method = protocolHooks.builtin?.(value, "IDeref/-deref", 1);
     if (method) return method.call(value, value);
     if (delays.has(value)) return deferredValue(delays.get(value));
     if (vars.has(value)) return vars.get(value).get.call(null);
@@ -941,13 +990,13 @@
   const isEmpty = x => x == null || (satisfies(ICounted, x) ? countProtocol(x) === 0 : seq(x) === null);
 
   //@unit reduce requires: builtinCoreImplementation, cells, chunks, deref, first, IIterable,
-  //@ invalidArity, IReduce, isReduced, iterator, iteratorProtocol, lazyValues, next,
-  //@ publicCollectionSlots, publicMethod, satisfies, seq, vectors, views
+  //@ invalidArity, IReduce, isReduced, iterator, iteratorProtocol, lazyValues, next, protocolHooks,
+  //@ publicCollectionSlots, satisfies, seq, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     const source = arity === 3 ? collection : init;
-    const method = publicMethod(source, "IReduce/-reduce", arity, true);
+    const method = protocolHooks.publicMethod?.(source, "IReduce/-reduce", arity, true);
     if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
     if (!builtinCoreImplementation(IReduce, source) && !Array.isArray(source) && typeof source !== "string" && satisfies(IIterable, source)) {
       const iter = iteratorProtocol(source);
@@ -1153,10 +1202,10 @@
     return invalidArity(arguments.length);
   }
 
-  //@unit reduceKv requires: deref, isReduced, keyProtocol, mapEntries, mapTraversal, publicMethod,
+  //@unit reduceKv requires: deref, isReduced, keyProtocol, mapEntries, mapTraversal, protocolHooks,
   //@ reduce, valProtocol, vectors
   function reduceKv(rf, init, collection) {
-    const method = publicMethod(collection, "IKVReduce/-kv-reduce", 3);
+    const method = protocolHooks.publicMethod?.(collection, "IKVReduce/-kv-reduce", 3);
     if (method) return method.call(collection, collection, rf, init);
     if (collection == null) return init;
     // MapEntry has vector storage, but no IKVReduce implementation. Its
@@ -1220,10 +1269,10 @@
   }
   //@unit seqIter requires: iteratorInit, SeqIter
   function seqIter(value) { return new SeqIter(iteratorInit, value); }
-  //@unit iterator requires: builtin, count, iteratorInit, mapEntry, publicCollectionSlots,
+  //@unit iterator requires: count, iteratorInit, mapEntry, protocolHooks, publicCollectionSlots,
   //@ rangedIterator, SeqIter, subvecSources, vectors
   function iterator(value) {
-    const method = builtin(value, "IIterable/-iterator", 1);
+    const method = protocolHooks.builtin?.(value, "IIterable/-iterator", 1);
     if (method) return method.call(value, value);
     const slots = publicCollectionSlots.get(value);
     if (slots?.arr) {
@@ -1247,37 +1296,24 @@
     return n === count(other);
   }
 
-  //@unit conj requires: assoc, builtin, cells, cons, copyEntries, emptyList, lazyValues, makeSet,
-  //@ makeVector, mapConj, maps, meta, PersistentHashSetValue, PersistentQueueValue, preserveMeta,
-  //@ publicCollectionSlots, putCollectionEntry, queueFromArray, queues, setKinds, sets,
-  //@ sortedComparators, subvecSources, SubvecValue, treeSetConstructor, vector, vectors, views
+  //@unit conj requires: cells, cons, emptyList, kindHooks, lazyValues, makeVector, maps, missing,
+  //@ preserveMeta, protocolHooks, publicCollectionSlots, queues, sets, subvecSources, vectors,
+  //@ views
   function conj(...args) {
-    if (args.length === 0) return vector();
+    if (args.length === 0) return makeVector([]);
     let result = args[0];
     for (let i = 1; i < args.length; i++) {
       const previous = result;
-      const custom = result == null ? null : builtin(result, "ICollection/-conj", 2);
+      const custom = result == null ? null : protocolHooks.builtin?.(result, "ICollection/-conj", 2);
       if (custom) { result = custom.call(result, result, args[i]); continue; }
       const items = vectors.get(result);
-      if (queues.has(result)) {
-        const q = publicCollectionSlots.get(result);
-        result = q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, args[i]), q.front != null ? conj(q.rear ?? vector(), args[i]) : vector(), null)
-          : queueFromArray([...queues.get(result), args[i]]);
-      }
-      else if (items) {
-        const slots = publicCollectionSlots.get(result);
-        result = slots && subvecSources.has(result) ? SubvecValue(meta(result), assoc(subvecSources.get(result), slots.end, args[i]), slots.start, slots.end + 1, null) : makeVector([...items, args[i]]);
-      }
-      else if (maps.has(result)) result = mapConj(result, args[i]);
-      else if (sets.has(result) && publicCollectionSlots.has(result)) {
-        const slots = publicCollectionSlots.get(result), source = slots["tree-map"] ?? slots["hash-map"], updated = assoc(source, args[i], null);
-        result = updated === source ? result : slots["tree-map"] ? treeSetConstructor(meta(result), updated, null) : PersistentHashSetValue(meta(result), updated, null);
-      }
+      if (queues.has(result)) result = kindHooks.conjQueue(result, args[i]);
+      else if (items) result = publicCollectionSlots.has(result) && subvecSources.has(result) ? kindHooks.conjSubvec(result, args[i]) : kindHooks.conjVector(items, args[i]);
+      else if (maps.has(result)) result = kindHooks.conjMap(result, args[i]);
       else if (sets.has(result)) {
-        const entries = copyEntries(sets.get(result));
-        putCollectionEntry(result, entries, args[i], undefined, true);
-        if (entries.length === sets.get(result).length) continue;
-        result = sortedComparators.has(previous) ? makeSet(entries, "sorted-set", sortedComparators.get(previous)) : makeSet(entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
+        const updated = kindHooks.conjSet(previous, result, args[i]);
+        if (updated === missing) continue;
+        result = updated;
       }
       else if (result == null) result = cons(args[i], emptyList, "list");
       else if (cells.has(result) || views.has(result) || lazyValues.has(result))
@@ -1287,26 +1323,53 @@
     }
     return result;
   }
+  //@unit queueFromArray.conj effect: queueFromArray when: conj requires: conj, kindHooks,
+  //@ makeVector, meta, PersistentQueueValue, publicCollectionSlots, queueFromArray, queues
+  kindHooks.conjQueue = (result, item) => {
+    const q = publicCollectionSlots.get(result);
+    return q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, item), q.front != null ? conj(q.rear ?? makeVector([]), item) : makeVector([]), null)
+      : queueFromArray([...queues.get(result), item]);
+  };
+  //@unit makeVector.conj effect: makeVector when: conj requires: kindHooks, makeVector
+  kindHooks.conjVector = (items, item) => makeVector([...items, item]);
+  //@unit SubvecValue.conj effect: SubvecValue when: conj requires: assoc, kindHooks, meta,
+  //@ publicCollectionSlots, subvecSources, SubvecValue
+  // A vector with slots and a source is a Subvec its public constructor built.
+  kindHooks.conjSubvec = (result, item) => {
+    const slots = publicCollectionSlots.get(result);
+    return SubvecValue(meta(result), assoc(subvecSources.get(result), slots.end, item), slots.start, slots.end + 1, null);
+  };
+  //@unit makeMap.conj effect: makeMap, treeMapConstructor, makeType when: conj requires: kindHooks,
+  //@ mapConj
+  kindHooks.conjMap = mapConj;
+  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj requires: assoc, copyEntries,
+  //@ kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots,
+  //@ putCollectionEntry, setKinds, sets, setTypes, sortedComparators
+  // The set `conj` builds, or `missing` where it adds nothing.
+  kindHooks.conjSet = (previous, result, item) => {
+    if (publicCollectionSlots.has(result)) {
+      const slots = publicCollectionSlots.get(result), source = slots["tree-map"] ?? slots["hash-map"], updated = assoc(source, item, null);
+      return updated === source ? result : slots["tree-map"] ? setTypes["sorted-set"](meta(result), updated, null) : PersistentHashSetValue(meta(result), updated, null);
+    }
+    const entries = copyEntries(sets.get(result));
+    putCollectionEntry(result, entries, item, undefined, true);
+    if (entries.length === sets.get(result).length) return missing;
+    return sortedComparators.has(previous) ? makeSet(setTypes["sorted-set"], entries, "sorted-set", sortedComparators.get(previous)) : makeSet(PersistentHashSetValue, entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
+  };
 
-  //@unit assoc requires: builtin, contains, copyEntries, makeVector, mapFromArray, maps, meta,
-  //@ outOfBounds, preserveMeta, publicCollectionSlots, putCollectionEntry, subvecSources,
-  //@ SubvecValue, updatedMap, vectors, withMeta
+  //@unit assoc requires: copyEntries, kindHooks, maps, missing, protocolHooks,
+  //@ publicCollectionSlots, putCollectionEntry, subvecSources, updatedMap, vectors
   function assoc(value, key, item, ...pairs) {
-    const method = value == null ? null : builtin(value, "IAssociative/-assoc", 3);
+    const method = value == null ? null : protocolHooks.builtin?.(value, "IAssociative/-assoc", 3);
     if (method) {
       let result = method.call(value, value, key, item);
       return pairs.length ? assoc(result, ...pairs) : result;
     }
-    if (vectors.has(value) && subvecSources.has(value) && publicCollectionSlots.has(value)) {
-      const slots = publicCollectionSlots.get(value);
-      if (key < 0 || slots.start + key > slots.end) return outOfBounds();
-      let result = SubvecValue(meta(value), assoc(subvecSources.get(value), slots.start + key, item), slots.start, Math.max(slots.end, slots.start + key + 1), null);
-      return pairs.length ? assoc(result, ...pairs) : result;
-    }
+    if (vectors.has(value) && subvecSources.has(value) && publicCollectionSlots.has(value)) return kindHooks.assocSubvec(value, key, item, pairs);
     const mapSlots = publicCollectionSlots.get(value);
-    if (maps.has(value) && mapSlots?.arr && mapSlots.cnt >= 8 && !contains(value, key)) {
-      const normalized = mapFromArray(Array.from({length: mapSlots.cnt * 2}, (_, i) => mapSlots.arr[i]), "hash-map");
-      return withMeta(assoc(normalized, key, item, ...pairs), meta(value));
+    if (maps.has(value) && mapSlots?.arr && mapSlots.cnt >= 8) {
+      const promoted = kindHooks.assocArrayMapSlots(value, mapSlots, key, item, pairs);
+      if (promoted !== missing) return promoted;
     }
     if (value == null || maps.has(value)) {
       const entries = value == null ? [] : copyEntries(maps.get(value));
@@ -1318,6 +1381,30 @@
     }
     const original = vectors.get(value);
     if (!original) throw new Error("assoc not supported on this type");
+    return kindHooks.assocVector(value, original, key, item, pairs);
+  }
+  //@unit SubvecValue.assoc effect: SubvecValue when: assoc requires: assoc, kindHooks, meta,
+  //@ outOfBounds, publicCollectionSlots, subvecSources, SubvecValue
+  // See `SubvecValue.conj`.
+  kindHooks.assocSubvec = (value, key, item, pairs) => {
+    const slots = publicCollectionSlots.get(value);
+    if (key < 0 || slots.start + key > slots.end) return outOfBounds();
+    let result = SubvecValue(meta(value), assoc(subvecSources.get(value), slots.start + key, item), slots.start, Math.max(slots.end, slots.start + key + 1), null);
+    return pairs.length ? assoc(result, ...pairs) : result;
+  };
+  //@unit PersistentArrayMapValue.assoc effect: PersistentArrayMapValue when: assoc requires: assoc,
+  //@ collectionWithMeta, contains, kindHooks, mapFromArray, meta, missing
+  // A map with an `arr` slot is an array map its public constructor built, or
+  // one updated from it; it becomes a hash map at its ninth key, or else
+  // gives `missing`.
+  kindHooks.assocArrayMapSlots = (value, mapSlots, key, item, pairs) => {
+    if (contains(value, key)) return missing;
+    const normalized = mapFromArray(Array.from({length: mapSlots.cnt * 2}, (_, i) => mapSlots.arr[i]), "hash-map");
+    return collectionWithMeta(assoc(normalized, key, item, ...pairs), meta(value));
+  };
+  //@unit makeVector.assoc effect: makeVector when: assoc requires: kindHooks, makeVector,
+  //@ outOfBounds, preserveMeta
+  kindHooks.assocVector = (value, original, key, item, pairs) => {
     const items = original.slice();
     const assign = (index, value) => {
       if (typeof index !== "number") throw new Error("Vector key must be a number");
@@ -1330,7 +1417,7 @@
     for (let i = 0; i < pairs.length; i += 2)
       assign(pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
     return preserveMeta(value, makeVector(items));
-  }
+  };
 
   //@unit mapPrototype requires: contains, es6EntriesIterator, es6Iterator, get, invalidArity, keys,
   //@ lookup, maps, objectEquiv, printHooks, vals
@@ -1363,6 +1450,19 @@
   //@unit treeMapConstructor.type effect: treeMapConstructor requires: builtinType, mapPrototype,
   //@ treeMapConstructor
   builtinType(treeMapConstructor, mapPrototype);
+  //@unit PersistentArrayMapValue.kind effect: PersistentArrayMapValue requires: mapTypes,
+  //@ PersistentArrayMapValue
+  mapTypes["array-map"] = PersistentArrayMapValue;
+  //@unit PersistentHashMapValue.kind effect: PersistentHashMapValue requires: mapTypes,
+  //@ PersistentHashMapValue
+  mapTypes["hash-map"] = PersistentHashMapValue;
+  //@unit treeMapConstructor.kind effect: treeMapConstructor requires: mapTypes, treeMapConstructor
+  mapTypes["sorted-map"] = treeMapConstructor;
+  //@unit mapFromEntries requires: makeMap, PersistentArrayMapValue, PersistentHashMapValue
+  // A hash or array map of `entries`.
+  function mapFromEntries(entries, hash) {
+    return hash ? makeMap(PersistentHashMapValue, entries, "hash-map") : makeMap(PersistentArrayMapValue, entries, "array-map");
+  }
   //@unit hashRoots
   // Routing nodes preserve observable key tests and rehashes at trie splits.
   // Immutable nodes can be shared by old collections and transient copies.
@@ -1489,11 +1589,16 @@
   function setTraversal(value) {
     return collectionTraversal(sets.get(value), setKinds.get(value));
   }
-  //@unit collectionTraversal requires: ensureHashRoot, hashTraversals
+  //@unit collectionTraversal requires: kindHooks
   function collectionTraversal(entries, kind) {
     // Array maps, positional constants, and sorted collections retain their
     // storage order. Hash-map promotion stays observable after removals.
-    if (kind !== "hash-map") return entries;
+    return kind !== "hash-map" ? entries : kindHooks.hashTraversal(entries);
+  }
+  //@unit PersistentHashMapValue.traversal effect: PersistentHashMapValue, PersistentHashSetValue
+  //@ when: collectionTraversal requires: ensureHashRoot, hashTraversals, kindHooks
+  // Only hash maps and hash sets have the hash-map kind.
+  kindHooks.hashTraversal = entries => {
     if (!hashTraversals.has(entries)) {
       const ordered = entries.filter(entry => entry.key == null);
       const visit = node => {
@@ -1509,7 +1614,7 @@
       hashTraversals.set(entries, Object.freeze(ordered));
     }
     return hashTraversals.get(entries);
-  }
+  };
   //@unit hashEntryIndex requires: ensureHashRoot, hash, hashNodeFind
   function hashEntryIndex(entries, key, keyHash) {
     if (key == null) return entries.findIndex(entry => entry.key == null);
@@ -1530,10 +1635,11 @@
     return promoted;
   }
 
-  //@unit makeMap requires: compareKeys, mapKinds, maps, PersistentArrayMapValue,
-  //@ PersistentHashMapValue, sortedComparators, treeMapConstructor
-  function makeMap(entries, kind = entries.length <= 8 ? "array-map" : "hash-map", comparator = compareKeys) {
-    const value = Object.create((kind === "hash-map" ? PersistentHashMapValue : kind === "sorted-map" ? treeMapConstructor : PersistentArrayMapValue).prototype);
+  //@unit makeMap requires: mapKinds, maps, sortedComparators
+  // A map of the type the caller builds (so a caller keeps only the map types
+  // it can build); `mapTypes` gives the type of an existing map's kind.
+  function makeMap(Type, entries, kind, comparator) {
+    const value = Object.create(Type.prototype);
     maps.set(value, Object.freeze(entries));
     mapKinds.set(value, kind);
     if (kind === "sorted-map") sortedComparators.set(value, comparator);
@@ -1551,7 +1657,7 @@
     return entries.findIndex(entry => entry.hash === keyHash && equalPair(key, entry.key));
   }
 
-  //@unit putEntry requires: ensureHashRoot, entryIndex, hash, hashNodeAssoc, hashRoots
+  //@unit putEntry requires: entryHashing, entryIndex, kindHooks
   // Builders mutate only fresh unpublished arrays. Entry cells and retained
   // equivalent keys are shared by subsequent immutable versions.
   function putEntry(entries, key, value, kind, edit = null) {
@@ -1559,11 +1665,18 @@
       const index = entryIndex(entries, key, undefined, kind), retained = index < 0 ? key : entries[index].key;
       let cachedHash;
       const entry = Object.freeze({key: retained, value, get hash() {
-        return cachedHash === undefined ? cachedHash = hash(retained) : cachedHash;
+        return cachedHash === undefined ? cachedHash = entryHashing.hash(retained) : cachedHash;
       }});
       if (index < 0) entries.push(entry); else entries[index] = entry;
       return;
     }
+    kindHooks.putHashEntry(entries, key, value, edit);
+  }
+  //@unit PersistentHashMapValue.put effect: PersistentHashMapValue, PersistentHashSetValue,
+  //@ makeTransient when: putEntry requires: ensureHashRoot, hash, hashNodeAssoc, hashRoots,
+  //@ kindHooks
+  // Only hash maps, hash sets and transients have hash-map entries.
+  kindHooks.putHashEntry = (entries, key, value, edit) => {
     const keyHash = key == null ? 0 : hash(key), entry = Object.freeze({key, value, hash: keyHash});
     if (key == null) {
       const index = entries.findIndex(old => old.key == null);
@@ -1574,15 +1687,16 @@
     if (result.old) entries[entries.indexOf(result.old)] = result.entry;
     else entries.push(entry);
     hashRoots.set(entries, root);
-  }
+  };
 
-  //@unit mapFromArray requires: displayStr, makeMap, putEntry
+  //@unit mapFromArray requires: displayStr, makeMap, PersistentArrayMapValue,
+  //@ PersistentHashMapValue, putEntry
   function mapFromArray(pairs, kind = pairs.length <= 16 ? "array-map" : "hash-map") {
     if (pairs.length % 2) throw new Error("No value supplied for key: " + displayStr(pairs[pairs.length - 1]));
     const entries = [];
     const edit = kind === "hash-map" ? {} : null;
     for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], kind, edit);
-    return makeMap(entries, kind);
+    return makeMap(kind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, entries, kind);
   }
 
   //@unit hashMap requires: mapFromArray
@@ -1614,11 +1728,11 @@
     return PersistentHashSetValue(null, constantMapFromArray(pairs), null);
   }
 
-  //@unit dissoc requires: builtin, collectionEntryIndex, copyEntries, equalPair, hashRoots,
-  //@ keyword, mapKinds, maps, recordTypes, removeHashEntry, updatedMap
+  //@unit dissoc requires: collectionEntryIndex, copyEntries, equalPair, hashRoots, keyword,
+  //@ mapKinds, maps, protocolHooks, recordTypes, removeHashEntry, updatedMap
   function dissoc(value, ...keys) {
-    if (value != null && builtin(value, "IMap/-dissoc", 2)) return keys.reduce((result, key) => {
-      const method = result == null ? null : builtin(result, "IMap/-dissoc", 2);
+    if (value != null && protocolHooks.builtin?.(value, "IMap/-dissoc", 2)) return keys.reduce((result, key) => {
+      const method = result == null ? null : protocolHooks.builtin?.(result, "IMap/-dissoc", 2);
       return method ? method.call(result, result, key) : dissoc(result, key);
     }, value);
     if (arguments.length === 0) return null;
@@ -1646,15 +1760,17 @@
     return updatedMap(value, entries, removeRecord);
   }
 
-  //@unit mapConj requires: assoc, first, isVector, next, nthProtocol, seq
+  //@unit mapConj requires: assoc, first, IVector, next, nth, protocolHooks, seq, vectors
   function mapConj(value, member) {
     if (member == null) return value;
-    if (isVector(member)) return assoc(value, nthProtocol(member, 0), nthProtocol(member, 1));
+    // A vector's `-nth` is `nth`'s own (see `protocolHooks`).
+    const vectorLike = item => protocolHooks.satisfies?.(IVector, item) ?? vectors.has(item), nthOf = protocolHooks.nthProtocol ?? nth;
+    if (vectorLike(member)) return assoc(value, nthOf(member, 0), nthOf(member, 1));
     let result = value;
     for (let current = seq(member); current !== null; current = next(current)) {
       const pair = first(current);
-      if (!isVector(pair)) throw new Error("Map conj requires vector entries");
-      result = assoc(result, nthProtocol(pair, 0), nthProtocol(pair, 1));
+      if (!vectorLike(pair)) throw new Error("Map conj requires vector entries");
+      result = assoc(result, nthOf(pair, 0), nthOf(pair, 1));
     }
     return result;
   }
@@ -1686,10 +1802,15 @@
   //@unit treeSetConstructor.type effect: treeSetConstructor requires: builtinType, setPrototype,
   //@ treeSetConstructor
   builtinType(treeSetConstructor, setPrototype);
-  //@unit makeSet requires: compareKeys, PersistentHashSetValue, setKinds, sets, sortedComparators,
-  //@ treeSetConstructor
-  function makeSet(entries, kind = entries.length > 8 ? "hash-map" : "array-map", comparator = compareKeys) {
-    const value = Object.create((kind === "sorted-set" ? treeSetConstructor : PersistentHashSetValue).prototype);
+  //@unit treeSetConstructor.kind effect: treeSetConstructor requires: setTypes, treeSetConstructor
+  setTypes["sorted-set"] = treeSetConstructor;
+  //@unit setType requires: PersistentHashSetValue, setTypes
+  // The type of an existing set's kind.
+  function setType(kind) { return kind === "sorted-set" ? setTypes[kind] : PersistentHashSetValue; }
+  //@unit makeSet requires: setKinds, sets, sortedComparators
+  // A set of the type the caller builds; `setType` gives an existing set's.
+  function makeSet(Type, entries, kind, comparator) {
+    const value = Object.create(Type.prototype);
     sets.set(value, Object.freeze(entries));
     setKinds.set(value, kind);
     if (kind === "sorted-set") sortedComparators.set(value, comparator);
@@ -1709,15 +1830,15 @@
     putEntry(entries, key, null, "hash-map", edit);
   }
 
-  //@unit setFromArray requires: makeSet, putMember
+  //@unit setFromArray requires: makeSet, PersistentHashSetValue, putMember
   function setFromArray(items) {
     const entries = [];
     const edit = {};
     for (const item of items) putMember(entries, item, edit);
-    return makeSet(entries);
+    return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
   }
 
-  //@unit literalSetFromArray requires: displayStr, makeSet, putMember
+  //@unit literalSetFromArray requires: displayStr, makeSet, PersistentHashSetValue, putMember
   function literalSetFromArray(items) {
     const entries = [], edit = {};
     for (const item of items) {
@@ -1725,17 +1846,17 @@
       putMember(entries, item, edit);
       if (entries.length === before) throw new Error("Duplicate key: " + displayStr(item));
     }
-    return makeSet(entries);
+    return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
   }
 
   //@unit hashSet requires: setFromArray
   function hashSet(...items) { return setFromArray(items); }
 
-  //@unit disj requires: builtin, collectionEntryIndex, copyEntries, dissoc, hashRoots, makeSet,
-  //@ meta, PersistentHashSetValue, preserveMeta, publicCollectionSlots, removeHashEntry, setKinds,
-  //@ sets, sortedComparators, treeSetConstructor
+  //@unit disj requires: collectionEntryIndex, copyEntries, dissoc, hashRoots, makeSet, meta,
+  //@ PersistentHashSetValue, preserveMeta, protocolHooks, publicCollectionSlots, removeHashEntry,
+  //@ setKinds, sets, setType, sortedComparators, treeSetConstructor
   function disj(value, ...keys) {
-    if (value != null && builtin(value, "ISet/-disjoin", 2)) return keys.reduce((result, key) => builtin(result, "ISet/-disjoin", 2).call(result, result, key), value);
+    if (value != null && protocolHooks.builtin?.(value, "ISet/-disjoin", 2)) return keys.reduce((result, key) => protocolHooks.builtin?.(result, "ISet/-disjoin", 2).call(result, result, key), value);
     if (arguments.length === 0) return null;
     if (keys.length === 0) return value;
     if (value == null) return null;
@@ -1753,7 +1874,7 @@
       }
     }
     if (entries.length === original.length) return value;
-    return preserveMeta(value, makeSet(entries, setKinds.get(value), sortedComparators.get(value)));
+    return preserveMeta(value, makeSet(setType(setKinds.get(value)), entries, setKinds.get(value), sortedComparators.get(value)));
   }
 
   //@unit transientPrototype requires: invalidArity, printHooks, transientLookup
@@ -1799,13 +1920,14 @@
   }
   //@unit persistentBang requires: persistentBangProtocol
   function persistentBang(value) { return persistentBangProtocol(value); }
-  //@unit persistTransient requires: editableTransient, makeMap, makeSet, makeVector
+  //@unit persistTransient requires: editableTransient, makeMap, makeSet, makeVector,
+  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue
   function persistTransient(value) {
     const state = editableTransient(value, "persistent!");
     state.editable = false;
     if (state.kind === "vector") return makeVector(state.entries);
-    if (state.kind === "map") return makeMap(state.entries, state.mapKind);
-    return makeSet(state.entries, state.mapKind);
+    if (state.kind === "map") return makeMap(state.mapKind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, state.entries, state.mapKind);
+    return makeSet(PersistentHashSetValue, state.entries, state.mapKind);
   }
   //@unit transientNth requires: editableTransient, missing, transients, vectorNth
   function transientNth(value, index, fallback) {
@@ -2015,10 +2137,10 @@
     }
   }
 
-  //@unit name requires: builtin, implementsProtocol, INamed, keywords, multiFns, symbols
+  //@unit name requires: INamed, keywords, multiFns, protocolHooks, symbols
   function name(value) {
     if (multiFns.has(value)) return name(value.name);
-    const method = implementsProtocol(INamed, value) ? builtin(value, "INamed/-name", 1) : null;
+    const method = protocolHooks.implementsProtocol?.(INamed, value) ? protocolHooks.builtin?.(value, "INamed/-name", 1) : null;
     if (method) return method.call(value, value);
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.name;
@@ -2036,21 +2158,21 @@
     }
   }
 
-  //@unit namespace requires: builtin, implementsProtocol, INamed, keywords, multiFns, symbols
+  //@unit namespace requires: INamed, keywords, multiFns, protocolHooks, symbols
   function namespace(value) {
     if (multiFns.has(value)) return namespace(value.name);
-    const method = implementsProtocol(INamed, value) ? builtin(value, "INamed/-namespace", 1) : null;
+    const method = protocolHooks.implementsProtocol?.(INamed, value) ? protocolHooks.builtin?.(value, "INamed/-namespace", 1) : null;
     if (method) return method.call(value, value);
     const named = keywords.get(value) || symbols.get(value);
     if (named) return named.namespace;
     throw new Error("Doesn't support namespace on this type");
   }
 
-  //@unit count requires: accumulatingCount, builtin, cells, chunkBuffers, chunks,
-  //@ editableTransient, implementsProtocol, ISeqable, lazyValues, maps, next,
-  //@ publicCollectionSlots, publicMethod, queues, sets, subvecSources, transients, vectors, views
+  //@unit count requires: accumulatingCount, cells, chunkBuffers, chunks, ISeqable, kindHooks,
+  //@ lazyValues, maps, next, protocolHooks, publicCollectionSlots, queues, seqableValue, sets,
+  //@ subvecSources, transients, vectors, views
   function count(value) {
-    const method = value == null ? null : publicMethod(value, "ICounted/-count", 1, true, true);
+    const method = value == null ? null : protocolHooks.publicMethod?.(value, "ICounted/-count", 1, true, true);
     if (method) return method.call(value, value);
     const slots = publicCollectionSlots.get(value);
     if (cells.get(value)?.kind === "tree-seq" && slots.cnt < 0) return 1 + count(next(value));
@@ -2059,7 +2181,7 @@
     if (slots?.vec) return count(slots.vec) - slots.i - slots.off;
     if (slots && subvecSources.has(value)) return slots.end - slots.start;
     if (slots && sets.has(value)) return count(slots["hash-map"]);
-    if (transients.has(value)) return editableTransient(value, "count").entries.length;
+    if (transients.has(value)) return kindHooks.countTransient(value);
     if (lazyValues.has(value)) return accumulatingCount(value);
     if (chunkBuffers.has(value)) return chunkBuffers.get(value).end;
     if (chunks.has(value)) { const c = chunks.get(value); return c.end - c.offset; }
@@ -2077,17 +2199,17 @@
     if (cell) return "count" in cell ? cell.count : accumulatingCount(value);
     const slice = views.get(value);
     if (slice) return Math.max(0, slice.storage.length - slice.offset) + count(slice.tail);
-    if (implementsProtocol(ISeqable, value)) return accumulatingCount(value);
-    const nativeCount = builtin(value, "ICounted/-count", 1);
+    if (protocolHooks.implementsProtocol?.(ISeqable, value) ?? seqableValue(value)) return accumulatingCount(value);
+    const nativeCount = protocolHooks.builtin?.(value, "ICounted/-count", 1);
     if (nativeCount) return nativeCount.call(value, value);
     throw new Error("count not supported on this type");
   }
 
-  //@unit accumulatingCount requires: countProtocol, ICounted, next, satisfies, seq
+  //@unit accumulatingCount requires: count, countedValue, ICounted, next, protocolHooks, seq
   function accumulatingCount(value) {
     let result = 0;
     for (let current = seq(value); current != null; current = next(current), result++) {
-      if (satisfies(ICounted, current)) return result + countProtocol(current);
+      if (protocolHooks.satisfies?.(ICounted, current) ?? countedValue(current)) return result + (protocolHooks.countProtocol ?? count)(current);
     }
     return result;
   }
@@ -2099,19 +2221,19 @@
     return notFound;
   }
 
-  //@unit nth requires: cells, chunkNth, chunks, first, IIndexed, implementsProtocol, invalidArity,
-  //@ ISeq, ISequential, mapEntries, missing, next, nthProtocol, outOfBounds, publicMethod,
-  //@ satisfies, seq, transientNth, transients, vectorNth, vectors, views
+  //@unit nth requires: cells, chunks, first, IIndexed, indexedValue, invalidArity, ISeq,
+  //@ ISequential, kindHooks, mapEntries, missing, next, outOfBounds, protocolHooks, seq,
+  //@ sequential, seqValue, transients, vectorNth, vectors, views
   function nth(value, index, notFound) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     if (typeof index !== "number") throw new Error("Index argument to nth must be a number");
     if (value == null) return arity === 2 ? value : notFound;
     const fallback = arity === 2 ? missing : notFound;
-    const method = publicMethod(value, "IIndexed/-nth", arity, true, true);
+    const method = protocolHooks.publicMethod?.(value, "IIndexed/-nth", arity, true, true);
     if (method) return method.call(value, ...arguments);
-    if (transients.has(value)) return transientNth(value, index, fallback);
-    if (chunks.has(value)) return chunkNth(value, index, fallback);
+    if (transients.has(value)) return kindHooks.nthTransient(value, index, fallback);
+    if (chunks.has(value)) return kindHooks.nthChunk(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
     if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
     const items = vectors.get(value);
@@ -2121,7 +2243,8 @@
       if (fallback === missing) return outOfBounds();
       return fallback;
     }
-    if (implementsProtocol(ISeq, value) || implementsProtocol(ISequential, value)) {
+    const implementing = protocolHooks.implementsProtocol;
+    if (implementing ? implementing(ISeq, value) || implementing(ISequential, value) : seqValue(value) || sequential(value)) {
       // Lists traverse to an exact zero. Indexed finite views retain the
       // pinned absolute-offset lookup, including fractional/missing slots.
       let current = value, remaining = index;
@@ -2138,40 +2261,36 @@
           if (seq(current) != null) return first(current);
           break;
         }
-        if (satisfies(IIndexed, current)) return fallback === missing ? nthProtocol(current, remaining) : nthProtocol(current, remaining, fallback);
+        if (protocolHooks.satisfies?.(IIndexed, current) ?? indexedValue(current)) {
+          // A seq is never a transient, so its `-nth` is `nth`'s own.
+          const indexed = protocolHooks.nthProtocol ?? nth;
+          return fallback === missing ? indexed(current, remaining) : indexed(current, remaining, fallback);
+        }
         if (seq(current) == null) break;
         current = next(current);
         remaining--;
       }
       return fallback === missing ? outOfBounds() : fallback;
     }
-    const nativeNth = publicMethod(value, "IIndexed/-nth", arity);
+    const nativeNth = protocolHooks.publicMethod?.(value, "IIndexed/-nth", arity);
     if (nativeNth) return nativeNth.call(value, ...arguments);
     throw new Error("nth not supported on this type");
   }
 
-  //@unit lookup requires: collectionEntryIndex, mapEntries, maps, publicCollectionSlots, sets,
-  //@ sortedComparators, transientLookup, transients, vectors
+  //@unit lookup requires: kindHooks, mapEntries, maps, publicCollectionSlots, sets, transients,
+  //@ vectors
   function lookup(value, key, notFound) {
     const slots = publicCollectionSlots.get(value);
-    if (maps.has(value) && slots && "tree" in slots) {
-      const comparator = sortedComparators.get(value);
-      for (let node = slots.tree; node != null;) {
-        const order = comparator.call(null, key, node.key);
-        if (order === 0) return node.val;
-        node = order < 0 ? node.left : node.right;
-      }
-      return notFound;
-    }
-    if (transients.has(value)) return transientLookup(value, key, notFound);
+    if (maps.has(value) && slots && "tree" in slots) return kindHooks.lookupTree(value, slots.tree, key, notFound);
+    if (transients.has(value)) return kindHooks.lookupTransient(value, key, notFound);
     const members = sets.get(value);
     if (members) {
-      const index = collectionEntryIndex(value, members, key);
+      const index = kindHooks.entryIndex(value, members, key);
       return index < 0 ? notFound : members[index].key;
     }
     const entries = maps.get(value);
     if (entries) {
-      const index = collectionEntryIndex(value, entries, key);
+      const index = kindHooks.entryIndex(value, entries, key);
       return index < 0 ? notFound : entries[index].value;
     }
     const items = vectors.get(value);
@@ -2183,10 +2302,28 @@
     // indexing separately without giving host objects owned collection storage.
     return notFound;
   }
+  //@unit treeMapConstructor.lookup effect: treeMapConstructor when: lookup requires: kindHooks,
+  //@ sortedComparators
+  // Maps with a tree slot (see `treeMapConstructor.seq`).
+  kindHooks.lookupTree = (value, tree, key, notFound) => {
+    const comparator = sortedComparators.get(value);
+    for (let node = tree; node != null;) {
+      const order = comparator.call(null, key, node.key);
+      if (order === 0) return node.val;
+      node = order < 0 ? node.left : node.right;
+    }
+    return notFound;
+  };
+  //@unit makeTransient.lookup effect: makeTransient when: lookup requires: kindHooks,
+  //@ transientLookup
+  kindHooks.lookupTransient = transientLookup;
+  //@unit makeMap.lookup effect: makeMap, treeMapConstructor, makeType, makeSet, treeSetConstructor
+  //@ when: lookup requires: collectionEntryIndex, kindHooks
+  kindHooks.entryIndex = collectionEntryIndex;
 
-  //@unit get requires: invalidArity, lookup, publicMethod
+  //@unit get requires: invalidArity, lookup, protocolHooks
   function get(value, key, notFound) {
-    const method = value == null ? null : publicMethod(value, "ILookup/-lookup", arguments.length, true);
+    const method = value == null ? null : protocolHooks.publicMethod?.(value, "ILookup/-lookup", arguments.length, true);
     if (method) return method.call(value, ...arguments);
     if (Array.isArray(value)) {
       const valid = key != null && key < value.length && (arguments.length === 2 || key > -1);
@@ -2199,9 +2336,9 @@
     }
   }
 
-  //@unit contains requires: get, missing, publicMethod, vectors
+  //@unit contains requires: get, missing, protocolHooks, vectors
   function contains(value, key) {
-    const method = publicMethod(value, "IAssociative/-contains-key?", 2);
+    const method = protocolHooks.publicMethod?.(value, "IAssociative/-contains-key?", 2);
     if (method) return method.call(value, value, key);
     const items = vectors.get(value);
     if (items) return Number.isInteger(key) && key >= 0 && key < items.length;
@@ -2214,9 +2351,9 @@
     return true;
   }
   //@unit find requires: collectionEntryIndex, contains, get, isAssociative, mapEntry, maps,
-  //@ publicMethod, publicTree, recordTypes, sortedComparators
+  //@ protocolHooks, publicTree, recordTypes, sortedComparators
   function find(value, key) {
-    const method = publicMethod(value, "IFind/-find", 2);
+    const method = protocolHooks.publicMethod?.(value, "IFind/-find", 2);
     if (method) return method.call(value, value, key);
     const entries = !recordTypes.has(value) && maps.get(value);
     if (entries) {
@@ -2266,17 +2403,18 @@
     const old = get(value, key);
     return assoc(value, key, more == null ? updateLeaf(old) : updatePath(old, more, updateLeaf));
   }
-  //@unit selectKeys requires: assoc, first, get, makeMap, meta, missing, next, seq, withMeta
+  //@unit selectKeys requires: assoc, collectionWithMeta, first, get, makeMap, meta, missing, next,
+  //@ PersistentArrayMapValue, seq
   function selectKeys(value, keyseq) {
-    let result = makeMap([]);
+    let result = makeMap(PersistentArrayMapValue, [], "array-map");
     for (let current = seq(keyseq); current != null; current = next(current)) {
       const key = first(current), item = get(value, key, missing);
       if (item !== missing) result = assoc(result, key, item);
     }
-    return withMeta(result, meta(value));
+    return collectionWithMeta(result, meta(value));
   }
   //@unit mergeMaps requires: assoc, conj, contains, first, get, keyProtocol, makeMap, missing,
-  //@ next, reduce, seq, truth, valProtocol
+  //@ next, PersistentArrayMapValue, reduce, seq, truth, valProtocol
   function mergeMaps(values, combine) {
     // `some identity` precedes reduction, including its sequence effects.
     let present = false;
@@ -2285,7 +2423,7 @@
     }
     if (!present) return null;
     return reduce((left, right) => {
-      const target = truth(left) ? left : makeMap([]);
+      const target = truth(left) ? left : makeMap(PersistentArrayMapValue, [], "array-map");
       if (combine === missing) return conj(target, right);
       return reduce((result, entry) => {
         const key = keyProtocol(entry), item = valProtocol(entry);
@@ -2346,10 +2484,10 @@
     return mapSeq(replaceOne, coll);
   }
   //@unit distinct requires: conj, cons, contains, first, invalidArity, lazySequence, makeSet,
-  //@ reducingFunction, rest, seq, transform
+  //@ PersistentHashSetValue, reducingFunction, rest, seq, transform
   function distinct(coll) {
     if (arguments.length === 0) return transform(rf => {
-      let seen = makeSet([]);
+      let seen = makeSet(PersistentHashSetValue, [], "array-map");
       return reducingFunction(rf, (result, input) => {
         if (contains(seen, input)) return result;
         seen = conj(seen, input);
@@ -2364,7 +2502,7 @@
       }
       return null;
     });
-    return step(coll, makeSet([]));
+    return step(coll, makeSet(PersistentHashSetValue, [], "array-map"));
   }
   //@unit distinctMore requires: conj, contains, equalPair, first, hashSet, next
   function distinctMore(x, y, more) {
@@ -2389,15 +2527,15 @@
       return typeof result === "number" ? result : truth(result) ? -1 : truth(fn.call(null, y, x)) ? 1 : 0;
     };
   }
-  //@unit sort requires: compareKeys, emptyList, fnComparator, invalidArity, meta, seq, toArray,
-  //@ withMeta
+  //@unit sort requires: collectionWithMeta, compareKeys, emptyList, fnComparator, invalidArity,
+  //@ meta, seq, toArray
   function sort(fn, coll) {
     if (arguments.length === 1) { coll = fn; fn = compareKeys; }
     else if (arguments.length !== 2) return invalidArity(arguments.length);
     if (seq(coll) === null) return emptyList;
     const values = toArray(coll);
     values.sort(fnComparator(fn));
-    return withMeta(seq(values), meta(coll));
+    return collectionWithMeta(seq(values), meta(coll));
   }
   //@unit sortBy requires: compareKeys, fnComparator, invalidArity, sort
   function sortBy(key, fn, coll) {
@@ -2460,23 +2598,23 @@
   function frequencies(coll) {
     return reduce((result, value) => assoc(result, value, get(result, value, 0) + 1), mapFromArray([]), coll);
   }
-  //@unit updateVals requires: assoc, mapFromArray, mapKinds, meta, reduceKv, withMeta
+  //@unit updateVals requires: assoc, collectionWithMeta, mapFromArray, mapKinds, meta, reduceKv
   function updateVals(coll, fn) {
     const kind = mapKinds.get(coll);
     const initial = kind === "array-map" || kind === "hash-map" ? coll : mapFromArray([]);
-    return withMeta(reduceKv((result, key, value) => assoc(result, key, fn.call(null, value)), initial, coll), meta(coll));
+    return collectionWithMeta(reduceKv((result, key, value) => assoc(result, key, fn.call(null, value)), initial, coll), meta(coll));
   }
-  //@unit updateKeys requires: assoc, mapFromArray, meta, reduceKv, withMeta
+  //@unit updateKeys requires: assoc, collectionWithMeta, mapFromArray, meta, reduceKv
   function updateKeys(coll, fn) {
-    return withMeta(reduceKv((result, key, value) => assoc(result, fn.call(null, key), value), mapFromArray([]), coll), meta(coll));
+    return collectionWithMeta(reduceKv((result, key, value) => assoc(result, fn.call(null, key), value), mapFromArray([]), coll), meta(coll));
   }
   //@unit merge requires: fnRest, mergeMaps, missing
   function merge(...values) { return mergeMaps(fnRest(values, 0), missing); }
   //@unit mergeWith requires: fnRest, mergeMaps
   function mergeWith(fn, ...values) { return mergeMaps(fnRest(values, 0), fn); }
-  //@unit zipmap requires: assoc, first, makeMap, next, seq
+  //@unit zipmap requires: assoc, first, makeMap, next, PersistentArrayMapValue, seq
   function zipmap(keys, values) {
-    let result = makeMap([]);
+    let result = makeMap(PersistentArrayMapValue, [], "array-map");
     let ks = seq(keys), vs = seq(values);
     while (ks != null && vs != null) {
       result = assoc(result, first(ks), first(vs));
@@ -2485,21 +2623,22 @@
     }
     return result;
   }
-  //@unit set requires: first, isSet, makeSet, next, putMember, seq, withMeta
+  //@unit set requires: first, isSet, makeSet, next, PersistentHashSetValue, putMember, seq,
+  //@ withMeta
   function set(value) {
     if (isSet(value)) return withMeta(value, null);
     const entries = [];
     const edit = {};
     for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current), edit);
-    return makeSet(entries);
+    return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
   }
-  //@unit objectEquiv requires: builtin, cells, equalPair, keywords, maps, sequential, sets,
+  //@unit objectEquiv requires: cells, equalPair, keywords, maps, protocolHooks, sequential, sets,
   //@ structuralEqualPair, symbols
   // Object.equiv calls the receiver's IEquiv implementation directly, even
   // when an extension rejects an identical value. Language = keeps its own
   // identity shortcut. Saved Object methods dispatch on the borrowed receiver.
   function objectEquiv(value, other) {
-    const equiv = builtin(value, "IEquiv/-equiv", 2);
+    const equiv = protocolHooks.builtin?.(value, "IEquiv/-equiv", 2);
     if (equiv) return equiv.call(value, value, other);
     if (maps.has(value)) return structuralEqualPair(value, other);
     // Sequence/collection protocols compare contents even for the same receiver
@@ -2509,17 +2648,16 @@
       (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind))
       ? structuralEqualPair(value, other) : equalPair(value, other);
   }
-  //@unit equalPair requires: builtin, structuralEqualPair
+  //@unit equalPair requires: protocolHooks, structuralEqualPair
   function equalPair(left, right) {
     if (left == null) return right == null;
     if (left === right) return true;
-    const equiv = builtin(left, "IEquiv/-equiv", 2);
+    const equiv = protocolHooks.builtin?.(left, "IEquiv/-equiv", 2);
     if (equiv) return equiv.call(left, left, right);
     return structuralEqualPair(left, right);
   }
-  //@unit structuralEqualPair requires: cells, contains, count, equalPair, first, get, ICounted,
-  //@ isMap, isRecord, isSequential, isSet, keywords, mapKinds, maps, mapTraversal, missing, next,
-  //@ recordTypes, satisfies, seq, sequential, sets, symbols, uuids, vars
+  //@unit structuralEqualPair requires: cells, equalPair, keywords, kindHooks, maps, recordTypes,
+  //@ sequential, sets, symbols, uuids, vars
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     if (uuids.has(left)) return uuids.has(right) && uuids.get(left) === uuids.get(right);
@@ -2535,36 +2673,49 @@
       return !!rightSymbol && leftSymbol.spelling === rightSymbol.spelling;
     }
     if (recordTypes.get(left) !== recordTypes.get(right)) return false;
-    const leftMap = maps.get(left);
-    if (leftMap) {
-      if (!isMap(right) || isRecord(right) || count(left) !== count(right)) return false;
-      return mapTraversal(left).every(entry => {
-        const found = get(right, entry.key, missing);
-        // Hash/tree maps use equiv-map's right-first value dispatch. Array
-        // maps retain their distinct left-first IEquiv implementation.
-        return found !== missing && (mapKinds.get(left) === "array-map"
-          ? equalPair(entry.value, found) : equalPair(found, entry.value));
-      });
-    }
+    if (maps.has(left)) return kindHooks.equivMap(left, right);
     const leftSet = sets.get(left);
-    if (leftSet) {
-      if (!isSet(right) || leftSet.length !== count(right)) return false;
-      try { return leftSet.every(entry => contains(right, entry.key)); }
-      catch (error) { if (error instanceof Error) return false; throw error; }
-    }
-    if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) {
-      if (!isSequential(right)) return false;
-      if (satisfies(ICounted, left) && satisfies(ICounted, right) && count(left) !== count(right)) return false;
-      let a = seq(left), b = seq(right);
-      while (a !== null) {
-        if (b === null || !equalPair(first(a), first(b))) return false;
-        a = next(a); b = next(b);
-      }
-      return b === null;
-    }
+    if (leftSet) return kindHooks.equivSet(leftSet, right);
+    if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) return kindHooks.equivSequential(left, right);
     // Primitive NaN stays unequal to itself; foreign objects use identity only.
     return false;
   }
+  //@unit makeMap.equiv effect: makeMap, treeMapConstructor, makeType when: structuralEqualPair
+  //@ requires: count, equalPair, get, IMap, IRecord, kindHooks, mapKinds, maps, mapTraversal,
+  //@ missing, protocolHooks
+  kindHooks.equivMap = (left, right) => {
+    if (!(right != null && (protocolHooks.satisfies?.(IMap, right) ?? maps.has(right))) || (protocolHooks.satisfies?.(IRecord, right) ?? false) || count(left) !== count(right)) return false;
+    return mapTraversal(left).every(entry => {
+      const found = get(right, entry.key, missing);
+      // Hash/tree maps use equiv-map's right-first value dispatch. Array
+      // maps retain their distinct left-first IEquiv implementation.
+      return found !== missing && (mapKinds.get(left) === "array-map"
+        ? equalPair(entry.value, found) : equalPair(found, entry.value));
+    });
+  };
+  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: contains,
+  //@ count, ISet, kindHooks, protocolHooks, sets
+  kindHooks.equivSet = (leftSet, right) => {
+    if (!(right != null && (protocolHooks.satisfies?.(ISet, right) ?? sets.has(right))) || leftSet.length !== count(right)) return false;
+    try { return leftSet.every(entry => contains(right, entry.key)); }
+    catch (error) { if (error instanceof Error) return false; throw error; }
+  };
+  //@unit makeVector.equiv effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
+  //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
+  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq when: structuralEqualPair
+  //@ requires: count, countedValue, equalPair, first, ICounted, ISequential, kindHooks, next,
+  //@ protocolHooks, seq, sequential
+  // Sequential values: vectors, cells, views, queues and lazy seqs.
+  kindHooks.equivSequential = (left, right) => {
+    if (!(protocolHooks.satisfies?.(ISequential, right) ?? sequential(right))) return false;
+    if ((protocolHooks.satisfies?.(ICounted, left) ?? countedValue(left)) && (protocolHooks.satisfies?.(ICounted, right) ?? countedValue(right)) && count(left) !== count(right)) return false;
+    let a = seq(left), b = seq(right);
+    while (a !== null) {
+      if (b === null || !equalPair(first(a), first(b))) return false;
+      a = next(a); b = next(b);
+    }
+    return b === null;
+  };
 
   //@unit equal requires: equalPair
   function equal(...values) {
@@ -2643,14 +2794,13 @@
       result = (result + hash(first(current))) | 0;
     return mixCollectionHash(result, n);
   }
-  //@unit hash requires: builtin, cells, constructorHashes, hashDouble, hashInt, hashNamed,
-  //@ hashOrderedColl, identityCounter, identityHashes, IHash, implementsProtocol, keywords,
-  //@ lazyValues, maps, mapTraversal, mixCollectionHash, publicCollectionSlots, queues, sequential,
-  //@ sets, stringHash, symbols, uuidHashes, uuids, vars, vectors
+  //@unit hash requires: cells, constructorHashes, hashDouble, hashInt, hashNamed, identityCounter,
+  //@ identityHashes, IHash, keywords, kindHooks, maps, mapTraversal, mixCollectionHash,
+  //@ protocolHooks, sequential, sets, stringHash, symbols, uuidHashes, uuids, vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
-    const method = implementsProtocol(IHash, value) ? builtin(value, "IHash/-hash", 1) : null;
+    const method = protocolHooks.implementsProtocol?.(IHash, value) ? protocolHooks.builtin?.(value, "IHash/-hash", 1) : null;
     if (method) return method.call(value, value) | 0;
     if (typeof value === "boolean") return value ? 1231 : 1237;
     if (typeof value === "number") {
@@ -2691,33 +2841,47 @@
       constructorHashes.set(value, resultHash);
       return resultHash;
     }
-    if (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind)) {
-      if (vectors.has(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
-        const result = hashOrderedColl(value);
-        constructorHashes.set(value, result);
-        return result;
-      }
-      const cached = lazyValues.get(value) ?? cells.get(value)?.chunkedState;
-      if (cached?.hash != null) return cached.hash;
-      const result = hashOrderedColl(value);
-      if (cached) cached.hash = result;
-      return result;
-    }
-    const nativeHash = builtin(value, "IHash/-hash", 1);
+    if (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind)) return kindHooks.hashSequential(value);
+    const nativeHash = protocolHooks.builtin?.(value, "IHash/-hash", 1);
     if (nativeHash) return nativeHash.call(value, value) | 0;
     if (typeof value === "symbol" || typeof value === "bigint") return hash(String(value));
     if (!identityHashes.has(value)) identityHashes.set(value, ++identityCounter);
     return identityHashes.get(value);
   }
 
+  //@unit makeVector.hash effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
+  //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
+  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq when: hash
+  //@ requires: cells, constructorHashes, hashOrderedColl, kindHooks, lazyValues,
+  //@ publicCollectionSlots, queues, vectors
+  // Sequential values (see `makeVector.equiv`).
+  kindHooks.hashSequential = value => {
+    if (vectors.has(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
+      const result = hashOrderedColl(value);
+      constructorHashes.set(value, result);
+      return result;
+    }
+    const cached = lazyValues.get(value) ?? cells.get(value)?.chunkedState;
+    if (cached?.hash != null) return cached.hash;
+    const result = hashOrderedColl(value);
+    if (cached) cached.hash = result;
+    return result;
+  };
+  //@unit entryHashing
+  // The hash of a key for map and set entries that compute it on demand. Only
+  // code that hashes, and so keeps `hash`, reads an entry's hash.
+  const entryHashing = {};
+  //@unit hash.entries effect: hash requires: entryHashing, hash
+  entryHashing.hash = hash;
   //@unit hashed requires: constructorHashes
   function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
-  //@ EmptyListValue, generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues,
-  //@ listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name, queueFromArray, queues,
-  //@ recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal, symbol, symbols,
-  //@ toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectors, view, views, volatiles
+  //@ EmptyListValue, generatedNames, ifnValues, IndexedSeqValue, jsObject, keyword, keywords,
+  //@ lazyValues, listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name,
+  //@ queueFromArray, queues, recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal,
+  //@ symbol, symbols, toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectors, view,
+  //@ views, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -2868,7 +3032,7 @@
                 }
               } catch (_) { fail("lazy realization failure", path); }
               if (current == null) break;
-              if (vectors.has(current)) current = view(vectors.get(current), 0, true);
+              if (vectors.has(current)) current = view(IndexedSeqValue, vectors.get(current), 0, true);
               if (cells.has(current)) {
                 const cell = cells.get(current);
                 if (cell.kind === "list" && cell.count === 0) break;
@@ -2880,7 +3044,7 @@
                 const slice = views.get(current);
                 if (slice.offset >= slice.storage.length) break;
                 a.push(visit(slice.storage[slice.offset], path + "[" + a.length + "]", depth + 1));
-                current = slice.offset + 1 < slice.storage.length ? view(slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail;
+                current = slice.offset + 1 < slice.storage.length ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail;
               } else fail("noncanonical sequence tail", path);
             }
           } else {
@@ -2964,29 +3128,121 @@
   }
 
   //@unit IChunk
-  const IChunk = function () {}, IChunkedNext = function () {}, IDrop = function () {};
+  const IChunk = function () {};
+  //@unit IChunkedNext
+  const IChunkedNext = function () {};
+  //@unit IDrop
+  const IDrop = function () {};
   //@unit IMapEntry
-  const IMapEntry = function () {}, IFind = function () {}, ISorted = function () {}, IChunkedSeq = function () {};
+  const IMapEntry = function () {};
+  //@unit IFind
+  const IFind = function () {};
+  //@unit ISorted
+  const ISorted = function () {};
+  //@unit IChunkedSeq
+  const IChunkedSeq = function () {};
   //@unit IEncodeJS
-  const IEncodeJS = function () {}, IEncodeClojure = function () {};
+  const IEncodeJS = function () {};
+  //@unit IEncodeClojure
+  const IEncodeClojure = function () {};
   //@unit IRecord
-  const IRecord = function () {}, ICloneable = function () {}, IPrintWithWriter = function () {}, IWriter = function () {};
+  const IRecord = function () {};
+  //@unit ICloneable
+  const ICloneable = function () {};
+  //@unit IPrintWithWriter
+  const IPrintWithWriter = function () {};
+  //@unit IWriter
+  const IWriter = function () {};
   //@unit INamed
   const INamed = function () {};
   //@unit Inst
-  const Inst = function () {}, IUUID = function () {}, ASeq = function () {}, IDerefWithTimeout = function () {};
+  const Inst = function () {};
+  //@unit IUUID
+  const IUUID = function () {};
+  //@unit ASeq
+  const ASeq = function () {};
+  //@unit IDerefWithTimeout
+  const IDerefWithTimeout = function () {};
   //@unit IMeta
-  const IMeta = function () {}, IWithMeta = function () {}, IHash = function () {}, IEquiv = function () {};
+  const IMeta = function () {};
+  //@unit IWithMeta
+  const IWithMeta = function () {};
+  //@unit IHash
+  const IHash = function () {};
+  //@unit IEquiv
+  const IEquiv = function () {};
   //@unit IPending
-  const IPending = function () {}, IDeref = function () {}, IAtom = function () {}, IReset = function () {}, ISwap = function () {}, IVolatile = function () {}, IWatchable = function () {};
+  const IPending = function () {};
+  //@unit IDeref
+  const IDeref = function () {};
+  //@unit IAtom
+  const IAtom = function () {};
+  //@unit IReset
+  const IReset = function () {};
+  //@unit ISwap
+  const ISwap = function () {};
+  //@unit IVolatile
+  const IVolatile = function () {};
+  //@unit IWatchable
+  const IWatchable = function () {};
   //@unit Fn
-  const Fn = function () {}, IList = function () {}, IFn = function () {}, ISeqable = function () {}, ISeq = function () {}, INext = function () {}, ICounted = function () {}, IIndexed = function () {}, ILookup = function () {}, ISequential = function () {}, IAssociative = function () {};
+  const Fn = function () {};
+  //@unit IList
+  const IList = function () {};
+  //@unit IFn
+  const IFn = function () {};
+  //@unit ISeqable
+  const ISeqable = function () {};
+  //@unit ISeq
+  const ISeq = function () {};
+  //@unit INext
+  const INext = function () {};
+  //@unit ICounted
+  const ICounted = function () {};
+  //@unit IIndexed
+  const IIndexed = function () {};
+  //@unit ILookup
+  const ILookup = function () {};
+  //@unit ISequential
+  const ISequential = function () {};
+  //@unit IAssociative
+  const IAssociative = function () {};
   //@unit IReduce
-  const IReduce = function () {}, IKVReduce = function () {}, IVector = function () {}, IMap = function () {}, ICollection = function () {}, IEmptyableCollection = function () {}, ISet = function () {}, IStack = function () {}, IReversible = function () {}, IComparable = function () {}, IIterable = function () {};
+  const IReduce = function () {};
+  //@unit IKVReduce
+  const IKVReduce = function () {};
+  //@unit IVector
+  const IVector = function () {};
+  //@unit IMap
+  const IMap = function () {};
+  //@unit ICollection
+  const ICollection = function () {};
+  //@unit IEmptyableCollection
+  const IEmptyableCollection = function () {};
+  //@unit ISet
+  const ISet = function () {};
+  //@unit IStack
+  const IStack = function () {};
+  //@unit IReversible
+  const IReversible = function () {};
+  //@unit IComparable
+  const IComparable = function () {};
+  //@unit IIterable
+  const IIterable = function () {};
   //@unit IMultiFn
   const IMultiFn = function () {};
   //@unit IEditableCollection
-  const IEditableCollection = function () {}, ITransientCollection = function () {}, ITransientAssociative = function () {}, ITransientMap = function () {}, ITransientVector = function () {}, ITransientSet = function () {};
+  const IEditableCollection = function () {};
+  //@unit ITransientCollection
+  const ITransientCollection = function () {};
+  //@unit ITransientAssociative
+  const ITransientAssociative = function () {};
+  //@unit ITransientMap
+  const ITransientMap = function () {};
+  //@unit ITransientVector
+  const ITransientVector = function () {};
+  //@unit ITransientSet
+  const ITransientSet = function () {};
   //@unit coreProtocolNames requires: ASeq, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
   //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDerefWithTimeout, IDrop,
   //@ IEditableCollection, IEmptyableCollection, IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn,
@@ -2998,42 +3254,54 @@
   const coreProtocolNames = new Map([[Inst, "Inst"], [IUUID, "IUUID"], [ASeq, "ASeq"], [IDerefWithTimeout, "IDerefWithTimeout"], [INamed, "INamed"], [IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
   //@unit coreProtocolsByName requires: coreProtocolNames
   const coreProtocolsByName = new Map([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
-  //@unit protocolDefaults effect: IMeta, Fn, ICounted, IHash, IEquiv requires: Fn, ICounted,
-  //@ IEquiv, IHash, IMeta
-  IMeta.function = true; Fn.function = true; ICounted.null = true; IHash._ = true; IEquiv._ = true;
-  //@unit meta requires: assoc, atoms, deferredVarMetadata, keyword, metadataValues, publicMethod
+  //@unit IMeta.defaults effect: IMeta requires: IMeta
+  IMeta.function = true;
+  //@unit Fn.defaults effect: Fn requires: Fn
+  Fn.function = true;
+  //@unit ICounted.defaults effect: ICounted requires: ICounted
+  ICounted.null = true;
+  //@unit IHash.defaults effect: IHash requires: IHash
+  IHash._ = true;
+  //@unit IEquiv.defaults effect: IEquiv requires: IEquiv
+  IEquiv._ = true;
+  //@unit meta requires: atoms, deferredVarMetadata, kindHooks, metadataValues, protocolHooks
   // Metadata belongs to values, never structural equality or hash payloads.
   function meta(value) {
-    const method = value == null ? null : publicMethod(value, "IMeta/-meta", 1);
+    const method = value == null ? null : protocolHooks.publicMethod?.(value, "IMeta/-meta", 1);
     if (method) return method.call(value, value);
     const deferred = deferredVarMetadata.get(value);
-    if (deferred) {
-      const metadata = assoc(metadataValues.get(value), keyword(null, "test"), deferred());
-      metadataValues.set(value, metadata);
-      deferredVarMetadata.delete(value);
-    }
+    if (deferred) kindHooks.metaDeferred(value, deferred);
     return atoms.has(value) ? value.meta : metadataValues.has(value) ? metadataValues.get(value) : null;
   }
-  //@unit empty requires: cells, emptyList, lazyValues, makeMap, makeSet, mapEntries, mapKinds,
-  //@ maps, meta, preserveMeta, publicCollectionSlots, publicMethod, queueFromArray, queues,
-  //@ recordTypes, setKinds, sets, sortedComparators, vector, vectors, views, withMeta
+  //@unit definitionVar.meta effect: definitionVar when: meta requires: assoc, deferredVarMetadata,
+  //@ keyword, kindHooks, metadataValues
+  // A Var's deferred :test metadata; only `definitionVar` defers it.
+  kindHooks.metaDeferred = (value, deferred) => {
+    const metadata = assoc(metadataValues.get(value), keyword(null, "test"), deferred());
+    metadataValues.set(value, metadata);
+    deferredVarMetadata.delete(value);
+  };
+  //@unit empty requires: cells, collectionWithMeta, emptyList, lazyValues, makeMap, makeSet,
+  //@ mapEntries, mapKinds, maps, mapTypes, meta, preserveMeta, protocolHooks,
+  //@ publicCollectionSlots, queueFromArray, queues, recordTypes, setKinds, sets, setType,
+  //@ sortedComparators, vector, vectors, views
   function empty(value) {
-    const method = value == null ? null : publicMethod(value, "IEmptyableCollection/-empty", 1);
+    const method = value == null ? null : protocolHooks.publicMethod?.(value, "IEmptyableCollection/-empty", 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
     if (recordTypes.has(value) || mapEntries.has(value)) return null;
     if (vectors.has(value)) return preserveMeta(value, vector());
-    if (maps.has(value)) return preserveMeta(value, makeMap([], mapKinds.get(value), sortedComparators.get(value)));
-    if (sets.has(value)) return preserveMeta(value, makeSet([], setKinds.get(value), sortedComparators.get(value)));
+    if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], [], mapKinds.get(value), sortedComparators.get(value)));
+    if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), [], setKinds.get(value), sortedComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value)) return value;
     if (cells.has(value) || views.has(value) || lazyValues.has(value))
-      return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? withMeta(emptyList, meta(value)) : emptyList;
+      return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
-  //@unit peek requires: builtin, cells, first, publicCollectionSlots, queues, vectors
+  //@unit peek requires: cells, first, protocolHooks, publicCollectionSlots, queues, vectors
   function peek(value) {
-    const method = value == null ? null : builtin(value, "IStack/-peek", 1);
+    const method = value == null ? null : protocolHooks.builtin?.(value, "IStack/-peek", 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
     if (vectors.has(value)) { const items = vectors.get(value); return items.length ? items[items.length - 1] : null; }
@@ -3041,11 +3309,11 @@
     if (queues.has(value) || cells.get(value)?.kind === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
-  //@unit pop requires: builtin, cells, count, makeVector, meta, next, PersistentQueueValue,
-  //@ preserveMeta, publicCollectionSlots, queueFromArray, queues, rest, seq, subvecSources,
+  //@unit pop requires: cells, count, makeVector, meta, next, PersistentQueueValue, preserveMeta,
+  //@ protocolHooks, publicCollectionSlots, queueFromArray, queues, rest, seq, subvecSources,
   //@ SubvecValue, vector, vectors
   function pop(value) {
-    const method = value == null ? null : builtin(value, "IStack/-pop", 1);
+    const method = value == null ? null : protocolHooks.builtin?.(value, "IStack/-pop", 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
     if (vectors.has(value)) {
@@ -3067,25 +3335,26 @@
     }
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
-  //@unit rseq requires: builtin, maps, sortedComparators, toArray, vectors, view, views
+  //@unit rseq requires: IndexedSeqValue, maps, protocolHooks, sortedComparators, toArray,
+  //@ treeMapSeqConstructor, vectors, view, views
   function rseq(value) {
-    const method = builtin(value, "IReversible/-rseq", 1);
+    const method = protocolHooks.builtin?.(value, "IReversible/-rseq", 1);
     if (method) return method.call(value, value);
     if (!vectors.has(value) && views.get(value)?.kind !== "indexed" && !sortedComparators.has(value))
       throw new Error("No protocol method IReversible.-rseq defined for this value");
     const items = Object.freeze(toArray(value).reverse());
-    return items.length ? view(items, 0, false, maps.has(value) ? "sorted-map" : "reverse") : null;
+    return items.length ? maps.has(value) ? view(treeMapSeqConstructor, items, 0, false, "sorted-map") : view(IndexedSeqValue, items, 0, false, "reverse") : null;
   }
-  //@unit mapProjection requires: cells, emptyList, firstProtocol, INext, keyProtocol, next,
-  //@ nextProtocol, satisfies, seq, sequencePrototype, valProtocol
+  //@unit mapProjection requires: cells, emptyList, entryKey, entryVal, first, INext, next,
+  //@ protocolHooks, seq, sequencePrototype
   function mapProjection(value, index, alreadySeq = false) {
     const entries = alreadySeq ? value : seq(value);
     if (entries === null) return null;
     const result = Object.create(sequencePrototype);
     cells.set(result, Object.freeze({kind: index === 0 ? "keys" : "vals",
-      get head() { const entry = firstProtocol(entries); return index === 0 ? keyProtocol(entry) : valProtocol(entry); },
+      get head() { const entry = (protocolHooks.firstProtocol ?? first)(entries); return index === 0 ? (protocolHooks.keyProtocol ?? entryKey)(entry) : (protocolHooks.valProtocol ?? entryVal)(entry); },
       get tail() {
-        const following = satisfies(INext, entries) ? nextProtocol(entries) : next(entries);
+        const following = protocolHooks.satisfies?.(INext, entries) ? protocolHooks.nextProtocol(entries) : next(entries);
         return following == null ? emptyList : mapProjection(following, index, true);
       }}));
     return result;
@@ -3116,14 +3385,14 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: builtin, displayStr, keywords, symbols, uuids, vectors
+  //@unit compareKeys requires: displayStr, keywords, protocolHooks, symbols, uuids, vectors
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
     if (b == null) return 1;
     const cannotCompare = () => { throw new Error("Cannot compare " + displayStr(a) + " to " + displayStr(b)); };
     if (typeof a === "number") return typeof b === "number" ? (a < b ? -1 : a > b ? 1 : 0) : cannotCompare();
-    const method = builtin(a, "IComparable/-compare", 2);
+    const method = protocolHooks.builtin?.(a, "IComparable/-compare", 2);
     if (method) return method.call(a, a, b);
     if (uuids.has(a)) return uuids.has(b) ? compareKeys(uuids.get(a), uuids.get(b)) : cannotCompare();
     if (a instanceof Date) return b instanceof Date ? compareKeys(a.valueOf(), b.valueOf()) : cannotCompare();
@@ -3187,27 +3456,28 @@
       has(_target, property) { return Reflect.has(demand(), property); }
     });
   }
-  //@unit treeMapConstructor requires: constructorSlots, deferredEntries, hash, makeMap, maps, nth,
-  //@ sortedComparators
+  //@unit treeMapConstructor requires: constructorSlots, deferredEntries, entryHashing, makeMap,
+  //@ maps, nth, sortedComparators
   function treeMapConstructor(comparator, tree, suppliedCount, metadata, cachedHash) {
-    const value = makeMap([], "sorted-map", comparator);
+    const value = makeMap(treeMapConstructor, [], "sorted-map", comparator);
     sortedComparators.set(value, comparator);
     maps.set(value, deferredEntries(() => {
       const entries = [];
       function visit(node) {
         if (node == null) return;
         visit(node.left);
-        entries.push(Object.freeze({key: "key" in node ? node.key : nth(node, 0), value: "val" in node ? node.val : nth(node, 1), get hash() { return hash(this.key); }}));
+        entries.push(Object.freeze({key: "key" in node ? node.key : nth(node, 0), value: "val" in node ? node.val : nth(node, 1), get hash() { return entryHashing.hash(this.key); }}));
         visit(node.right);
       }
       visit(tree); return entries;
     }));
     return constructorSlots(value, {tree, cnt: suppliedCount}, metadata, cachedHash);
   }
-  //@unit treeSetConstructor requires: constructorSlots, deferredEntries, makeSet, maps, sets,
-  //@ sortedComparators
+  //@unit treeSetConstructor requires: compareKeys, constructorSlots, deferredEntries, makeSet,
+  //@ maps, sets, sortedComparators
   function treeSetConstructor(metadata, treeMap, cachedHash) {
-    const value = makeSet([], "sorted-set", sortedComparators.get(treeMap));
+    const comparator = sortedComparators.get(treeMap);
+    const value = makeSet(treeSetConstructor, [], "sorted-set", comparator === undefined ? compareKeys : comparator);
     sets.set(value, deferredEntries(() => treeMap == null ? [] : maps.get(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
     return constructorSlots(value, {"tree-map": treeMap}, metadata, cachedHash);
   }
@@ -3236,7 +3506,7 @@
     }
     return lo;
   }
-  //@unit collectionEntryIndex requires: entryIndex, hashEntryIndex, mapKinds, setKinds,
+  //@unit collectionEntryIndex requires: entryIndex, kindHooks, mapKinds, setKinds,
   //@ sortedComparators, sortedPosition
   function collectionEntryIndex(value, entries, key) {
     const comparator = sortedComparators.get(value);
@@ -3248,18 +3518,23 @@
         if (key == null) return entries.findIndex(entry => entry.key == null);
         if (!entries.some(entry => entry.key != null)) return -1;
       }
-      return hashEntryIndex(entries, key);
+      return kindHooks.hashEntryIndex(entries, key);
     }
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
   }
-  //@unit putSortedEntry requires: equalPair, hash, sortedPosition
+  //@unit PersistentHashMapValue.entryIndex effect: PersistentHashMapValue, PersistentHashSetValue,
+  //@ makeType when: collectionEntryIndex requires: hashEntryIndex, kindHooks
+  // Maps and sets of a kind other than array-map or sorted: hash maps, hash
+  // sets (some public hash sets keep their map's kind) and records.
+  kindHooks.hashEntryIndex = hashEntryIndex;
+  //@unit putSortedEntry requires: entryHashing, equalPair, sortedPosition
   function putSortedEntry(entries, key, value, comparator, member = false) {
     const i = sortedPosition(entries, key, comparator);
     const exists = i < entries.length && comparator.call(null, entries[i].key, key) === 0;
     if (exists && (member || equalPair(entries[i].value, value))) return;
     const retained = exists ? entries[i].key : key;
-    const entry = Object.freeze({key: retained, value, get hash() { return hash(retained); }});
+    const entry = Object.freeze({key: retained, value, get hash() { return entryHashing.hash(retained); }});
     if (exists) entries[i] = entry;
     else entries.splice(i, 0, entry);
   }
@@ -3283,11 +3558,11 @@
       putEntry(entries, key, value, array ? "array-map" : undefined);
     }
   }
-  //@unit buildSortedMap requires: makeMap, putSortedEntry
+  //@unit buildSortedMap requires: makeMap, putSortedEntry, treeMapConstructor
   function buildSortedMap(comparator, pairs) {
     const entries = [];
     for (let i = 0; i < pairs.length; i += 2) putSortedEntry(entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null, comparator);
-    return makeMap(entries, "sorted-map", comparator);
+    return makeMap(treeMapConstructor, entries, "sorted-map", comparator);
   }
   //@unit sortedMap requires: buildSortedMap, compareKeys
   function sortedMap(...pairs) { return buildSortedMap(compareKeys, pairs); }
@@ -3295,11 +3570,11 @@
   function sortedMapBy(comparator, ...pairs) {
     return buildSortedMap(fnComparator(comparator), pairs);
   }
-  //@unit buildSortedSet requires: makeSet, putSortedEntry
+  //@unit buildSortedSet requires: makeSet, putSortedEntry, treeSetConstructor
   function buildSortedSet(comparator, items) {
     const entries = [];
     for (const item of items) putSortedEntry(entries, item, undefined, comparator, true);
-    return makeSet(entries, "sorted-set", comparator);
+    return makeSet(treeSetConstructor, entries, "sorted-set", comparator);
   }
   //@unit sortedSet requires: buildSortedSet, compareKeys
   function sortedSet(...items) { return buildSortedSet(compareKeys, items); }
@@ -3308,7 +3583,7 @@
     return buildSortedSet(fnComparator(comparator), items);
   }
   //@unit sortedSeqFrom requires: identity, mapEntry, maps, mapSeq, sets, sortedComparators,
-  //@ sortedPosition, truth, view
+  //@ sortedPosition, treeMapSeqConstructor, truth, view
   function sortedSeqFrom(value, key, ascending) {
     const entries = maps.get(value) ?? sets.get(value), comparator = sortedComparators.get(value);
     let i = sortedPosition(entries, key, comparator);
@@ -3318,7 +3593,7 @@
       if (i < 0) return absent();
     } else if (i === entries.length) return absent();
     const selected = truth(ascending) ? entries.slice(i) : entries.slice(0, i + 1).reverse();
-    return sets.has(value) ? mapSeq(entry => entry.key, selected) : view(Object.freeze(selected.map(entry => mapEntry(entry.key, entry.value))), 0, false, "sorted-map");
+    return sets.has(value) ? mapSeq(entry => entry.key, selected) : view(treeMapSeqConstructor, Object.freeze(selected.map(entry => mapEntry(entry.key, entry.value))), 0, false, "sorted-map");
   }
   //@unit mkBoundFn requires: comparatorProtocol, entryKeyProtocol, invalidArity, truth
   function mkBoundFn(sc, test, key) {
@@ -3349,15 +3624,15 @@
     if (!include(first(s))) s = next(s);
     return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, test, key), s);
   }
-  //@unit metaSupported requires: atoms, builtin, cells, lazyValues, maps, metaFunctions, queues,
-  //@ reifyValues, sets, symbols, vars, vectors, views
+  //@unit metaSupported requires: atoms, cells, lazyValues, maps, metaFunctions, protocolHooks,
+  //@ queues, reifyValues, sets, symbols, vars, vectors, views
   function metaSupported(value) {
-    return typeof value === "function" || !!builtin(value, "IMeta/-meta", 1) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+    return typeof value === "function" || !!protocolHooks.builtin?.(value, "IMeta/-meta", 1) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
   }
-  //@unit withMetaSupported requires: builtin, cells, lazyValues, maps, metaFunctions, queues,
+  //@unit withMetaSupported requires: cells, lazyValues, maps, metaFunctions, protocolHooks, queues,
   //@ reifyValues, sets, symbols, vars, vectors, views
   function withMetaSupported(value) {
-    return !!builtin(value, "IWithMeta/-with-meta", 2) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+    return !!protocolHooks.builtin?.(value, "IWithMeta/-with-meta", 2) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
   }
   //@unit declarationJournal
   // The open declarationTransaction's undo journal; applications open none.
@@ -3437,6 +3712,37 @@
   }
   //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
+  //@unit countedValue requires: cells, chunkBuffers, chunks, maps, queues, sets, transients,
+  //@ vectors, views
+  // What `builtinCoreImplementation` answers for one core protocol, without
+  // the protocol objects: the answer of `satisfies` and `implementsProtocol`
+  // where no protocol implementation exists (`protocolHooks`). ICounted:
+  function countedValue(value) {
+    const cell = cells.get(value);
+    return transients.has(value) || cell?.kind === "tree-seq" || chunkBuffers.has(value) || chunks.has(value) || cell?.integer === true || vectors.has(value) || maps.has(value) || sets.has(value) || queues.has(value) || cell?.kind === "list" || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind));
+  }
+  //@unit seqValue requires: cells, chunks, iteratorSeqs, lazyValues, queues, views
+  // ISeq (see `countedValue`).
+  function seqValue(value) {
+    return chunks.get(value)?.integer === true || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value) || iteratorSeqs.has(value);
+  }
+  //@unit nextValue requires: cells, lazyValues, queues, views
+  // INext (see `countedValue`).
+  function nextValue(value) {
+    return cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
+  }
+  //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets, vectors, views
+  // ISeqable (see `countedValue`).
+  function seqableValue(value) {
+    return [vectors, maps, sets, cells, views, queues, lazyValues, iteratorSeqs].some(store => store.has(value));
+  }
+  //@unit indexedValue requires: cells, chunks, transients, vectors, views
+  // IIndexed (see `countedValue`).
+  function indexedValue(value) {
+    const transient = transients.get(value);
+    if (transient) return transient.kind === "vector";
+    return chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || views.get(value)?.indexed === true;
+  }
   //@unit cloneablePayload requires: cells, mapEntries, maps, queues, recordTypes, sets, vectors,
   //@ views
   function cloneablePayload(value) { return (vectors.has(value) && !mapEntries.has(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(views.get(value)?.kind); }
@@ -3449,16 +3755,17 @@
     if (name && directMethod(value, name, 0)) return true;
     return builtinCoreImplementation(protocol, value);
   }
-  //@unit builtinCoreImplementation requires: ASeq, atoms, cells, chunkBuffers, chunks,
-  //@ cloneablePayload, delays, directMethod, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
+  //@unit builtinCoreImplementation requires: ASeq, atoms, cells, chunks, cloneablePayload,
+  //@ countedValue, delays, directMethod, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
   //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDrop,
   //@ IEditableCollection, IEmptyableCollection, IEquiv, IFind, IFn, ifnMethods, IHash, IIndexed,
-  //@ IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, IMultiFn, INamed, INext, Inst,
-  //@ IPending, IPrintWithWriter, IReduce, IReset, IReversible, ISeq, ISeqable, ISequential, ISet,
-  //@ isIdent, ISorted, IStack, ISwap, ITransientAssociative, ITransientCollection, ITransientMap,
-  //@ ITransientSet, ITransientVector, IUUID, IVector, IVolatile, IWatchable, IWithMeta, keywords,
-  //@ lazyValues, mapEntries, mapKinds, maps, metaFunctions, multiFns, ownedProtocolValue,
-  //@ publicCollectionSlots, queues, recordTypes, reducedValues, reifyValues, sets,
+  //@ IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, IMultiFn, INamed, indexedValue,
+  //@ INext, Inst, IPending, IPrintWithWriter, IReduce, IReset, IReversible, ISeq, ISeqable,
+  //@ ISequential, ISet, isIdent, ISorted, IStack, ISwap, ITransientAssociative,
+  //@ ITransientCollection, ITransientMap, ITransientSet, ITransientVector, IUUID, IVector,
+  //@ IVolatile, IWatchable, IWithMeta, keywords, lazyValues, mapEntries, mapKinds, maps,
+  //@ metaFunctions, multiFns, nextValue, ownedProtocolValue, publicCollectionSlots, queues,
+  //@ recordTypes, reducedValues, reifyValues, seqableValue, sequential, seqValue, sets,
   //@ sortedComparators, subvecSources, symbols, transients, uuids, vars, vectors, views, volatiles
   function builtinCoreImplementation(protocol, value) {
     if (protocol === Inst) return value instanceof Date;
@@ -3505,11 +3812,12 @@
     if (protocol === IReversible) return vectors.has(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
     if (protocol === IIterable) return builtinCoreImplementation(ICollection, value);
     if (protocol === IComparable) return vectors.has(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
-    if (protocol === ISeqable) return [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value));
-    if (protocol === ISeq || protocol === INext) return protocol === ISeq && chunks.get(value)?.integer === true || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
-    if (protocol === ISequential) return vectors.has(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
-    if (protocol === ICounted) return cells.get(value)?.kind === "tree-seq" || chunkBuffers.has(value) || chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || maps.has(value) || sets.has(value) || queues.has(value) || cells.get(value)?.kind === "list" || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind));
-    if (protocol === IIndexed) return chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || views.get(value)?.indexed === true;
+    if (protocol === ISeqable) return seqableValue(value);
+    if (protocol === ISeq) return seqValue(value);
+    if (protocol === INext) return nextValue(value);
+    if (protocol === ISequential) return sequential(value);
+    if (protocol === ICounted) return countedValue(value);
+    if (protocol === IIndexed) return indexedValue(value);
     if (protocol === ILookup) return vectors.has(value) || maps.has(value) || sets.has(value);
     if (protocol === IAssociative) return vectors.has(value) || maps.has(value);
     if (protocol === IMeta) return [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
@@ -3755,9 +4063,9 @@
     }
   }
 
-  //@unit stateProtocol requires: builtin
+  //@unit stateProtocol requires: protocolHooks
   function stateProtocol(value, key, args) {
-    const method = builtin(value, key, args.length + 1);
+    const method = protocolHooks.builtin?.(value, key, args.length + 1);
     if (!method) throw new Error("No protocol method " + key + " defined for this value");
     return method.call(value, value, ...args);
   }
@@ -3768,9 +4076,9 @@
     if (arguments.length < 2 || arguments.length > 5) return invalidArity(arguments.length);
     return stateProtocol(value, "ISwap/-swap!", [fn, ...args]);
   }
-  //@unit notifyWatches requires: atoms, builtin, first, next, nth, seq, stateProtocol
+  //@unit notifyWatches requires: atoms, first, next, nth, protocolHooks, seq, stateProtocol
   function notifyWatches(value, oldState, state) {
-    const method = builtin(value, "IWatchable/-notify-watches", 3);
+    const method = protocolHooks.builtin?.(value, "IWatchable/-notify-watches", 3);
     if (method) return method.call(value, value, oldState, state);
     if (!atoms.has(value)) return stateProtocol(value, "IWatchable/-notify-watches", [oldState, state]);
     // Hold the original persistent watch map through all synchronous callbacks.
@@ -3780,17 +4088,17 @@
     }
     return null;
   }
-  //@unit addWatchProtocol requires: assoc, atoms, builtin, stateProtocol
+  //@unit addWatchProtocol requires: assoc, atoms, protocolHooks, stateProtocol
   function addWatchProtocol(value, key, fn) {
-    const method = builtin(value, "IWatchable/-add-watch", 3);
+    const method = protocolHooks.builtin?.(value, "IWatchable/-add-watch", 3);
     if (method) return method.call(value, value, key, fn);
     if (!atoms.has(value)) return stateProtocol(value, "IWatchable/-add-watch", [key, fn]);
     value.watches = assoc(value.watches, key, fn);
     return value;
   }
-  //@unit removeWatchProtocol requires: atoms, builtin, dissoc, stateProtocol
+  //@unit removeWatchProtocol requires: atoms, dissoc, protocolHooks, stateProtocol
   function removeWatchProtocol(value, key) {
-    const method = builtin(value, "IWatchable/-remove-watch", 2);
+    const method = protocolHooks.builtin?.(value, "IWatchable/-remove-watch", 2);
     if (method) return method.call(value, value, key);
     if (!atoms.has(value)) return stateProtocol(value, "IWatchable/-remove-watch", [key]);
     return value.watches = dissoc(value.watches, key);
@@ -3857,9 +4165,9 @@
   function isVolatile(value) { return volatiles.has(value); }
   //@unit vreset requires: vresetProtocol
   function vreset(value, state) { return vresetProtocol(value, state); }
-  //@unit vresetProtocol requires: builtin, stateProtocol, volatiles
+  //@unit vresetProtocol requires: protocolHooks, stateProtocol, volatiles
   function vresetProtocol(value, state) {
-    const method = builtin(value, "IVolatile/-vreset!", 2);
+    const method = protocolHooks.builtin?.(value, "IVolatile/-vreset!", 2);
     if (method) return method.call(value, value, state);
     if (volatiles.has(value)) return value.state = state;
     return stateProtocol(value, "IVolatile/-vreset!", [state]);
@@ -3871,22 +4179,19 @@
       ? fn.call(null, old, ...args)
       : apply(fn, old, args[0], args[1], args[2], fnRest(args, 3)));
   }
-  //@unit updatedMap requires: constructorSlots, equalPair, keyword, makeMap, mapKinds, maps, meta,
-  //@ preserveMeta, publicCollectionSlots, recordTypes, sortedComparators
+  //@unit updatedMap requires: constructorSlots, kindHooks, makeMap, mapFromEntries, mapKinds, maps,
+  //@ mapTypes, meta, preserveMeta, publicCollectionSlots, recordTypes, sortedComparators
   function updatedMap(original, entries, removeRecord = false) {
     const Type = !removeRecord && recordTypes.get(original);
     if (mapKinds.get(original) === "sorted-map") {
       const prior = maps.get(original);
       if (entries.length === prior.length && entries.every((entry, i) => entry === prior[i])) return original;
-      const result = makeMap(entries, "sorted-map", sortedComparators.get(original)), slots = publicCollectionSlots.get(original);
+      const result = makeMap(mapTypes["sorted-map"], entries, "sorted-map", sortedComparators.get(original)), slots = publicCollectionSlots.get(original);
       if (slots && "cnt" in slots) constructorSlots(result, {cnt: slots.cnt + entries.length - prior.length}, meta(original), null);
       return preserveMeta(original, result);
     }
-    const result = Type ? new Type(...Type.fieldNames.map(name => {
-      const entry = entries.find(e => equalPair(e.key, keyword(null, name)));
-      return entry?.value;
-    })) : makeMap(entries, mapKinds.get(original) === "hash-map" || (entries.length > 8 && entries.length > (maps.get(original)?.length ?? 0)) ? "hash-map" : "array-map");
-    if (Type) { maps.set(result, Object.freeze(entries)); mapKinds.set(result, mapKinds.get(original)); }
+    const result = Type ? kindHooks.updatedRecord(Type, entries, mapKinds.get(original))
+      : mapFromEntries(entries, mapKinds.get(original) === "hash-map" || (entries.length > 8 && entries.length > (maps.get(original)?.length ?? 0)));
     const slots = publicCollectionSlots.get(original);
     if (slots?.cnt != null) {
       const cnt = slots.cnt + entries.length - maps.get(original).length;
@@ -3895,62 +4200,47 @@
     }
     return preserveMeta(original, result);
   }
-  //@unit withMeta requires: apply, builtin, canonicalVectorRoots, cells, ChunkedCons,
-  //@ ChunkedSeqValue, constructorHashes, cycleNode, field, ifnValues, IntegerRangeValue,
-  //@ iterateNode, LazySeq, lazyValues, makeIFn, mapEntries, mapKinds, maps, meta, metadataValues,
-  //@ metaFunctions, protocolImplementations, publicCollectionSlots, queues, rangeChunks,
-  //@ RangeValue, recordTypes, reifyValues, RepeatValue, seq, setKinds, sets, sortedComparators,
-  //@ subvecSources, symbols, treeRoots, treeSetMaps, typeFields, vars, vectorFromArray, vectors,
-  //@ views
+  //@unit withMeta requires: collectionWithMeta, fnWithMeta
   function withMeta(value, metadata) {
+    return typeof value === "function" ? fnWithMeta(value, metadata) : collectionWithMeta(value, metadata);
+  }
+  //@unit fnWithMeta requires: apply, makeIFn, metadataValues, metaFunctions
+  // A function, or a function with metadata, with `metadata`.
+  function fnWithMeta(value, metadata) {
+    const original = metaFunctions.get(value) || value;
+    const methods = {};
+    for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return original.call(null, ...args); };
+    methods[21] = function (_self, ...args) { return apply(original, ...args); };
+    const result = makeIFn(methods);
+    metaFunctions.set(result, original);
+    metadataValues.set(result, metadata);
+    return result;
+  }
+  //@unit collectionWithMeta requires: canonicalVectorRoots, cells, constructorHashes, ifnValues,
+  //@ kindHooks, lazyValues, mapEntries, mapKinds, maps, meta, metadataValues, metaFunctions,
+  //@ protocolHooks, protocolImplementations, publicCollectionSlots, queues, recordTypes,
+  //@ reifyValues, setKinds, sets, sortedComparators, subvecSources, symbols, treeRoots,
+  //@ treeSetMaps, typeFields, vars, vectors, views
+  // `withMeta` of a value other than a function, for callers that pass no
+  // function.
+  function collectionWithMeta(value, metadata) {
     if (value == null) return null;
-    const method = typeof value === "function" ? null : builtin(value, "IWithMeta/-with-meta", 2);
+    const method = protocolHooks.builtin?.(value, "IWithMeta/-with-meta", 2);
     if (method) return method.call(value, value, metadata);
     if (!recordTypes.has(value) && !mapEntries.has(value) &&
         [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
-    if (mapEntries.has(value)) return withMeta(vectorFromArray(vectors.get(value)), metadata);
-    if (typeof value === "function" || metaFunctions.has(value)) {
-      const original = metaFunctions.get(value) || value;
-      const methods = {};
-      for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return original.call(null, ...args); };
-      methods[21] = function (_self, ...args) { return apply(original, ...args); };
-      result = makeIFn(methods);
-      metaFunctions.set(result, original);
-    }
-    else if (lazyValues.has(value)) {
-      result = new LazySeq(metadata, () => seq(value), null, lazyValues.get(value).hash);
-    }
-    else if (cells.get(value)?.kind === "range") {
-      const c = cells.get(value), state = rangeChunks.get(c);
-      result = c.integer ? IntegerRangeValue(metadata, c.head, c.end, c.step, c.count, constructorHashes.get(value))
-        : RangeValue(metadata, c.head, c.end, c.step, state?.chunk, state?.tail, constructorHashes.get(value));
-    }
-    else if (cells.get(value)?.kind === "chunked-cons") {
-      const c = cells.get(value);
-      result = new ChunkedCons(c.chunk, c.more, metadata, c.hash);
-    }
-    else if (cells.get(value)?.kind === "repeat") {
-      const c = cells.get(value); result = RepeatValue(metadata, c.remaining, c.head, c.state?.following ?? null, null);
-    }
-    else if (cells.get(value)?.kind === "iterate") {
-      const c = cells.get(value), state = c.state;
-      result = iterateNode(c.fn, c.previous, state.value, state.realized, state.following);
-    }
-    else if (publicCollectionSlots.get(value)?.vec) {
-      const c = publicCollectionSlots.get(value); result = ChunkedSeqValue(c.vec, c.node, c.i, c.off, metadata, null);
-    }
-    else if (cells.get(value)?.kind === "cycle") {
-      const c = cells.get(value), state = c.state;
-      result = cycleNode(c.all, c.previous, state.current, state.following);
-    }
-    else if (recordTypes.has(value)) {
-      // A record copy owns fresh mutable host fields. Copying accessor
-      // descriptors would leave their closures pointing at the old instance.
-      const Type = recordTypes.get(value);
-      result = new Type(...Type.fieldNames.map(name => field(value, name)));
-      maps.set(result, maps.get(value)); mapKinds.set(result, mapKinds.get(value));
-    }
+    if (mapEntries.has(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
+    const kind = cells.get(value)?.kind;
+    if (metaFunctions.has(value)) return kindHooks.withMetaFn(value, metadata);
+    else if (lazyValues.has(value)) result = kindHooks.withMetaLazy(value, metadata);
+    else if (kind === "range") result = kindHooks.withMetaRange(value, metadata);
+    else if (kind === "chunked-cons") result = kindHooks.withMetaChunkedCons(value, metadata);
+    else if (kind === "repeat") result = kindHooks.withMetaRepeat(value, metadata);
+    else if (kind === "iterate") result = kindHooks.withMetaIterate(value);
+    else if (publicCollectionSlots.get(value)?.vec) result = kindHooks.withMetaChunkedSeq(value, metadata);
+    else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
+    else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
       const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, vectors, maps, mapKinds, setKinds, sortedComparators, sets, cells, views, queues, lazyValues, vars, subvecSources];
       if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
@@ -3963,6 +4253,71 @@
     metadataValues.set(result, metadata);
     return result;
   }
+  //@unit fnWithMeta.meta effect: fnWithMeta when: collectionWithMeta requires: fnWithMeta,
+  //@ kindHooks
+  kindHooks.withMetaFn = fnWithMeta;
+  //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
+  //@ vectorFromArray, vectors
+  // A map entry's metadata copy is a vector.
+  kindHooks.entryVector = value => vectorFromArray(vectors.get(value));
+  //@unit LazySeq.meta effect: LazySeq when: collectionWithMeta requires: kindHooks, LazySeq,
+  //@ lazyValues, seq
+  kindHooks.withMetaLazy = (value, metadata) => new LazySeq(metadata, () => seq(value), null, lazyValues.get(value).hash);
+  //@unit rangeNode.meta effect: rangeNode when: collectionWithMeta requires: cells,
+  //@ constructorHashes, IntegerRangeValue, kindHooks, rangeChunks, RangeValue
+  kindHooks.withMetaRange = (value, metadata) => {
+    const c = cells.get(value), state = rangeChunks.get(c);
+    return c.integer ? IntegerRangeValue(metadata, c.head, c.end, c.step, c.count, constructorHashes.get(value))
+      : RangeValue(metadata, c.head, c.end, c.step, state?.chunk, state?.tail, constructorHashes.get(value));
+  };
+  //@unit ChunkedCons.meta effect: ChunkedCons when: collectionWithMeta requires: cells,
+  //@ ChunkedCons, kindHooks
+  kindHooks.withMetaChunkedCons = (value, metadata) => {
+    const c = cells.get(value);
+    return new ChunkedCons(c.chunk, c.more, metadata, c.hash);
+  };
+  //@unit RepeatValue.meta effect: RepeatValue when: collectionWithMeta requires: cells, kindHooks,
+  //@ RepeatValue
+  kindHooks.withMetaRepeat = (value, metadata) => {
+    const c = cells.get(value);
+    return RepeatValue(metadata, c.remaining, c.head, c.state?.following ?? null, null);
+  };
+  //@unit iterateNode.meta effect: iterateNode when: collectionWithMeta requires: cells,
+  //@ iterateNode, kindHooks
+  kindHooks.withMetaIterate = value => {
+    const c = cells.get(value), state = c.state;
+    return iterateNode(c.fn, c.previous, state.value, state.realized, state.following);
+  };
+  //@unit ChunkedSeqValue.meta effect: ChunkedSeqValue when: collectionWithMeta requires: ChunkedSeqValue,
+  //@ kindHooks, publicCollectionSlots
+  kindHooks.withMetaChunkedSeq = (value, metadata) => {
+    const c = publicCollectionSlots.get(value);
+    return ChunkedSeqValue(c.vec, c.node, c.i, c.off, metadata, null);
+  };
+  //@unit cycleNode.meta effect: cycleNode when: collectionWithMeta requires: cells, cycleNode,
+  //@ kindHooks
+  kindHooks.withMetaCycle = value => {
+    const c = cells.get(value), state = c.state;
+    return cycleNode(c.all, c.previous, state.current, state.following);
+  };
+  //@unit makeType.meta effect: makeType when: collectionWithMeta, updatedMap requires: equalPair,
+  //@ field, keyword, kindHooks, mapKinds, maps, recordTypes
+  // A record copy owns fresh mutable host fields. Copying accessor
+  // descriptors would leave their closures pointing at the old instance.
+  kindHooks.withMetaRecord = value => {
+    const Type = recordTypes.get(value), result = new Type(...Type.fieldNames.map(name => field(value, name)));
+    maps.set(result, maps.get(value)); mapKinds.set(result, mapKinds.get(value));
+    return result;
+  };
+  // A record of `entries`, for `updatedMap`.
+  kindHooks.updatedRecord = (Type, entries, kind) => {
+    const result = new Type(...Type.fieldNames.map(name => {
+      const entry = entries.find(e => equalPair(e.key, keyword(null, name)));
+      return entry?.value;
+    }));
+    maps.set(result, Object.freeze(entries)); mapKinds.set(result, kind);
+    return result;
+  };
   //@unit uuidPrototype requires: uuids
   const uuidPrototype = Object.freeze({toString() { return uuids.get(this); }});
   //@unit UUIDType effect requires: builtinType, uuidPrototype, uuidValue
@@ -4438,9 +4793,9 @@
     const values = toArray(args);
     return new Eduction(comp(...values.slice(0, -1)), values.length ? values.at(-1) : null);
   });
-  //@unit fnRest requires: view
+  //@unit fnRest requires: IndexedSeqValue, view
   function fnRest(args, start) {
-    return args.length > start ? view(Object.freeze(Array.prototype.slice.call(args, start)), 0, true) : null;
+    return args.length > start ? view(IndexedSeqValue, Object.freeze(Array.prototype.slice.call(args, start)), 0, true) : null;
   }
   //@unit fnApplyTo requires: first, next, rest, seq
   function fnApplyTo(delegate, fixed, args) {
@@ -4740,10 +5095,10 @@
   function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbols.has(value) ? symbolCore(result) : result; }
   //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
   function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
-  //@unit mapEntry requires: mapEntries, MapEntryType, vector
+  //@unit mapEntry requires: makeVector, mapEntries, MapEntryType
   // Surface records supply protocol methods just as the upstream macro does.
   // Raw defrecord* only emits a constructor; its explicit body installs methods.
-  function mapEntry(key, value) { const pair = vector(key, value); Object.setPrototypeOf(pair, MapEntryType.prototype); mapEntries.add(pair); return pair; }
+  function mapEntry(key, value) { const pair = makeVector([key, value]); Object.setPrototypeOf(pair, MapEntryType.prototype); mapEntries.add(pair); return pair; }
   //@unit recordEntries requires: field, keyword, mapEntry, toArray
   function recordEntries(value, Type) {
     return [...Type.fieldNames.map(name => mapEntry(keyword(null, name), field(value, name))), ...toArray(value.__extmap)];
@@ -4780,8 +5135,8 @@
       for (const entry of recordEntries(this, Type)) result = (result + (hash(nth(entry, 0)) ^ hash(nth(entry, 1)))) | 0;
       return this.__hash = result ^ stringHash(typeNames.get(Type) ?? "");
     }]]);
-  //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol, objectEquiv requires: equalPair,
-  //@ field, recordMethodTable
+  //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol, objectEquiv
+  //@ requires: equalPair, field, recordMethodTable
   recordMethodTable.push(Type => [
     ["IEquiv/-equiv", 2, function (_self, other) {
       return other != null && this.constructor === other.constructor &&
@@ -4790,8 +5145,8 @@
   //@unit recordMethods.meta effect: recordMethods when: meta, metaSupported requires: recordMethodTable
   recordMethodTable.push(() => [
     ["IMeta/-meta", 1, function () { return this.__meta; }]]);
-  //@unit recordMethods.withMeta effect: recordMethods when: withMeta, withMetaSupported requires: recordCopy,
-  //@ recordMethodTable
+  //@unit recordMethods.withMeta effect: recordMethods when: collectionWithMeta, withMetaSupported
+  //@ requires: recordCopy, recordMethodTable
   recordMethodTable.push(Type => [
     ["IWithMeta/-with-meta", 2, function (_self, metadata) { return recordCopy(this, Type, metadata, this.__extmap, this.__hash); }]]);
   //@unit recordMethods.lookup effect: recordMethods when: get, seqProtocol requires: field, get,
@@ -4825,11 +5180,11 @@
       const Constructor = Type.currentConstructor?.() ?? Type;
       return new Constructor(...Type.fieldNames.map((name, i) => i === index ? value : field(this, name)), this.__meta, this.__extmap, null);
     }]]);
-  //@unit recordMethods.dissoc effect: recordMethods when: dissoc, dissocProtocol requires: dissoc,
-  //@ into, mapFromArray, recordCopy, recordFieldIndex, recordMethodTable, seq, withMeta
+  //@unit recordMethods.dissoc effect: recordMethods when: dissoc, dissocProtocol requires: collectionWithMeta,
+  //@ dissoc, into, mapFromArray, recordCopy, recordFieldIndex, recordMethodTable, seq
   recordMethodTable.push(Type => [
     ["IMap/-dissoc", 2, function (_self, key) {
-      if (recordFieldIndex(Type, key) >= 0) return dissoc(withMeta(into(mapFromArray([]), this), this.__meta), key);
+      if (recordFieldIndex(Type, key) >= 0) return dissoc(collectionWithMeta(into(mapFromArray([]), this), this.__meta), key);
       const extmap = dissoc(this.__extmap, key);
       return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
     }]]);
@@ -4918,9 +5273,9 @@
     const values = Array.from(args);
     return value.call(null, ...values.slice(0, 20), ...(values.length > 20 ? [values.slice(20)] : []));
   }
-  //@unit boundedCount requires: count, isCounted, next, seq
+  //@unit boundedCount requires: count, countedValue, ICounted, next, protocolHooks, seq
   function boundedCount(n, value) {
-    if (isCounted(value)) return count(value);
+    if (protocolHooks.satisfies?.(ICounted, value) ?? (value == null || countedValue(value))) return count(value);
     let total = 0;
     for (let current = seq(value); n > 0 && current !== null; n--, current = next(current)) total++;
     return total;
@@ -5004,6 +5359,14 @@
     // ArrayChunk's two-argument -nth reads the backing array directly.
     return state.array?.[state.offset + i];
   }
+  //@unit arrayChunk.nth effect: arrayChunk, ownedChunkFirst, dropFirstProtocol when: nth requires: chunkNth,
+  //@ kindHooks
+  kindHooks.nthChunk = chunkNth;
+  //@unit makeTransient.nth effect: makeTransient when: nth requires: kindHooks, transientNth
+  kindHooks.nthTransient = transientNth;
+  //@unit makeTransient.count effect: makeTransient when: count requires: editableTransient,
+  //@ kindHooks
+  kindHooks.countTransient = value => editableTransient(value, "count").entries.length;
   //@unit chunkFirst requires: chunkedFirstProtocol
   function chunkFirst(value) { return chunkedFirstProtocol(value); }
   //@unit chunkRest requires: chunkedRestProtocol
@@ -5046,19 +5409,22 @@
     }
     return rangeChunks.get(cell);
   }
-  //@unit ownedChunkRest requires: cells, ChunkedSeqValue, count, emptyList, forceRangeChunk,
-  //@ publicCollectionSlots, rangeNode, vectors, view, views
+  //@unit ownedChunkRest requires: cells, chunkedVectorRest, emptyList, forceRangeChunk,
+  //@ publicCollectionSlots, rangeNode, view, views
   function ownedChunkRest(value) {
     const cell = cells.get(value);
     if (cell?.kind === "chunked-cons") return cell.more ?? emptyList;
     if (cell?.kind === "range") return cell.integer ? (cell.count <= 32 ? emptyList : rangeNode(cell.head + 32 * cell.step, cell.end, cell.step, true)) : forceRangeChunk(cell).tail ?? emptyList;
     const slice = views.get(value), slots = publicCollectionSlots.get(value);
-    if (slots?.vec) {
-      const end = slots.i + slots.node.length;
-      return end < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice((end >>> 5) << 5, ((end >>> 5) << 5) + 32), end, 0, null, null) : emptyList;
-    }
+    if (slots?.vec) return chunkedVectorRest(slots);
     const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
-    return end < slice.storage.length ? view(slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
+    return end < slice.storage.length ? view(slice.Type, slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
+  }
+  //@unit chunkedVectorRest requires: ChunkedSeqValue, count, emptyList, vectors
+  // The chunks after a public ChunkedSeq's node.
+  function chunkedVectorRest(slots) {
+    const end = slots.i + slots.node.length;
+    return end < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice((end >>> 5) << 5, ((end >>> 5) << 5) + 32), end, 0, null, null) : emptyList;
   }
   //@unit ChunkedCons requires: cells, count, dropFirstProtocol, emptyList, metadataValues, nth
   function ChunkedCons(chunk, more, metadata, cachedHash) {
@@ -5073,8 +5439,8 @@
   }
   //@unit chunkCons requires: ChunkedCons, count
   function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : new ChunkedCons(chunk, tail, null, null); }
-  //@unit dropOwned requires: cells, ChunkedSeqValue, count, maps, publicCollectionSlots, rangeNode,
-  //@ repeat, seq, vectors, view, views
+  //@unit dropOwned requires: cells, ChunkedSeqValue, count, IndexedSeqValue, maps,
+  //@ publicCollectionSlots, rangeNode, repeat, seq, vectors, view, views
   function dropOwned(value, n) {
     if (value == null) return null;
     if (maps.has(value)) return dropOwned(seq(value), n);
@@ -5089,7 +5455,7 @@
       return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice(i - newOffset, i - newOffset + 32), i - newOffset, newOffset, null, null) : null;
     }
     const storage = items ?? slice.storage, offset = (items ? 0 : slice.offset) + n;
-    return offset < storage.length ? view(storage, offset, items ? items.length <= 32 : slice.indexed, items ? items.length <= 32 ? "indexed" : "chunked" : slice.kind) : null;
+    return offset < storage.length ? view(items ? items.length <= 32 ? IndexedSeqValue : ChunkedSeqValue : slice.Type, storage, offset, items ? items.length <= 32 : slice.indexed, items ? items.length <= 32 ? "indexed" : "chunked" : slice.kind) : null;
   }
   //@unit numberArgument
   function numberArgument(value) {
@@ -5403,7 +5769,7 @@
     metadataValues.set(value, metadata);
     // Ordinary views snapshot inputs; positional construction retains
     // the supplied public array and observes subsequent host-array writes.
-    views.set(value, {storage: arr, offset: i, indexed: true, kind: "indexed", tail: null});
+    views.set(value, {storage: arr, offset: i, indexed: true, kind: "indexed", tail: null, Type: IndexedSeqValue});
     return value;
   }
   //@unit primSeq requires: IndexedSeqValue, invalidArity
@@ -6200,14 +6566,18 @@
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
   });
-  //@unit seqProtocol effect requires: contains, coreMethod, count, first, get, missing, next, nth,
-  //@ rest, seq, transientNth, transients
-  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], function (value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
-  //@unit publicFields mutator requires: cells, constructorHashes, iterateUnrealizedSeed, meta,
-  //@ mungeMember, ownedProtocolValue, rangeChunks
-  // The upstream deftype fields; `read` answers all but `meta` and the hash.
-  function publicFields(Type, fields, read) {
-    for (const field of fields) Object.defineProperty(Type.prototype, mungeMember(field), {
+  //@unit indexedNth requires: missing, nth, transientNth, transients
+  // The `-nth` of the runtime's indexed values.
+  function indexedNth(value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }
+  //@unit seqProtocol effect requires: contains, coreMethod, count, first, get, indexedNth, next,
+  //@ rest, seq
+  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], indexedNth), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
+  //@unit publicFields mutator requires: constructorHashes, ownedProtocolValue
+  // The upstream deftype fields; `read` answers all but `meta` (from `meta`)
+  // and the hash, and `write` sets a mutable field other than the hash.
+  function publicFields(Type, fields, read, meta = null, write = null) {
+    // `mungeMember` of a field name, which holds only letters, `_`, `-` and `?`.
+    for (const field of fields) Object.defineProperty(Type.prototype, field.replaceAll("-", "_").replaceAll("?", "_QMARK_"), {
       get() {
         if (field === "meta") return meta(this);
         if (field === "__hash" || field === "_hash") return constructorHashes.has(this) ? constructorHashes.get(this) : null;
@@ -6216,13 +6586,26 @@
       set: ["__hash", "_hash", "next", "_next", "current", "seed", "chunk", "chunk-next"].includes(field) ? function (value) {
         if (!ownedProtocolValue(this) || !(this instanceof Type)) throw new Error("Expected public core value");
         if (field === "__hash" || field === "_hash") constructorHashes.set(this, value);
-        else if (field === "chunk" || field === "chunk-next") { const c = cells.get(this), state = rangeChunks.get(c) ?? {}; state[field === "chunk" ? "chunk" : "tail"] = value; rangeChunks.set(c, state); }
-        else { const state = cells.get(this).state; state[field === "current" ? "current" : field === "seed" ? "value" : "following"] = value; if (field === "seed") state.realized = value !== iterateUnrealizedSeed; }
+        else write(this, field, value);
       } : function (value) {
         // A host field shadow cannot mutate an immutable branded payload.
-        Object.defineProperty(this, mungeMember(field), {value, writable: true, configurable: true, enumerable: true});
+        Object.defineProperty(this, field.replaceAll("-", "_").replaceAll("?", "_QMARK_"), {value, writable: true, configurable: true, enumerable: true});
       }
     });
+  }
+  //@unit cellStateField requires: cells, iterateUnrealizedSeed
+  // The `write` of Repeat, Cycle and Iterate.
+  function cellStateField(value, field, newValue) {
+    const state = cells.get(value).state;
+    state[field === "current" ? "current" : field === "seed" ? "value" : "following"] = newValue;
+    if (field === "seed") state.realized = newValue !== iterateUnrealizedSeed;
+  }
+  //@unit rangeChunkField requires: cells, rangeChunks
+  // The `write` of Range.
+  function rangeChunkField(value, field, newValue) {
+    const c = cells.get(value), state = rangeChunks.get(c) ?? {};
+    state[field === "chunk" ? "chunk" : "tail"] = newValue;
+    rangeChunks.set(c, state);
   }
   //@unit slotField requires: count, missing, publicCollectionSlots
   // A field a positional constructor supplied, else the count, else `missing`.
@@ -6311,38 +6694,40 @@
       reducedValues.set(this, value);
     }
   });
-  //@unit ListValue.members effect: ListValue requires: cells, ListValue, publicFields, seqIndexes,
-  //@ seqMethods
-  publicFields(ListValue, ["meta", "first", "rest", "count", "__hash"], (value, field) => cells.get(value)[{first: "head", rest: "tail", count: "count"}[field]]);
+  //@unit ListValue.members effect: ListValue requires: cells, ListValue, meta, publicFields,
+  //@ seqIndexes, seqMethods
+  publicFields(ListValue, ["meta", "first", "rest", "count", "__hash"], (value, field) => cells.get(value)[{first: "head", rest: "tail", count: "count"}[field]], meta);
   seqIndexes(ListValue);
   ListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit EmptyListValue.members effect: EmptyListValue requires: EmptyListValue, publicFields,
-  //@ seqIndexes, seqMethods
-  publicFields(EmptyListValue, ["meta"], null);
+  //@unit EmptyListValue.members effect: EmptyListValue requires: EmptyListValue, meta,
+  //@ publicFields, seqIndexes, seqMethods
+  publicFields(EmptyListValue, ["meta"], null, meta);
   seqIndexes(EmptyListValue);
   EmptyListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit KeywordValue.members effect: KeywordValue requires: keywords, KeywordValue, publicFields
   publicFields(KeywordValue, ["ns", "name", "fqn", "_hash"], (value, field) => keywords.get(value)[{ns: "namespace", name: "name", fqn: "spelling"}[field]]);
-  //@unit RepeatValue.members effect: RepeatValue requires: cells, publicFields, RepeatValue,
-  //@ seqIndexes
+  //@unit RepeatValue.members effect: RepeatValue requires: cells, cellStateField, meta,
+  //@ publicFields, RepeatValue, seqIndexes
   publicFields(RepeatValue, ["meta", "count", "val", "next", "__hash"], (value, field) => {
     const c = cells.get(value);
     return field === "count" ? c.remaining : field === "val" ? c.head : c.state?.following ?? null;
-  });
+  }, meta, cellStateField);
   seqIndexes(RepeatValue);
-  //@unit CycleValue.members effect: CycleValue requires: cells, CycleValue, publicFields
+  //@unit CycleValue.members effect: CycleValue requires: cells, cellStateField, CycleValue, meta,
+  //@ publicFields
   publicFields(CycleValue, ["meta", "all", "prev", "current", "_next"], (value, field) => {
     const c = cells.get(value);
     return field === "all" ? c.all : field === "prev" ? c.previous : c.state[field === "current" ? "current" : "following"];
-  });
+  }, meta, cellStateField);
   CycleValue.prototype.currentval = function () { return cells.get(this).currentValue(); };
-  //@unit IterateValue.members effect: IterateValue requires: cells, IterateValue, publicFields
+  //@unit IterateValue.members effect: IterateValue requires: cells, cellStateField, IterateValue,
+  //@ meta, publicFields
   publicFields(IterateValue, ["meta", "f", "prev-seed", "seed", "next"], (value, field) => {
     const c = cells.get(value);
     return field === "f" ? c.fn : field === "prev-seed" ? c.previous : c.state[field === "seed" ? "value" : "following"];
-  });
+  }, meta, cellStateField);
   //@unit PersistentVectorValue.members effect: PersistentVectorValue requires: canonicalVectorRoots,
-  //@ missing, PersistentVectorValue, publicFields, slotField, vectorRoots, vectors
+  //@ meta, missing, PersistentVectorValue, publicFields, slotField, vectorRoots, vectors
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     if (slot !== missing) return slot;
@@ -6353,86 +6738,87 @@
       if (!canonicalVectorRoots.has(value)) { const root = {}; vectorRoots.set(root, items.slice(0, tailOffset)); canonicalVectorRoots.set(value, root); }
       return canonicalVectorRoots.get(value);
     }
-  });
-  //@unit SubvecValue.members effect: SubvecValue requires: count, missing, publicFields, slotField,
-  //@ subvecSources, SubvecValue
+  }, meta);
+  //@unit SubvecValue.members effect: SubvecValue requires: count, meta, missing, publicFields,
+  //@ slotField, subvecSources, SubvecValue
   publicFields(SubvecValue, ["meta", "start", "end", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     return slot !== missing ? slot : field === "start" ? 0 : count(value);
-  });
+  }, meta);
   Object.defineProperty(SubvecValue.prototype, "v", {get() { return subvecSources.get(this); }});
-  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, missing,
+  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, meta, missing,
   //@ publicFields, seqIndexes, seqMethods, slotField, vectorFromArray, views
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     if (slot !== missing) return slot;
     const v = views.get(value);
     return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : vectorFromArray(v.storage);
-  });
+  }, meta);
   seqIndexes(ChunkedSeqValue);
   ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: missing,
+  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: meta, missing,
   //@ PersistentQueueValue, publicFields, queues, seq, seqMethods, slotField, vector
   publicFields(PersistentQueueValue, ["meta", "count", "front", "rear", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     return slot !== missing ? slot : field === "front" ? seq(queues.get(value)) : vector();
-  });
+  }, meta);
   PersistentQueueValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentArrayMapValue.members effect: PersistentArrayMapValue requires: maps, missing,
-  //@ PersistentArrayMapValue, publicFields, slotField
+  //@unit PersistentArrayMapValue.members effect: PersistentArrayMapValue requires: maps, meta,
+  //@ missing, PersistentArrayMapValue, publicFields, slotField
   publicFields(PersistentArrayMapValue, ["meta", "cnt", "arr", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     return slot !== missing ? slot : maps.get(value).flatMap(e => [e.key, e.value]);
-  });
+  }, meta);
   //@unit PersistentHashMapValue.members effect: PersistentHashMapValue requires: contains, get,
-  //@ missing, PersistentHashMapValue, publicFields, slotField
+  //@ meta, missing, PersistentHashMapValue, publicFields, slotField
   publicFields(PersistentHashMapValue, ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
-  });
+  }, meta);
   //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: mapFromArray,
-  //@ missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
+  //@ meta, missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
   publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     return slot !== missing ? slot : mapFromArray(sets.get(value).flatMap(e => [e.key, null]), setKinds.get(value));
-  });
-  //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, publicFields,
-  //@ seqIndexes, seqMethods, views
+  }, meta);
+  //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, meta,
+  //@ publicFields, seqIndexes, seqMethods, views
   publicFields(IndexedSeqValue, ["arr", "i", "meta"], (value, field) => {
     const v = views.get(value);
     return field === "arr" ? v.storage : v.offset;
-  });
+  }, meta);
   seqIndexes(IndexedSeqValue);
   IndexedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit RangeValue.members effect: RangeValue requires: cells, forceRangeChunk, publicFields,
-  //@ rangeField, RangeValue, seqIndexes, seqMethods
-  publicFields(RangeValue, ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField);
+  //@unit RangeValue.members effect: RangeValue requires: cells, forceRangeChunk, meta,
+  //@ publicFields, rangeChunkField, rangeField, RangeValue, seqIndexes, seqMethods
+  publicFields(RangeValue, ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField, meta, rangeChunkField);
   RangeValue.prototype.forceChunk = function () { forceRangeChunk(cells.get(this)); return null; };
   seqIndexes(RangeValue);
   RangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit IntegerRangeValue.members effect: IntegerRangeValue requires: IntegerRangeValue,
+  //@unit IntegerRangeValue.members effect: IntegerRangeValue requires: IntegerRangeValue, meta,
   //@ publicFields, rangeField, seqIndexes, seqMethods
-  publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField);
+  publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField, meta);
   seqIndexes(IntegerRangeValue);
   IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit treeMapConstructor.members effect: treeMapConstructor requires: publicFields, publicTree,
-  //@ slotField, sortedComparators, treeMapConstructor
-  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field));
+  //@unit treeMapConstructor.members effect: treeMapConstructor requires: meta, publicFields,
+  //@ publicTree, slotField, sortedComparators, treeMapConstructor
+  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field), meta);
   Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return sortedComparators.get(this); }});
-  //@unit treeSetConstructor.members effect: treeSetConstructor requires: makeMap,
-  //@ publicCollectionSlots, publicFields, sets, sortedComparators, treeSetConstructor, treeSetMaps
+  //@unit treeSetConstructor.members effect: treeSetConstructor requires: makeMap, meta,
+  //@ publicCollectionSlots, publicFields, sets, sortedComparators, treeMapConstructor,
+  //@ treeSetConstructor, treeSetMaps
   publicFields(treeSetConstructor, ["meta", "tree-map", "__hash"], (value, field) => {
     const slots = publicCollectionSlots.get(value);
     if (slots && field in slots) return slots[field];
-    if (!treeSetMaps.has(value)) treeSetMaps.set(value, makeMap(sets.get(value).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", sortedComparators.get(value)));
+    if (!treeSetMaps.has(value)) treeSetMaps.set(value, makeMap(treeMapConstructor, sets.get(value).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", sortedComparators.get(value)));
     return treeSetMaps.get(value);
-  });
-  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: missing,
+  }, meta);
+  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: meta, missing,
   //@ publicFields, seqMethods, slotField, treeMapSeqConstructor
   publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     return slot !== missing ? slot : undefined;
-  });
+  }, meta);
   treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit Eduction.members effect: Eduction requires: completing, count, Eduction, eductions,
   //@ es6Iterator, installMethods, printHooks, seq, sequence, sequenceIterator, sequentialIndex,
@@ -6516,25 +6902,25 @@
   ListValue.EMPTY = emptyList;
   //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue requires: makeSet,
   //@ PersistentHashSetValue
-  PersistentHashSetValue.EMPTY = makeSet([], "array-map");
+  PersistentHashSetValue.EMPTY = makeSet(PersistentHashSetValue, [], "array-map");
   //@unit PersistentQueueValue.statics effect: PersistentQueueValue requires: PersistentQueueValue,
   //@ queueFromArray
   PersistentQueueValue.EMPTY = queueFromArray([]);
-  //@unit PersistentVectorValue.statics effect: PersistentVectorValue requires: PersistentVectorValue,
-  //@ vector
-  PersistentVectorValue.EMPTY = vector();
+  //@unit PersistentVectorValue.statics effect: PersistentVectorValue requires: makeVector,
+  //@ PersistentVectorValue
+  PersistentVectorValue.EMPTY = makeVector([]);
   //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue requires: makeMap,
   //@ PersistentArrayMapValue
-  PersistentArrayMapValue.EMPTY = makeMap([], "array-map");
+  PersistentArrayMapValue.EMPTY = makeMap(PersistentArrayMapValue, [], "array-map");
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
   //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue requires: aclone,
   //@ displayStr, makeMap, PersistentHashMapValue, putEntry
-  PersistentHashMapValue.EMPTY = makeMap([], "hash-map");
+  PersistentHashMapValue.EMPTY = makeMap(PersistentHashMapValue, [], "hash-map");
   PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
     const edit = {};
     for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1], "hash-map", edit);
-    return makeMap(entries, "hash-map");
+    return makeMap(PersistentHashMapValue, entries, "hash-map");
   };
   PersistentHashMapValue.fromArrays = (keys, values) => {
     const length = keys.length, entries = [], edit = {};
@@ -6542,7 +6928,7 @@
       if (values.length <= i) throw new Error("No value supplied for key: " + displayStr(keys[i]));
       putEntry(entries, keys[i], values[i], "hash-map", edit);
     }
-    return makeMap(entries, "hash-map");
+    return makeMap(PersistentHashMapValue, entries, "hash-map");
   };
   //@unit positionalFactory requires: invalidArity
   function positionalFactory(Type, arity) {
@@ -6632,10 +7018,41 @@
   const isIterable = value => satisfies(IIterable, value);
   //@unit writeAll requires: write
   const writeAll = (writer, ...texts) => { for (const text of texts) write(writer, text); return null; };
-  //@unit keyProtocol effect requires: coreMethod, nth
-  const keyProtocol = coreMethod("IMapEntry/-key", [1], value => nth(value, 0));
-  //@unit valProtocol effect requires: coreMethod, nth
-  const valProtocol = coreMethod("IMapEntry/-val", [1], value => nth(value, 1));
+  //@unit keyProtocol effect requires: coreMethod, entryKey
+  const keyProtocol = coreMethod("IMapEntry/-key", [1], entryKey);
+  //@unit valProtocol effect requires: coreMethod, entryVal
+  const valProtocol = coreMethod("IMapEntry/-val", [1], entryVal);
+  //@unit entryKey requires: mapEntries, nth
+  // `-key` and `-val` of the runtime's map entries, which are all that
+  // implement IMapEntry where no protocol implementation exists.
+  function entryKey(entry) {
+    if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-key defined for this value");
+    return nth(entry, 0);
+  }
+  //@unit entryVal requires: mapEntries, nth
+  function entryVal(entry) {
+    if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
+    return nth(entry, 1);
+  }
+  //@unit protocolHooks.install effect: installMethods when: accumulatingCount, addWatchProtocol,
+  //@ assoc, boundedCount, collectionWithMeta, compareKeys, conj, cons, contains, count,
+  //@ derefProtocol, disj, dissoc, empty, equalPair, find, first, get, hash, iterator, mapConj,
+  //@ mapProjection, meta, metaSupported, name, namespace, next, notifyWatches, nth, objectEquiv,
+  //@ peek, pop, reduce, reduceKv, removeWatchProtocol, rest, rseq, seq, stateProtocol,
+  //@ structuralEqualPair, vresetProtocol, withMetaSupported requires: builtin, countProtocol,
+  //@ firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol, protocolHooks,
+  //@ publicMethod, satisfies, valProtocol
+  // Every protocol implementation goes through `installMethods`.
+  protocolHooks.builtin = builtin;
+  protocolHooks.publicMethod = publicMethod;
+  protocolHooks.satisfies = satisfies;
+  protocolHooks.implementsProtocol = implementsProtocol;
+  protocolHooks.countProtocol = countProtocol;
+  protocolHooks.nthProtocol = nthProtocol;
+  protocolHooks.firstProtocol = firstProtocol;
+  protocolHooks.nextProtocol = nextProtocol;
+  protocolHooks.keyProtocol = keyProtocol;
+  protocolHooks.valProtocol = valProtocol;
   //@unit findProtocol effect requires: coreMethod, find
   const findProtocol = coreMethod("IFind/-find", [2], find);
   //@unit sortedSeqProtocol effect requires: coreMethod, identity, mapSeq, rseq, seq, sets, truth
@@ -6728,8 +7145,8 @@
   const isRegex = value => value instanceof RegExp;
   //@unit consCore requires: cons
   const consCore = Object.defineProperty((head, tail) => cons(head, tail), "name", {value: "cons"});
-  //@unit arraySeq requires: invalidArity, view
-  const arraySeq = function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(array, start, true) : null; };
+  //@unit arraySeq requires: IndexedSeqValue, invalidArity, view
+  const arraySeq = function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(IndexedSeqValue, array, start, true) : null; };
   //@unit array
   const array = (...args) => args;
   //@unit alength

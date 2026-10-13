@@ -408,7 +408,8 @@ to under 1 KB and beat every upstream ceiling on its own.
 Step 1 is implemented (light-cljs-202). Later steps build on it:
 
 - **Format.** `//@unit <name>[ compile-time][ mutator][ effect[: <bindings>[ when: <bindings>]]][ requires: <bindings>]`
-  headers in `src/js_runtime.js`, with `//@ ` continuation lines and a final
+  headers in `src/js_runtime.js`, with `//@ ` continuation lines (since
+  light-cljs-227 any list of the header may wrap) and a final
   `//@exports` section; the module docs of `src/runtime_manifest.rs` give the
   rules. A unit that declares bindings is named after its first one (today
   each is one top-level declaration statement). `requires:` lists exactly the
@@ -609,7 +610,9 @@ loading that the manifest does not attach to the units needing it:
   `toString`) reference every collection constructor, so any program that
   builds a value keeps them and their members, about 326 units (132 KB); step
   6 and rapid type analysis (Phase 2) shrink that core. (Since step 6 the
-  printer is not part of it: about 300 units, 119 KB.)
+  printer is not part of it: about 300 units, 119 KB. Since light-cljs-227 a
+  program keeps the branches of the types it builds; see "Phase 2 builtin
+  types extension points".)
 - **Measured.** `(js/console.log (+ 1 2))` drops from 152,535 to 136,918
   bytes at `Advanced`. Its `add` root now keeps only `add`; the rest is the
   namespace registration (`registerReaderNamespace` reaches 338 units through
@@ -737,7 +740,8 @@ printer only when it can print:
   so each references every collection constructor, whose prototype and
   members reference the generic operations back. That is one strongly
   connected component of the unit graph, which rapid type analysis
-  (Phase 2) has to cut.
+  (Phase 2) has to cut. (Light-cljs-227 cut it; see "Phase 2 builtin types
+  extension points".)
 - **Measured.** `[1 2 3]` drops from 132,231 to 119,567 bytes at `Advanced`
   (327 to 299 units); `(pr-str [1 2 3])` grows from 132,919 to 133,434. Every
   fixture that builds a value and does not print drops by 10.1-12.7 KB, the
@@ -882,8 +886,8 @@ keyed by names.
    unreached methods are dropped. Calls whose receiver type set is a
    singleton become direct calls. Closure can do neither for protocols.
    Implemented for program types and protocols; see "Phase 2 rapid type
-   analysis extension points" below. The runtime's builtin types are
-   light-cljs-227.
+   analysis extension points" below, and for the runtime's builtin types
+   "Phase 2 builtin types extension points".
 5. **Call shape.** Direct `f(a, b)` for known targets with no `.call(null)`;
    arity entry chosen at compile time at every call site; no
    `arguments.length` dispatcher when the fn value never escapes; variadic
@@ -1078,7 +1082,8 @@ and `Prepare` output does not change.
 Step 4 is implemented (light-cljs-211) for program types and protocols in
 `src/rta.rs`, at `Advanced` only. `prepare_application` runs it after type
 inference, which it reads, and rewrites the prepared program that emission
-reads. The runtime's builtin types are left for light-cljs-227.
+reads. The runtime's builtin types are light-cljs-227 ("Phase 2 builtin types
+extension points").
 
 - **Analysis.** `rta::analyze` walks the prepared program from its root, as
   emission will. It enters a method body of a `deftype`, `defrecord`, `reify`
@@ -1200,12 +1205,130 @@ reads. The runtime's builtin types are left for light-cljs-227.
   - The runtime's builtin types (light-cljs-227): a program that builds any
     collection, keyword or symbol keeps the 301-unit generic core (119 KB),
     because generic operations and builtin prototypes reference every
-    collection type.
+    collection type. Done; see "Phase 2 builtin types extension points".
   - A per-arity method set.
   - `IPrintWithWriter` and the other core protocol methods of program types
     whose operations the slice does not keep. This needs the slice before
     emission, a second emission like the reflection one.
   - The positional factory of a type that is only built with `new`.
+
+#### Phase 2 builtin types extension points
+
+Step 4 is implemented for the runtime's builtin types (light-cljs-227), in
+the runtime and its manifest. A program keeps the generic operations it
+calls, the builtin types it can construct, and for each of those types only
+the branches of the kept operations that handle it.
+
+- **Protocol hooks.** A generic operation (`seq`, `count`, `get`, `=`,
+  `hash`, `conj`, ...) reaches protocol machinery only through
+  `protocolHooks`: `builtin`, `publicMethod`, `satisfies`,
+  `implementsProtocol` and the core dispatchers operations call themselves
+  (`countProtocol`, `nthProtocol`, `firstProtocol`, `nextProtocol`,
+  `keyProtocol`, `valProtocol`). The table is empty until
+  `protocolHooks.install`, an effect of `installMethods`, fills it in. Every
+  protocol implementation goes through `installMethods`: deftype, defrecord,
+  reify, specify!, extend-type, extend-protocol and the runtime types built
+  with it (Eduction, TaggedLiteral, `iteration`); `extendType` requires it.
+  Where it is not kept no value has a protocol method or marker, so the
+  empty table answers what the machinery would:
+  - `protocolHooks.builtin?.(...)` and `protocolHooks.publicMethod?.(...)`
+    give `undefined`, as `builtin` and `publicMethod` do;
+  - a protocol test calls the native predicate for its protocol, what
+    `builtinCoreImplementation` answers (which now calls them too):
+    `countedValue` (with nil, the `ICounted` marker), `seqValue`,
+    `nextValue`, `seqableValue`, `indexedValue` and `sequential`;
+  - a dispatcher call is its fallback (`count`, `nth`, `first`, `next`,
+    `entryKey`, `entryVal`), which the dispatcher calls whenever the value
+    implements its protocol natively, as every value at these call sites
+    does.
+  The protocol machinery (`builtinCoreImplementation`, `coreProtocolNames`,
+  `protocolSlot`, ...) is about 18 KB.
+- **Host iterator seqs.** `seq` of a host iterable was an object built by
+  `installMethods`, so every program keeping `seq` kept the protocol
+  machinery. It is now a plain object that `seq`, `first`, `rest` and
+  `builtinCoreImplementation` (ISeq, ISeqable) know from the `iteratorSeqs`
+  store. It has no protocol slots, which only compiler-owned names could
+  observe; `satisfies?`, printing, equality and hashing give what they gave.
+- **Kind hooks.** A branch of a generic operation that only one kind of value
+  takes is `kindHooks.<operation><Kind>`, installed by an effect whose
+  targets build the kind and whose `when:` names the operation:
+  `makeVector.seq effect: makeVector when: seq` fills in
+  `kindHooks.seqVector`. A kind is a payload store (`vectors`, `maps`,
+  `sets`, `cells`, `views`, `queues`, `lazyValues`, `transients`, `chunks`,
+  `deferredVarMetadata`), built by every unit writing to it, or a narrower
+  kind that only named units build (maps with a `tree` slot, by
+  `treeMapConstructor`; maps and sets of the hash-map kind, by their types).
+  A branch for a kind that no kept unit builds is never taken. The hooks
+  cover `seq`, `rest`, `count`, `nth`, `lookup`, structural equality,
+  `hash`, `meta` (a Var's deferred `:test`), hash-map traversal, entry
+  search and insertion; `KIND_HOOKS` in the `runtime_manifest` suite lists
+  them with their kinds.
+- **Kind tokens.** Factories of several types take the type from the caller,
+  so a caller keeps only the types it builds: `view(Type, ...)` (a view
+  records its type to rebuild itself further on), `makeMap(Type, ...)` and
+  `makeSet(Type, ...)`. Code building a collection of an existing value's
+  kind reads the type from `mapTypes` or `setType`, which the `.kind` effect
+  of each map and sorted set type fills in. The empty vector is
+  `makeVector([])`, so the vector type keeps no variadic `vector`.
+- **Lazy entry hashes.** Map and set entries that compute their hash on
+  demand call `entryHashing.hash`, which `hash.entries`, an effect of `hash`,
+  sets. Every reader of an entry's hash keeps `hash` itself, so a map that is
+  never hashed keeps no hashing.
+- **Fields.** `publicFields` takes the `meta` reader and a `write` function
+  for mutable fields from the type (`cellStateField`, `rangeChunkField`) and
+  munges its field names itself, so a keyword's fields keep neither `meta`
+  nor `mungeMember`.
+- **Manifest.** Continuation lines continue the whole header, so long effect
+  target and `when:` lists wrap, and the update wraps them. Each protocol
+  declaration is its own unit and `protocolDefaults` is one effect per
+  protocol (`ICounted.defaults`).
+- **Tests.**
+  - `runtime_manifest`: the `when:` check covers `kindHooks` and
+    `protocolHooks` (a reader that is itself an effect stands for its own
+    `when:` list), and `kind_hooks_are_installed_wherever_their_kind_can_be_built`
+    requires every unit writing to a hook's store to be a target of its
+    install. A new hook, or a new unit building a kind, fails until listed.
+  - `builtin_types` in `tests/compiler/` runs each kind's branch of the
+    generic operations, host iterator seqs, protocol extensions of builtin
+    and host types and the host-facing methods of builtin prototypes at every
+    level against `None`, and checks what small programs keep. It also runs
+    the collection corpora of other suites and the 729 programs of
+    `compiler-language.tsv` through `pr-str` at every level.
+  - The ratchet fixtures `vector-only` and `keyword-only`.
+- **Measured.** At `Advanced`, against master `75d9dd0`:
+  - `(js/console.log :a)` drops from 119,502 to 9,963 bytes (301 to 41
+    units), `(js/console.log [1 2 3])` from 119,659 to 29,293 (93 units) and
+    `(js/console.log {})` from 119,528 to 39,501 (127 units).
+  - `(conj [1] 2)` drops from 119,520 to 33,325 bytes, `(fn [& xs] xs)` from
+    119,701 to 24,755 and `keyword-case` from 119,902 to 10,363. A program
+    that assocs into a map keeps both map types and hashing, about 65 KB.
+  - Fixtures that print keep the printer and drop about 28 KB (`println-hi`
+    from 134,618 to 106,105); `seq-pipeline` drops from 137,887 to 81,638.
+  - Programs without builtin values do not change.
+  - The steady-state collection workloads run 2.3 to 11 times faster at
+    `Advanced` in Node and QuickJS: without protocol implementations a
+    generic operation no longer looks up protocol methods before taking its
+    own branch.
+  - The shared runtime grows by 12,907 bytes (3.6%): the hook tables, their
+    installs, the native predicates and the moved branches' wrappers.
+  Per-fixture sizes and timings are in `benchmarks/compiler.md`.
+- **Left for later** (light-cljs-230).
+  - The vector program keeps 29 KB, against a target of 25 KB, and the map
+    program 39 KB, against 30 KB. Their host-facing methods (`equiv`,
+    `indexOf`, iteration, `call`) keep `seq`, `first`, `next`, `count`, `nth`,
+    structural equality and the seq types a vector builds (with ChunkedSeq
+    for vectors over 32 items); a map also keeps the vector type for its
+    entries. About 3.6 KB of the vector program is comment lines, which
+    terse emission (light-cljs-215) removes.
+  - A map literal keeps both map types and hashing: `mapFromArray` builds a
+    hash map past 8 entries. Emitting an array-map builder for literals of at
+    most 8 entries would drop them.
+  - The printer (`str`, `pr-str`; about 104 KB) dispatches
+    `IPrintWithWriter` and writes through `StringBufferWriter`, whose
+    `installMethods` keeps the protocol machinery. `into`, `reduce` (its
+    `IReduce` and `IIterable` tests), `atom` (`seqToMap`, `into`) and the
+    core dispatchers (`coreMethod` keeps `builtin` and
+    `builtinCoreImplementation`) keep it too.
 
 #### Phase 2 call shape extension points
 

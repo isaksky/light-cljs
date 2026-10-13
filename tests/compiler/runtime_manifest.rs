@@ -280,13 +280,48 @@ fn method_keys(text: &str) -> Vec<(&str, bool)> {
     keys
 }
 
+/// The hook tables a conditional effect may fill in (`typeHooks.rest =
+/// fnRest`), each read as `<table>.<key>`.
+const HOOK_TABLES: [&str; 3] = ["typeHooks", "kindHooks", "protocolHooks"];
+
+/// The `<table>.<key>` hooks a unit body fills in.
+fn installed_hooks(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter_map(|line| line.trim().split_once(" = ").map(|(hook, _)| hook))
+        .filter(|hook| {
+            hook.split_once('.').is_some_and(|(table, key)| {
+                HOOK_TABLES.contains(&table)
+                    && !key.is_empty()
+                    && key.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+        })
+        .collect()
+}
+
+/// Whether `text` reads `hook`: `kindHooks.seqMap`, but not
+/// `kindHooks.seqMapX` or an assignment to it.
+fn reads_hook(text: &str, hook: &str) -> bool {
+    text.match_indices(hook).any(|(start, _)| {
+        let after = &text[start + hook.len()..];
+        let assigned = after.trim_start().starts_with('=') && !after.trim_start().starts_with("==");
+        let before = &text[..start];
+        let member = before.ends_with('.') && !before.ends_with("...");
+        !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+            && !assigned
+            && !member
+            && !before.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    })
+}
+
 /// An `effect: ... when:` unit installs what only some code can use, and its
 /// `when:` list must name exactly that code. A unit installing protocol
 /// methods (`recordMethods.hash` adds `IHash/-hash` for records) is needed
 /// where one of them can be dispatched: its list names every unit whose body
-/// holds one of its keys other than as a method entry. A unit filling in a
-/// hook (`typeHooks.rest = fnRest`) names every unit that reads the hook. A
-/// new dispatch site or hook read fails here until the list names it.
+/// holds one of its keys other than as a method entry. A unit filling in
+/// hooks (`typeHooks.rest = fnRest`, `kindHooks.seqVector = ...`) names every
+/// unit that reads one of them; a reader that is itself an effect stands for
+/// its own `when:` list, or else its targets. A new dispatch site or hook
+/// read fails here until the list names it.
 #[test]
 fn conditional_effects_name_every_unit_that_can_use_them() {
     let manifest = manifest();
@@ -316,23 +351,26 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                 })
                 .collect()
         } else {
-            let hook = body(id)
-                .lines()
-                .find_map(|line| {
-                    line.trim()
-                        .split_once(" = ")
-                        .map(|(hook, _)| hook)
-                        .filter(|hook| hook.starts_with("typeHooks."))
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "`{}` installs neither protocol methods nor a hook",
-                        unit.name
-                    )
-                });
+            let hooks = installed_hooks(body(id));
+            assert!(
+                !hooks.is_empty(),
+                "`{}` installs neither protocol methods nor a hook",
+                unit.name
+            );
             (0..manifest.units.len())
                 .map(UnitId)
-                .filter(|&other| other != id && body(other).contains(hook))
+                .filter(|&other| {
+                    other != id && hooks.iter().any(|hook| reads_hook(body(other), hook))
+                })
+                .flat_map(|reader| match &manifest.units[reader.0].effect {
+                    Some(effect) if effect.when.is_empty() => effect
+                        .targets
+                        .iter()
+                        .filter_map(|target| manifest.unit_of(target))
+                        .collect(),
+                    Some(_) => manifest.conditions(reader).to_vec(),
+                    None => vec![reader],
+                })
                 .collect()
         };
         let mut expected: Vec<&str> = users
@@ -345,12 +383,167 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             .map(|condition| manifest.units[condition.0].name)
             .collect();
         expected.sort_unstable();
+        expected.dedup();
         listed.sort_unstable();
         assert_eq!(listed, expected, "`when:` of unit `{}`", unit.name);
         checked += 1;
     }
-    // The record methods and the four type hooks.
-    assert_eq!(checked, 19);
+    // The record methods, the four type hooks, the kind hooks and the
+    // protocol hooks.
+    assert_eq!(checked, 60);
+}
+
+/// What values a kind hook handles: those of payload stores, built by every
+/// unit that writes to one, or a narrower kind only the listed units build.
+enum Kind {
+    Stores(&'static [&'static str]),
+    Units(&'static [&'static str]),
+}
+
+/// Every `kindHooks` entry and its kind.
+const KIND_HOOKS: &[(&str, Kind)] = &[
+    ("seqLazy", Kind::Stores(&["lazyValues"])),
+    ("seqQueue", Kind::Stores(&["queues"])),
+    ("seqVector", Kind::Stores(&["vectors"])),
+    ("seqMap", Kind::Stores(&["maps"])),
+    // Maps with a `tree` slot and sorted maps.
+    ("seqTree", Kind::Units(&["treeMapConstructor"])),
+    ("sortedMapSeq", Kind::Units(&["treeMapConstructor"])),
+    ("seqSet", Kind::Stores(&["sets"])),
+    // Views with a `vec` slot, which the public ChunkedSeq constructor builds.
+    ("restChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
+    // Views of queues.
+    ("restQueue", Kind::Stores(&["queues"])),
+    ("equivMap", Kind::Stores(&["maps"])),
+    ("equivSet", Kind::Stores(&["sets"])),
+    (
+        "equivSequential",
+        Kind::Stores(&["vectors", "cells", "views", "queues", "lazyValues"]),
+    ),
+    ("metaDeferred", Kind::Stores(&["deferredVarMetadata"])),
+    ("conjQueue", Kind::Stores(&["queues"])),
+    ("conjVector", Kind::Stores(&["vectors"])),
+    // Vectors with slots and a source, which the public Subvec constructor
+    // builds.
+    ("conjSubvec", Kind::Units(&["SubvecValue"])),
+    ("assocSubvec", Kind::Units(&["SubvecValue"])),
+    ("conjMap", Kind::Stores(&["maps"])),
+    ("conjSet", Kind::Stores(&["sets"])),
+    // Maps with an `arr` slot: array maps from the public constructor.
+    (
+        "assocArrayMapSlots",
+        Kind::Units(&["PersistentArrayMapValue"]),
+    ),
+    ("assocVector", Kind::Stores(&["vectors"])),
+    ("withMetaFn", Kind::Stores(&["metaFunctions"])),
+    ("entryVector", Kind::Stores(&["mapEntries"])),
+    ("withMetaLazy", Kind::Stores(&["lazyValues"])),
+    // Cells of one kind, each built only by the listed unit.
+    ("withMetaRange", Kind::Units(&["rangeNode"])),
+    ("withMetaChunkedCons", Kind::Units(&["ChunkedCons"])),
+    ("withMetaRepeat", Kind::Units(&["RepeatValue"])),
+    ("withMetaIterate", Kind::Units(&["iterateNode"])),
+    ("withMetaCycle", Kind::Units(&["cycleNode"])),
+    ("withMetaChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
+    ("withMetaRecord", Kind::Stores(&["recordTypes"])),
+    ("updatedRecord", Kind::Stores(&["recordTypes"])),
+    ("lookupTransient", Kind::Stores(&["transients"])),
+    ("lookupTree", Kind::Units(&["treeMapConstructor"])),
+    ("entryIndex", Kind::Stores(&["maps", "sets"])),
+    // Maps and sets of the hash-map kind, and records.
+    (
+        "hashTraversal",
+        Kind::Units(&["PersistentHashMapValue", "PersistentHashSetValue"]),
+    ),
+    (
+        "hashEntryIndex",
+        Kind::Units(&[
+            "PersistentHashMapValue",
+            "PersistentHashSetValue",
+            "makeType",
+        ]),
+    ),
+    (
+        "putHashEntry",
+        Kind::Units(&[
+            "PersistentHashMapValue",
+            "PersistentHashSetValue",
+            "makeTransient",
+        ]),
+    ),
+    ("nthChunk", Kind::Stores(&["chunks"])),
+    ("nthTransient", Kind::Stores(&["transients"])),
+    ("countTransient", Kind::Stores(&["transients"])),
+    (
+        "hashSequential",
+        Kind::Stores(&["vectors", "cells", "views", "queues", "lazyValues"]),
+    ),
+];
+
+/// A kind hook is the branch of a generic operation for one kind of value,
+/// installed by an effect whose targets build that kind (`effect: makeVector
+/// when: seq`). A unit that builds the kind but is not a target could build a
+/// value whose branch is missing, so every unit that writes to a kind's store
+/// must be a target. (Effect units that write to a store only update values
+/// of the type they belong to.) A new hook, or a new unit building a kind,
+/// fails here until the targets name it.
+#[test]
+fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
+    let manifest = manifest();
+    let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
+    let writers = |store: &str| -> Vec<&str> {
+        let calls = [format!("{store}.set("), format!("{store}.add(")];
+        (0..manifest.units.len())
+            .filter(|&unit| {
+                !manifest.units[unit].declares.is_empty()
+                    && calls.iter().any(|call| {
+                        body(unit).match_indices(call.as_str()).any(|(start, _)| {
+                            !body(unit)[..start].ends_with(|c: char| {
+                                c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'
+                            })
+                        })
+                    })
+            })
+            .map(|unit| manifest.units[unit].name)
+            .collect()
+    };
+    let mut seen = Vec::new();
+    for (index, unit) in manifest.units.iter().enumerate() {
+        let hooks: Vec<&str> = installed_hooks(body(index))
+            .into_iter()
+            .filter_map(|hook| hook.strip_prefix("kindHooks."))
+            .collect();
+        if hooks.is_empty() {
+            continue;
+        }
+        let effect = unit
+            .effect
+            .as_ref()
+            .expect("a kind hook install is an effect");
+        assert!(!effect.when.is_empty(), "`{}` needs `when:`", unit.name);
+        for hook in hooks {
+            let (_, kind) = KIND_HOOKS
+                .iter()
+                .find(|(key, _)| *key == hook)
+                .unwrap_or_else(|| panic!("kind hook `{hook}` is not in KIND_HOOKS"));
+            let builders = match kind {
+                Kind::Stores(stores) => stores.iter().flat_map(|store| writers(store)).collect(),
+                Kind::Units(units) => units.to_vec(),
+            };
+            for builder in builders {
+                assert!(
+                    effect.targets.contains(&builder),
+                    "`{}` installs `kindHooks.{hook}` but `{builder}`, which builds its kind, is not a target",
+                    unit.name
+                );
+            }
+            seen.push(hook);
+        }
+    }
+    seen.sort_unstable();
+    let mut listed: Vec<&str> = KIND_HOOKS.iter().map(|(key, _)| *key).collect();
+    listed.sort_unstable();
+    assert_eq!(seen, listed);
 }
 
 #[test]
@@ -409,11 +602,15 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
         }
     }
     let unit = |name| manifest.unit_named(name).unwrap();
-    // Effects travel with the bindings they mutate, and only with them.
+    // Effects travel with the bindings they mutate, and only with them; kind
+    // hooks also with the bindings that build their kind, here the sequential
+    // branches of structural equality and hashing.
     assert_eq!(
         manifest.attached_effects(unit("ListValue")),
         [
             unit("ListValue.type"),
+            unit("makeVector.equiv"),
+            unit("makeVector.hash"),
             unit("ListValue.members"),
             unit("ListValue.statics")
         ]

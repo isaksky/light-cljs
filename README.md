@@ -126,7 +126,9 @@ such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
 a printing `toString` on collections) only for programs that print,
 builds each distinct constant literal once, with its hash computed by the
 compiler, drops the methods and types of the program that no instance can
-use, and calls the program's own functions directly, without an arity
+use, keeps of the runtime's collection, keyword and seq types only those the
+program can build, with the parts of each operation that handle them, and
+calls the program's own functions directly, without an arity
 dispatcher when nothing else sees them (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
@@ -211,10 +213,12 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   it prints, infers types to write truth tests, arithmetic, comparisons
   and typed core calls as plain JavaScript, drops the protocol methods and
   types no instance can use, and calls known functions directly through the
-  method a call selects. `(js/console.log (+ 1 2))` drops from about
-  360 KB to about 200 bytes and a small record and protocol program to about
-  12 KB, but a program that builds a collection still pulls in the collection
-  machinery (120-135 KB).
+  method a call selects, and keeps only the runtime types a program can
+  build. `(js/console.log (+ 1 2))` drops from about 360 KB to about 200
+  bytes, a small record and protocol program to about 12 KB, a program that
+  only builds a keyword to 10 KB and one that builds a vector to 29 KB; a
+  program that prints still keeps the printer and much of the collection
+  machinery (about 105 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

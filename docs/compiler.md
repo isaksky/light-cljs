@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below), and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below) and the runtime types it cannot build, and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -166,7 +166,12 @@ prototype members and `EMPTY` constants are embedded with its constructor, a
 core function the program only calls (`rt$add(1, 2)`) is embedded without the
 variadic arity properties that `apply` reads, which a value use such as
 `(apply + xs)` keeps, and an `extend-type` of a core protocol keeps the
-protocol method's dispatcher. Each distinct keyword and quoted symbol literal
+protocol method's dispatcher. A generic operation's branch for one kind of
+value is embedded only with a unit that builds that kind, and its protocol
+dispatch only with `installMethods`, which every protocol implementation goes
+through, so a program keeps of the runtime's collection, keyword and seq types
+only those it can build (see "Phase 2 builtin types extension points" in
+[advanced-optimization.md](advanced-optimization.md)). Each distinct keyword and quoted symbol literal
 the output reads is declared once after the runtime, `const k0 = rt$keyword(null,
 "a");`, and its sites read `k0`; keyword `case` switches on
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it

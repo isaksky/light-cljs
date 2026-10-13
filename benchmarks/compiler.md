@@ -1600,3 +1600,114 @@ faster in QuickJS, and in Node 21 times faster: V8 now inlines the whole
 loop body, where every call used to go through `.call`, the dispatcher's
 `switch` and `.apply(this, arguments)`. The other fixtures and workloads do
 not change beyond the noise.
+
+## Builtin types — October 13, 2026
+
+light-cljs-227 extends rapid type analysis (Phase 2 step 4 of the
+[design](../docs/advanced-optimization.md)) to the runtime's own types, in
+the runtime and its manifest. At `--optimize advanced` a program keeps the
+collection, keyword and seq types it can build and, of each generic
+operation it keeps, only the branches for those types:
+
+- generic operations reach protocol dispatch through `protocolHooks`, which
+  only `installMethods`, and so only a program with protocol
+  implementations, fills in;
+- each type's branch of an operation is a `kindHooks` entry that the units
+  building the type install where the operation is kept;
+- the factories of several types (`view`, `makeMap`, `makeSet`) take the
+  type from their caller.
+
+The new ratchet fixtures `vector-only` and `keyword-only` build a vector and
+iterate it, and build a keyword and call its `toString`:
+
+```clojure
+(js/console.log (.join (js/Array.from [1 2 3]) " "))
+(js/console.log (.toString :a))
+```
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL --text`.
+"Before" is master `75d9dd0` (after light-cljs-212). `prepare` equals `none`
+for every fixture but `pure-defs`, which is 78 bytes smaller there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 362,631 / 86,288 | 375,538 / 89,378 | 192 / 161 | 192 / 161 | 376,000 / 376,000 / 200 |
+| add | 362,471 / 86,209 | 375,378 / 89,299 | 32 / 52 | 32 / 52 | 376,000 / 376,000 / 100 |
+| raw-js | 363,470 / 86,460 | 376,377 / 89,548 | 271 / 133 | 271 / 133 | 377,000 / 377,000 / 300 |
+| multi-arity | 365,299 / 86,721 | 378,206 / 89,809 | 2,040 / 839 | 2,040 / 839 | 379,000 / 379,000 / 2,100 |
+| record-protocol | 363,424 / 86,536 | 376,331 / 89,626 | 11,637 / 3,786 | 11,637 / 3,786 | 377,000 / 377,000 / 12,000 |
+| pure-defs | 364,060 / 86,645 | 376,967 / 89,733 | 11,471 / 3,715 | 11,471 / 3,715 | 377,000 / 377,000 / 12,000 |
+| three-records | 365,561 / 86,836 | 378,468 / 89,926 | 11,642 / 3,780 | 11,642 / 3,780 | 379,000 / 379,000 / 12,000 |
+| keyword-only | 362,638 / 86,291 | 375,545 / 89,380 | 119,518 / 27,365 | 9,979 / 3,222 | 376,000 / 376,000 / 10,000 |
+| keyword-case | 363,103 / 86,363 | 376,010 / 89,452 | 119,902 / 27,452 | 10,363 / 3,292 | 377,000 / 377,000 / 11,000 |
+| rest-fn | 362,815 / 86,345 | 375,722 / 89,433 | 119,701 / 27,378 | 24,755 / 6,528 | 376,000 / 376,000 / 25,000 |
+| vector-only | 362,670 / 86,309 | 375,577 / 89,398 | 119,699 / 27,433 | 29,333 / 7,539 | 376,000 / 376,000 / 30,000 |
+| seq-pipeline | 362,862 / 86,337 | 375,769 / 89,426 | 137,887 / 31,641 | 81,638 / 19,109 | 376,000 / 376,000 / 82,000 |
+| keyword-lookups | 363,595 / 86,466 | 376,502 / 89,555 | 130,909 / 30,112 | 98,936 / 23,399 | 377,000 / 377,000 / 99,000 |
+| constant-literals | 363,372 / 86,417 | 376,279 / 89,506 | 132,695 / 30,580 | 105,190 / 24,637 | 377,000 / 377,000 / 106,000 |
+| constant-keys | 363,588 / 86,405 | 376,495 / 89,494 | 124,716 / 28,830 | 106,963 / 24,982 | 377,000 / 377,000 / 107,000 |
+| println-hi | 362,518 / 86,217 | 375,425 / 89,307 | 134,618 / 30,914 | 106,105 / 25,080 | 376,000 / 376,000 / 107,000 |
+| vector-printed | 362,543 / 86,227 | 375,450 / 89,316 | 134,830 / 30,991 | 106,317 / 25,153 | 376,000 / 376,000 / 107,000 |
+| map-printed | 362,546 / 86,221 | 375,453 / 89,310 | 134,699 / 30,926 | 106,186 / 25,093 | 376,000 / 376,000 / 107,000 |
+
+Small programs at `advanced`, raw bytes and runtime units (out of 1,132):
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(js/console.log :a)` | 119,502 (301) | 9,963 (41) |
+| `(js/console.log [1 2 3])` | 119,659 (302) | 29,293 (93) |
+| `(js/console.log {})` | 119,528 (301) | 39,501 (127) |
+| `(conj [1] 2)` | 119,520 (302) | 33,325 (104) |
+| `(assoc {} :a 1)` | 119,459 (301) | 65,654 (190) |
+| `(with-meta [1] {:a 1})` | 119,684 (302) | 66,717 (201) |
+| `(str 1 2)` | 132,734 (332) | 104,221 (312) |
+| `(atom 1)` | 134,196 (338) | 112,428 (351) |
+
+The pellet's targets were 10 KB for the logged keyword, which it meets, and
+25 KB for the logged vector and 30 KB for the empty map, which it misses by
+4 and 10 KB (light-cljs-230). About 3.6 KB of the vector program is comment
+lines, which terse emission removes. Programs without builtin values do not
+change. The shared runtime grows by 12,907 bytes (3.6%): the hook tables and
+their installs, the native protocol predicates, the moved branches' wrappers
+and one unit per protocol. The `none` and `prepare` ceilings rise by 13,000
+for that growth.
+
+**Startup and steady state.** `--levels --samples 9 --warmups 1` on master
+`75d9dd0` (exported tree, with the new fixtures) and on this change, one
+directly after the other; the median one-minute load average was 4.49 and
+4.19. Every table is in
+[before](results/builtin-types-2026-10-13/before/summary.md) and
+[after](results/builtin-types-2026-10-13/after/summary.md), next to their
+`samples.csv`. Parse plus first execution at `advanced`, median ms, Node /
+QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| keyword-only | 2.276 / 5.790 | 0.541 / 0.379 |
+| vector-only | 2.999 / 5.920 | 1.062 / 1.188 |
+| rest-fn | 2.116 / 5.882 | 0.566 / 0.953 |
+| keyword-case | 2.178 / 5.752 | 0.338 / 0.393 |
+| seq-pipeline | 4.876 / 8.015 | 3.229 / 3.968 |
+| keyword-lookups | 3.536 / 6.859 | 2.575 / 4.674 |
+| constant-keys | 8.320 / 14.048 | 4.606 / 6.343 |
+| vector-printed | 3.813 / 6.856 | 3.069 / 5.036 |
+
+Steady state at `advanced`, median µs per call (`none` and `prepare` do not
+change beyond the noise):
+
+| Workload | n | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| seq-pipeline | 200 | 5,353 | 1,076 | 29,039 | 3,350 |
+| keyword-lookups | 2,000 | 18,792 | 8,278 | 106,839 | 27,822 |
+| constant-literals | 2,000 | 42,176 | 9,620 | 255,713 | 37,344 |
+| constant-keys | 200 | 11,169 | 1,042 | 71,685 | 6,441 |
+| record-protocol | 2,000 | 9,826 | 9,542 | 16,571 | 16,583 |
+| multi-arity | 50,000 | 146 | 145 | 45,347 | 44,925 |
+
+The collection workloads run 2.3 to 11 times faster at `advanced`. Without
+protocol implementations every `seq`, `first`, `count`, `get`, `=` and
+`hash` skips the protocol lookup (`publicMethod`, `builtin`,
+`implementsProtocol` and the protocol slot computation) that each call used
+to make before reaching its own branch. `record-protocol`, whose records keep
+`installMethods` and so the lookup, does not change, and neither do levels
+below `advanced`, which embed the whole runtime.
