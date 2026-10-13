@@ -531,15 +531,26 @@ fn recorded_observations_contain_no_other_process_wide_ids() {
     }
 }
 
-#[test]
-fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
+/// A historical SCI case with its reviewed accounting row, its disposition and the
+/// evaluator observation that row requires.
+struct Disposition<'a> {
+    case: protocol::Case<'a>,
+    row: Vec<&'a str>,
+    status: &'a str,
+    expected: String,
+}
+
+/// Every historical case in corpus order with its accounting row, after checking
+/// that each row is complete, owned, current with its SCI row and inherited with
+/// provenance, and that no accounting row is orphaned.
+fn dispositions() -> Vec<Disposition<'static>> {
     let cases = protocol::cases(CORPUS).unwrap();
     let source_rows: HashMap<_, _> = CORPUS
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .map(|line| (line.split('\t').next().unwrap(), line))
         .collect();
-    let mut dispositions = HashMap::new();
+    let mut rows = HashMap::new();
     for line in ACCOUNTING
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
@@ -547,18 +558,15 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
         let fields: Vec<_> = line.split('\t').collect();
         assert_eq!(fields.len(), 14, "accounting field count: {}", fields[0]);
         assert!(
-            dispositions.insert(fields[0], fields).is_none(),
+            rows.insert(fields[0], fields).is_none(),
             "duplicate disposition"
         );
     }
     assert_eq!(
-        dispositions.len(),
+        rows.len(),
         cases.len(),
         "every historical row needs explicit accounting"
     );
-    let mut counts = BTreeMap::<&str, usize>::new();
-    let mut matching_families = BTreeMap::<String, usize>::new();
-    let mut failures = vec![];
     let mut provenance_ids = HashSet::new();
     for line in include_str!("../reference/fixture-origins.tsv")
         .lines()
@@ -566,75 +574,81 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
     {
         provenance_ids.extend(line.split('\t').nth(1).unwrap().split(','));
     }
-    for case in &cases {
-        assert!(
-            provenance_ids.contains(case.id),
-            "missing inherited SCI provenance: {}",
-            case.id
-        );
-        let row = dispositions.remove(case.id).unwrap();
-        assert_eq!(
-            row[..7].join("\t"),
-            source_rows[case.id],
-            "stale SCI observation {}",
-            case.id
-        );
-        let status = row[7];
-        assert!(
-            matches!(status, "portable" | "adapted" | "gap" | "retired"),
-            "unknown disposition {status}"
-        );
-        assert!(!row[13].is_empty(), "missing reason {}", case.id);
-        assert!(
-            row[13].contains("owner=light-cljs-")
-                && row[13].contains("kind=")
-                && row[13].contains("family="),
-            "missing explicit ownership/kind/family {}",
-            case.id
-        );
-        let actual = evaluator::run(case.id, row[8], case.profile);
-        // Select the expected canonical contract from the immutable row alone.
-        // A regression back to SCI's [0 2] must fail this canonical comparison.
-        let canonical = canonical_anonymous_contract(&row);
-        let status = if canonical.is_some() {
-            "canonical-dialect-difference"
-        } else {
-            status
-        };
-        *counts.entry(status).or_default() += 1;
-        let expected = if let Some(expected) = canonical {
-            expected.to_owned()
-        } else if let Some(current) = current_quoted_macro_diagnostic(&row) {
-            current
-        } else {
-            row[9..13].join("\t")
-        };
-        let observed = actual.as_ref().map(evaluator::Observation::fields);
-        let matches = observed.as_ref().is_ok_and(|fields| {
-            same_observation(fields, &expected) || stack_depth_reconciliation(&row, fields)
-        });
-        if !matches {
-            let actual_text = match &observed {
-                Ok(fields) => fields,
-                Err(error) => *error,
+    let dispositions = cases
+        .into_iter()
+        .map(|case| {
+            assert!(
+                provenance_ids.contains(case.id),
+                "missing inherited SCI provenance: {}",
+                case.id
+            );
+            let row = rows.remove(case.id).unwrap();
+            assert_eq!(
+                row[..7].join("\t"),
+                source_rows[case.id],
+                "stale SCI observation {}",
+                case.id
+            );
+            let status = row[7];
+            assert!(
+                matches!(status, "portable" | "adapted" | "gap" | "retired"),
+                "unknown disposition {status}"
+            );
+            assert!(!row[13].is_empty(), "missing reason {}", case.id);
+            assert!(
+                row[13].contains("owner=light-cljs-")
+                    && row[13].contains("kind=")
+                    && row[13].contains("family="),
+                "missing explicit ownership/kind/family {}",
+                case.id
+            );
+            // Select the expected canonical contract from the immutable row alone.
+            // A regression back to SCI's [0 2] must fail this canonical comparison.
+            let canonical = canonical_anonymous_contract(&row);
+            let status = if canonical.is_some() {
+                "canonical-dialect-difference"
+            } else {
+                status
             };
-            let brief = |text: &str| text.chars().take(1_200).collect::<String>();
-            failures.push(format!(
-                "{} [{status}]: {}\nactual {}\nexpected {}\n{}",
-                case.id,
-                row[8],
-                brief(actual_text),
-                brief(&expected),
-                row[13]
-            ));
-        }
+            let expected = if let Some(expected) = canonical {
+                expected.to_owned()
+            } else if let Some(current) = current_quoted_macro_diagnostic(&row) {
+                current
+            } else {
+                row[9..13].join("\t")
+            };
+            Disposition {
+                case,
+                row,
+                status,
+                expected,
+            }
+        })
+        .collect();
+    assert!(rows.is_empty(), "orphaned evaluator dispositions");
+    dispositions
+}
+
+#[test]
+fn every_historical_sci_case_has_an_evaluator_disposition() {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    let mut matching_families = BTreeMap::<String, usize>::new();
+    for Disposition {
+        case,
+        row,
+        status,
+        expected,
+    } in &dispositions()
+    {
+        let status = *status;
+        *counts.entry(status).or_default() += 1;
         if status == "portable" || status == "adapted" {
             let family = case.id.split('-').take(2).collect::<Vec<_>>().join("-");
             *matching_families.entry(family).or_default() += 1;
             let projected = evaluator::Observation::portable(case)
                 .unwrap_or_else(|error| panic!("{} is not portable: {error}", case.id));
             assert_eq!(
-                expected,
+                *expected,
                 projected.fields(),
                 "passing disposition cannot replace SCI expectations: {}",
                 case.id
@@ -656,13 +670,12 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
         } else {
             let projected = evaluator::Observation::portable(case).map(|o| o.fields());
             assert!(
-                !projected.is_ok_and(|fields| same_observation(&fields, &expected)),
+                !projected.is_ok_and(|fields| same_observation(&fields, expected)),
                 "{} now agrees with the SCI projection: migrate its disposition",
                 case.id
             );
         }
     }
-    assert!(dispositions.is_empty(), "orphaned evaluator dispositions");
     assert!(
         counts.get("portable").copied().unwrap_or(0) >= 1_000,
         "broad portable corpus required: {counts:?}"
@@ -686,8 +699,61 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
     println!(
         "Evaluator accounting (gaps/retirements/canonical differences are not SCI conformance passes): {counts:?}"
     );
+}
+
+/// The corpus executes in this many tests, declared below, so they overlap under
+/// nextest.
+const PARTS: usize = 10;
+
+/// Runs every `PARTS`-th historical case from `part` through the evaluator and
+/// compares each observation with the one its disposition requires. Striding
+/// spreads the slow families and the deadline-bound lazy-cycle probes over the
+/// parts.
+fn execute_dispositions(part: usize) {
+    let mut failures = vec![];
+    for Disposition {
+        case,
+        row,
+        status,
+        expected,
+    } in dispositions().iter().skip(part).step_by(PARTS)
+    {
+        let actual = evaluator::run(case.id, row[8], case.profile);
+        let observed = actual.as_ref().map(evaluator::Observation::fields);
+        let matches = observed.as_ref().is_ok_and(|fields| {
+            same_observation(fields, expected) || stack_depth_reconciliation(row, fields)
+        });
+        if !matches {
+            let actual_text = match &observed {
+                Ok(fields) => fields,
+                Err(error) => *error,
+            };
+            let brief = |text: &str| text.chars().take(1_200).collect::<String>();
+            failures.push(format!(
+                "{} [{status}]: {}\nactual {}\nexpected {}\n{}",
+                case.id,
+                row[8],
+                brief(actual_text),
+                brief(expected),
+                row[13]
+            ));
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+row_tests!(execute_dispositions;
+    historical_sci_cases_execute_their_dispositions_0(0),
+    historical_sci_cases_execute_their_dispositions_1(1),
+    historical_sci_cases_execute_their_dispositions_2(2),
+    historical_sci_cases_execute_their_dispositions_3(3),
+    historical_sci_cases_execute_their_dispositions_4(4),
+    historical_sci_cases_execute_their_dispositions_5(5),
+    historical_sci_cases_execute_their_dispositions_6(6),
+    historical_sci_cases_execute_their_dispositions_7(7),
+    historical_sci_cases_execute_their_dispositions_8(8),
+    historical_sci_cases_execute_their_dispositions_9(9),
+);
 
 #[test]
 fn cljs_projection_keeps_numeric_bits_and_explicitly_rejects_jvm_only_numbers() {

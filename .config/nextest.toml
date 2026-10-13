@@ -19,7 +19,7 @@ filter = '''
     | test(/^residual_bodies::phase_oracles::/)
     | test(/^(hash_branch_effects|runtime_map_order|residual_source_context|map_value_equiv)::/)
     | test(=public_constructors::public_constructor_api_arities_and_macro_phase_execute)))
-| (binary(evaluation) & test(=evaluator_conformance::every_historical_sci_case_has_an_executable_evaluator_disposition))
+| (binary(evaluation) & test(/^evaluator_conformance::historical_sci_cases_execute_their_dispositions_/))
 | (binary(execution) & test(=tiny_programs_execute_with_expected_values_and_effects))
 '''
 priority = 50

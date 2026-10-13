@@ -273,10 +273,12 @@ reference suites, `tests/evaluation/`), `frontend` (tokenizer, parser, analyzer
 and namespaces, `tests/frontend/`), plus `execution`, `cli`, `provenance` and
 `benchmark_variants`. Add a suite as a module file in the matching directory and
 register it with `mod <name>;` in that directory's `main.rs`. Long fixture loops
-can declare one test per row or row range with `row_tests!`
-(`tests/compiler/main.rs`). A complete source that must give the same result as an
-application and as a macro computation, with fresh and reused macro hosts, in
-QuickJS and Node, goes in its feature suite's `phase_oracles` module as a case for
+can declare one test per row, row range or share of the rows with `row_tests!`
+([tests/support/row_tests.rs](tests/support/row_tests.rs), loaded by the `compiler`
+and `evaluation` binaries), so the parts run in parallel. A complete source that
+must give the same result as an application and as a macro computation, with
+fresh and reused macro hosts, in QuickJS and Node, goes in its feature suite's
+`phase_oracles` module as a case for
 [tests/support/phase_oracle.rs](tests/support/phase_oracle.rs); `cargo nextest run
 phase_oracles::` runs them all. [.config/nextest.toml](.config/nextest.toml) runs 16
 tests at a time, starts the slowest tests first and sets the slow-test timeout;
@@ -295,6 +297,9 @@ or run more seeds with `LIGHT_CLJS_GENERATED_COUNT=<n>` (for example 240).
 
 Some tests bound macro expansion and evaluation by wall-clock deadlines, so on a
 heavily loaded machine run fewer tests at once (`-j`) or rerun a failure alone.
+To see where suite time goes, save a run's output and summarize it with
+`bb benchmarks/nextest_times.bb run.log`, which prints the wall-clock and summed
+test time and the slowest tests. Pass a second log to compare two runs.
 
 Optional comparisons against standard ClojureScript need Java, the Clojure CLI
 and, for some, the upstream checkout; they are `#[ignore]`d by default:
