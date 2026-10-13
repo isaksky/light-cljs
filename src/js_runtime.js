@@ -67,36 +67,30 @@
   const typeNames = new WeakMap();
   //@unit typeFields
   const typeFields = new WeakMap(), recordTypes = new WeakMap(), reifyValues = new WeakSet();
-  //@unit publicConstructors requires: ChunkedSeqValue, CycleValue, EmptyListValue, IterateValue,
-  //@ KeywordValue, ListValue, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, RepeatValue,
-  //@ StringBufferWriter, SubvecValue
-  // Extension prototypes are public and mutable; immutable collection payloads
-  // and their base callability remain private and frozen.
-  const publicConstructors = {List: ListValue, EmptyList: EmptyListValue, Keyword: KeywordValue,
-    Cycle: CycleValue, Repeat: RepeatValue, Iterate: IterateValue, PersistentVector: PersistentVectorValue,
-    Subvec: SubvecValue, ChunkedSeq: ChunkedSeqValue, PersistentQueue: PersistentQueueValue,
-    PersistentArrayMap: PersistentArrayMapValue, PersistentHashMap: PersistentHashMapValue, PersistentHashSet: PersistentHashSetValue,
-    StringBufferWriter};
-  //@unit builtinTypes
-  const builtinTypes = {};
-  //@unit builtinType requires: arrayChunk, builtinTypes, ChunkBuffer, ChunkedCons, Cons, Delay,
-  //@ Eduction, IndexedSeqValue, IntegerRangeValue, LazySeq, mapEntry, publicConstructors,
-  //@ RangeValue, Reduced, SymbolValue, treeMapConstructor, treeMapSeqConstructor,
-  //@ treeSetConstructor, uuidValue
-  function builtinType(name, base) {
-    if (!builtinTypes[name]) {
-      const Type = publicConstructors[name] ?? (name === "Cons" ? Cons : name === "Symbol" ? SymbolValue : name === "Reduced" ? Reduced : name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "ChunkBuffer" ? ChunkBuffer : name === "ArrayChunk" ? arrayChunk : name === "ChunkedCons" ? ChunkedCons : name === "IndexedSeq" ? IndexedSeqValue : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" ? RangeValue : name === "IntegerRange" ? IntegerRangeValue : function () {});
-      Type.prototype = Object.create(base);
-      Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
-      builtinTypes[name] = Type;
-    }
-    return builtinTypes[name];
+  //@unit builtinType mutator
+  // Called once per type, before any of its values exist. Extension prototypes
+  // are public and mutable; immutable collection payloads and their base
+  // callability remain private and frozen.
+  function builtinType(Type, base) {
+    Type.prototype = Object.create(base);
+    Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
+    return Type;
   }
-  //@unit builtinValue requires: builtinType
-  function builtinValue(name, base) { return Object.create(builtinType(name, base).prototype); }
+  //@unit Delay.type effect: Delay requires: builtinType, Delay
+  builtinType(Delay, Object.prototype);
+  //@unit Eduction.type effect: Eduction requires: builtinType, Eduction
+  builtinType(Eduction, Object.prototype);
+  //@unit ChunkBuffer.type effect: ChunkBuffer requires: builtinType, ChunkBuffer
+  builtinType(ChunkBuffer, Object.prototype);
+  //@unit arrayChunk.type effect: arrayChunk requires: arrayChunk, builtinType
+  builtinType(arrayChunk, Object.prototype);
+  //@unit StringBufferWriter.type effect: StringBufferWriter requires: builtinType,
+  //@ StringBufferWriter
+  builtinType(StringBufferWriter, Object.prototype);
   //@unit reducedPrototype
   const reducedPrototype = Object.freeze({});
+  //@unit Reduced.type effect: Reduced requires: builtinType, Reduced, reducedPrototype
+  builtinType(Reduced, reducedPrototype);
   //@unit sequencePrototype requires: count, objectEquiv, print, sequentialIndex
   const sequencePrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
@@ -104,8 +98,45 @@
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
   });
-  //@unit emptyList effect requires: builtinValue, cells, sequencePrototype
-  const emptyList = builtinValue("EmptyList", sequencePrototype);
+  //@unit ListValue.type effect: ListValue requires: builtinType, ListValue, sequencePrototype
+  builtinType(ListValue, sequencePrototype);
+  //@unit EmptyListValue.type effect: EmptyListValue requires: builtinType, EmptyListValue,
+  //@ sequencePrototype
+  builtinType(EmptyListValue, sequencePrototype);
+  //@unit Cons.type effect: Cons requires: builtinType, Cons, sequencePrototype
+  builtinType(Cons, sequencePrototype);
+  //@unit IndexedSeqValue.type effect: IndexedSeqValue requires: builtinType, IndexedSeqValue,
+  //@ sequencePrototype
+  builtinType(IndexedSeqValue, sequencePrototype);
+  //@unit ChunkedSeqValue.type effect: ChunkedSeqValue requires: builtinType, ChunkedSeqValue,
+  //@ sequencePrototype
+  builtinType(ChunkedSeqValue, sequencePrototype);
+  //@unit ChunkedCons.type effect: ChunkedCons requires: builtinType, ChunkedCons, sequencePrototype
+  builtinType(ChunkedCons, sequencePrototype);
+  //@unit LazySeq.type effect: LazySeq requires: builtinType, LazySeq, sequencePrototype
+  builtinType(LazySeq, sequencePrototype);
+  //@unit PersistentQueueValue.type effect: PersistentQueueValue requires: builtinType,
+  //@ PersistentQueueValue, sequencePrototype
+  builtinType(PersistentQueueValue, sequencePrototype);
+  //@unit RepeatValue.type effect: RepeatValue requires: builtinType, RepeatValue, sequencePrototype
+  builtinType(RepeatValue, sequencePrototype);
+  //@unit CycleValue.type effect: CycleValue requires: builtinType, CycleValue, sequencePrototype
+  builtinType(CycleValue, sequencePrototype);
+  //@unit IterateValue.type effect: IterateValue requires: builtinType, IterateValue,
+  //@ sequencePrototype
+  builtinType(IterateValue, sequencePrototype);
+  //@unit RangeValue.type effect: RangeValue requires: builtinType, RangeValue, sequencePrototype
+  builtinType(RangeValue, sequencePrototype);
+  //@unit IntegerRangeValue.type effect: IntegerRangeValue requires: builtinType, IntegerRangeValue,
+  //@ sequencePrototype
+  builtinType(IntegerRangeValue, sequencePrototype);
+  //@unit NodeSeqType effect requires: builtinType, sequencePrototype
+  const NodeSeqType = builtinType(function () {}, sequencePrototype);
+  //@unit treeMapSeqConstructor.type effect: treeMapSeqConstructor requires: builtinType,
+  //@ sequencePrototype, treeMapSeqConstructor
+  builtinType(treeMapSeqConstructor, sequencePrototype);
+  //@unit emptyList effect requires: cells, EmptyListValue
+  const emptyList = Object.create(EmptyListValue.prototype);
   cells.set(emptyList, Object.freeze({kind: "list", count: 0}));
   //@unit missing
   const missing = Object.freeze({});
@@ -134,6 +165,9 @@
       return ":" + value.spelling;
     }
   });
+  //@unit KeywordValue.type effect: KeywordValue requires: builtinType, keywordPrototype,
+  //@ KeywordValue
+  builtinType(KeywordValue, keywordPrototype);
 
   //@unit symbolPrototype requires: get, invalidArity, objectEquiv, symbols
   const symbolPrototype = Object.freeze({
@@ -153,25 +187,25 @@
       return value.spelling;
     }
   });
+  //@unit SymbolValue.type effect: SymbolValue requires: builtinType, symbolPrototype, SymbolValue
+  builtinType(SymbolValue, symbolPrototype);
 
-  //@unit SymbolValue requires: builtinValue, constructorHashes, invalidArity, metadataValues,
-  //@ symbolPrototype, symbols
+  //@unit SymbolValue requires: constructorHashes, invalidArity, metadataValues, symbols
   // Positional constructors retain the supplied slots; unlike cons/symbol they
   // do not normalize a tail or derive the printed spelling from name/namespace.
   function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
     if (arguments.length !== 5) return invalidArity(arguments.length);
-    const value = builtinValue("Symbol", symbolPrototype);
+    const value = Object.create(SymbolValue.prototype);
     symbols.set(value, Object.freeze({namespace, name, spelling}));
     constructorHashes.set(value, cachedHash);
     metadataValues.set(value, metadata);
     return value;
   }
 
-  //@unit Cons requires: builtinValue, cells, constructorHashes, invalidArity, metadataValues,
-  //@ sequencePrototype
+  //@unit Cons requires: cells, constructorHashes, invalidArity, metadataValues
   function Cons(metadata, head, tail, cachedHash) {
     if (arguments.length !== 4) return invalidArity(arguments.length);
-    const value = builtinValue("Cons", sequencePrototype);
+    const value = Object.create(Cons.prototype);
     cells.set(value, Object.freeze({kind: "cons", head, tail}));
     constructorHashes.set(value, cachedHash);
     metadataValues.set(value, metadata);
@@ -185,15 +219,15 @@
     constructorHashes.set(value, cachedHash);
     return value;
   }
-  //@unit ListValue requires: builtinValue, cells, constructorSlots, sequencePrototype
+  //@unit ListValue requires: cells, constructorSlots
   function ListValue(metadata, head, tail, suppliedCount, cachedHash) {
-    const value = builtinValue("List", sequencePrototype);
+    const value = Object.create(ListValue.prototype);
     cells.set(value, Object.freeze({kind: "list", head, tail, count: suppliedCount}));
     return constructorSlots(value, {}, metadata, cachedHash);
   }
-  //@unit EmptyListValue requires: builtinValue, cells, metadataValues, sequencePrototype
+  //@unit EmptyListValue requires: cells, metadataValues
   function EmptyListValue(metadata) {
-    const value = builtinValue("EmptyList", sequencePrototype);
+    const value = Object.create(EmptyListValue.prototype);
     cells.set(value, Object.freeze({kind: "list", count: 0}));
     metadataValues.set(value, metadata);
     return value;
@@ -210,10 +244,9 @@
     metadataValues.set(value, metadata);
     return value;
   }
-  //@unit RepeatValue requires: builtinValue, cells, constructorHashes, emptyList, metadataValues,
-  //@ sequencePrototype
+  //@unit RepeatValue requires: cells, constructorHashes, emptyList, metadataValues
   function RepeatValue(metadata, remaining, head, following, cachedHash) {
-    const value = builtinValue("Repeat", sequencePrototype), state = {following};
+    const value = Object.create(RepeatValue.prototype), state = {following};
     cells.set(value, Object.freeze({kind: "repeat", remaining, head, state,
       get tail() { return state.following ?? (remaining === -1 ? value : remaining > 1
         ? (state.following = RepeatValue(null, remaining - 1, head, null, null)) : emptyList); }}));
@@ -236,13 +269,12 @@
     const value = makeVector(items);
     return constructorSlots(value, {cnt, shift, root, tail}, metadata, cachedHash);
   }
-  //@unit SubvecValue requires: builtinType, constructorSlots, makeVector, nth, subvecSources,
-  //@ vectorPrototype
+  //@unit SubvecValue requires: constructorSlots, makeVector, nth, subvecSources
   function SubvecValue(metadata, source, start, end, cachedHash) {
     const items = Array.from({length: Math.max(0, end - start)});
     for (let i = 0; i < items.length; i++) Object.defineProperty(items, i, {enumerable: true, get: () => nth(source, start + i)});
     const value = makeVector(items);
-    Object.setPrototypeOf(value, builtinType("Subvec", vectorPrototype).prototype);
+    Object.setPrototypeOf(value, SubvecValue.prototype);
     subvecSources.set(value, source);
     return constructorSlots(value, {start, end}, metadata, cachedHash);
   }
@@ -283,9 +315,9 @@
     return reduced(value);
   }
 
-  //@unit symbol requires: builtinValue, symbolPrototype, symbols
+  //@unit symbol requires: symbols, SymbolValue
   function symbol(namespace, name) {
-    const value = builtinValue("Symbol", symbolPrototype);
+    const value = Object.create(SymbolValue.prototype);
     symbols.set(value, Object.freeze({namespace, name,
       spelling: namespace == null ? name : namespace + "/" + name}));
     return value;
@@ -353,14 +385,13 @@
   //@unit macroexpand1 requires: expansionService
   const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
 
-  //@unit cons requires: builtinValue, cells, count, implementsProtocol, ISeq, seq,
-  //@ sequencePrototype
+  //@unit cons requires: cells, Cons, count, implementsProtocol, ISeq, ListValue, seq
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
       else if (!implementsProtocol(ISeq, tail)) tail = seq(tail);
     }
-    const value = builtinValue(kind === "list" ? "List" : "Cons", sequencePrototype);
+    const value = Object.create((kind === "list" ? ListValue : Cons).prototype);
     cells.set(value, Object.freeze({kind, head, tail, ...(kind === "list" ? {count: count(tail) + 1} : {})}));
     return value;
   }
@@ -375,17 +406,16 @@
   //@unit list requires: listFromArray
   function list(...items) { return listFromArray(items); }
 
-  //@unit view requires: builtinValue, sequencePrototype, views
+  //@unit view requires: ChunkedSeqValue, IndexedSeqValue, NodeSeqType, treeMapSeqConstructor, views
   function view(storage, offset, indexed, kind = "indexed", tail = null) {
-    const value = builtinValue(kind === "indexed" ? "IndexedSeq" : kind === "chunked" ? "ChunkedSeq" : kind === "hash-map" ? "NodeSeq" : kind === "sorted-map" ? "PersistentTreeMapSeq" : "IndexedSeq", sequencePrototype);
+    const value = Object.create((kind === "indexed" ? IndexedSeqValue : kind === "chunked" ? ChunkedSeqValue : kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? treeMapSeqConstructor : IndexedSeqValue).prototype);
     views.set(value, Object.freeze({storage, offset, indexed, kind, tail}));
     return value;
   }
 
-  //@unit seq requires: builtinType, cells, concat, deferredValue, iteratorSeq, lazyValues,
-  //@ mapEntries, mapKinds, maps, mapTraversal, publicCollectionSlots, publicMethod, queues, sets,
-  //@ setTraversal, subvecSources, treeMapPush, treeMapSeqConstructor, vector, vectorPrototype,
-  //@ vectors, view, views
+  //@unit seq requires: cells, concat, deferredValue, iteratorSeq, lazyValues, mapEntries,
+  //@ MapEntryType, mapKinds, maps, mapTraversal, publicCollectionSlots, publicMethod, queues, sets,
+  //@ setTraversal, subvecSources, treeMapPush, treeMapSeqConstructor, vector, vectors, view, views
   function seq(value) {
     if (value == null) return null;
     const method = publicMethod(value, "ISeqable/-seq", 1, true);
@@ -422,7 +452,7 @@
     if (entries) return entries.length
       ? view(Object.freeze(entries.map(entry => {
           const pair = vector(entry.key, entry.value);
-          Object.setPrototypeOf(pair, builtinType("MapEntry", vectorPrototype).prototype);
+          Object.setPrototypeOf(pair, MapEntryType.prototype);
           mapEntries.add(pair);
           return pair;
         })), 0, false, mapKinds.get(value)) : null;
@@ -515,9 +545,9 @@
     return trailing == null ? base : into(base, trailing);
   }
 
-  //@unit reduced requires: builtinValue, reducedPrototype, reducedValues
+  //@unit reduced requires: Reduced, reducedValues
   function reduced(value) {
-    const marker = builtinValue("Reduced", reducedPrototype);
+    const marker = Object.create(Reduced.prototype);
     reducedValues.set(marker, value);
     return marker;
   }
@@ -573,7 +603,7 @@
   function divide(x, y, ...more) {
     return arguments.length === 1 ? 1 / x : numericFold((a, b) => a / b, x, y, more);
   }
-  //@unit comparison requires: first, next, seq, variadicCore
+  //@unit comparison
   function comparison(test) {
     const fn = function (x, y, ...more) {
       if (arguments.length === 1) return true;
@@ -581,6 +611,10 @@
       for (const item of more) { if (!test(y, item)) return false; y = item; }
       return true;
     };
+    return fn;
+  }
+  //@unit comparisonVariadic mutator requires: first, next, seq, variadicCore
+  function comparisonVariadic(fn, test) {
     return variadicCore(fn, 2, (x, y, more) => {
       if (!test(x, y)) return false;
       for (let s = seq(more); s !== null; s = next(s)) {
@@ -630,10 +664,9 @@
     if (typeof x === "string" && x.length === 1) return x;
     throw new Error("Argument to char must be a character or number");
   }
-  //@unit bitOperation requires: foldSeq, numericFold, variadicCore
+  //@unit bitOperation requires: numericFold
   function bitOperation(operation) {
-    return variadicCore((x, y, ...more) => numericFold(operation, x, y, more), 2,
-      (x, y, more) => foldSeq(operation, x, y, more));
+    return (x, y, ...more) => numericFold(operation, x, y, more);
   }
   //@unit bitCount
   function bitCount(v) {
@@ -648,12 +681,20 @@
   const dec = x => x - 1;
   //@unit less requires: comparison
   const less = comparison((x, y) => x < y);
+  //@unit less.variadic install: less requires: comparisonVariadic, less
+  comparisonVariadic(less, (x, y) => x < y);
   //@unit lessEqual requires: comparison
   const lessEqual = comparison((x, y) => x <= y);
+  //@unit lessEqual.variadic install: lessEqual requires: comparisonVariadic, lessEqual
+  comparisonVariadic(lessEqual, (x, y) => x <= y);
   //@unit greater requires: comparison
   const greater = comparison((x, y) => x > y);
+  //@unit greater.variadic install: greater requires: comparisonVariadic, greater
+  comparisonVariadic(greater, (x, y) => x > y);
   //@unit greaterEqual requires: comparison
   const greaterEqual = comparison((x, y) => x >= y);
+  //@unit greaterEqual.variadic install: greaterEqual requires: comparisonVariadic, greaterEqual
+  comparisonVariadic(greaterEqual, (x, y) => x >= y);
   //@unit numericEqual requires: equal
   const numericEqual = function (...values) { return values.length !== 0 && equal(...values); };
   //@unit max requires: extrema
@@ -738,12 +779,20 @@
   const rem = (n, d) => n - d * quot(n, d);
   //@unit bitXor requires: bitOperation
   const bitXor = bitOperation((x, y) => x ^ y);
+  //@unit bitXor.variadic install: bitXor requires: bitXor, foldSeq, variadicCore
+  variadicCore(bitXor, 2, (x, y, more) => foldSeq((x, y) => x ^ y, x, y, more));
   //@unit bitAnd requires: bitOperation
   const bitAnd = bitOperation((x, y) => x & y);
+  //@unit bitAnd.variadic install: bitAnd requires: bitAnd, foldSeq, variadicCore
+  variadicCore(bitAnd, 2, (x, y, more) => foldSeq((x, y) => x & y, x, y, more));
   //@unit bitOr requires: bitOperation
   const bitOr = bitOperation((x, y) => x | y);
+  //@unit bitOr.variadic install: bitOr requires: bitOr, foldSeq, variadicCore
+  variadicCore(bitOr, 2, (x, y, more) => foldSeq((x, y) => x | y, x, y, more));
   //@unit bitAndNot requires: bitOperation
   const bitAndNot = bitOperation((x, y) => x & ~y);
+  //@unit bitAndNot.variadic install: bitAndNot requires: bitAndNot, foldSeq, variadicCore
+  variadicCore(bitAndNot, 2, (x, y, more) => foldSeq((x, y) => x & ~y, x, y, more));
   //@unit bitNot
   const bitNot = x => ~x;
   //@unit bitClear
@@ -1120,15 +1169,14 @@
   }
   //@unit subvecSources
   const subvecSources = new WeakMap();
-  //@unit subvec requires: builtinType, count, isVector, nth, subvecSources, vectorFromArray,
-  //@ vectorPrototype
+  //@unit subvec requires: count, isVector, nth, subvecSources, SubvecValue, vectorFromArray
   function subvec(value, start, end = count(value)) {
     if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
     start = start | 0; end = end | 0;
     if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
     if (!isVector(value)) throw new Error("subvec requires a vector");
     const result = vectorFromArray(Array.from({length: Math.ceil(end - start)}, (_, i) => nth(value, start + i)));
-    Object.setPrototypeOf(result, builtinType("Subvec", vectorPrototype).prototype);
+    Object.setPrototypeOf(result, SubvecValue.prototype);
     subvecSources.set(result, subvecSources.get(value) ?? value);
     return result;
   }
@@ -1304,6 +1352,15 @@
     }
   });
 
+  //@unit PersistentArrayMapValue.type effect: PersistentArrayMapValue requires: builtinType,
+  //@ mapPrototype, PersistentArrayMapValue
+  builtinType(PersistentArrayMapValue, mapPrototype);
+  //@unit PersistentHashMapValue.type effect: PersistentHashMapValue requires: builtinType,
+  //@ mapPrototype, PersistentHashMapValue
+  builtinType(PersistentHashMapValue, mapPrototype);
+  //@unit treeMapConstructor.type effect: treeMapConstructor requires: builtinType, mapPrototype,
+  //@ treeMapConstructor
+  builtinType(treeMapConstructor, mapPrototype);
   //@unit hashRoots
   // Routing nodes preserve observable key tests and rehashes at trie splits.
   // Immutable nodes can be shared by old collections and transient copies.
@@ -1471,10 +1528,10 @@
     return promoted;
   }
 
-  //@unit makeMap requires: builtinValue, compareKeys, mapKinds, mapPrototype, maps,
-  //@ sortedComparators
+  //@unit makeMap requires: compareKeys, mapKinds, maps, PersistentArrayMapValue,
+  //@ PersistentHashMapValue, sortedComparators, treeMapConstructor
   function makeMap(entries, kind = entries.length <= 8 ? "array-map" : "hash-map", comparator = compareKeys) {
-    const value = builtinValue(kind === "hash-map" ? "PersistentHashMap" : kind === "sorted-map" ? "PersistentTreeMap" : "PersistentArrayMap", mapPrototype);
+    const value = Object.create((kind === "hash-map" ? PersistentHashMapValue : kind === "sorted-map" ? treeMapConstructor : PersistentArrayMapValue).prototype);
     maps.set(value, Object.freeze(entries));
     mapKinds.set(value, kind);
     if (kind === "sorted-map") sortedComparators.set(value, comparator);
@@ -1621,10 +1678,16 @@
     }
   });
 
-  //@unit makeSet requires: builtinValue, compareKeys, setKinds, setPrototype, sets,
-  //@ sortedComparators
+  //@unit PersistentHashSetValue.type effect: PersistentHashSetValue requires: builtinType,
+  //@ PersistentHashSetValue, setPrototype
+  builtinType(PersistentHashSetValue, setPrototype);
+  //@unit treeSetConstructor.type effect: treeSetConstructor requires: builtinType, setPrototype,
+  //@ treeSetConstructor
+  builtinType(treeSetConstructor, setPrototype);
+  //@unit makeSet requires: compareKeys, PersistentHashSetValue, setKinds, sets, sortedComparators,
+  //@ treeSetConstructor
   function makeSet(entries, kind = entries.length > 8 ? "hash-map" : "array-map", comparator = compareKeys) {
-    const value = builtinValue(kind === "sorted-set" ? "PersistentTreeSet" : "PersistentHashSet", setPrototype);
+    const value = Object.create((kind === "sorted-set" ? treeSetConstructor : PersistentHashSetValue).prototype);
     sets.set(value, Object.freeze(entries));
     setKinds.set(value, kind);
     if (kind === "sorted-set") sortedComparators.set(value, comparator);
@@ -1702,10 +1765,19 @@
       return transientLookup(this, key, arguments.length === 2 ? null : notFound);
     }
   });
-  //@unit makeTransient requires: builtinValue, transientPrototype, transients
+  //@unit TransientVectorType effect requires: builtinType, transientPrototype
+  const TransientVectorType = builtinType(function () {}, transientPrototype);
+  //@unit TransientArrayMapType effect requires: builtinType, transientPrototype
+  const TransientArrayMapType = builtinType(function () {}, transientPrototype);
+  //@unit TransientHashMapType effect requires: builtinType, transientPrototype
+  const TransientHashMapType = builtinType(function () {}, transientPrototype);
+  //@unit TransientHashSetType effect requires: builtinType, transientPrototype
+  const TransientHashSetType = builtinType(function () {}, transientPrototype);
+  //@unit makeTransient requires: TransientArrayMapType, TransientHashMapType, TransientHashSetType,
+  //@ transients, TransientVectorType
   function makeTransient(kind, entries, mapKind) {
-    const name = kind === "vector" ? "TransientVector" : kind === "set" ? "TransientHashSet" : mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap";
-    const result = builtinValue(name, transientPrototype);
+    const Type = kind === "vector" ? TransientVectorType : kind === "set" ? TransientHashSetType : mapKind === "array-map" ? TransientArrayMapType : TransientHashMapType;
+    const result = Object.create(Type.prototype);
     transients.set(result, {kind, entries, mapKind, editable: true, edit: {}});
     return result;
   }
@@ -1859,9 +1931,16 @@
     }
   });
 
-  //@unit makeKeyword requires: builtinValue, keywordPrototype, keywords
+  //@unit PersistentVectorValue.type effect: PersistentVectorValue requires: builtinType,
+  //@ PersistentVectorValue, vectorPrototype
+  builtinType(PersistentVectorValue, vectorPrototype);
+  //@unit SubvecValue.type effect: SubvecValue requires: builtinType, SubvecValue, vectorPrototype
+  builtinType(SubvecValue, vectorPrototype);
+  //@unit MapEntryType effect requires: builtinType, mapEntry, vectorPrototype
+  const MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, vectorPrototype);
+  //@unit makeKeyword requires: keywords, KeywordValue
   function makeKeyword(namespace, name, spelling) {
-    const value = builtinValue("Keyword", keywordPrototype);
+    const value = Object.create(KeywordValue.prototype);
     keywords.set(value, Object.freeze({namespace, name, spelling}));
     return value;
   }
@@ -1873,9 +1952,9 @@
       namespace == null ? name : namespace + "/" + name);
   }
 
-  //@unit makeVector requires: builtinValue, vectorPrototype, vectors
+  //@unit makeVector requires: PersistentVectorValue, vectors
   function makeVector(items) {
-    const value = builtinValue("PersistentVector", vectorPrototype);
+    const value = Object.create(PersistentVectorValue.prototype);
     vectors.set(value, Object.freeze(items));
     return value;
   }
@@ -2618,11 +2697,11 @@
     return identityHashes.get(value);
   }
 
-  //@unit compilerFormBridge requires: atoms, builtinValue, cells, deferredValue, emptyList,
+  //@unit compilerFormBridge requires: atoms, cells, deferredValue, emptyList, EmptyListValue,
   //@ generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues, listFromArray,
   //@ mapFromArray, maps, mapTraversal, metadataValues, name, queueFromArray, queues, recordTypes,
-  //@ reifyValues, rePattern, sequencePrototype, setFromArray, sets, setTraversal, symbol, symbols,
-  //@ toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectors, view, views, volatiles
+  //@ reifyValues, rePattern, setFromArray, sets, setTraversal, symbol, symbols, toArray,
+  //@ typeFields, uuid, uuids, vars, vectorFromArray, vectors, view, views, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -2678,7 +2757,7 @@
         case "string": case "character": value = fromUnits(a); break;
         case "symbol": case "keyword": value = (kind === "symbol" ? symbol : keyword)(a == null ? null : fromUnits(a), fromUnits(b)); if (kind === "symbol" && a == null) generatedNames.add(fromUnits(b)); break;
         case "list": value = listFromArray(a.map(decode));
-          if (a.length === 0) { value = builtinValue("EmptyList", sequencePrototype); cells.set(value, cells.get(emptyList)); }
+          if (a.length === 0) { value = Object.create(EmptyListValue.prototype); cells.set(value, cells.get(emptyList)); }
           break;
         case "vector": value = vectorFromArray(a.map(decode)); break;
         case "map": value = mapFromArray(a.map(decode)); break;
@@ -2848,9 +2927,9 @@
     return null;
   }
 
-  //@unit queueFromArray requires: builtinValue, queues, sequencePrototype
+  //@unit queueFromArray requires: PersistentQueueValue, queues
   function queueFromArray(items) {
-    const value = builtinValue("PersistentQueue", sequencePrototype);
+    const value = Object.create(PersistentQueueValue.prototype);
     queues.set(value, Object.freeze(items.slice()));
     return value;
   }
@@ -3006,9 +3085,9 @@
     if (arguments.length === 2 && !(n > 0)) return emptyList;
     return RepeatValue(null, n, item, null, null);
   }
-  //@unit cycleNode requires: builtinValue, cells, first, next, sequencePrototype, truth
+  //@unit cycleNode requires: cells, CycleValue, first, next, truth
   function cycleNode(all, previous, current, following = null) {
-    const value = builtinValue("Cycle", sequencePrototype), state = {current, following};
+    const value = Object.create(CycleValue.prototype), state = {current, following};
     const currentValue = () => truth(state.current) ? state.current : (state.current = next(previous) ?? all);
     cells.set(value, Object.freeze({kind: "cycle", all, previous, state, currentValue,
       get realized() { return state.current != null; },
@@ -3121,10 +3200,10 @@
     while (tree != null) { stack = conj(stack, tree); tree = truth(ascending) ? tree.left : tree.right; }
     return stack;
   }
-  //@unit treeMapSeqConstructor requires: builtinValue, cells, constructorSlots, emptyList, first,
-  //@ next, peek, sequencePrototype, treeMapPush, truth
+  //@unit treeMapSeqConstructor requires: cells, constructorSlots, emptyList, first, next, peek,
+  //@ treeMapPush, truth
   function treeMapSeqConstructor(metadata, stack, ascending, suppliedCount, cachedHash) {
-    const value = builtinValue("PersistentTreeMapSeq", sequencePrototype);
+    const value = Object.create(treeMapSeqConstructor.prototype);
     cells.set(value, {kind: "tree-seq", get head() { return peek(stack); }, get tail() {
       const node = first(stack), pending = treeMapPush(truth(ascending) ? node?.right : node?.left, next(stack), ascending);
       return pending == null ? emptyList : treeMapSeqConstructor(null, pending, ascending, suppliedCount - 1, null);
@@ -3278,7 +3357,7 @@
   }
   //@unit declarationReceiver requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
-  //@unit patchDeclaration requires: declarationTransactions
+  //@unit patchDeclaration mutator requires: declarationTransactions
   function patchDeclaration(value, key, descriptor) {
     const transaction = declarationTransactions.at(-1);
     if (transaction) {
@@ -3287,7 +3366,7 @@
     }
     Object.defineProperty(value, key, descriptor);
   }
-  //@unit setDeclaration requires: declarationTransactions
+  //@unit setDeclaration mutator requires: declarationTransactions
   function setDeclaration(store, key, value) {
     const transaction = declarationTransactions.at(-1), present = store.has(key), previous = store.get(key);
     if (transaction) transaction.push({undo: () => present ? store.set(key, previous) : store.delete(key), redo: () => store.set(key, value), snapshot: () => { const saved = store.get(key), has = store.has(key); return () => has ? store.set(key, saved) : store.delete(key); }});
@@ -3870,14 +3949,16 @@
   }
   //@unit uuidPrototype requires: uuids
   const uuidPrototype = Object.freeze({toString() { return uuids.get(this); }});
+  //@unit UUIDType effect requires: builtinType, uuidPrototype, uuidValue
+  const UUIDType = builtinType(function (text, cachedHash) { return uuidValue(text, cachedHash); }, uuidPrototype);
   //@unit uuid requires: uuidValue
   function uuid(text) {
     if (typeof text !== "string") throw new Error("UUID expects a string");
     return uuidValue(text.toLowerCase(), null);
   }
-  //@unit uuidValue requires: builtinValue, uuidHashes, uuidPrototype, uuids
+  //@unit uuidValue requires: uuidHashes, uuids, UUIDType
   function uuidValue(text, cachedHash) {
-    const value = builtinValue("UUID", uuidPrototype);
+    const value = Object.create(UUIDType.prototype);
     uuids.set(value, text);
     if (cachedHash != null) uuidHashes.set(value, cachedHash);
     Object.defineProperties(value, {uuid: {get() { return uuids.get(this); }},
@@ -4056,7 +4137,7 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
-  //@unit createNs requires: invalidArity, Namespace, namespaces, str, symbols
+  //@unit createNs mutator requires: invalidArity, Namespace, namespaces, str, symbols
   function createNs(name, obj = null) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     if (!symbols.has(name)) throw new TypeError("create-ns requires a symbol");
@@ -4156,15 +4237,15 @@
     if (lazy ? state.thunk != null : truth(state.thunk)) { state.value = state.thunk.call(null); state.thunk = null; }
     return state.value;
   }
-  //@unit Delay requires: builtinValue, delays
+  //@unit Delay requires: delays
   function Delay(thunk, result) {
-    const value = builtinValue("Delay", Object.prototype);
+    const value = Object.create(Delay.prototype);
     delays.set(value, {thunk, value: result});
     return value;
   }
-  //@unit LazySeq requires: builtinValue, lazyValues, metadataValues, sequencePrototype
+  //@unit LazySeq requires: lazyValues, metadataValues
   function LazySeq(metadata, thunk, result, cachedHash) {
-    const value = builtinValue("LazySeq", sequencePrototype);
+    const value = Object.create(LazySeq.prototype);
     lazyValues.set(value, {thunk, value: result, hash: cachedHash});
     metadataValues.set(value, metadata);
     return value;
@@ -4326,11 +4407,11 @@
     1: value => isSeq(value) ? value : seq(value) ?? emptyList,
     2: (xform, value) => chunkIteratorSequence(transformedIterator(xform, [sequenceIterator(value)]))
   }, (xform, value, more) => chunkIteratorSequence(transformedIterator(xform, [value, ...toArray(more)].map(sequenceIterator))));
-  //@unit Eduction requires: builtinValue, eductions
+  //@unit Eduction requires: eductions
   function Eduction(xform, coll) {
     // Retain only the view's inputs; each protocol call owns its traversal state.
     // This is not a collection payload with structural equality or metadata.
-    const value = builtinValue("Eduction", Object.prototype);
+    const value = Object.create(Eduction.prototype);
     eductions.set(value, {xform, coll});
     Object.defineProperties(value, {xform: {value: xform}, coll: {value: coll}});
     return value;
@@ -4384,7 +4465,7 @@
   const protocolNames = new WeakMap(), protocolValues = new Map(), protocolFunctions = new Map(), protocolVariables = new Map(), protocolGetters = new Map();
   //@unit nativeMethods
   const nativeMethods = new Map(), coreDispatchers = new Map();
-  //@unit protocol requires: protocolNames, protocolValues, setDeclaration
+  //@unit protocol mutator requires: protocolNames, protocolValues, setDeclaration
   function protocol(name) {
     const value = function () {};
     protocolNames.set(value, name); setDeclaration(protocolValues, name, value);
@@ -4453,9 +4534,9 @@
       throw new Error("No protocol method " + key + " defined for this value");
     return undefined;
   }
-  //@unit protocolMethod requires: directMethod, fnRest, get, invalidArity, meta, nativeType,
-  //@ protocolFunctions, protocolGetters, protocolKeys, protocolVariables, setDeclaration,
-  //@ symbolCore, truth
+  //@unit protocolMethod mutator requires: directMethod, fnRest, get, invalidArity, meta,
+  //@ nativeType, protocolFunctions, protocolGetters, protocolKeys, protocolVariables,
+  //@ setDeclaration, symbolCore, truth
   function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null) {
     const dispatch = function (receiver, ...args) {
       const fixed = arities?.filter(n => n !== (variadic == null ? -1 : variadic + 2));
@@ -4485,9 +4566,9 @@
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
     return dispatch;
   }
-  //@unit extendType requires: coreDispatchers, coreProtocolsByName, installMethods, invalidArity,
-  //@ nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolSentinel,
-  //@ protocolValues, setDeclaration
+  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, installMethods,
+  //@ invalidArity, nativeMethods, patchDeclaration, protocolFunctions, protocolGetters,
+  //@ protocolSentinel, protocolValues, setDeclaration
   function extendType(target, methods) {
     let result = null;
     if (typeof target === "string") {
@@ -4521,13 +4602,13 @@
     }
     return result;
   }
-  //@unit extendInstance requires: installMethods, protocolSentinel
+  //@unit extendInstance mutator requires: installMethods, protocolSentinel
   function extendInstance(target, methods, returnTarget) {
     installMethods(target, methods);
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
   }
-  //@unit installMethods requires: declarationTransactions, ifnInvokeEntry, ifnPrototype, ifnValues,
-  //@ ifnVariadics, invalidArity, mungeMember, patchDeclaration, protocolImplementations,
+  //@unit installMethods mutator requires: declarationTransactions, ifnInvokeEntry, ifnPrototype,
+  //@ ifnValues, ifnVariadics, invalidArity, mungeMember, patchDeclaration, protocolImplementations,
   //@ protocolKeys, protocolSentinel, protocolSlot
   function installMethods(value, methods) {
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
@@ -4628,10 +4709,10 @@
   function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbols.has(value) ? symbolCore(result) : result; }
   //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
   function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
-  //@unit mapEntry requires: builtinType, mapEntries, vector, vectorPrototype
+  //@unit mapEntry requires: mapEntries, MapEntryType, vector
   // Surface records supply protocol methods just as the upstream macro does.
   // Raw defrecord* only emits a constructor; its explicit body installs methods.
-  function mapEntry(key, value) { const pair = vector(key, value); Object.setPrototypeOf(pair, builtinType("MapEntry", vectorPrototype).prototype); mapEntries.add(pair); return pair; }
+  function mapEntry(key, value) { const pair = vector(key, value); Object.setPrototypeOf(pair, MapEntryType.prototype); mapEntries.add(pair); return pair; }
   //@unit recordEntries requires: field, keyword, mapEntry, toArray
   function recordEntries(value, Type) {
     return [...Type.fieldNames.map(name => mapEntry(keyword(null, name), field(value, name))), ...toArray(value.__extmap)];
@@ -4803,9 +4884,9 @@
     for (let i = args.length - 1; i >= 0; i--) result = cons(args[i], result);
     return result;
   }
-  //@unit iterateNode requires: builtinValue, cells, first, iterateUnrealizedSeed, sequencePrototype
+  //@unit iterateNode requires: cells, first, iterateUnrealizedSeed, IterateValue
   function iterateNode(fn, previous, value, realized, following = null) {
-    const result = builtinValue("Iterate", sequencePrototype), state = {value, realized, following};
+    const result = Object.create(IterateValue.prototype), state = {value, realized, following};
     cells.set(result, Object.freeze({kind: "iterate", fn, previous, state,
       get realized() { return state.realized; },
       get head() { if (!state.realized) { state.value = fn.call(null, previous); state.realized = true; } return state.value; },
@@ -4817,9 +4898,9 @@
   //@unit chunks
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
   const chunks = new WeakMap(), chunkBuffers = new WeakMap();
-  //@unit ChunkBuffer requires: builtinValue, chunkBuffers
+  //@unit ChunkBuffer requires: chunkBuffers
   function ChunkBuffer(array, end) {
-    const value = builtinValue("ChunkBuffer", Object.prototype);
+    const value = Object.create(ChunkBuffer.prototype);
     chunkBuffers.set(value, {array, end});
     return value;
   }
@@ -4829,9 +4910,9 @@
   function chunkAppend(buffer, item) { const state = chunkBuffers.get(buffer); state.array[state.end] = item; return ++state.end; }
   //@unit chunk requires: arrayChunk, chunkBuffers
   function chunk(buffer) { const state = chunkBuffers.get(buffer), value = arrayChunk(state.array, 0, state.end); state.array = null; return value; }
-  //@unit arrayChunk requires: builtinValue, chunks
+  //@unit arrayChunk requires: chunks
   function arrayChunk(array, offset = 0, end = array.length) {
-    const result = builtinValue("ArrayChunk", Object.prototype);
+    const result = Object.create(arrayChunk.prototype);
     chunks.set(result, {array, offset, end});
     return result;
   }
@@ -4900,10 +4981,9 @@
     const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return end < slice.storage.length ? view(slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
   }
-  //@unit ChunkedCons requires: builtinValue, cells, count, dropFirstProtocol, emptyList,
-  //@ metadataValues, nth, sequencePrototype
+  //@unit ChunkedCons requires: cells, count, dropFirstProtocol, emptyList, metadataValues, nth
   function ChunkedCons(chunk, more, metadata, cachedHash) {
-    const value = builtinValue("ChunkedCons", sequencePrototype);
+    const value = Object.create(ChunkedCons.prototype);
     const chunkedState = {hash: cachedHash};
     cells.set(value, Object.freeze({kind: "chunked-cons", chunk, more, chunkedState,
       get hash() { return chunkedState.hash; },
@@ -5229,18 +5309,18 @@
     if (!colls.length) return invalidArity(arguments.length);
     return apply(concat, mapSeq(fn, ...colls));
   }
-  //@unit rangeNode requires: builtinValue, cells, emptyList, sequencePrototype
+  //@unit rangeNode requires: cells, emptyList, IntegerRangeValue, RangeValue
   function rangeNode(start, end, step, integer, suppliedCount) {
     const rangeCount = arguments.length >= 5 ? suppliedCount : Math.ceil((end - start) / step);
-    const value = builtinValue(integer ? "IntegerRange" : "Range", sequencePrototype);
+    const value = Object.create((integer ? IntegerRangeValue : RangeValue).prototype);
     cells.set(value, Object.freeze({kind: "range", head: start, end, step, integer,
       ...(integer ? {count: rangeCount} : {}),
       get tail() { const following = start + step; return (step > 0 ? following < end : following > end) ? rangeNode(following, end, step, integer) : emptyList; }}));
     return value;
   }
-  //@unit IndexedSeqValue requires: builtinValue, metadataValues, sequencePrototype, views
+  //@unit IndexedSeqValue requires: metadataValues, views
   function IndexedSeqValue(arr, i, metadata) {
-    const value = builtinValue("IndexedSeq", sequencePrototype);
+    const value = Object.create(IndexedSeqValue.prototype);
     metadataValues.set(value, metadata);
     // Ordinary views snapshot inputs; positional construction retains
     // the supplied public array and observes subsequent host-array writes.
@@ -5579,9 +5659,9 @@
     const buffer = {text: "", append(text) { this.text += text; return this; }};
     return {buffer, writer: new StringBufferWriter(buffer)};
   }
-  //@unit StringBufferWriter requires: builtinValue
+  //@unit StringBufferWriter
   function StringBufferWriter(sb) {
-    const writer = builtinValue("StringBufferWriter", Object.prototype);
+    const writer = Object.create(StringBufferWriter.prototype);
     writer.sb = sb;
     return writer;
   }
@@ -5722,7 +5802,7 @@
   //@unit str requires: maps, print, recordTypes, sequential, sets
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? print(value, true) : String(value)).join(""); }
 
-  //@unit variadicCore requires: fnApplyTo
+  //@unit variadicCore mutator requires: fnApplyTo
   function variadicCore(fn, fixed, delegate) {
     fn.cljs$lang$maxFixedArity = fixed;
     fn.cljs$lang$applyTo = args => fnApplyTo(delegate, fixed, args);
@@ -5735,15 +5815,15 @@
     for (let s = seq(more); s !== null; s = next(s)) result = operation(result, first(s));
     return result;
   }
-  //@unit add.variadic effect: add requires: add, foldSeq, variadicCore
+  //@unit add.variadic install: add requires: add, foldSeq, variadicCore
   variadicCore(add, 2, (x, y, more) => foldSeq((a, b) => a + b, x, y, more));
-  //@unit subtract.variadic effect: subtract requires: foldSeq, subtract, variadicCore
+  //@unit subtract.variadic install: subtract requires: foldSeq, subtract, variadicCore
   variadicCore(subtract, 2, (x, y, more) => foldSeq((a, b) => a - b, x, y, more));
-  //@unit multiply.variadic effect: multiply requires: foldSeq, multiply, variadicCore
+  //@unit multiply.variadic install: multiply requires: foldSeq, multiply, variadicCore
   variadicCore(multiply, 2, (x, y, more) => foldSeq((a, b) => a * b, x, y, more));
-  //@unit divide.variadic effect: divide requires: divide, foldSeq, variadicCore
+  //@unit divide.variadic install: divide requires: divide, foldSeq, variadicCore
   variadicCore(divide, 2, (x, y, more) => foldSeq((a, b) => a / b, x, y, more));
-  //@unit equal.variadic effect: equal requires: equal, equalPair, first, next, seq, variadicCore
+  //@unit equal.variadic install: equal requires: equal, equalPair, first, next, seq, variadicCore
   variadicCore(equal, 2, (x, y, more) => {
     if (!equalPair(x, y)) return false;
     for (let s = seq(more); s !== null; s = next(s)) {
@@ -5753,48 +5833,49 @@
     }
     return true;
   });
-  //@unit vector.variadic effect: vector requires: toArray, variadicCore, vector, vectorFromArray
+  //@unit vector.variadic install: vector requires: toArray, variadicCore, vector, vectorFromArray
   variadicCore(vector, 0, args => vectorFromArray(toArray(args)));
-  //@unit list.variadic effect: list requires: list, listFromArray, toArray, variadicCore
+  //@unit list.variadic install: list requires: list, listFromArray, toArray, variadicCore
   variadicCore(list, 0, args => listFromArray(toArray(args)));
-  //@unit hashMap.variadic effect: hashMap requires: hashMap, mapFromArray, toArray, variadicCore
+  //@unit hashMap.variadic install: hashMap requires: hashMap, mapFromArray, toArray, variadicCore
   variadicCore(hashMap, 0, args => mapFromArray(toArray(args), "hash-map"));
-  //@unit arrayMap.variadic effect: arrayMap requires: arrayMap, mapFromArray, toArray, variadicCore
+  //@unit arrayMap.variadic install: arrayMap requires: arrayMap, mapFromArray, toArray,
+  //@ variadicCore
   variadicCore(arrayMap, 0, args => mapFromArray(toArray(args), "array-map"));
-  //@unit hashSet.variadic effect: hashSet requires: hashSet, setFromArray, toArray, variadicCore
+  //@unit hashSet.variadic install: hashSet requires: hashSet, setFromArray, toArray, variadicCore
   variadicCore(hashSet, 0, args => setFromArray(toArray(args)));
-  //@unit mapSeq.variadic effect: mapSeq requires: apply, cons, mapManySteps, mapSeq, variadicCore
+  //@unit mapSeq.variadic install: mapSeq requires: apply, cons, mapManySteps, mapSeq, variadicCore
   // Applied collection arguments remain a sequence. Materializing the rest
   // here would demand collections after the shortest input has already ended.
   variadicCore(mapSeq, 4, (fn, c1, c2, c3, colls) =>
     mapSeq(args => apply(fn, args), mapManySteps(cons(c1, cons(c2, cons(c3, colls))))));
-  //@unit mapv.variadic effect: mapv requires: apply, into, mapSeq, mapv, variadicCore, vector
+  //@unit mapv.variadic install: mapv requires: apply, into, mapSeq, mapv, variadicCore, vector
   variadicCore(mapv, 4, (fn, c1, c2, c3, colls) =>
     into(vector(), apply(mapSeq, fn, c1, c2, c3, colls)));
-  //@unit str.variadic effect: str requires: first, next, seq, str, variadicCore
+  //@unit str.variadic install: str requires: first, next, seq, str, variadicCore
   variadicCore(str, 1, (x, more) => {
     let result = str(x);
     for (let s = seq(more); s !== null; s = next(s)) result += str(first(s));
     return result;
   });
 
-  //@unit printCore.variadic effect: printCore requires: printCore, printItems, toArray,
+  //@unit printCore.variadic install: printCore requires: printCore, printItems, toArray,
   //@ variadicCore
   variadicCore(printCore, 0, args => printItems(toArray(args)));
-  //@unit minKey.variadic effect: minKey requires: keyExtreme, minKey, variadicCore
+  //@unit minKey.variadic install: minKey requires: keyExtreme, minKey, variadicCore
   variadicCore(minKey, 3, (key, x, y, more) => keyExtreme(true, key, x, y, more));
-  //@unit maxKey.variadic effect: maxKey requires: keyExtreme, maxKey, variadicCore
+  //@unit maxKey.variadic install: maxKey requires: keyExtreme, maxKey, variadicCore
   variadicCore(maxKey, 3, (key, x, y, more) => keyExtreme(false, key, x, y, more));
-  //@unit isDistinct.variadic effect: isDistinct requires: distinctMore, isDistinct, variadicCore
+  //@unit isDistinct.variadic install: isDistinct requires: distinctMore, isDistinct, variadicCore
   variadicCore(isDistinct, 2, distinctMore);
 
-  //@unit swap.variadic effect: swap requires: cons, swap, swapState, variadicCore
+  //@unit swap.variadic install: swap requires: cons, swap, swapState, variadicCore
   variadicCore(swap, 4, (value, fn, x, y, more) => swapState(value, fn, cons(x, cons(y, more)), false, true));
-  //@unit swapVals.variadic effect: swapVals requires: cons, swapState, swapVals, variadicCore
+  //@unit swapVals.variadic install: swapVals requires: cons, swapState, swapVals, variadicCore
   variadicCore(swapVals, 4, (value, fn, x, y, more) => swapState(value, fn, cons(x, cons(y, more)), true, true));
-  //@unit merge.variadic effect: merge requires: merge, mergeMaps, missing, variadicCore
+  //@unit merge.variadic install: merge requires: merge, mergeMaps, missing, variadicCore
   variadicCore(merge, 0, values => mergeMaps(values, missing));
-  //@unit mergeWith.variadic effect: mergeWith requires: mergeMaps, mergeWith, variadicCore
+  //@unit mergeWith.variadic install: mergeWith requires: mergeMaps, mergeWith, variadicCore
   variadicCore(mergeWith, 1, (fn, values) => mergeMaps(values, fn));
   //@unit spreadArgs requires: cons, first, next, seq
   function spreadArgs(args) {
@@ -5802,11 +5883,11 @@
     const following = next(args), item = first(args);
     return following == null ? seq(item) : cons(item, spreadArgs(following));
   }
-  //@unit listStar.variadic effect: listStar requires: cons, listStar, spreadArgs, variadicCore
+  //@unit listStar.variadic install: listStar requires: cons, listStar, spreadArgs, variadicCore
   variadicCore(listStar, 4, (a, b, c, d, more) => cons(a, cons(b, cons(c, cons(d, spreadArgs(more))))));
-  //@unit updateIn.variadic effect: updateIn requires: apply, updateIn, updatePath, variadicCore
+  //@unit updateIn.variadic install: updateIn requires: apply, updateIn, updatePath, variadicCore
   variadicCore(updateIn, 6, (value, path, fn, x, y, z, more) => updatePath(value, path, old => apply(fn, old, x, y, z, more)));
-  //@unit update.variadic effect: update requires: apply, assoc, get, update, variadicCore
+  //@unit update.variadic install: update requires: apply, assoc, get, update, variadicCore
   variadicCore(update, 6, (value, key, fn, x, y, z, more) => assoc(value, key, apply(fn, get(value, key), x, y, z, more)));
 
   //@unit jsSet
@@ -5972,7 +6053,7 @@
     return jsSet(array, index, value);
   }
 
-  //@unit coreMethod requires: builtin, builtinCoreImplementation, coreDispatchers,
+  //@unit coreMethod mutator requires: builtin, builtinCoreImplementation, coreDispatchers,
   //@ coreProtocolsByName, ICounted, IEquiv, IHash, invalidArity
   function coreMethod(key, arities, fallback) {
     const dispatch = function (value, ...args) {
@@ -5988,19 +6069,20 @@
     coreDispatchers.set(key, dispatch);
     return dispatch;
   }
-  //@unit write requires: coreMethod
+  //@unit write effect requires: coreMethod
   const write = coreMethod("IWriter/-write", [2], () => null);
-  //@unit flushWriter requires: coreMethod
+  //@unit flushWriter effect requires: coreMethod
   const flushWriter = coreMethod("IWriter/-flush", [1], () => null);
-  //@unit builtinTypes.StringBufferWriter effect: builtinTypes requires: builtinType, installMethods
-  installMethods(builtinType("StringBufferWriter", Object.prototype).prototype, [
+  //@unit StringBufferWriter.members effect: StringBufferWriter requires: installMethods,
+  //@ StringBufferWriter
+  installMethods(StringBufferWriter.prototype, [
     ["IWriter", 0, null],
     ["IWriter/-write", 2, (writer, text) => writer.sb.append(text)],
     ["IWriter/-flush", 1, () => null]
   ]);
-  //@unit prWriter requires: coreMethod, printWriterImpl
+  //@unit prWriter effect requires: coreMethod, printWriterImpl
   const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true));
-  //@unit clone requires: canonicalVectorRoots, cells, cloneablePayload, constructorHashes,
+  //@unit clone effect requires: canonicalVectorRoots, cells, cloneablePayload, constructorHashes,
   //@ coreMethod, IntegerRangeValue, mapEntries, mapKinds, meta, metadataValues, protocolStores,
   //@ rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources, treeRoots, treeSetMaps
   const clone = coreMethod("ICloneable/-clone", [1], value => {
@@ -6015,123 +6097,244 @@
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
   });
-  //@unit seqProtocol requires: contains, coreMethod, count, first, get, missing, next, nth, rest,
-  //@ seq, transientNth, transients
+  //@unit seqProtocol effect requires: contains, coreMethod, count, first, get, missing, next, nth,
+  //@ rest, seq, transientNth, transients
   const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], function (value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
-  //@unit builtinTypes.prototypes effect: builtinTypes requires: builtinType, builtinTypes,
-  //@ canonicalVectorRoots, cells, chunk, chunkAppend, chunkBuffers, chunks, completing,
-  //@ constructorHashes, contains, count, deferredValue, delays, eductions, equalPair, es6Iterator,
-  //@ forceRangeChunk, get, installMethods, iterateUnrealizedSeed, keywordPrototype, keywords,
-  //@ lazyValues, makeMap, mapFromArray, mapPrototype, maps, meta, metadataValues, mungeMember, nth,
-  //@ objectEquiv, ownedProtocolValue, printWriter, prSequentialWriter, publicCollectionSlots,
-  //@ publicTree, queues, rangeChunks, reducedPrototype, reducedValues, seq, sequence,
-  //@ sequenceIterator, sequencePrototype, sequentialIndex, setKinds, setPrototype, sets,
-  //@ sortedComparators, subvecSources, symbolPrototype, symbols, transduce, transformedIterator,
-  //@ transientPrototype, treeSetMaps, uuidPrototype, vector, vectorFromArray, vectorPrototype,
-  //@ vectorRoots, vectors, views
-  for (const [names, base] of [
-    [["PersistentVector", "Subvec", "MapEntry"], vectorPrototype],
-    [["PersistentArrayMap", "PersistentHashMap", "PersistentTreeMap"], mapPrototype],
-    [["PersistentHashSet", "PersistentTreeSet"], setPrototype], [["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "ChunkedCons", "LazySeq", "PersistentQueue", "Repeat", "Cycle", "Iterate", "Range", "IntegerRange", "NodeSeq", "PersistentTreeMapSeq"], sequencePrototype],
-    [["Keyword"], keywordPrototype], [["Symbol"], symbolPrototype], [["Reduced"], reducedPrototype], [["UUID"], uuidPrototype]
-  ]) for (const name of names) builtinType(name, base);
-  for (const [Type, store, fields] of [
-    [builtinTypes.Symbol, symbols, {ns: "namespace", name: "name", str: "spelling"}],
-    [builtinTypes.Cons, cells, {first: "head", rest: "tail"}]
-  ]) for (const [field, key] of Object.entries(fields)) Object.defineProperty(Type.prototype, field, {
-    get() { return store.get(this)[key]; },
+  //@unit publicFields mutator requires: cells, constructorHashes, iterateUnrealizedSeed, meta,
+  //@ mungeMember, ownedProtocolValue, rangeChunks
+  // The upstream deftype fields; `read` answers all but `meta` and the hash.
+  function publicFields(Type, fields, read) {
+    for (const field of fields) Object.defineProperty(Type.prototype, mungeMember(field), {
+      get() {
+        if (field === "meta") return meta(this);
+        if (field === "__hash" || field === "_hash") return constructorHashes.has(this) ? constructorHashes.get(this) : null;
+        return read(this, field);
+      },
+      set: ["__hash", "_hash", "next", "_next", "current", "seed", "chunk", "chunk-next"].includes(field) ? function (value) {
+        if (!ownedProtocolValue(this) || !(this instanceof Type)) throw new Error("Expected public core value");
+        if (field === "__hash" || field === "_hash") constructorHashes.set(this, value);
+        else if (field === "chunk" || field === "chunk-next") { const c = cells.get(this), state = rangeChunks.get(c) ?? {}; state[field === "chunk" ? "chunk" : "tail"] = value; rangeChunks.set(c, state); }
+        else { const state = cells.get(this).state; state[field === "current" ? "current" : field === "seed" ? "value" : "following"] = value; if (field === "seed") state.realized = value !== iterateUnrealizedSeed; }
+      } : function (value) {
+        // A host field shadow cannot mutate an immutable branded payload.
+        Object.defineProperty(this, mungeMember(field), {value, writable: true, configurable: true, enumerable: true});
+      }
+    });
+  }
+  //@unit slotField requires: count, missing, publicCollectionSlots
+  // A field a positional constructor supplied, else the count, else `missing`.
+  function slotField(value, field) {
+    const slots = publicCollectionSlots.get(value);
+    if (slots && field in slots) return slots[field];
+    return field === "cnt" || field === "count" ? count(value) : missing;
+  }
+  //@unit rangeField requires: cells, rangeChunks
+  function rangeField(value, field) {
+    const c = cells.get(value);
+    if (["start", "end", "step", "cnt"].includes(field)) return c[field === "start" ? "head" : field === "cnt" ? "count" : field];
+    return rangeChunks.has(c) ? rangeChunks.get(c)[field === "chunk" ? "chunk" : "tail"] : null;
+  }
+  //@unit seqMethods requires: count, equalPair, es6Iterator, nth
+  const seqMethods = {
+    indexOf(item, start = 0) {
+      const length = count(this);
+      for (let i = start < 0 ? Math.max(0, length + start) : start; i < length; i++) if (equalPair(nth(this, i), item)) return i;
+      return -1;
+    },
+    lastIndexOf(item, start = count(this)) {
+      const length = count(this);
+      for (let i = start < 0 ? length + start : Math.min(length - 1, start); i >= 0; i--) if (equalPair(nth(this, i), item)) return i;
+      return -1;
+    },
+    [Symbol.iterator]() { return es6Iterator(this); }
+  };
+  //@unit seqIndexes mutator requires: seqMethods
+  function seqIndexes(Type) {
+    Object.defineProperties(Type.prototype, Object.getOwnPropertyDescriptors({
+      indexOf: seqMethods.indexOf,
+      lastIndexOf: seqMethods.lastIndexOf
+    }));
+  }
+  //@unit SymbolValue.members effect: SymbolValue requires: constructorHashes, metadataValues,
+  //@ symbols, SymbolValue
+  for (const [field, key] of Object.entries({ns: "namespace", name: "name", str: "spelling"})) Object.defineProperty(SymbolValue.prototype, field, {
+    get() { return symbols.get(this)[key]; },
     set(value) {
-      if (!store.has(this)) throw new Error("Expected public core value");
-      store.set(this, Object.freeze({...store.get(this), [key]: value}));
+      if (!symbols.has(this)) throw new Error("Expected public core value");
+      symbols.set(this, Object.freeze({...symbols.get(this), [key]: value}));
     }
   });
-  for (const [Type, field] of [[builtinTypes.Symbol, "_hash"], [builtinTypes.Cons, "__hash"]])
-    Object.defineProperty(Type.prototype, field, {
-      get() { return constructorHashes.has(this) ? constructorHashes.get(this) : null; },
-      set(value) {
-        if (!(Type === builtinTypes.Symbol ? symbols.has(this) : cells.get(this)?.kind === "cons"))
-          throw new Error("Expected public core value");
-        constructorHashes.set(this, value);
-      }
-    });
-  for (const [Type, field] of [[builtinTypes.Symbol, "_meta"], [builtinTypes.Cons, "meta"]])
-    Object.defineProperty(Type.prototype, field, {
-      get() { return metadataValues.has(this) ? metadataValues.get(this) : null; }, set(value) {
-        if (!(Type === builtinTypes.Symbol ? symbols.has(this) : cells.get(this)?.kind === "cons"))
-          throw new Error("Expected public core value");
-        metadataValues.set(this, value);
-      }
-    });
-  Object.defineProperty(builtinTypes.Reduced.prototype, "val", {
+  Object.defineProperty(SymbolValue.prototype, "_hash", {
+    get() { return constructorHashes.has(this) ? constructorHashes.get(this) : null; },
+    set(value) {
+      if (!symbols.has(this)) throw new Error("Expected public core value");
+      constructorHashes.set(this, value);
+    }
+  });
+  Object.defineProperty(SymbolValue.prototype, "_meta", {
+    get() { return metadataValues.has(this) ? metadataValues.get(this) : null; }, set(value) {
+      if (!symbols.has(this)) throw new Error("Expected public core value");
+      metadataValues.set(this, value);
+    }
+  });
+  //@unit Cons.members effect: Cons requires: cells, Cons, constructorHashes, metadataValues,
+  //@ seqIndexes, seqMethods
+  for (const [field, key] of Object.entries({first: "head", rest: "tail"})) Object.defineProperty(Cons.prototype, field, {
+    get() { return cells.get(this)[key]; },
+    set(value) {
+      if (!cells.has(this)) throw new Error("Expected public core value");
+      cells.set(this, Object.freeze({...cells.get(this), [key]: value}));
+    }
+  });
+  Object.defineProperty(Cons.prototype, "__hash", {
+    get() { return constructorHashes.has(this) ? constructorHashes.get(this) : null; },
+    set(value) {
+      if (!(cells.get(this)?.kind === "cons")) throw new Error("Expected public core value");
+      constructorHashes.set(this, value);
+    }
+  });
+  Object.defineProperty(Cons.prototype, "meta", {
+    get() { return metadataValues.has(this) ? metadataValues.get(this) : null; }, set(value) {
+      if (!(cells.get(this)?.kind === "cons")) throw new Error("Expected public core value");
+      metadataValues.set(this, value);
+    }
+  });
+  seqIndexes(Cons);
+  Cons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit Reduced.members effect: Reduced requires: Reduced, reducedValues
+  Object.defineProperty(Reduced.prototype, "val", {
     get() { return reducedValues.get(this); }, set(value) {
       if (!reducedValues.has(this)) throw new Error("Expected Reduced");
       reducedValues.set(this, value);
     }
   });
-  for (const [name, fields] of Object.entries({
-    List: ["meta", "first", "rest", "count", "__hash"], EmptyList: ["meta"], Keyword: ["ns", "name", "fqn", "_hash"],
-    Repeat: ["meta", "count", "val", "next", "__hash"], Cycle: ["meta", "all", "prev", "current", "_next"],
-    Iterate: ["meta", "f", "prev-seed", "seed", "next"], PersistentVector: ["meta", "cnt", "shift", "root", "tail", "__hash"],
-    Subvec: ["meta", "start", "end", "__hash"], ChunkedSeq: ["vec", "node", "i", "off", "meta", "__hash"],
-    PersistentQueue: ["meta", "count", "front", "rear", "__hash"], PersistentArrayMap: ["meta", "cnt", "arr", "__hash"],
-    PersistentHashMap: ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], PersistentHashSet: ["meta", "hash-map", "__hash"],
-    IndexedSeq: ["arr", "i", "meta"], Range: ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"],
-    IntegerRange: ["meta", "start", "end", "step", "cnt", "__hash"],
-    PersistentTreeMap: ["tree", "cnt", "meta", "__hash"], PersistentTreeSet: ["meta", "tree-map", "__hash"],
-    PersistentTreeMapSeq: ["meta", "stack", "ascending?", "cnt", "__hash"]
-  })) for (const field of fields) Object.defineProperty(builtinTypes[name].prototype, mungeMember(field), {
-    get() {
-      if (field === "meta") return meta(this);
-      if (field === "__hash" || field === "_hash") return constructorHashes.has(this) ? constructorHashes.get(this) : null;
-      const c = cells.get(this), v = views.get(this), k = keywords.get(this), slots = publicCollectionSlots.get(this);
-      if (name === "IndexedSeq") return field === "arr" ? v.storage : v.offset;
-      if (["Range", "IntegerRange"].includes(name) && ["start", "end", "step", "cnt"].includes(field)) return c[field === "start" ? "head" : field === "cnt" ? "count" : field];
-      if (name === "Range" && ["chunk", "chunk-next"].includes(field)) return rangeChunks.has(c) ? rangeChunks.get(c)[field === "chunk" ? "chunk" : "tail"] : null;
-      if (name === "PersistentTreeMap" && field === "tree") return publicTree(this);
-      if (name === "PersistentTreeSet" && field === "tree-map") {
-        if (slots && field in slots) return slots[field];
-        if (!treeSetMaps.has(this)) treeSetMaps.set(this, makeMap(sets.get(this).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", sortedComparators.get(this)));
-        return treeSetMaps.get(this);
-      }
-      if (name === "Keyword") return k[{ns: "namespace", name: "name", fqn: "spelling"}[field]];
-      if (name === "List") return c[{first: "head", rest: "tail", count: "count"}[field]];
-      if (name === "Repeat") return field === "count" ? c.remaining : field === "val" ? c.head : c.state?.following ?? null;
-      if (name === "Cycle") return field === "all" ? c.all : field === "prev" ? c.previous : c.state[field === "current" ? "current" : "following"];
-      if (name === "Iterate") return field === "f" ? c.fn : field === "prev-seed" ? c.previous : c.state[field === "seed" ? "value" : "following"];
-      if (slots && field in slots) return slots[field];
-      if (field === "cnt" || field === "count") return count(this);
-      if (name === "PersistentVector") {
-        const items = vectors.get(this), tailOffset = items.length < 32 ? 0 : ((items.length - 1) >>> 5) << 5;
-        if (field === "tail") return items.slice(tailOffset);
-        if (field === "shift") return 5;
-        if (field === "root") {
-          if (!canonicalVectorRoots.has(this)) { const root = {}; vectorRoots.set(root, items.slice(0, tailOffset)); canonicalVectorRoots.set(this, root); }
-          return canonicalVectorRoots.get(this);
-        }
-      }
-      if (name === "PersistentHashMap") return field === "root" ? this : field === "has-nil?" ? contains(this, null) : get(this, null);
-      if (name === "PersistentHashSet") return mapFromArray(sets.get(this).flatMap(e => [e.key, null]), setKinds.get(this));
-      if (name === "PersistentArrayMap") return maps.get(this).flatMap(e => [e.key, e.value]);
-      if (name === "ChunkedSeq") return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : vectorFromArray(v.storage);
-      if (name === "PersistentQueue") return field === "front" ? seq(queues.get(this)) : vector();
-      if (name === "Subvec") return field === "start" ? 0 : count(this);
-    },
-    set: ["__hash", "_hash", "next", "_next", "current", "seed", "chunk", "chunk-next"].includes(field) ? function (value) {
-      if (!ownedProtocolValue(this) || !(this instanceof builtinTypes[name])) throw new Error("Expected public core value");
-      if (field === "__hash" || field === "_hash") constructorHashes.set(this, value);
-      else if (field === "chunk" || field === "chunk-next") { const c = cells.get(this), state = rangeChunks.get(c) ?? {}; state[field === "chunk" ? "chunk" : "tail"] = value; rangeChunks.set(c, state); }
-      else { const state = cells.get(this).state; state[field === "current" ? "current" : field === "seed" ? "value" : "following"] = value; if (field === "seed") state.realized = value !== iterateUnrealizedSeed; }
-    } : function (value) {
-      // A host field shadow cannot mutate an immutable branded payload.
-      Object.defineProperty(this, mungeMember(field), {value, writable: true, configurable: true, enumerable: true});
+  //@unit ListValue.members effect: ListValue requires: cells, ListValue, publicFields, seqIndexes,
+  //@ seqMethods
+  publicFields(ListValue, ["meta", "first", "rest", "count", "__hash"], (value, field) => cells.get(value)[{first: "head", rest: "tail", count: "count"}[field]]);
+  seqIndexes(ListValue);
+  ListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit EmptyListValue.members effect: EmptyListValue requires: EmptyListValue, publicFields,
+  //@ seqIndexes, seqMethods
+  publicFields(EmptyListValue, ["meta"], null);
+  seqIndexes(EmptyListValue);
+  EmptyListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit KeywordValue.members effect: KeywordValue requires: keywords, KeywordValue, publicFields
+  publicFields(KeywordValue, ["ns", "name", "fqn", "_hash"], (value, field) => keywords.get(value)[{ns: "namespace", name: "name", fqn: "spelling"}[field]]);
+  //@unit RepeatValue.members effect: RepeatValue requires: cells, publicFields, RepeatValue,
+  //@ seqIndexes
+  publicFields(RepeatValue, ["meta", "count", "val", "next", "__hash"], (value, field) => {
+    const c = cells.get(value);
+    return field === "count" ? c.remaining : field === "val" ? c.head : c.state?.following ?? null;
+  });
+  seqIndexes(RepeatValue);
+  //@unit CycleValue.members effect: CycleValue requires: cells, CycleValue, publicFields
+  publicFields(CycleValue, ["meta", "all", "prev", "current", "_next"], (value, field) => {
+    const c = cells.get(value);
+    return field === "all" ? c.all : field === "prev" ? c.previous : c.state[field === "current" ? "current" : "following"];
+  });
+  CycleValue.prototype.currentval = function () { return cells.get(this).currentValue(); };
+  //@unit IterateValue.members effect: IterateValue requires: cells, IterateValue, publicFields
+  publicFields(IterateValue, ["meta", "f", "prev-seed", "seed", "next"], (value, field) => {
+    const c = cells.get(value);
+    return field === "f" ? c.fn : field === "prev-seed" ? c.previous : c.state[field === "seed" ? "value" : "following"];
+  });
+  //@unit PersistentVectorValue.members effect: PersistentVectorValue requires: canonicalVectorRoots,
+  //@ missing, PersistentVectorValue, publicFields, slotField, vectorRoots, vectors
+  publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    if (slot !== missing) return slot;
+    const items = vectors.get(value), tailOffset = items.length < 32 ? 0 : ((items.length - 1) >>> 5) << 5;
+    if (field === "tail") return items.slice(tailOffset);
+    if (field === "shift") return 5;
+    if (field === "root") {
+      if (!canonicalVectorRoots.has(value)) { const root = {}; vectorRoots.set(root, items.slice(0, tailOffset)); canonicalVectorRoots.set(value, root); }
+      return canonicalVectorRoots.get(value);
     }
   });
-  builtinTypes.Range.prototype.forceChunk = function () { forceRangeChunk(cells.get(this)); return null; };
-  builtinTypes.Cycle.prototype.currentval = function () { return cells.get(this).currentValue(); };
-  Object.defineProperty(builtinTypes.PersistentTreeMap.prototype, "comp", {get() { return sortedComparators.get(this); }});
-  builtinType("Delay", Object.prototype);
-  builtinType("Eduction", Object.prototype);
-  installMethods(builtinTypes.Eduction.prototype, [
+  //@unit SubvecValue.members effect: SubvecValue requires: count, missing, publicFields, slotField,
+  //@ subvecSources, SubvecValue
+  publicFields(SubvecValue, ["meta", "start", "end", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    return slot !== missing ? slot : field === "start" ? 0 : count(value);
+  });
+  Object.defineProperty(SubvecValue.prototype, "v", {get() { return subvecSources.get(this); }});
+  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, missing,
+  //@ publicFields, seqIndexes, seqMethods, slotField, vectorFromArray, views
+  publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    if (slot !== missing) return slot;
+    const v = views.get(value);
+    return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : vectorFromArray(v.storage);
+  });
+  seqIndexes(ChunkedSeqValue);
+  ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: missing,
+  //@ PersistentQueueValue, publicFields, queues, seq, seqMethods, slotField, vector
+  publicFields(PersistentQueueValue, ["meta", "count", "front", "rear", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    return slot !== missing ? slot : field === "front" ? seq(queues.get(value)) : vector();
+  });
+  PersistentQueueValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit PersistentArrayMapValue.members effect: PersistentArrayMapValue requires: maps, missing,
+  //@ PersistentArrayMapValue, publicFields, slotField
+  publicFields(PersistentArrayMapValue, ["meta", "cnt", "arr", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    return slot !== missing ? slot : maps.get(value).flatMap(e => [e.key, e.value]);
+  });
+  //@unit PersistentHashMapValue.members effect: PersistentHashMapValue requires: contains, get,
+  //@ missing, PersistentHashMapValue, publicFields, slotField
+  publicFields(PersistentHashMapValue, ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
+  });
+  //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: mapFromArray,
+  //@ missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
+  publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    return slot !== missing ? slot : mapFromArray(sets.get(value).flatMap(e => [e.key, null]), setKinds.get(value));
+  });
+  //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, publicFields,
+  //@ seqIndexes, seqMethods, views
+  publicFields(IndexedSeqValue, ["arr", "i", "meta"], (value, field) => {
+    const v = views.get(value);
+    return field === "arr" ? v.storage : v.offset;
+  });
+  seqIndexes(IndexedSeqValue);
+  IndexedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit RangeValue.members effect: RangeValue requires: cells, forceRangeChunk, publicFields,
+  //@ rangeField, RangeValue, seqIndexes, seqMethods
+  publicFields(RangeValue, ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField);
+  RangeValue.prototype.forceChunk = function () { forceRangeChunk(cells.get(this)); return null; };
+  seqIndexes(RangeValue);
+  RangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit IntegerRangeValue.members effect: IntegerRangeValue requires: IntegerRangeValue,
+  //@ publicFields, rangeField, seqIndexes, seqMethods
+  publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField);
+  seqIndexes(IntegerRangeValue);
+  IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit treeMapConstructor.members effect: treeMapConstructor requires: publicFields, publicTree,
+  //@ slotField, sortedComparators, treeMapConstructor
+  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field));
+  Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return sortedComparators.get(this); }});
+  //@unit treeSetConstructor.members effect: treeSetConstructor requires: makeMap,
+  //@ publicCollectionSlots, publicFields, sets, sortedComparators, treeSetConstructor, treeSetMaps
+  publicFields(treeSetConstructor, ["meta", "tree-map", "__hash"], (value, field) => {
+    const slots = publicCollectionSlots.get(value);
+    if (slots && field in slots) return slots[field];
+    if (!treeSetMaps.has(value)) treeSetMaps.set(value, makeMap(sets.get(value).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", sortedComparators.get(value)));
+    return treeSetMaps.get(value);
+  });
+  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: missing,
+  //@ publicFields, seqMethods, slotField, treeMapSeqConstructor
+  publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"], (value, field) => {
+    const slot = slotField(value, field);
+    return slot !== missing ? slot : undefined;
+  });
+  treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit Eduction.members effect: Eduction requires: completing, count, Eduction, eductions,
+  //@ es6Iterator, installMethods, printWriter, prSequentialWriter, seq, sequence, sequenceIterator,
+  //@ sequentialIndex, transduce, transformedIterator
+  installMethods(Eduction.prototype, [
     ["ISequential", 0, null], ["IIterable", 0, null], ["ISeqable", 0, null], ["IReduce", 0, null], ["IPrintWithWriter", 0, null],
     ["IIterable/-iterator", 1, value => {
       const {xform, coll} = eductions.get(value);
@@ -6154,7 +6357,7 @@
       return prSequentialWriter(writer, printWriter, "(", " ", ")", options, value);
     }]
   ]);
-  Object.defineProperties(builtinTypes.Eduction.prototype, Object.getOwnPropertyDescriptors({
+  Object.defineProperties(Eduction.prototype, Object.getOwnPropertyDescriptors({
     get xform() { return eductions.get(this).xform; },
     set xform(value) { eductions.get(this).xform = value; },
     get coll() { return eductions.get(this).coll; },
@@ -6163,76 +6366,74 @@
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
     [Symbol.iterator]() { return es6Iterator(this); }
   }));
-  for (const name of ["TransientVector", "TransientArrayMap", "TransientHashMap", "TransientHashSet"]) builtinType(name, transientPrototype);
-  Object.defineProperty(builtinTypes.Subvec.prototype, "v", {get() { return subvecSources.get(this); }});
-  for (const [Type, store, fields] of [
-    [builtinTypes.Delay, delays, {f: "thunk", value: "value"}],
-    [builtinTypes.LazySeq, lazyValues, {fn: "thunk", s: "value", __hash: "hash"}]
-  ]) for (const [field, key] of Object.entries(fields)) Object.defineProperty(Type.prototype, field, {
-    configurable: true, get() { return store.get(this)[key]; }, set(value) { store.get(this)[key] = value; }
+  //@unit Delay.members effect: Delay requires: Delay, delays
+  for (const [field, key] of Object.entries({f: "thunk", value: "value"})) Object.defineProperty(Delay.prototype, field, {
+    configurable: true, get() { return delays.get(this)[key]; }, set(value) { delays.get(this)[key] = value; }
   });
-  Object.defineProperty(builtinTypes.LazySeq.prototype, "meta", {
+  //@unit LazySeq.members effect: LazySeq requires: deferredValue, LazySeq, lazyValues,
+  //@ metadataValues, objectEquiv, seqMethods
+  for (const [field, key] of Object.entries({fn: "thunk", s: "value", __hash: "hash"})) Object.defineProperty(LazySeq.prototype, field, {
+    configurable: true, get() { return lazyValues.get(this)[key]; }, set(value) { lazyValues.get(this)[key] = value; }
+  });
+  Object.defineProperty(LazySeq.prototype, "meta", {
     configurable: true, get() { return metadataValues.get(this); }, set(value) { metadataValues.set(this, value); }
   });
-  Object.defineProperties(builtinTypes.LazySeq.prototype, Object.getOwnPropertyDescriptors({
+  Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     sval() { return deferredValue(lazyValues.get(this), true); },
     equiv(other) { return objectEquiv(this, other); },
-    indexOf(item, start = 0) {
-      const length = count(this);
-      for (let i = start < 0 ? Math.max(0, length + start) : start; i < length; i++) if (equalPair(nth(this, i), item)) return i;
-      return -1;
-    },
-    lastIndexOf(item, start = count(this)) {
-      const length = count(this);
-      for (let i = start < 0 ? length + start : Math.min(length - 1, start); i >= 0; i--) if (equalPair(nth(this, i), item)) return i;
-      return -1;
-    },
-    [Symbol.iterator]() { return es6Iterator(this); }
+    indexOf: seqMethods.indexOf,
+    lastIndexOf: seqMethods.lastIndexOf,
+    [Symbol.iterator]: seqMethods[Symbol.iterator]
   }));
-  for (const name of ["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "Repeat", "Range", "IntegerRange"]) {
-    Object.defineProperties(builtinTypes[name].prototype, Object.getOwnPropertyDescriptors({
-      indexOf: builtinTypes.LazySeq.prototype.indexOf,
-      lastIndexOf: builtinTypes.LazySeq.prototype.lastIndexOf
-    }));
-  }
-  for (const name of ["List", "EmptyList", "Cons", "IndexedSeq", "ChunkedSeq", "ChunkedCons", "NodeSeq", "PersistentTreeMapSeq", "PersistentQueue", "Range", "IntegerRange"]) {
-    builtinTypes[name].prototype[Symbol.iterator] = builtinTypes.LazySeq.prototype[Symbol.iterator];
-  }
-  builtinType("ChunkBuffer", Object.prototype);
-  builtinType("ArrayChunk", Object.prototype);
-  for (const [name, store, fields] of [
-    ["ChunkBuffer", chunkBuffers, {buf: "array", end: "end"}],
-    ["ArrayChunk", chunks, {arr: "array", off: "offset", end: "end"}]
-  ]) for (const [field, key] of Object.entries(fields)) Object.defineProperty(builtinTypes[name].prototype, field, {
-    configurable: true, get() { return store.get(this)[key]; }, set(value) { store.get(this)[key] = value; }
-  });
-  Object.defineProperties(builtinTypes.ChunkBuffer.prototype, Object.getOwnPropertyDescriptors({
-    add(value) { return chunkAppend(this, value); },
-    chunk() { return chunk(this); }
-  }));
-  for (const [field, key] of Object.entries({chunk: "chunk", more: "more", __hash: "hash"})) Object.defineProperty(builtinTypes.ChunkedCons.prototype, field, {
+  //@unit NodeSeqType.members effect: NodeSeqType requires: NodeSeqType, seqMethods
+  NodeSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit ChunkedCons.members effect: ChunkedCons requires: cells, ChunkedCons, meta, seqMethods
+  ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  for (const [field, key] of Object.entries({chunk: "chunk", more: "more", __hash: "hash"})) Object.defineProperty(ChunkedCons.prototype, field, {
     configurable: true, get() { return cells.get(this)[key]; },
     set: field === "__hash" ? function (value) { cells.get(this).chunkedState.hash = value; } : undefined
   });
-  Object.defineProperty(builtinTypes.ChunkedCons.prototype, "meta", {get() { return meta(this); }});
-  //@unit realized requires: cells, coreMethod, delays, lazyValues, truth
+  Object.defineProperty(ChunkedCons.prototype, "meta", {get() { return meta(this); }});
+  //@unit ChunkBuffer.members effect: ChunkBuffer requires: chunk, chunkAppend, ChunkBuffer,
+  //@ chunkBuffers
+  for (const [field, key] of Object.entries({buf: "array", end: "end"})) Object.defineProperty(ChunkBuffer.prototype, field, {
+    configurable: true, get() { return chunkBuffers.get(this)[key]; }, set(value) { chunkBuffers.get(this)[key] = value; }
+  });
+  Object.defineProperties(ChunkBuffer.prototype, Object.getOwnPropertyDescriptors({
+    add(value) { return chunkAppend(this, value); },
+    chunk() { return chunk(this); }
+  }));
+  //@unit arrayChunk.members effect: arrayChunk requires: arrayChunk, chunks
+  for (const [field, key] of Object.entries({arr: "array", off: "offset", end: "end"})) Object.defineProperty(arrayChunk.prototype, field, {
+    configurable: true, get() { return chunks.get(this)[key]; }, set(value) { chunks.get(this)[key] = value; }
+  });
+  //@unit realized effect requires: cells, coreMethod, delays, lazyValues, truth
   const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk));
-  //@unit builtinTypes.statics effect: builtinTypes requires: aclone, builtinTypes, emptyList,
-  //@ makeMap, makeSet, putEntry, queueFromArray, str, vector
-  builtinTypes.List.EMPTY = emptyList;
-  builtinTypes.PersistentHashSet.EMPTY = makeSet([], "array-map");
-  builtinTypes.PersistentQueue.EMPTY = queueFromArray([]);
-  builtinTypes.PersistentVector.EMPTY = vector();
-  builtinTypes.PersistentArrayMap.EMPTY = makeMap([], "array-map");
-  builtinTypes.PersistentArrayMap.HASHMAP_THRESHOLD = 8;
-  builtinTypes.PersistentHashMap.EMPTY = makeMap([], "hash-map");
-  builtinTypes.PersistentHashMap.fromArray = (array, noClone) => {
+  //@unit ListValue.statics effect: ListValue requires: emptyList, ListValue
+  ListValue.EMPTY = emptyList;
+  //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue requires: makeSet,
+  //@ PersistentHashSetValue
+  PersistentHashSetValue.EMPTY = makeSet([], "array-map");
+  //@unit PersistentQueueValue.statics effect: PersistentQueueValue requires: PersistentQueueValue,
+  //@ queueFromArray
+  PersistentQueueValue.EMPTY = queueFromArray([]);
+  //@unit PersistentVectorValue.statics effect: PersistentVectorValue requires: PersistentVectorValue,
+  //@ vector
+  PersistentVectorValue.EMPTY = vector();
+  //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue requires: makeMap,
+  //@ PersistentArrayMapValue
+  PersistentArrayMapValue.EMPTY = makeMap([], "array-map");
+  PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue requires: aclone, makeMap,
+  //@ PersistentHashMapValue, putEntry, str
+  PersistentHashMapValue.EMPTY = makeMap([], "hash-map");
+  PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
     const edit = {};
     for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1], "hash-map", edit);
     return makeMap(entries, "hash-map");
   };
-  builtinTypes.PersistentHashMap.fromArrays = (keys, values) => {
+  PersistentHashMapValue.fromArrays = (keys, values) => {
     const length = keys.length, entries = [], edit = {};
     for (let i = 0; i < length; i++) {
       if (values.length <= i) throw new Error(str("No value supplied for key: ", keys[i]));
@@ -6259,46 +6460,46 @@
     readerCurrentInputValue: null, currentNs: null, assertions: true,
     hostClock: defaultHostClock, hostRandom: defaultHostRandom, execTapFn: defaultTapSchedule,
     rand: hostRand, flush};
-  //@unit removeAllMethods requires: coreMethod, resetMulti
+  //@unit removeAllMethods effect requires: coreMethod, resetMulti
   // Core operations without a function of their own, one unit each.
   const removeAllMethods = coreMethod("IMultiFn/-reset", [1], resetMulti);
-  //@unit addMethodProtocol requires: addMethod, coreMethod
+  //@unit addMethodProtocol effect requires: addMethod, coreMethod
   const addMethodProtocol = coreMethod("IMultiFn/-add-method", [3], addMethod);
-  //@unit removeMethodProtocol requires: coreMethod, removeMethod
+  //@unit removeMethodProtocol effect requires: coreMethod, removeMethod
   const removeMethodProtocol = coreMethod("IMultiFn/-remove-method", [2], removeMethod);
-  //@unit preferMethodProtocol requires: coreMethod, preferMethod
+  //@unit preferMethodProtocol effect requires: coreMethod, preferMethod
   const preferMethodProtocol = coreMethod("IMultiFn/-prefer-method", [3], preferMethod);
-  //@unit getMethodProtocol requires: coreMethod, getMethod
+  //@unit getMethodProtocol effect requires: coreMethod, getMethod
   const getMethodProtocol = coreMethod("IMultiFn/-get-method", [2], getMethod);
-  //@unit methods requires: coreMethod, demandMulti, deref
+  //@unit methods effect requires: coreMethod, demandMulti, deref
   const methods = coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); });
-  //@unit prefers requires: coreMethod, demandMulti, deref
+  //@unit prefers effect requires: coreMethod, demandMulti, deref
   const prefers = coreMethod("IMultiFn/-prefers", [1], mf => { demandMulti(mf); return deref(mf.prefer_table); });
-  //@unit defaultDispatchVal requires: coreMethod
+  //@unit defaultDispatchVal effect requires: coreMethod
   const defaultDispatchVal = coreMethod("IMultiFn/-default-dispatch-val", [1], mf => mf.default_dispatch_val);
-  //@unit dispatchFn requires: coreMethod
+  //@unit dispatchFn effect requires: coreMethod
   const dispatchFn = coreMethod("IMultiFn/-dispatch-fn", [1], mf => mf.dispatch_fn);
-  //@unit asTransientProtocol requires: asTransient, coreMethod
+  //@unit asTransientProtocol effect requires: asTransient, coreMethod
   const asTransientProtocol = coreMethod("IEditableCollection/-as-transient", [1], asTransient);
-  //@unit persistentBangProtocol requires: coreMethod, persistTransient
+  //@unit persistentBangProtocol effect requires: coreMethod, persistTransient
   const persistentBangProtocol = coreMethod("ITransientCollection/-persistent!", [1], persistTransient);
-  //@unit conjBangProtocol requires: conjTransient, coreMethod
+  //@unit conjBangProtocol effect requires: conjTransient, coreMethod
   const conjBangProtocol = coreMethod("ITransientCollection/-conj!", [2], conjTransient);
-  //@unit assocBangProtocol requires: assocTransient, coreMethod
+  //@unit assocBangProtocol effect requires: assocTransient, coreMethod
   const assocBangProtocol = coreMethod("ITransientAssociative/-assoc!", [3], assocTransient);
-  //@unit assocNBangProtocol requires: assocTransient, coreMethod
+  //@unit assocNBangProtocol effect requires: assocTransient, coreMethod
   const assocNBangProtocol = coreMethod("ITransientVector/-assoc-n!", [3], (value, index, item) => assocTransient(value, index, item, true));
-  //@unit dissocBangProtocol requires: coreMethod, removeTransient
+  //@unit dissocBangProtocol effect requires: coreMethod, removeTransient
   const dissocBangProtocol = coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!"));
-  //@unit disjoinBangProtocol requires: coreMethod, removeTransient
+  //@unit disjoinBangProtocol effect requires: coreMethod, removeTransient
   const disjoinBangProtocol = coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!"));
-  //@unit popBangProtocol requires: coreMethod, popTransient
+  //@unit popBangProtocol effect requires: coreMethod, popTransient
   const popBangProtocol = coreMethod("ITransientVector/-pop!", [1], popTransient);
-  //@unit chunkedNextProtocol requires: cells, coreMethod, ownedChunkRest, seq
+  //@unit chunkedNextProtocol effect requires: cells, coreMethod, ownedChunkRest, seq
   const chunkedNextProtocol = coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value)));
-  //@unit dropProtocol requires: coreMethod, dropOwned
+  //@unit dropProtocol effect requires: coreMethod, dropOwned
   const dropProtocol = coreMethod("IDrop/-drop", [2], dropOwned);
-  //@unit dropFirstProtocol requires: arrayChunk, chunks, coreMethod, count
+  //@unit dropFirstProtocol effect requires: arrayChunk, chunks, coreMethod, count
   const dropFirstProtocol = coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; });
   //@unit second requires: first, next
   const second = x => first(next(x));
@@ -6328,25 +6529,25 @@
   const isIterable = value => satisfies(IIterable, value);
   //@unit writeAll requires: write
   const writeAll = (writer, ...texts) => { for (const text of texts) write(writer, text); return null; };
-  //@unit keyProtocol requires: coreMethod, nth
+  //@unit keyProtocol effect requires: coreMethod, nth
   const keyProtocol = coreMethod("IMapEntry/-key", [1], value => nth(value, 0));
-  //@unit valProtocol requires: coreMethod, nth
+  //@unit valProtocol effect requires: coreMethod, nth
   const valProtocol = coreMethod("IMapEntry/-val", [1], value => nth(value, 1));
-  //@unit findProtocol requires: coreMethod, find
+  //@unit findProtocol effect requires: coreMethod, find
   const findProtocol = coreMethod("IFind/-find", [2], find);
-  //@unit sortedSeqProtocol requires: coreMethod, identity, mapSeq, rseq, seq, sets, truth
+  //@unit sortedSeqProtocol effect requires: coreMethod, identity, mapSeq, rseq, seq, sets, truth
   const sortedSeqProtocol = coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => { const s = truth(ascending) ? seq(value) : rseq(value); return sets.has(value) ? mapSeq(identity, s) : s; });
-  //@unit sortedSeqFromProtocol requires: coreMethod, sortedSeqFrom
+  //@unit sortedSeqFromProtocol effect requires: coreMethod, sortedSeqFrom
   const sortedSeqFromProtocol = coreMethod("ISorted/-sorted-seq-from", [3], sortedSeqFrom);
-  //@unit entryKeyProtocol requires: coreMethod, keyProtocol, sets
+  //@unit entryKeyProtocol effect requires: coreMethod, keyProtocol, sets
   const entryKeyProtocol = coreMethod("ISorted/-entry-key", [2], (value, entry) => sets.has(value) ? entry : keyProtocol(entry));
-  //@unit comparatorProtocol requires: coreMethod, sortedComparators
+  //@unit comparatorProtocol effect requires: coreMethod, sortedComparators
   const comparatorProtocol = coreMethod("ISorted/-comparator", [1], value => sortedComparators.get(value));
-  //@unit chunkedFirstProtocol requires: coreMethod, ownedChunkFirst
+  //@unit chunkedFirstProtocol effect requires: coreMethod, ownedChunkFirst
   const chunkedFirstProtocol = coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst);
-  //@unit chunkedRestProtocol requires: coreMethod, ownedChunkRest
+  //@unit chunkedRestProtocol effect requires: coreMethod, ownedChunkRest
   const chunkedRestProtocol = coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest);
-  //@unit invokeProtocol requires: coreMethod
+  //@unit invokeProtocol effect requires: coreMethod
   const invokeProtocol = coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args));
   //@unit evalCore
   const evalCore = Object.defineProperty(() => { throw new Error("compiler eval service is not installed"); }, "name", {value: "eval"});
@@ -6354,43 +6555,43 @@
   const isCloneable = value => satisfies(ICloneable, value);
   //@unit isDelay requires: delays
   const isDelay = value => delays.has(value);
-  //@unit derefWithTimeoutProtocol requires: coreMethod
+  //@unit derefWithTimeoutProtocol effect requires: coreMethod
   const derefWithTimeoutProtocol = coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null);
-  //@unit reduceProtocol requires: coreMethod, reduce
+  //@unit reduceProtocol effect requires: coreMethod, reduce
   const reduceProtocol = coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); });
-  //@unit kvReduceProtocol requires: coreMethod, reduceKv
+  //@unit kvReduceProtocol effect requires: coreMethod, reduceKv
   const kvReduceProtocol = coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value));
-  //@unit assocProtocol requires: assoc, coreMethod
+  //@unit assocProtocol effect requires: assoc, coreMethod
   const assocProtocol = coreMethod("IAssociative/-assoc", [3], assoc);
-  //@unit assocNProtocol requires: assoc, coreMethod
+  //@unit assocNProtocol effect requires: assoc, coreMethod
   const assocNProtocol = coreMethod("IVector/-assoc-n", [3], assoc);
-  //@unit dissocProtocol requires: coreMethod, dissoc
+  //@unit dissocProtocol effect requires: coreMethod, dissoc
   const dissocProtocol = coreMethod("IMap/-dissoc", [2], dissoc);
-  //@unit conjProtocol requires: conj, coreMethod
+  //@unit conjProtocol effect requires: conj, coreMethod
   const conjProtocol = coreMethod("ICollection/-conj", [2], conj);
-  //@unit emptyProtocol requires: coreMethod, empty
+  //@unit emptyProtocol effect requires: coreMethod, empty
   const emptyProtocol = coreMethod("IEmptyableCollection/-empty", [1], empty);
-  //@unit disjoinProtocol requires: coreMethod, disj
+  //@unit disjoinProtocol effect requires: coreMethod, disj
   const disjoinProtocol = coreMethod("ISet/-disjoin", [2], disj);
-  //@unit peekProtocol requires: coreMethod, peek
+  //@unit peekProtocol effect requires: coreMethod, peek
   const peekProtocol = coreMethod("IStack/-peek", [1], peek);
-  //@unit popProtocol requires: coreMethod, pop
+  //@unit popProtocol effect requires: coreMethod, pop
   const popProtocol = coreMethod("IStack/-pop", [1], pop);
-  //@unit rseqProtocol requires: coreMethod, rseq
+  //@unit rseqProtocol effect requires: coreMethod, rseq
   const rseqProtocol = coreMethod("IReversible/-rseq", [1], rseq);
-  //@unit compareProtocol requires: compareKeys, coreMethod
+  //@unit compareProtocol effect requires: compareKeys, coreMethod
   const compareProtocol = coreMethod("IComparable/-compare", [2], compareKeys);
-  //@unit iteratorProtocol requires: coreMethod, iterator
+  //@unit iteratorProtocol effect requires: coreMethod, iterator
   const iteratorProtocol = coreMethod("IIterable/-iterator", [1], iterator);
   //@unit imul
   const imul = Math.imul;
-  //@unit nameProtocol requires: builtinCoreImplementation, coreMethod, INamed, name
+  //@unit nameProtocol effect requires: builtinCoreImplementation, coreMethod, INamed, name
   const nameProtocol = coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); });
-  //@unit namespaceProtocol requires: coreMethod, namespace
+  //@unit namespaceProtocol effect requires: coreMethod, namespace
   const namespaceProtocol = coreMethod("INamed/-namespace", [1], namespace);
-  //@unit hashProtocol requires: coreMethod, hash
+  //@unit hashProtocol effect requires: coreMethod, hash
   const hashProtocol = coreMethod("IHash/-hash", [1], hash);
-  //@unit equivProtocol requires: coreMethod, equalPair
+  //@unit equivProtocol effect requires: coreMethod, equalPair
   const equivProtocol = coreMethod("IEquiv/-equiv", [2], equalPair);
   //@unit type
   const type = value => value == null ? null : value.constructor;
@@ -6402,15 +6603,15 @@
   const isInst = value => satisfies(Inst, value);
   //@unit isTaggedLiteral requires: TaggedLiteral
   const isTaggedLiteral = value => value instanceof TaggedLiteral;
-  //@unit encodeJsProtocol requires: coreMethod
+  //@unit encodeJsProtocol effect requires: coreMethod
   const encodeJsProtocol = coreMethod("IEncodeJS/-clj->js", [1], value => value);
-  //@unit encodeKeyProtocol requires: coreMethod
+  //@unit encodeKeyProtocol effect requires: coreMethod
   const encodeKeyProtocol = coreMethod("IEncodeJS/-key->js", [1], value => value);
-  //@unit encodeClojureProtocol requires: coreMethod
+  //@unit encodeClojureProtocol effect requires: coreMethod
   const encodeClojureProtocol = coreMethod("IEncodeClojure/-js->clj", [2], value => value);
   //@unit instMs requires: instMsProtocol
   const instMs = value => instMsProtocol(value);
-  //@unit instMsProtocol requires: coreMethod
+  //@unit instMsProtocol effect requires: coreMethod
   const instMsProtocol = coreMethod("Inst/inst-ms*", [1], value => value.getTime());
   //@unit isVar requires: vars
   const isVar = value => vars.has(value);
@@ -6434,22 +6635,22 @@
   const jsIn = (key, object) => key in object;
   //@unit uncheckedGet
   const uncheckedGet = (object, key) => object[key];
-  //@unit IndexedSeqFactory requires: builtinTypes, positionalFactory
-  const IndexedSeqFactory = positionalFactory(builtinTypes.IndexedSeq, 3);
-  //@unit UUIDFactory requires: builtinTypes, positionalFactory
-  const UUIDFactory = positionalFactory(builtinTypes.UUID, 2);
-  //@unit RangeFactory requires: builtinTypes, positionalFactory
-  const RangeFactory = positionalFactory(builtinTypes.Range, 7);
-  //@unit IntegerRangeFactory requires: builtinTypes, positionalFactory
-  const IntegerRangeFactory = positionalFactory(builtinTypes.IntegerRange, 6);
-  //@unit PersistentTreeMapFactory requires: builtinTypes, positionalFactory
-  const PersistentTreeMapFactory = positionalFactory(builtinTypes.PersistentTreeMap, 5);
-  //@unit PersistentTreeSetFactory requires: builtinTypes, positionalFactory
-  const PersistentTreeSetFactory = positionalFactory(builtinTypes.PersistentTreeSet, 3);
-  //@unit PersistentTreeMapSeqFactory requires: builtinTypes, positionalFactory
-  const PersistentTreeMapSeqFactory = positionalFactory(builtinTypes.PersistentTreeMapSeq, 5);
-  //@unit EductionFactory requires: builtinTypes, positionalFactory
-  const EductionFactory = positionalFactory(builtinTypes.Eduction, 2);
+  //@unit IndexedSeqFactory requires: IndexedSeqValue, positionalFactory
+  const IndexedSeqFactory = positionalFactory(IndexedSeqValue, 3);
+  //@unit UUIDFactory requires: positionalFactory, UUIDType
+  const UUIDFactory = positionalFactory(UUIDType, 2);
+  //@unit RangeFactory requires: positionalFactory, RangeValue
+  const RangeFactory = positionalFactory(RangeValue, 7);
+  //@unit IntegerRangeFactory requires: IntegerRangeValue, positionalFactory
+  const IntegerRangeFactory = positionalFactory(IntegerRangeValue, 6);
+  //@unit PersistentTreeMapFactory requires: positionalFactory, treeMapConstructor
+  const PersistentTreeMapFactory = positionalFactory(treeMapConstructor, 5);
+  //@unit PersistentTreeSetFactory requires: positionalFactory, treeSetConstructor
+  const PersistentTreeSetFactory = positionalFactory(treeSetConstructor, 3);
+  //@unit PersistentTreeMapSeqFactory requires: positionalFactory, treeMapSeqConstructor
+  const PersistentTreeMapSeqFactory = positionalFactory(treeMapSeqConstructor, 5);
+  //@unit EductionFactory requires: Eduction, positionalFactory
+  const EductionFactory = positionalFactory(Eduction, 2);
   //@unit MultiFnFactory requires: MultiFn, positionalFactory
   const MultiFnFactory = positionalFactory(MultiFn, 8);
   //@unit SeqIterFactory requires: positionalFactory, SeqIter
@@ -6463,9 +6664,9 @@
 
   //@unit compilerForms requires: compilerFormBridge
   const compilerForms = compilerFormBridge();
-  //@unit reader requires: builtinTypes, cells, compilerForms, conj, contains, coreCells, first,
-  //@ gensym, hashMap, hashSet, inspect, into, isRecord, keyword, keywords, listFromArray,
-  //@ mapFromArray, maps, merge, meta, next, nsName, prStr, readerCoreNames, rePattern, seq,
+  //@unit reader requires: cells, compilerForms, conj, contains, coreCells, first, gensym, hashMap,
+  //@ hashSet, inspect, into, isRecord, keyword, keywords, listFromArray, mapFromArray, maps, merge,
+  //@ meta, next, nsName, PersistentQueueValue, prStr, readerCoreNames, rePattern, seq,
   //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors,
   //@ views, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
@@ -6823,7 +7024,7 @@
           if (tag === 'inst') result = instant(s, value);
           else if (tag === 'uuid') { if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s,'Invalid UUID'); result = uuid(value); }
           else if (tag === 'js') return jsLiteral(s,value);
-          else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return into(builtinTypes.PersistentQueue.EMPTY,value); }
+          else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return into(PersistentQueueValue.EMPTY,value); }
         } else result = handler.call(null, value);
       }
       else if (opts.profile === 'code' && tag === 'inst') {
@@ -7023,7 +7224,7 @@
   const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};
   builtinTags.set('inst', value => instant(builtinLocation,value));
   builtinTags.set('uuid', value => { if (typeof value !== 'string') throw new TypeError('UUID literal requires a string'); return uuid(value); });
-  builtinTags.set('queue', value => { if (inspect(value)?.kind !== 'vector') throw new TypeError('Queue literal requires a vector'); return into(builtinTypes.PersistentQueue.EMPTY,value); });
+  builtinTags.set('queue', value => { if (inspect(value)?.kind !== 'vector') throw new TypeError('Queue literal requires a vector'); return into(PersistentQueueValue.EMPTY,value); });
   builtinTags.set('js', value => jsLiteral(builtinLocation,value));
   for (const [tag, handler] of builtinTags) tags.set(tag,handler);
   return {ednReadString: (...args) => readStringWith('edn', args), ednRead: (...args) => readWith('edn', args),
@@ -7047,32 +7248,33 @@
   //@ arraySeq, ASeq, aset, assoc, assocBang, assocBangProtocol, assocIn, assocNBangProtocol,
   //@ assocNProtocol, assocProtocol, asTransientProtocol, Atom, atom, atomFactory, bases, bitAnd,
   //@ bitAndNot, bitClear, bitCount, bitFlip, bitNot, bitOr, bitSet, bitShiftLeft, bitShiftRight,
-  //@ bitShiftRightZeroFill, bitTest, bitXor, boolean, booleans, boundedCount, builtinTypes,
-  //@ butlast, byte, bytes, cat, char, chars, checkedAget, checkedAgetStrict, checkedAset,
-  //@ checkedAsetStrict, chunk, chunkAppend, ChunkBuffer, chunkBuffer, chunkCons, ChunkedCons,
-  //@ chunkedFirstProtocol, chunkedNextProtocol, chunkedRestProtocol, chunkFirst, chunkNext,
-  //@ chunkRest, cljToJs, clone, comp, comparator, comparatorProtocol, compareAndSet, compareKeys,
+  //@ bitShiftRightZeroFill, bitTest, bitXor, boolean, booleans, boundedCount, butlast, byte, bytes,
+  //@ cat, char, chars, checkedAget, checkedAgetStrict, checkedAset, checkedAsetStrict, chunk,
+  //@ chunkAppend, ChunkBuffer, chunkBuffer, chunkCons, ChunkedCons, chunkedFirstProtocol,
+  //@ chunkedNextProtocol, chunkedRestProtocol, ChunkedSeqValue, chunkFirst, chunkNext, chunkRest,
+  //@ cljToJs, clone, comp, comparator, comparatorProtocol, compareAndSet, compareKeys,
   //@ compareProtocol, compilerMacroVar, complement, completing, concat, configureHostHooks, conj,
-  //@ conjBang, conjBangProtocol, conjProtocol, consCore, constantly, contains, containsProtocol,
-  //@ coreCells, count, countProtocol, createNs, cycle, dec, dedupe, defaultDispatchVal, demunge,
-  //@ deref, derefProtocol, derefWithTimeoutProtocol, derive, descendants, disj, disjBang,
-  //@ disjoinBangProtocol, disjoinProtocol, dispatchFn, dissoc, dissocBang, dissocBangProtocol,
-  //@ dissocProtocol, distinct, divide, doall, dorun, double, doubleArray, doubles, drop,
-  //@ dropFirstProtocol, dropLast, dropProtocol, dropWhile, eduction, EductionFactory, empty,
-  //@ emptyProtocol, enableConsolePrint, encodeClojureProtocol, encodeJsProtocol, encodeKeyProtocol,
-  //@ ensureReduced, entryKeyProtocol, equal, equivMap, equivProtocol, es6Iterator, evalCore, every,
-  //@ everyPred, exCause, ExceptionInfo, exData, exInfo, exMessage, ffirst, filter, filterv, find,
-  //@ findNs, findProtocol, first, firstProtocol, flatten, float, floats, flushWriter, Fn, fnext,
-  //@ fnil, force, frequencies, gensym, get, getGlobalHierarchy, getIn, getMethodProtocol,
-  //@ getValidator, greater, greaterEqual, groupBy, haltWhen, hash, hashDouble, hashMap,
-  //@ hashOrderedColl, hashProtocol, hashSet, hashUnorderedColl, hostRandInt, hostRandNth,
-  //@ hostRandomUuid, hostShuffle, IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq,
-  //@ ICloneable, ICollection, IComparable, ICounted, identical, identity, IDeref,
-  //@ IDerefWithTimeout, IDrop, IEditableCollection, IEmptyableCollection, IEncodeClojure,
-  //@ IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed, IIterable, IKVReduce, IList, ILookup, IMap,
-  //@ IMapEntry, IMeta, implementsProtocol, imul, IMultiFn, INamed, inc, IndexedSeqFactory, INext,
-  //@ Inst, instMs, instMsProtocol, int, intArray, IntegerRangeFactory, interleave, interpose, into,
-  //@ intoArray, ints, invokeProtocol, IPending, IPrintWithWriter, IRecord, IReduce, IReset,
+  //@ conjBang, conjBangProtocol, conjProtocol, Cons, consCore, constantly, contains,
+  //@ containsProtocol, coreCells, count, countProtocol, createNs, cycle, CycleValue, dec, dedupe,
+  //@ defaultDispatchVal, Delay, demunge, deref, derefProtocol, derefWithTimeoutProtocol, derive,
+  //@ descendants, disj, disjBang, disjoinBangProtocol, disjoinProtocol, dispatchFn, dissoc,
+  //@ dissocBang, dissocBangProtocol, dissocProtocol, distinct, divide, doall, dorun, double,
+  //@ doubleArray, doubles, drop, dropFirstProtocol, dropLast, dropProtocol, dropWhile, Eduction,
+  //@ eduction, EductionFactory, empty, EmptyListValue, emptyProtocol, enableConsolePrint,
+  //@ encodeClojureProtocol, encodeJsProtocol, encodeKeyProtocol, ensureReduced, entryKeyProtocol,
+  //@ equal, equivMap, equivProtocol, es6Iterator, evalCore, every, everyPred, exCause,
+  //@ ExceptionInfo, exData, exInfo, exMessage, ffirst, filter, filterv, find, findNs, findProtocol,
+  //@ first, firstProtocol, flatten, float, floats, flushWriter, Fn, fnext, fnil, force,
+  //@ frequencies, gensym, get, getGlobalHierarchy, getIn, getMethodProtocol, getValidator, greater,
+  //@ greaterEqual, groupBy, haltWhen, hash, hashDouble, hashMap, hashOrderedColl, hashProtocol,
+  //@ hashSet, hashUnorderedColl, hostRandInt, hostRandNth, hostRandomUuid, hostShuffle,
+  //@ IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable,
+  //@ ICounted, identical, identity, IDeref, IDerefWithTimeout, IDrop, IEditableCollection,
+  //@ IEmptyableCollection, IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed,
+  //@ IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, implementsProtocol, imul,
+  //@ IMultiFn, INamed, inc, IndexedSeqFactory, IndexedSeqValue, INext, Inst, instMs,
+  //@ instMsProtocol, int, intArray, IntegerRangeFactory, IntegerRangeValue, interleave, interpose,
+  //@ into, intoArray, ints, invokeProtocol, IPending, IPrintWithWriter, IRecord, IReduce, IReset,
   //@ IReversible, isa, isAny, isArray, isAssociative, isBoolean, isChar, isChunkedSeq, isCloneable,
   //@ isColl, isCounted, isDelay, isDistinct, isDouble, isEmpty, ISeq, ISeqable, ISequential, ISet,
   //@ isEven, isFalse, isFloat, isFn, isIdent, isIFind, isIFn, isIndexed, isInfinite, isInst,
@@ -7082,67 +7284,72 @@
   //@ isReduceable, isReduced, isRegex, isReversible, isSeq, isSeqable, isSequential, isSet,
   //@ isSimpleIdent, isSimpleKeyword, isSimpleSymbol, isSome, isSorted, isSpecialSymbol, isString,
   //@ isSymbol, IStack, isTaggedLiteral, isTrue, isUndefined, isUri, isUuid, isVar, isVector,
-  //@ isVolatile, ISwap, isZero, iterate, iteration, iteratorInit, iteratorProtocol, iteratorSeq,
-  //@ iteratorStart, ITransientAssociative, ITransientCollection, ITransientMap, ITransientSet,
-  //@ ITransientVector, IUUID, IVector, IVolatile, IWatchable, IWithMeta, IWriter, jsDelete, jsIn,
-  //@ jsInvoke, jsIterable, jsKeys, jsMod, jsObj, jsSet, jsToClj, juxt, keep, keepIndexed,
-  //@ keyProtocol, keys, keyToJs, keywordCore, keywordIdentical, kvReduceProtocol, last, less,
-  //@ lessEqual, list, listStar, loadFile, long, longArray, longs, lookupProtocol, macroexpand,
-  //@ macroexpand1, macroReaderFunction, makeArray, makeHierarchy, mapcat, mapIndexed, mapSeq, mapv,
-  //@ max, maxKey, memoize, merge, mergeWith, meta, metaProtocol, methods, min, minKey, mkBoundFn,
-  //@ mod, MultiFn, MultiFnFactory, multiply, munge, mungeStr, name, nameProtocol, Namespace,
-  //@ namespace, NamespaceFactory, namespaceProtocol, newline, next, nextProtocol, nfirst, nnext,
-  //@ not, notAny, notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol,
-  //@ nthrest, numericEqual, objectArray, parents, parseBoolean, parseDouble, parseLong, parseUuid,
-  //@ partial, partition, partitionAll, partitionBy, partitionV, partitionVAll, peek, peekProtocol,
-  //@ persistentBang, persistentBangProtocol, PersistentTreeMapFactory, PersistentTreeMapSeqFactory,
-  //@ PersistentTreeSetFactory, pop, popBang, popBangProtocol, popProtocol, pr,
-  //@ preferMethodProtocol, prefers, primSeq, printCore, printForHost, println, printlnStr,
-  //@ printMetaQ, printStr, prn, prnStr, prnStrWithOpts, protocolSentinel, prSequentialWriter,
-  //@ prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter, quot, randomSample, range,
-  //@ RangedIterator, rangedIterator, RangedIteratorFactory, RangeFactory, reader, realized, reduce,
-  //@ reduced, reduceKv, reduceProtocol, reductions, reFind, registerReaderNamespace, rem,
-  //@ reMatches, remove, removeAllMethods, removeMethodProtocol, removeTap, removeWatch,
-  //@ removeWatchProtocol, rePattern, repeat, repeatedly, replace, replicate, requiredGet, reSeq,
-  //@ reset, resetMeta, resetProtocol, resetVals, rest, restProtocol, reverse, rotateLeft, rseq,
+  //@ isVolatile, ISwap, isZero, iterate, IterateValue, iteration, iteratorInit, iteratorProtocol,
+  //@ iteratorSeq, iteratorStart, ITransientAssociative, ITransientCollection, ITransientMap,
+  //@ ITransientSet, ITransientVector, IUUID, IVector, IVolatile, IWatchable, IWithMeta, IWriter,
+  //@ jsDelete, jsIn, jsInvoke, jsIterable, jsKeys, jsMod, jsObj, jsSet, jsToClj, juxt, keep,
+  //@ keepIndexed, keyProtocol, keys, keyToJs, keywordCore, keywordIdentical, KeywordValue,
+  //@ kvReduceProtocol, last, LazySeq, less, lessEqual, list, listStar, ListValue, loadFile, long,
+  //@ longArray, longs, lookupProtocol, macroexpand, macroexpand1, macroReaderFunction, makeArray,
+  //@ makeHierarchy, mapcat, MapEntryType, mapIndexed, mapSeq, mapv, max, maxKey, memoize, merge,
+  //@ mergeWith, meta, metaProtocol, methods, min, minKey, mkBoundFn, mod, MultiFn, MultiFnFactory,
+  //@ multiply, munge, mungeStr, name, nameProtocol, Namespace, namespace, NamespaceFactory,
+  //@ namespaceProtocol, newline, next, nextProtocol, nfirst, nnext, NodeSeqType, not, notAny,
+  //@ notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol, nthrest,
+  //@ numericEqual, objectArray, parents, parseBoolean, parseDouble, parseLong, parseUuid, partial,
+  //@ partition, partitionAll, partitionBy, partitionV, partitionVAll, peek, peekProtocol,
+  //@ PersistentArrayMapValue, persistentBang, persistentBangProtocol, PersistentHashMapValue,
+  //@ PersistentHashSetValue, PersistentQueueValue, PersistentTreeMapFactory,
+  //@ PersistentTreeMapSeqFactory, PersistentTreeSetFactory, PersistentVectorValue, pop, popBang,
+  //@ popBangProtocol, popProtocol, pr, preferMethodProtocol, prefers, primSeq, printCore,
+  //@ printForHost, println, printlnStr, printMetaQ, printStr, prn, prnStr, prnStrWithOpts,
+  //@ protocolSentinel, prSequentialWriter, prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter,
+  //@ quot, randomSample, range, RangedIterator, rangedIterator, RangedIteratorFactory,
+  //@ RangeFactory, RangeValue, reader, realized, reduce, Reduced, reduced, reduceKv,
+  //@ reduceProtocol, reductions, reFind, registerReaderNamespace, rem, reMatches, remove,
+  //@ removeAllMethods, removeMethodProtocol, removeTap, removeWatch, removeWatchProtocol,
+  //@ rePattern, repeat, repeatedly, RepeatValue, replace, replicate, requiredGet, reSeq, reset,
+  //@ resetMeta, resetProtocol, resetVals, rest, restProtocol, reverse, rotateLeft, rseq,
   //@ rseqProtocol, rsubseq, run, satisfies, second, selectKeys, seq, SeqIter, seqIter,
   //@ SeqIterFactory, seqProtocol, seqToMap, sequence, sequenceIterator, set, setPrintErrFn,
   //@ setPrintFn, setValidator, short, shorts, some, someFn, someVals, sort, sortBy, sortedMap,
   //@ sortedMapBy, sortedSeqFromProtocol, sortedSeqProtocol, sortedSet, sortedSetBy, splitAt,
   //@ splitVAt, splitWith, str, StringBufferWriter, stringHash, stringPrint, subs, subseq, subtract,
-  //@ subvec, supers, swap, swapProtocol, swapVals, symbolCore, symbolIdentical, systemTime,
-  //@ TaggedLiteral, taggedLiteral, TaggedLiteralFactory, take, takeLast, takeNth, takeWhile,
-  //@ tapGreater, test, theNs, throwableToMap, toArray, toArray2d, trampoline, transduce, transient,
-  //@ treeSeq, type, uncheckedAdd, uncheckedAddInt, uncheckedByte, uncheckedChar, uncheckedDec,
+  //@ subvec, SubvecValue, supers, swap, swapProtocol, swapVals, symbolCore, symbolIdentical,
+  //@ SymbolValue, systemTime, TaggedLiteral, taggedLiteral, TaggedLiteralFactory, take, takeLast,
+  //@ takeNth, takeWhile, tapGreater, test, theNs, throwableToMap, toArray, toArray2d, trampoline,
+  //@ transduce, transient, TransientArrayMapType, TransientHashMapType, TransientHashSetType,
+  //@ TransientVectorType, treeMapConstructor, treeMapSeqConstructor, treeSeq, treeSetConstructor,
+  //@ type, uncheckedAdd, uncheckedAddInt, uncheckedByte, uncheckedChar, uncheckedDec,
   //@ uncheckedDecInt, uncheckedDivideInt, uncheckedDouble, uncheckedFloat, uncheckedGet,
   //@ uncheckedInc, uncheckedIncInt, uncheckedInt, uncheckedLong, uncheckedMultiply,
   //@ uncheckedMultiplyInt, uncheckedNegate, uncheckedNegateInt, uncheckedRemainderInt,
   //@ uncheckedShort, uncheckedSubtract, uncheckedSubtractInt, underive, unreduced,
-  //@ unsignedBitShiftRight, update, updateIn, updateKeys, updateVals, uuid, UUIDFactory,
+  //@ unsignedBitShiftRight, update, updateIn, updateKeys, updateVals, uuid, UUIDFactory, UUIDType,
   //@ valProtocol, vals, Var, varyMeta, vec, vector, Volatile, volatile, volatileFactory, vreset,
   //@ vresetProtocol, withMeta, withMetaProtocol, write, writeAll, zipmap
   // Every core operation by runtime name, for the shared runtime and reflection;
   // Advanced output reads the values directly (src/runtime_manifest.rs).
   const core = Object.assign(coreCells, {
-   EmptyList: builtinTypes.EmptyList, PersistentVector: builtinTypes.PersistentVector,
-    Subvec: builtinTypes.Subvec, MapEntry: builtinTypes.MapEntry,
-    PersistentArrayMap: builtinTypes.PersistentArrayMap,
-    PersistentHashMap: builtinTypes.PersistentHashMap,
-    PersistentTreeMap: builtinTypes.PersistentTreeMap,
-    PersistentHashSet: builtinTypes.PersistentHashSet,
-    PersistentTreeSet: builtinTypes.PersistentTreeSet, List: builtinTypes.List,
-    Cons: builtinTypes.Cons, IndexedSeq: builtinTypes.IndexedSeq,
-    ChunkedSeq: builtinTypes.ChunkedSeq, LazySeq: builtinTypes.LazySeq,
-    PersistentQueue: builtinTypes.PersistentQueue, Repeat: builtinTypes.Repeat,
-    Cycle: builtinTypes.Cycle, Iterate: builtinTypes.Iterate, Range: builtinTypes.Range,
-    IntegerRange: builtinTypes.IntegerRange, NodeSeq: builtinTypes.NodeSeq,
-    PersistentTreeMapSeq: builtinTypes.PersistentTreeMapSeq, Keyword: builtinTypes.Keyword,
-    Symbol: builtinTypes.Symbol, Reduced: builtinTypes.Reduced, UUID: builtinTypes.UUID,
-    Delay: builtinTypes.Delay, Eduction: builtinTypes.Eduction,
-    TransientVector: builtinTypes.TransientVector,
-    TransientArrayMap: builtinTypes.TransientArrayMap,
-    TransientHashMap: builtinTypes.TransientHashMap,
-    TransientHashSet: builtinTypes.TransientHashSet, ArrayChunk: builtinTypes.ArrayChunk, IMultiFn,
+   EmptyList: EmptyListValue, PersistentVector: PersistentVectorValue,
+    Subvec: SubvecValue, MapEntry: MapEntryType,
+    PersistentArrayMap: PersistentArrayMapValue,
+    PersistentHashMap: PersistentHashMapValue,
+    PersistentTreeMap: treeMapConstructor,
+    PersistentHashSet: PersistentHashSetValue,
+    PersistentTreeSet: treeSetConstructor, List: ListValue,
+    Cons, IndexedSeq: IndexedSeqValue,
+    ChunkedSeq: ChunkedSeqValue, LazySeq,
+    PersistentQueue: PersistentQueueValue, Repeat: RepeatValue,
+    Cycle: CycleValue, Iterate: IterateValue, Range: RangeValue,
+    IntegerRange: IntegerRangeValue, NodeSeq: NodeSeqType,
+    PersistentTreeMapSeq: treeMapSeqConstructor, Keyword: KeywordValue,
+    Symbol: SymbolValue, Reduced, UUID: UUIDType,
+    Delay, Eduction,
+    TransientVector: TransientVectorType,
+    TransientArrayMap: TransientArrayMapType,
+    TransientHashMap: TransientHashMapType,
+    TransientHashSet: TransientHashSetType, ArrayChunk: arrayChunk, IMultiFn,
     MultiFn, makeHierarchy, getGlobalHierarchy, isa, parents, ancestors, descendants, derive,
     underive, bases, supers, removeAllMethods, addMethod: addMethodProtocol,
     removeMethod: removeMethodProtocol, preferMethod: preferMethodProtocol,

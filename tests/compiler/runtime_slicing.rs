@@ -1,15 +1,18 @@
 //! Advanced-mode runtime slicing (docs/advanced-optimization.md, Phase 1
-//! steps 2 and 3): `Advanced` output reads runtime bindings directly and
+//! steps 2 to 4): `Advanced` output reads runtime bindings directly and
 //! embeds only the runtime units those reads reach over the unit manifest, and
 //! `PreparedApplication::retention()` reports each embedded unit with the root
-//! and source span that first demanded it.
+//! and source span that first demanded it. Runtime effects are demand-driven:
+//! a core function the output only calls leaves out its variadic arity ABI, a
+//! builtin type's members travel with its constructor, and an `extend-type` of
+//! a core protocol keeps the dispatcher the runtime patches by key.
 //!
 //! The emitter records every runtime read it writes; in debug builds it also
 //! checks that no `rt.`, `rt$` or `core$` read in the output escaped that
 //! record, so every test that emits code at any level checks the roots.
 
 use super::optimization::execute;
-use light_cljs::runtime_manifest::{RUNTIME, RuntimeManifest, UnitId};
+use light_cljs::runtime_manifest::{RUNTIME, RootUse, RuntimeManifest, UnitId};
 use light_cljs::runtime_slice::{Demand, RuntimeEmbedding, RuntimeName};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, PreparedApplication, Program, analyze, parse,
@@ -28,12 +31,21 @@ fn prepared(source: &str, level: OptimizationLevel) -> PreparedApplication {
     prepare_application(&program(source), ApplicationOptions::new(level))
 }
 
+/// The units these roots keep, indexed by `UnitId`.
+fn kept(roots: &[(UnitId, RootUse)]) -> Vec<bool> {
+    manifest()
+        .reached_by_uses(roots)
+        .iter()
+        .map(Option::is_some)
+        .collect()
+}
+
 /// The `Advanced` runtime declaration for these root units and bindings: their
 /// closure, returning the bindings in the given order, which the output
 /// destructures into `rt$<binding>` constants.
-fn slice(units: &[UnitId], bindings: &[&str]) -> (String, String) {
+fn slice(units: &[(UnitId, RootUse)], bindings: &[&str]) -> (String, String) {
     let manifest = manifest();
-    let kept = manifest.reachable(units.iter().copied());
+    let kept = kept(units);
     let factory = manifest.sliced_bindings_text(&kept, bindings);
     let pattern = bindings
         .iter()
@@ -77,13 +89,14 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
         let units = report
             .roots
             .iter()
-            .map(|root| root.unit)
+            .map(|root| (root.unit, root.root_use()))
             .collect::<Vec<_>>();
         for root in &report.roots {
             assert!(root.name.direct, "{source}: {}", root.name);
             assert_eq!(manifest.unit_of(root.name.binding), Some(root.unit));
-            assert!(
+            assert_eq!(
                 js.contains(&root.name.to_string()),
+                root.read(),
                 "{source}: {}",
                 root.name
             );
@@ -96,7 +109,7 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
                 .any(|unit| unit.name == "core" || unit.name == "core.seal"),
             "{source}"
         );
-        let kept = manifest.reachable(units.iter().copied());
+        let kept = kept(&units);
         assert_eq!(
             report
                 .units
@@ -110,7 +123,7 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
             "{source}"
         );
         let mut bindings = Vec::new();
-        for root in &report.roots {
+        for root in report.roots.iter().filter(|root| root.read()) {
             if !bindings.contains(&root.name.binding) {
                 bindings.push(root.name.binding);
             }
@@ -163,7 +176,12 @@ fn levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
         assert_eq!(report.runtime_bytes, RUNTIME.trim().len());
         assert!(application.emit_js().contains(RUNTIME.trim()));
         // Units no root reaches are embedded only because the runtime is whole.
-        let kept = manifest.reachable(report.roots.iter().map(|root| root.unit));
+        let roots = report
+            .roots
+            .iter()
+            .map(|root| (root.unit, root.root_use()))
+            .collect::<Vec<_>>();
+        let kept = kept(&roots);
         for unit in &report.units {
             assert_eq!(unit.root.is_some(), kept[unit.unit.0], "{}", unit.name);
         }
@@ -235,14 +253,16 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
             .collect::<Vec<_>>()
     };
     assert_eq!(attributed(0), ["jsObject"]);
+    // `+` is only called, so it keeps its own unit and not its variadic arity.
+    assert_eq!(attributed(1), ["add"]);
     let units = report
         .roots
         .iter()
-        .map(|root| root.unit)
+        .map(|root| (root.unit, root.root_use()))
         .collect::<Vec<_>>();
     for root in 1..report.roots.len() {
-        let before = manifest.reachable(units[..root].iter().copied());
-        let after = manifest.reachable(units[..=root].iter().copied());
+        let before = kept(&units[..root]);
+        let after = kept(&units[..=root]);
         assert_eq!(
             attributed(root),
             manifest
@@ -292,7 +312,7 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
         );
     }
     let (start, end) = expression("+");
-    let add_row = format!(" rt$add source 0, bytes {start}..{end}");
+    let add_row = format!(" rt$add(...) source 0, bytes {start}..{end}");
     assert!(
         rows.iter()
             .any(|row| row.starts_with("rt$theNs ") && row.ends_with(" namespace registration")),
@@ -348,4 +368,125 @@ fn the_slice_for_each_export_evaluates_on_its_own() {
         );
         assert_eq!(printed, expected, "{exports:?}");
     }
+}
+
+/// The units an `Advanced` report embeds, by name.
+fn embedded(application: &PreparedApplication) -> Vec<&'static str> {
+    application
+        .retention()
+        .units
+        .iter()
+        .map(|unit| unit.name)
+        .collect()
+}
+
+/// Runs a program at every level and returns what it prints, which must be
+/// the same at each.
+fn same_at_every_level(source: &str) -> String {
+    let printed = OptimizationLevel::ALL.map(|level| {
+        let js = prepared(source, level).emit_js();
+        execute(&format!("console.log({js});"))
+    });
+    assert_eq!(printed[0], printed[1], "{source}: prepare");
+    assert_eq!(printed[0], printed[2], "{source}: advanced");
+    printed[2].clone()
+}
+
+/// A core function's variadic arity ABI (`cljs$lang$applyTo` and friends, read
+/// by `apply`) is an `install:` unit: kept where the function's value escapes,
+/// left out where the program only calls it.
+#[test]
+fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
+    for (called, applied, install) in [
+        ("(+ 1 2 3)", "(apply + [1 2 3])", "add.variadic"),
+        ("(< 1 2 3)", "(apply < [1 2 3])", "less.variadic"),
+        ("(bit-or 1 2 4)", "(apply bit-or [1 2 4])", "bitOr.variadic"),
+    ] {
+        let call = prepared(called, OptimizationLevel::Advanced);
+        let report = call.retention();
+        let root = &report.roots[0];
+        assert_eq!(root.root_use(), RootUse::Call, "{called}");
+        assert!(report.to_string().contains(&format!("{}(...)", root.name)));
+        assert!(!embedded(&call).contains(&install), "{called}");
+        // The call keeps its own unit and helpers (`bitOperation`,
+        // `numericFold`); only the namespace registration reaches the
+        // generic core.
+        assert!(
+            report
+                .units
+                .iter()
+                .filter(|unit| unit.root == Some(0))
+                .count()
+                <= 3,
+            "{called}:\n{report}"
+        );
+        let apply = prepared(applied, OptimizationLevel::Advanced);
+        assert!(embedded(&apply).contains(&install), "{applied}");
+        assert_eq!(
+            same_at_every_level(called),
+            same_at_every_level(applied),
+            "{called}"
+        );
+    }
+    // A value read keeps the install; here the host reads the ABI.
+    let source = "(let [f +] (.-cljs$lang$maxFixedArity f))";
+    assert!(embedded(&prepared(source, OptimizationLevel::Advanced)).contains(&"add.variadic"));
+    assert_eq!(same_at_every_level(source), "2\n");
+}
+
+/// `extendType` patches the core protocol dispatcher it finds by key, so an
+/// `extend-type` of a core protocol method keeps that dispatcher even where
+/// nothing calls it: the runtime's generic dispatch reads the patch. Without
+/// it, `reduce` with an init would find no 3-arity method and throw.
+#[test]
+fn extended_core_protocols_keep_their_dispatchers() {
+    let source = "(extend-type number IReduce (-reduce [n f] [:two n]))
+                  (pr-str [(reduce + 0 5) (reduce + 5)])";
+    let advanced = prepared(source, OptimizationLevel::Advanced);
+    let report = advanced.retention();
+    let kept = report
+        .roots
+        .iter()
+        .find(|root| root.name.binding == "reduceProtocol")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(!kept.read());
+    assert!(report.to_string().contains("(rt$reduceProtocol)"));
+    let js = advanced.emit_js();
+    assert!(js.contains("coreMethod(\"IReduce/-reduce\""));
+    assert!(!js.contains("rt$reduceProtocol"));
+    assert_eq!(same_at_every_level(source), "[[:two 5] [:two 5]]\n");
+}
+
+/// A builtin type's prototype setup, members and static fields are effects of
+/// its constructor: a program keeps those of the types it can construct.
+#[test]
+fn builtin_type_members_travel_with_their_constructors() {
+    let vector = prepared("[1 2 3]", OptimizationLevel::Advanced);
+    let units = embedded(&vector);
+    for kept in [
+        "PersistentVectorValue",
+        "PersistentVectorValue.type",
+        "PersistentVectorValue.members",
+        "PersistentVectorValue.statics",
+    ] {
+        assert!(units.contains(&kept), "{kept}");
+    }
+    for left_out in [
+        "Eduction.members",
+        "UUIDType",
+        "TransientVectorType",
+        "Delay.type",
+        "ChunkBuffer.members",
+    ] {
+        assert!(!units.contains(&left_out), "{left_out}");
+    }
+    let source = "(pr-str [(.-EMPTY cljs.core/PersistentVector) (.-cnt [1 2]) \
+                  (.-arr (array-map :a 1)) (.-val (reduced 3)) (.-ns 'a/b) @(delay 4) \
+                  (vec (eduction (map inc) [1 2])) (persistent! (conj! (transient []) 1)) \
+                  (.indexOf (list 1 2 3) 3) (vec (js/Array.from (range 3))) \
+                  (cljs.core/PersistentHashMap.fromArrays #js [:k] #js [1])])";
+    assert_eq!(
+        same_at_every_level(source),
+        "[[] 2 #js [:a 1] 3 \"a\" 4 [2 3] [1] 2 [0 1 2] {:k 1}]\n"
+    );
 }

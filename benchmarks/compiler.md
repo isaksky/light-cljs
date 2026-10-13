@@ -868,3 +868,62 @@ adds 14 more (`registerReaderNamespace`, `theNs`; step 5); without those, the
 [retention report](results/retention-2026-10-13/console-log-sum.txt) and the
 [unit table](results/runtime-units-2026-10-13/units.tsv) are checked in;
 reproduce them with the commands of the two sections above.
+
+## Demand-driven runtime effects — October 13, 2026
+
+light-cljs-205 makes the runtime's load-time effects demand-driven (Phase 1
+step 4 of the [design](../docs/advanced-optimization.md)). The `builtinTypes`
+registry and its two attached effects (prototype patching for every builtin
+type and the `EMPTY` constants) became one prototype setup (`.type`), one
+members unit (`.members`) and, for six types, one statics unit (`.statics`) per
+type, each attached to the type's constructor. The variadic arity of the 24
+`variadicCore` operations, the comparisons and the bit operations are
+`install:` units, which a slice keeps only where the operation's value
+escapes: `rt$add(1, 2)` keeps the 234-byte `add` unit, `(apply + xs)` keeps
+`add.variadic` and the sequence machinery behind it. Every `coreMethod`
+dispatcher registration is listed by the manifest, and an `extend-type` of a
+core protocol method keeps its dispatcher. Raw and `gzip -9` bytes of
+`--compile --optimize LEVEL` output; "before" is the advanced output at
+6f10f51:
+
+| Fixture | Prepare raw / gzip | Advanced before | Advanced after | Saved | Units kept | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 359,238 / 85,273 | 152,535 / 35,364 | 136,918 / 31,500 | 15,617 | 341 | 137,000 |
+| println-hi | 359,125 / 85,197 | 154,002 / 35,559 | 138,655 / 31,777 | 15,347 | 350 | 139,000 |
+| vector-printed | 359,150 / 85,211 | 154,064 / 35,583 | 138,717 / 31,799 | 15,347 | 350 | 139,000 |
+| map-printed | 359,140 / 85,200 | 154,048 / 35,576 | 138,701 / 31,791 | 15,347 | 350 | 139,000 |
+| seq-pipeline | 359,469 / 85,318 | 161,885 / 37,678 | 155,103 / 35,705 | 6,782 | 384 | 156,000 |
+| add | 359,078 / 85,182 | 152,375 / 35,283 | 136,758 / 31,417 | 15,617 | 341 | 137,000 |
+| rest-fn | 359,422 / 85,321 | 152,264 / 35,287 | 136,917 / 31,482 | 15,347 | 340 | 137,000 |
+| keyword-case | 359,710 / 85,344 | 153,733 / 35,687 | 138,033 / 31,823 | 15,700 | 344 | 139,000 |
+| record-protocol | 360,031 / 85,518 | 171,476 / 39,768 | 164,486 / 37,626 | 6,990 | 387 | 165,000 |
+| pure-defs | 360,589 / 85,615 | 166,838 / 38,445 | 160,123 / 36,423 | 6,715 | 381 | 161,000 |
+| raw-js | 360,077 / 85,433 | 153,365 / 35,503 | 137,748 / 31,640 | 15,617 | 341 | 138,000 |
+| `[1 2 3]` | 359,077 / 85,183 | 151,912 / 35,185 | 136,565 / 31,382 | 15,347 | 340 | - |
+| `{}` | 359,067 / 85,178 | 151,896 / 35,182 | 136,549 / 31,379 | 15,347 | 340 | - |
+| `(apply + [1 2 3])` with `<` and `reduce` | 359,384 / 85,297 | 153,301 / 35,550 | 145,155 / 33,330 | 8,146 | 355 | - |
+
+The `add` root of `console-log-sum` now keeps one unit; the 338 units after it
+are the namespace registration's (`registerReaderNamespace` reaches `symbol`,
+step 5), as the [retention report](results/effects-2026-10-13/console-log-sum.txt)
+shows. Any value constructor still reaches 326 units (131,897 bytes): generic
+operations (`seq`, `withMeta`, `conj`, `hash`, the printer behind `toString`)
+reference every collection constructor, so a program that builds one value
+keeps all collection types and their members. What step 4 removes from that
+closure is the rest of the old `builtinTypes` effects: eductions, delays,
+transients, chunk buffers, UUIDs and the `reduce`/transducer machinery that
+only their members needed, and every variadic arity no escaping value needs.
+`seq-pipeline`, `record-protocol` and `pure-defs` reach some of that through
+their own operations, so they save less.
+
+The shared runtime that `none`, `prepare`, the REPL and the macro host embed
+grows by 1,800 bytes (357,438 to 359,238 for `console-log-sum`), so their
+ceilings rise to 360,000-361,000: each type's prototype setup is a statement
+of its own (`builtinType(ListValue, sequencePrototype);`), the field accessors
+are one `publicFields` call per type, and the comparison and bit-operation
+variadic arities are separate statements. The runtime has 986 units (357,895
+unit bytes): 70 effect units attached to other units' bindings, 70 with
+effects on their own bindings (58 of them the dispatcher registrations, now
+declared) and 32 installs. The
+[unit table](results/effects-2026-10-13/units.tsv) lists each unit's reach as
+a value root; reproduce both files with the commands of the sections above.

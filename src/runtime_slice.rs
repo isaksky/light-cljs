@@ -12,19 +12,24 @@
 //! At `Advanced`, application output reads runtime bindings directly. A core
 //! operation `rt.core.<name>` resolves through the core table
 //! ([`RuntimeManifest::core_reference`]) to the binding holding it (`add`), a
-//! member of one (`builtinTypes.PersistentVector`) or a cell
-//! (`coreCells.printFn`). The output embeds only the units reachable from the
-//! roots over the unit manifest ([`RuntimeManifest::reachable`]), in runtime
-//! order; the slice returns the bindings the program reads as an array, which
-//! the output destructures into `rt$<binding>` constants. A root keeps the unit
-//! declaring its binding, so the `core` hub stays out of application slices.
+//! member of one (`reader.readString`) or a cell (`coreCells.printFn`). The
+//! output embeds only the units reachable from the roots over the unit
+//! manifest ([`RuntimeManifest::reached_by_uses`]), in runtime order; the slice
+//! returns the bindings the program reads as an array, which the output
+//! destructures into `rt$<binding>` constants. A root keeps the unit declaring
+//! its binding, so the `core` hub stays out of application slices. Each root
+//! records how the output uses it ([`NameUse`]): a core operation that is only
+//! the callee of plain calls (`rt$add(1, 2)`) does not escape, so the slice
+//! leaves out its `install:` units (the variadic arity ABI), and an
+//! `extend-type` of a core protocol method keeps the method's dispatcher,
+//! which the runtime looks up by key.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::analyzer::{ExprId, Program, Span};
 use crate::application::OptimizationLevel;
-use crate::runtime_manifest::{RuntimeManifest, UnitId};
+use crate::runtime_manifest::{RootUse, RuntimeManifest, UnitId};
 
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
@@ -91,20 +96,62 @@ impl fmt::Display for RuntimeName {
     }
 }
 
+/// How emitted code uses a runtime name it records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NameUse {
+    /// Read as a value, which may escape to code that reads its installed
+    /// properties, so its `install:` units are kept.
+    Value,
+    /// Read only as the callee of plain calls, `rt$add(1, 2)` (Advanced), so
+    /// its `install:` units (the variadic arity ABI) are not needed.
+    Call,
+    /// Not read: kept because the runtime finds it by key. An `extend-type` of
+    /// a core protocol method keeps its dispatcher, which `extendType` looks up
+    /// in `coreDispatchers` and patches (Advanced).
+    Keep,
+}
+
+impl NameUse {
+    /// The use of a name recorded twice: a name both called and kept is read
+    /// and escapes, as a value is.
+    fn join(self, other: Self) -> Self {
+        if self == other { self } else { Self::Value }
+    }
+}
+
+/// How the slice treats a root's unit: only a binding the output calls and
+/// never reads otherwise is a call; a member read uses its binding as a value.
+fn root_use(name: &RuntimeName, used: NameUse) -> RootUse {
+    if used == NameUse::Call && name.member.is_none() {
+        RootUse::Call
+    } else {
+        RootUse::Value
+    }
+}
+
 /// The runtime names one emission reads, each with the site that first
-/// demanded it, in first-demand order. A site is the innermost expression
-/// being emitted, or `None` for the namespace registration emitted with the
-/// runtime.
+/// demanded it, in first-demand order, and how the output uses it. A site is
+/// the innermost expression being emitted, or `None` for the namespace
+/// registration emitted with the runtime.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuntimeRoots {
-    names: Vec<(RuntimeName, Option<ExprId>)>,
-    seen: HashSet<RuntimeName>,
+    names: Vec<(RuntimeName, Option<ExprId>, NameUse)>,
+    seen: HashMap<RuntimeName, usize>,
 }
 
 impl RuntimeRoots {
+    /// Records a read of `name` as a value.
     pub(crate) fn demand(&mut self, name: RuntimeName, site: Option<ExprId>) {
-        if self.seen.insert(name) {
-            self.names.push((name, site));
+        self.record(name, site, NameUse::Value);
+    }
+
+    pub(crate) fn record(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) {
+        match self.seen.get(&name) {
+            Some(&index) => self.names[index].2 = self.names[index].2.join(used),
+            None => {
+                self.seen.insert(name, self.names.len());
+                self.names.push((name, site, used));
+            }
         }
     }
 
@@ -117,37 +164,39 @@ impl RuntimeRoots {
     pub(crate) fn contains(&self, binding: &str, member: Option<&str>) -> bool {
         self.names
             .iter()
-            .any(|(name, _)| !name.direct && name.binding == binding && name.member == member)
+            .any(|(name, ..)| !name.direct && name.binding == binding && name.member == member)
     }
 
-    /// Whether some `rt$<binding>[.<member>]` was demanded.
+    /// Whether the output reads some `rt$<binding>[.<member>]`.
     #[cfg(any(debug_assertions, test))]
     pub(crate) fn contains_direct(&self, binding: &str) -> bool {
         self.names
             .iter()
-            .any(|(name, _)| name.direct && name.binding == binding)
+            .any(|(name, _, used)| name.direct && name.binding == binding && *used != NameUse::Keep)
     }
 
-    /// The bindings of the direct roots, each once, in first-demand order:
-    /// what an `Advanced` runtime slice returns.
+    /// The bindings of the direct roots the output reads, each once, in
+    /// first-demand order: what an `Advanced` runtime slice returns.
     pub(crate) fn direct_bindings(&self) -> Vec<&'static str> {
         let mut bindings: Vec<&'static str> = Vec::new();
-        for (name, _) in &self.names {
-            if name.direct && !bindings.contains(&name.binding) {
+        for (name, _, used) in &self.names {
+            if name.direct && *used != NameUse::Keep && !bindings.contains(&name.binding) {
                 bindings.push(name.binding);
             }
         }
         bindings
     }
 
-    /// The unit declaring each root's binding, in root order.
-    fn units(&self, manifest: &RuntimeManifest) -> Vec<UnitId> {
+    /// The unit declaring each root's binding with its use, in root order. A
+    /// member read uses the binding as a value.
+    fn units(&self, manifest: &RuntimeManifest) -> Vec<(UnitId, RootUse)> {
         self.names
             .iter()
-            .map(|(name, _)| {
-                manifest
+            .map(|(name, _, used)| {
+                let unit = manifest
                     .unit_of(name.binding)
-                    .unwrap_or_else(|| panic!("{name} is not a runtime binding"))
+                    .unwrap_or_else(|| panic!("{name} is not a runtime binding"));
+                (unit, root_use(name, *used))
             })
             .collect()
     }
@@ -177,11 +226,15 @@ pub(crate) struct EmittedRuntime {
 /// [`RuntimeRoots::direct_bindings`] order, which the output destructures.
 pub(crate) fn sliced_runtime(roots: &RuntimeRoots) -> (String, Vec<&'static str>) {
     debug_assert!(
-        roots.names.iter().all(|(name, _)| name.direct),
+        roots.names.iter().all(|(name, ..)| name.direct),
         "Advanced output reads every runtime name directly"
     );
     let manifest = RuntimeManifest::embedded();
-    let kept = manifest.reachable(roots.units(manifest));
+    let kept = manifest
+        .reached_by_uses(&roots.units(manifest))
+        .iter()
+        .map(Option::is_some)
+        .collect::<Vec<_>>();
     let bindings = roots.direct_bindings();
     (manifest.sliced_bindings_text(&kept, &bindings), bindings)
 }
@@ -224,6 +277,33 @@ pub struct RuntimeRoot {
     /// The unit declaring the name's binding.
     pub unit: UnitId,
     pub demand: Demand,
+    /// How the output uses the name, over all its reads.
+    pub used: NameUse,
+}
+
+impl RuntimeRoot {
+    /// The use of the root's unit for [`RuntimeManifest::reached_by_uses`]: a
+    /// call for a binding only called, else a value (a member read uses its
+    /// binding as a value).
+    pub fn root_use(&self) -> RootUse {
+        root_use(&self.name, self.used)
+    }
+
+    /// Whether the output reads the name: every root but a dispatcher kept for
+    /// an `extend-type`.
+    pub fn read(&self) -> bool {
+        self.used != NameUse::Keep
+    }
+
+    /// The root column of the report: the emitted spelling, with `(...)` for a
+    /// name only called and in parentheses for a name kept but not read.
+    fn label(&self) -> String {
+        match self.used {
+            NameUse::Value => self.name.to_string(),
+            NameUse::Call => format!("{}(...)", self.name),
+            NameUse::Keep => format!("({})", self.name),
+        }
+    }
 }
 
 /// One embedded runtime unit.
@@ -271,15 +351,16 @@ impl RetentionReport {
         } else {
             Vec::new()
         };
-        let first = manifest.reached_by(&root_units);
+        let first = manifest.reached_by_uses(&root_units);
         let roots = emitted
             .roots
             .names
             .iter()
             .zip(root_units)
-            .map(|(&(name, site), unit)| RuntimeRoot {
+            .map(|(&(name, site, used), (unit, _))| RuntimeRoot {
                 name,
                 unit,
+                used,
                 demand: site.map_or(Demand::NamespaceRegistration, |expr| {
                     let expr_data = &program.exprs[expr.0];
                     Demand::Expression {
@@ -365,7 +446,7 @@ impl fmt::Display for RetentionReport {
         let names = self
             .roots
             .iter()
-            .map(|root| root.name.to_string())
+            .map(RuntimeRoot::label)
             .collect::<Vec<_>>();
         let name_width = names.iter().map(String::len).max().unwrap_or(0).max(4);
         writeln!(f)?;
@@ -431,9 +512,13 @@ mod tests {
         assert_eq!(
             roots.names,
             [
-                (RuntimeName::core("add"), Some(ExprId(3))),
-                (RuntimeName::export("keyword"), Some(ExprId(5))),
-                (RuntimeName::export("symbol"), None),
+                (RuntimeName::core("add"), Some(ExprId(3)), NameUse::Value),
+                (
+                    RuntimeName::export("keyword"),
+                    Some(ExprId(5)),
+                    NameUse::Value
+                ),
+                (RuntimeName::export("symbol"), None, NameUse::Value),
             ]
         );
         assert!(roots.contains("core", Some("add")));
@@ -451,6 +536,33 @@ mod tests {
             roots.contains_direct("coreCells") && !roots.contains("coreCells", Some("printFn"))
         );
         assert_eq!(roots.direct_bindings(), ["coreCells", "add"]);
+
+        // A name only called stays a call; read as a value or both called and
+        // kept, it escapes. A name only kept is not returned by the slice.
+        let mut roots = RuntimeRoots::default();
+        let name = |binding| RuntimeName::direct(binding, None);
+        roots.record(name("add"), Some(ExprId(1)), NameUse::Call);
+        roots.record(name("add"), Some(ExprId(2)), NameUse::Call);
+        roots.record(name("inc"), Some(ExprId(3)), NameUse::Call);
+        roots.demand(name("inc"), Some(ExprId(4)));
+        roots.record(name("countProtocol"), Some(ExprId(5)), NameUse::Keep);
+        roots.record(name("seqProtocol"), Some(ExprId(6)), NameUse::Keep);
+        roots.record(name("seqProtocol"), Some(ExprId(7)), NameUse::Call);
+        assert_eq!(
+            roots
+                .names
+                .iter()
+                .map(|(name, site, used)| (name.binding, *site, *used))
+                .collect::<Vec<_>>(),
+            [
+                ("add", Some(ExprId(1)), NameUse::Call),
+                ("inc", Some(ExprId(3)), NameUse::Value),
+                ("countProtocol", Some(ExprId(5)), NameUse::Keep),
+                ("seqProtocol", Some(ExprId(6)), NameUse::Value),
+            ]
+        );
+        assert_eq!(roots.direct_bindings(), ["add", "inc", "seqProtocol"]);
+        assert!(!roots.contains_direct("countProtocol"));
         assert_eq!(thousands(334_504), "334,504");
         assert_eq!(thousands(999), "999");
     }

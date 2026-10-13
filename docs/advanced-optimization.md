@@ -183,7 +183,9 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   machinery (form bridge, declaration demand, `inspect`, namespace
   registry, macro reader, reader input window) is about 60 KB and is
   unreachable from value construction. (Since step 3 of Phase 1 the hub only
-  lists runtime bindings, and only the shared runtime keeps it.)
+  lists runtime bindings, and only the shared runtime keeps it. Since step 4
+  every load-time effect is a unit attached to the constructor or operation
+  that needs it.)
 - The IR already carries what Closure lacks: `CoreFnId` with 688 variants
   and per-variant runtime names, `Program.protocols` with arities,
   `record_constructors`, `GlobalBinding` with `constant`, `boolean_tag`
@@ -350,6 +352,7 @@ to under 1 KB and beat every upstream ceiling on its own.
    `installMethods`, `variadicCore` registrations, `EMPTY` constants and
    factory assignments move into install functions required by the
    constructors or operations that need them.
+   Implemented; see "Phase 1 effects extension points" below.
 5. **Separate compile-time machinery.** Form bridge, declaration demand,
    `inspect`, macro reader context, `compilerInput*`, and the namespace
    registry become units reached only by compile-time emission modes or by
@@ -379,13 +382,16 @@ Step 1 is implemented (light-cljs-202). Later steps build on it:
 - **Effects.** A unit with top-level statements other than declarations is
   marked `effect`. Bare `effect` mutates its own bindings; `effect: a, b`
   belongs to other units' bindings, is named `<target>.<what>` by convention
-  (`add.variadic`, `builtinTypes.statics`, `core.seal`), and is kept whenever
-  a unit declaring a target is kept. Step 4 replaces these units with install
-  functions that constructors and operations require.
+  (`ListValue.members`, `core.seal`), and is kept whenever a unit declaring a
+  target is kept. Since step 4, calling a `mutator` while loading is an effect
+  too, and `install: a, b` marks effects needed only where a target's value
+  escapes (`add.variadic`); see "Phase 1 effects extension points".
 - **API.** `RuntimeManifest::embedded()` parses the compiled-in runtime once.
   `unit_of(binding)` maps a runtime name to its `UnitId` (dense, in file
   order); `dependencies`, `attached_effects` and `reachable(roots)`, which
-  returns a `Vec<bool>` over units, give the slicing closure. A sliced runtime
+  returns a `Vec<bool>` over units, give the slicing closure
+  (`attached_installs` and `reached_by_uses` since step 4, and
+  `core_dispatcher(key)` for the dispatcher table). A sliced runtime
   is the prologue, the kept bodies (`&source()[unit.body_range]`) in `UnitId`
   order, so initialization order is preserved, and a replacement for the
   export section (`exports.names` lists today's exports). `runtime_text()` is
@@ -418,7 +424,8 @@ Step 2 is implemented (light-cljs-203) in `src/runtime_slice.rs`:
   records direct reads (see "Phase 1 hub extension points").
 - **Slice.** A root keeps the unit declaring its binding. At `Advanced`,
   application output (`emit_js` and `emit_esm`) embeds
-  `RuntimeManifest::sliced_bindings_text(reachable(roots), bindings)`: the
+  `RuntimeManifest::sliced_bindings_text(reachable(roots), bindings)` (since
+  step 4 the closure is `reached_by_uses`, with each root's `NameUse`): the
   prologue, the kept unit bodies in runtime order and `return [binding, ...];`
   for the bindings the program reads (step 2 returned an export object;
   `sliced_text` still builds that form). The anchor text, the shared path's
@@ -458,8 +465,9 @@ shared runtime, but no application slice keeps it:
   `core` literal became one unit per operation (named after the operation, or
   `<name>Protocol` / `<name>Core` where the name was taken, keeping the
   public function name, which printing shows). The reader is the `reader`
-  unit, types stay members of `builtinTypes`, and positional factories are
-  units. The `core` unit is `Object.assign(coreCells, {name, name: binding,
+  unit, types were members of `builtinTypes` (since step 4 each type is the
+  binding of its constructor, `PersistentVector: PersistentVectorValue`), and
+  positional factories are units. The `core` unit is `Object.assign(coreCells, {name, name: binding,
   name: binding.member, ...})` and must keep that flat shape:
   `RuntimeManifest::parse` reads it, with the keys of the `coreCells`
   literal, into `RuntimeManifest::core_reference(runtime name) ->
@@ -476,7 +484,7 @@ shared runtime, but no application slice keeps it:
   cell only when redefinition must reach it, and add the key to `coreCells`.
 - **Emission.** At `Advanced`, `Emitter::rt` resolves `rt.core.<name>`
   through the table and records the direct root (`RuntimeName::direct`,
-  spelled `rt$add`, `rt$coreCells.printFn`, `rt$builtinTypes.Keyword`). The
+  spelled `rt$add`, `rt$coreCells.printFn`, `rt$reader.readString`). The
   slice returns `[add, ...]` and the output destructures it into `rt$<binding>`
   constants, so the names are compiler-owned: `hygienic_js` renames `rt$` and
   `core$` tokens, and the debug scan checks each `rt$`/`core$` read against
@@ -502,6 +510,71 @@ shared runtime, but no application slice keeps it:
   prototype, and that reaches the collection, hashing and printing machinery
   (`symbol` alone keeps 299 units, 147 KB). Steps 4 (demand-driven effects)
   and 5 (conditional namespace registration) remove those edges. Per-fixture
+  sizes are in `benchmarks/compiler.md`.
+
+#### Phase 1 effects extension points
+
+Step 4 is implemented (light-cljs-205). The runtime runs no effect while
+loading that the manifest does not attach to the units needing it:
+
+- **Builtin types.** The `builtinTypes` registry, `publicConstructors` and
+  `builtinValue` are gone. Each builtin type is the binding of its
+  constructor (`ListValue`, `Cons`, `treeMapConstructor`; anonymous
+  constructors are `NodeSeqType`, `MapEntryType`, `UUIDType` and the four
+  `Transient*Type`s), and values are `Object.create(ListValue.prototype)`. A
+  type's effects are units attached to that binding: `<binding>.type` sets the
+  prototype chain right after its base prototype (`builtinType(ListValue,
+  sequencePrototype)`), before any value of the type exists; `.members` adds
+  the public fields (`publicFields`), methods and iterators where the old
+  `builtinTypes.prototypes` loop did; `.statics` sets `EMPTY`, `fromArray`,
+  `fromArrays` and `HASHMAP_THRESHOLD` where `builtinTypes.statics` did. A
+  program keeps the members of the types it can construct, and the empty
+  singletons of tier 1 below are `PersistentVectorValue.EMPTY` and so on,
+  kept with their type. The hub lists the constructors directly, so core
+  operation table rows name them (`PersistentVector` is
+  `PersistentVectorValue`).
+- **Installs.** `install: <binding>` marks an effect that only adds
+  properties to a value for code that receives it: the variadic arity ABI of
+  the 24 `variadicCore` operations, the comparisons (`comparisonVariadic`) and
+  the bit operations. `RuntimeManifest::reached_by_uses` keeps an install
+  once its target escapes: it is a `RootUse::Value` root, or a kept unit
+  requires it (conservatively, since runtime code may pass it on). The emitter
+  records a plain call `rt$add(1, 2)` as a `NameUse::Call` root, so a program
+  that only calls `+` keeps the 234-byte `add` unit and not `foldSeq` and the
+  sequence machinery; `(apply + xs)` or any other value read keeps the ABI.
+  The retention report prints call roots as `rt$add(...)`.
+- **Mutators.** `mutator` marks a function whose calls mutate their arguments
+  or a registry (`builtinType`, `installMethods`, `variadicCore`, `coreMethod`,
+  `createNs`, `extendType`, the declaration patch helpers). The validator
+  computes each unit's load-time calls (outside every function body) and
+  rejects a unit that calls a mutator while loading without being an `effect`
+  or `install` unit, or one marked `effect` with neither statements nor such
+  calls. Mark a new function `mutator` when calling it has a lasting effect;
+  the check is one level deep, so a load-time call of a function that calls a
+  mutator needs the callee marked too.
+- **Dispatchers.** Each `coreMethod("<key>", ...)` declarator registers a core
+  protocol dispatcher in `coreDispatchers`, where `extendType` looks it up by
+  key to patch native extensions and `builtin` reads them. The dispatcher
+  units are bare `effect` units, and the manifest lists every registration
+  (`RuntimeManifest::core_dispatcher(key)`; any other use of `coreMethod` is
+  a parse error). At `Advanced` an `extend-type` of a core protocol method
+  records the method's dispatcher as a `NameUse::Keep` root: the slice keeps
+  it although the output does not read it, so dispatch through a dispatcher
+  no kept code calls still finds the patch. The report prints such roots in
+  parentheses.
+- **Left for later.** `namespaces.cljsUser` and `namespaces.cljsCore` stay
+  effects of the namespace registry, which only the namespace registration
+  and reflection reach (step 5), and so does `compilerForms`. Generic
+  operations (`seq`, `withMeta`, `conj`, `=`, `hash`, the printer behind
+  `toString`) reference every collection constructor, so any program that
+  builds a value keeps them and their members, about 326 units (132 KB); step
+  6 and rapid type analysis (Phase 2) shrink that core.
+- **Measured.** `(js/console.log (+ 1 2))` drops from 152,535 to 136,918
+  bytes at `Advanced`. Its `add` root now keeps only `add`; the rest is the
+  namespace registration (`registerReaderNamespace` reaches 338 units through
+  `symbol`), which step 5 makes conditional. Every other fixture drops by
+  6-15 KB; `[1 2 3]` and `{}` alone drop from 151,912 and 151,896 to 136,565
+  and 136,549 bytes. The shared runtime grows by 1,800 bytes. Per-fixture
   sizes are in `benchmarks/compiler.md`.
 
 ### Phase 2: whole-program analysis over the IR

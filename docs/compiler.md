@@ -159,12 +159,18 @@ read and assigned as `rt$coreCells.printLength`. A core operation the program
 may replace (a `set!`, `binding` or `with-redefs` target, or a `js*` hole) is
 read and written through an output-level cell, `let core$inc = rt$inc;`, for the
 whole program (`PreparedApplication::replaced_core()` lists them); every other
-operation stays a direct read. `PreparedApplication::retention()` reports what was embedded: each
+operation stays a direct read. Runtime effects follow demand: a builtin type's
+prototype members and `EMPTY` constants are embedded with its constructor, a
+core function the program only calls (`rt$add(1, 2)`) is embedded without the
+variadic arity properties that `apply` reads, which a value use such as
+`(apply + xs)` keeps, and an `extend-type` of a core protocol keeps the
+protocol method's dispatcher. `PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
 that first demanded it, and each embedded unit with its byte size and the first
 of those names whose dependencies reach it. `--compile --size-report` prints
 that report as a table on stderr, for single files and `--entry` builds, at any
-level.
+level; a root the output only calls prints as `rt$add(...)`, and a dispatcher
+kept for an `extend-type` prints in parentheses.
 
 The entry result, all standalone expressions, unknown or effectful initializers,
 throws, definition tests, and protocol/type/extension declarations retain their

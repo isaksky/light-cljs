@@ -56,9 +56,10 @@ fn every_runtime_unit_in_the_table_exists_in_the_manifest() {
 
 /// For each key of the runtime's core table (`RuntimeManifest::core_reference`),
 /// the unit that Advanced output keeps to read it directly: the unit declaring
-/// the binding that holds the value (`add`, `keywordCore` for `keyword`), or
-/// the binding it is a member of (`builtinTypes` for type constructors,
-/// `reader` for the reader), or `coreCells` for a cell (dynamic Vars, `rand`).
+/// the binding that holds the value (`add`, `keywordCore` for `keyword`, the
+/// constructor `PersistentVectorValue` for the type `PersistentVector`), or
+/// the binding it is a member of (`reader` for the reader), or `coreCells` for
+/// a cell (dynamic Vars, `rand`).
 fn core_value_units(manifest: &RuntimeManifest<'_>) -> BTreeMap<String, Vec<String>> {
     manifest
         .core_references()
@@ -145,7 +146,7 @@ fn moving_an_operation_into_its_own_unit_moves_its_units() {
     assert_eq!(embedded["add"], ["add"]);
     assert_eq!(embedded["keyword"], ["keywordCore"]);
     assert_eq!(embedded["readString"], ["reader"]);
-    assert_eq!(embedded["PersistentVector"], ["builtinTypes"]);
+    assert_eq!(embedded["PersistentVector"], ["PersistentVectorValue"]);
     assert_eq!(embedded["printLength"], ["coreCells"]);
     assert_eq!(CoreFnId::Second.operation().units, ["second"]);
     // Pointing the hub's `second` at another unit's binding makes that unit

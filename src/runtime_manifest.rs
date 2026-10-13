@@ -25,7 +25,7 @@
 //! # Header syntax
 //!
 //! ```text
-//! //@unit <name>[ effect[: <binding>, ...]][ requires: <binding>, ...]
+//! //@unit <name>[ mutator][ effect[: <binding>, ...] | install: <binding>, ...][ requires: <binding>, ...]
 //! //@ <binding>, ...                    continues the requires list
 //! //@exports
 //! ```
@@ -34,19 +34,40 @@
 //! - `<name>` is unique. A unit that declares bindings is named after the
 //!   first one, so for most units the name is the binding. An effect unit
 //!   that declares nothing has a free name, by convention `<target>.<what>`
-//!   (`add.variadic`, `core.seal`); it never collides with a binding.
+//!   (`add.variadic`, `ListValue.members`, `core.seal`); it never collides
+//!   with a binding.
 //! - `requires:` lists exactly the top-level runtime bindings the body
 //!   references that other units declare, in any order (the update below
 //!   writes them sorted case-insensitively). ECMAScript globals
 //!   ([`ECMASCRIPT_GLOBALS`]) are never listed; host globals are not allowed
 //!   at all, and the runtime reaches the host through `globalThis`.
-//! - `effect` marks a unit with top-level statements other than declarations.
-//!   Bare `effect` means the statements mutate state the unit itself
-//!   declares, so they travel with it. `effect: a, b` names the bindings of
-//!   other units whose state they mutate: the unit belongs to those bindings
-//!   and must be kept whenever any of their units is kept (see
-//!   [`RuntimeManifest::reachable`]). A unit that declares nothing names at
-//!   least one target.
+//! - `mutator` marks a unit declaring a function whose calls mutate their
+//!   arguments or a registry (`builtinType`, `installMethods`, `variadicCore`,
+//!   `coreMethod`). Calling one while loading is an effect.
+//! - `effect` marks a unit that runs code with an effect while loading:
+//!   top-level statements other than declarations, or a call of a `mutator`
+//!   outside every function body. Bare `effect` means the code mutates state
+//!   the unit itself declares (or registers it, as each `coreMethod`
+//!   dispatcher does), so it travels with the unit. `effect: a, b` names the
+//!   bindings of other units whose state it mutates: the unit belongs to
+//!   those bindings and must be kept whenever any of their units is kept (see
+//!   [`RuntimeManifest::reachable`]); this is how a builtin type's prototype
+//!   setup (`ListValue.type`), members (`ListValue.members`) and static fields
+//!   (`ListValue.statics`) travel with its constructor. A unit that declares
+//!   nothing names at least one target.
+//! - `install: a, b` is an effect that only adds properties to the targets'
+//!   values for code that receives them, such as the variadic arity ABI of a
+//!   core function (`add.variadic`), which `apply` reads. It is kept once a
+//!   target's value escapes: when a kept unit requires the target, or the
+//!   program uses it as a value rather than only calling it
+//!   ([`RuntimeManifest::reached_by_uses`]). An install declares nothing.
+//!
+//! `coreMethod("<key>", ...)` registers a core protocol dispatcher in
+//! `coreDispatchers`, where `extendType` looks it up by key to patch it. The
+//! manifest lists every registration ([`RuntimeManifest::core_dispatcher`]),
+//! so a program that extends a core protocol method keeps its dispatcher; any
+//! use of `coreMethod` other than `const <binding> = coreMethod("<key>", ...)`
+//! is a parse error.
 //!
 //! # Validation
 //!
@@ -57,7 +78,9 @@
 //! dependency. [`RuntimeManifest::validate`] then requires every free
 //! identifier of a unit to be its own binding, a listed require, or an
 //! ECMAScript global, and rejects stale or unknown requires and misdeclared
-//! effects. The `runtime_manifest` suite in `tests/compiler/` runs both on the
+//! effects: a unit with load-time effects (statements or `mutator` calls) that
+//! is not marked `effect`, and an `effect` unit without them. The
+//! `runtime_manifest` suite in `tests/compiler/` runs both on the
 //! embedded runtime, so the runtime cannot regain hidden edges. After editing
 //! the runtime, fix the headers by hand or rewrite every `requires:` list with
 //! `LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::`
@@ -151,13 +174,19 @@ pub const ECMASCRIPT_GLOBALS: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub usize);
 
-/// Top-level statements of a unit other than declarations, and whose state
-/// they mutate.
+/// Code a unit runs at load time other than declaring bindings (top-level
+/// statements, or calls of a [`Unit::mutator`]), and whose state it mutates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Effect<'a> {
     /// Bindings of other units the statements belong to. Empty when they
     /// mutate the unit's own declarations.
     pub targets: Vec<&'a str>,
+    /// `install:` instead of `effect:`: the statements only add properties to
+    /// the targets' values that code receiving those values may read (the
+    /// variadic arity ABI of a core function), so they are needed where a
+    /// target's value escapes, not where it is only called
+    /// ([`RuntimeManifest::reached_by_uses`]).
+    pub install: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -169,12 +198,19 @@ pub struct Unit<'a> {
     pub body_range: Range<usize>,
     /// The bindings listed after `requires:`, in header order.
     pub requires: Vec<&'a str>,
+    /// Marked `mutator`: calling the function the unit declares mutates its
+    /// arguments or a registry, so a unit that calls it at load time has an
+    /// effect.
+    pub mutator: bool,
     pub effect: Option<Effect<'a>>,
     /// Top-level bindings the body declares, in source order.
     pub declares: Vec<&'a str>,
     /// Free identifiers of the body: other units' bindings and globals,
     /// sorted and without duplicates. Excludes [`Unit::declares`].
     pub references: Vec<&'a str>,
+    /// The [`Unit::references`] called directly (`name(...)`) by code run at load
+    /// time, outside every function body, sorted and without duplicates.
+    pub load_time_calls: Vec<&'a str>,
     /// Whether some top-level statement is not a declaration.
     pub has_effect_statements: bool,
 }
@@ -216,8 +252,7 @@ pub enum CoreReference<'a> {
     /// A runtime binding holding the operation: `add`, or `keywordCore` for
     /// `keyword`.
     Binding(&'a str),
-    /// A member of a runtime binding: `builtinTypes.PersistentVector`,
-    /// `reader.readString`.
+    /// A member of a runtime binding: `reader.readString`.
     Member(&'a str, &'a str),
     /// The cell [`CORE_CELLS`]`.<name>`, which the hub shares: reads and
     /// writes through either reach the runtime's own reads.
@@ -235,11 +270,31 @@ pub struct RuntimeManifest<'a> {
     names: HashMap<&'a str, UnitId>,
     /// The core table, by runtime name; empty without a [`CORE_HUB`] unit.
     core: HashMap<&'a str, CoreReference<'a>>,
+    /// The core protocol dispatchers, binding by protocol method key.
+    dispatchers: HashMap<&'a str, &'a str>,
     /// Per unit: the units declaring its required bindings, sorted.
     dependencies: Vec<Vec<UnitId>>,
-    /// Per unit: the effect units targeting one of its bindings.
+    /// Per unit: the `effect:` units targeting one of its bindings.
     attached: Vec<Vec<UnitId>>,
+    /// Per unit: the `install:` units targeting one of its bindings.
+    installs: Vec<Vec<UnitId>>,
 }
+
+/// How a program uses a root of a runtime slice
+/// ([`RuntimeManifest::reached_by_uses`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RootUse {
+    /// The program holds the binding's value, which may escape to code that
+    /// reads its installed properties.
+    Value,
+    /// The program only calls the binding directly, `rt$add(1, 2)`, so the
+    /// `install:` units targeting it are not needed.
+    Call,
+}
+
+/// The function whose calls register core protocol dispatchers by key
+/// ([`RuntimeManifest::core_dispatcher`]).
+pub const CORE_METHOD: &str = "coreMethod";
 
 /// Whether `line` is a manifest header line. `build.rs` removes exactly these.
 pub fn is_header_line(line: &str) -> bool {
@@ -326,6 +381,7 @@ impl<'a> RuntimeManifest<'a> {
                 },
                 Header::Unit {
                     name,
+                    mutator,
                     effect,
                     requires,
                 } => {
@@ -339,9 +395,11 @@ impl<'a> RuntimeManifest<'a> {
                             header_range: section.header_range,
                             body_range: section.body,
                             requires,
+                            mutator,
                             effect,
                             declares: facts.declares,
                             references: facts.references,
+                            load_time_calls: facts.load_time_calls,
                             has_effect_statements: facts.has_effect_statements,
                         }),
                         Err((offset, message)) => errors.push(ManifestError {
@@ -397,11 +455,22 @@ impl<'a> RuntimeManifest<'a> {
                 HashMap::new()
             }
         };
+        let dispatchers = match parse_dispatchers(source, &units) {
+            Ok(dispatchers) => dispatchers,
+            Err(found) => {
+                errors.extend(found.into_iter().map(|(offset, message)| ManifestError {
+                    line: line_of(offset),
+                    message,
+                }));
+                HashMap::new()
+            }
+        };
         let Some(exports) = exports.filter(|_| errors.is_empty()) else {
             return Err(errors);
         };
         let mut dependencies = Vec::with_capacity(units.len());
         let mut attached = vec![Vec::new(); units.len()];
+        let mut installs = vec![Vec::new(); units.len()];
         for (index, unit) in units.iter().enumerate() {
             let mut required = unit
                 .requires
@@ -411,9 +480,16 @@ impl<'a> RuntimeManifest<'a> {
             required.sort_unstable();
             required.dedup();
             dependencies.push(required);
-            for target in unit.effect.iter().flat_map(|effect| &effect.targets) {
-                if let Some(owner) = bindings.get(target) {
-                    attached[owner.0].push(UnitId(index));
+            if let Some(effect) = &unit.effect {
+                for target in &effect.targets {
+                    if let Some(owner) = bindings.get(target) {
+                        let list = if effect.install {
+                            &mut installs
+                        } else {
+                            &mut attached
+                        };
+                        list[owner.0].push(UnitId(index));
+                    }
                 }
             }
         }
@@ -429,8 +505,10 @@ impl<'a> RuntimeManifest<'a> {
             bindings,
             names,
             core,
+            dispatchers,
             dependencies,
             attached,
+            installs,
         })
     }
 
@@ -470,9 +548,23 @@ impl<'a> RuntimeManifest<'a> {
         &self.dependencies[unit.0]
     }
 
-    /// Effect units that target one of `unit`'s bindings, in source order.
+    /// `effect:` units that target one of `unit`'s bindings, in source order.
     pub fn attached_effects(&self, unit: UnitId) -> &[UnitId] {
         &self.attached[unit.0]
+    }
+
+    /// `install:` units that target one of `unit`'s bindings, in source order.
+    pub fn attached_installs(&self, unit: UnitId) -> &[UnitId] {
+        &self.installs[unit.0]
+    }
+
+    /// The binding of the core protocol dispatcher registered for a protocol
+    /// method key such as `"ICounted/-count"`: the `<binding>` of
+    /// `const <binding> = coreMethod("<key>", ...)`. `extendType` patches the
+    /// dispatcher it finds in `coreDispatchers` by key, so a program extending
+    /// a core protocol keeps the dispatcher's unit.
+    pub fn core_dispatcher(&self, key: &str) -> Option<&'a str> {
+        self.dispatchers.get(key).copied()
     }
 
     /// Units declaring the exported bindings, the roots of the full runtime.
@@ -488,38 +580,56 @@ impl<'a> RuntimeManifest<'a> {
         roots
     }
 
-    /// The units a program needs when it uses `roots`, indexed by [`UnitId`]:
-    /// the closure under `requires`, where keeping a unit also keeps every
-    /// effect unit that targets one of its bindings.
+    /// The units a program needs when it holds the values of `roots`, indexed
+    /// by [`UnitId`]: the closure under `requires`, where keeping a unit also
+    /// keeps every `effect:` and `install:` unit that targets one of its
+    /// bindings. [`RuntimeManifest::reached_by_uses`] distinguishes roots the
+    /// program only calls.
     pub fn reachable(&self, roots: impl IntoIterator<Item = UnitId>) -> Vec<bool> {
-        let mut kept = vec![false; self.units.len()];
-        let mut stack = roots.into_iter().collect::<Vec<_>>();
-        while let Some(unit) = stack.pop() {
-            if std::mem::replace(&mut kept[unit.0], true) {
-                continue;
-            }
-            stack.extend_from_slice(&self.dependencies[unit.0]);
-            stack.extend_from_slice(&self.attached[unit.0]);
-        }
-        kept
+        let roots = roots
+            .into_iter()
+            .map(|unit| (unit, RootUse::Value))
+            .collect::<Vec<_>>();
+        self.reached_by_uses(&roots)
+            .into_iter()
+            .map(|first| first.is_some())
+            .collect()
     }
 
     /// [`RuntimeManifest::reachable`] with attribution, indexed by [`UnitId`]:
     /// the position in `roots` of the first root whose closure contains the
     /// unit, or `None` for a unit no root keeps. The kept units are the same.
     pub fn reached_by(&self, roots: &[UnitId]) -> Vec<Option<usize>> {
+        let roots = roots
+            .iter()
+            .map(|&unit| (unit, RootUse::Value))
+            .collect::<Vec<_>>();
+        self.reached_by_uses(&roots)
+    }
+
+    /// The units a program needs, with attribution as in
+    /// [`RuntimeManifest::reached_by`], when it uses each root as given. A
+    /// unit's `effect:` units are kept with it. Its `install:` units are kept
+    /// once its value escapes: when it is a [`RootUse::Value`] root or another
+    /// kept unit requires it, since the runtime may pass a binding it
+    /// references anywhere. A [`RootUse::Call`] root alone keeps none.
+    pub fn reached_by_uses(&self, roots: &[(UnitId, RootUse)]) -> Vec<Option<usize>> {
         let mut first = vec![None; self.units.len()];
+        let mut escaped = vec![false; self.units.len()];
         let mut stack = Vec::new();
-        for (index, &root) in roots.iter().enumerate() {
+        for (index, &(root, root_use)) in roots.iter().enumerate() {
             // A unit an earlier root reached has its whole closure attributed.
-            stack.push(root);
-            while let Some(unit) = stack.pop() {
+            stack.push((root, root_use == RootUse::Value));
+            while let Some((unit, escapes)) = stack.pop() {
+                if escapes && !std::mem::replace(&mut escaped[unit.0], true) {
+                    stack.extend(self.installs[unit.0].iter().map(|&install| (install, true)));
+                }
                 if first[unit.0].is_some() {
                     continue;
                 }
                 first[unit.0] = Some(index);
-                stack.extend_from_slice(&self.dependencies[unit.0]);
-                stack.extend_from_slice(&self.attached[unit.0]);
+                stack.extend(self.dependencies[unit.0].iter().map(|&unit| (unit, true)));
+                stack.extend(self.attached[unit.0].iter().map(|&unit| (unit, true)));
             }
         }
         first
@@ -607,13 +717,32 @@ impl<'a> RuntimeManifest<'a> {
                     fail(format!("requires `{required}` but never references it"));
                 }
             }
+            if unit.mutator && unit.declares.is_empty() {
+                fail("is marked `mutator` but declares no function".into());
+            }
+            // Mutators the unit calls while loading.
+            let mutators = unit
+                .load_time_calls
+                .iter()
+                .filter(|reference| {
+                    self.unit_of(reference)
+                        .is_some_and(|owner| owner != id && self.units[owner.0].mutator)
+                })
+                .collect::<Vec<_>>();
             match &unit.effect {
                 None if unit.has_effect_statements => fail(
                     "has top-level statements other than declarations but is not marked `effect`"
                         .into(),
                 ),
-                Some(_) if !unit.has_effect_statements => {
-                    fail("is marked `effect` but only declares bindings".into())
+                None if !mutators.is_empty() => fail(format!(
+                    "calls mutator `{}` while loading but is not marked `effect`",
+                    mutators[0]
+                )),
+                Some(_) if !unit.has_effect_statements && mutators.is_empty() => fail(
+                    "is marked `effect` but only declares bindings and calls no mutator".into(),
+                ),
+                Some(effect) if effect.install && !unit.declares.is_empty() => {
+                    fail("is marked `install:` but declares bindings".into())
                 }
                 Some(effect) => {
                     if effect.targets.is_empty() && unit.declares.is_empty() {
@@ -708,9 +837,16 @@ impl<'a> RuntimeManifest<'a> {
             let header = &self.source[unit.header_range.clone()];
             let indent = &header[..header.len() - header.trim_start().len()];
             let mut words = vec![format!("//@unit {}", unit.name)];
+            if unit.mutator {
+                words.push("mutator".into());
+            }
             match &unit.effect {
                 Some(effect) if effect.targets.is_empty() => words.push("effect".into()),
-                Some(effect) => words.push(format!("effect: {}", effect.targets.join(", "))),
+                Some(effect) => words.push(format!(
+                    "{}: {}",
+                    if effect.install { "install" } else { "effect" },
+                    effect.targets.join(", ")
+                )),
                 None => {}
             }
             let required = self.computed_requires(UnitId(index));
@@ -756,6 +892,7 @@ fn line_at(source: &str, offset: usize) -> usize {
 enum Header<'a> {
     Unit {
         name: &'a str,
+        mutator: bool,
         effect: Option<Effect<'a>>,
         requires: Vec<&'a str>,
     },
@@ -900,12 +1037,26 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
         return Err(format!("invalid unit name `{name}`"));
     }
     rest = rest[name_end..].trim_start();
+    let mutator = rest
+        .strip_prefix("mutator")
+        .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
+    if mutator {
+        rest = rest["mutator".len()..].trim_start();
+    }
     let mut effect = None;
-    if let Some(after) = rest.strip_prefix("effect")
-        && (after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || c == ':'))
-    {
+    let keyword = if rest.starts_with("install:") {
+        Some("install")
+    } else {
+        rest.strip_prefix("effect")
+            .filter(|after| {
+                after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || c == ':')
+            })
+            .map(|_| "effect")
+    };
+    if let Some(keyword) = keyword {
+        let install = keyword == "install";
         let mut targets = Vec::new();
-        rest = after.trim_start();
+        rest = rest[keyword.len()..].trim_start();
         if let Some(after) = rest.strip_prefix(':') {
             rest = after;
             loop {
@@ -918,7 +1069,9 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
                     .unwrap_or(rest.len());
                 let target = &rest[..end];
                 if !is_identifier(target) {
-                    return Err(format!("unit `{name}`: invalid effect target `{target}`"));
+                    return Err(format!(
+                        "unit `{name}`: invalid {keyword} target `{target}`"
+                    ));
                 }
                 targets.push(target);
                 rest = rest[end..].trim_start();
@@ -928,10 +1081,10 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
                 }
             }
             if targets.is_empty() {
-                return Err(format!("unit `{name}`: `effect:` names no binding"));
+                return Err(format!("unit `{name}`: `{keyword}:` names no binding"));
             }
         }
-        effect = Some(Effect { targets });
+        effect = Some(Effect { targets, install });
     }
     let mut requires = Vec::new();
     if let Some(after) = rest.strip_prefix("requires:") {
@@ -956,11 +1109,12 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     }
     if !rest.is_empty() {
         return Err(format!(
-            "unit `{name}`: unexpected `{rest}`; expected `effect` or `requires:`"
+            "unit `{name}`: unexpected `{rest}`; expected `mutator`, `effect`, `install:` or `requires:`"
         ));
     }
     Ok(Header::Unit {
         name,
+        mutator,
         effect,
         requires,
     })
@@ -1151,6 +1305,75 @@ fn parse_core_table<'a>(
         return Err((hub.body_range.start, shape()));
     }
     Ok(table)
+}
+
+/// The core protocol dispatchers: for every `const <binding> = coreMethod(
+/// "<key>", ...)` declarator, the key it registers in `coreDispatchers` and
+/// the binding that holds it. Any other mention of [`CORE_METHOD`] outside its
+/// own unit is an error, so the table lists every registration.
+fn parse_dispatchers<'a>(
+    source: &'a str,
+    units: &[Unit<'a>],
+) -> Result<HashMap<&'a str, &'a str>, Vec<(usize, String)>> {
+    let mut table = HashMap::new();
+    let mut errors = Vec::new();
+    for unit in units {
+        if unit.references.binary_search(&CORE_METHOD).is_err() {
+            continue;
+        }
+        let tokens = match lex(source, unit.body_range.clone()) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                errors.push((error.offset, error.message.to_string()));
+                continue;
+            }
+        };
+        let text = |index: Option<usize>| {
+            index
+                .and_then(|index| tokens.get(index))
+                .map(|token| token.text(source))
+        };
+        for (index, token) in tokens.iter().enumerate() {
+            if token.kind != Kind::Name || token.text(source) != CORE_METHOD {
+                continue;
+            }
+            let binding = index
+                .checked_sub(2)
+                .map(|at| &tokens[at])
+                .filter(|token| token.kind == Kind::Name);
+            let key = tokens
+                .get(index + 2)
+                .filter(|token| token.kind == Kind::Str)
+                .map(|token| &source[token.start + 1..token.end - 1]);
+            let declarator = matches!(text(index.checked_sub(3)), Some("const" | ","))
+                && text(index.checked_sub(1)) == Some("=")
+                && text(Some(index + 1)) == Some("(");
+            match (binding, key) {
+                (Some(binding), Some(key)) if declarator && !key.contains('\\') => {
+                    if table.insert(key, binding.text(source)).is_some() {
+                        errors.push((
+                            token.start,
+                            format!("`{CORE_METHOD}` registers a dispatcher for `{key}` twice"),
+                        ));
+                    }
+                }
+                _ => errors.push((
+                    token.start,
+                    format!(
+                        "unit `{}`: `{CORE_METHOD}` registers a core protocol dispatcher by key; \
+                         call it only as `const <binding> = {CORE_METHOD}(\"<key>\", ...)` so the \
+                         manifest lists the dispatcher",
+                        unit.name
+                    ),
+                )),
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(table)
+    } else {
+        Err(errors)
+    }
 }
 
 /// The index after `head` at the start of a core table unit's tokens.
@@ -1487,6 +1710,7 @@ fn lex_section(source: &str, range: Range<usize>, balanced: bool) -> Result<Vec<
 struct Facts<'a> {
     declares: Vec<&'a str>,
     references: Vec<&'a str>,
+    load_time_calls: Vec<&'a str>,
     has_effect_statements: bool,
 }
 
@@ -1588,7 +1812,8 @@ struct Parser<'t, 'a> {
     partners: Vec<usize>,
     pos: usize,
     scopes: Vec<Scope<'a>>,
-    references: Vec<(&'a str, usize)>,
+    /// Each reference with its scope and whether it is the callee of a call.
+    references: Vec<(&'a str, usize, bool)>,
     error: Option<(usize, String)>,
 }
 
@@ -1668,8 +1893,10 @@ fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usize, S
     }
     let declares = parser.scopes[0].names.clone();
     let mut references = Vec::new();
-    for &(name, scope) in &parser.references {
+    let mut load_time_calls = Vec::new();
+    for &(name, scope, call) in &parser.references {
         let mut current = scope;
+        let mut load_time = true;
         let local = loop {
             if current == 0 {
                 break parser.scopes[0].names.contains(&name);
@@ -1677,17 +1904,24 @@ fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usize, S
             if parser.scopes[current].names.contains(&name) {
                 break true;
             }
+            load_time &= !parser.scopes[current].function;
             current = parser.scopes[current].parent;
         };
         if !local {
             references.push(name);
+            if load_time && call {
+                load_time_calls.push(name);
+            }
         }
     }
     references.sort_unstable();
     references.dedup();
+    load_time_calls.sort_unstable();
+    load_time_calls.dedup();
     Ok(Facts {
         declares,
         references,
+        load_time_calls,
         has_effect_statements,
     })
 }
@@ -1775,7 +2009,8 @@ impl<'a> Parser<'_, 'a> {
     }
 
     fn reference(&mut self, name: &'a str, scope: usize) {
-        self.references.push((name, scope));
+        let call = self.word() == Some(name) && self.punct_at(self.pos + 1) == Some("(");
+        self.references.push((name, scope, call));
     }
 
     /// The single-token property key at the cursor, if any.
@@ -2528,6 +2763,74 @@ mod tests {
                 "  //@unit c effect requires:\n  //@   a\n"
             ),
             SAMPLE
+        );
+    }
+
+    const INSTALLS: &str = "// Original bounded runtime\n(() => {\n  \"use strict\";\n\n  //@unit f\n  function f() { return 1; }\n  //@unit install mutator\n  function install(fn) { fn.extra = true; return fn; }\n  //@unit f.extra install: f requires: f, install\n  install(f);\n  //@unit g requires: f\n  const g = () => f();\n  //@unit h effect requires: install\n  const h = install(() => 2);\n  //@exports\n  return Object.freeze({f, g, h});\n})()\n";
+
+    #[test]
+    fn installs_follow_escaping_values_and_mutator_calls_are_effects() {
+        let manifest = RuntimeManifest::parse(INSTALLS).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.with_computed_requires(), INSTALLS);
+        let unit = |name| manifest.unit_named(name).unwrap();
+        assert!(manifest.units[unit("install").0].mutator);
+        assert_eq!(manifest.units[unit("h").0].load_time_calls, ["install"]);
+        assert!(manifest.units[unit("g").0].load_time_calls.is_empty());
+        assert_eq!(manifest.attached_installs(unit("f")), [unit("f.extra")]);
+        assert!(manifest.attached_effects(unit("f")).is_empty());
+        let kept = |roots: &[(UnitId, RootUse)]| {
+            manifest
+                .reached_by_uses(roots)
+                .iter()
+                .map(Option::is_some)
+                .collect::<Vec<_>>()
+        };
+        // Called only, `f` keeps no install; held as a value, or required by
+        // a kept unit that may pass it on, it does.
+        assert_eq!(
+            kept(&[(unit("f"), RootUse::Call)]),
+            [true, false, false, false, false]
+        );
+        assert_eq!(
+            kept(&[(unit("f"), RootUse::Value)]),
+            [true, true, true, false, false]
+        );
+        assert_eq!(
+            manifest.reached_by_uses(&[(unit("f"), RootUse::Call), (unit("g"), RootUse::Call)]),
+            [Some(0), Some(1), Some(1), Some(1), None]
+        );
+        assert_eq!(
+            manifest.reachable([unit("f")]),
+            kept(&[(unit("f"), RootUse::Value)])
+        );
+
+        let messages = |source: &str| {
+            RuntimeManifest::parse(source)
+                .unwrap()
+                .validate()
+                .unwrap_err()
+                .into_iter()
+                .map(|e| e.message)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            messages(&INSTALLS.replace("//@unit h effect requires", "//@unit h requires")),
+            ["unit `h`: calls mutator `install` while loading but is not marked `effect`"]
+        );
+        assert_eq!(
+            messages(&INSTALLS.replace("//@unit g requires: f", "//@unit g effect requires: f")),
+            ["unit `g`: is marked `effect` but only declares bindings and calls no mutator"]
+        );
+        // Without `mutator`, the call that initializes `h` is no effect.
+        assert_eq!(
+            messages(&INSTALLS.replace("//@unit install mutator", "//@unit install")),
+            ["unit `h`: is marked `effect` but only declares bindings and calls no mutator"]
+        );
+        // An install names the bindings whose values it extends.
+        assert!(
+            RuntimeManifest::parse(&INSTALLS.replace("install: f requires", "install: requires"))
+                .is_err()
         );
     }
 

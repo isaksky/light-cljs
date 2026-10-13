@@ -1,0 +1,987 @@
+unit	bytes	requires	effect	reach_units	reach_bytes
+keywords	176	0		1	176
+vectors	33	0		1	33
+symbols	33	0		1	33
+maps	30	0		1	30
+mapKinds	34	0		1	34
+sortedComparators	43	0		1	43
+mapEntries	36	0		1	36
+sets	30	0		1	30
+setKinds	34	0		1	34
+transients	36	0		1	36
+cells	31	0		1	31
+views	31	0		1	31
+reducedValues	39	0		1	39
+constructorHashes	43	0		1	43
+publicCollectionSlots	47	0		1	47
+iterateUnrealizedSeed	51	0		1	51
+vectorRoots	37	0		1	37
+canonicalVectorRoots	46	0		1	46
+metadataValues	40	0		1	40
+deferredVarMetadata	45	0		1	45
+uuids	31	0		1	31
+uuidHashes	36	0		1	36
+vars	30	0		1	30
+atoms	58	0		1	58
+queues	32	0		1	32
+lazyValues	60	0		1	60
+eductions	35	0		1	35
+ifnValues	65	0		1	65
+metaFunctions	39	0		1	39
+typeNames	35	0		1	35
+typeFields	94	0		1	94
+builtinType	407	0		1	407
+Delay.type	40	2	Delay	5	900
+Eduction.type	43	2	Eduction	349	145569
+ChunkBuffer.type	46	2	ChunkBuffer	10	1959
+arrayChunk.type	45	2	arrayChunk	5	1037
+StringBufferWriter.type	53	2	StringBufferWriter	326	131897
+reducedPrototype	46	0		1	46
+Reduced.type	42	3	Reduced	8	1116
+sequencePrototype	335	4		326	131897
+ListValue.type	45	3	ListValue	326	131897
+EmptyListValue.type	50	3	EmptyListValue	326	131897
+Cons.type	40	3	Cons	326	131897
+IndexedSeqValue.type	51	3	IndexedSeqValue	326	131897
+ChunkedSeqValue.type	51	3	ChunkedSeqValue	326	131897
+ChunkedCons.type	47	3	ChunkedCons	326	131897
+LazySeq.type	43	3	LazySeq	326	131897
+PersistentQueueValue.type	56	3	PersistentQueueValue	326	131897
+RepeatValue.type	47	3	RepeatValue	326	131897
+CycleValue.type	46	3	CycleValue	326	131897
+IterateValue.type	48	3	IterateValue	326	131897
+RangeValue.type	46	3	RangeValue	326	131897
+IntegerRangeValue.type	53	3	IntegerRangeValue	326	131897
+NodeSeqType	70	2	own	326	131897
+treeMapSeqConstructor.type	57	3	treeMapSeqConstructor	326	131897
+emptyList	126	2	own	326	131897
+missing	37	0		1	37
+truth	59	0		1	59
+invalidArity	73	0		1	73
+outOfBounds	74	0		1	74
+keywordPrototype	649	4		326	131897
+KeywordValue.type	48	3	KeywordValue	326	131897
+symbolPrototype	638	4		326	131897
+SymbolValue.type	46	3	SymbolValue	326	131897
+SymbolValue	540	4		326	131897
+Cons	347	4		326	131897
+constructorSlots	220	3		4	350
+ListValue	279	2		326	131897
+EmptyListValue	223	2		326	131897
+KeywordValue	191	2		326	131897
+CycleValue	196	2		326	131897
+RepeatValue	521	4		326	131897
+IterateValue	224	3		326	131897
+PersistentVectorValue	584	3		326	131897
+SubvecValue	472	4		326	131897
+ChunkedSeqValue	242	2		326	131897
+PersistentQueueValue	201	2		326	131897
+PersistentArrayMapValue	463	3		326	131897
+PersistentHashMapValue	522	4		326	131897
+PersistentHashSetValue	352	5		326	131897
+Reduced	131	2		8	1116
+symbol	241	2		326	131897
+symbolCore	859	5		327	132756
+gensymCounter	25	0		1	25
+generatedNames	36	0		1	36
+gensym	310	5		330	133127
+macroexpandServices	181	0		1	181
+setMacroexpandServices	482	1		2	663
+expansionService	337	2		3	591
+macroexpand	70	1		4	661
+macroexpand1	75	1		4	666
+cons	398	7		326	131897
+listFromArray	175	2		327	132072
+list	60	1		329	132195
+view	399	5		326	131897
+seq	2807	22		326	131897
+iteratorSeq	517	1		326	131897
+first	907	11		326	131897
+rest	1268	15		326	131897
+next	639	8		326	131897
+seqToMap	490	6		360	146072
+reduced	143	2		8	1116
+isReduced	65	1		2	104
+ensureReduced	86	2		10	1267
+unreduced	92	2		3	196
+deref	57	1		61	16257
+derefProtocol	459	8		60	16200
+add	234	0		329	132401
+numericFold	400	0		1	400
+subtract	124	1		330	132696
+multiply	165	1		330	132737
+divide	125	1		330	132695
+comparison	280	0		1	280
+comparisonVariadic	315	4		327	132212
+extrema	218	1		2	618
+isInteger	269	0		1	269
+isClosureInteger	524	0		1	524
+fix	58	0		1	58
+mod	43	0		1	43
+quot	47	1		2	105
+isEven	130	1		2	399
+char	217	0		1	217
+bitOperation	107	1		2	507
+bitCount	181	0		1	181
+inc	71	0		1	71
+dec	26	0		1	26
+less	44	1		330	132581
+less.variadic	45	2	install:less	330	132581
+lessEqual	50	1		330	132593
+lessEqual.variadic	51	2	install:lessEqual	330	132593
+greater	47	1		330	132587
+greater.variadic	48	2	install:greater	330	132587
+greaterEqual	53	1		330	132599
+greaterEqual.variadic	54	2	install:greaterEqual	330	132599
+numericEqual	97	1		329	132417
+max	40	1		3	658
+min	40	1		3	658
+abs	32	0		1	32
+int	26	0		1	26
+long	28	1		2	86
+uncheckedInt	36	1		2	94
+uncheckedLong	37	1		2	95
+byte	23	0		1	23
+short	24	0		1	24
+float	24	0		1	24
+double	25	0		1	25
+booleans	27	0		1	27
+bytes	24	0		1	24
+chars	24	0		1	24
+shorts	25	0		1	25
+ints	23	0		1	23
+floats	25	0		1	25
+doubles	26	0		1	26
+longs	24	0		1	24
+uncheckedByte	32	0		1	32
+uncheckedShort	33	0		1	33
+uncheckedFloat	33	0		1	33
+uncheckedDouble	34	0		1	34
+uncheckedChar	32	0		1	32
+uncheckedAdd	46	1		330	132447
+uncheckedAddInt	49	1		330	132450
+uncheckedSubtract	56	1		331	132752
+uncheckedSubtractInt	59	1		331	132755
+uncheckedMultiply	56	1		331	132793
+uncheckedMultiplyInt	59	1		331	132796
+uncheckedDivideInt	55	1		331	132750
+uncheckedInc	35	0		1	35
+uncheckedIncInt	38	0		1	38
+uncheckedDec	35	0		1	35
+uncheckedDecInt	38	0		1	38
+uncheckedNegate	35	0		1	35
+uncheckedNegateInt	38	0		1	38
+uncheckedRemainderInt	53	1		2	96
+jsMod	33	0		1	33
+rem	44	1		3	149
+bitXor	48	1		331	132725
+bitXor.variadic	81	3	install:bitXor	331	132725
+bitAnd	48	1		331	132725
+bitAnd.variadic	81	3	install:bitAnd	331	132725
+bitOr	47	1		331	132723
+bitOr.variadic	80	3	install:bitOr	331	132723
+bitAndNot	52	1		331	132733
+bitAndNot.variadic	85	3	install:bitAndNot	331	132733
+bitNot	26	0		1	26
+bitClear	44	0		1	44
+bitFlip	42	0		1	42
+bitSet	41	0		1	41
+bitTest	50	0		1	50
+bitShiftLeft	41	0		1	41
+bitShiftRight	42	0		1	42
+bitShiftRightZeroFill	51	0		1	51
+unsignedBitShiftRight	51	0		1	51
+isZero	31	0		1	31
+isPositive	33	0		1	33
+isNegative	33	0		1	33
+isOdd	33	1		3	432
+isInt	58	2		3	851
+isPositiveInt	107	2		3	900
+isNegativeInt	91	2		3	884
+isNaturalInt	94	2		3	887
+isNumber	47	0		1	47
+isFloat	46	0		1	46
+isDouble	47	0		1	47
+isInfinite	61	0		1	61
+isNaNCore	142	0		1	142
+isIdent	58	2		3	267
+isCollectionValue	188	8		16	2432
+boolean	86	0		1	86
+not	45	0		1	45
+isBoolean	52	0		1	52
+isTrue	34	0		1	34
+isFalse	36	0		1	36
+isNil	32	0		1	32
+isSome	33	0		1	33
+isUndefined	44	0		1	44
+notEqual	45	1		329	132365
+identity	27	0		1	27
+isAny	28	0		1	28
+isString	47	0		1	47
+isChar	63	0		1	63
+isKeyword	42	1		2	218
+isSymbol	40	1		2	73
+isSimpleIdent	65	2		62	17085
+isQualifiedIdent	68	2		62	17088
+isSimpleKeyword	72	2		62	17092
+isQualifiedKeyword	75	2		62	17095
+isSimpleSymbol	70	2		62	17090
+isQualifiedSymbol	73	2		62	17093
+keywordIdentical	105	2		327	132002
+symbolIdentical	102	2		327	131999
+isFn	65	2		60	16549
+isIFn	51	3		61	16600
+isArray	41	0		1	41
+isObject	161	5		23	2960
+isColl	62	2		60	16546
+isSeq	54	2		60	16538
+isList	43	2		60	16527
+isSeqable	137	2		60	16621
+isSequential	55	2		60	16539
+isVector	47	2		60	16531
+isMap	54	2		60	16538
+isSet	54	2		60	16538
+isAssociative	57	2		60	16541
+isIFind	44	2		60	16528
+isCounted	49	2		60	16533
+isIndexed	49	2		60	16533
+isReduceable	51	2		60	16535
+isReversible	55	2		60	16539
+isSorted	47	2		60	16531
+isRecord	47	2		60	16531
+isMapEntry	60	2		57	15625
+isChunkedSeq	64	2		57	15629
+isEmpty	106	4		327	132003
+reduce	4900	19		336	139352
+reducingFunction	513	1		2	586
+transform	96	0		1	96
+completing	282	2		3	868
+transduce	305	2		337	139657
+indexedTransform	349	2		4	1031
+bufferedTransform	1021	8		332	133789
+haltWhen	530	10		336	133783
+dedupe	813	10		329	133319
+randomSample	255	3		331	133792
+reduceKv	858	9		337	140210
+subvecSources	39	0		1	39
+subvec	623	6		327	132520
+iteratorInit	47	0		1	47
+SeqIter	536	5		328	132480
+RangedIterator	409	1		2	442
+rangedIterator	224	3		328	132530
+seqIter	71	2		329	132551
+iterator	681	9		331	133794
+equivMap	373	9		327	132270
+conj	2459	28		326	131897
+assoc	2166	16		326	131897
+mapPrototype	840	11		326	131897
+PersistentArrayMapValue.type	54	3	PersistentArrayMapValue	326	131897
+PersistentHashMapValue.type	53	3	PersistentHashMapValue	326	131897
+treeMapConstructor.type	49	3	treeMapConstructor	326	131897
+hashRoots	239	0		1	239
+hashTraversals	40	0		1	40
+copyEntries	166	1		2	405
+bitmapNode	146	0		1	146
+hashNodeAssoc	3104	3		326	131897
+hashNodeFind	386	1		326	131897
+hashNodeRemove	1169	1		2	1315
+ensureHashRoot	301	2		326	131897
+mapTraversal	107	3		326	131897
+setTraversal	107	3		326	131897
+collectionTraversal	876	2		326	131897
+hashEntryIndex	276	3		326	131897
+removeHashEntry	239	3		328	133305
+promoteEntries	189	1		326	131897
+makeMap	445	7		326	131897
+entryIndex	595	1		326	131897
+putEntry	1195	5		326	131897
+mapFromArray	407	3		326	131897
+hashMap	73	1		328	132047
+arrayMap	76	1		328	132052
+mapFromArrays	343	1		327	132240
+constantMapFromArray	349	1		327	132246
+constantSetFromArray	198	2		328	132444
+dissoc	1687	11		329	134992
+mapConj	493	6		326	131897
+setPrototype	766	8		326	131897
+PersistentHashSetValue.type	53	3	PersistentHashSetValue	326	131897
+treeSetConstructor.type	49	3	treeSetConstructor	326	131897
+makeSet	396	6		326	131897
+putMember	473	4		326	131897
+setFromArray	174	2		327	132071
+literalSetFromArray	307	3		327	132204
+hashSet	62	1		329	132198
+disj	1189	15		330	136181
+transientPrototype	553	3		327	132450
+TransientVectorType	79	2	own	328	132529
+TransientArrayMapType	81	2	own	328	132531
+TransientHashMapType	80	2	own	328	132530
+TransientHashSetType	80	2	own	328	132530
+makeTransient	375	5		332	133145
+editableTransient	248	1		2	284
+transient	67	1		335	133622
+asTransient	313	7		333	133458
+persistentBang	75	1		329	132398
+persistTransient	321	4		327	132218
+transientNth	427	4		6	1024
+transientLookup	671	5		326	131897
+assocTransient	1048	6		333	134193
+conjTransient	768	11		336	135115
+removeTransient	621	5		329	133926
+popTransient	202	1		3	486
+conjBang	193	3		341	135875
+assocBang	256	1		335	134543
+dissocBang	179	1		331	134233
+disjBang	179	1		331	134233
+popBang	62	1		62	16753
+vectorPrototype	1067	11		326	131897
+PersistentVectorValue.type	55	3	PersistentVectorValue	326	131897
+SubvecValue.type	45	3	SubvecValue	326	131897
+MapEntryType	109	3	own	326	131897
+makeKeyword	201	2		326	131897
+keyword	217	1		326	131897
+makeVector	166	2		326	131897
+vector	65	1		326	131897
+vectorFromArray	224	1		326	131897
+keywordCore	1157	5		327	133054
+name	433	6		61	17044
+subs	306	1		2	379
+namespace	409	6		61	17020
+count	1941	19		326	131897
+accumulatingCount	257	5		326	131897
+vectorNth	202	2		3	313
+nth	2679	22		326	131897
+lookup	1427	9		326	131897
+get	610	3		326	131897
+contains	334	4		326	131897
+every	200	4		327	132097
+find	1002	10		328	132956
+getIn	410	6		327	132307
+assocIn	209	5		327	132106
+updateIn	275	3		329	132559
+updatePath	259	5		327	132156
+selectKeys	331	9		327	132228
+mergeMaps	743	13		337	140095
+someVals	140	2		338	140350
+requiredGet	187	3		327	132084
+keyExtreme	408	3		327	132305
+minKey	124	2		329	132512
+maxKey	125	2		329	132514
+reductions	550	8		330	132745
+replace	591	7		336	136036
+distinct	705	11		329	133211
+distinctMore	321	6		330	132519
+isDistinct	123	2		332	132688
+fnComparator	253	2		327	132150
+sort	334	8		328	132484
+sortBy	269	4		329	132753
+comparator	144	1		2	203
+isJsSymbol	215	0		1	215
+specialSymbols	170	0		1	170
+isSpecialSymbol	156	2		3	359
+parsingString	208	0		1	208
+parseLong	239	1		2	447
+parseDouble	267	1		2	475
+parseUuid	206	2		9	1660
+parseBoolean	136	1		2	344
+groupBy	220	6		337	139572
+frequencies	146	4		337	139498
+updateVals	290	6		338	140500
+updateKeys	171	5		338	140381
+merge	78	3		339	140237
+mergeWith	81	2		339	140245
+zipmap	268	5		327	132165
+set	273	7		327	132170
+objectEquiv	898	9		326	131897
+equalPair	272	2		326	131897
+structuralEqualPair	2214	25		326	131897
+equal	166	1		328	132320
+sequential	153	5		6	340
+identityHashes	40	0		1	40
+identityCounter	27	0		1	27
+stringHash	205	0		1	205
+rotateLeft	262	0		1	262
+mixK1	104	1		2	366
+mixH1	104	1		2	366
+fmix	201	0		1	201
+hashInt	88	3		5	759
+hashChars	281	3		5	952
+hashNamed	164	2		7	1321
+hashDouble	267	0		1	267
+mixCollectionHash	91	3		5	762
+hashOrderedColl	258	5		326	131897
+hashUnorderedColl	245	5		327	132142
+hash	3276	24		326	131897
+compilerFormBridge	11645	37		336	145579
+inspect	1527	19		329	133657
+queueFromArray	176	2		326	131897
+jsObject	543	0		1	543
+IChunk	88	0		1	88
+IMapEntry	116	0		1	116
+IEncodeJS	69	0		1	69
+IRecord	124	0		1	124
+INamed	33	0		1	33
+Inst	114	0		1	114
+IMeta	109	0		3	499
+IPending	190	0		1	190
+Fn	290	0		3	499
+IReduce	316	0		1	316
+IMultiFn	35	0		1	35
+IEditableCollection	224	0		1	224
+coreProtocolNames	1523	58		14	3331
+coreProtocolsByName	107	1		15	3438
+protocolDefaults	100	5	IMeta,Fn,ICounted,IHash,IEquiv	3	499
+meta	597	6		326	131897
+empty	1030	22		327	132927
+peek	593	6		326	131897
+pop	1183	17		327	133080
+rseq	485	7		327	132382
+mapProjection	635	11		326	131897
+keys	59	1		326	131897
+vals	59	1		326	131897
+repeat	293	3		327	132190
+cycleNode	587	5		326	131897
+cycle	141	3		327	132038
+compareKeys	1478	6		326	131897
+sequentialIndex	485	3		326	131897
+treeRoots	216	0		1	216
+publicTree	644	4		326	131897
+deferredEntries	540	0		1	540
+treeMapConstructor	690	7		326	131897
+treeSetConstructor	392	6		326	131897
+treeMapPush	177	2		326	131897
+treeMapSeqConstructor	612	8		326	131897
+sortedPosition	268	0		1	268
+collectionEntryIndex	742	6		326	131897
+putSortedEntry	524	3		326	131897
+putCollectionEntry	905	8		326	131897
+buildSortedMap	267	2		327	132164
+sortedMap	78	2		328	132242
+sortedMapBy	111	2		329	132528
+buildSortedSet	220	2		327	132117
+sortedSet	78	2		328	132195
+sortedSetBy	111	2		329	132481
+sortedSeqFrom	751	9		334	135072
+mkBoundFn	229	4		329	132364
+subseq	547	9		355	139293
+rsubseq	647	9		355	139381
+metaSupported	270	13		57	15531
+withMetaSupported	245	12		57	15506
+declarationDemand	32	0		1	32
+declarationTransactions	38	0		1	38
+setDeclarationDemand	72	1		2	104
+demandProtocol	173	2		3	240
+declarationReceiver	89	1		4	329
+patchDeclaration	617	1		2	655
+setDeclaration	466	1		2	504
+declarationTransaction	358	1		2	396
+applyDeclarationPatches	193	0		1	193
+snapshotDeclarationPatches	98	0		1	98
+restoreDeclarationPatches	104	0		1	104
+protocolPredicate	235	3		10	2344
+implementsProtocol	205	3		56	15565
+satisfies	743	8		59	16484
+protocolMaskNames	565	0		1	565
+cloneablePayload	303	8		9	620
+coreProtocolImplementation	422	4		54	15202
+builtinCoreImplementation	6880	85		50	12623
+metaProtocol	166	2		328	132333
+withMetaProtocol	207	2		328	132349
+preserveMeta	200	2		326	131897
+varyMeta	98	3		327	131995
+resetMeta	235	0		1	235
+alterMeta	99	2		328	132231
+Atom	255	2		327	132152
+Volatile	97	1		2	155
+atomFactory	110	1		328	132262
+atom	273	5		363	146775
+globalHierarchy	188	0		1	188
+multiFns	34	0		1	34
+makeHierarchy	263	3		327	132160
+getGlobalHierarchy	157	4		366	147383
+hierarchyPart	74	2		327	131971
+bases	259	2		328	132331
+supers	297	4		330	132802
+isa	754	10		371	148941
+hierarchyRel	698	10		371	148885
+parents	89	1		372	148974
+ancestors	93	1		372	148978
+descendants	97	1		372	148982
+derive	1573	17		375	151110
+underive	644	15		380	156038
+MultiFn	862	4		383	153747
+demandMulti	113	2		327	132010
+multiState	549	3		332	133943
+resetMultiCache	159	2		336	134683
+resetMulti	252	3		334	134308
+addMethod	301	6		338	135097
+removeMethod	168	5		341	138059
+multiPrefers	256	3		330	132734
+preferMethod	414	10		340	135640
+getMethod	1290	13		381	152805
+stateProtocol	244	1		57	15505
+resetProtocol	99	1		58	15604
+swapProtocol	207	2		59	15785
+notifyWatches	564	7		328	132705
+addWatchProtocol	333	4		328	132474
+removeWatchProtocol	316	4		331	135552
+addWatch	88	1		329	132562
+removeWatch	86	1		332	135638
+resetAtom	467	3		329	133172
+reset	123	3		331	133394
+resetVals	148	5		334	134000
+swapState	576	10		333	134329
+swap	228	3		335	134668
+swapVals	230	3		335	134673
+compareAndSet	238	3		335	134213
+setValidator	216	2		62	16473
+getValidator	59	0		1	59
+volatile	59	1		3	214
+volatileFactory	66	1		3	221
+isVolatile	62	1		2	120
+vreset	73	1		59	15863
+vresetProtocol	285	3		58	15790
+update	263	4		328	132285
+updatedMap	1579	11		326	131897
+withMeta	3719	42		326	131897
+uuidPrototype	81	1		2	112
+UUIDType	116	3	own	6	1094
+uuid	152	1		7	1246
+uuidValue	423	3		6	1094
+tapListeners	208	0		1	208
+tapDraining	61	0		1	61
+tapLimit	23	0		1	23
+defaultTapSchedule	70	0		1	70
+configureHostHooks	892	5		10	2491
+defaultHostClock	142	0		1	142
+defaultHostRandom	57	0		1	57
+systemTime	288	2		9	1864
+hostRandom	231	1		8	1576
+hostRand	161	2		8	1576
+hostRandInt	134	2		9	1710
+hostRandNth	144	4		328	132175
+hostShuffle	300	4		328	132331
+hostRandomUuid	281	3		17	3237
+addTap	273	2		3	554
+removeTap	146	2		3	427
+deliverTap	185	0		1	185
+tapGreater	882	10		15	3351
+drainTaps	357	6		5	834
+makeVar	482	5		330	133021
+definitionVar	777	11		367	148926
+Var	139	2		330	133021
+test	258	5		327	132155
+varPrototype	471	5		330	133021
+Var.prototype	32	2	Var	330	133021
+namespaces	122	0		337	134970
+Namespace	803	9	own	333	134334
+createNs	414	5		337	134970
+readerCoreNames	9366	0		1	9366
+registerReaderNamespace	369	2		338	135339
+macroReaderFunction	165	1		339	136482
+withMacroReaderContext	1347	7		338	136317
+findNs	321	5		338	135291
+nsName	340	2		3	446
+theNs	213	3		339	135504
+allNs	132	3		339	135277
+compilerMacroVar	432	9		366	148406
+rePattern	337	0		1	337
+reMatch	318	1		327	132215
+deferredValue	356	1		2	415
+Delay	153	1		5	900
+LazySeq	242	2		326	131897
+lazySequence	80	1		326	131897
+force	77	2		62	16334
+nthrest	159	2		327	132056
+nthnext	142	2		327	132039
+reSeq	690	4		327	132587
+toArray	181	3		326	131897
+vec	199	7		360	145781
+concatTwo	273	10		326	131897
+concatMany	383	11		326	131897
+treeSeq	216	4		354	144250
+flatten	109	5		357	145390
+concat	163	4		326	131897
+es6Iterator	259	3		326	131897
+es6EntriesIterator	305	2		326	131897
+sequenceIterator	701	7		334	134709
+transformedIterator	1390	2		4	1567
+chunkIteratorSequence	439	3		327	132336
+sequence	329	8		339	136986
+Eduction	394	1		349	145569
+eduction	178	4		353	146492
+fnRest	148	1		326	131897
+fnApplyTo	430	4		326	131897
+ifnInvokeEntry	702	1		326	131897
+makeIFn	338	4		326	131897
+protocolKeys	79	0		1	79
+protocolNames	158	0		1	158
+nativeMethods	64	0		1	64
+protocol	165	3		4	827
+nativeType	112	0		1	112
+protocolSentinel	73	0		1	73
+protocolSlot	916	2		4	1446
+directMethod	311	3		8	1997
+protocolStores	185	17		16	877
+ownedProtocolValue	96	1		17	973
+builtin	763	6		56	15261
+publicMethod	879	6		62	18233
+protocolMethod	2117	13		329	135339
+extendType	1736	11		328	134099
+extendInstance	225	2		327	132122
+installMethods	3967	12		326	131897
+makeReify	115	2		327	132012
+reifySites	32	0		1	32
+reify	772	5		368	155077
+field	67	1		3	524
+memberMunging	362	0		1	362
+mungeMember	95	1		2	457
+mungeCharacters	345	1	own	2	707
+demungeCharacters	105	1		3	812
+demungePattern	129	1		4	941
+reservedNames	472	0		1	472
+mungeStr	165	1		3	872
+munge	213	5		331	133951
+demunge	256	5		331	133591
+mapEntry	317	3		326	131897
+recordEntries	168	4		327	132065
+recordCopy	242	1		4	766
+recordMethods	3497	26		365	152584
+makeType	1689	10		366	154273
+recordFromMap	323	7		363	149000
+ifnMethods	145	1		2	210
+ifnPrototype	807	4		5	1428
+ifnApply	338	0		1	338
+boundedCount	225	4		326	131897
+applyTo	313	3		326	131897
+apply	1020	5		326	131897
+listStar	343	2		329	132546
+iterateNode	579	4		326	131897
+iterate	75	1		327	131972
+chunks	139	0		1	139
+ChunkBuffer	158	1		10	1959
+chunkBuffer	85	1		11	2044
+chunkAppend	132	1		2	271
+chunk	150	2		6	1187
+arrayChunk	188	1		5	1037
+chunkNth	486	2		3	662
+chunkFirst	69	1		326	131897
+chunkRest	67	1		326	131897
+chunkNext	139	5		328	132226
+ownedChunkFirst	709	6		326	131897
+rangeChunks	37	0		1	37
+forceRangeChunk	691	4		326	131897
+ownedChunkRest	881	10		326	131897
+ChunkedCons	533	6		326	131897
+chunkCons	115	2		326	131897
+dropOwned	1194	11		328	133384
+numberArgument	121	0		1	121
+collectionArity	92	1		2	165
+take	680	11		338	134147
+drop	711	12		334	134983
+mapSeq	1386	19		332	134294
+mapManySteps	243	7		332	134294
+indexedSequence	928	13		327	132825
+mapIndexed	200	3		332	134075
+keepIndexed	200	3		332	134075
+keep	193	3		332	134068
+filter	939	17		330	133537
+remove	179	3		332	133993
+takeWhile	431	10		335	133626
+dropWhile	520	8		330	133118
+repeatedly	250	4		339	134397
+replicate	66	2		340	134506
+takeNth	529	10		335	135512
+dropLast	203	3		340	137487
+takeLast	147	3		335	135130
+splitAt	77	3		343	136488
+splitWith	98	3		337	134244
+splitVAt	83	4		376	150313
+partitionV	555	10		376	148978
+partitionVAll	383	8		380	152226
+jsIterable	79	0		1	79
+iteration	1136	10		362	147383
+partition	536	9		346	137245
+partitionAll	395	7		346	138024
+partitionBy	485	11		345	137779
+interleave	525	6		327	132422
+interpose	472	7		337	136045
+dorun	249	3		327	132146
+doall	182	2		328	132328
+last	149	3		327	132046
+butlast	110	3		327	132007
+mapv	79	3		367	148168
+filterv	116	4		337	139468
+cat	220	4		343	140682
+mapcat	210	6		353	144034
+rangeNode	568	4		326	131897
+IndexedSeqValue	410	2		326	131897
+primSeq	233	2		327	132130
+RangeValue	308	4		326	131897
+IntegerRangeValue	196	2		326	131897
+range	488	5		329	132947
+callable	708	2		326	131897
+directOrApply	122	2		327	132019
+complement	277	2		327	132174
+constantly	96	1		327	131993
+predicateCombination	1990	5		327	133887
+predicateConstructor	338	4		329	134400
+someFn	86	1		330	134486
+memoize	302	6		327	132199
+trampolineLoop	152	1		61	16701
+trampoline	108	3		329	132222
+comp	596	4		329	132642
+partialFixed	315	2		327	132212
+partial	507	4		328	132719
+juxtFixed	330	4		328	132349
+juxt	577	8		338	135972
+fnil	511	3		327	132408
+into	927	14		359	145582
+exceptionMessages	206	0		1	206
+compilerExceptionMessage	74	1		2	280
+ExceptionInfo	800	3	own	326	131897
+exInfo	227	2		327	132124
+exData	78	1		327	131975
+exMessage	76	0		1	76
+exCause	80	1		327	131977
+throwableToMap	1003	10		330	133134
+printCore	63	1		333	133163
+setPrintFn	128	2		9	1704
+setPrintErrFn	134	2		9	1710
+enableConsolePrint	291	4		11	2129
+stringPrint	262	2		9	1838
+printOption	126	3		326	131897
+flush	103	1		2	176
+newline	247	5		328	132406
+pr	67	2		331	132887
+println	111	4		333	133393
+prn	102	4		333	133236
+prnStr	65	1		330	132623
+printStr	185	2		330	132743
+printlnStr	72	1		331	132815
+TaggedLiteral	932	8	own	330	133490
+taggedLiteral	149	2		331	133639
+printItems	215	3		331	133035
+stringWriter	174	1		326	131897
+StringBufferWriter	143	0		326	131897
+prStrStar	309	3		328	132348
+printMetaQ	235	6		326	131897
+prSequentialWriter	1065	10		326	131897
+printMapEntries	818	10		326	131897
+printWriter	285	5		326	131897
+printWriterImpl	4066	28		326	131897
+prSeqWriter	310	5		327	132207
+prStrWithOpts	283	5		328	132490
+prnStrWithOpts	160	2		329	132650
+print	306	4		326	131897
+prStr	68	1		329	132558
+printForHost	380	1		330	132938
+str	248	5		326	131897
+variadicCore	231	1		326	131897
+foldSeq	192	3		327	132089
+add.variadic	78	3	install:add	329	132401
+subtract.variadic	83	3	install:subtract	330	132696
+multiply.variadic	83	3	install:multiply	330	132737
+divide.variadic	81	3	install:divide	330	132695
+equal.variadic	257	6	install:equal	328	132320
+vector.variadic	67	4	install:vector	326	131897
+list.variadic	63	4	install:list	329	132195
+hashMap.variadic	77	4	install:hashMap	328	132047
+arrayMap.variadic	79	4	install:arrayMap	328	132052
+hashSet.variadic	65	4	install:hashSet	329	132198
+mapSeq.variadic	297	5	install:mapSeq	332	134294
+mapv.variadic	110	6	install:mapv	367	148168
+str.variadic	167	5	install:str	326	131897
+printCore.variadic	65	4	install:printCore	333	133163
+minKey.variadic	83	3	install:minKey	329	132512
+maxKey.variadic	84	3	install:maxKey	329	132514
+isDistinct.variadic	46	3	install:isDistinct	332	132688
+swap.variadic	111	4	install:swap	335	134668
+swapVals.variadic	114	4	install:swapVals	335	134673
+merge.variadic	64	4	install:merge	339	140237
+mergeWith.variadic	69	3	install:mergeWith	339	140245
+spreadArgs	201	4		327	132098
+listStar.variadic	105	4	install:listStar	329	132546
+updateIn.variadic	128	4	install:updateIn	329	132559
+update.variadic	125	5	install:update	328	132285
+jsSet	285	0		1	285
+jsDelete	189	0		1	189
+aget	159	0		1	159
+aset	161	1		2	446
+makeArray	332	1		2	405
+aclone	160	0		1	160
+toArray2d	196	5		327	132093
+typedArray	562	7		330	133039
+intArray	61	1		331	133100
+longArray	62	1		331	133101
+doubleArray	64	1		331	133103
+objectArray	64	1		331	133103
+intoArray	194	2		327	132091
+jsObj	373	0		1	373
+jsKeys	102	0		1	102
+jsInvoke	86	0		1	86
+keyToJs	261	7		373	150299
+cljToJs	764	20		373	150299
+jsToClj	998	22		376	152448
+checkedIndex	301	0		1	301
+checkedAget	309	2		10	2186
+checkedAset	336	4		12	2807
+checkedAgetStrict	225	2		10	2102
+checkedAsetStrict	240	3		11	2402
+coreMethod	824	8		58	16158
+write	63	1	own	59	16221
+flushWriter	69	1	own	59	16227
+StringBufferWriter.members	188	2	StringBufferWriter	326	131897
+prWriter	142	2	own	327	132039
+clone	908	18	own	327	132805
+seqProtocol	632	12	own	326	131897
+publicFields	1445	7		326	131897
+slotField	301	3		326	131897
+rangeField	302	2		3	370
+seqMethods	539	4		326	131897
+seqIndexes	199	1		326	131897
+SymbolValue.members	954	4	SymbolValue	326	131897
+Cons.members	1025	6	Cons	326	131897
+Reduced.members	235	2	Reduced	8	1116
+ListValue.members	258	5	ListValue	326	131897
+EmptyListValue.members	153	4	EmptyListValue	326	131897
+KeywordValue.members	158	3	KeywordValue	326	131897
+RepeatValue.members	257	4	RepeatValue	326	131897
+CycleValue.members	347	3	CycleValue	326	131897
+IterateValue.members	253	3	IterateValue	326	131897
+PersistentVectorValue.members	635	7	PersistentVectorValue	326	131897
+SubvecValue.members	305	6	SubvecValue	326	131897
+ChunkedSeqValue.members	444	8	ChunkedSeqValue	326	131897
+PersistentQueueValue.members	324	8	PersistentQueueValue	326	131897
+PersistentArrayMapValue.members	227	5	PersistentArrayMapValue	326	131897
+PersistentHashMapValue.members	294	6	PersistentHashMapValue	326	131897
+PersistentHashSetValue.members	256	7	PersistentHashSetValue	326	131897
+IndexedSeqValue.members	270	5	IndexedSeqValue	326	131897
+RangeValue.members	304	7	RangeValue	326	131897
+IntegerRangeValue.members	209	5	IntegerRangeValue	326	131897
+treeMapConstructor.members	265	5	treeMapConstructor	326	131897
+treeSetConstructor.members	430	7	treeSetConstructor	326	131897
+treeMapSeqConstructor.members	286	5	treeMapSeqConstructor	326	131897
+Eduction.members	1595	14	Eduction	349	145569
+Delay.members	240	2	Delay	5	900
+LazySeq.members	771	6	LazySeq	326	131897
+NodeSeqType.members	72	2	NodeSeqType	326	131897
+ChunkedCons.members	483	4	ChunkedCons	326	131897
+ChunkBuffer.members	436	4	ChunkBuffer	10	1959
+arrayChunk.members	258	2	arrayChunk	5	1037
+realized	184	5	own	60	16401
+ListValue.statics	31	2	ListValue	326	131897
+PersistentHashSetValue.statics	59	2	PersistentHashSetValue	326	131897
+PersistentQueueValue.statics	51	2	PersistentQueueValue	326	131897
+PersistentVectorValue.statics	42	2	PersistentVectorValue	326	131897
+PersistentArrayMapValue.statics	109	2	PersistentArrayMapValue	326	131897
+PersistentHashMapValue.statics	734	5	PersistentHashMapValue	326	131897
+positionalFactory	198	1		2	271
+coreCells	739	5		8	1576
+removeAllMethods	144	2	own	335	134452
+addMethodProtocol	80	2	own	339	135177
+removeMethodProtocol	89	2	own	342	138148
+preferMethodProtocol	89	2	own	341	135729
+getMethodProtocol	80	2	own	382	152885
+methods	115	3	own	331	132706
+prefers	115	3	own	331	132706
+defaultDispatchVal	111	1	own	59	16269
+dispatchFn	85	1	own	59	16243
+asTransientProtocol	97	2	own	334	133555
+persistentBangProtocol	105	2	own	328	132323
+conjBangProtocol	90	2	own	337	135205
+assocBangProtocol	94	2	own	334	134287
+assocNBangProtocol	142	2	own	334	134335
+dissocBangProtocol	128	2	own	330	134054
+disjoinBangProtocol	128	2	own	330	134054
+popBangProtocol	83	2	own	61	16691
+chunkedNextProtocol	190	4	own	327	132087
+dropProtocol	66	2	own	329	133450
+dropFirstProtocol	375	4	own	326	131897
+second	38	2		327	131935
+ffirst	39	1		327	131936
+nfirst	38	2		327	131935
+fnext	37	2		327	131934
+nnext	36	1		327	131933
+reverse	75	3		337	139427
+some	175	4		327	132072
+notEvery	55	1		328	132152
+notAny	59	2		328	132131
+notEmpty	61	1		327	131958
+run	107	1		337	139459
+isUri	109	0		1	109
+isIterable	59	2		60	16543
+writeAll	106	1		60	16327
+keyProtocol	81	2	own	326	131897
+valProtocol	81	2	own	326	131897
+findProtocol	61	2	own	329	133017
+sortedSeqProtocol	200	7	own	335	135006
+sortedSeqFromProtocol	92	2	own	335	135164
+entryKeyProtocol	130	3	own	327	132027
+comparatorProtocol	108	2	own	59	16266
+chunkedFirstProtocol	95	2	own	326	131897
+chunkedRestProtocol	92	2	own	326	131897
+invokeProtocol	142	1	own	59	16300
+evalCore	137	0		1	137
+isCloneable	61	2		60	16545
+isDelay	46	1		2	106
+derefWithTimeoutProtocol	105	1	own	59	16263
+reduceProtocol	173	2	own	337	139525
+kvReduceProtocol	116	2	own	338	140326
+assocProtocol	71	2	own	327	131968
+assocNProtocol	69	2	own	327	131966
+dissocProtocol	66	2	own	330	135058
+conjProtocol	67	2	own	327	131964
+emptyProtocol	79	2	own	328	133006
+disjoinProtocol	66	2	own	331	136247
+peekProtocol	62	2	own	327	131959
+popProtocol	59	2	own	328	133139
+rseqProtocol	67	2	own	328	132449
+compareProtocol	80	2	own	327	131977
+iteratorProtocol	77	2	own	332	133871
+imul	26	0		1	26
+nameProtocol	212	4	own	64	18153
+namespaceProtocol	77	2	own	64	17994
+hashProtocol	61	2	own	327	131958
+equivProtocol	69	2	own	327	131966
+type	66	0		1	66
+identical	39	0		1	39
+isUuid	60	2		57	15625
+isInst	50	2		60	16534
+isTaggedLiteral	67	1		331	133557
+encodeJsProtocol	82	1	own	59	16240
+encodeKeyProtocol	83	1	own	59	16241
+encodeClojureProtocol	92	1	own	59	16250
+instMs	49	1		60	16292
+instMsProtocol	85	1	own	59	16243
+isVar	42	1		2	72
+isInstance	61	0		1	61
+reFind	57	1		328	132272
+reMatches	59	1		328	132274
+isRegex	52	0		1	52
+consCore	101	1		327	131998
+arraySeq	197	2		327	132094
+array	35	0		1	35
+alength	41	0		1	41
+jsIn	47	0		1	47
+uncheckedGet	53	0		1	53
+IndexedSeqFactory	67	2		328	132162
+UUIDFactory	54	2		9	1419
+RangeFactory	57	2		328	132152
+IntegerRangeFactory	71	2		328	132166
+PersistentTreeMapFactory	77	2		328	132172
+PersistentTreeSetFactory	77	2		328	132172
+PersistentTreeMapSeqFactory	83	2		328	132178
+EductionFactory	58	2		351	145825
+MultiFnFactory	56	2		385	154001
+SeqIterFactory	56	2		330	132734
+RangedIteratorFactory	70	2		5	783
+NamespaceFactory	60	2		335	134592
+TaggedLiteralFactory	69	2		332	133757
+compilerForms	46	1		337	145625
+reader	35067	38		388	208795
+loadFile	191	1		2	264
+core	9873	643		960	342837
+namespaces.cljsUser	61	3	namespaces	337	134970
+namespaces.cljsCore	39	2	namespaces	337	134970
+core.seal	21	1	core	960	342837

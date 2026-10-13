@@ -51,10 +51,10 @@
 //! - `units`: the runtime units (`src/runtime_manifest.rs`) whose code defines
 //!   the value the shared runtime holds as `rt.core.<name>`, as the core table
 //!   (`RuntimeManifest::core_reference`) resolves it: the unit declaring the
-//!   binding that holds it (`add` for `+`, `keywordCore` for `keyword`), the
-//!   unit declaring the object it is a member of (`builtinTypes` for types,
-//!   `reader` for the reader), or `coreCells` for a cell (dynamic vars,
-//!   `rand`). These are the slicing roots of the direct reference that
+//!   binding that holds it (`add` for `+`, `keywordCore` for `keyword`, the
+//!   constructor `PersistentVectorValue` for the type), the unit declaring the
+//!   object it is a member of (`reader` for the reader), or `coreCells` for a
+//!   cell (dynamic vars, `rand`). These are the slicing roots of the direct reference that
 //!   `Advanced` output reads.
 //!
 //! [`Purity`] is the operation's own behavior: `pure` (no effect, never

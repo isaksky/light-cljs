@@ -8,7 +8,7 @@ use crate::analyzer::{
 };
 use crate::application::OptimizationLevel;
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
-use crate::runtime_slice::{EmittedRuntime, RuntimeEmbedding, RuntimeName, RuntimeRoots};
+use crate::runtime_slice::{EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots};
 
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
@@ -202,7 +202,11 @@ fn emit_js_mode(
             let previous = std::mem::take(&mut emitter.output);
             emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
             let literal = std::mem::replace(&mut emitter.output, previous);
-            let register = emitter.runtime_read(RuntimeName::core("registerReaderNamespace"), None);
+            let register = emitter.runtime_read(
+                RuntimeName::core("registerReaderNamespace"),
+                None,
+                NameUse::Value,
+            );
             writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
             if let Some(context) = program.reader_contexts.get(namespace) {
                 for (alias, target) in &context.aliases {
@@ -268,7 +272,7 @@ fn emit_js_mode(
                 RuntimeName::core("theNs"),
                 RuntimeName::export("symbol"),
             ]
-            .map(|name| emitter.runtime_read(name, None));
+            .map(|name| emitter.runtime_read(name, None, NameUse::Value));
             writeln!(
                 registration,
                 "  {current} = {the_ns}({symbol}(null, {}));",
@@ -569,18 +573,18 @@ impl Emitter<'_> {
     /// `rt$add` at `Advanced`) and record it as a root of the runtime slice.
     /// All emitted runtime reads go through here.
     fn rt(&mut self, name: RuntimeName) {
-        let text = self.runtime_read(name, self.site);
+        let text = self.runtime_read(name, self.site, NameUse::Value);
         self.output.push_str(&text);
     }
 
-    /// The spelling of a runtime read attributed to `site`, recorded as a root.
-    /// At `Advanced` a core operation resolves through the core table: to a
-    /// cell of `coreCells`, to the output-level cell `core$<name>` when the
-    /// program may replace the operation, or else to the binding (or member of
-    /// one) holding it.
-    fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>) -> String {
+    /// The spelling of a runtime read attributed to `site`, recorded as a root
+    /// with its use. At `Advanced` a core operation resolves through the core
+    /// table: to a cell of `coreCells`, to the output-level cell `core$<name>`
+    /// when the program may replace the operation, or else to the binding (or
+    /// member of one) holding it.
+    fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) -> String {
         if self.replaced_core.is_none() {
-            self.runtime.demand(name, site);
+            self.runtime.record(name, site, used);
             return name.to_string();
         }
         let resolved = match (name.binding, name.member) {
@@ -606,7 +610,7 @@ impl Emitter<'_> {
             },
             (binding, member) => RuntimeName::direct(binding, member),
         };
-        self.runtime.demand(resolved, site);
+        self.runtime.record(resolved, site, used);
         resolved.to_string()
     }
 
@@ -1984,6 +1988,22 @@ impl Emitter<'_> {
                 } else {
                     "extendType"
                 }));
+                if !*instance && self.replaced_core.is_some() {
+                    // `extendType` patches the dispatcher it finds in
+                    // `coreDispatchers` by key, so a sliced runtime keeps the
+                    // dispatcher of every core protocol method extended here.
+                    for (dispatch, _) in methods {
+                        if let MethodDispatch::Builtin(key) = dispatch
+                            && let Some(binding) = RuntimeManifest::embedded().core_dispatcher(key)
+                        {
+                            self.runtime.record(
+                                RuntimeName::direct(binding, None),
+                                self.site,
+                                NameUse::Keep,
+                            );
+                        }
+                    }
+                }
                 self.output.push('(');
                 self.value(*target);
                 self.output.push_str(", ");
@@ -2452,8 +2472,18 @@ impl Emitter<'_> {
                 if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind
                     && self.known_unit(core)
                 {
-                    // `rt$add(1, 2)`: a core operation in a unit binding of its own.
-                    self.value(*callee);
+                    // `rt$add(1, 2)`: a core operation in a unit binding of its
+                    // own. Only called, its value does not escape, so the slice
+                    // leaves out its variadic arity ABI (`install:` units).
+                    let site = self.site.replace(*callee);
+                    self.used.insert(*callee);
+                    let text = self.runtime_read(
+                        RuntimeName::core(core.runtime_name()),
+                        self.site,
+                        NameUse::Call,
+                    );
+                    self.output.push_str(&text);
+                    self.site = site;
                     self.output.push('(');
                     self.arguments(args);
                     self.output.push(')');
