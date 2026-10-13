@@ -67,3 +67,17 @@ fn remaining_complete_residual_bodies_execute_in_both_phases() {
         both(fields[1], fields[2], true);
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn cljs_2866_test() {
+        run(&[Case::expression(
+            "cljs-2866-test",
+            include_str!("../fixtures/phase-oracles/residual-completion/cljs-2866-test.cljs"),
+        )]);
+    }
+}

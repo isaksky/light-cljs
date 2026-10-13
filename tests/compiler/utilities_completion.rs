@@ -159,3 +159,52 @@ fn seeded_number_parse_roundtrips_cover_one_hundred_thousand_inputs_in_both_phas
         "[true true]",
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn utility_test_bodies() {
+        run(&[
+            Case::expression(
+                "test-parse-uuid",
+                include_str!("../fixtures/phase-oracles/utilities-completion/test-parse-uuid.cljs"),
+            ),
+            Case::expression(
+                "checked-aget-test",
+                include_str!(
+                    "../fixtures/phase-oracles/utilities-completion/checked-aget-test.cljs"
+                ),
+            ),
+            Case::expression(
+                "checked-aset-test",
+                include_str!(
+                    "../fixtures/phase-oracles/utilities-completion/checked-aset-test.cljs"
+                ),
+            ),
+            Case::expression(
+                "unchecked-aget-test",
+                include_str!(
+                    "../fixtures/phase-oracles/utilities-completion/unchecked-aget-test.cljs"
+                ),
+            ),
+            Case::expression(
+                "unchecked-set-test",
+                include_str!(
+                    "../fixtures/phase-oracles/utilities-completion/unchecked-set-test.cljs"
+                ),
+            ),
+            Case::expression(
+                "uri-predicate",
+                include_str!("../fixtures/phase-oracles/utilities-completion/uri-predicate.cljs"),
+            ),
+            Case::observed_during_expansion(
+                "test-make-array",
+                include_str!("../fixtures/phase-oracles/utilities-completion/test-make-array.cljs"),
+                r#"{"id":"test-make-array","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+        ]);
+    }
+}

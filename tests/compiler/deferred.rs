@@ -78,3 +78,25 @@ fn namespace_aliases_compiled_macro_output_and_captured_bindings_are_deferred() 
     assert_eq!(output.stdout, b"false 9 7 9\n");
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn deferred_constructors() {
+        run(&[
+            Case::observed_during_expansion(
+                "lazy-constructors",
+                include_str!("../fixtures/phase-oracles/deferred/lazy-constructors.cljs"),
+                r#"{"id":"lazy-constructors","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "deferred-constructor-false",
+                include_str!("../fixtures/phase-oracles/deferred/deferred-constructor-false.cljs"),
+                r#"{"id":"deferred-constructor-false","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+        ]);
+    }
+}

@@ -1,1 +1,0 @@
-(let [o (js/Object.freeze #js {:x 1}) put aset del js-delete] (and (= 2 (set! (.-x o) 2)) (= 3 (put o "x" 3)) (= 1 (.-x o)) (false? (js-delete o "x")) (false? (del o "x"))))

@@ -1,1 +1,0 @@
-(defprotocol P (f [x])) (let [v #js {} thrown #js {}] (specify! v P (f [_] (throw thrown))) (assert (identical? thrown (try (f v) (catch :default e e)))) (specify! v P (f [_] 7)) (assert (= 7 (f v)))) true

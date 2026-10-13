@@ -83,3 +83,19 @@ fn immutable_fields_shadowed_fields_and_bad_methods_have_located_errors() {
         );
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn deftype_test_namespace() {
+        run(&[Case::namespace(
+            "deftype-core",
+            "cljs.core-test",
+            "(run nil)",
+            include_str!("../fixtures/compiler-namespaces/deftype/cljs/core_test.cljs"),
+        )]);
+    }
+}

@@ -656,3 +656,19 @@ fn selector_requires_literal_map_with_result_directive() {
     }
     check("(= nil ((selector {:missing _}) {}))");
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn trailing_map_destructuring() {
+        run(&[Case::expression(
+            "trailing-map-destructuring",
+            include_str!(
+                "../fixtures/phase-oracles/destructuring-completion/trailing-map-destructuring.cljs"
+            ),
+        )]);
+    }
+}

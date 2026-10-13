@@ -335,3 +335,39 @@ fn public_api_arities_execute_in_macro_phase() {
         "true",
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn multimethod_test_bodies() {
+        run(&[
+            Case::namespace(
+                "test-hierarchy",
+                "cljs.core-test",
+                "(run nil)",
+                include_str!(
+                    "../fixtures/compiler-multimethods/test-hierarchy/cljs/core_test.cljs"
+                ),
+            ),
+            Case::namespace(
+                "test-multimethods-2",
+                "cljs.core-test",
+                "(run nil)",
+                include_str!(
+                    "../fixtures/compiler-multimethods/test-multimethods-2/cljs/core_test.cljs"
+                ),
+            ),
+            Case::expression(
+                "test-multimethods-1",
+                include_str!("../fixtures/phase-oracles/multimethods/test-multimethods-1.cljs"),
+            ),
+            Case::expression(
+                "multifn-factory",
+                include_str!("../fixtures/phase-oracles/multimethods/multifn-factory.cljs"),
+            ),
+        ]);
+    }
+}

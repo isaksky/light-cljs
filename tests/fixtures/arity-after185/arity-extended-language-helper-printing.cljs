@@ -1,1 +1,0 @@
-(= "[\"a :b\\n\\\"c\\\"\\n\",\"[# #]\",\"#:n{:a 1, :b 2}\",\"a :b\\n\",\"no newline\"]" (js/JSON.stringify (do (array (with-out-str (println "a" :b) (prn "c")) (binding [*print-level* 1] (pr-str [[1] {:a 2}])) (binding [*print-namespace-maps* true] (pr-str {:n/a 1 :n/b 2})) (println-str "a" :b) (with-out-str (binding [*print-newline* false] (println "no newline")))))))

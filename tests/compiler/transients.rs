@@ -291,3 +291,25 @@ fn into_uses_custom_editable_protocol_and_real_transient_completion() {
         "[[0 1 2] {:source true} true :closed]",
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn transient_bodies() {
+        run(&[
+            Case::expression(
+                "test-transient-edge-case-2",
+                include_str!(
+                    "../fixtures/phase-oracles/transients/test-transient-edge-case-2.cljs"
+                ),
+            ),
+            Case::expression(
+                "transient-receivers",
+                include_str!("../fixtures/phase-oracles/transients/transient-receivers.cljs"),
+            ),
+        ]);
+    }
+}

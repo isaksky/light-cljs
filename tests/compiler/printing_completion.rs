@@ -366,3 +366,42 @@ fn rust_display_escapes_isolated_surrogates_and_preserves_valid_pairs() {
     let units = e.evaluate_js(&format!("JSON.stringify({RUNTIME_SOURCE}.core.prStr(String.fromCharCode(0xd800, 0x61, 0xdc00, 0xd83d, 0xde00)))")).unwrap();
     assert_eq!(e.string(units).unwrap(), "\"\\\"\\ud800a\\udc00😀\\\"\"");
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn printing_test_namespaces() {
+        run(&[
+            Case::namespace(
+                "test-print-with-opts",
+                "cljs.printing-test",
+                "(run nil)",
+                include_str!(
+                    "../fixtures/compiler-printing-completion/test-print-with-opts/cljs/printing_test.cljs"
+                ),
+            ),
+            Case::namespace(
+                "test-print-knobs",
+                "cljs.printing-test",
+                "(run nil)",
+                include_str!(
+                    "../fixtures/compiler-printing-completion/test-print-knobs/cljs/printing_test.cljs"
+                ),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn printing_helpers() {
+        run(&[
+Case::expression("print-err-callback-failure", include_str!("../fixtures/phase-oracles/printing-completion/print-err-callback-failure.cljs")),
+Case::expression("string-buffer-writer", include_str!("../fixtures/public-print-helper-gap/public-string-buffer-writer.cljs")).printing(r#"["a" nil "a"]"#),
+Case::expression("print-writer-factories", include_str!("../fixtures/phase-oracles/printing-completion/print-writer-factories.cljs")).printing(r#"[true true [["a" true]] [["a" true] ["b" true]] [["a" true] ["b" true] ["c" true]] nil [["a" true] ["b" true] ["c" true]]]"#),
+Case::expression("print-meta-unreadable", include_str!("../fixtures/phase-oracles/printing-completion/print-meta-unreadable.cljs")).printing(r#""^{:x true} [x]""#),
+Case::observed("writer-flush", include_str!("../fixtures/phase-oracles/printing-completion/writer-flush.cljs"), r#"{"id":"writer-flush","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#),
+]);
+    }
+}

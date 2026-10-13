@@ -133,3 +133,25 @@ fn iterator_helpers_preserve_session_owned_progress() {
     assert_eq!(fresh.print(value).unwrap(), "[1 4]");
     fresh.release(value).unwrap();
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn iterator_test_bodies() {
+        run(&[
+            Case::expression(
+                "iterator-helper-contract",
+                include_str!(
+                    "../fixtures/phase-oracles/iterator-helpers/iterator-helper-contract.cljs"
+                ),
+            ),
+            Case::expression(
+                "coll-iter-seq-match",
+                include_str!("../fixtures/phase-oracles/iterator-helpers/coll-iter-seq-match.cljs"),
+            ),
+        ]);
+    }
+}

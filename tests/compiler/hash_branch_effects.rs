@@ -165,3 +165,17 @@ fn hash_branch_effects_execute_in_fresh_and_reused_phases() {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn fixed_hash_collisions() {
+        run(&[Case::expression(
+            "phm-fixed-hash",
+            include_str!("../fixtures/phase-oracles/hash-branch-effects/phm-fixed-hash.cljs"),
+        )]);
+    }
+}

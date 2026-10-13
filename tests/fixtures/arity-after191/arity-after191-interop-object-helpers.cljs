@@ -1,1 +1,0 @@
-(let [o (js-obj "a" 1 "b" 2) f (fn [x] (this-as self (+ (aget self "a") x)))] (aset o "my method" f) (and (= 5 (js-invoke o "my method" 4)) (js-in "b" o) (js-delete o "b") (not (js-in "b" o)) (= ["a" "my method"] (vec (js-keys o)))))

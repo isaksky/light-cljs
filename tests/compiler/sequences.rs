@@ -109,3 +109,100 @@ fn malformed_comprehensions_are_rejected_and_transducer_constructors_are_callabl
         "[true,true,true,true,true,true,true,true,true,true,true,true,true,true,true]\n"
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn seqs_test_bodies() {
+        run(&[
+            Case::expression(
+                "distinct",
+                include_str!("../fixtures/phase-oracles/sequences/distinct.cljs"),
+            ),
+            Case::expression(
+                "partitionv-all",
+                include_str!("../fixtures/phase-oracles/sequences/partitionv-all.cljs"),
+            ),
+            Case::expression(
+                "partitionv",
+                include_str!("../fixtures/phase-oracles/sequences/partitionv.cljs"),
+            ),
+            Case::expression(
+                "run-bang",
+                include_str!("../fixtures/phase-oracles/sequences/run-bang.cljs"),
+            ),
+            Case::expression(
+                "rearrange-sequential",
+                include_str!("../fixtures/phase-oracles/sequences/rearrange-sequential.cljs"),
+            ),
+            Case::expression(
+                "test-empy-and-seq",
+                include_str!("../fixtures/phase-oracles/sequences/test-empy-and-seq.cljs"),
+            ),
+            Case::expression(
+                "test-string",
+                include_str!("../fixtures/phase-oracles/sequences/test-string.cljs"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn iteration_test_bodies() {
+        run(&[
+            Case::expression(
+                "iteration-opts",
+                include_str!("../fixtures/phase-oracles/sequences/iteration-opts.cljs"),
+            ),
+            Case::expression(
+                "test-iteration",
+                include_str!("../fixtures/phase-oracles/sequences/test-iteration.cljs"),
+            ),
+            Case::expression(
+                "lazy-doall-nil",
+                include_str!("../fixtures/phase-oracles/sequences/lazy-doall-nil.cljs"),
+            ),
+        ]);
+    }
+
+    /// Compares 49 iterations of up to about a thousand steps two ways; QuickJS needs
+    /// several seconds for each of the four programs, so this case has its own test.
+    #[test]
+    fn iteration_seq_equals_reduce() {
+        run(&[Case::expression(
+            "iteration-seq-equals-reduce",
+            include_str!("../fixtures/phase-oracles/sequences/iteration-seq-equals-reduce.cljs"),
+        )]);
+    }
+
+    #[test]
+    fn chunks_and_arities() {
+        run(&[
+            Case::expression(
+                "chunk-public-factories",
+                include_str!("../fixtures/phase-oracles/sequences/chunk-public-factories.cljs"),
+            ),
+            Case::expression(
+                "chunk-public-pipeline",
+                include_str!("../fixtures/phase-oracles/sequences/chunk-public-pipeline.cljs"),
+            ),
+            Case::observed(
+                "bounded-count",
+                include_str!("../fixtures/phase-oracles/sequences/bounded-count.cljs"),
+                r#"{"id":"bounded-count","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "conj-arities",
+                include_str!("../fixtures/phase-oracles/sequences/conj-arities.cljs"),
+                r#"{"id":"conj-arities","outcome":{"status":"returned","value":{"$vector":[{"$vector":[]},{"$vector":[1]},{"$vector":[1,2,3]},{"$list":[3,2,1]},{"$list":[2,1]}]}},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "partitionv-all-transducer",
+                include_str!("../fixtures/phase-oracles/sequences/partitionv-all-transducer.cljs"),
+                r#"{"id":"partitionv-all-transducer","outcome":{"status":"returned","value":[["returned","[[[1 2] [3]] [[[1 2] [3]] [[4 5]]]]"],"[]"]},"trace":[],"stdout":""}"#,
+            ),
+        ]);
+    }
+}

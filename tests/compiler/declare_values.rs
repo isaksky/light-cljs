@@ -206,3 +206,50 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
     .unwrap();
     assert_eq!(node(&format!("eval({js:?})")), "[true 7]");
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn namespace_declarations() {
+        run(&[
+            Case::observed_during_expansion(
+                "declare-original",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-original.cljs"),
+                r#"{"id":"declare-original","outcome":{"status":"returned","value":{"$vector":[false,null,null]}},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "declare-single",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-single.cljs"),
+                r#"{"id":"declare-single","outcome":{"status":"returned","value":{"$vector":[true,true,false,false]}},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "declare-multiple",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-multiple.cljs"),
+                r#"{"id":"declare-multiple","outcome":{"status":"returned","value":{"$vector":[true,true,false,false]}},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "declare-zero",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-zero.cljs"),
+                r#"{"id":"declare-zero","outcome":{"status":"returned","value":{"$vector":[false,true,false,true]}},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "declare-nested",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-nested.cljs"),
+                r#"{"id":"declare-nested","outcome":{"status":"returned","value":{"$vector":[true,true,true,null]}},"trace":[{"$keyword":{"namespace":null,"name":"before","spelling":"before"}}],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "declare-callback",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-callback.cljs"),
+                r#"{"id":"declare-callback","outcome":{"status":"returned","value":{"$vector":[{"$vector":[{"$value":"undefined"},{"$value":"undefined"}]},{"$vector":[null,null]}]}},"trace":[1,2,3,4],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "declare-redefinition",
+                include_str!("../fixtures/phase-oracles/declare-values/declare-redefinition.cljs"),
+                r#"{"id":"declare-redefinition","outcome":{"status":"returned","value":{"$vector":[true,3,2,null]}},"trace":[],"stdout":""}"#,
+            ),
+        ]);
+    }
+}

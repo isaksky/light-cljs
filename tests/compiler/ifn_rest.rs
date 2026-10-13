@@ -104,3 +104,18 @@ fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
     let value = evaluator.evaluate_js(&js).unwrap();
     assert_eq!(evaluator.string(value).unwrap(), "[1 2]");
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn apply_to() {
+        run(&[Case::observed(
+            "apply-to",
+            include_str!("../fixtures/phase-oracles/ifn-rest/apply-to.cljs"),
+            r#"{"id":"apply-to","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+        )]);
+    }
+}

@@ -187,3 +187,23 @@ fn explicit_collection_slots_and_protocol_membership_survive_construction() {
     both(source, "true");
     both(&format!("(defmacro slots [] {source}) (slots)"), "true");
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn constructor_test_bodies() {
+        run(&[
+            Case::expression(
+                "test-vectors",
+                include_str!("../fixtures/phase-oracles/public-constructors/test-vectors.cljs"),
+            ),
+            Case::expression(
+                "symbol-cljs-2944",
+                include_str!("../fixtures/phase-oracles/public-constructors/symbol-cljs-2944.cljs"),
+            ),
+        ]);
+    }
+}

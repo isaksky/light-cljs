@@ -52,7 +52,7 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
         executable.display(),
         executable_snapshot.display()
     );
-    let source = include_str!("../fixtures/arity-after188/cljs-definitions-var-test.cljs");
+    let source = include_str!("../fixtures/compiler-namespaces/definitions/cljs/var_test.cljs");
     let mut reused = proof_host();
     let warm = artifacts.join("warmup");
     std::fs::create_dir_all(&warm).unwrap();

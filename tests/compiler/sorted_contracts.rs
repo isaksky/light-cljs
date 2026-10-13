@@ -197,3 +197,17 @@ fn sorted_membership_does_not_hash_keys() {
         true)"#,
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn sorted_receivers() {
+        run(&[Case::expression(
+            "sorted-receivers",
+            include_str!("../fixtures/phase-oracles/sorted-contracts/sorted-receivers.cljs"),
+        )]);
+    }
+}

@@ -1,1 +1,0 @@
-(defprotocol P (f [this])) (extend-type js/RegExp P (f [x] (.test x "abc"))) (assert (f (js/RegExp. "b"))) (assert (implements? P (js/RegExp. "b"))) true

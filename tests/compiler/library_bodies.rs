@@ -64,3 +64,133 @@ fn complete_promised_library_bodies_execute_in_both_phases() {
         );
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn walk_test_bodies() {
+        run(&[
+            Case::namespace(
+                "walk-t-prewalk-replace",
+                "librarybody.case0",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case0.cljs"),
+            ),
+            Case::namespace(
+                "walk-t-postwalk-replace",
+                "librarybody.case1",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case1.cljs"),
+            ),
+            Case::namespace(
+                "walk-t-stringify-keys",
+                "librarybody.case2",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case2.cljs"),
+            ),
+            Case::namespace(
+                "walk-t-prewalk-order",
+                "librarybody.case3",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case3.cljs"),
+            ),
+            Case::namespace(
+                "walk-t-postwalk-order",
+                "librarybody.case4",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case4.cljs"),
+            ),
+            Case::namespace(
+                "walk-test-walk",
+                "librarybody.case5",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case5.cljs"),
+            ),
+            Case::namespace(
+                "walk-test-map-entry",
+                "librarybody.case23",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case23.cljs"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn set_test_bodies() {
+        run(&[
+            Case::namespace(
+                "set-test-union",
+                "librarybody.case8",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case8.cljs"),
+            ),
+            Case::namespace(
+                "set-test-intersection",
+                "librarybody.case9",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case9.cljs"),
+            ),
+            Case::namespace(
+                "set-test-difference",
+                "librarybody.case10",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case10.cljs"),
+            ),
+            Case::namespace(
+                "set-test-select",
+                "librarybody.case11",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case11.cljs"),
+            ),
+            Case::namespace(
+                "set-test-project",
+                "librarybody.case12",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case12.cljs"),
+            ),
+            Case::namespace(
+                "set-test-rename-keys",
+                "librarybody.case14",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case14.cljs"),
+            ),
+            Case::namespace(
+                "set-test-index",
+                "librarybody.case15",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case15.cljs"),
+            ),
+            Case::namespace(
+                "set-test-join",
+                "librarybody.case16",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case16.cljs"),
+            ),
+            Case::namespace(
+                "set-test-subset-p",
+                "librarybody.case18",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case18.cljs"),
+            ),
+            Case::namespace(
+                "set-test-superset-p",
+                "librarybody.case19",
+                "(run)",
+                include_str!("../fixtures/compiler-library-bodies/librarybody/case19.cljs"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn string_test_bodies() {
+        run(&[Case::namespace(
+            "string-test-api",
+            "librarybody.case20",
+            "(run)",
+            include_str!("../fixtures/compiler-library-bodies/librarybody/case20.cljs"),
+        )]);
+    }
+}

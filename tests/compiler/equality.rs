@@ -218,3 +218,33 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
         fs::remove_dir_all(output_dir).unwrap();
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn hashing_test_bodies() {
+        run(&[
+            Case::expression(
+                "test-962-empty-literal-hashes",
+                include_str!(
+                    "../fixtures/phase-oracles/equality/test-962-empty-literal-hashes.cljs"
+                ),
+            ),
+            Case::expression(
+                "test-nil-hashing-cljs-1649",
+                include_str!("../fixtures/phase-oracles/equality/test-nil-hashing-cljs-1649.cljs"),
+            ),
+            Case::expression(
+                "test-mumur-support",
+                include_str!("../fixtures/phase-oracles/equality/test-mumur-support.cljs"),
+            ),
+            Case::expression(
+                "test-cljs-3410",
+                include_str!("../fixtures/phase-oracles/equality/test-cljs-3410.cljs"),
+            ),
+        ]);
+    }
+}

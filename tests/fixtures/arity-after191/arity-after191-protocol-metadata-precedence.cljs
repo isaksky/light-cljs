@@ -1,1 +1,0 @@
-(defprotocol P :extend-via-metadata true (f [this])) (extend-type object P (f [_] :external)) (let [v (with-meta (reify P (f [_] :direct)) {`f (fn [_] :metadata)}) m (with-meta {} {`f (fn [_] :metadata)})] (assert (= :metadata (f v))) (assert (= :metadata (f m))) (assert (not (implements? P m))) (assert (satisfies? P v))) true

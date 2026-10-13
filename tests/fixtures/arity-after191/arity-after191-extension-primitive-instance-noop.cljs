@@ -1,1 +1,0 @@
-(defprotocol P (f [x])) (specify! 1 P (f [_] 2))

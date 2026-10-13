@@ -107,3 +107,48 @@ fn applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases() {
         }
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    /// Complete helper workflows whose JSON encoding must equal the row's literal.
+    #[test]
+    fn helper_workflows() {
+        const IDS: &[&str] = &[
+            "trampoline-and-comparator",
+            "update-map-metadata",
+            "language-helper-partition-vectors",
+            "language-helper-iteration-order",
+            "language-helper-tagged-values",
+            "language-helper-printing",
+            "language-helper-js-conversions",
+            "language-helper-munging",
+            "language-helper-cat-early-stop",
+            "language-helper-subvec-metadata-source",
+        ];
+        let rows: Vec<Vec<_>> = include_str!("../fixtures/compiler-core-helpers.tsv")
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+            .map(|line| line.split('\t').collect())
+            .filter(|fields: &Vec<_>| IDS.contains(&fields[0]))
+            .collect();
+        assert_eq!(rows.len(), IDS.len(), "missing complete original helper");
+        // The fixture keeps compact JSON text on one line; quote it as a string.
+        let sources: Vec<_> = rows
+            .iter()
+            .map(|fields| {
+                assert_eq!(fields.len(), 3);
+                let literal = fields[2].replace('\\', "\\\\").replace('"', "\\\"");
+                format!("(= \"{literal}\" (js/JSON.stringify (do {})))", fields[1])
+            })
+            .collect();
+        let cases: Vec<_> = rows
+            .iter()
+            .zip(&sources)
+            .map(|(fields, source)| Case::expression(fields[0], source))
+            .collect();
+        run(&cases);
+    }
+}

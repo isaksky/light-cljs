@@ -15,7 +15,8 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.default.overrides]]
 filter = '''
 (binary(compiler) & (
-    test(/^arity_after\d+::/)
+    test(=sequences::phase_oracles::iteration_seq_equals_reduce)
+    | test(/^residual_bodies::phase_oracles::/)
     | test(/^(hash_branch_effects|runtime_map_order|residual_source_context|map_value_equiv)::/)
     | test(=public_constructors::public_constructor_api_arities_and_macro_phase_execute)))
 | (binary(evaluation) & test(=evaluator_conformance::every_historical_sci_case_has_an_executable_evaluator_disposition))

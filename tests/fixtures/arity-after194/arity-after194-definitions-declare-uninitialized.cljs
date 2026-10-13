@@ -1,1 +1,0 @@
-(declare a) (let [v #'a] (and (undefined? @v) (nil? (resolve (quote a))) (do (def a false) (false? @v)) (var? (resolve (quote a)))))

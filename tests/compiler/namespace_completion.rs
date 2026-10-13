@@ -354,3 +354,19 @@ fn retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_mod
         }
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn namespace_operations() {
+        run(&[
+Case::namespace("require-alias", "probe.require-alias", "(run nil)", include_str!("../fixtures/compiler-namespaces/namespace-completion/require-alias/probe/require_alias.cljs")).with_sources(&[("clojure/set.cljs", include_str!("../fixtures/compiler-namespaces/namespace-completion/require-alias/clojure/set.cljs"))]),
+Case::namespace("use", "use.probe", "(run nil)", include_str!("../fixtures/compiler-namespaces/namespace-completion/use/use/probe.cljs")).with_sources(&[("clojure/set.cljs", include_str!("../fixtures/compiler-namespaces/namespace-completion/use/clojure/set.cljs"))]),
+Case::namespace("refer-core-exclude", "refer.exclude", "(run nil)", include_str!("../fixtures/compiler-namespaces/namespace-completion/refer-core-exclude/refer/exclude.cljs")),
+Case::namespace("refer-global", "global.probe", "(run nil)", include_str!("../fixtures/compiler-namespaces/namespace-completion/refer-global/global/probe.cljs")),
+]);
+    }
+}

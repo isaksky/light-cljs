@@ -1,1 +1,0 @@
-(defprotocol P (f [this] [this x]) (g [this])) (defprotocol M) (let [v (reify P (f [_] 1) M)] (assert (= 1 (f v))) (assert (satisfies? P v)) (assert (implements? P v)) (assert (satisfies? M v)) (assert (implements? M v)) (assert (not (satisfies? P {}))) (assert (= :missing (try (g v) (catch js/Error e :missing))))) true

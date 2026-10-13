@@ -98,3 +98,54 @@ fn native_extension_preserves_core_fast_paths_and_raw_protocol_dispatch() {
         "[2,99,\"a\",98,\"a\",96,\"ab\",95,true,true,true]\n"
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn extension_test_bodies() {
+        run(&[
+            Case::expression(
+                "cljs-2974",
+                include_str!("../fixtures/phase-oracles/extensions/cljs-2974.cljs"),
+            ),
+            Case::expression(
+                "test-414",
+                include_str!("../fixtures/phase-oracles/extensions/test-414.cljs"),
+            ),
+            Case::expression(
+                "cljs-2812",
+                include_str!("../fixtures/phase-oracles/extensions/cljs-2812.cljs"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn instance_extensions() {
+        run(&[
+            Case::observed(
+                "instance-object-ifn",
+                include_str!("../fixtures/phase-oracles/extensions/instance-object-ifn.cljs"),
+                r#"{"id":"instance-object-ifn","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "instance-exception",
+                include_str!("../fixtures/phase-oracles/extensions/instance-exception.cljs"),
+                r#"{"id":"instance-exception","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "primitive-instance-noop",
+                include_str!("../fixtures/phase-oracles/extensions/primitive-instance-noop.cljs"),
+                r#"{"id":"primitive-instance-noop","outcome":{"status":"returned","value":1},"trace":[],"stdout":""}"#,
+            ),
+            // The value is a JavaScript array, which a macro cannot return as code.
+            Case::observed_during_expansion(
+                "dispatch-precedence",
+                include_str!("../fixtures/phase-oracles/extensions/dispatch-precedence.cljs"),
+                r#"{"id":"dispatch-precedence","outcome":{"status":"returned","value":[true,"instance","type","record","metadata",true,true]},"trace":[],"stdout":""}"#,
+            ),
+        ]);
+    }
+}

@@ -103,3 +103,19 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
         }
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn apply_test_namespace() {
+        run(&[Case::namespace(
+            "apply",
+            "cljs.apply-test",
+            "(run)",
+            include_str!("../fixtures/compiler-residual-source-context/apply/cljs/apply_test.cljs"),
+        )]);
+    }
+}

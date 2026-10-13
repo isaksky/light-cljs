@@ -127,3 +127,35 @@ fn public_protocol_invalid_implementations_are_located() {
         assert!(error.to_string().contains("protocol"), "{error}");
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn public_protocol_bodies() {
+        run(&[
+            Case::expression(
+                "test-preds",
+                include_str!("../fixtures/phase-oracles/public-protocols/test-preds.cljs"),
+            ),
+            Case::expression(
+                "protocol-public",
+                include_str!("../fixtures/phase-oracles/public-protocols/protocol-public.cljs"),
+            ),
+            Case::expression(
+                "protocol-custom-state",
+                include_str!(
+                    "../fixtures/phase-oracles/public-protocols/protocol-custom-state.cljs"
+                ),
+            ),
+            Case::expression(
+                "clone-find-protocol-workflow",
+                include_str!(
+                    "../fixtures/phase-oracles/public-protocols/clone-find-protocol-workflow.cljs"
+                ),
+            ),
+        ]);
+    }
+}

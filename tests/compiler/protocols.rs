@@ -103,3 +103,44 @@ fn primitive_programs_still_omit_the_runtime() {
     assert!(!js.contains("protocolMethod"));
     assert!(js.len() < 200);
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn protocol_bodies() {
+        run(&[
+            Case::observed(
+                "membership",
+                include_str!("../fixtures/phase-oracles/protocols/membership.cljs"),
+                r#"{"id":"membership","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "metadata-precedence",
+                include_str!("../fixtures/phase-oracles/protocols/metadata-precedence.cljs"),
+                r#"{"id":"metadata-precedence","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "native-and-default",
+                include_str!("../fixtures/phase-oracles/protocols/native-and-default.cljs"),
+                r#"{"id":"native-and-default","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "external-named",
+                include_str!("../fixtures/phase-oracles/protocols/external-named.cljs"),
+                r#"{"id":"external-named","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "external-host",
+                include_str!("../fixtures/phase-oracles/protocols/external-host.cljs"),
+                r#"{"id":"external-host","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::expression(
+                "extend-to-object",
+                include_str!("../fixtures/phase-oracles/protocols/extend-to-object.cljs"),
+            ),
+        ]);
+    }
+}

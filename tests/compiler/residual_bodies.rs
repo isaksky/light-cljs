@@ -90,3 +90,41 @@ mod complete_residual_bodies_execute_in_both_phases {
         row_14(14), row_15(15), row_16(16), row_17(17), row_18(18), row_19(19), row_20(20),
     );
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    // Each program of these bodies takes seconds to compile, so each body has a test
+    // of its own.
+    #[test]
+    fn residual_body_0() {
+        run(&[Case::namespace(
+            "residual-body-0",
+            "residualbody.case0",
+            "(run)",
+            include_str!("../fixtures/compiler-residual-bodies/residualbody/case0.cljs"),
+        )]);
+    }
+
+    #[test]
+    fn residual_body_2() {
+        run(&[Case::namespace(
+            "residual-body-2",
+            "residualbody.case2",
+            "(run)",
+            include_str!("../fixtures/compiler-residual-bodies/residualbody/case2.cljs"),
+        )]);
+    }
+
+    #[test]
+    fn residual_body_10() {
+        run(&[Case::namespace(
+            "residual-body-10",
+            "residualbody.case10",
+            "(run)",
+            include_str!("../fixtures/compiler-residual-bodies/residualbody/case10.cljs"),
+        )]);
+    }
+}

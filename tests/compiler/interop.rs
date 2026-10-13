@@ -104,3 +104,57 @@ fn referred_global_names_and_qualified_methods_survive_namespace_compilation() {
     assert_eq!(output.stdout, b"FOO true\n");
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn interop_test_bodies() {
+        run(&[
+            Case::expression(
+                "test-es6-interfaces",
+                include_str!("../fixtures/phase-oracles/interop/test-es6-interfaces.cljs"),
+            ),
+            Case::expression(
+                "memfn-test",
+                include_str!("../fixtures/phase-oracles/interop/memfn-test.cljs"),
+            ),
+            Case::expression(
+                "test-arrays",
+                include_str!("../fixtures/phase-oracles/interop/test-arrays.cljs"),
+            ),
+            Case::expression(
+                "js-invoke-test",
+                include_str!("../fixtures/phase-oracles/interop/js-invoke-test.cljs"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn object_and_array_access() {
+        run(&[
+            Case::observed(
+                "object-helpers",
+                include_str!("../fixtures/phase-oracles/interop/object-helpers.cljs"),
+                r#"{"id":"object-helpers","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "readonly-write",
+                include_str!("../fixtures/phase-oracles/interop/readonly-write.cljs"),
+                r#"{"id":"readonly-write","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed(
+                "checked-strict",
+                include_str!("../fixtures/phase-oracles/interop/checked-strict.cljs"),
+                r#"{"id":"checked-strict","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+            Case::observed_during_expansion(
+                "dot-shapes",
+                include_str!("../fixtures/phase-oracles/interop/dot-shapes.cljs"),
+                r#"{"id":"dot-shapes","outcome":{"status":"returned","value":true},"trace":[],"stdout":""}"#,
+            ),
+        ]);
+    }
+}

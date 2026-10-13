@@ -300,3 +300,17 @@ fn eager_transducer_fixtures_match_pinned_release_and_checkout() {
         fs::remove_dir_all(output_dir).unwrap();
     }
 }
+
+/// Complete sources in both compiler phases and both host lifecycles, each run in
+/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+mod phase_oracles {
+    use crate::phase_oracle::{Case, run};
+
+    #[test]
+    fn transducer_test_bodies() {
+        run(&[Case::expression(
+            "test-transducers",
+            include_str!("../fixtures/phase-oracles/transducers/test-transducers.cljs"),
+        )]);
+    }
+}
