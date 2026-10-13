@@ -74,6 +74,9 @@ pub(crate) struct Application<'a> {
     /// At `Advanced`: calls that name the method they run, and definitions
     /// that bind each method to an entry of its own (`crate::call_shapes`).
     pub shapes: Option<&'a CallShapes>,
+    /// At `Advanced`: write terse output ([`crate::terse`]) rather than the
+    /// readable output of `pseudo_names`.
+    pub terse: bool,
 }
 
 /// Emit one ES module for a bundler instead of a bare expression. Each package
@@ -137,6 +140,7 @@ fn emit_js_mode(
     let shapes = application
         .and_then(|application| application.shapes)
         .filter(|_| direct.is_some());
+    let terse = direct.is_some() && application.is_some_and(|application| application.terse);
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool| {
         let mut emitter = Emitter {
@@ -281,6 +285,9 @@ fn emit_js_mode(
     );
     let mut embedding = RuntimeEmbedding::None;
     let mut runtime_bytes = 0;
+    // The embedded runtime factory's range in the output.
+    let mut runtime_segment = None;
+    let mut unit_bytes = None;
     if embed {
         let mut registration = String::new();
         let register_namespaces = emitter.register_namespaces;
@@ -377,7 +384,9 @@ fn emit_js_mode(
         } else if slice {
             // `const [rt$add, rt$symbol] = (() => { ...; return [add, symbol]; })();`
             embedding = RuntimeEmbedding::Slice;
-            let (factory, bindings) = crate::runtime_slice::sliced_runtime(&emitter.runtime);
+            let (factory, bindings, bytes) =
+                crate::runtime_slice::sliced_runtime(&emitter.runtime, terse);
+            unit_bytes = bytes;
             runtime_bytes = factory.trim().len();
             let pattern = bindings
                 .iter()
@@ -394,6 +403,12 @@ fn emit_js_mode(
             )
         };
         let source_length = runtime.len();
+        // Where the factory expression starts, after the readable runtime's
+        // leading comment.
+        let factory = runtime
+            .find("(() =>")
+            .or_else(|| runtime.find("(()=>"))
+            .unwrap_or_default();
         // The cells of the core operations the program may replace start as the
         // operations: `let core$inc = rt$inc;`.
         for (name, initial) in &emitter.core_cells {
@@ -418,10 +433,9 @@ fn emit_js_mode(
             }
         }
         if shared.is_none() {
-            let start = prelude_end + runtime.find("(() =>").unwrap();
-            emitter
-                .raw_segments
-                .push(start..prelude_end + source_length - 2);
+            let segment = prelude_end + factory..prelude_end + source_length - 2;
+            runtime_segment = Some(segment.clone());
+            emitter.raw_segments.push(segment);
         }
         emitter.output.insert_str(prelude_end, &runtime);
     } else if let Some(constants) = emitter
@@ -443,11 +457,20 @@ fn emit_js_mode(
 
     // Raw JavaScript is an escape hatch, but its user-authored identifiers must
     // not accidentally capture compiler locals or be captured by our helpers.
-    let output = if emitter
+    // Terse output renames every compiler name anyway, and keeps them away
+    // from raw text the same way.
+    let raw_js = emitter
         .used
         .iter()
-        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
-    {
+        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }));
+    let output = if terse {
+        crate::terse::terse_program(
+            &emitter.output,
+            &emitter.raw_segments,
+            runtime_segment,
+            raw_js,
+        )
+    } else if raw_js {
         hygienic_js(emitter.output, emitter.raw_segments)
     } else {
         emitter.output
@@ -469,6 +492,7 @@ fn emit_js_mode(
         roots: emitter.runtime,
         embedding,
         bytes: runtime_bytes,
+        unit_bytes,
         constants,
     };
     (output, runtime)
@@ -4308,106 +4332,15 @@ fn reads_function_scope(program: &Program, id: ExprId) -> bool {
 
 // The compiler emits only quoted strings and ordinary identifier tokens outside
 // explicitly recorded raw segments; the runtime body is also excluded here.
-// Every name the emitted code binds must be renamed here, so raw text can name
-// only its holes and host globals: advanced preparation relies on that to treat
-// `js*` as an opaque leaf. `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
-// in tests/compiler checks it from raw text in each scope the emitter creates.
-fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
-    raw.retain(|range| !range.is_empty());
-    raw.sort_by_key(|range| range.start);
-    let mut index = 0;
-    let prefix = loop {
-        let candidate = format!("__light{index}_");
-        if !raw
-            .iter()
-            .any(|range| source[range.clone()].contains(&candidate))
-        {
-            break candidate;
-        }
-        index += 1;
-    };
-    let mut result = String::new();
-    let bytes = source.as_bytes();
-    let mut at = 0;
-    let mut raw_at = 0;
-    while at < bytes.len() {
-        if raw.get(raw_at).is_some_and(|range| range.start == at) {
-            let range = &raw[raw_at];
-            result.push_str(&source[range.clone()]);
-            at = range.end;
-            raw_at += 1;
-            continue;
-        }
-        let start = at;
-        if bytes[at] == b'"' {
-            at += 1;
-            while at < bytes.len() {
-                let byte = bytes[at];
-                at += 1;
-                if byte == b'\\' {
-                    at += 1;
-                } else if byte == b'"' {
-                    break;
-                }
-            }
-        } else if bytes[at].is_ascii_alphabetic() || matches!(bytes[at], b'_' | b'$') {
-            at += 1;
-            while at < bytes.len()
-                && raw.get(raw_at).is_none_or(|range| at < range.start)
-                && (bytes[at].is_ascii_alphanumeric() || matches!(bytes[at], b'_' | b'$'))
-            {
-                at += 1;
-            }
-            let token = &source[start..at];
-            let numbered = [
-                "l",
-                "g",
-                "k",
-                "c",
-                "m",
-                "a",
-                "r",
-                "next",
-                "saved",
-                "temporary",
-                "captures",
-                "self",
-                "recur",
-                "installed",
-            ]
-            .iter()
-            .any(|head| {
-                token.strip_prefix(head).is_some_and(|tail| {
-                    !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
-                })
-            });
-            // `rt$<binding>` and `core$<name>` are the runtime reads and the
-            // core operation cells of `Advanced` output.
-            if numbered
-                || matches!(
-                    token,
-                    "rt" | "truth"
-                        | "host"
-                        | "pkg"
-                        | "f"
-                        | "text"
-                        | "savedPrint"
-                        | "savedNewline"
-                        | "caught"
-                        | "caseValue"
-                )
-                || token.starts_with("rt$")
-                || token.starts_with("core$")
-            {
-                result.push_str(&prefix);
-            }
-        } else {
-            at += 1;
-        }
-        // All non-ASCII source outside raw JS occurs inside escaped strings.
-        result.push_str(&source[start..at]);
-    }
-    result
+// Every name the emitted code binds (`crate::terse::compiler_name`) gets the
+// hygiene prefix, so raw text can name only its holes and host globals:
+// advanced preparation relies on that to treat `js*` as an opaque leaf. Terse
+// `Advanced` output renames the same names (`crate::terse::terse_program`).
+// `optimization::raw_js_names_resolve_only_to_holes_and_host_globals` in
+// tests/compiler checks it from raw text in each scope the emitter creates.
+fn hygienic_js(source: String, raw: Vec<std::ops::Range<usize>>) -> String {
+    let prefix = crate::terse::hygiene_prefix(&source, &raw);
+    crate::terse::rename_compiler_names(&source, &raw, |word| format!("{prefix}{word}"))
 }
 
 /// Interactive application roots live in the application heap, never the macro heap.

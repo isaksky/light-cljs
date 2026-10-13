@@ -8,7 +8,7 @@
 //! and factories) and for devirtualized calls, so a removal or rewrite that
 //! silently stops applying fails too. Sentinel strings mark code that must
 //! leave the output.
-use super::optimization::{Sources, execute};
+use super::optimization::{Sources, execute, readable};
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry;
 use light_cljs::runtime_manifest::RuntimeManifest;
@@ -29,7 +29,7 @@ fn advanced(source: &str) -> PreparedApplication {
 }
 
 /// The program prints `expected` (its value, through `console.log`) at every
-/// level; returns the program part of the `Advanced` output.
+/// level; returns the program part of the readable `Advanced` output.
 fn every_level(source: &str, expected: &str) -> String {
     program_at_every_level(&program(source), source, expected)
 }
@@ -52,7 +52,6 @@ fn entry_at_every_level(entry: &str, sources: &[(&str, &str)], expected: &str) -
 }
 
 fn program_at_every_level(program: &Program, source: &str, expected: &str) -> String {
-    let mut output = String::new();
     for level in OptimizationLevel::ALL {
         let js = prepare_application(program, ApplicationOptions::new(level)).emit_js();
         assert_eq!(
@@ -60,8 +59,8 @@ fn program_at_every_level(program: &Program, source: &str, expected: &str) -> St
             format!("{expected}\n"),
             "at {level}: {source}"
         );
-        output = js;
     }
+    let output = prepare_application(program, readable(OptimizationLevel::Advanced)).emit_js();
     program_text(&output).to_owned()
 }
 

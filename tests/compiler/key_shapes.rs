@@ -19,7 +19,7 @@ use super::constant_hashes::agrees;
 use super::constant_pool::calls;
 use super::generated::{SEEDS, namespace_program};
 use super::generated_optimization::analyze as analyze_generated;
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
@@ -30,8 +30,15 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
-fn emit(program: &Program, level: OptimizationLevel) -> String {
+/// The output at `level`, terse at `Advanced`, which the programs run as.
+fn emit_terse(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
+}
+
+/// The readable output (`pseudo_names`), whose shapes the tests read and
+/// whose runtime functions `calls` patches.
+fn emit(program: &Program, level: OptimizationLevel) -> String {
+    prepare_application(program, readable(level)).emit_js()
 }
 
 /// The value of the JavaScript string expression `expression` in a fresh
@@ -54,7 +61,7 @@ fn quickjs(expression: &str) -> String {
 /// and in QuickJS: the same string, which is returned. `None` is the oracle.
 fn every_level(program: &Program) -> String {
     let outputs = OptimizationLevel::ALL.map(|level| {
-        let js = emit(program, level);
+        let js = emit_terse(program, level);
         let node = execute(&format!("console.log({js});"));
         let quickjs = quickjs(&js);
         assert_eq!(node, format!("{quickjs}\n"), "Node and QuickJS at {level}");

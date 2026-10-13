@@ -11,7 +11,9 @@ points", "Phase 2 type inference extension points", "Phase 2 rapid type
 analysis extension points", "Phase 2 call shape extension points" and
 "Phase 2 folding and inlining extension points"), and every tier of constant
 collection literals, folding against them included (see "Constant pool
-extension points" and "Constant folding extension points"); the rest is
+extension points" and "Constant folding extension points"), and Phase 3's
+renaming, runtime stripping and terse syntax (see "Phase 3 terse emission
+extension points"); the rest (ABI property mangling, a string table) is
 not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
@@ -190,7 +192,9 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   of Phase 2, `Advanced` calls known functions through the method each call
   selects, defines a dispatcher only for functions whose value escapes, and
   writes a `do` in value position, such as a `def` initializer, as a comma
-  expression.)
+  expression. Since Phase 3, `Advanced` output has short names, dotted
+  properties where the name is an identifier, fewer parentheses and no
+  whitespace or comments, in the program and in the runtime slice.)
 - `src/js_runtime.js` is one closure: 659 top-level declarations, about 97
   top-level effect statements, a 693-key `core` hub object that is
   `Object.seal`ed and mutable through `set!`, eager prototype patching and
@@ -2355,6 +2359,110 @@ runs in its rounds.
   written tersely.
 - String table for repeated long strings when it pays after gzip.
 
+#### Phase 3 terse emission extension points
+
+Renaming, runtime stripping and terse syntax are implemented
+(light-cljs-215) in `src/js_syntax.rs`, `build.rs` and `src/terse.rs`, at
+`Advanced` only. `ApplicationOptions::pseudo_names` (`--pseudo-names`) turns
+all of it off and gives the readable output of Phases 1 and 2: the
+compiler's names, the runtime with its comments and the emitter's layout.
+Tests that read the output's text use it (`optimization::readable` in
+`tests/compiler/`); the programs they run, and every differential suite,
+run the terse output.
+
+- **Front end.** `src/js_syntax.rs` holds the manifest's lexer and scope
+  analysis, moved out of `src/runtime_manifest.rs`. It depends on nothing
+  else in the crate, so `build.rs` includes it as well. `resolve` gives
+  each identifier token the declaration it declares or reads (or none, for
+  a free name), and marks shorthand properties; `Resolution::local_names`
+  names the declarations below a body's top level; `TerseWriter` joins
+  tokens; `redundant_semicolons` drops a `;` before `}` unless a statement
+  needs it as its body; `joined_declarations` joins adjacent `let` and
+  `const` statements (`const a=1,b=2;`). The writer keeps a space only
+  where tokens would merge (`return a`, `a- -b`, `a/ /re/`, `1 .x`) and a
+  line break only between a token that may end a statement and one that
+  may start the next, or after `return`, `throw`, `break`, `continue` and
+  `yield`, where automatic semicolon insertion may depend on it. Removing
+  any other line break never changes the parse.
+- **Runtime units.** `build.rs` writes `OUT_DIR/terse_runtime.rs` from
+  `src/js_runtime.js`: the prologue and every unit body, terse, in
+  manifest order (`TERSE_UNITS`). Locals get short names per scope,
+  outermost first, each scope starting again at `a` and skipping the names
+  of outer declarations its code reads and the ECMAScript globals, so a
+  function's parameters read `a, b, c`. A top-level binding, declared or
+  read, is a placeholder, `\u{1}<index>\u{2}` into `TERSE_BINDINGS`, and
+  each unit lists, per binding it names, the local names visible where it
+  occurs. `terse::terse_slice` names a slice's bindings by frequency, each
+  the first name of Closure's sequence (`DefaultNameGenerator`: `a`-`z`,
+  `A`-`Z`, `$`, then two characters) that no other binding has and no
+  local visible at one of its occurrences has, so no name captures
+  another. (Closure's same-length batches in order of first occurrence,
+  which the program's names use, measured no gzip gain for the slice.)
+  Constructors keep their names (`TERSE_KEPT`: function and class
+  declarations with an uppercase initial, such as `KeywordValue`,
+  `PersistentVectorValue` and `Atom`, and local ones bound to a function or
+  class, such as the `Type` that `makeType` returns), because the host
+  shows them (`console.log` of a keyword prints `KeywordValue {}`) and the
+  printer writes them (`#object[...]`); protocol markers are renamed.
+  Adjacent units join their `const` statements. `the_whole_terse_runtime_renames_without_capture`
+  and `partial_slices_rename_without_capture` (unit tests of
+  `src/terse.rs`) resolve the readable and the terse slice again and check
+  that every identifier names the binding it named before; the
+  `src/js_syntax.rs` tests pin the writer's separators.
+- **Program.** `terse::terse_program` replaces the hygiene pass at
+  `Advanced`. `terse::compiler_name` is the one list of the names the
+  emitter binds (`l7`, `g3_1`, `k0`, `c2`, `r5_0`, `next0`, `self4`,
+  `captures4`, `installed1`, `caught`, `caseValue`, `truth`, `host`,
+  `rt$add`, `core$inc`, ...), which the readable output's `hygienic_js`
+  prefixes too. Each gets a short name by frequency, the way Closure's
+  `RenameVars` names globals (`RenameVars.java:466-498`): the most
+  frequent first and, among the names of one length, in order of first
+  occurrence. The names avoid every other identifier of the output (host
+  globals, helper parameters, property names) and the ECMAScript globals
+  the runtime reads. Then `x["name"]` with an identifier key that is no
+  compiler name is `x.name`; the parentheses go around a member chain
+  (`(a.b)(c)`), a single arrow parameter, an assignment's right-hand side
+  (`x = (y);`), a returned or thrown value and the inner pair of `((x))`,
+  each where the rule that applies keeps the parse, applied innermost
+  first; a `;` before `}` goes; adjacent `let` and `const` join; and
+  tokens join as above. The runtime factory, already terse, is one token.
+  A new emitter construct that binds a name must add it to
+  `compiler_name`.
+- **Raw `js*`.** A program whose output keeps raw text keeps its layout,
+  and its compiler names are the hygiene prefix and a short name
+  (`__light0_a`), so raw text still sees only its holes and host globals.
+  `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
+  checks it at every level.
+- **Retention report.** At terse `Advanced` a unit's bytes are its bytes in
+  the slice, names included.
+- **Measured.** Over the 25 size-ratchet fixtures `Advanced` output goes
+  from 749,499 to 352,350 bytes (190,387 to 112,866 gzipped): −53% raw,
+  −41% gzipped. Stripping the runtime's comments and whitespace, with the
+  program rewrite, gives 544,806 (138,188); renaming runtime locals
+  another 101,876 (13,498 gzipped); naming the slice's top-level bindings
+  another 90,580 (11,824). So local renaming inside runtime units is worth
+  its build-time pass. Keeping constructor names costs about 2.6% raw and
+  0.9% gzipped. `[1 2 3]` (`vector-only`) is 5,883 bytes (2,321 gzipped)
+  instead of 13,940 (4,487). See "Terse emission" in
+  `benchmarks/compiler.md`.
+- **Not done.**
+  - ABI property mangling: no property is mangled. The arity ABI
+    (`cljs$core$IFn$_invoke$arity$N`, `$variadic`,
+    `cljs$lang$maxFixedArity`, `cljs$lang$applyTo`), `cljs$lang$type`,
+    `cljs$lang$ctorStr`, the protocol mask fields and protocol slots
+    (`cljs$user$P$m$arity$1`) keep their names. The runtime builds most of
+    them by concatenation (`"cljs$core$IFn$_invoke$arity$" + n`, slots from
+    protocol keys in `installMethods`), so mangling them needs a
+    compile-time table the runtime reads, and a program that names one
+    through interop (`(.-cljs$lang$maxFixedArity f)`) must keep it, as for
+    `getBasis`. They are at most 568 bytes of any fixture (`closed-params`),
+    mostly in the runtime slice, and repeat, so gzip shrinks them well:
+    light-cljs-232 (maybe later) tracks it with these numbers.
+  - A string table for repeated long strings, and whitespace and
+    parenthesis rewriting of programs with raw `js*` text.
+  - Joining `if`/`else` blocks and dropping block braces around single
+    statements in the program (`else{{const ...}}`).
+
 ### Phase 4: deferred
 
 ES module output, chunk splitting with cross-chunk motion, and the npm
@@ -2411,7 +2519,10 @@ upstream states that advanced mode is unsafe for certain patterns.
   is nil until it is hashed and its hash afterwards.
 - `set!` on a core operation forces indirection for that operation only.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
-  because the hygiene pass renames every name the compiler binds away from it.
+  because the compiler renames every name it binds away from it: the
+  hygiene pass gives them the `__light<n>_` prefix, which no raw text of the
+  program contains, and terse output (light-cljs-215) keeps the prefix on
+  the short names of a program with raw text.
   Raw text that reaches compiler state another way (building a renamed
   identifier for `eval`, patching host or runtime prototypes so that core
   operations run program code) is unsupported, and a definition only such
@@ -2437,9 +2548,25 @@ upstream states that advanced mode is unsafe for certain patterns.
 - A call of a program function whose target is known at compile time reads
   the method's own binding, `g3_1(a)` (light-cljs-212). A call that runs before
   the function's definition throws a `TypeError` at every level, but its
-  engine-generated message names that binding (`g3_1 is not a function`)
-  where lower levels name the property they read (`Cannot read properties of
-  undefined (reading 'call')`).
+  engine-generated message names that binding (`b is not a function`, or
+  `g3_1 is not a function` with `pseudo_names`) where lower levels name the
+  property they read (`Cannot read properties of undefined (reading
+  'call')`).
+- Messages the JavaScript engine generates quote the output's identifiers,
+  which terse output shortens (light-cljs-215), so their text differs at
+  `Advanced`: calling a core value that is not a function, such as `INIT`,
+  gives `a.call is not a function` where lower levels give
+  `rt.core.iteratorInit.call is not a function` (`rt$iteratorInit.call` with
+  `pseudo_names`). Messages the runtime builds are the same at every level.
+- A function's `name` is its name in the output, and terse output renames
+  the program's functions and the runtime's (light-cljs-215), as Closure
+  does: `(pr-str inc)` is `#object[aK]` where lower levels print
+  `#object[inc]`, and `(.-name (fn foo []))` is `d` where they give `l0`.
+  Runtime constructors keep their names (`KeywordValue`,
+  `PersistentVectorValue`, `Atom`, the constructor `deftype` and
+  `defrecord` build), so the host and the printer show instances as at
+  every level. The text of a function (`(str f)`, `*print-fn-bodies*`) is
+  its output source, without comments or whitespace.
 - An inlined call (light-cljs-214) leaves no stack frame: the `stack` of an
   error thrown in an inlined body names its caller, and recursion that
   overflows the stack may do so at another depth. The function's `name` and

@@ -16,8 +16,10 @@
 //!    P + G records exactly what P records.
 //! 2. Dead code by construction: a chain P, P + G_T1, P + G_T1 + G_T2, ...,
 //!    P + G adds one tag's garbage per step in `GarbageTag::ALL` order. Each
-//!    step's advanced output is compared with the previous step's, and the
-//!    tag's class (see [`Class`]) must equal its row in [`EXPECTED`].
+//!    step's readable advanced output (`pseudo_names`, whose names do not
+//!    depend on the rest of the program) is compared with the previous
+//!    step's, and the tag's class (see [`Class`]) must equal its row in
+//!    [`EXPECTED`].
 //! 3. Escape preservation: in P + G + escapes, the code of every escaped item
 //!    survives at every level, and property 1 holds.
 //! 4. Prepare-level regression: `removed_definitions` and `specialized_calls`
@@ -44,7 +46,7 @@
 //! `LIGHT_CLJS_GENERATED_COUNT=240 cargo nextest run --test compiler generated_optimization::`.
 //! `--no-capture` prints each seed's garbage table.
 use super::generated::{GarbageTag, Literals, NamespaceProgram, SEEDS, namespace_program, seeds};
-use super::optimization::Sources;
+use super::optimization::{Sources, readable};
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry;
 use light_cljs::{
@@ -138,6 +140,9 @@ struct Compiled {
     sources: Vec<(String, String)>,
     js: [String; 3],
     stats: [ApplicationStats; 3],
+    /// The readable `Advanced` output, whose size and table properties 2
+    /// and 5 compare.
+    readable: String,
 }
 
 /// Load the program's entry namespace and its dependencies from a temporary
@@ -173,9 +178,10 @@ fn compile(
         .map(|level| prepare_application(&analyzed, ApplicationOptions::new(level)));
     Compiled {
         variant,
-        sources,
         js: prepared.each_ref().map(|prepared| prepared.emit_js()),
         stats: prepared.each_ref().map(|prepared| prepared.stats().clone()),
+        readable: prepare_application(&analyzed, readable(OptimizationLevel::Advanced)).emit_js(),
+        sources,
     }
 }
 
@@ -509,7 +515,7 @@ fn check_seed(seed: u64) {
     // (light-cljs-221), which the built rendering keeps, so the pools are
     // compared with folding off.
     let unfolded = |compiled: &Compiled| {
-        let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+        let mut options = readable(OptimizationLevel::Advanced);
         options.no_folding = true;
         prepare_application(&analyze(&program, &compiled.sources), options).emit_js()
     };
@@ -534,7 +540,7 @@ fn check_seed(seed: u64) {
     // Properties 2 and 4 along the chain P, P + G_T1, P + G_T1 + G_T2, ...,
     // P + G, which adds one tag's garbage per step in `GarbageTag::ALL` order.
     // Each step's advanced output is compared with the previous step's.
-    let mut previous = p.js[2].clone();
+    let mut previous = p.readable.clone();
     let mut prefixes = vec![p.stats[1].clone()];
     let mut rows = Vec::new();
     let mut included = Vec::new();
@@ -548,17 +554,21 @@ fn check_seed(seed: u64) {
             .iter()
             .all(|item| included.contains(&item.tag))
         {
-            (pg.js[2].clone(), pg.stats[1].clone())
+            (pg.readable.clone(), pg.stats[1].clone())
         } else {
             let sources = program.sources(
                 &|index| included.contains(&program.garbage[index].tag),
                 false,
             );
             let analyzed = analyze(&program, &sources);
-            let prepare = |level| prepare_application(&analyzed, ApplicationOptions::new(level));
             (
-                prepare(OptimizationLevel::Advanced).emit_js(),
-                prepare(OptimizationLevel::Prepare).stats().clone(),
+                prepare_application(&analyzed, readable(OptimizationLevel::Advanced)).emit_js(),
+                prepare_application(
+                    &analyzed,
+                    ApplicationOptions::new(OptimizationLevel::Prepare),
+                )
+                .stats()
+                .clone(),
             )
         };
         rows.push(classify(&program, tag, &previous, &advanced));
@@ -569,8 +579,8 @@ fn check_seed(seed: u64) {
     let report = table(&program, &rows, &prefixes);
     println!(
         "{report}constant pool composites at advanced: {} constant, {} built",
-        pool_composites(&p.js[2]),
-        pool_composites(&built.js[2])
+        pool_composites(&p.readable),
+        pool_composites(&built.readable)
     );
     for pair in prefixes.windows(2) {
         assert!(

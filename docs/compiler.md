@@ -244,6 +244,19 @@ symbols as the printer does. With the printer every message is the same as
 at `None`; `[1 2 3]` alone is about 120 KB instead of 132 KB. See "Phase 1
 print extension points" in [advanced-optimization.md](advanced-optimization.md).
 
+At `Advanced` the output is terse (light-cljs-215; "Phase 3 terse emission
+extension points" in [advanced-optimization.md](advanced-optimization.md)).
+`build.rs` strips the runtime units of comments and whitespace and gives
+their locals short names, using the lexer and scope analysis of
+`src/js_syntax.rs`; the slice names its top-level bindings by frequency; and
+`src/terse.rs` gives every name the emitter binds a short name, dots member
+reads with identifier keys, drops redundant parentheses and joins the tokens
+without whitespace. Runtime constructors keep their names. A program with
+raw `js*` text keeps its layout, and its names keep the hygiene prefix.
+`ApplicationOptions::pseudo_names` (`--compile --pseudo-names`) keeps the
+readable output instead. Terse output changes engine-generated error
+messages and function names, as the Advanced-mode contract says.
+
 `PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
 that first demanded it, and each embedded unit with its byte size and the first
@@ -252,7 +265,8 @@ that report as a table on stderr, for single files and `--entry` builds, at any
 level; a root the output only calls prints as `rt$add(...)`, and a dispatcher
 kept for an `extend-type` prints in parentheses. At `Advanced` the line under
 the summary gives the constant table's entries, how many are collections and
-lazy cells, and its bytes.
+lazy cells, and its bytes, and a unit's bytes are its terse bytes in the
+slice.
 
 The entry result, all standalone expressions, unknown or effectful initializers,
 throws, definition tests, and protocol/type/extension declarations retain their

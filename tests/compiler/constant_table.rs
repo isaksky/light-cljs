@@ -8,7 +8,7 @@
 //! literals are one object; keywords built from data at run time are fresh and
 //! equal them by spelling. Later passes (type inference, light-cljs-210) rely on
 //! exactly the identities pinned here.
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::{
     ApplicationOptions, EvalOptions, EvalSession, OptimizationLevel, Program, analyze, parse,
     prepare_application,
@@ -18,8 +18,14 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
-fn emit(program: &Program, level: OptimizationLevel) -> String {
+/// The output at `level`, terse at `Advanced`, which the programs run as.
+fn emit_terse(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
+}
+
+/// The readable output (`pseudo_names`), whose table the tests read.
+fn emit(program: &Program, level: OptimizationLevel) -> String {
+    prepare_application(program, readable(level)).emit_js()
 }
 
 /// The program prints `expected` (its value, through `console.log`) at every
@@ -28,7 +34,7 @@ fn every_level(source: &str, expected: &str) {
     let program = program(source);
     for level in OptimizationLevel::ALL {
         assert_eq!(
-            execute(&format!("console.log({});", emit(&program, level))),
+            execute(&format!("console.log({});", emit_terse(&program, level))),
             format!("{expected}\n"),
             "at {level}: {source}"
         );
@@ -92,11 +98,7 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
     assert_eq!(advanced.matches("rt$withMeta(").count(), 1);
     assert_eq!(advanced.matches("rt$listFromArray(").count(), 1);
     // Bundler output declares the same table.
-    let esm = prepare_application(
-        &program,
-        ApplicationOptions::new(OptimizationLevel::Advanced),
-    )
-    .emit_esm();
+    let esm = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_esm();
     assert!(esm.contains("  const k10 = rt$keyword(null, \"m\");\n"));
     // Below `Advanced` every site constructs its literal, as before.
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
@@ -128,7 +130,7 @@ fn literal_symbols_share_one_value_only_at_advanced_and_keywords_at_every_level(
         (OptimizationLevel::Advanced, "[true true true true]\n"),
     ] {
         assert_eq!(
-            execute(&format!("console.log({});", emit(&program, level))),
+            execute(&format!("console.log({});", emit_terse(&program, level))),
             expected,
             "{level}"
         );

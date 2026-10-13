@@ -8,7 +8,7 @@
 //! and an `Advanced` program registers its namespaces (and switches `*ns*` at
 //! namespace entries) only when it does. The declaration hooks woven into
 //! application paths start as plain versions in application slices.
-use super::optimization::{Sources, execute};
+use super::optimization::{Sources, execute, readable};
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry;
 use light_cljs::runtime_manifest::{CoreReference, RuntimeManifest, UnitId};
@@ -28,6 +28,11 @@ fn program(source: &str) -> Program {
 
 fn emit(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
+}
+
+/// The readable output (`pseudo_names`), whose text the tests read.
+fn emit_readable(program: &Program, level: OptimizationLevel) -> String {
+    prepare_application(program, readable(level)).emit_js()
 }
 
 /// What the program's value prints as in Node, or the message it throws.
@@ -208,7 +213,11 @@ fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
         &program("(js/console.log (+ 1 2))"),
         OptimizationLevel::Advanced,
     );
-    assert!(!registers(&sum), "{sum}");
+    let readable_sum = emit_readable(
+        &program("(js/console.log (+ 1 2))"),
+        OptimizationLevel::Advanced,
+    );
+    assert!(!registers(&readable_sum), "{readable_sum}");
     assert!(sum.len() < 1_000, "{} bytes:\n{sum}", sum.len());
     assert_eq!(execute(&sum), "3\n");
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
@@ -238,7 +247,10 @@ fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
     ] {
         let program = program(source);
         let advanced = emit(&program, OptimizationLevel::Advanced);
-        assert!(registers(&advanced), "{source}");
+        assert!(
+            registers(&emit_readable(&program, OptimizationLevel::Advanced)),
+            "{source}"
+        );
         assert_eq!(printed(&advanced), format!("{expected}\n"), "{source}");
         assert_eq!(
             printed(&emit(&program, OptimizationLevel::None)),
@@ -258,7 +270,10 @@ fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
     ] {
         let program = program(source);
         let advanced = emit(&program, OptimizationLevel::Advanced);
-        assert!(!registers(&advanced), "{source}");
+        assert!(
+            !registers(&emit_readable(&program, OptimizationLevel::Advanced)),
+            "{source}"
+        );
         assert_eq!(printed(&advanced), format!("{expected}\n"), "{source}");
         assert_eq!(
             printed(&emit(&program, OptimizationLevel::None)),
@@ -278,7 +293,8 @@ fn a_registered_namespace_lists_only_retained_definitions() {
                     (pr-str [inc (read-string "`inc") (read-string "`map")])"#;
     let program = program(source);
     let advanced = emit(&program, OptimizationLevel::Advanced);
-    let bindings = advanced
+    let readable_advanced = emit_readable(&program, OptimizationLevel::Advanced);
+    let bindings = readable_advanced
         .lines()
         .find(|line| line.trim_start().starts_with("bindings: ["))
         .unwrap();
@@ -334,7 +350,8 @@ fn namespace_entries_switch_ns_only_when_the_program_reaches_reflection() {
     };
     let plain = entry(false);
     let advanced = emit(&plain, OptimizationLevel::Advanced);
-    assert!(!registers(&advanced), "{advanced}");
+    let readable_advanced = emit_readable(&plain, OptimizationLevel::Advanced);
+    assert!(!registers(&readable_advanced), "{readable_advanced}");
     assert_eq!(printed(&advanced), "2\n");
     assert!(registers(&emit(&plain, OptimizationLevel::Prepare)));
     // `*ns*` is the namespace being loaded when the call runs, at every level.
@@ -384,8 +401,9 @@ fn application_slices_keep_plain_declaration_hooks() {
         assert!(kept.contains(&hook), "{hook}");
     }
     let advanced = prepared.emit_js();
-    assert!(!registers(&advanced));
-    assert!(advanced.contains("let demandProtocol = () => {}, demandMethod = () => {}"));
+    let readable_advanced = emit_readable(&program, OptimizationLevel::Advanced);
+    assert!(!registers(&readable_advanced));
+    assert!(readable_advanced.contains("let demandProtocol = () => {}, demandMethod = () => {}"));
     let expected = "[12 25 true \"number\" \"other\"]\n";
     assert_eq!(printed(&advanced), expected);
     assert_eq!(printed(&emit(&program, OptimizationLevel::None)), expected);

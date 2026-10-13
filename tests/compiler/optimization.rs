@@ -26,6 +26,15 @@ pub(crate) fn execute(js: &str) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+/// Options at `level` whose `Advanced` output keeps the compiler's names, the
+/// runtime as written and the emitter's layout
+/// ([`ApplicationOptions::pseudo_names`]), for tests that read the output's
+/// text. Tests that run programs use the terse default.
+pub(crate) fn readable(level: OptimizationLevel) -> ApplicationOptions {
+    let mut options = ApplicationOptions::new(level);
+    options.pseudo_names = true;
+    options
+}
 /// Run `source` at every optimization level in Node, printing its value as
 /// `JSON.stringify` gives it, and require every level to print what `None`
 /// (the oracle) prints; returns that output. The protocol, record, reify,
@@ -191,6 +200,7 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
             defines: Vec::new(),
             no_inlining: false,
             no_folding: false,
+            pseudo_names: false,
         },
     );
     assert!(!without.emit_js().contains("OPTIMIZER_EXPORT_SENTINEL"));

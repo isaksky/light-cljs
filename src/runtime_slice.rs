@@ -248,6 +248,9 @@ pub(crate) struct EmittedRuntime {
     pub(crate) embedding: RuntimeEmbedding,
     /// Bytes of the embedded runtime factory expression.
     pub(crate) bytes: usize,
+    /// Per unit, by `UnitId`, its bytes in a terse slice
+    /// ([`crate::terse::terse_slice`]); `None` for readable text.
+    pub(crate) unit_bytes: Option<Vec<usize>>,
     pub(crate) constants: ConstantPool,
 }
 
@@ -274,7 +277,13 @@ pub struct ConstantPool {
 /// The `Advanced` runtime factory for `roots`, which are all direct: the units
 /// they reach, returning the bindings they read as an array in
 /// [`RuntimeRoots::direct_bindings`] order, which the output destructures.
-pub(crate) fn sliced_runtime(roots: &RuntimeRoots) -> (String, Vec<&'static str>) {
+/// `terse` writes the units as `build.rs` strips and renames them
+/// ([`crate::terse::terse_slice`]) rather than as written, and also returns
+/// each unit's bytes.
+pub(crate) fn sliced_runtime(
+    roots: &RuntimeRoots,
+    terse: bool,
+) -> (String, Vec<&'static str>, Option<Vec<usize>>) {
     debug_assert!(
         roots.names.iter().all(|(name, ..)| name.direct),
         "Advanced output reads every runtime name directly"
@@ -286,7 +295,16 @@ pub(crate) fn sliced_runtime(roots: &RuntimeRoots) -> (String, Vec<&'static str>
         .map(Option::is_some)
         .collect::<Vec<_>>();
     let bindings = roots.direct_bindings();
-    (manifest.sliced_bindings_text(&kept, &bindings), bindings)
+    if terse {
+        let (text, bytes) = crate::terse::terse_slice(&kept, &bindings);
+        (text, bindings, Some(bytes))
+    } else {
+        (
+            manifest.sliced_bindings_text(&kept, &bindings),
+            bindings,
+            None,
+        )
+    }
 }
 
 /// What first demanded a runtime name.
@@ -362,7 +380,9 @@ impl RuntimeRoot {
 pub struct RetainedUnit {
     pub unit: UnitId,
     pub name: &'static str,
-    /// Bytes of the unit body, including its comments and blank lines.
+    /// Bytes of the unit as the output embeds it: its body, including its
+    /// comments and blank lines, or at `Advanced` its terse text (with the
+    /// names of the slice) unless the output is readable (`pseudo_names`).
     pub bytes: usize,
     /// Index in [`RetentionReport::roots`] of the first root whose closure
     /// reaches this unit. `None` for a unit embedded only because the whole
@@ -436,7 +456,10 @@ impl RetentionReport {
             .map(|(index, unit)| RetainedUnit {
                 unit: UnitId(index),
                 name: unit.name,
-                bytes: unit.body_range.len(),
+                bytes: emitted
+                    .unit_bytes
+                    .as_ref()
+                    .map_or(unit.body_range.len(), |bytes| bytes[index]),
                 root: first[index],
             })
             .collect();

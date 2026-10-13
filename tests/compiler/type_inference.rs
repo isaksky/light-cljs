@@ -17,7 +17,7 @@
 //! `None`.
 use super::generated::{SEEDS, namespace_program};
 use super::generated_optimization::analyze as analyze_generated;
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::core_operations::Type;
 use light_cljs::inference::{Inferred, Known};
 use light_cljs::{
@@ -38,15 +38,22 @@ fn options(level: OptimizationLevel) -> ApplicationOptions {
     options
 }
 
+/// [`options`] with readable `Advanced` output (`pseudo_names`), whose text
+/// the tests read.
+fn readable_options(level: OptimizationLevel) -> ApplicationOptions {
+    let mut options = options(level);
+    options.pseudo_names = true;
+    options
+}
+
 fn prepared(source: &str, level: OptimizationLevel) -> PreparedApplication {
     prepare_application(&program(source), options(level))
 }
 
 /// The program prints `expected` (its value, through `console.log`) at every
-/// level; returns the program part of the `Advanced` output.
+/// level; returns the program part of the readable `Advanced` output.
 fn every_level(source: &str, expected: &str) -> String {
     let program = program(source);
-    let mut advanced = String::new();
     for level in OptimizationLevel::ALL {
         let js = prepare_application(&program, options(level)).emit_js();
         assert_eq!(
@@ -54,8 +61,9 @@ fn every_level(source: &str, expected: &str) -> String {
             format!("{expected}\n"),
             "at {level}: {source}"
         );
-        advanced = js;
     }
+    let advanced =
+        prepare_application(&program, readable_options(OptimizationLevel::Advanced)).emit_js();
     program_text(&advanced).to_owned()
 }
 
@@ -244,11 +252,7 @@ fn truth_tests_drop_truth_when_javascript_truthiness_agrees() {
     }
     // A program that tests only booleans declares no `truth`.
     let program = program("(defn f [a b] (if (< a b) a b)) (f 1 2)");
-    let advanced = prepare_application(
-        &program,
-        ApplicationOptions::new(OptimizationLevel::Advanced),
-    )
-    .emit_js();
+    let advanced = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
     assert!(!advanced.contains("truth"), "{advanced}");
     assert!(
         prepare_application(
@@ -957,7 +961,7 @@ fn closed_functions_program(seed: u64) -> String {
 }
 
 /// The program prints at every level what it prints at `None`; returns the
-/// program part of the `Advanced` output and its statistics.
+/// program part of the readable `Advanced` output and its statistics.
 fn same_at_every_level(source: &str) -> (String, ApplicationStats) {
     let program = program(source);
     let printed = OptimizationLevel::ALL.map(|level| {
@@ -967,10 +971,7 @@ fn same_at_every_level(source: &str) -> (String, ApplicationStats) {
     for (level, output) in OptimizationLevel::ALL.into_iter().zip(&printed) {
         assert_eq!(output, &printed[0], "at {level}:\n{source}");
     }
-    let advanced = prepare_application(
-        &program,
-        ApplicationOptions::new(OptimizationLevel::Advanced),
-    );
+    let advanced = prepare_application(&program, readable(OptimizationLevel::Advanced));
     (
         program_text(&advanced.emit_js()).to_owned(),
         advanced.stats().clone(),

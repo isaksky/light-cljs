@@ -10,8 +10,10 @@
 //! redefined or assigned. Local and named functions with several methods
 //! (light-cljs-228) call their methods' entries, hoisted to the constant table
 //! when they capture nothing and bound next to their `let` otherwise, and keep
-//! their dispatcher when their value escapes.
-use super::optimization::{Sources, execute};
+//! their dispatcher when their value escapes. The programs run as the terse
+//! `Advanced` output; their shapes are read from the readable output
+//! (`pseudo_names`, light-cljs-215).
+use super::optimization::{Sources, execute, readable};
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry;
 use light_cljs::{
@@ -44,10 +46,7 @@ fn every_level(program: &Program, source: &str, expected: &str) -> (String, Appl
             );
         }
     }
-    let prepared = prepare_application(
-        program,
-        ApplicationOptions::new(OptimizationLevel::Advanced),
-    );
+    let prepared = prepare_application(program, readable(OptimizationLevel::Advanced));
     (
         program_text(&prepared.emit_js()).to_owned(),
         prepared.stats().clone(),
@@ -416,6 +415,7 @@ fn exports_keep_their_dispatcher() {
             defines: Vec::new(),
             no_inlining: false,
             no_folding: false,
+            pseudo_names: true,
         },
     );
     let text = prepared.emit_js();

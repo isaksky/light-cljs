@@ -8,7 +8,7 @@
 //! what stayed: calls outside an operation's domain, operations the program
 //! may replace, bodies that depend on their function's scope, calls that may
 //! run before the definition and arguments whose evaluation must not move.
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use super::size_ratchet::ratchet_fixtures::FIXTURES;
 use light_cljs::{
     ApplicationOptions, ApplicationStats, Define, DefineError, DefineValue, OptimizationLevel,
@@ -34,7 +34,7 @@ fn script(program: &Program, options: ApplicationOptions, strict: bool) -> Strin
 }
 
 /// The program prints `expected` at every level with `defines`, sloppy and
-/// strict; returns the program part of the `Advanced` output and its
+/// strict; returns the program part of the readable `Advanced` output and its
 /// statistics.
 fn defined_at_every_level(
     source: &str,
@@ -51,7 +51,9 @@ fn defined_at_every_level(
             );
         }
     }
-    let prepared = prepare_application(&program, options(OptimizationLevel::Advanced, defines));
+    let mut advanced = options(OptimizationLevel::Advanced, defines);
+    advanced.pseudo_names = true;
+    let prepared = prepare_application(&program, advanced);
     assert!(prepared.rejected_defines().is_empty(), "{source}");
     (
         program_text(&prepared.emit_js()).to_owned(),
@@ -384,11 +386,7 @@ fn debug_logging_vanishes_completely() {
     let release = r#"(defn area [w h] (* w h)) (area (.-length "abc") 4)"#;
     assert_eq!(
         text,
-        prepare_application(
-            &program(release),
-            ApplicationOptions::new(OptimizationLevel::Advanced)
-        )
-        .emit_js()
+        prepare_application(&program(release), readable(OptimizationLevel::Advanced)).emit_js()
     );
     defined_at_every_level(
         fixture,
@@ -412,7 +410,7 @@ fn single_use_functions_move_into_their_only_call() {
     assert!(stats.removed_definitions >= 2, "{stats:?}");
     // `no_inlining` keeps every call, as Closure's `inlineFunctions` option
     // does; folding still runs.
-    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    let mut options = readable(OptimizationLevel::Advanced);
     options.no_inlining = true;
     let prepared = prepare_application(&program(source), options);
     assert_eq!(prepared.stats().inlined_calls, 0);

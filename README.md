@@ -133,8 +133,11 @@ calls the program's own functions directly, without an arity
 dispatcher when nothing else sees them, creating once the methods of local
 functions that capture nothing, and folds constants, dead branches and
 lookups in constant collections and inlines single-use and small pure
-functions (see
+functions, and writes the program and the runtime it embeds tersely, with
+short names and without comments or whitespace (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
+`--pseudo-names` to keep `advanced` output readable for debugging: the
+compiler's own names, the runtime as written and an indented layout. Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
 the constant table. `--define ns/NAME=VALUE` (repeatable) gives a

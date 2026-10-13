@@ -2226,3 +2226,97 @@ ms before and 18.1 after, and the program of
 (tests/compiler/constant_lookups.rs) 19.3 and 18.9 ms: within the noise.
 The folder classifies each constant once (memoized) and its key checks are
 linear.
+
+## Terse emission — October 13, 2026
+
+light-cljs-215 implements Phase 3 of the
+[design](../docs/advanced-optimization.md) ("Phase 3 terse emission
+extension points"). At `--optimize advanced` the output is terse:
+
+- `build.rs` writes every runtime unit without comments or whitespace, with
+  its locals renamed to short names per scope, and the slice names its
+  top-level bindings by frequency; runtime constructors keep their names;
+- every name the emitter binds gets a short name by frequency, member reads
+  with an identifier key are dotted, redundant parentheses and semicolons go,
+  adjacent `let` and `const` statements join, and the tokens join without
+  whitespace;
+- `--pseudo-names` keeps the readable output.
+
+`none` and `prepare` output does not change, nor does the shared runtime.
+
+**Sizes**, raw and `gzip -9` bytes (of stdin, so without a file name) of
+`--compile --optimize advanced`. "Before" is master `f0b800c` (after
+light-cljs-221). "Stripped" and "+ runtime locals" are this change with the
+build's renaming steps turned off: the program rewrite and the runtime's
+comment and whitespace stripping only, and then with runtime locals renamed
+too (their slices' top-level names are inconsistent, so they are sizes, not
+runnable programs).
+
+| Fixture | Before | Stripped | + runtime locals | After | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 186 / 157 | 151 / 140 | 151 / 140 | 151 / 140 | 200 → 200 |
+| println-hi | 43,926 / 10,941 | 32,620 / 8,108 | 26,774 / 7,382 | 21,456 / 6,737 | 44,000 → 22,000 |
+| vector-printed | 51,502 / 12,626 | 38,207 / 9,377 | 31,322 / 8,557 | 24,932 / 7,794 | 52,000 → 25,000 |
+| map-printed | 58,863 / 14,359 | 43,245 / 10,467 | 35,483 / 9,513 | 28,170 / 8,654 | 59,000 → 29,000 |
+| seq-pipeline | 69,798 / 16,600 | 51,853 / 12,328 | 42,312 / 11,148 | 33,742 / 10,138 | 70,000 → 34,000 |
+| add | 26 / 46 | 19 / 39 | 19 / 39 | 19 / 39 | 100 → 100 |
+| rest-fn | 24,795 / 6,570 | 17,641 / 4,609 | 14,395 / 4,169 | 11,423 / 3,709 | 25,000 → 12,000 |
+| keyword-case | 10,381 / 3,301 | 6,673 / 2,112 | 5,483 / 1,879 | 4,343 / 1,647 | 11,000 → 4,400 |
+| record-protocol | 11,637 / 3,786 | 8,689 / 2,941 | 6,819 / 2,627 | 5,750 / 2,423 | 12,000 → 5,800 |
+| pure-defs | 11,471 / 3,715 | 8,579 / 2,887 | 6,709 / 2,574 | 5,640 / 2,372 | 12,000 → 5,700 |
+| keyword-lookups | 73,216 / 17,648 | 53,081 / 12,671 | 42,950 / 11,414 | 34,465 / 10,409 | 74,000 → 35,000 |
+| constant-literals | 61,383 / 14,794 | 45,412 / 10,879 | 36,835 / 9,819 | 29,502 / 8,968 | 62,000 → 30,000 |
+| constant-lookups | 10,910 / 3,424 | 7,245 / 2,261 | 5,903 / 2,013 | 4,723 / 1,775 | 11,000 → 4,800 |
+| three-records | 11,642 / 3,780 | 8,696 / 2,941 | 6,826 / 2,626 | 5,757 / 2,422 | 12,000 → 5,800 |
+| constant-keys | 96,023 / 22,753 | 70,353 / 16,716 | 56,538 / 14,949 | 45,095 / 13,539 | 97,000 → 46,000 |
+| event-maps | 73,775 / 17,776 | 53,870 / 12,895 | 43,688 / 11,612 | 35,048 / 10,567 | 74,000 → 36,000 |
+| vector-only | 13,940 / 4,487 | 9,308 / 2,965 | 7,708 / 2,672 | 5,883 / 2,321 | 14,000 → 5,900 |
+| keyword-only | 9,997 / 3,231 | 6,576 / 2,081 | 5,394 / 1,853 | 4,270 / 1,617 | 10,000 → 4,300 |
+| map-only | 25,808 / 7,282 | 17,438 / 4,826 | 14,164 / 4,308 | 11,068 / 3,820 | 26,000 → 12,000 |
+| atom-str | 5,514 / 1,928 | 3,557 / 1,185 | 2,929 / 1,059 | 2,284 / 904 | 5,600 → 2,300 |
+| raw-js | 36 / 54 | 36 / 54 | 36 / 54 | 36 / 54 | 100 → 100 |
+| multi-arity | 781 / 308 | 318 / 212 | 318 / 212 | 318 / 212 | 800 → 400 |
+| closed-params | 82,559 / 20,336 | 60,718 / 15,165 | 49,653 / 13,742 | 37,754 / 12,276 | 83,000 → 38,000 |
+| debug-logging | 48 / 68 | 31 / 51 | 31 / 51 | 31 / 51 | 100 → 100 |
+| local-arities | 1,282 / 417 | 490 / 278 | 490 / 278 | 490 / 278 | 1,300 → 500 |
+| total | 749,499 / 190,387 | 544,806 / 138,188 | 442,930 / 124,690 | 352,350 / 112,866 | |
+
+Over all fixtures the output is 53% smaller raw and 41% smaller gzipped.
+Stripping alone takes 27% of the bytes away, renaming the runtime's locals
+another 14 points raw (7 gzipped) and naming the slice's top-level bindings
+12 (6): renaming inside runtime units is worth its build-time pass. About
+4.6 KB of the 13.9 KB `[1 2 3]` program were the runtime's comments and
+whitespace; it is now 5,883 bytes, 2,321 gzipped. Keeping the 35 constructor
+names (`KeywordValue`, `PersistentVectorValue`, ...) costs 2.6% raw and 0.9%
+gzipped; all other runtime bindings are renamed. Programs with raw `js*`
+text (`raw-js`) keep their layout and a prefixed short name for each
+compiler name. The ABI property names are not mangled: they are at most 568
+bytes of any fixture (`closed-params`), see light-cljs-232.
+
+**Startup and steady state.** `--levels --only
+constant-literals,event-maps,constant-lookups,vector-only --samples 9
+--warmups 1`, with other builds running: the median one-minute load average
+was 3.02 (range 2.37–4.56). The table is in
+[after](results/terse-emission-2026-10-13/after/summary.md), next to its
+`samples.csv`; "before" is the [after run of
+light-cljs-221](results/constant-folding-2026-10-13/after/summary.md), whose
+outputs are this change's base. Parse plus first execution at `advanced`,
+median ms, Node / QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| constant-literals | 1.790 / 2.554 | 1.554 / 2.325 |
+| event-maps | 2.011 / 3.118 | 1.794 / 2.766 |
+| constant-lookups | 0.326 / 0.389 | 0.284 / 0.328 |
+| vector-only | – | 0.553 / 0.470 |
+
+Node parses the terse output 15–20% faster and QuickJS evaluates it 9–16%
+faster. Steady state does not change beyond noise (median µs per call,
+Node / QuickJS): `constant-literals` 3.3 / 71.4 before and 3.2 / 67.4 after,
+`event-maps` 3,344 / 8,773 and 3,489 / 8,730.
+
+**Compile time.** Median of 15 interleaved release-build CLI runs at
+`advanced`, terse and with `--pseudo-names`:
+`benchmarks/fixtures/compiler/collections/value.cljs` 14.1 and 13.5 ms,
+`closed-params` 15.1 and 14.6 ms, `vector-only` 13.3 and 13.2 ms. The build
+script writes the terse runtime (470 KB of Rust source) in about 0.1 s.

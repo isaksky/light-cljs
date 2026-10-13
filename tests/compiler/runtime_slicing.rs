@@ -11,7 +11,7 @@
 //! checks that no `rt.`, `rt$` or `core$` read in the output escaped that
 //! record, so every test that emits code at any level checks the roots.
 
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::runtime_manifest::{RUNTIME, RootUse, RuntimeManifest, UnitId};
 use light_cljs::runtime_slice::{Demand, RuntimeEmbedding, RuntimeName};
 use light_cljs::{
@@ -27,8 +27,15 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
+/// The prepared program with readable `Advanced` output (`pseudo_names`),
+/// whose slice the tests compare with the manifest's text.
 fn prepared(source: &str, level: OptimizationLevel) -> PreparedApplication {
-    prepare_application(&program(source), ApplicationOptions::new(level))
+    prepare_application(&program(source), readable(level))
+}
+
+/// The output at `level`, terse at `Advanced`, which the programs run as.
+fn terse(source: &str, level: OptimizationLevel) -> String {
+    prepare_application(&program(source), ApplicationOptions::new(level)).emit_js()
 }
 
 /// The units these roots keep, indexed by `UnitId`.
@@ -144,10 +151,21 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
         let whole = prepared(source, OptimizationLevel::Prepare).emit_js();
         assert!(whole.contains(RUNTIME.trim()), "{source}");
         assert!(js.len() < whole.len(), "{source}");
-        let none = prepared(source, OptimizationLevel::None).emit_js();
+        let none = execute(&format!(
+            "console.log({});",
+            prepared(source, OptimizationLevel::None).emit_js()
+        ));
         assert_eq!(
             execute(&format!("console.log({js});")),
-            execute(&format!("console.log({none});")),
+            none,
+            "{source}: readable advanced prints what none prints"
+        );
+        assert_eq!(
+            execute(&format!(
+                "console.log({});",
+                terse(source, OptimizationLevel::Advanced)
+            )),
+            none,
             "{source}: advanced prints what none prints"
         );
     }
@@ -156,14 +174,19 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
 #[test]
 fn bundler_modules_embed_the_same_slice() {
     for source in PROGRAMS {
-        let advanced = prepared(source, OptimizationLevel::Advanced);
-        let js = advanced.emit_js();
-        let module = advanced.emit_esm();
-        assert_eq!(
-            module,
-            format!("export default {};\n", js.trim_end()),
-            "{source}"
-        );
+        for options in [
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            readable(OptimizationLevel::Advanced),
+        ] {
+            let advanced = prepare_application(&program(source), options);
+            let js = advanced.emit_js();
+            let module = advanced.emit_esm();
+            assert_eq!(
+                module,
+                format!("export default {};\n", js.trim_end()),
+                "{source}"
+            );
+        }
     }
 }
 
@@ -391,7 +414,7 @@ fn embedded(application: &PreparedApplication) -> Vec<&'static str> {
 /// the same at each.
 fn same_at_every_level(source: &str) -> String {
     let printed = OptimizationLevel::ALL.map(|level| {
-        let js = prepared(source, level).emit_js();
+        let js = terse(source, level);
         execute(&format!("console.log({js});"))
     });
     assert_eq!(printed[0], printed[1], "{source}: prepare");

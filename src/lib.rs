@@ -29,6 +29,7 @@ pub mod evaluator;
 pub mod folding;
 pub mod inference;
 pub mod inlining;
+mod js_syntax;
 mod program_fragment;
 mod rta;
 pub use eval_session::{
@@ -43,6 +44,7 @@ mod reader_literals;
 pub mod runtime_manifest;
 pub mod runtime_slice;
 pub mod source_provider;
+mod terse;
 pub mod value_hash;
 
 pub use analyzer::{

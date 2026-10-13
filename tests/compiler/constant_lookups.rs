@@ -14,7 +14,7 @@
 //! Every program runs at every level in Node and in QuickJS and must give
 //! what `None` gives; the `Advanced` text is checked for what folded and what
 //! stayed.
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
@@ -45,8 +45,8 @@ fn quickjs(expression: &str) -> String {
 }
 
 /// The program, whose value is a string, gives `expected` at every level in
-/// Node and in QuickJS; returns the program part of the `Advanced` output
-/// (what follows the runtime slice and the constant table).
+/// Node and in QuickJS; returns the program part of the readable `Advanced`
+/// output (what follows the runtime slice and the constant table).
 fn every_level(source: &str, expected: &str) -> String {
     let program = program(source);
     for level in OptimizationLevel::ALL {
@@ -58,7 +58,7 @@ fn every_level(source: &str, expected: &str) -> String {
         );
         assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
     }
-    let advanced = emit(&program, OptimizationLevel::Advanced);
+    let advanced = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
     let start = advanced
         .find("  const host = ")
         .or_else(|| advanced.rfind("\n  const k"))

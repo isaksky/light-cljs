@@ -15,7 +15,7 @@
 //! also check that `=` implies equal hashes across pooled and built values.
 use super::generated::{namespace_program, seeds};
 use super::generated_optimization::analyze;
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze as analyze_source, parse,
@@ -32,6 +32,12 @@ fn program(source: &str) -> Program {
 
 fn emit(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
+}
+
+/// The readable output (`pseudo_names`), whose text the checks read and
+/// whose runtime they patch.
+fn emit_readable(program: &Program, level: OptimizationLevel) -> String {
+    prepare_application(program, readable(level)).emit_js()
 }
 
 /// The program prints `expected` (its value, through `console.log`) at every
@@ -235,7 +241,7 @@ fn edge_case_constants_embed_the_runtime_hash() {
    {{:a {{:b {{:c [1 2 {{:d #{{:e "f"}}}}]}}}}}} [[[[[[1]]]]]]
    [[7 8 9] {big}]]"##
     );
-    let js = emit(&kept(&items), OptimizationLevel::Advanced);
+    let js = emit_readable(&kept(&items), OptimizationLevel::Advanced);
     // The lazy cell is hashed too.
     assert!(js.contains("??= rt$hashed(rt$vectorFromArray([k"));
     let checked = agrees(&js, "edge cases");
@@ -346,7 +352,7 @@ fn random_scalars_embed_the_runtime_hash() {
         .collect::<Vec<_>>()
         .join(" ");
     let checked = agrees(
-        &emit(&kept(&items), OptimizationLevel::Advanced),
+        &emit_readable(&kept(&items), OptimizationLevel::Advanced),
         "random scalars",
     );
     assert!(checked > 700, "{checked}");
@@ -400,10 +406,7 @@ fn rows_agree(rows: &[&str]) -> usize {
         .ok()
         .and_then(|syntax| analyze_source(&source, &syntax).ok())
         .map(|program| {
-            let prepared = prepare_application(
-                &program,
-                ApplicationOptions::new(OptimizationLevel::Advanced),
-            );
+            let prepared = prepare_application(&program, readable(OptimizationLevel::Advanced));
             let intact = prepared
                 .inference()
                 .is_some_and(|inference| inference.facts().core_protocols_intact());
@@ -463,7 +466,7 @@ fn generated_program_constants_embed_the_runtime_hash() {
         let (_, text) = sources.iter_mut().find(|(path, _)| *path == entry).unwrap();
         text.push_str("\n(set! (.-lightHash js/globalThis) cljs.core/hash)\n");
         let analyzed = analyze(&program, &sources);
-        let js = emit(&analyzed, OptimizationLevel::Advanced);
+        let js = emit_readable(&analyzed, OptimizationLevel::Advanced);
         checked += agrees(&js, &format!("seed {seed}"));
     }
     eprintln!("{checked} embedded hashes in generated programs");
@@ -530,7 +533,7 @@ fn hashes_are_embedded_only_at_advanced_with_intact_core_protocols() {
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         assert!(!emit(&program, level).contains("rt.hashed("), "{level}");
     }
-    let advanced = emit(&program, OptimizationLevel::Advanced);
+    let advanced = emit_readable(&program, OptimizationLevel::Advanced);
     let declarations: Vec<_> = advanced
         .lines()
         .filter(|line| {
@@ -559,9 +562,16 @@ fn hashes_are_embedded_only_at_advanced_with_intact_core_protocols() {
     ));
     assert!(expected.ends_with(" 318764438]\n"), "{expected}");
     assert_eq!(execute(&format!("console.log({advanced});")), expected);
+    assert_eq!(
+        execute(&format!(
+            "console.log({});",
+            emit(&program, OptimizationLevel::Advanced)
+        )),
+        expected
+    );
     // Extending a core protocol to a host type may change the hash of any
     // value, so such a program embeds none.
-    let extended = emit(
+    let extended = emit_readable(
         &self::program(&format!(
             "(extend-type number IHash (-hash [n] 42)) {source}"
         )),

@@ -118,6 +118,13 @@ pub struct ApplicationOptions {
     /// tests that compare what the constant pool holds before folding reads
     /// constants away.
     pub no_folding: bool,
+    /// At `Advanced`, keep the output readable: the compiler's names
+    /// (`g3_1`, `l7`, `k0`, `rt$add`), the runtime as written, with its
+    /// comments, and the emitter's layout, as Closure's `--debug` and pretty
+    /// printing do; for debugging, and for tests that read the output. Off,
+    /// `Advanced` output is terse ([`crate::terse`]; docs/advanced-optimization.md,
+    /// Phase 3). CLI: `--pseudo-names`.
+    pub pseudo_names: bool,
 }
 impl ApplicationOptions {
     /// Options at `optimize` without explicit exports or defines. Accepts a
@@ -129,6 +136,7 @@ impl ApplicationOptions {
             defines: Vec::new(),
             no_inlining: false,
             no_folding: false,
+            pseudo_names: false,
         }
     }
 }
@@ -172,6 +180,8 @@ pub struct ApplicationStats {
 /// Repeated emission does not rerun preparation or execute compiler callbacks.
 pub struct PreparedApplication {
     level: OptimizationLevel,
+    /// `Advanced` without [`ApplicationOptions::pseudo_names`]: terse output.
+    terse: bool,
     program: Program,
     globals: Vec<bool>,
     calls: HashMap<ExprId, usize>,
@@ -209,6 +219,7 @@ impl PreparedApplication {
                 entries: advanced.then_some(&self.entry_lookups),
                 basis: !advanced || self.type_basis,
                 shapes: self.shapes.as_ref().filter(|_| advanced),
+                terse: self.terse,
             },
             module,
         )
@@ -283,6 +294,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
     let level = options.optimize;
     let mut prepared = PreparedApplication {
         level,
+        terse: level.advanced() && !options.pseudo_names,
         program: program.clone(),
         globals: vec![false; program.globals.len()],
         calls: HashMap::new(),

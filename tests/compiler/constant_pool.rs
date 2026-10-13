@@ -10,7 +10,7 @@
 //! at different sites are one value. Large constants are lazy cells. The
 //! advanced-mode contract allows exactly one difference: equal constant
 //! literals may be `identical?`.
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::{
     ApplicationOptions, ConstantPool, EvalOptions, EvalSession, OptimizationLevel, Program,
     analyze, parse, prepare_application,
@@ -20,8 +20,15 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
-fn emit(program: &Program, level: OptimizationLevel) -> String {
+/// The output at `level`, terse at `Advanced`, which the programs run as.
+fn emit_terse(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
+}
+
+/// The readable output (`pseudo_names`), whose table the tests read and
+/// whose runtime functions [`counted`] patches.
+fn emit(program: &Program, level: OptimizationLevel) -> String {
+    prepare_application(program, readable(level)).emit_js()
 }
 
 fn printed(js: &str) -> String {
@@ -34,7 +41,7 @@ fn every_level(source: &str, expected: &str) {
     let program = program(source);
     for level in OptimizationLevel::ALL {
         assert_eq!(
-            printed(&emit(&program, level)),
+            printed(&emit_terse(&program, level)),
             format!("{expected}\n"),
             "at {level}: {source}"
         );
@@ -46,7 +53,7 @@ fn per_level(source: &str, expected: [&str; 3]) {
     let program = program(source);
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(
-            printed(&emit(&program, level)),
+            printed(&emit_terse(&program, level)),
             format!("{expected}\n"),
             "at {level}: {source}"
         );
@@ -219,11 +226,7 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
         "{advanced}"
     );
     // The table precedes the program in bundler output too.
-    let esm = prepare_application(
-        &program,
-        ApplicationOptions::new(OptimizationLevel::Advanced),
-    )
-    .emit_esm();
+    let esm = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_esm();
     assert!(esm.contains("  const k3 = rt$hashed(rt$vectorFromArray([k0, k2]), 1067525070);\n"));
     // Below `Advanced` each evaluation builds its literal, as before.
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {

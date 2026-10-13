@@ -9,7 +9,7 @@
 //! and the operations the runtime reads through a cell (`rand`, `flush`) keep
 //! their `coreCells` cell. Every program here must print what `None` prints.
 
-use super::optimization::execute;
+use super::optimization::{execute, readable};
 use light_cljs::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RUNTIME, RuntimeManifest};
 use light_cljs::runtime_slice::RuntimeName;
 use light_cljs::{
@@ -38,8 +38,8 @@ fn printed(source: &str, level: OptimizationLevel) -> String {
     ))
 }
 
-/// The `Advanced` output of `source`, after checking that it prints what the
-/// `None` output prints.
+/// The readable `Advanced` output of `source`, after checking that the
+/// terse output prints what the `None` output prints.
 fn advanced_matches_none(source: &str) -> String {
     let expected = printed(source, OptimizationLevel::None);
     assert_eq!(
@@ -47,7 +47,7 @@ fn advanced_matches_none(source: &str) -> String {
         expected,
         "{source}"
     );
-    prepared(source, OptimizationLevel::Advanced).emit_js()
+    prepare_application(&program(source), readable(OptimizationLevel::Advanced)).emit_js()
 }
 
 /// Whether `js` reads an output-level core operation cell, a `core$<name>`
