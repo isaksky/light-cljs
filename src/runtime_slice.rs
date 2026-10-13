@@ -248,6 +248,24 @@ pub(crate) struct EmittedRuntime {
     pub(crate) embedding: RuntimeEmbedding,
     /// Bytes of the embedded runtime factory expression.
     pub(crate) bytes: usize,
+    pub(crate) constants: ConstantPool,
+}
+
+/// The constant table of `Advanced` output (docs/advanced-optimization.md,
+/// "Constant collection literals"): the keywords, quoted symbols and constant
+/// collections the emitted code reads, each declared once after the runtime.
+/// Empty below `Advanced`, which has no table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConstantPool {
+    /// Declared entries, `k<n>`.
+    pub entries: usize,
+    /// Entries that are collection literals, reader metadata on them or
+    /// `#uuid` literals; the rest are keywords and quoted symbols.
+    pub composites: usize,
+    /// Entries built on first read rather than while the output loads.
+    pub lazy: usize,
+    /// Bytes of the declarations.
+    pub bytes: usize,
 }
 
 /// The `Advanced` runtime factory for `roots`, which are all direct: the units
@@ -366,6 +384,8 @@ pub struct RetentionReport {
     /// Bytes of the embedded runtime factory expression: the prologue, the
     /// unit bodies and the export section. Zero without a runtime.
     pub runtime_bytes: usize,
+    /// The constant table (`Advanced`).
+    pub constants: ConstantPool,
 }
 
 impl RetentionReport {
@@ -424,6 +444,7 @@ impl RetentionReport {
             units,
             total_units: manifest.units.len(),
             runtime_bytes: emitted.bytes,
+            constants: emitted.constants,
         }
     }
 
@@ -466,6 +487,17 @@ impl fmt::Display for RetentionReport {
             thousands(self.unit_bytes()),
             thousands(self.runtime_bytes)
         )?;
+        let pool = &self.constants;
+        if pool.entries > 0 {
+            writeln!(
+                f,
+                "constant pool: {} entries ({} composite, {} lazy), {} bytes",
+                thousands(pool.entries),
+                thousands(pool.composites),
+                thousands(pool.lazy),
+                thousands(pool.bytes)
+            )?;
+        }
         let mut added = vec![(0, 0); self.roots.len()];
         for unit in &self.units {
             if let Some(root) = unit.root {

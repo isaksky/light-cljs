@@ -5,11 +5,11 @@
 //! (`seed_00` ... `seed_11`).
 //!
 //! Each seed yields a program P (2-6 namespaces), tagged garbage G that is dead
-//! by construction, and escape edges that make some garbage items live. Three
+//! by construction, and escape edges that make some garbage items live. Four
 //! variants compile through `analyze_namespace_entry` (the `--entry` path) from
 //! a temporary source root at every level and run in one Node process through
-//! the shared outcome protocol (tests/support/execution.js): P, P + G, and
-//! P + G + escapes.
+//! the shared outcome protocol (tests/support/execution.js): P, P + G,
+//! P + G + escapes, and P with its collection literals built (property 5).
 //!
 //! 1. Correctness: each variant's observable record (trace, returned value or
 //!    error category, stdout) is identical at none, prepare and advanced, and
@@ -22,6 +22,11 @@
 //!    survives at every level, and property 1 holds.
 //! 4. Prepare-level regression: `removed_definitions` and `specialized_calls`
 //!    of `ApplicationStats` never decrease along the same chain.
+//! 5. Constant pool (light-cljs-218): the generator's collection literals,
+//!    repeated, nested, with metadata, partially constant, read through
+//!    transients, `with-meta`, hashes and printing, can also be rendered with
+//!    their first item behind `identity` (`Literals::Built`), which no level
+//!    pools. P so rendered records exactly what P records, at every level.
 //!
 //! Failures print the seed, every namespace's source and the three output
 //! sizes. Replay a seed with `LIGHT_CLJS_GENERATED_SEED=<u64>` (it runs in
@@ -29,7 +34,7 @@
 //! twelve tests for longer local runs:
 //! `LIGHT_CLJS_GENERATED_COUNT=240 cargo nextest run --test compiler generated_optimization::`.
 //! `--no-capture` prints each seed's garbage table.
-use super::generated::{GarbageTag, NamespaceProgram, SEEDS, namespace_program, seeds};
+use super::generated::{GarbageTag, Literals, NamespaceProgram, SEEDS, namespace_program, seeds};
 use super::optimization::Sources;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry;
@@ -290,6 +295,21 @@ fn agree(records: &[&str], throws: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The composite entries (collections, `with-meta`, `#uuid`) of the
+/// `Advanced` constant table in `js`: every table entry that is not a keyword
+/// or symbol.
+fn pool_composites(js: &str) -> usize {
+    js.lines()
+        .filter(|line| {
+            ["  const k", "  let c"].iter().any(|prefix| {
+                line.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+            }) && !line.contains("= rt$keyword(")
+                && !line.contains("= rt$symbol(")
+        })
+        .count()
+}
+
 /// Bytes of `js` without the digits inside identifiers, so outputs that differ
 /// only in compiler numbering (`g12`, `l3`, `r4_0`, `__light2_`) have the same
 /// size. Digits of numeric literals count.
@@ -421,15 +441,21 @@ fn check_seed(seed: u64) {
             compile(&program, variant, sources)
         })
         .collect();
-    let all: Vec<_> = compiled.iter().collect();
+    // P with every collection literal built at its site, for property 5.
+    let built = compile(
+        &program,
+        "built",
+        program.sources_with(&|_| false, false, Literals::Built),
+    );
+    let all: Vec<_> = compiled.iter().chain([&built]).collect();
     let [p, pg, escapes] = [&compiled[0], &compiled[1], &compiled[2]];
 
-    // Properties 1 and 3: one Node run for every variant and level.
+    // Properties 1, 3 and 5: one Node run for every variant and level.
     let output =
         run(&all).unwrap_or_else(|error| panic!("{error}\n{}", context(&program, escapes)));
     let records = records(&output, &all)
         .unwrap_or_else(|error| panic!("{error}\n{}", context(&program, escapes)));
-    for (variant, records) in compiled.iter().zip(records.chunks(3)) {
+    for (variant, records) in all.iter().zip(records.chunks(3)) {
         agree(records, program.throws)
             .unwrap_or_else(|error| panic!("property 1: {error}\n{}", context(&program, variant)));
     }
@@ -438,6 +464,23 @@ fn check_seed(seed: u64) {
         records[3],
         "property 1: dead garbage changed the observable record\n{}",
         context(&program, pg)
+    );
+    for (level, (pooled, built_record)) in OptimizationLevel::ALL
+        .iter()
+        .zip(records[..3].iter().zip(&records[9..]))
+    {
+        assert_eq!(
+            pooled,
+            built_record,
+            "property 5: constant literals behave differently from built ones at {level}\n{}\n{}",
+            context(&program, p),
+            context(&program, &built)
+        );
+    }
+    assert!(
+        pool_composites(&p.js[2]) >= pool_composites(&built.js[2]),
+        "property 5: the built rendering pools more than the constant one\n{}",
+        context(&program, &built)
     );
     for item in program.garbage.iter().filter(|item| item.escape.is_some()) {
         for (level, js) in OptimizationLevel::ALL.iter().zip(&escapes.js) {
@@ -488,7 +531,11 @@ fn check_seed(seed: u64) {
     }
 
     let report = table(&program, &rows, &prefixes);
-    println!("{report}");
+    println!(
+        "{report}constant pool composites at advanced: {} constant, {} built",
+        pool_composites(&p.js[2]),
+        pool_composites(&built.js[2])
+    );
     for pair in prefixes.windows(2) {
         assert!(
             pair[1].removed_definitions >= pair[0].removed_definitions
@@ -592,6 +639,13 @@ fn garbage_never_changes_the_program_text_and_every_tag_occurs() {
         assert_eq!(without, namespace_program(seed).sources(&|_| false, false));
         // Escape edges need their garbage, and no garbage text leaks into P.
         assert_eq!(without, program.sources(&|_| false, true));
+        // Every program reads collection literals, which property 5 renders
+        // both ways.
+        assert_ne!(
+            without,
+            program.sources_with(&|_| false, false, Literals::Built),
+            "seed {seed}: no collection literal"
+        );
         for (_, source) in &without {
             assert!(!source.contains("GARBAGE-") && !source.contains("dead"));
         }

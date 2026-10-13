@@ -113,9 +113,23 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [363_000, 363_000, 131_000],
+        ceilings: [363_000, 363_000, 132_000],
         removed: [0, 0, 0],
         printed: "17\n",
+    },
+    // Constant collection literals (light-cljs-218): the empty vector reads
+    // the runtime's singleton at every level, and at `Advanced` the constant
+    // parts of `row` and the `get-in` path are built once, from the pool.
+    Fixture {
+        name: "constant-literals",
+        source: "(defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty []
+                                :meta {:kind :row :dims [1 2 3]}})
+                 (reduce + (map (fn [i] (let [r (row i)]
+                                          (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
+                                (range 10)))",
+        ceilings: [363_000, 363_000, 133_000],
+        removed: [0, 0, 0],
+        printed: "50\n",
     },
     // Retained raw JavaScript is an escape below `Advanced` only.
     Fixture {

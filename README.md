@@ -120,13 +120,15 @@ top-level calls; `none` emits everything as analyzed; `advanced` is the release
 mode being built from [docs/advanced-optimization.md](docs/advanced-optimization.md);
 so far it also removes unused definitions whose initializers only call pure core
 operations, does not let retained `js*` disable these passes, reads runtime
-functions directly, embeds just the runtime units the program reaches, and
+functions directly, embeds just the runtime units the program reaches,
 registers namespaces with the runtime only for programs that use reflection
-such as `*ns*`, `find-ns` or `read-string`, and keeps the printer (and with it
-a printing `toString` on collections) only for programs that print (see
+such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
+a printing `toString` on collections) only for programs that print, and
+builds each distinct constant literal once (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
-their sizes and the source expression that first demanded each.
+their sizes and the source expression that first demanded each, and the size of
+the constant table.
 
 Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
 Vars and arity conflicts become warnings instead of errors), or with
@@ -200,13 +202,13 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   optimization; output is one JavaScript expression, or one ES module with `--esm`.
   A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md);
   `--optimize advanced` so far drops unused definitions with pure initializers
-  and the runtime units a program does not reach, declares each keyword and
-  symbol literal once, leaves out the compiler's namespace registry unless
-  the program uses reflection and the printer unless it prints, and infers
-  types to write truth tests, arithmetic, comparisons and typed core calls as
-  plain JavaScript. `(js/console.log (+ 1 2))` drops from about 360 KB to
-  about 200 bytes, but a program that builds a value still pulls in the
-  collection machinery (120-150 KB).
+  and the runtime units a program does not reach, declares each keyword,
+  symbol and constant collection literal once, leaves out the compiler's
+  namespace registry unless the program uses reflection and the printer unless
+  it prints, and infers types to write truth tests, arithmetic, comparisons
+  and typed core calls as plain JavaScript. `(js/console.log (+ 1 2))` drops
+  from about 360 KB to about 200 bytes, but a program that builds a value
+  still pulls in the collection machinery (120-150 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

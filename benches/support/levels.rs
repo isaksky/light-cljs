@@ -42,9 +42,9 @@ struct Steady {
     expected: fn(u64) -> u64,
 }
 
-/// The ratchet's seq-pipeline, record-protocol and keyword-lookups fixtures, as
-/// workloads over `n`.
-const STEADY: [Steady; 3] = [
+/// The ratchet's seq-pipeline, record-protocol, keyword-lookups and
+/// constant-literals fixtures, as workloads over `n`.
+const STEADY: [Steady; 4] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -73,7 +73,24 @@ const STEADY: [Steady; 3] = [
         input: 2_000,
         expected: keyword_lookups,
     },
+    Steady {
+        name: "constant-literals",
+        source: "(defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty []
+                                :meta {:kind :row :dims [1 2 3]}})
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (let [r (row i)]
+                               (recur (inc i) (+ total (count (:pos r)) (count (:tags r))
+                                                 (count (get-in r [:meta :dims])))))
+                             total)))",
+        input: 2_000,
+        expected: constant_literals,
+    },
 ];
+
+fn constant_literals(n: u64) -> u64 {
+    7 * n
+}
 
 fn keyword_lookups(n: u64) -> u64 {
     (0..n).map(|i| (i + 1) + (2 + i) + 1 + i % 2).sum()

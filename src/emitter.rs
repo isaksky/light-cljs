@@ -1,6 +1,7 @@
 //! Recursive JavaScript emission from resolved expressions; no name lookup.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fmt::Write,
 };
@@ -13,7 +14,9 @@ use crate::application::OptimizationLevel;
 use crate::core_operations::Type;
 use crate::inference::{Inference, Known};
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
-use crate::runtime_slice::{EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots};
+use crate::runtime_slice::{
+    ConstantPool, EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots,
+};
 
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
@@ -150,6 +153,9 @@ fn emit_js_mode(
                 declarations: String::new(),
                 numbers: HashMap::new(),
                 named: vec![[None; 2]; program.named_literals.len()],
+                lazy: Vec::new(),
+                composites: 0,
+                classes: vec![ConstantClass::Unknown; program.exprs.len()],
             }),
             output: String::new(),
             indent: 1,
@@ -400,10 +406,19 @@ fn emit_js_mode(
         Some(imports) => module_source(&imports, &output),
         None => output,
     };
+    let constants = emitter
+        .constants
+        .map_or_else(ConstantPool::default, |table| ConstantPool {
+            entries: table.lazy.len(),
+            composites: table.composites,
+            lazy: table.lazy.iter().filter(|lazy| **lazy).count(),
+            bytes: table.declarations.len(),
+        });
     let runtime = EmittedRuntime {
         roots: emitter.runtime,
         embedding,
         bytes: runtime_bytes,
+        constants,
     };
     (output, runtime)
 }
@@ -605,10 +620,8 @@ fn module_source(imports: &[PackageImport], expression: &str) -> String {
 }
 
 /// A constant of the `Advanced` constant table, compared by emitted
-/// structure: sites with equal keys share one table entry. Collection
-/// constants (light-cljs-218) add variants keyed by their kind, metadata and
-/// the table numbers of their parts.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+/// structure: sites with equal keys share one table entry.
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum ConstantKey<'a> {
     /// `rt$keyword(namespace, name)`; equal parts give the interned keyword.
     Keyword {
@@ -620,16 +633,244 @@ enum ConstantKey<'a> {
         namespace: Option<&'a [u16]>,
         name: &'a [u16],
     },
+    /// A composite constant of the pool (light-cljs-218): the runtime
+    /// constructor its sites call below `Advanced` and its parts, whose nested
+    /// constants are earlier entries. Keying on these rather than on runtime
+    /// equality keeps reader-distinct forms apart (`[1]` and `'(1)` are `=`),
+    /// and hash-consing the parts shares equal subterms.
+    Composite {
+        constructor: Composite,
+        parts: Box<[ConstantPart<'a>]>,
+    },
+}
+
+/// How a composite constant is built, which is how its sites build it below
+/// `Advanced`, so a pooled value differs from a per-site one only in identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Composite {
+    /// `vectorFromArray([items])`.
+    Vector,
+    /// `listFromArray([items])`, a quoted list.
+    List,
+    /// `mapFromArray([k0, v0, ...])`, a map literal of at most 8 entries.
+    ArrayMap,
+    /// `mapFromArrays([keys], [values])`, a map literal of more entries.
+    HashMap,
+    /// `setFromArray([items])`, a set literal of scalars, keywords and symbols.
+    Set,
+    /// `literalSetFromArray([items])`, which throws on members equal at run
+    /// time. Never pooled: hoisting would move the throw to load time.
+    CheckedSet,
+    /// `constantMapFromArray([k0, v0, ...])`, reader-distinct keys.
+    LiteralMap,
+    /// `constantSetFromArray([items])`, reader-distinct members.
+    LiteralSet,
+    /// `rt$withMeta(value, metadata)`: reader metadata on a constant
+    /// collection or quoted symbol.
+    WithMeta,
+    /// `rt$uuid(text)`, a `#uuid` literal.
+    Uuid,
+}
+
+/// A part of a composite constant: an inline scalar, an empty collection
+/// singleton or another table entry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ConstantPart<'a> {
+    Nil,
+    Bool(bool),
+    /// The bits of the number, with one NaN; `-0` and `0` stay distinct.
+    Number(u64),
+    String(&'a [u16]),
+    Empty(EmptyCollection),
+    Entry(usize),
+}
+
+/// The empty collections every level reads from the runtime's `EMPTY`
+/// singletons instead of allocating (light-cljs-218 tier 1), as upstream does.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum EmptyCollection {
+    Vector,
+    Map,
+    Set,
+    List,
+}
+
+impl EmptyCollection {
+    /// The empty value of a `[]`, `{}`, `#{}` or `()` literal. A quoted
+    /// `'#{}` (a `LiteralSet`) keeps its positional constructor.
+    fn of(kind: &ExprKind) -> Option<Self> {
+        match kind {
+            ExprKind::Vector(items) if items.is_empty() => Some(Self::Vector),
+            ExprKind::Map(items) if items.is_empty() => Some(Self::Map),
+            ExprKind::Set(items) if items.is_empty() => Some(Self::Set),
+            ExprKind::List(items) if items.is_empty() => Some(Self::List),
+            _ => None,
+        }
+    }
+
+    /// The core table name of the type whose `EMPTY` this is.
+    fn core_type(self) -> &'static str {
+        match self {
+            Self::Vector => "PersistentVector",
+            Self::Map => "PersistentArrayMap",
+            Self::Set => "PersistentHashSet",
+            Self::List => "List",
+        }
+    }
+}
+
+/// Constants of at least this many nodes (scalars, keywords, symbols and
+/// collections, counted over the literal) are lazy cells, built on first
+/// read: `let c<n>; const k<n> = () => c<n> ??= <initializer>;`, read as
+/// `k<n>()`. Smaller ones are built while the output loads. A lazy cell saves
+/// QuickJS the construction of a constant that startup does not read, and
+/// costs V8 a second parse of one that it does; below about a thousand nodes
+/// neither engine gains. Measured in benchmarks/compiler.md ("Constant
+/// collection pool").
+const LAZY_CONSTANT_NODES: u32 = 1024;
+
+/// What the pool knows about an expression (indexed by `ExprId`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConstantClass {
+    Unknown,
+    /// Not a constant the pool may hoist.
+    Variable,
+    /// A constant of this many nodes.
+    Constant(u32),
+}
+
+/// A scalar, keyword or quoted symbol: the members of a set literal that
+/// `setFromArray` builds without a duplicate check.
+fn scalar_constant(kind: &ExprKind) -> bool {
+    matches!(
+        kind,
+        ExprKind::Nil
+            | ExprKind::Bool(_)
+            | ExprKind::Number(_)
+            | ExprKind::String(_)
+            | ExprKind::Keyword(_)
+            | ExprKind::Symbol(_)
+    )
+}
+
+/// The runtime constructor of a collection literal, `with-meta` of a literal
+/// or `#uuid` literal, and its items in constructor order; `None` for any
+/// other expression. Empty collections are [`EmptyCollection`]s instead.
+fn composite<'p>(program: &Program, kind: &'p ExprKind) -> Option<(Composite, Cow<'p, [ExprId]>)> {
+    use crate::compiler_data::CompilerLiteralKind as K;
+    let (constructor, items) = match kind {
+        ExprKind::Vector(items) => (Composite::Vector, Cow::Borrowed(&items[..])),
+        ExprKind::List(items) => (Composite::List, Cow::Borrowed(&items[..])),
+        ExprKind::Map(items) if items.len() > 16 => (Composite::HashMap, Cow::Borrowed(&items[..])),
+        ExprKind::Map(items) => (Composite::ArrayMap, Cow::Borrowed(&items[..])),
+        // Reader-distinct constants retain the runtime's existing
+        // Number-coercion policy. Dynamic member results need the pinned
+        // checkout's duplicate check after all operands run.
+        ExprKind::Set(items)
+            if items
+                .iter()
+                .all(|item| scalar_constant(&program.exprs[item.0].kind)) =>
+        {
+            (Composite::Set, Cow::Borrowed(&items[..]))
+        }
+        ExprKind::Set(items) => (Composite::CheckedSet, Cow::Borrowed(&items[..])),
+        ExprKind::LiteralMap(items) => (Composite::LiteralMap, Cow::Borrowed(&items[..])),
+        ExprKind::LiteralSet(items) => (Composite::LiteralSet, Cow::Borrowed(&items[..])),
+        // `#js` data keeps its compiler form `withMeta`.
+        ExprKind::WithMeta { value, .. }
+            if matches!(
+                program.exprs[value.0].kind,
+                ExprKind::ReaderLiteral {
+                    kind: K::JsArray | K::JsObject,
+                    quoted: true,
+                    ..
+                }
+            ) =>
+        {
+            return None;
+        }
+        ExprKind::WithMeta { value, metadata } => {
+            (Composite::WithMeta, Cow::Owned(vec![*value, *metadata]))
+        }
+        ExprKind::ReaderLiteral {
+            kind: K::Uuid,
+            items,
+            ..
+        } => (Composite::Uuid, Cow::Borrowed(&items[..])),
+        _ => return None,
+    };
+    Some((constructor, items))
+}
+
+/// The size in nodes of the constant `id` evaluates to, or `None` when the
+/// pool may not hoist it (docs/advanced-optimization.md, "Constant
+/// collection literals"). Constants are scalars, keywords, quoted symbols,
+/// `#uuid` literals, collection literals of constants and reader metadata of
+/// a constant on a constant collection or symbol. Locals, globals, calls,
+/// `js*`, `#js`, regexes (`lastIndex` is mutable), `#inst` (a mutable `Date`)
+/// and `#queue` are not, and neither is a set literal whose members are not
+/// all scalars, keywords or symbols, because its construction may throw.
+/// Neither is a literal whose construction reads a core operation in
+/// `replaced` (sorted runtime names), which a `set!` may change before an
+/// evaluation: `with-meta`, `uuid`, or the type of an empty collection.
+/// Memoized in `classes`, so classifying every literal of a program is linear.
+fn constant_nodes(
+    program: &Program,
+    replaced: &[&str],
+    classes: &mut [ConstantClass],
+    id: ExprId,
+) -> Option<u32> {
+    match classes[id.0] {
+        ConstantClass::Constant(nodes) => return Some(nodes),
+        ConstantClass::Variable => return None,
+        ConstantClass::Unknown => {}
+    }
+    let fixed = |name: &str| replaced.binary_search(&name).is_err();
+    let kind = &program.exprs[id.0].kind;
+    let nodes = if scalar_constant(kind) {
+        Some(1)
+    } else if let Some(empty) = EmptyCollection::of(kind) {
+        fixed(empty.core_type()).then_some(1)
+    } else {
+        match composite(program, kind) {
+            Some((Composite::CheckedSet, _)) | None => None,
+            Some((Composite::WithMeta, _)) if !fixed("withMeta") => None,
+            Some((Composite::Uuid, _)) if !fixed("uuid") => None,
+            Some((Composite::WithMeta, items))
+                if !matches!(
+                    program.exprs[items[0].0].kind,
+                    ExprKind::Vector(_)
+                        | ExprKind::List(_)
+                        | ExprKind::Map(_)
+                        | ExprKind::Set(_)
+                        | ExprKind::LiteralMap(_)
+                        | ExprKind::LiteralSet(_)
+                        | ExprKind::Symbol(_)
+                        | ExprKind::WithMeta { .. }
+                ) =>
+            {
+                None
+            }
+            Some((_, items)) => items.iter().try_fold(1u32, |nodes, &item| {
+                Some(nodes.saturating_add(constant_nodes(program, replaced, classes, item)?))
+            }),
+        }
+    };
+    classes[id.0] = nodes.map_or(ConstantClass::Variable, ConstantClass::Constant);
+    nodes
 }
 
 /// The constant table of `Advanced` application output
 /// (docs/advanced-optimization.md, "Phase 1 constant table extension
-/// points"). Every distinct constant the emitted code reads is declared
-/// once, `const k<n> = <initializer>;`, at the top of the output closure after
-/// the runtime slice, and each site reads `k<n>`. Entries are numbered and
-/// declared in first-use order, and an entry's initializer is written before
-/// the entry is numbered, so the constants it reads come first. Only emitted
-/// sites add entries, so constants are inert for reachability.
+/// points" and "Constant collection literals"). Every distinct constant the
+/// emitted code reads is declared once, `const k<n> = <initializer>;`, at the
+/// top of the output closure after the runtime slice, and each site reads
+/// `k<n>`. Large composite constants are lazy cells instead,
+/// `let c<n>; const k<n> = () => c<n> ??= <initializer>;`, read as `k<n>()`.
+/// Entries are numbered and declared in first-use order, and an entry's
+/// initializer is written before the entry is numbered, so the constants it
+/// reads come first. Only emitted sites add entries, so constants are inert
+/// for reachability.
 struct ConstantTable<'a> {
     /// The declarations, one line each.
     declarations: String,
@@ -638,6 +879,12 @@ struct ConstantTable<'a> {
     /// Entry numbers by `NamedLiteralId` and kind (keyword, symbol), so a
     /// repeated site reads its number without hashing its spelling.
     named: Vec<[Option<usize>; 2]>,
+    /// Whether each entry, by number, is a lazy cell.
+    lazy: Vec<bool>,
+    /// The number of composite entries.
+    composites: usize,
+    /// What the pool knows about each expression, by `ExprId`.
+    classes: Vec<ConstantClass>,
 }
 
 struct Emitter<'a> {
@@ -770,63 +1017,90 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Write a reference to the table constant for `key`, `k<n>`, declaring
-    /// it on first use: `initializer` writes the value expression, reading
-    /// the runtime through [`Emitter::rt`] as usual (the first site is the
-    /// one the retention report names). `Advanced` only.
-    fn constant(&mut self, key: ConstantKey<'a>, initializer: impl FnOnce(&mut Self)) -> usize {
+    /// The number of the table entry for `key`, declaring it on first use:
+    /// `initializer` writes the value expression, reading the runtime through
+    /// [`Emitter::rt`] as usual (the first site is the one the retention
+    /// report names). The entry is eager, or a lazy cell when `lazy` is set;
+    /// an existing entry keeps how it was declared. Sites write the entry with
+    /// [`Emitter::constant_reference`]. `Advanced` only.
+    fn constant_entry(
+        &mut self,
+        key: ConstantKey<'a>,
+        lazy: bool,
+        initializer: impl FnOnce(&mut Self),
+    ) -> usize {
         let constants = self
             .constants
             .as_ref()
             .expect("constants are hoisted at Advanced");
-        let number = match constants.numbers.get(&key) {
-            Some(&number) => number,
-            None => {
-                let site = std::mem::take(&mut self.output);
-                let raw = self.raw_segments.len();
-                initializer(self);
-                debug_assert_eq!(
-                    self.raw_segments.len(),
-                    raw,
-                    "a constant holds raw JavaScript"
-                );
-                let value = std::mem::replace(&mut self.output, site);
-                let constants = self.constants.as_mut().unwrap();
-                let number = constants.numbers.len();
-                writeln!(constants.declarations, "  const k{number} = {value};").unwrap();
-                constants.numbers.insert(key, number);
-                number
-            }
-        };
-        write!(self.output, "k{number}").unwrap();
+        if let Some(&number) = constants.numbers.get(&key) {
+            return number;
+        }
+        let site = std::mem::take(&mut self.output);
+        let raw = self.raw_segments.len();
+        initializer(self);
+        debug_assert_eq!(
+            self.raw_segments.len(),
+            raw,
+            "a constant holds raw JavaScript"
+        );
+        let value = std::mem::replace(&mut self.output, site);
+        let constants = self.constants.as_mut().unwrap();
+        let number = constants.lazy.len();
+        if lazy {
+            writeln!(
+                constants.declarations,
+                "  let c{number}; const k{number} = () => c{number} ??= {value};"
+            )
+            .unwrap();
+        } else {
+            writeln!(constants.declarations, "  const k{number} = {value};").unwrap();
+        }
+        constants.composites += usize::from(matches!(key, ConstantKey::Composite { .. }));
+        constants.lazy.push(lazy);
+        constants.numbers.insert(key, number);
         number
+    }
+
+    /// A read of table entry `number`: `k<n>`, or `k<n>()` for a lazy cell.
+    fn constant_reference(&mut self, number: usize) {
+        let lazy = self.constants.as_ref().unwrap().lazy[number];
+        write!(self.output, "k{number}{}", if lazy { "()" } else { "" }).unwrap();
+    }
+
+    /// `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
+    fn construct_named(&mut self, literal: NamedLiteralId, symbol: bool) {
+        let name = &self.program.named_literals[literal.0];
+        let constructor = if symbol { "symbol" } else { "keyword" };
+        self.rt(RuntimeName::export(constructor));
+        self.output.push('(');
+        if let Some(namespace) = name.namespace {
+            self.string(namespace);
+        } else {
+            self.output.push_str("null");
+        }
+        self.output.push_str(", ");
+        self.string(name.name);
+        self.output.push(')');
     }
 
     /// A keyword or quoted symbol literal: a table constant at `Advanced`,
     /// else `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
     fn named_literal(&mut self, literal: NamedLiteralId, symbol: bool) {
-        let program = self.program;
-        let construct = |emitter: &mut Self| {
-            let name = &program.named_literals[literal.0];
-            let constructor = if symbol { "symbol" } else { "keyword" };
-            emitter.rt(RuntimeName::export(constructor));
-            emitter.output.push('(');
-            if let Some(namespace) = name.namespace {
-                emitter.string(namespace);
-            } else {
-                emitter.output.push_str("null");
-            }
-            emitter.output.push_str(", ");
-            emitter.string(name.name);
-            emitter.output.push(')');
-        };
-        let Some(constants) = &self.constants else {
-            return construct(self);
-        };
-        if let Some(number) = constants.named[literal.0][usize::from(symbol)] {
-            write!(self.output, "k{number}").unwrap();
-            return;
+        if self.constants.is_none() {
+            return self.construct_named(literal, symbol);
         }
+        let number = self.named_entry(literal, symbol);
+        self.constant_reference(number);
+    }
+
+    /// The table entry of a keyword or quoted symbol literal (`Advanced`).
+    fn named_entry(&mut self, literal: NamedLiteralId, symbol: bool) -> usize {
+        let constants = self.constants.as_ref().unwrap();
+        if let Some(number) = constants.named[literal.0][usize::from(symbol)] {
+            return number;
+        }
+        let program = self.program;
         let name = &program.named_literals[literal.0];
         let namespace = name.namespace.map(|id| &program.strings[id.0][..]);
         let name = &program.strings[name.name.0][..];
@@ -835,8 +1109,155 @@ impl<'a> Emitter<'a> {
         } else {
             ConstantKey::Keyword { namespace, name }
         };
-        let number = self.constant(key, construct);
+        let number = self.constant_entry(key, false, |emitter| {
+            emitter.construct_named(literal, symbol)
+        });
         self.constants.as_mut().unwrap().named[literal.0][usize::from(symbol)] = Some(number);
+        number
+    }
+
+    /// At `Advanced`, write a constant collection literal, `with-meta` of
+    /// one or `#uuid` literal `id` as a read of its pool entry and return
+    /// true; an empty collection reads its singleton. Return false for
+    /// anything else, which its site builds.
+    fn pooled(&mut self, id: ExprId) -> bool {
+        let Some(nodes) = self.constant_nodes(id) else {
+            return false;
+        };
+        let part = self.constant_part(id, nodes >= LAZY_CONSTANT_NODES);
+        self.part(part);
+        true
+    }
+
+    /// The size of `id` when it is a constant the pool hoists (`Advanced`).
+    fn constant_nodes(&mut self, id: ExprId) -> Option<u32> {
+        let constants = self.constants.as_mut()?;
+        let replaced = self.replaced_core.unwrap_or_default();
+        constant_nodes(self.program, replaced, &mut constants.classes, id)
+    }
+
+    /// The part a constant contributes to its parent, declaring the pool
+    /// entries of it and its nested constants bottom-up (hash-consing): equal
+    /// subterms are one entry. New entries are lazy cells when `lazy` is set,
+    /// so the parts of a lazy constant are built with it.
+    fn constant_part(&mut self, id: ExprId, lazy: bool) -> ConstantPart<'a> {
+        let program = self.program;
+        let kind = &program.exprs[id.0].kind;
+        if let Some(empty) = EmptyCollection::of(kind) {
+            return ConstantPart::Empty(empty);
+        }
+        match kind {
+            ExprKind::Nil => ConstantPart::Nil,
+            ExprKind::Bool(value) => ConstantPart::Bool(*value),
+            ExprKind::Number(value) => ConstantPart::Number(if value.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                value.to_bits()
+            }),
+            ExprKind::String(string) => ConstantPart::String(&program.strings[string.0]),
+            ExprKind::Keyword(literal) => ConstantPart::Entry(self.named_entry(*literal, false)),
+            ExprKind::Symbol(literal) => ConstantPart::Entry(self.named_entry(*literal, true)),
+            _ => {
+                let (constructor, items) =
+                    composite(program, kind).expect("a classified constant is a composite");
+                let parts = items
+                    .iter()
+                    .map(|&item| self.constant_part(item, lazy))
+                    .collect::<Box<[_]>>();
+                let key = ConstantKey::Composite {
+                    constructor,
+                    parts: parts.clone(),
+                };
+                ConstantPart::Entry(self.constant_entry(key, lazy, |emitter| {
+                    emitter.construct(constructor, parts.len(), |emitter, index| {
+                        emitter.part(parts[index]);
+                    });
+                }))
+            }
+        }
+    }
+
+    /// Write a constant part as an initializer or a site reads it.
+    fn part(&mut self, part: ConstantPart<'a>) {
+        match part {
+            ConstantPart::Nil => self.output.push_str("null"),
+            ConstantPart::Bool(value) => self.output.push_str(if value { "true" } else { "false" }),
+            ConstantPart::Number(bits) => self.number(f64::from_bits(bits)),
+            ConstantPart::String(units) => self.string_units(units),
+            ConstantPart::Empty(empty) => self.empty_collection(empty),
+            ConstantPart::Entry(number) => self.constant_reference(number),
+        }
+    }
+
+    /// A number literal.
+    fn number(&mut self, value: f64) {
+        if value.is_nan() {
+            self.output.push_str("NaN");
+        } else if value == f64::INFINITY {
+            self.output.push_str("Infinity");
+        } else if value == f64::NEG_INFINITY {
+            self.output.push_str("-Infinity");
+        } else {
+            write!(self.output, "{value}").unwrap();
+        }
+    }
+
+    /// The runtime's empty singleton, `rt.core.PersistentVector.EMPTY`
+    /// (`rt$PersistentVectorValue.EMPTY` at `Advanced`), which an empty
+    /// literal reads at every level instead of allocating.
+    fn empty_collection(&mut self, empty: EmptyCollection) {
+        self.rt(RuntimeName::core(empty.core_type()));
+        self.output.push_str(".EMPTY");
+    }
+
+    /// A call of a composite's runtime constructor with `count` items, which
+    /// `item` writes by index: the one construction of both a pooled
+    /// constant's initializer and a site that builds its value.
+    fn construct(
+        &mut self,
+        constructor: Composite,
+        count: usize,
+        mut item: impl FnMut(&mut Self, usize),
+    ) {
+        let mut items = |emitter: &mut Self, indexes: &mut dyn Iterator<Item = usize>| {
+            for (position, index) in indexes.enumerate() {
+                if position > 0 {
+                    emitter.output.push_str(", ");
+                }
+                item(emitter, index);
+            }
+        };
+        self.rt(match constructor {
+            Composite::Vector => RuntimeName::export("vectorFromArray"),
+            Composite::List => RuntimeName::export("listFromArray"),
+            Composite::ArrayMap => RuntimeName::export("mapFromArray"),
+            Composite::HashMap => RuntimeName::export("mapFromArrays"),
+            Composite::Set => RuntimeName::export("setFromArray"),
+            Composite::CheckedSet => RuntimeName::export("literalSetFromArray"),
+            Composite::LiteralMap => RuntimeName::export("constantMapFromArray"),
+            Composite::LiteralSet => RuntimeName::export("constantSetFromArray"),
+            Composite::WithMeta => RuntimeName::core("withMeta"),
+            Composite::Uuid => RuntimeName::core("uuid"),
+        });
+        match constructor {
+            Composite::HashMap => {
+                self.output.push_str("([");
+                items(self, &mut (0..count).step_by(2));
+                self.output.push_str("], [");
+                items(self, &mut (1..count).step_by(2));
+                self.output.push_str("])");
+            }
+            Composite::WithMeta | Composite::Uuid => {
+                self.output.push('(');
+                items(self, &mut (0..count));
+                self.output.push(')');
+            }
+            _ => {
+                self.output.push_str("([");
+                items(self, &mut (0..count));
+                self.output.push_str("])");
+            }
+        }
     }
 
     fn indentation(&mut self) {
@@ -1872,6 +2293,14 @@ impl<'a> Emitter<'a> {
                 self.indentation();
                 self.output.push_str("}\n");
             }
+            // A discarded collection, keyword or symbol constant has no effect
+            // at `Advanced`, so it adds no table entry.
+            kind if context == ExprContext::Discard
+                && !matches!(
+                    kind,
+                    ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Number(_) | ExprKind::String(_)
+                )
+                && self.constant_nodes(id).is_some() => {}
             _ => {
                 self.indentation();
                 if context == ExprContext::Return {
@@ -2571,18 +3000,18 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::Bool(value) => self.output.push_str(if *value { "true" } else { "false" }),
-            ExprKind::Number(value) => {
-                if value.is_nan() {
-                    self.output.push_str("NaN");
-                } else if *value == f64::INFINITY {
-                    self.output.push_str("Infinity");
-                } else if *value == f64::NEG_INFINITY {
-                    self.output.push_str("-Infinity");
-                } else {
-                    write!(self.output, "{value}").unwrap();
-                }
-            }
+            ExprKind::Number(value) => self.number(*value),
             ExprKind::String(id) => self.string(*id),
+            // At `Advanced`, constant literals read the pool.
+            ExprKind::Vector(_)
+            | ExprKind::List(_)
+            | ExprKind::Map(_)
+            | ExprKind::Set(_)
+            | ExprKind::LiteralMap(_)
+            | ExprKind::LiteralSet(_)
+            | ExprKind::WithMeta { .. }
+            | ExprKind::ReaderLiteral { .. }
+                if self.pooled(id) => {}
             ExprKind::ReaderLiteral {
                 kind,
                 items,
@@ -2624,21 +3053,13 @@ impl<'a> Emitter<'a> {
                 }
             }
             ExprKind::WithMeta { value, metadata } => {
-                use crate::compiler_data::CompilerLiteralKind as K;
-                self.rt(
-                    if matches!(
-                        self.program.exprs[value.0].kind,
-                        ExprKind::ReaderLiteral {
-                            kind: K::JsArray | K::JsObject,
-                            quoted: true,
-                            ..
-                        }
-                    ) {
-                        RuntimeName::compiler_forms("withMeta")
-                    } else {
-                        RuntimeName::core("withMeta")
-                    },
-                );
+                // `#js` data keeps its compiler form `withMeta`.
+                let core = composite(self.program, &self.program.exprs[id.0].kind).is_some();
+                self.rt(if core {
+                    RuntimeName::core("withMeta")
+                } else {
+                    RuntimeName::compiler_forms("withMeta")
+                });
                 self.output.push('(');
                 self.value(*value);
                 self.output.push_str(", ");
@@ -2696,68 +3117,24 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Keyword(literal) => self.named_literal(*literal, false),
             ExprKind::Symbol(literal) => self.named_literal(*literal, true),
-            ExprKind::Vector(items) => {
-                self.rt(RuntimeName::export("vectorFromArray"));
-                self.output.push_str("([");
-                self.arguments(items);
-                self.output.push_str("])");
-            }
-            ExprKind::Map(items) => {
-                if items.len() > 16 {
-                    self.rt(RuntimeName::export("mapFromArrays"));
-                    self.output.push_str("([");
-                    self.arguments(&items.iter().step_by(2).copied().collect::<Vec<_>>());
-                    self.output.push_str("], [");
-                    self.arguments(&items.iter().skip(1).step_by(2).copied().collect::<Vec<_>>());
-                    self.output.push_str("])");
+            // Below `Advanced`, and for literals that are not constants, each
+            // evaluation builds the value; empty literals read the runtime's
+            // singletons at every level.
+            kind @ (ExprKind::Vector(_)
+            | ExprKind::List(_)
+            | ExprKind::Map(_)
+            | ExprKind::Set(_)
+            | ExprKind::LiteralMap(_)
+            | ExprKind::LiteralSet(_)) => {
+                let program = self.program;
+                if let Some(empty) = EmptyCollection::of(kind) {
+                    self.empty_collection(empty);
                 } else {
-                    self.rt(RuntimeName::export("mapFromArray"));
-                    self.output.push_str("([");
-                    self.arguments(items);
-                    self.output.push_str("])");
+                    let (constructor, items) = composite(program, kind).unwrap();
+                    self.construct(constructor, items.len(), |emitter, index| {
+                        emitter.value(items[index]);
+                    });
                 }
-            }
-            ExprKind::LiteralMap(items) | ExprKind::LiteralSet(items) => {
-                self.rt(RuntimeName::export(
-                    if matches!(self.program.exprs[id.0].kind, ExprKind::LiteralMap(_)) {
-                        "constantMapFromArray"
-                    } else {
-                        "constantSetFromArray"
-                    },
-                ));
-                self.output.push_str("([");
-                self.arguments(items);
-                self.output.push_str("])");
-            }
-            ExprKind::Set(items) => {
-                // Reader-distinct constants retain the runtime's existing
-                // Number-coercion policy. Dynamic member results need the
-                // pinned checkout's duplicate check after all operands run.
-                let constant = items.iter().all(|item| {
-                    matches!(
-                        self.program.exprs[item.0].kind,
-                        ExprKind::Nil
-                            | ExprKind::Bool(_)
-                            | ExprKind::Number(_)
-                            | ExprKind::String(_)
-                            | ExprKind::Keyword(_)
-                            | ExprKind::Symbol(_)
-                    )
-                });
-                self.rt(RuntimeName::export(if constant {
-                    "setFromArray"
-                } else {
-                    "literalSetFromArray"
-                }));
-                self.output.push_str("([");
-                self.arguments(items);
-                self.output.push_str("])");
-            }
-            ExprKind::List(items) => {
-                self.rt(RuntimeName::export("listFromArray"));
-                self.output.push_str("([");
-                self.arguments(items);
-                self.output.push_str("])");
             }
             ExprKind::CoreFn(core) => {
                 self.rt(RuntimeName::core(core.runtime_name()));
@@ -3127,6 +3504,7 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
                 "l",
                 "g",
                 "k",
+                "c",
                 "m",
                 "a",
                 "r",

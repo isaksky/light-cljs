@@ -1199,3 +1199,105 @@ multiplies with `*` instead of calling the runtime's `multiply`, which saves
 their time in the sequence and map runtime, which the lowerings do not touch;
 their parameters are untyped, so `=`, `count` and `nth` on them keep the
 runtime call.
+
+## Constant collection pool — October 13, 2026
+
+light-cljs-218 implements tiers 1 and 2 of "Constant collection literals" in
+the [design](../docs/advanced-optimization.md). At every level the empty
+literals `[]`, `{}`, `#{}` and `()` read the runtime's `EMPTY` singletons. At
+`--optimize advanced` each distinct constant collection literal, reader
+metadata on one and `#uuid` literal is a constant table entry, built once from
+the entries of its parts, `const k1 = rt$vectorFromArray([1, k0]);`, and
+constants of 1,024 or more nodes are lazy cells. The new ratchet fixture
+`constant-literals` builds a map with a dynamic value and constant parts:
+
+```clojure
+(defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty []
+               :meta {:kind :row :dims [1 2 3]}})
+(reduce + (map (fn [i] (let [r (row i)]
+                         (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
+               (range 10)))
+```
+
+`--levels` gains it as a fourth steady-state workload, which calls `row`
+n = 2,000 times per call and also counts `:tags`.
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL --text`;
+"before" is master `21b1abf` (after light-cljs-206, 207 and 210). Fixtures not
+listed do not change.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| vector-printed | 361,407 / 85,946 | 361,407 / 85,946 | 134,837 / 30,944 | 134,854 / 30,950 | 135,000 |
+| map-printed | 361,397 / 85,939 | 361,410 / 85,941 | 134,821 / 30,938 | 134,856 / 30,938 | 135,000 |
+| keyword-lookups | 362,459 / 86,105 | 362,459 / 86,105 | 130,993 / 30,060 | 131,027 / 30,074 | 132,000 |
+| constant-literals | 362,228 / 86,131 | 362,236 / 86,137 | 132,524 / 30,466 | 132,677 / 30,500 | 133,000 |
+
+The pool does not shrink these programs: a table declaration costs a few more
+bytes than the construction it replaces when a literal occurs once, and the
+fixtures have few literals. `map-printed` reads `PersistentArrayMap.EMPTY`
+instead of calling `mapFromArray([])`, 13 bytes more below `Advanced`. The
+runtime does not change. The `keyword-lookups` ceiling rises from 131,000 to
+132,000, because its two constant maps become declarations (34 bytes) on a
+size that was 7 bytes under the ceiling; `constant-literals` gets
+[363,000, 363,000, 133,000]. Its advanced table has 13 entries (3 composite)
+in 515 bytes, which `--size-report` now prints under its summary line.
+
+**Steady state.** `--levels` on master `d7ae574` (exported tree, with the new
+fixture and workload) and on this change before it was rebased onto
+light-cljs-206, 207 and 210, one directly after the other. The
+one-minute load average had a median of 7.4 and 5.3. Every table is in
+[before](results/constant-pool-2026-10-13/before/summary.md) and
+[after](results/constant-pool-2026-10-13/after/summary.md), next to their
+`samples.csv`. Median ms per call:
+
+| Workload | n | Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| constant-literals | 2,000 | none | 59.39 | 55.07 | 308.04 | 304.75 |
+| constant-literals | 2,000 | prepare | 58.14 | 54.98 | 308.65 | 305.36 |
+| constant-literals | 2,000 | advanced | 58.21 | 43.47 | 292.25 | 271.11 |
+| keyword-lookups | 2,000 | advanced | 20.01 | 19.39 | 114.60 | 114.04 |
+| record-protocol | 2,000 | advanced | 9.75 | 9.34 | 20.80 | 20.42 |
+| seq-pipeline | 200 | advanced | 5.46 | 5.46 | 30.31 | 30.13 |
+
+At `Advanced` the constant-literals workload takes 25% less time in Node and
+7% less in QuickJS: each iteration still builds the outer map, whose `:id` is
+dynamic, but no longer its set, vectors, nested map and the `get-in` path.
+Below `Advanced` the workload moves by about as much as the others, which ran
+under less load the second time: only the empty vector is shared there. Parse
+plus first execution does not change beyond that noise at any level.
+
+**Lazy threshold.** A lazy cell, `let c<n>; const k<n> = () => c<n> ??=
+<initializer>;`, builds a constant on its first read instead of while the
+output loads. Programs of 60 or 10 retained functions, each returning a
+distinct vector of numbers of the given size, were compiled at `Advanced`
+with every constant eager or every constant lazy, and measured by parse plus
+first execution in Node (`benchmarks/support/compiler_levels.js startup`, 21
+or 31 fresh processes) and in a fresh QuickJS `Evaluator` (as `--levels`
+does). In one variant the program only returns the functions, so startup
+reads no constant; in the other it calls each once. Medians, ms; all rows are
+in [lazy-threshold.tsv](results/constant-pool-2026-10-13/lazy-threshold.tsv):
+
+| Constants | Nodes | Read at startup | Node eager | Node lazy | QuickJS eager | QuickJS lazy |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 60 | 17 | no | 3.380 | 3.434 | 7.863 | 8.095 |
+| 60 | 17 | yes | 3.661 | 3.970 | 8.165 | 8.606 |
+| 60 | 257 | no | 4.137 | 4.035 | 13.084 | 12.481 |
+| 60 | 257 | yes | 4.381 | 5.353 | 13.375 | 13.841 |
+| 10 | 1,025 | no | 3.606 | 3.548 | 10.644 | 10.126 |
+| 10 | 1,025 | yes | 3.714 | 4.362 | 10.745 | 10.731 |
+| 10 | 4,097 | no | 5.127 | 4.838 | 21.003 | 18.807 |
+| 10 | 4,097 | yes | 5.226 | 7.704 | 21.065 | 21.006 |
+
+A lazy cell saves QuickJS the construction of a constant that startup does
+not read, about 50 µs per 1,025-node vector and 220 µs per 4,097-node one,
+and costs it nothing measurable when startup does read it. V8 gains little
+when startup does not read the constant, and when it does, it parses the
+cell's body a second time on the first call, about 65 µs per 1,025-node
+vector. Below a few hundred nodes the closure and call cost more than they
+save in both engines. The threshold is therefore 1,024 nodes, where QuickJS
+clearly gains and the V8 cost is bounded by the size of rare, large literals.
+Wrapping the cell in parentheses, `(() => ...)`, makes V8 compile it eagerly
+and removes its second parse, but QuickJS then scans the whole body twice to
+find the arrow, which cost it about 2 ms on the 4,097-node program, so the
+cell is a plain arrow function.

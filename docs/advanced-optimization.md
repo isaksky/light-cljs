@@ -306,16 +306,22 @@ retention report covers runtime units. Later phases plug in here:
   as values), plus garbage that is dead by construction and tagged with why
   (unreferenced namespace, unused literal or pure def, unused defn, unused
   keyword, uninstantiated type, uncalled protocol method). Each fixed seed is
-  one test. It checks four properties: every level records the same trace,
+  one test. It checks five properties: every level records the same trace,
   value or error category and stdout, and adding the garbage changes none of
   them; adding one tag's garbage at a time, each step's advanced output is
   compared with the previous step's and the tag classified as `removed` (no
   sentinel string left and at most `SLACK` more bytes once compiler numbering
   is ignored), `residue` (code gone, bytes left) or `survives`; garbage that
   the escape variant wires to a reachable `var`, `resolve`, `with-redefs` or
-  protocol call on a constructed instance survives at every level; and
+  protocol call on a constructed instance survives at every level;
   Prepare's `removed_definitions` and `specialized_calls` never fall as
-  garbage is added. Observations are host values only (numbers
+  garbage is added; and, since 218, the program behaves identically at every
+  level when its collection literals are rendered with their first item
+  behind `identity`, which no level pools (`Literals::Built`). The literals
+  come from a stream of their own: repeated and nested constants, reader
+  metadata, partially constant vectors holding a local, read through
+  `count`, `pr-str`, `hash`, `=`, transients and `with-meta`, each read also
+  checking that the literal itself is unchanged. Observations are host values only (numbers
   and `pr-str` strings), so the harness does not depend on the runtime anchor
   and keeps working when advanced output slices the runtime.
 
@@ -741,30 +747,32 @@ literals (Pellets 218-221) extend the same table.
   Only emitted sites add entries, so the table needs no reachability of its
   own: a constant that no retained code reads never appears. `None` and
   `Prepare` output has no table.
-- **API.** `Emitter::constant(key, initializer)` writes `k<n>` for a
-  `ConstantKey` and declares the entry on first use. `initializer` writes
-  the value expression into the emitter's output, which `constant` moves into
-  the table line, so runtime reads go through `Emitter::rt` as usual. The
-  first site is the demand site that the retention report names. Keys
-  compare emitted structure: `ConstantKey::Keyword` and `ConstantKey::Symbol`
-  hold the UTF-16 namespace and name. `Emitter::named_literal` also caches each
-  entry number by `NamedLiteralId` in a dense array, so repeated sites skip the
-  hash. An entry is numbered after its initializer has run, so an initializer
-  that reads other constants (a vector of keywords) declares them first.
-  Hash-consing and subterm sharing (218 tier 2) therefore need only a key
-  variant per collection kind, keyed by its parts' entry numbers and its
-  metadata. Initializers run once, in table order, before any definition. An
-  entry may read only the runtime and earlier entries, never a program global.
-  A function that only references globals in its body is fine, because the
-  body runs later; this covers the arity methods that 212 may hoist. Lazy
-  entries (218's `c<n> ??= ...` cells for type-dependent or large
-  constants) need a second declaration form, which does not exist yet.
-- **Names.** `k<n>` names are compiler-owned. `hygienic_js` renames
-  `k<digits>` tokens along with its other numbered prefixes.
-  `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
-  checks this, because its probe program reads keywords. A pellet that
-  introduces another prefix (such as `c<n>`) adds it there. Reusing `k<n>`
-  for every entry needs no change.
+- **API.** `Emitter::constant_entry(key, lazy, initializer)` returns the
+  entry number of a `ConstantKey`, declaring the entry on first use, and
+  `Emitter::constant_reference(n)` writes a site's read of it. `initializer`
+  writes the value expression into the emitter's output, which
+  `constant_entry` moves into the table line, so runtime reads go through
+  `Emitter::rt` as usual. The first site is the demand site that the
+  retention report names. Keys compare emitted structure:
+  `ConstantKey::Keyword` and `ConstantKey::Symbol` hold the UTF-16 namespace
+  and name, and `ConstantKey::Composite` (218) the runtime constructor and
+  the parts (see "Constant collection literals"). `Emitter::named_entry` also
+  caches each keyword and symbol entry number by `NamedLiteralId` in a dense
+  array, so repeated sites skip the hash. An entry is numbered after its
+  initializer has run, so an initializer that reads other constants (a
+  vector of keywords) declares them first. Initializers run once, in table
+  order, before any definition. An entry may read only the runtime and
+  earlier entries, never a program global. A function that only references
+  globals in its body is fine, because the body runs later; this covers the
+  arity methods that 212 may hoist. With `lazy` set, a new entry is a lazy
+  cell instead (218): `let c<n>; const k<n> = () => c<n> ??= <initializer>;`,
+  read as `k<n>()`, which builds the value on the first read.
+- **Names.** `k<n>` and `c<n>` names are compiler-owned. `hygienic_js`
+  renames `k<digits>` and `c<digits>` tokens along with its other numbered
+  prefixes. `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
+  checks this, because its probe program reads keywords and fills a lazy
+  cell before its other probes run. A pellet that introduces another prefix
+  adds it there. Reusing `k<n>` for every entry needs no change.
 - **Keyword interning.** The runtime's `keyword(namespace, name)` interns.
   Every literal site calls it, per evaluation below `Advanced` and once from
   the table at `Advanced`. It keeps one keyword per namespace and name in a
@@ -1100,13 +1108,14 @@ under `js*` below.
 ### Constant collection literals
 
 Tracked as Pellets 218-221 after keyword interning (208), whose constant
-table they extend (see "Phase 1 constant table extension points"). Every
-literal is rebuilt per evaluation today: `[1 2 3]` copies, freezes and wraps a
-fresh array; `{:a 1}` allocates the map each time (its keyword is interned
-since 208); `[]` allocates
-although the runtime has `EMPTY` singletons. No hash cache exists for
-vectors, maps or sets. Sharing is safe because payload arrays are frozen,
-`withMeta` returns a new or unchanged object, and transients copy.
+table they extend (see "Phase 1 constant table extension points"). Tiers 1
+and 2 are implemented (218, below). Before them every literal was rebuilt per
+evaluation: `[1 2 3]` copies, freezes and wraps a fresh array; `{:a 1}`
+allocates the map each time (its keyword is interned since 208); `[]`
+allocated although the runtime has `EMPTY` singletons. Below `Advanced`
+non-empty literals still are. No hash cache exists for vectors, maps or
+sets. Sharing is safe because payload arrays are frozen, `withMeta` returns
+a new or unchanged object, and transients copy.
 
 Precedents: upstream hoists only keywords and symbols and maps empty
 literals to `EMPTY`. shadow-cljs has an opt-in `:shadow-optimize-constants`
@@ -1121,7 +1130,12 @@ quoted symbols, UUIDs, nested constant collections including the
 reader-distinct `LiteralMap`/`LiteralSet`, and `with-meta` of a constant on
 a constant. Record literals qualify when fields do but depend on the type.
 Not constant: anything with locals, globals, calls or `js*`; `#js` and
-`js-obj` (mutable); regex (`lastIndex`); `#inst` (`Date` is mutable).
+`js-obj` (mutable); regex (`lastIndex`); `#inst` (`Date` is mutable). As
+implemented, a set literal whose members are not all scalars, keywords or
+symbols is not constant either: its constructor throws on members that are
+equal at run time (`#{[1] '(1)}`), and hoisting would move that throw to
+load time. `#queue` is left out, and the reader has no record literals, so
+no constant depends on a type yet.
 
 **Tiers.**
 
@@ -1156,6 +1170,91 @@ without it at every level, with the generator producing repeated and nested
 literals, metadata on literals, transients from literals, shaped maps with
 colliding keys, and lookups with missing and out-of-range arguments. Fixed
 fixtures pin per-evaluation allocation counts and pool bytes.
+
+#### Constant pool extension points
+
+Tiers 1 and 2 are implemented (light-cljs-218).
+
+- **Empty singletons (tier 1).** At every level, and in the REPL, macro host
+  and deferred units, which share the emitter, `[]`, `{}`, `#{}` and `()`
+  (quoted too) read `rt.core.PersistentVector.EMPTY`,
+  `rt.core.PersistentArrayMap.EMPTY`, `rt.core.PersistentHashSet.EMPTY` and
+  `rt.core.List.EMPTY` (`rt$PersistentVectorValue.EMPTY` and so on at
+  `Advanced`) instead of allocating, as upstream does. They are the values
+  the constructors build for no items, so only identity changes:
+  `(identical? [] [])` is true at every level. A quoted `'#{}` keeps its
+  positional constructor. Empty literals are inline reads, never table
+  entries (`EmptyCollection` in `src/emitter.rs`).
+- **Classification.** `constant_nodes` in `src/emitter.rs` classifies an
+  expression of the prepared IR as above and memoizes the result per
+  `ExprId` in a dense array (`ConstantClass`), so classifying a program is
+  linear; a constant's class is its size in nodes. `composite` names the
+  runtime constructor and items of a collection literal, reader metadata or
+  `#uuid` literal, and `Emitter::construct` writes the call. Sites that build
+  their value use the same two functions, so a pooled value is built exactly
+  as a site builds it below `Advanced`.
+- **Pool (tier 2).** At `Advanced` a constant collection literal, reader
+  metadata of a constant on a constant collection or quoted symbol, and a
+  `#uuid` literal read a table entry, which `Emitter::constant_part` declares
+  bottom-up: scalars stay inline (`ConstantPart`), keywords and symbols are
+  their 208 entries, and each nested composite is an entry of its own, keyed
+  by `ConstantKey::Composite { constructor, parts }`. Hash-consing on these
+  keys gives subterm sharing: `[[1 2] {:k [1 2]}]` declares `[1 2]` once and
+  reads it twice. Keys are emitted structure, never runtime equality, so
+  `[1 2]` and `'(1 2)` are two entries, and `#{1 1.0}` (a `LiteralSet` of two
+  reader-distinct members) is not `#{1}`. A literal with a non-constant item
+  is built at its site from its pooled constant items. So is a literal whose
+  construction reads a core operation the program may replace
+  (`PreparedApplication::replaced_core`): `with-meta`, `uuid`, or the type of
+  an empty literal, whose `set!` later evaluations must see. A discarded
+  constant emits nothing and declares nothing.
+- **Lazy cells.** A constant of at least 1,024 nodes
+  (`LAZY_CONSTANT_NODES`) is a lazy cell,
+  `let c<n>; const k<n> = () => c<n> ??= <initializer>;`, read as `k<n>()`,
+  and the entries first declared for its parts are lazy too, so a large
+  constant that no evaluation reads is never built. The threshold is
+  measured (`benchmarks/compiler.md`, "Constant collection pool"): a lazy
+  cell saves QuickJS the construction of a constant that startup does not
+  read, and costs V8 a second parse of the cell's body when startup does
+  read it; below about a thousand nodes neither engine gains. The
+  parenthesized form `(() => ...)`, which V8 compiles eagerly, makes QuickJS
+  scan the whole body twice to find the arrow, so it is not used. A
+  type-dependent constant would also need a lazy cell, because the table
+  precedes the definitions, but the reader has no record literals yet.
+- **Report.** `RetentionReport::constants` (`ConstantPool`) counts the
+  entries, the composite entries and the lazy cells and the bytes of the
+  declarations, and `--size-report` prints
+  `constant pool: N entries (C composite, L lazy), B bytes` under its
+  summary line. Below `Advanced` it is empty.
+- **For 219 (hash caching).** A composite entry's key holds its constructor
+  and parts, and parts precede their entries, so a Rust port of the runtime
+  hash can compute each entry's hash from its parts' hashes in entry order
+  (keywords and symbols from their spelling) and pass it to the entry's
+  initializer. Pool values are built by the ordinary constructors, so the
+  runtime hash cache applies to them unchanged.
+- **For 220 (key shapes).** A map literal with constant keys and dynamic
+  values is built at its site, with its keys read from the table. A shape is
+  another `ConstantKey` variant (the keys' parts), declared with
+  `constant_entry` from the map site in `value_expr`; `constant_nodes` tells
+  which items are constant. The generator's `Literal` in
+  `tests/support/generated.rs` is where shaped maps with colliding keys go.
+- **For 221 (folding).** `constant_nodes` and `constant_part` give the value
+  of any constant expression as parts, which a folder can evaluate `get`,
+  `count`, `nth` and `contains?` against, keeping the throws of out-of-range
+  arguments.
+- **For 212.** Hoisted functions are entries under a new key variant;
+  `constant_entry`'s initializer may reference globals only inside function
+  bodies, and a function entry should never be lazy.
+- **Tests.** `tests/compiler/constant_pool.rs` pins the empty singletons at
+  every level and in the REPL, the table of a nested program, reader-distinct
+  entries, metadata, transients, equality and hashes on pooled values,
+  identity across sites, what stays at its site (`#js`, `js-obj`, regexes,
+  `#inst`, throwing sets, partially constant literals), lazy cells, and the
+  allocation fixture: the calls of the literal constructors in a loop of
+  1,000 iterations, counted by a hook the test inserts into the emitted
+  runtime functions, and the pool's size. Generated programs check property
+  5 (see "Generated programs"), and the size ratchet has a
+  `constant-literals` fixture, also a steady-state workload of `--levels`.
 
 ### Phase 3: terse emission
 
@@ -1204,8 +1303,15 @@ upstream states that advanced mode is unsafe for certain patterns.
   symbol with its `toString`. Where printing is reachable every message is
   the one `optimize: false` gives.
 - Equal constant literals may be `identical?` because they share one pooled
-  value. Since light-cljs-208 this holds for quoted symbols; keyword
-  literals are interned at every level, so their identity does not differ.
+  value, and each evaluation of a constant literal is the same value. This
+  holds for quoted symbols since light-cljs-208 and for constant
+  collections, reader metadata on them and `#uuid` literals since 218.
+  Keyword literals are interned at every level, and empty collection
+  literals are the runtime's `EMPTY` singletons at every level, as upstream,
+  so their identity does not differ. Equality, hashing, metadata and
+  transients are unaffected. Mutating a pooled value through host interop
+  (`set!` of a property, `reset-meta!`) is visible at every site that reads
+  it.
 - `set!` on a core operation forces indirection for that operation only.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the hygiene pass renames every name the compiler binds away from it.

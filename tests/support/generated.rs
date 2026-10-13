@@ -339,6 +339,9 @@ pub(crate) fn seeds() -> Vec<u64> {
 
 const PROGRAM_STREAM: u64 = 0x6e61_6d65_7370_6163;
 const GARBAGE_STREAM: u64 = 0x6761_7262_6167_6521;
+/// Collection literals come from their own stream, so adding them left every
+/// other choice of the program and garbage streams as it was.
+const LITERAL_STREAM: u64 = 0x6c69_7465_7261_6c73;
 const OBSERVE: &str = "js/lightObserve";
 /// Protocol methods of `Proto` and their parameter counts, receiver included.
 const METHODS: [(&str, usize); 3] = [("pm0", 1), ("pm1", 2), ("pm2", 1)];
@@ -426,6 +429,143 @@ impl Escape {
             Self::Resolve => "resolve",
             Self::FnAsData => "fn-as-data",
             Self::ProtocolCall => "protocol-call",
+        }
+    }
+}
+
+/// How [`NamespaceProgram::sources_with`] writes the program's collection
+/// literals (light-cljs-218). The two renderings must behave identically at
+/// every level: the metamorphic property of the constant pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Literals {
+    /// As written, so `Advanced` pools each constant one.
+    Constant,
+    /// With the first item of every nonempty collection behind `identity` and
+    /// metadata through `with-meta`, so that no literal is a constant and each
+    /// evaluation builds it at its site.
+    Built,
+}
+
+/// Brackets one literal occurrence in generated text: its
+/// [`Literals::Constant`] rendering, then its [`Literals::Built`] one.
+const LITERAL_OPEN: char = '\u{E000}';
+const LITERAL_SPLIT: char = '\u{E001}';
+const LITERAL_CLOSE: char = '\u{E002}';
+
+/// `text` with each bracketed literal written as `literals` says.
+fn resolve_literals(text: &str, literals: Literals) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find(LITERAL_OPEN) {
+        out.push_str(&rest[..open]);
+        let body = &rest[open + LITERAL_OPEN.len_utf8()..];
+        let split = body.find(LITERAL_SPLIT).unwrap();
+        let close = body.find(LITERAL_CLOSE).unwrap();
+        out.push_str(match literals {
+            Literals::Constant => &body[..split],
+            Literals::Built => &body[split + LITERAL_SPLIT.len_utf8()..close],
+        });
+        rest = &body[close + LITERAL_CLOSE.len_utf8()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A generated collection literal: numbers, `:a`-`:c`, strings, locals and
+/// nested vectors, maps, sets and quoted lists, with optional reader
+/// metadata. A local makes its literal only partially constant.
+#[derive(Clone, Debug)]
+enum Literal {
+    Number(i64),
+    Keyword(&'static str),
+    String(&'static str),
+    /// A number local.
+    Local(String),
+    Vector(Vec<Literal>),
+    /// Distinct keyword keys.
+    Map(Vec<(&'static str, Literal)>),
+    /// Distinct scalar members.
+    Set(Vec<Literal>),
+    /// Scalar items, quoted.
+    List(Vec<Literal>),
+    /// `^{:m n}` on a vector, map or set.
+    Meta(Box<Literal>, i64),
+}
+impl Literal {
+    fn render(&self, built: bool) -> String {
+        // The first item of a built collection goes behind `identity`.
+        let item = |index: usize, item: &Self| {
+            if built && index == 0 {
+                format!("(identity {})", item.render(true))
+            } else {
+                item.render(built)
+            }
+        };
+        let items = |items: &[Self]| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, value)| item(index, value))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        match self {
+            Self::Number(n) => n.to_string(),
+            Self::Keyword(keyword) => keyword.to_string(),
+            Self::String(string) => format!("\"{string}\""),
+            Self::Local(name) => name.clone(),
+            Self::Vector(vector) => format!("[{}]", items(vector)),
+            Self::Map(entries) => format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (key, value))| format!("{key} {}", item(index, value)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Self::Set(members) => format!("#{{{}}}", items(members)),
+            Self::List(list) if built && !list.is_empty() => format!("(list {})", items(list)),
+            Self::List(list) => format!(
+                "'({})",
+                list.iter()
+                    .map(|item| item.render(false))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Self::Meta(value, n) if built => {
+                format!("(with-meta {} {{:m {n}}})", value.render(true))
+            }
+            Self::Meta(value, n) => format!("^{{:m {n}}} {}", value.render(false)),
+        }
+    }
+
+    /// Both renderings, bracketed for [`resolve_literals`].
+    fn marked(&self) -> String {
+        format!(
+            "{LITERAL_OPEN}{}{LITERAL_SPLIT}{}{LITERAL_CLOSE}",
+            self.render(false),
+            self.render(true)
+        )
+    }
+
+    /// Whether printing depends on a set's member order, which the reader
+    /// sorts for a constant set literal but not for a built one.
+    fn has_set(&self) -> bool {
+        match self {
+            Self::Set(_) => true,
+            Self::Vector(items) | Self::List(items) => items.iter().any(Self::has_set),
+            Self::Map(entries) => entries.iter().any(|(_, value)| value.has_set()),
+            Self::Meta(value, _) => value.has_set(),
+            _ => false,
+        }
+    }
+
+    /// The collection under any metadata.
+    fn collection(&self) -> &Self {
+        match self {
+            Self::Meta(value, _) => value.collection(),
+            other => other,
         }
     }
 }
@@ -538,6 +678,17 @@ impl NamespaceProgram {
         garbage: &dyn Fn(usize) -> bool,
         escapes: bool,
     ) -> Vec<(String, String)> {
+        self.sources_with(garbage, escapes, Literals::Constant)
+    }
+
+    /// [`NamespaceProgram::sources`] with the collection literals written as
+    /// `literals` says.
+    pub(crate) fn sources_with(
+        &self,
+        garbage: &dyn Fn(usize) -> bool,
+        escapes: bool,
+        literals: Literals,
+    ) -> Vec<(String, String)> {
         let admits = |gate| match gate {
             Gate::Program => true,
             Gate::Garbage(index) => garbage(index),
@@ -551,7 +702,10 @@ impl NamespaceProgram {
                 for item in &namespace.items {
                     item.render(&admits, &mut source);
                 }
-                (format!("{}.cljs", namespace.name.replace('.', "/")), source)
+                (
+                    format!("{}.cljs", namespace.name.replace('.', "/")),
+                    resolve_literals(&source, literals),
+                )
             })
             .collect()
     }
@@ -603,6 +757,10 @@ struct Implementation {
 
 struct Builder {
     rng: Generator,
+    /// Draws collection literals and their reads ([`Literal`]).
+    literal_rng: Generator,
+    /// Literals generated so far, which later sites repeat or nest.
+    literals: Vec<Literal>,
     namespaces: Vec<Namespace>,
     requires: Vec<Vec<usize>>,
     /// `ancestors[i][j]`: namespace `j` has loaded before `i`'s body runs.
@@ -628,6 +786,11 @@ pub(crate) fn namespace_program(seed: u64) -> NamespaceProgram {
             state: seed ^ PROGRAM_STREAM,
             next_id: 0,
         },
+        literal_rng: Generator {
+            state: seed ^ LITERAL_STREAM,
+            next_id: 0,
+        },
+        literals: Vec::new(),
         namespaces: Vec::new(),
         requires: Vec::new(),
         ancestors: Vec::new(),
@@ -827,6 +990,13 @@ impl Builder {
                     self.effect(),
                     self.number(scope, locals, d)
                 )),
+                // The leaf this arm used to fall through to, plus a read of a
+                // collection literal from the literal stream.
+                14 => Some(format!(
+                    "(+ {} {})",
+                    self.leaf_number(scope, locals),
+                    self.literal_read(locals)
+                )),
                 13 => {
                     let name = format!("x{}", self.rng.fresh());
                     let init = self.number(scope, locals, d);
@@ -843,6 +1013,11 @@ impl Builder {
                 return form;
             }
         }
+        self.leaf_number(scope, locals)
+    }
+
+    /// A local, a number global or a small number.
+    fn leaf_number(&mut self, scope: Scope, locals: &[String]) -> String {
         match self.rng.choose(4) {
             0 if !locals.is_empty() => locals[self.rng.choose(locals.len())].clone(),
             1 => match self.pick(scope, |kind| matches!(kind, Kind::Number)) {
@@ -850,6 +1025,110 @@ impl Builder {
                 None => self.small(),
             },
             _ => self.small(),
+        }
+    }
+
+    fn scalar(&mut self) -> Literal {
+        match self.literal_rng.choose(3) {
+            0 => Literal::Keyword(KEYWORDS[self.literal_rng.choose(KEYWORDS.len())]),
+            1 => Literal::String(["s0", "s1", "s2"][self.literal_rng.choose(3)]),
+            _ => Literal::Number(self.literal_rng.choose(13) as i64 - 3),
+        }
+    }
+
+    /// A constant literal: often one generated before, at another site or as
+    /// a part of a new one, so the pool sees repeated and nested literals.
+    fn constant_literal(&mut self, depth: usize) -> Literal {
+        if !self.literals.is_empty() && self.literal_rng.choose(3) == 0 {
+            let index = self.literal_rng.choose(self.literals.len());
+            return self.literals[index].clone();
+        }
+        let count = self.literal_rng.choose(4);
+        let literal = match self.literal_rng.choose(5) {
+            0 => {
+                // Distinct members, so a built set never throws.
+                let mut members: Vec<Literal> = Vec::new();
+                for _ in 0..count {
+                    let member = self.scalar();
+                    if members
+                        .iter()
+                        .all(|other| other.render(false) != member.render(false))
+                    {
+                        members.push(member);
+                    }
+                }
+                Literal::Set(members)
+            }
+            1 => Literal::List((0..count).map(|_| self.scalar()).collect()),
+            2 => Literal::Map(
+                KEYWORDS[..count.min(KEYWORDS.len())]
+                    .iter()
+                    .map(|key| (*key, self.literal_item(depth)))
+                    .collect(),
+            ),
+            3 if depth > 0 => {
+                let value = self.constant_literal(depth - 1);
+                match value.collection() {
+                    Literal::Vector(_) | Literal::Map(_) | Literal::Set(_) => {
+                        Literal::Meta(Box::new(value), self.literal_rng.choose(4) as i64)
+                    }
+                    _ => value,
+                }
+            }
+            _ => Literal::Vector((0..count).map(|_| self.literal_item(depth)).collect()),
+        };
+        if self.literals.len() < 32 {
+            self.literals.push(literal.clone());
+        }
+        literal
+    }
+
+    fn literal_item(&mut self, depth: usize) -> Literal {
+        if depth > 0 && self.literal_rng.choose(3) == 0 {
+            self.constant_literal(depth - 1)
+        } else {
+            self.scalar()
+        }
+    }
+
+    /// A number read from a collection literal (light-cljs-218): its count,
+    /// printed length, hash, equality with a repeated or other literal, a
+    /// transient built from it, or `with-meta` on it, each also checking that
+    /// the literal itself is unchanged. Sometimes the literal is partially
+    /// constant: a vector holding a local among constant items.
+    fn literal_read(&mut self, locals: &[String]) -> String {
+        let literal = if !locals.is_empty() && self.literal_rng.choose(4) == 0 {
+            let local = locals[self.literal_rng.choose(locals.len())].clone();
+            let mut items = vec![self.constant_literal(1), self.literal_item(1)];
+            items.insert(self.literal_rng.choose(3), Literal::Local(local));
+            Literal::Vector(items)
+        } else {
+            self.constant_literal(2)
+        };
+        let text = literal.marked();
+        let changed = |update: &str, added: &str| {
+            format!(
+                "(let [v {text}] (+ (count (persistent! ({update} (transient v) {added}))) (count v)))"
+            )
+        };
+        match (self.literal_rng.choose(6), literal.collection()) {
+            (1, _) if !literal.has_set() => format!("(count (pr-str {text}))"),
+            (2, _) => format!("(mod (hash {text}) 97)"),
+            (3, _) => {
+                let other = if self.literal_rng.choose(2) == 0 {
+                    literal.clone()
+                } else {
+                    self.constant_literal(2)
+                };
+                format!("(if (= {text} {}) 1 0)", other.marked())
+            }
+            (4, Literal::Vector(_)) => changed("conj!", "0"),
+            (4, Literal::Map(_)) => changed("assoc!", ":z 0"),
+            (4, Literal::Set(_)) => changed("conj!", ":z"),
+            (5, Literal::Vector(_) | Literal::Map(_) | Literal::Set(_)) => format!(
+                "(let [v {text}] (+ (count (meta (with-meta v {{:x 1}}))) (count (meta v))))"
+            ),
+            _ => format!("(count {text})"),
         }
     }
 

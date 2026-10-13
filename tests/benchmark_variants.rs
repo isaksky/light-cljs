@@ -37,14 +37,15 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     levels::run(&config, &fixtures).unwrap();
     let samples = std::fs::read_to_string(output.join("samples.csv")).unwrap();
     // Startup: 2 fixtures x 3 levels x (4 Node + 1 QuickJS measures). Steady state:
-    // 3 workloads x 3 levels x 2 engines.
-    assert_eq!(samples.lines().count(), 1 + 30 + 18, "{samples}");
+    // 4 workloads x 3 levels x 2 engines.
+    assert_eq!(samples.lines().count(), 1 + 30 + 24, "{samples}");
     for row in [
         "node,parse+execute,seq-pipeline,advanced,0,",
         "quickjs,parse+execute,rest-fn,none,0,",
         "node,call,record-protocol,prepare,0,",
         "quickjs,call,seq-pipeline,advanced,0,",
         "quickjs,call,keyword-lookups,none,0,",
+        "node,call,constant-literals,advanced,0,",
     ] {
         assert!(samples.contains(row), "missing {row}:\n{samples}");
     }

@@ -68,9 +68,13 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
             r#"4 = rt$keyword(null, "b");"#,
             r#"5 = rt$symbol(null, "sym");"#,
             r#"6 = rt$keyword("ns", "a");"#,
-            r#"7 = rt$keyword(null, "c");"#,
-            r#"8 = rt$symbol(null, "sym2");"#,
-            r#"9 = rt$keyword(null, "m");"#,
+            r#"7 = rt$mapFromArray([k3, 1, k4, 2, k5, 3, k6, 4]);"#,
+            r#"8 = rt$keyword(null, "c");"#,
+            r#"9 = rt$symbol(null, "sym2");"#,
+            r#"10 = rt$keyword(null, "m");"#,
+            r#"11 = rt$mapFromArray([k10, true]);"#,
+            r#"12 = rt$withMeta(k9, k11);"#,
+            r#"13 = rt$listFromArray([k5, k3]);"#,
         ]
     );
     // The table follows the runtime slice and precedes the program, and no
@@ -82,17 +86,18 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
     assert!(!advanced.contains("registerReaderNamespace"));
     assert_eq!(advanced.matches("rt$keyword(").count(), 8);
     assert_eq!(advanced.matches("rt$symbol(").count(), 2);
-    // A quoted symbol with metadata keeps its per-site `with-meta` on the
-    // shared symbol.
-    assert!(advanced.contains("rt$withMeta(k8, "));
-    assert!(advanced.contains("rt$listFromArray([k5, k3])"));
+    // Constant collections are entries too (light-cljs-218), with their
+    // keywords and symbols declared first: the map, the quoted list, and the
+    // quoted symbol with metadata, which is `with-meta` of the shared symbol.
+    assert_eq!(advanced.matches("rt$withMeta(").count(), 1);
+    assert_eq!(advanced.matches("rt$listFromArray(").count(), 1);
     // Bundler output declares the same table.
     let esm = prepare_application(
         &program,
         ApplicationOptions::new(OptimizationLevel::Advanced),
     )
     .emit_esm();
-    assert!(esm.contains("  const k9 = rt$keyword(null, \"m\");\n"));
+    assert!(esm.contains("  const k10 = rt$keyword(null, \"m\");\n"));
     // Below `Advanced` every site constructs its literal, as before.
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         let js = emit(&program, level);

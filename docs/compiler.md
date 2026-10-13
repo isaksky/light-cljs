@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword and quoted symbol literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, and infers types to write truth tests and core calls as JavaScript (below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, and infers types to write truth tests and core calls as JavaScript (below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -171,7 +171,19 @@ the output reads is declared once after the runtime, `const k0 = rt$keyword(null
 "a");`, and its sites read `k0`; keyword `case` switches on
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it
 (see "Phase 1 constant table extension points" in
-[advanced-optimization.md](advanced-optimization.md)).
+[advanced-optimization.md](advanced-optimization.md)). The same table holds
+each distinct constant collection literal, reader metadata on one and `#uuid`
+literal, built once from the entries of its parts:
+`const k1 = rt$vectorFromArray([1, k0]);`. Equal literals at different sites
+are therefore one value, which the advanced-mode contract allows. A constant
+of 1,024 or more nodes is built on its first read instead,
+`let c2; const k2 = () => c2 ??= ...;`, read as `k2()`. A literal with a
+local, global or call inside, a set literal whose members are not all
+scalars, keywords or symbols, `#js`, regexes and `#inst` are built where they
+are evaluated, as at every other level (see "Constant collection literals"
+in [advanced-optimization.md](advanced-optimization.md)). At every level,
+empty `[]`, `{}`, `#{}` and `()` literals are the runtime's `EMPTY`
+singletons, as upstream, so `(identical? [] [])` is true.
 
 Compiler machinery in the runtime (the compiler form bridge, declaration
 demand and transactions, the namespace registry, the macro reader context,
@@ -215,7 +227,9 @@ that first demanded it, and each embedded unit with its byte size and the first
 of those names whose dependencies reach it. `--compile --size-report` prints
 that report as a table on stderr, for single files and `--entry` builds, at any
 level; a root the output only calls prints as `rt$add(...)`, and a dispatcher
-kept for an `extend-type` prints in parentheses.
+kept for an `extend-type` prints in parentheses. At `Advanced` the line under
+the summary gives the constant table's entries, how many are collections and
+lazy cells, and its bytes.
 
 The entry result, all standalone expressions, unknown or effectful initializers,
 throws, definition tests, and protocol/type/extension declarations retain their

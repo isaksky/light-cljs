@@ -517,8 +517,10 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         (defn this-as-fn [] (this-as t {} 1))
         (defn let-fn [] (let [x 1 y (inc x)] {} (+ x y)))
         (def initialized (let [v (js/Math.max 1 2)] {} v))
+        (defn table [] [{}])
+        (defn constants [] [(count (table)) (:a {{:a [1 2]}}) '(x y)])
         {}
-        (pr-str [(str (T. 1)) (method (->R 1) 2) (fixed 1 2) (multi 1) (multi 1 2)
+        (pr-str [(constants) (str (T. 1)) (method (->R 1) 2) (fixed 1 2) (multi 1) (multi 1 2)
                  (variadic 1 2 3) (looping 2) (caught) (cases :a 1 "s") (bound)
                  (redefined) (printed) (reified 3) (letfns) (this-as-fn) (let-fn)
                  initialized])"#,
@@ -543,6 +545,12 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         p("this-as"),
         p("let"),
         p("initializer"),
+        // A constant large enough to be a lazy cell (`c<n>`), which
+        // `(constants)` fills before the other probes run.
+        (0..1024)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
         p("top-level"),
     );
     let program = program(&source);
@@ -585,7 +593,7 @@ console.log(value);"#
         );
         assert_eq!(lines[1], ran, "probes that ran at {level}");
         assert_eq!(
-            lines[2], r#"["t" 3 3 1 3 6 [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2]"#,
+            lines[2], r#"[[1024 [1 2] (x y)] "t" 3 3 1 3 6 [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2]"#,
             "{level}"
         );
     }
