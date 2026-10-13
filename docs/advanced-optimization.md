@@ -332,7 +332,12 @@ retention report covers runtime units. Later phases plug in here:
   compares a literal with the same or another literal built at its site and
   throws if they are `=` but hash apart, and the sizes ignore the digits of
   the hashes constant declarations embed, which follow the source paths in
-  var metadata. Observations are host values only (numbers
+  var metadata. Since 220 a fourth stream adds reads of shaped map and set
+  literals (keys that hash alike, nil keys and values, one local at several
+  keys, set members equal at run time), each compared in the program with
+  the literal built with its first key behind `identity` and returning
+  order-dependent hashes, which the levels compare. Observations are host
+  values only (numbers
   and `pr-str` strings), so the harness does not depend on the runtime anchor
   and keeps working when advanced output slices the runtime.
 
@@ -1491,10 +1496,11 @@ under `js*` below.
 
 Tracked as Pellets 218-221 after keyword interning (208), whose constant
 table they extend (see "Phase 1 constant table extension points"). Tiers 1
-and 2 are implemented (218, below), and tier 3 (219). Before them every
-literal was rebuilt per evaluation: `[1 2 3]` copies, freezes and wraps a
-fresh array; `{:a 1}` allocates the map each time (its keyword is interned
-since 208); `[]` allocated although the runtime has `EMPTY` singletons.
+and 2 are implemented (218, below), tier 3 (219) and tier 4 (220). Before
+them every literal was rebuilt per evaluation: `[1 2 3]` copies, freezes and
+wraps a fresh array; `{:a 1}` allocates the map each time (its keyword is
+interned since 208); `[]` allocated although the runtime has `EMPTY`
+singletons.
 Below `Advanced` non-empty literals still are. Before 219 maps, lists,
 records and positional constructions cached their hash, but vectors and
 sets did not, so a constant vector used as a key was rehashed on every
@@ -1534,8 +1540,9 @@ no constant depends on a type yet.
    corpus and on generated programs.
 4. Key shapes for maps with constant keys and dynamic values: pooled key
    array, precomputed key hashes and trie layout; sites emit only values.
-   Constant-core sets plus `conj`. Vector prefixes are out of scope while
-   vectors are flat arrays.
+   Sets whose first members are constants add the others to a pooled
+   shape of those (a constant core plus `conj` would reorder members).
+   Vector prefixes are out of scope while vectors are flat arrays.
 5. Folding of `get`, keyword lookup, `nth`, `count`, `contains?`, `seq`,
    destructuring and `case` membership against pool constants, preserving
    throws.
@@ -1557,7 +1564,8 @@ fixtures pin per-evaluation allocation counts and pool bytes.
 
 #### Constant pool extension points
 
-Tiers 1 and 2 are implemented (light-cljs-218), and tier 3 (light-cljs-219).
+Tiers 1 and 2 are implemented (light-cljs-218), tier 3 (light-cljs-219) and
+tier 4 (light-cljs-220).
 
 - **Empty singletons (tier 1).** At every level, and in the REPL, macro host
   and deferred units, which share the emitter, `[]`, `{}`, `#{}` and `()`
@@ -1635,19 +1643,51 @@ Tiers 1 and 2 are implemented (light-cljs-218), and tier 3 (light-cljs-219).
   (`ProgramFacts::core_protocols_intact`): `hash` dispatches `IHash` and walks
   collections with `seq`, so an extension to a host or runtime type could
   change what it computes.
-- **For 220 (key shapes).** A map literal with constant keys and dynamic
-  values is built at its site, with its keys read from the table. A shape is
-  another `ConstantKey` variant (the keys' parts), declared with
-  `constant_entry` from the map site in `value_expr`; `constant_nodes` tells
-  which items are constant. The generator's `Literal` in
-  `tests/support/generated.rs` is where shaped maps with colliding keys go.
-  A shape's key hashes come from `ConstantHashes::part` (219), when the
-  table has `hashes`, and `ConstantHashes::composite_hash` shows how the
-  builders merge equal keys.
+- **Key shapes (tier 4, light-cljs-220).** At `Advanced`, when the table has
+  `hashes` (core protocols intact), `Emitter::shaped` builds a `Map` literal
+  whose keys are all constants and whose values are not (a map of constants
+  is pooled whole) from a key shape, `ConstantKey::Shape { set: false, keys }`
+  declared from the map site in `value_expr`: `const k3 =
+  rt$mapShape([k0, k1, k2], [1174270348, 2099068185, -1757859776]);`, the
+  keys' parts and their hashes from `ConstantHashes::part`. The site passes
+  the values, `rt$mapFromShape(k3, [k4, l0, l1])`, and each evaluation only
+  makes the frozen entries `{key, value, hash}` and the map: no key is looked
+  up, compared or hashed. `ConstantHashes::distinct` must prove the keys
+  pairwise unequal; keys it cannot tell apart (`{:a 1}` and `{:a 1.0}`, map or
+  set keys with items, NaN, keywords spelled alike) keep `mapFromArray` and its
+  merging, and reader-distinct numbers that are `=` (`1`, `1.0`) already make a
+  positional `LiteralMap`, whose `constantMapFromArray` neither checks nor
+  hashes keys and is left alone. Past 8 entries, where sites call
+  `mapFromArrays`, the shape is `rt$hashMapShape`: it runs the builder's trie
+  insertion (`hashNodeAssoc`, with `effects` off, which distinct keys make
+  equivalent) once, under one edit token, over placeholder entries that hold
+  their index, and `rt$hashMapFromShape` copies that trie with each
+  evaluation's entries. Trie nodes are never mutated and the shape's token
+  never reaches a transient, so the map has exactly the entries, root, nodes,
+  capacities and collision order `mapFromArray` gives it, which later
+  operations (transient removal reorders collision nodes) can observe. The
+  only difference is that an array map's entries hold their hash from the
+  start, where `putEntry` computes it on the first read. Values are evaluated
+  once each in the operand order the reader gave the literal, as before. A
+  shape is a lazy cell when one of its keys is.
+- **Set shapes.** A `Set` literal whose first members in reader order are
+  scalar, keyword or symbol constants that `distinct` proves unequal, and whose
+  other members are not all such constants, reads `ConstantKey::Shape { set:
+  true, .. }`, `rt$setShape([first members])`, which holds the entries
+  `literalSetFromArray` makes for those members and its edit token. The site
+  `rt$setFromShape(k<n>, [other members])` copies the entries and adds the
+  other members as `literalSetFromArray` would have, under the same token, so
+  each is checked against every member before it and a duplicate throws the
+  same error naming the same member. The reader orders set members by hash,
+  so a literal whose first member is not a constant keeps
+  `literalSetFromArray`: adding the dynamic members to a set of all the
+  constant ones would reorder an array set and could name the other member of
+  a duplicate pair.
 - **For 221 (folding).** `constant_nodes` and `constant_part` give the value
   of any constant expression as parts, which a folder can evaluate `get`,
   `count`, `nth` and `contains?` against, keeping the throws of out-of-range
-  arguments.
+  arguments. A lookup of a constant key in a shaped map literal can fold to
+  that key's value expression when the rest have no effects.
 - **For 212.** Hoisted functions are entries under a new key variant;
   `constant_entry`'s initializer may reference globals only inside function
   bodies, and a function entry should never be lazy.
@@ -1661,7 +1701,8 @@ Tiers 1 and 2 are implemented (light-cljs-218), and tier 3 (light-cljs-219).
   not go stale and that `=` values hash alike, pooled or built. The
   generator's literal reads compare a literal with a built one in both
   renderings and throw if they are `=` but hash apart. `value_hash`'s unit
-  tests pin runtime values.
+  tests pin runtime values. Since 220 the check also rewrites `mapShape` and
+  `hashMapShape` to compare each key hash a shape embeds.
 - **Tests.** `tests/compiler/constant_pool.rs` pins the empty singletons at
   every level and in the REPL, the table of a nested program, reader-distinct
   entries, metadata, transients, equality and hashes on pooled values,
@@ -1672,6 +1713,22 @@ Tiers 1 and 2 are implemented (light-cljs-218), and tier 3 (light-cljs-219).
   runtime functions, and the pool's size. Generated programs check property
   5 (see "Generated programs"), and the size ratchet has a
   `constant-literals` fixture, also a steady-state workload of `--levels`.
+- **Key shape tests.** `tests/compiler/key_shapes.rs` runs shaped maps of
+  both kinds with adversarial keys (nil, keys that hash alike in full or in
+  their low bits, keys spelled alike, collection keys with metadata, a trie
+  node that becomes an array node) and values (nil, undefined, one local at
+  several keys) through printing, order, hashes, lookups, updates and
+  transients at every level in Node and QuickJS, and compares array maps with
+  maps built at their site in the program; likewise sets with duplicate
+  members. It checks what stays at its site, compares the runtime's private
+  entries and trie nodes of 600 random shaped maps and 600 sets with the
+  builders' (exposed by a hook), and pins the allocation fixture
+  `event_map_allocations_per_evaluation_are_pinned`: per-evaluation calls of
+  `keyword`, the builders, `putEntry`, `putMember`, `entryIndex` and
+  `hashNodeAssoc` over 1,000 evaluations of an event map, a 10-entry hash map
+  and a set. The generator draws shaped literals from a stream of its own
+  (`shape_read`), and the size ratchet and `--levels` have an `event-maps`
+  fixture.
 
 ### Phase 3: terse emission
 

@@ -342,6 +342,38 @@ const GARBAGE_STREAM: u64 = 0x6761_7262_6167_6521;
 /// Collection literals come from their own stream, so adding them left every
 /// other choice of the program and garbage streams as it was.
 const LITERAL_STREAM: u64 = 0x6c69_7465_7261_6c73;
+/// Key shape reads (light-cljs-220) come from a stream of their own as well,
+/// so adding them left every choice of the other three streams as it was.
+const SHAPE_STREAM: u64 = 0x7368_6170_6573_2121;
+/// Constant keys of shaped maps and first members of shaped sets: keywords,
+/// and scalars that hash alike in full (`1` and `2147483648`, `0` and
+/// `2147483647`, `"Aa"` and `"BB"`, `true` and `1231`) or in their low bits
+/// (`1` and `33`), `nil`, a symbol, a namespaced keyword, a vector and an
+/// empty map. Pairwise distinct, so every literal of them has a shape.
+const SHAPE_KEYS: [&str; 22] = [
+    ":a",
+    ":b",
+    ":c",
+    ":d",
+    ":e",
+    ":f",
+    ":g",
+    ":h",
+    "nil",
+    "1",
+    "2147483648",
+    "33",
+    "0",
+    "2147483647",
+    "\"Aa\"",
+    "\"BB\"",
+    "true",
+    "1231",
+    "'s",
+    ":n/a",
+    "[1 2]",
+    "{}",
+];
 const OBSERVE: &str = "js/lightObserve";
 /// Protocol methods of `Proto` and their parameter counts, receiver included.
 const METHODS: [(&str, usize); 3] = [("pm0", 1), ("pm1", 2), ("pm2", 1)];
@@ -759,6 +791,8 @@ struct Builder {
     rng: Generator,
     /// Draws collection literals and their reads ([`Literal`]).
     literal_rng: Generator,
+    /// Draws key shape reads ([`Builder::shape_read`]).
+    shape_rng: Generator,
     /// Literals generated so far, which later sites repeat or nest.
     literals: Vec<Literal>,
     namespaces: Vec<Namespace>,
@@ -788,6 +822,10 @@ pub(crate) fn namespace_program(seed: u64) -> NamespaceProgram {
         },
         literal_rng: Generator {
             state: seed ^ LITERAL_STREAM,
+            next_id: 0,
+        },
+        shape_rng: Generator {
+            state: seed ^ SHAPE_STREAM,
             next_id: 0,
         },
         literals: Vec::new(),
@@ -991,12 +1029,16 @@ impl Builder {
                     self.number(scope, locals, d)
                 )),
                 // The leaf this arm used to fall through to, plus a read of a
-                // collection literal from the literal stream.
-                14 => Some(format!(
-                    "(+ {} {})",
-                    self.leaf_number(scope, locals),
-                    self.literal_read(locals)
-                )),
+                // collection literal from the literal stream, and sometimes
+                // one of a shaped literal from the shape stream.
+                14 => {
+                    let leaf = self.leaf_number(scope, locals);
+                    let read = self.literal_read(locals);
+                    Some(match self.shape_read(locals) {
+                        Some(shaped) => format!("(+ {leaf} {read} {shaped})"),
+                        None => format!("(+ {leaf} {read})"),
+                    })
+                }
                 13 => {
                     let name = format!("x{}", self.rng.fresh());
                     let init = self.number(scope, locals, d);
@@ -1146,6 +1188,85 @@ impl Builder {
             }
             _ => format!("(count {text})"),
         }
+    }
+
+    /// Sometimes a number read from a literal with a key shape
+    /// (light-cljs-220): a map whose keys are distinct constants from
+    /// [`SHAPE_KEYS`], or a set whose first members are, with values that are
+    /// locals (often one local at several keys), `nil`, numbers or calls, and
+    /// another member that is a call. The read also builds the literal with its first
+    /// key or member behind `identity`, which no level shapes, throws if the
+    /// two differ in `=`, hash, count, a lookup or a removal, and returns
+    /// order-dependent hashes of the shaped one, which every level must agree
+    /// on. A set's other member may equal a constant one; both builds then
+    /// throw, and the read counts the error message instead.
+    fn shape_read(&mut self, locals: &[String]) -> Option<String> {
+        if self.shape_rng.choose(2) == 0 {
+            return None;
+        }
+        let rng = &mut self.shape_rng;
+        let mut keys = SHAPE_KEYS.to_vec();
+        for i in (1..keys.len()).rev() {
+            keys.swap(i, rng.choose(i + 1));
+        }
+        let local = |rng: &mut Generator| match locals.len() {
+            0 => format!("(identity {})", rng.choose(5)),
+            count => locals[rng.choose(count)].clone(),
+        };
+        let value = |rng: &mut Generator| match rng.choose(6) {
+            0 | 1 => local(rng),
+            2 => "nil".to_owned(),
+            3 => format!("(inc {})", local(rng)),
+            4 => format!("(identity {})", rng.choose(5)),
+            _ => rng.choose(5).to_string(),
+        };
+        let behind = |key: &str| format!("(identity {key})");
+        if rng.choose(4) == 0 {
+            let members = &keys[..1 + rng.choose(10)];
+            // Never a constant or `(identity ...)` form, which could repeat a
+            // member's form, but often equal to a constant member at run time.
+            let other = match rng.choose(6) {
+                0 => local(rng),
+                1 => format!("(inc {})", local(rng)),
+                2 => "(keyword \"a\")".to_owned(),
+                3 => "(get {} 0)".to_owned(),
+                4 => "(str \"A\" \"a\")".to_owned(),
+                _ => format!("(- {} 0)", ["0", "1", "33", "1231"][rng.choose(4)]),
+            };
+            let set = |first: String| format!("#{{{first} {} {other}}}", members[1..].join(" "));
+            let (shaped, built) = (set(members[0].to_owned()), set(behind(members[0])));
+            return Some(format!(
+                "(let [s (try {shaped} (catch :default e (.-message e))) \
+                 t (try {built} (catch :default e (.-message e)))] \
+                 (cond (string? s) (if (string? t) (count s) (throw (js/Error. \"shaped set differs\"))) \
+                 (and (= s t) (= (hash s) (hash t)) (= (count s) (count t)) (contains? s {})) \
+                 (+ (count s) (mod (hash (vec s)) 97)) \
+                 :else (throw (js/Error. \"shaped set differs\"))))",
+                members[0]
+            ));
+        }
+        let entries: Vec<(&str, String)> = keys[..1 + rng.choose(12)]
+            .iter()
+            .map(|key| (*key, value(rng)))
+            .collect();
+        let map = |first: String| {
+            let rest = entries[1..]
+                .iter()
+                .map(|(key, value)| format!("{key} {value}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{{{first} {} {rest}}}", entries[0].1)
+        };
+        let (first, last) = (entries[0].0, entries[entries.len() - 1].0);
+        let (shaped, built) = (map(first.to_owned()), map(behind(first)));
+        Some(format!(
+            "(let [m {shaped} b {built}] \
+             (if (and (= m b) (= (hash m) (hash b)) (= (count m) (count b)) \
+             (= (get m {last} :none) (get b {last} :none)) (= (dissoc m {last}) (dissoc b {last})) \
+             (= (persistent! (dissoc! (transient m) {first})) (persistent! (dissoc! (transient b) {first})))) \
+             (+ (count m) (mod (hash (vec (keys m))) 97) (mod (hash (vec (vals m))) 97)) \
+             (throw (js/Error. \"shaped map differs\"))))"
+        ))
     }
 
     fn call(&mut self, scope: Scope, locals: &[String], depth: usize) -> Option<String> {

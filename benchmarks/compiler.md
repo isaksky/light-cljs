@@ -673,7 +673,9 @@ cargo bench --locked --bench compiler -- --levels --output benchmarks/results/le
 `--upstream research/clojurescript` adds the upstream column. It needs Java and
 the Clojure CLI, and adds about a minute. `--samples N` (default 15, at least 9)
 and `--warmups N` (default 2) set the rounds. With the defaults the run takes
-about three minutes. It writes `samples.csv` (every sample, with the one-minute
+about three minutes. `--only a,b,...` (light-cljs-220) measures only the named
+fixtures and steady-state workloads, for a pellet whose change reaches a few of
+them. It writes `samples.csv` (every sample, with the one-minute
 load average of its round) and `summary.md` (every table below, with environment
 and load), and it refuses a directory that already holds a run. The application
 phases of the default mode (`--application-only`) now also run at all three
@@ -1711,3 +1713,104 @@ protocol implementations every `seq`, `first`, `count`, `get`, `=` and
 to make before reaching its own branch. `record-protocol`, whose records keep
 `installMethods` and so the lookup, does not change, and neither do levels
 below `advanced`, which embed the whole runtime.
+
+## Key shapes — October 13, 2026
+
+light-cljs-220 implements tier 4 of "Constant collection literals" in the
+[design](../docs/advanced-optimization.md). At `--optimize advanced` a map
+literal whose keys are distinct constants and whose values are not is built
+from a pooled key shape, `const k3 = rt$mapShape([k0, k1, k2], [<key
+hashes>]);`, and its site passes only the values,
+`rt$mapFromShape(k3, [k4, l0, l1])`. An evaluation makes the frozen entries
+and the map and nothing else: no keyword lookup, no duplicate-key comparison,
+no hash closure per entry. Past 8 entries `rt$hashMapShape` builds the hash
+trie once and `rt$hashMapFromShape` copies it. Set literals whose first
+members (in reader order) are distinct constants add the others to a shape
+of those. The new ratchet fixture and `--levels` workload `event-maps` builds
+event maps:
+
+```clojure
+(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target "submit"})
+(fn [n] (loop [i 0 total 0]
+          (if (< i n)
+            (let [e (event i)] (recur (inc i) (+ total (:x e) (:y e) (count e))))
+            total)))
+```
+
+**Allocations.** The fixture in `tests/compiler/key_shapes.rs` counts runtime
+calls over 1,000 evaluations of that event map, a 10-entry hash map and
+`#{nil i}`: below `Advanced` 16,000 `keyword`, 2,000 `mapFromArray`, 16,000
+`putEntry`, 7,000 `entryIndex` and 16,000 `hashNodeAssoc` calls; at
+`Advanced` 15 `keyword` and 16 `hashNodeAssoc` calls in all, from the table,
+no `mapFromArray`, and 1,001 `putEntry` for the set's other member and its
+shape. The 218 allocation fixture's map with a dynamic value goes from 1,001
+`mapFromArray` calls to 1 (the pooled constant) and 1,000 `mapFromShape`
+calls; its table grows from 13 entries and 583 bytes to 14 and 695.
+
+**Sizes**, bytes of `--compile --optimize advanced --text`; "before" is
+master `9e80996` (after light-cljs-227). The constructors join the shared
+runtime, which grows by 2,082 bytes at `none` and `prepare` for every
+program (`mapShape`, `shapeEntries`, `mapFromShape`, `hashMapShape`, the
+trie copy, `hashMapFromShape`, `setShape`, `setFromShape` and their
+exports), so every ceiling below `Advanced` rises by 2,000 or 3,000. At
+`Advanced` a program that builds a shaped array map embeds `mapShape`,
+`shapeEntries` and `mapFromShape` (about 600 bytes with their bindings) and
+pays about 70 bytes per shape for its keys and hashes; its sites shrink by
+the keys they no longer pass. Since light-cljs-227 keeps only the builders a
+program reaches, a program whose map literals are all shaped no longer
+embeds `mapFromArray`, `putEntry` and the key search behind them:
+`event-maps` loses 14 KB. Programs without shaped literals do not change.
+
+| Fixture | Advanced before | Advanced after | Ceiling before | Ceiling after |
+| --- | ---: | ---: | ---: | ---: |
+| keyword-lookups | 98,936 | 99,650 | 99,000 | 100,000 |
+| constant-literals | 105,190 | 105,940 | 106,000 | 106,000 |
+| constant-keys | 106,963 | 107,665 | 107,000 | 108,000 |
+| event-maps | 100,606 | 86,592 | — | 87,000 |
+
+`keyword-lookups`, `constant-literals` and `constant-keys` also build
+constant maps, which `mapFromArray` builds into the pool, so they keep it
+and pay for the shape constructors on top.
+
+**Steady state and startup.** `--levels --samples 9 --warmups 1 --only
+event-maps,constant-literals,keyword-lookups,constant-keys,vector-printed`
+(the new `--only` option, so that a run takes ten minutes instead of
+forty-five) on the exported master tree `ce1fd58` with the new fixture,
+workload and option, then on this change, one directly after the other; the
+one-minute load average had a median of 4.31 and 4.19. Every table is in
+[before](results/key-shapes-2026-10-13/before/summary.md) and
+[after](results/key-shapes-2026-10-13/after/summary.md), next to their
+`samples.csv`; their sizes predate light-cljs-212 and 227, onto which this
+change was then rebased, and which do not change how a map is built.
+`event-maps` runs n = 5,000, so a sample's 20 timed calls build 100,000
+event maps. Median ms per call:
+
+| Workload | n | Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| event-maps | 5,000 | none | 26.96 | 26.73 | 159.31 | 158.60 |
+| event-maps | 5,000 | advanced | 26.33 | 14.77 | 144.50 | 97.66 |
+| keyword-lookups | 2,000 | advanced | 18.93 | 14.11 | 107.11 | 99.61 |
+| constant-literals | 2,000 | advanced | 42.61 | 36.10 | 256.34 | 238.45 |
+| constant-keys | 200 | advanced | 11.17 | 11.10 | 70.88 | 70.48 |
+
+At `Advanced` the event-map workload takes 44% less time in Node and 32% less
+in QuickJS, and the workloads whose loops build small maps with dynamic
+values (`keyword-lookups`, `constant-literals`' row) 15-25% less in Node and
+7% less in QuickJS. `constant-keys` builds its maps once, outside the timed
+calls, and does not change; nor does any workload below `Advanced`. In a
+Node micro-benchmark (200,000 evaluations of a 10-entry map literal with
+two dynamic values) the hash-map shape takes 495 ms instead of 1,470 ms, as
+it copies one or two trie nodes instead of inserting ten keys. Parse plus
+first execution, median ms:
+
+| Fixture | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: |
+| event-maps, none | 8.50 | 8.47 | 23.49 | 23.38 |
+| event-maps, advanced | 4.38 | 4.12 | 7.49 | 7.46 |
+| constant-literals, advanced | 4.80 | 4.81 | 8.48 | 8.43 |
+| keyword-lookups, advanced | 3.56 | 3.60 | 6.96 | 6.86 |
+| vector-printed, none | 7.29 | 7.27 | 22.56 | 22.66 |
+
+Startup does not change beyond noise: building a shape at load (and a
+hash-map shape's trie) costs about what the first evaluation saves, and the
+shared runtime's extra bytes are not resolved at `none`.

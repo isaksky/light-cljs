@@ -96,7 +96,7 @@ fn counted(js: &str, names: &[&str]) -> String {
 }
 
 /// The value and the call counts of `names` of a run of `js`.
-fn calls(js: &str, names: &[&str]) -> (String, String) {
+pub(crate) fn calls(js: &str, names: &[&str]) -> (String, String) {
     let output = execute(&counted(js, names));
     let (value, counts) = output.trim_end().rsplit_once('\n').unwrap();
     (value.to_owned(), counts.to_owned())
@@ -434,7 +434,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     // Below `Advanced` each iteration builds every literal (keywords are
     // interned but still looked up per site); at `Advanced` the constant
     // parts are built once, and only the map with a dynamic value is built
-    // per iteration.
+    // per iteration, on its key shape (light-cljs-220).
     let source = r#"
       (defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty [] :meta {:kind :row :dims [1 2]}})
       (defn total [n]
@@ -446,15 +446,16 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     let names = [
         "vectorFromArray",
         "mapFromArray",
+        "mapFromShape",
         "setFromArray",
         "keyword",
         "makeVector",
     ];
     let program = program(source);
     let expected = [
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":1,"mapFromArray":1001,"setFromArray":1,"keyword":10,"makeVector":2}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":1,"mapFromArray":1,"mapFromShape":1000,"setFromArray":1,"keyword":10,"makeVector":2}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(
@@ -469,27 +470,29 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         [
             "0 = rt$keyword(null, \"id\");",
             "1 = rt$keyword(null, \"tags\");",
-            "2 = rt$keyword(null, \"b\");",
-            "3 = rt$keyword(null, \"a\");",
-            "4 = rt$hashed(rt$setFromArray([k2, k3]), 551401264);",
-            "5 = rt$keyword(null, \"pos\");",
-            "6 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
-            "7 = rt$keyword(null, \"empty\");",
-            "8 = rt$keyword(null, \"meta\");",
-            "9 = rt$keyword(null, \"kind\");",
-            "10 = rt$keyword(null, \"row\");",
-            "11 = rt$keyword(null, \"dims\");",
-            "12 = rt$hashed(rt$mapFromArray([k9, k10, k11, k6]), 1014014460);",
+            "2 = rt$keyword(null, \"pos\");",
+            "3 = rt$keyword(null, \"empty\");",
+            "4 = rt$keyword(null, \"meta\");",
+            "5 = rt$mapShape([k0, k1, k2, k3, k4], \
+             [-1388402092, 1771418977, -864607220, 767870958, 1499536964]);",
+            "6 = rt$keyword(null, \"b\");",
+            "7 = rt$keyword(null, \"a\");",
+            "8 = rt$hashed(rt$setFromArray([k6, k7]), 551401264);",
+            "9 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
+            "10 = rt$keyword(null, \"kind\");",
+            "11 = rt$keyword(null, \"row\");",
+            "12 = rt$keyword(null, \"dims\");",
+            "13 = rt$hashed(rt$mapFromArray([k10, k11, k12, k9]), 1014014460);",
         ]
     );
     let table = pool(&program, OptimizationLevel::Advanced);
     assert_eq!(
         table,
         ConstantPool {
-            entries: 13,
+            entries: 14,
             composites: 3,
             lazy: 0,
-            bytes: 583
+            bytes: 695
         }
     );
     assert_eq!(
@@ -501,7 +504,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         .to_string()
         .lines()
         .nth(1),
-        Some("constant pool: 13 entries (3 composite, 0 lazy), 583 bytes")
+        Some("constant pool: 14 entries (3 composite, 0 lazy), 695 bytes")
     );
     assert_eq!(table.bytes, table_bytes(&advanced));
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {

@@ -189,7 +189,15 @@ of 1,024 or more nodes is built on its first read instead,
 local, global or call inside, a set literal whose members are not all
 scalars, keywords or symbols, `#js`, regexes and `#inst` are built where they
 are evaluated, as at every other level (see "Constant collection literals"
-in [advanced-optimization.md](advanced-optimization.md)). At every level,
+in [advanced-optimization.md](advanced-optimization.md)). A map literal whose
+keys are distinct constants is built there from a key shape in the table,
+`const k3 = rt$mapShape([k0, k1, k2], [1174270348, 2099068185, -1757859776]);`,
+and its site passes only the values, `rt$mapFromShape(k3, [k4, l0, l1])`, so
+no evaluation looks up, compares or hashes its keys; past 8 entries the shape
+also holds the hash trie. A set literal whose first members in reader order
+are distinct scalars, keywords or symbols adds its other members to a shape
+of those, with the same duplicate check. The maps and sets are the ones the
+builders make, down to their entries and trie nodes. At every level,
 empty `[]`, `{}`, `#{}` and `()` literals are the runtime's `EMPTY`
 singletons, as upstream, so `(identical? [] [])` is true.
 

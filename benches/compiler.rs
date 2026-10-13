@@ -267,6 +267,7 @@ fn level_benchmarks(
             "--samples" => config.samples = value("samples")?.parse()?,
             "--warmups" => config.warmups = value("warm-up rounds")?.parse()?,
             "--upstream" => config.upstream = Some(value("checkout")?.into()),
+            "--only" => config.only = value("names")?.split(',').map(str::to_owned).collect(),
             _ => return Err(format!("unknown --levels argument: {arg}").into()),
         }
     }
@@ -279,8 +280,17 @@ fn level_benchmarks(
         return Err("--levels requires --output DIR".into());
     }
     config.command = command;
+    if let Some(name) = config.only.iter().find(|name| {
+        !levels::is_workload(name)
+            && !ratchet_fixtures::FIXTURES
+                .iter()
+                .any(|fixture| fixture.name == name.as_str())
+    }) {
+        return Err(format!("--only names no fixture or workload {name}").into());
+    }
     let fixtures: Vec<_> = ratchet_fixtures::FIXTURES
         .iter()
+        .filter(|fixture| config.selects(fixture.name))
         .map(|fixture| levels::Startup {
             name: fixture.name,
             source: fixture.source,

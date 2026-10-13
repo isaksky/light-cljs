@@ -1713,6 +1713,44 @@
     return mapFromArray(pairs, "hash-map");
   }
 
+  //@unit mapShape
+  // Map literal key shapes (light-cljs-220): distinct constant keys, hashed.
+  function mapShape(keys, hashes) { return Object.freeze({keys, hashes}); }
+  //@unit shapeEntries
+  // The entries mapFromArray makes of a shape's keys and `values`, without
+  // key lookups.
+  function shapeEntries({keys, hashes}, values) {
+    const entries = [];
+    for (let i = 0; i < keys.length; i++) entries.push(Object.freeze({key: keys[i], value: values[i], hash: hashes[i]}));
+    return entries;
+  }
+  //@unit mapFromShape requires: makeMap, PersistentArrayMapValue, shapeEntries
+  function mapFromShape(shape, values) {
+    return makeMap(PersistentArrayMapValue, shapeEntries(shape, values), "array-map");
+  }
+  //@unit hashMapShape requires: hashNodeAssoc
+  // Past 8 keys, also the trie mapFromArray builds, entry indexes as leaves.
+  // Distinct keys are never equal, so `effects` changes nothing.
+  function hashMapShape(keys, hashes) {
+    let layout, edit = {};
+    keys.forEach((key, index) => {
+      if (key != null) layout = hashNodeAssoc(layout, 0, hashes[index], {key, hash: hashes[index], index}, edit, {}, false);
+    });
+    return Object.freeze({keys, hashes, layout});
+  }
+  //@unit shapeNode
+  function shapeNode(node, entries) {
+    return node.kind === "collision" ? {...node, entries: node.entries.map(entry => entries[entry.index])}
+      : {...node, slots: node.slots.map(slot => slot.node ? {node: shapeNode(slot.node, entries)} : {entry: entries[slot.entry.index]})};
+  }
+  //@unit hashMapFromShape requires: hashRoots, makeMap, PersistentHashMapValue, shapeEntries,
+  //@ shapeNode
+  function hashMapFromShape(shape, values) {
+    const entries = shapeEntries(shape, values);
+    hashRoots.set(entries, shapeNode(shape.layout, entries));
+    return makeMap(PersistentHashMapValue, entries, "hash-map");
+  }
+
   //@unit constantMapFromArray requires: PersistentArrayMapValue
   // The analyzer has checked distinct source constants. Character/string and
   // numeric reader categories can lower to equal JS values, so literal storage
@@ -1839,14 +1877,25 @@
   }
 
   //@unit literalSetFromArray requires: displayStr, makeSet, PersistentHashSetValue, putMember
-  function literalSetFromArray(items) {
-    const entries = [], edit = {};
+  function literalSetFromArray(items, entries = [], edit = {}) {
     for (const item of items) {
       const before = entries.length;
       putMember(entries, item, edit);
       if (entries.length === before) throw new Error("Duplicate key: " + displayStr(item));
     }
     return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
+  }
+  //@unit setShape requires: putMember
+  // Set literal shapes (light-cljs-220): distinct constant first members,
+  // added as literalSetFromArray adds them, and its edit token.
+  function setShape(members) {
+    const entries = [], edit = {};
+    for (const member of members) putMember(entries, member, edit);
+    return Object.freeze({entries: Object.freeze(entries), edit});
+  }
+  //@unit setFromShape requires: copyEntries, literalSetFromArray
+  function setFromShape({entries, edit}, items) {
+    return literalSetFromArray(items, copyEntries(entries), edit);
   }
 
   //@unit hashSet requires: setFromArray
@@ -7980,5 +8029,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()

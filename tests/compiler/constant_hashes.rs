@@ -102,18 +102,48 @@ const CHECK: &str = "const actual = hash(value); globalThis.lightHashed.checked+
      if (actual !== cached) globalThis.lightHashed.mismatches.push(cached + \" != \" + actual); \
      return value; ";
 
-/// Run `Advanced` output `js` with its `hashed` rewritten by [`CHECK`], in
-/// Node and in QuickJS, and return what each saw. Whatever the program does
-/// after building its constants (it may throw) is ignored.
+/// The check added to the runtime's map key shape constructors
+/// (light-cljs-220), which receive the keys and their embedded hashes: each
+/// key's runtime hash is compared with its embedded one.
+const SHAPE_CHECK: &str = "keys.forEach((key, i) => { const actual = hash(key); \
+     globalThis.lightHashed.checked++; if (actual !== hashes[i]) \
+     globalThis.lightHashed.mismatches.push(hashes[i] + \" != \" + actual + \" (a shape key)\"); }); ";
+
+/// The map key shape constructors whose embedded hashes [`SHAPE_CHECK`] checks.
+const SHAPES: [&str; 2] = [
+    "  function mapShape(keys, hashes) {",
+    "  function hashMapShape(keys, hashes) {",
+];
+
+/// The number of key hashes the map key shapes of `js` embed: the last array
+/// of each shape's declaration, which holds only integers.
+fn shape_hashes(js: &str) -> usize {
+    js.lines()
+        .filter(|line| line.contains("rt$mapShape([") || line.contains("rt$hashMapShape(["))
+        .map(|line| line[line.rfind('[').unwrap()..].split(", ").count())
+        .sum()
+}
+
+/// Run `Advanced` output `js` with its `hashed` rewritten by [`CHECK`] and its
+/// map key shape constructors by [`SHAPE_CHECK`], in Node and in QuickJS, and
+/// return what each saw. Whatever the program does after building its
+/// constants (it may throw) is ignored.
 fn checks(js: &str) -> [Checks; 2] {
-    let header = "  function hashed(value, cached) { ";
-    assert_eq!(js.matches(header).count(), 1, "the output embeds `hashed`");
     assert_eq!(
         js.matches("  function hash(value) {").count(),
         1,
         "the output embeds `hash`"
     );
-    let js = js.replacen(header, &format!("{header}{CHECK}"), 1);
+    let mut js = js.to_owned();
+    if js.contains("rt$hashed(") {
+        let header = "  function hashed(value, cached) { ";
+        assert_eq!(js.matches(header).count(), 1, "the output embeds `hashed`");
+        js = js.replacen(header, &format!("{header}{CHECK}"), 1);
+    }
+    for header in SHAPES {
+        assert!(js.matches(header).count() <= 1, "{header}");
+        js = js.replacen(header, &format!("{header} {SHAPE_CHECK}"), 1);
+    }
     let expression = format!(
         "(() => {{\n globalThis.lightHashed = {{checked: 0, mismatches: []}};\n \
          try {{ {js} }} catch (error) {{}}\n \
@@ -135,9 +165,10 @@ fn checks(js: &str) -> [Checks; 2] {
 
 /// Check every embedded hash of `Advanced` output `js` in both engines and
 /// return how many there are: each constant declared with one is built, and a
-/// mismatch names its declaration.
-fn agrees(js: &str, context: &str) -> usize {
-    let embedded = js.matches("rt$hashed(").count();
+/// mismatch names its declaration. Since light-cljs-220 the key hashes of map
+/// key shapes count too.
+pub(crate) fn agrees(js: &str, context: &str) -> usize {
+    let embedded = js.matches("rt$hashed(").count() + shape_hashes(js);
     if embedded == 0 {
         return 0;
     }
@@ -433,9 +464,7 @@ fn generated_program_constants_embed_the_runtime_hash() {
         text.push_str("\n(set! (.-lightHash js/globalThis) cljs.core/hash)\n");
         let analyzed = analyze(&program, &sources);
         let js = emit(&analyzed, OptimizationLevel::Advanced);
-        if js.contains("rt$hashed(") {
-            checked += agrees(&js, &format!("seed {seed}"));
-        }
+        checked += agrees(&js, &format!("seed {seed}"));
     }
     eprintln!("{checked} embedded hashes in generated programs");
     assert!(checked > 20, "{checked}");

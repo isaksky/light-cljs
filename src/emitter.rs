@@ -668,6 +668,17 @@ enum ConstantKey<'a> {
         constructor: Composite,
         parts: Box<[ConstantPart<'a>]>,
     },
+    /// The key shape of map literals with these distinct constant keys in
+    /// this order (light-cljs-220), `rt$mapShape([keys], [hashes])`, which
+    /// sites read as `rt$mapFromShape(k<n>, [values])`; past 8 keys
+    /// `rt$hashMapShape` and `rt$hashMapFromShape`, whose shape also holds the
+    /// hash trie. With `set`, the shape of set literals whose first members
+    /// are these, `rt$setShape([members])`, which sites read as
+    /// `rt$setFromShape(k<n>, [other members])`.
+    Shape {
+        set: bool,
+        keys: Box<[ConstantPart<'a>]>,
+    },
 }
 
 /// How a composite constant is built, which is how its sites build it below
@@ -1255,6 +1266,162 @@ impl<'a> Emitter<'a> {
                 ConstantPart::Entry(number)
             }
         }
+    }
+
+    /// At `Advanced`, build a map or set literal on its key shape, a pooled
+    /// [`ConstantKey::Shape`], and return true (light-cljs-220;
+    /// docs/advanced-optimization.md, "Constant pool extension points"):
+    ///
+    /// - a map literal whose keys are distinct constants and whose values are
+    ///   not all constants, `rt$mapFromShape(k<n>, [values])`, or past 8
+    ///   entries, where sites call `mapFromArrays`, `rt$hashMapFromShape`;
+    /// - a set literal whose first members are distinct scalar, keyword or
+    ///   symbol constants and whose other members are not all such constants,
+    ///   `rt$setFromShape(k<n>, [other members])`, which adds and checks the
+    ///   other members in order as `literalSetFromArray` does.
+    ///
+    /// Values and members are evaluated in order, once each, as before; the
+    /// keys need no lookups. Return false for any other literal, which its
+    /// site builds. Telling keys apart needs the program's core protocols
+    /// intact, as the pool's hashes do (`ConstantHashes`).
+    fn shaped(&mut self, id: ExprId) -> bool {
+        if self
+            .constants
+            .as_ref()
+            .is_none_or(|constants| constants.hashes.is_none())
+        {
+            return false;
+        }
+        let program = self.program;
+        match &program.exprs[id.0].kind {
+            ExprKind::Map(items) => self.shaped_map(items),
+            ExprKind::Set(items) => self.shaped_set(items),
+            _ => false,
+        }
+    }
+
+    /// [`Emitter::shaped`] for the items of a map literal.
+    fn shaped_map(&mut self, items: &'a [ExprId]) -> bool {
+        let mut lazy = Vec::with_capacity(items.len() / 2);
+        for &key in items.iter().step_by(2) {
+            let Some(nodes) = self.constant_nodes(key) else {
+                return false;
+            };
+            lazy.push(nodes >= LAZY_CONSTANT_NODES);
+        }
+        let keys = items
+            .iter()
+            .step_by(2)
+            .zip(&lazy)
+            .map(|(&key, &lazy)| self.constant_part(key, lazy))
+            .collect::<Box<[_]>>();
+        let hashes = self.constants.as_ref().unwrap().hashes.as_ref().unwrap();
+        let Some(key_hashes) = keys
+            .iter()
+            .map(|&key| hashes.part(key))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        if !hashes.distinct(&keys) {
+            return false;
+        }
+        // Past 8 entries the shape also holds the hash trie.
+        let hash_map = keys.len() > 8;
+        let shape = ConstantKey::Shape {
+            set: false,
+            keys: keys.clone(),
+        };
+        let number = self.constant_entry(shape, lazy.contains(&true), |emitter| {
+            emitter.rt(RuntimeName::export(if hash_map {
+                "hashMapShape"
+            } else {
+                "mapShape"
+            }));
+            emitter.output.push('(');
+            emitter.parts(&keys);
+            emitter.output.push_str(", [");
+            for (index, hash) in key_hashes.iter().enumerate() {
+                if index > 0 {
+                    emitter.output.push_str(", ");
+                }
+                write!(emitter.output, "{hash}").unwrap();
+            }
+            emitter.output.push_str("])");
+        });
+        let constructor = if hash_map {
+            "hashMapFromShape"
+        } else {
+            "mapFromShape"
+        };
+        let values = items.iter().skip(1).step_by(2).copied();
+        self.shaped_site(constructor, number, values);
+        true
+    }
+
+    /// [`Emitter::shaped`] for the members of a set literal.
+    fn shaped_set(&mut self, items: &'a [ExprId]) -> bool {
+        let program = self.program;
+        let first = items
+            .iter()
+            .take_while(|item| scalar_constant(&program.exprs[item.0].kind))
+            .count();
+        // A literal of such constants only is pooled instead.
+        if first == 0 || first == items.len() {
+            return false;
+        }
+        let members = items[..first]
+            .iter()
+            .map(|&member| self.constant_part(member, false))
+            .collect::<Box<[_]>>();
+        let hashes = self.constants.as_ref().unwrap().hashes.as_ref().unwrap();
+        if !hashes.distinct(&members) {
+            return false;
+        }
+        let shape = ConstantKey::Shape {
+            set: true,
+            keys: members.clone(),
+        };
+        let number = self.constant_entry(shape, false, |emitter| {
+            emitter.rt(RuntimeName::export("setShape"));
+            emitter.output.push('(');
+            emitter.parts(&members);
+            emitter.output.push(')');
+        });
+        self.shaped_site("setFromShape", number, items[first..].iter().copied());
+        true
+    }
+
+    /// `[part, ...]`.
+    fn parts(&mut self, parts: &[ConstantPart<'a>]) {
+        self.output.push('[');
+        for (index, &part) in parts.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            self.part(part);
+        }
+        self.output.push(']');
+    }
+
+    /// A site built on shape entry `number`: `rt$<constructor>(k<n>, [items])`.
+    fn shaped_site(
+        &mut self,
+        constructor: &'static str,
+        number: usize,
+        items: impl Iterator<Item = ExprId>,
+    ) {
+        self.rt(RuntimeName::export(constructor));
+        self.output.push('(');
+        self.constant_reference(number);
+        self.output.push_str(", [");
+        for (index, item) in items.enumerate() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            self.value(item);
+        }
+        self.output.push_str("])");
     }
 
     /// Write a constant part as an initializer or a site reads it.
@@ -3474,7 +3641,9 @@ impl<'a> Emitter<'a> {
             ExprKind::Symbol(literal) => self.named_literal(*literal, true),
             // Below `Advanced`, and for literals that are not constants, each
             // evaluation builds the value; empty literals read the runtime's
-            // singletons at every level.
+            // singletons at every level. At `Advanced` a map or set literal
+            // with distinct constant keys or first members builds on its key
+            // shape.
             kind @ (ExprKind::Vector(_)
             | ExprKind::List(_)
             | ExprKind::Map(_)
@@ -3484,6 +3653,7 @@ impl<'a> Emitter<'a> {
                 let program = self.program;
                 if let Some(empty) = EmptyCollection::of(kind) {
                     self.empty_collection(empty);
+                } else if self.shaped(id) {
                 } else {
                     let (constructor, items) = composite(program, kind).unwrap();
                     self.construct(constructor, items.len(), |emitter, index| {

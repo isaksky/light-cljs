@@ -341,6 +341,13 @@ impl<'a> ConstantHashes<'a> {
         }
     }
 
+    /// Whether the builders keep each of `keys` as a key of its own, because
+    /// the pool can tell that no two of them are `=` (light-cljs-220).
+    pub(crate) fn distinct(&self, keys: &[ConstantPart<'a>]) -> bool {
+        self.merged(keys.iter().map(|&key| (key, None)))
+            .is_some_and(|kept| kept.len() == keys.len())
+    }
+
     /// The entries a builder keeps of `items`, keys with optional values: a
     /// key equal to an earlier one replaces that entry's value. `None` when
     /// the pool cannot tell whether two keys are equal. Scalar, keyword and
@@ -730,5 +737,62 @@ mod tests {
             hashes.composite_hash(Composite::Set, &[P::Entry(0), P::Entry(0), P::String(&a)]),
             Some(unordered([keyword_a, string(&a)]))
         );
+    }
+
+    #[test]
+    fn key_shapes_need_keys_known_to_be_distinct() {
+        use ConstantPart as P;
+        let (a, b, ab) = (utf16("a"), utf16("b"), utf16("a/b"));
+        let number = |value: f64| P::Number(value.to_bits());
+        let mut hashes = ConstantHashes::default();
+        hashes.named(0, false, None, &a);
+        hashes.named(1, false, Some(&a), &b);
+        hashes.named(2, false, None, &ab);
+        hashes.named(3, true, None, &a);
+        hashes.composite(4, Composite::Vector, Box::new([number(1.0)]), Some(7));
+        hashes.composite(5, Composite::List, Box::new([number(1.0)]), Some(7));
+        hashes.composite(
+            6,
+            Composite::ArrayMap,
+            Box::new([P::Entry(0), P::Nil]),
+            Some(8),
+        );
+        // Keys that hash alike (`1` and `2147483648`, `"Aa"` and `"BB"`,
+        // `true` and `1231`) are distinct, and so are `:a`, `'a` and `"a"`.
+        assert!(hashes.distinct(&[
+            P::Nil,
+            number(1.0),
+            number(2_147_483_648.0),
+            P::String(&utf16("Aa")),
+            P::String(&utf16("BB")),
+            P::Bool(true),
+            number(1231.0),
+            P::Entry(0),
+            P::Entry(3),
+            P::String(&a),
+            P::Entry(4),
+            P::Entry(6),
+            P::Empty(EmptyCollection::Map),
+            P::Empty(EmptyCollection::Set),
+        ]));
+        // `=` keys, and keys the pool cannot tell apart, are not.
+        for keys in [
+            [number(0.0), number(-0.0)],
+            [number(f64::NAN), number(f64::NAN)],
+            [P::Entry(4), P::Entry(5)],
+            [P::Entry(1), P::Entry(2)],
+            [P::Entry(6), P::Entry(6)],
+            [
+                P::Empty(EmptyCollection::Vector),
+                P::Empty(EmptyCollection::List),
+            ],
+            [P::Entry(9), P::Nil],
+        ] {
+            assert!(
+                !hashes.distinct(&keys),
+                "{:?}",
+                keys.map(|key| hashes.part(key))
+            );
+        }
     }
 }

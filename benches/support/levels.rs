@@ -43,9 +43,9 @@ struct Steady {
 }
 
 /// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
-/// constant-literals, constant-keys and multi-arity fixtures, as workloads over
-/// `n`.
-const STEADY: [Steady; 6] = [
+/// constant-literals, constant-keys, multi-arity and event-maps fixtures, as
+/// workloads over `n`.
+const STEADY: [Steady; 7] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -112,7 +112,27 @@ const STEADY: [Steady; 6] = [
         input: 50_000,
         expected: multi_arity,
     },
+    // A sample's 20 timed calls build 100,000 event maps.
+    Steady {
+        name: "event-maps",
+        source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (let [e (event i)] (recur (inc i) (+ total (:x e) (:y e) (count e))))
+                             total)))",
+        input: 5_000,
+        expected: event_maps,
+    },
 ];
+
+fn event_maps(n: u64) -> u64 {
+    105 * n
+}
+
+/// Whether `name` is a steady-state workload, which `--only` can select.
+pub fn is_workload(name: &str) -> bool {
+    STEADY.iter().any(|workload| workload.name == name)
+}
 
 fn constant_keys(n: u64) -> u64 {
     62 * n
@@ -155,6 +175,9 @@ pub struct Config {
     pub upstream: Option<PathBuf>,
     /// The benchmark arguments, recorded in the summary.
     pub command: String,
+    /// `--only`: the startup fixtures and steady-state workloads to measure,
+    /// by name; empty measures all of them.
+    pub only: Vec<String>,
 }
 impl Config {
     pub fn new(output: PathBuf) -> Self {
@@ -167,7 +190,21 @@ impl Config {
             calls: 20,
             upstream: None,
             command: String::new(),
+            only: Vec::new(),
         }
+    }
+
+    /// Whether `--only` selects the fixture or workload `name`.
+    pub fn selects(&self, name: &str) -> bool {
+        self.only.is_empty() || self.only.iter().any(|only| only == name)
+    }
+
+    /// The steady-state workloads `--only` selects.
+    fn workloads(&self) -> Vec<&'static Steady> {
+        STEADY
+            .iter()
+            .filter(|workload| self.selects(workload.name))
+            .collect()
     }
 }
 
@@ -234,6 +271,7 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     )));
     fs::create_dir_all(&scratch.0)?;
+    let workloads = config.workloads();
     let startup = emit_all(
         &scratch.0,
         "startup",
@@ -242,7 +280,7 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
     let steady = emit_all(
         &scratch.0,
         "steady",
-        STEADY.iter().map(|s| (s.name, s.source)),
+        workloads.iter().map(|s| (s.name, s.source)),
     )?;
     let node = env::var_os("NODE").unwrap_or_else(|| "node".into());
     let first_load = load_average();
@@ -292,7 +330,7 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
                 record("quickjs", "parse+execute", index, level, total);
             }
         }
-        for (index, workload) in STEADY.iter().enumerate() {
+        for (index, workload) in workloads.iter().enumerate() {
             let input = config.input.unwrap_or(workload.input);
             let calls = Calls {
                 input,
@@ -316,7 +354,7 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
     let mut rows = String::from("engine,measure,fixture,level,round,nanoseconds,load_1m\n");
     for sample in &samples {
         let fixture = match sample.measure {
-            "call" => STEADY[sample.fixture].name,
+            "call" => workloads[sample.fixture].name,
             _ => fixtures[sample.fixture].name,
         };
         let load = loads[sample.round].map_or(String::new(), |l| format!("{l:.2}"));
@@ -821,7 +859,7 @@ fn summary(
          | Fixture | n | Level | Node | QuickJS |\n| --- | ---: | --- | ---: | ---: |\n",
         config.calls, config.warmup_calls
     );
-    for (index, workload) in STEADY.iter().enumerate() {
+    for (index, workload) in config.workloads().iter().enumerate() {
         for level in OptimizationLevel::ALL {
             let _ = writeln!(
                 out,

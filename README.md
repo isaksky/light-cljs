@@ -125,8 +125,9 @@ registers namespaces with the runtime only for programs that use reflection
 such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
 a printing `toString` on collections) only for programs that print,
 builds each distinct constant literal once, with its hash computed by the
-compiler, drops the methods and types of the program that no instance can
-use, keeps of the runtime's collection, keyword and seq types only those the
+compiler, builds map literals with constant keys from a precomputed key
+shape, drops the methods and types of the program that no instance can use,
+keeps of the runtime's collection, keyword and seq types only those the
 program can build, with the parts of each operation that handle them, and
 calls the program's own functions directly, without an arity
 dispatcher when nothing else sees them (see

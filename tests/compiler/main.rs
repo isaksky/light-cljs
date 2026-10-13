@@ -83,6 +83,7 @@ mod interop;
 mod invoke_program_scope;
 mod iterator_helpers;
 mod iterator_name;
+mod key_shapes;
 mod language_namespace;
 mod library_bodies;
 mod literal_char_string;
