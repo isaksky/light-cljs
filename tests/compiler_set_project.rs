@@ -1,7 +1,7 @@
 //! Canonical project metadata and complete SCI source in fresh/reused phases.
 use light_cljs::{
-    evaluator::{Evaluator, EvaluatorOptions},
     MacroHost,
+    evaluator::{Evaluator, EvaluatorOptions},
 };
 use std::{
     fs,

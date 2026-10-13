@@ -587,8 +587,13 @@ fn core_functions_resolve_after_locals_and_globals_and_by_explicit_qualifier() {
         })
         .collect();
     assert_eq!(resolved, [CoreFnId::Vector, CoreFnId::Get, CoreFnId::Nth]);
-    let ExprKind::Do(body) = &program.exprs[program.root.0].kind else { panic!("program body") };
-    assert!(matches!(program.exprs[body.last().unwrap().0].kind, ExprKind::Global(_)));
+    let ExprKind::Do(body) = &program.exprs[program.root.0].kind else {
+        panic!("program body")
+    };
+    assert!(matches!(
+        program.exprs[body.last().unwrap().0].kind,
+        ExprKind::Global(_)
+    ));
     for name in ["cljs.core/not-a-core-function", "other/vector"] {
         assert!(matches!(
             analyze(name, &parse(name).unwrap()).unwrap_err().kind,
@@ -787,7 +792,6 @@ fn small_map_literals_keep_source_order_and_reader_duplicates_keep_number_catego
     assert!(spans.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
-
 #[test]
 fn hash_map_reader_traversal_preserves_whole_pairs_and_original_spans() {
     // This order is independently observed in both pinned ClojureScript readers.
@@ -795,11 +799,25 @@ fn hash_map_reader_traversal_preserves_whole_pairs_and_original_spans() {
     for prefix in ["", "'", "^:marked ", "'^:marked "] {
         let source = format!("{prefix}{{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}}");
         let program = analyze(&source, &parse(&source).unwrap()).unwrap();
-        let items = program.exprs.iter().find_map(|expr| match &expr.kind {
-            ExprKind::Map(items) => Some(items), _ => None,
-        }).unwrap();
-        let spans = items.iter().map(|id| &source[program.exprs[id.0].span.clone()]).collect::<Vec<_>>();
-        assert_eq!(spans, [":e", "5", ":g", "7", ":c", "3", ":h", "8", ":b", "2", ":d", "4", ":f", "6", ":i", "9", ":a", "1"]);
+        let items = program
+            .exprs
+            .iter()
+            .find_map(|expr| match &expr.kind {
+                ExprKind::Map(items) => Some(items),
+                _ => None,
+            })
+            .unwrap();
+        let spans = items
+            .iter()
+            .map(|id| &source[program.exprs[id.0].span.clone()])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            spans,
+            [
+                ":e", "5", ":g", "7", ":c", "3", ":h", "8", ":b", "2", ":d", "4", ":f", "6", ":i",
+                "9", ":a", "1"
+            ]
+        );
     }
 }
 
@@ -854,8 +872,14 @@ fn sets_lower_owned_values_and_reject_duplicate_readable_forms_with_spans() {
     assert_eq!(items.len(), 2);
     // Both pinned readers traverse these two original forms in reverse source
     // order. Keep their original locations while lowering in reader order.
-    assert_eq!(&source[program.exprs[items[0].0].span.clone()], "(js/parseInt \"2\")");
-    assert_eq!(&source[program.exprs[items[1].0].span.clone()], "(js/parseInt \"1\")");
+    assert_eq!(
+        &source[program.exprs[items[0].0].span.clone()],
+        "(js/parseInt \"2\")"
+    );
+    assert_eq!(
+        &source[program.exprs[items[1].0].span.clone()],
+        "(js/parseInt \"1\")"
+    );
     let source = "{#{1 2} 1 #{2 1} 2}";
     assert_eq!(
         analyze(source, &parse(source).unwrap()).unwrap_err().kind,
@@ -891,9 +915,19 @@ fn reduction_core_values_have_resolved_ids_without_native_macro_initialization()
             CoreFnId::ReduceKv
         ]
     );
-    for (name, expected) in [("transduce", CoreFnId::Transduce), ("completing", CoreFnId::Completing), ("ensure-reduced", CoreFnId::EnsureReduced)] {
+    for (name, expected) in [
+        ("transduce", CoreFnId::Transduce),
+        ("completing", CoreFnId::Completing),
+        ("ensure-reduced", CoreFnId::EnsureReduced),
+    ] {
         let program = analyze(name, &parse(name).unwrap()).unwrap();
-        assert!(program.exprs.iter().any(|expr| expr.kind == ExprKind::CoreFn(expected)), "{name}");
+        assert!(
+            program
+                .exprs
+                .iter()
+                .any(|expr| expr.kind == ExprKind::CoreFn(expected)),
+            "{name}"
+        );
     }
 }
 

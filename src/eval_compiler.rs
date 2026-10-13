@@ -113,7 +113,10 @@ impl InteractiveCompiler {
     pub(crate) fn globals(&self) -> &[crate::GlobalBinding] {
         self.program.as_ref().map_or(&[], |p| p.globals.as_slice())
     }
-    pub(crate) fn read_forms(&self, input: &SourceInput) -> Result<Vec<Form>, crate::compiler_data::ReadError> {
+    pub(crate) fn read_forms(
+        &self,
+        input: &SourceInput,
+    ) -> Result<Vec<Form>, crate::compiler_data::ReadError> {
         let mut cursor = 0;
         let mut forms = Vec::new();
         while let Some(form) = self.next_form(input, &mut cursor)? {
@@ -138,12 +141,7 @@ impl InteractiveCompiler {
         loop {
             let mut parser = crate::Parser::at_offset(&input.source, *cursor).retaining_discards();
             let root = parser.read_form().map_err(|e| {
-                let mut message = format!(
-                    "{} (bytes {}..{})",
-                    e,
-                    e.span.start,
-                    e.span.end
-                );
+                let mut message = format!("{} (bytes {}..{})", e, e.span.start, e.span.end);
                 if let Some(open) = &e.related {
                     let (line, column) = source.line_column(open.start).unwrap();
                     message.push_str(&format!("; opened at {}:{line}:{column}", source.name()));
@@ -179,9 +177,11 @@ impl InteractiveCompiler {
                         nodes: parser.nodes().to_vec(),
                         roots: roots.clone(),
                     };
-                    if let Err(e) =
-                        crate::compiler_reader::select_cljs(&input.source, &mut syntax, &mut discards)
-                    {
+                    if let Err(e) = crate::compiler_reader::select_cljs(
+                        &input.source,
+                        &mut syntax,
+                        &mut discards,
+                    ) {
                         // An inactive top-level conditional under a prefix may
                         // require the next syntactic root. Do not cross a closed
                         // collection boundary or eagerly read later source forms.
@@ -383,8 +383,13 @@ impl InteractiveCompiler {
                 &self.requires,
                 (1, 1),
             )?;
-            let env = self.host.reader_environment(env, &self.namespace, &self.resolution.refers,
-                &self.resolution.excludes, self.globals())?;
+            let env = self.host.reader_environment(
+                env,
+                &self.namespace,
+                &self.resolution.refers,
+                &self.resolution.excludes,
+                self.globals(),
+            )?;
             let next = if self.host.has_javascript_macro(&self.namespace, &target) {
                 Some(self.host.expand_source_javascript(
                     &self.namespace,
@@ -566,10 +571,7 @@ impl InteractiveCompiler {
                 data: None,
             })
     }
-    fn directive_inner(
-        &mut self,
-        form: &Form,
-    ) -> Result<Option<NamespaceDirective>, String> {
+    fn directive_inner(&mut self, form: &Form) -> Result<Option<NamespaceDirective>, String> {
         use crate::source_provider::{LoadRequest, Reload};
         fn text(form: &Form) -> Option<String> {
             match form.data().kind() {

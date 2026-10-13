@@ -1441,7 +1441,16 @@ impl CoreFnId {
     fn accepts_direct_arity(self, arity: usize) -> bool {
         match self {
             Self::SystemTime | Self::AllNs | Self::Flush | Self::EnableConsolePrint => arity == 0,
-            Self::FindNs | Self::NsName | Self::TheNs | Self::AddTap | Self::RemoveTap | Self::TapGreater | Self::LoadFile | Self::SetPrintFn | Self::SetPrintErrFn | Self::StringPrint => arity == 1,
+            Self::FindNs
+            | Self::NsName
+            | Self::TheNs
+            | Self::AddTap
+            | Self::RemoveTap
+            | Self::TapGreater
+            | Self::LoadFile
+            | Self::SetPrintFn
+            | Self::SetPrintErrFn
+            | Self::StringPrint => arity == 1,
             Self::CreateNs => matches!(arity, 1 | 2),
             Self::PrimSeq => matches!(arity, 1 | 2),
             Self::NamespaceClass | Self::CompilerMacroVar => arity == 2,
@@ -2280,7 +2289,10 @@ pub enum ExprKind {
         quoted: bool,
     },
     /// One executable metadata value, cached independently in a demanded session.
-    DefinitionTest { value: ExprId, unit: usize },
+    DefinitionTest {
+        value: ExprId,
+        unit: usize,
+    },
     WithMeta {
         value: ExprId,
         metadata: ExprId,
@@ -2633,28 +2645,43 @@ impl ReaderDatum {
         use crate::reader_literals::{collection_hash, named_hash, number_hash, string_hash};
         Some(match self {
             Self::Nil => 0,
-            Self::Bool(value) => if *value { 1231 } else { 1237 },
+            Self::Bool(value) => {
+                if *value {
+                    1231
+                } else {
+                    1237
+                }
+            }
             Self::Number(category, spelling) => number_hash(*category, spelling)?,
             Self::NonreflexiveNumber(_) => 0x7ff80000,
             Self::Character(value) => u32::from(*value),
             Self::String(units) => string_hash(units),
-            Self::Named(keyword, namespace, name) => named_hash(*keyword, namespace.as_deref(), name),
+            Self::Named(keyword, namespace, name) => {
+                named_hash(*keyword, namespace.as_deref(), name)
+            }
             Self::Sequential(items) => {
                 let mut hash = 1u32;
-                for item in items { hash = hash.wrapping_mul(31).wrapping_add(item.reader_hash()?); }
+                for item in items {
+                    hash = hash.wrapping_mul(31).wrapping_add(item.reader_hash()?);
+                }
                 collection_hash(hash, items.len())
             }
             Self::Map(items) => {
                 let mut hash = 0u32;
                 for (key, value) in items {
-                    let entry = 31u32.wrapping_add(key.reader_hash()?).wrapping_mul(31).wrapping_add(value.reader_hash()?);
+                    let entry = 31u32
+                        .wrapping_add(key.reader_hash()?)
+                        .wrapping_mul(31)
+                        .wrapping_add(value.reader_hash()?);
                     hash = hash.wrapping_add(collection_hash(entry, 2));
                 }
                 collection_hash(hash, items.len())
             }
             Self::Set(items) => {
                 let mut hash = 0u32;
-                for item in items { hash = hash.wrapping_add(item.reader_hash()?); }
+                for item in items {
+                    hash = hash.wrapping_add(item.reader_hash()?);
+                }
                 collection_hash(hash, items.len())
             }
             Self::ReaderLiteral(0, uuid) => {
@@ -2777,7 +2804,9 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
     let mut nodes = parser.into_nodes();
     // Namespace preparation may have replaced top-level require forms with nil.
     // Retaining discarded forms must preserve those prepared operations.
-    let prepared_nil_spans = syntax.nodes.iter()
+    let prepared_nil_spans = syntax
+        .nodes
+        .iter()
         .filter(|node| matches!(node.kind, NodeKind::Nil))
         .map(|node| node.span.clone())
         .collect::<std::collections::HashSet<_>>();
@@ -2880,7 +2909,11 @@ pub fn analyze_with_macro_warnings(
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
     analyze_input(
-        source, syntax, macro_host, options, warnings,
+        source,
+        syntax,
+        macro_host,
+        options,
+        warnings,
         AnalysisInputState::default(),
     )
 }
@@ -2969,7 +3002,11 @@ fn analyze_input(
     state: AnalysisInputState<'_>,
 ) -> Result<Program, AnalysisError> {
     let AnalysisInputState {
-        owned_form, definition_view, snapshot, engine, previous,
+        owned_form,
+        definition_view,
+        snapshot,
+        engine,
+        previous,
     } = state;
     if definition_view.is_none() && previous.is_none() {
         macro_host.begin_compilation();
@@ -2983,13 +3020,17 @@ fn analyze_input(
         compiler_syntax(source, syntax)
     };
     let mut roots = syntax.roots.clone();
-    let NamespaceAnalysisView { namespace, aliases, requires, resolution } =
-        definition_view.unwrap_or(NamespaceAnalysisView {
-            namespace: "cljs.user",
-            aliases: &[],
-            requires: &[],
-            resolution: NamespaceResolution::default(),
-        });
+    let NamespaceAnalysisView {
+        namespace,
+        aliases,
+        requires,
+        resolution,
+    } = definition_view.unwrap_or(NamespaceAnalysisView {
+        namespace: "cljs.user",
+        aliases: &[],
+        requires: &[],
+        resolution: NamespaceResolution::default(),
+    });
     let mut analyzer = Analyzer {
         source,
         syntax,
@@ -3026,30 +3067,60 @@ fn analyze_input(
     };
     if let Some(previous) = previous {
         analyzer.program = previous.clone();
-        analyzer.globals = previous.globals.iter().enumerate().map(|(i,g)| ((g.namespace.clone(),g.name.clone()),GlobalId(i))).collect();
+        analyzer.globals = previous
+            .globals
+            .iter()
+            .enumerate()
+            .map(|(i, g)| ((g.namespace.clone(), g.name.clone()), GlobalId(i)))
+            .collect();
     }
     if let Some(snapshot) = snapshot {
         analyzer.program = snapshot.resolution_program.clone();
-        analyzer.globals = analyzer.program.globals.iter().enumerate().map(|(i,g)| ((g.namespace.clone(),g.name.clone()),GlobalId(i))).collect();
+        analyzer.globals = analyzer
+            .program
+            .globals
+            .iter()
+            .enumerate()
+            .map(|(i, g)| ((g.namespace.clone(), g.name.clone()), GlobalId(i)))
+            .collect();
         analyzer.source_index = snapshot.source_index;
         analyzer.definition_name = snapshot.definition_name.clone();
     }
-    if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) { analyzer.program.namespaces.push(namespace.into()); }
-    analyzer.program.reader_contexts.insert(namespace.into(), RuntimeReaderNamespace {aliases: aliases.to_vec(), refers: analyzer.resolution.refers.clone(), excludes: analyzer.resolution.excludes.clone(), macros: Vec::new()});
+    if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) {
+        analyzer.program.namespaces.push(namespace.into());
+    }
+    analyzer.program.reader_contexts.insert(
+        namespace.into(),
+        RuntimeReaderNamespace {
+            aliases: aliases.to_vec(),
+            refers: analyzer.resolution.refers.clone(),
+            excludes: analyzer.resolution.excludes.clone(),
+            macros: Vec::new(),
+        },
+    );
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
     }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
     if let Some(unit) = snapshot.and_then(|s| s.definition_test_unit) {
-        let session = analyzer.macro_host.session_handle().expect("compilation session");
-        let (program, warnings) = session.analyze(unit, engine).map_err(|message| AnalysisError {
-            span: analyzer.program.exprs[analyzer.program.root.0].span.clone(),
-            kind: AnalysisErrorKind::MacroExpansion(message),
-        })?;
+        let session = analyzer
+            .macro_host
+            .session_handle()
+            .expect("compilation session");
+        let (program, warnings) =
+            session
+                .analyze(unit, engine)
+                .map_err(|message| AnalysisError {
+                    span: analyzer.program.exprs[analyzer.program.root.0].span.clone(),
+                    kind: AnalysisErrorKind::MacroExpansion(message),
+                })?;
         let value = crate::program_fragment::append(&mut analyzer.program, &program);
         analyzer.warnings.extend(warnings);
-        let test = analyzer.push(ExprKind::DefinitionTest { value, unit },
-            analyzer.program.exprs[value.0].span.clone(), ExprContext::Value);
+        let test = analyzer.push(
+            ExprKind::DefinitionTest { value, unit },
+            analyzer.program.exprs[value.0].span.clone(),
+            ExprContext::Value,
+        );
         let span = analyzer.program.exprs[analyzer.program.root.0].span.clone();
         let local = LocalId(analyzer.program.locals.len());
         analyzer.program.locals.push(LocalBinding {
@@ -3058,20 +3129,48 @@ fn analyze_input(
             source_index: analyzer.source_index,
         });
         let value = analyzer.push(ExprKind::Local(local), span.clone(), ExprContext::Value);
-        let target = analyzer.push(ExprKind::Property {
-            receiver: value, property: "cljs$lang$test".into(),
-        }, span.clone(), ExprContext::Value);
-        let assignment = analyzer.push(ExprKind::SetGlobal { target, value: test }, span.clone(), ExprContext::Discard);
-        let body = analyzer.push(ExprKind::Do(vec![assignment, value]), span.clone(), ExprContext::Return);
-        analyzer.program.root = analyzer.push(ExprKind::Let {
-            bindings: vec![(local, analyzer.program.root)], body,
-        }, span, ExprContext::Return);
+        let target = analyzer.push(
+            ExprKind::Property {
+                receiver: value,
+                property: "cljs$lang$test".into(),
+            },
+            span.clone(),
+            ExprContext::Value,
+        );
+        let assignment = analyzer.push(
+            ExprKind::SetGlobal {
+                target,
+                value: test,
+            },
+            span.clone(),
+            ExprContext::Discard,
+        );
+        let body = analyzer.push(
+            ExprKind::Do(vec![assignment, value]),
+            span.clone(),
+            ExprContext::Return,
+        );
+        analyzer.program.root = analyzer.push(
+            ExprKind::Let {
+                bindings: vec![(local, analyzer.program.root)],
+                body,
+            },
+            span,
+            ExprContext::Return,
+        );
     }
-    analyzer.program.reader_contexts.get_mut(namespace).unwrap().macros = analyzer.macro_host.source_macro_names(namespace);
+    analyzer
+        .program
+        .reader_contexts
+        .get_mut(namespace)
+        .unwrap()
+        .macros = analyzer.macro_host.source_macro_names(namespace);
     analyzer.read_discards_before(source.len())?;
     analyzer.drain_deferred()?;
     analyzer.collect_expression_warnings();
-    if snapshot.is_none() && let Some(session) = analyzer.macro_host.session_handle() {
+    if snapshot.is_none()
+        && let Some(session) = analyzer.macro_host.session_handle()
+    {
         analyzer.program.compilation_uses = session.compilation_uses();
     }
     Ok(analyzer.program)
@@ -3208,16 +3307,36 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
         analyzer
             .read_discards_before(input.source.len())
             .map_err(|e| (source_index, e))?;
-        analyzer.program.reader_contexts.insert(input.name.into(), RuntimeReaderNamespace {aliases: input.aliases.to_vec(), refers: analyzer.resolution.refers.clone(), excludes: analyzer.resolution.excludes.clone(), macros: analyzer.macro_host.source_macro_names(input.name)});
-        analyzer.program.namespace_entries.insert(root, input.name.into());
+        analyzer.program.reader_contexts.insert(
+            input.name.into(),
+            RuntimeReaderNamespace {
+                aliases: input.aliases.to_vec(),
+                refers: analyzer.resolution.refers.clone(),
+                excludes: analyzer.resolution.excludes.clone(),
+                macros: analyzer.macro_host.source_macro_names(input.name),
+            },
+        );
+        analyzer
+            .program
+            .namespace_entries
+            .insert(root, input.name.into());
         roots.push(root);
         analyzer.drain_deferred().map_err(|e| (source_index, e))?;
         analyzer.collect_expression_warnings();
-        if !analyzer.program.namespaces.iter().any(|ns| ns == input.name) { analyzer.program.namespaces.push(input.name.into()); }
+        if !analyzer
+            .program
+            .namespaces
+            .iter()
+            .any(|ns| ns == input.name)
+        {
+            analyzer.program.namespaces.push(input.name.into());
+        }
         program = analyzer.program;
         globals = analyzer.globals;
     }
-    program.compilation_uses = macro_host.session_handle().map_or_else(Vec::new, |s| s.compilation_uses());
+    program.compilation_uses = macro_host
+        .session_handle()
+        .map_or_else(Vec::new, |s| s.compilation_uses());
     program.root = ExprId(program.exprs.len());
     program.exprs.push(Expr {
         kind: ExprKind::Do(roots),
@@ -3685,7 +3804,10 @@ impl Analyzer<'_> {
 
     fn form(&mut self, id: NodeId, context: ExprContext) -> Result<ExprId, AnalysisError> {
         if let Some(engine) = self.engine {
-            engine.control().poll().map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+            engine
+                .control()
+                .poll()
+                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
         }
         if self.macro_depth > 0 && self.analysis_depth >= 128 {
             return Err(self.error(
@@ -3705,8 +3827,21 @@ impl Analyzer<'_> {
                 let name = self.spelling(*id);
                 matches!(
                     name,
-                    "do" | "def" | "defonce" | "declare" | "cljs.core/def" | "cljs.core/defonce" | "cljs.core/declare" | "defmacro" | "cljs.core/defmacro" | "clojure.core/defmacro"
-                ) || matches!(name.rsplit('/').next(), Some("defprotocol" | "deftype" | "defrecord" | "extend-type" | "extend-protocol")) || (self.lookup(name).is_none()
+                    "do" | "def"
+                        | "defonce"
+                        | "declare"
+                        | "cljs.core/def"
+                        | "cljs.core/defonce"
+                        | "cljs.core/declare"
+                        | "defmacro"
+                        | "cljs.core/defmacro"
+                        | "clojure.core/defmacro"
+                ) || matches!(
+                    name.rsplit('/').next(),
+                    Some(
+                        "defprotocol" | "deftype" | "defrecord" | "extend-type" | "extend-protocol"
+                    )
+                ) || (self.lookup(name).is_none()
                     && (self.macro_host.has_javascript_macro(self.namespace, name)
                         || self
                             .macro_host
@@ -3879,20 +4014,30 @@ impl Analyzer<'_> {
             } => {
                 self.check_map_keys(children)?;
                 let direct = children.len() <= 16
-                    && self.source_constant_collision(children.iter().step_by(2).copied(), false)?;
+                    && self
+                        .source_constant_collision(children.iter().step_by(2).copied(), false)?;
                 let ordered = self.source_map_order(id, children)?;
                 // Hash map lowering analyzes all keys before values as well:
                 // demanded expansion effects follow the same two groups.
                 let items = if ordered.len() > 16 {
-                    let keys = ordered.iter().step_by(2)
+                    let keys = ordered
+                        .iter()
+                        .step_by(2)
                         .map(|&child| self.non_tail_form(child, ExprContext::Value))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let values = ordered.iter().skip(1).step_by(2)
+                    let values = ordered
+                        .iter()
+                        .skip(1)
+                        .step_by(2)
                         .map(|&child| self.non_tail_form(child, ExprContext::Value))
                         .collect::<Result<Vec<_>, _>>()?;
-                    keys.into_iter().zip(values).flat_map(|(key, value)| [key, value]).collect()
+                    keys.into_iter()
+                        .zip(values)
+                        .flat_map(|(key, value)| [key, value])
+                        .collect()
                 } else {
-                    ordered.iter()
+                    ordered
+                        .iter()
                         .map(|&child| self.non_tail_form(child, ExprContext::Value))
                         .collect::<Result<_, _>>()?
                 };
@@ -4041,7 +4186,8 @@ impl Analyzer<'_> {
                     || self.resolution.refers.iter().any(|(name, _, _)| {
                         name == &operator_name && imported_intrinsic.is_none()
                     }));
-            if !shadowed && self.lookup(&operator_name).is_none()
+            if !shadowed
+                && self.lookup(&operator_name).is_none()
                 && let Some(value) =
                     self.intrinsic_form(id, operator, args, context, intrinsic, &operator_name)?
             {
@@ -4321,23 +4467,27 @@ impl Analyzer<'_> {
         // even when character/string or numeric categories lower to equal JS
         // values. Saved function values and apply keep runtime deduplication.
         let positional_constructor = match self.program.exprs[callee.0].kind {
-            ExprKind::CoreFn(CoreFnId::ArrayMap) if args.len().is_multiple_of(2) => {
-                self.source_constant_collision(args.iter().step_by(2).copied(), false)?
-                    .then_some(true)
-            }
-            ExprKind::CoreFn(CoreFnId::HashSet) if args.len() <= 8 => {
-                self.source_constant_collision(args.iter().copied(), false)?
-                    .then_some(false)
-            }
+            ExprKind::CoreFn(CoreFnId::ArrayMap) if args.len().is_multiple_of(2) => self
+                .source_constant_collision(args.iter().step_by(2).copied(), false)?
+                .then_some(true),
+            ExprKind::CoreFn(CoreFnId::HashSet) if args.len() <= 8 => self
+                .source_constant_collision(args.iter().copied(), false)?
+                .then_some(false),
             _ => None,
         };
         if let Some(map) = positional_constructor {
-            let items = args.iter()
+            let items = args
+                .iter()
                 .map(|&arg| self.non_tail_form(arg, ExprContext::Value))
                 .collect::<Result<_, _>>()?;
             return Ok(self.push(
-                if map { ExprKind::LiteralMap(items) } else { ExprKind::LiteralSet(items) },
-                self.syntax.nodes[id.0].span.clone(), context,
+                if map {
+                    ExprKind::LiteralMap(items)
+                } else {
+                    ExprKind::LiteralSet(items)
+                },
+                self.syntax.nodes[id.0].span.clone(),
+                context,
             ));
         }
         if matches!(self.syntax.nodes[operator.0].kind, NodeKind::Symbol)
@@ -4389,7 +4539,10 @@ impl Analyzer<'_> {
                     ExprContext::Value,
                 );
                 let call = self.push(
-                    ExprKind::Call { callee, args: values },
+                    ExprKind::Call {
+                        callee,
+                        args: values,
+                    },
                     self.syntax.nodes[id.0].span.clone(),
                     context,
                 );
@@ -4890,42 +5043,72 @@ impl Analyzer<'_> {
         // Macro-computed maps already carry their runtime traversal; only
         // source reader maps acquire JVM hash traversal before lowering.
         if children.len() <= 16
-            || self.generated.get(id.0).and_then(Option::as_ref)
-                .is_some_and(|form| !matches!(form.node().origin, Origin::Source | Origin::Metadata))
+            || self
+                .generated
+                .get(id.0)
+                .and_then(Option::as_ref)
+                .is_some_and(|form| {
+                    !matches!(form.node().origin, Origin::Source | Origin::Metadata)
+                })
         {
             return Ok(children.to_vec());
         }
         let mut entries = Vec::with_capacity(children.len() / 2);
         for pair in children.as_chunks::<2>().0 {
-            let Some(data) = self.reader_datum(pair[0])? else { return Ok(children.to_vec()); };
-            let Some(hash) = data.reader_hash() else { return Ok(children.to_vec()); };
+            let Some(data) = self.reader_datum(pair[0])? else {
+                return Ok(children.to_vec());
+            };
+            let Some(hash) = data.reader_hash() else {
+                return Ok(children.to_vec());
+            };
             entries.push((*pair, matches!(data, ReaderDatum::Nil), hash));
         }
         // Nil precedes the trie. Successive five-bit partitions determine its
         // traversal, while equal-hash collision nodes keep insertion order.
         // Carry whole pairs to retain each key's matching value and source span;
         // hash-map lowering evaluates the ordered keys before ordered values.
-        entries.sort_by_key(|(_, nil, hash)| (!*nil, std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31)));
+        entries.sort_by_key(|(_, nil, hash)| {
+            (
+                !*nil,
+                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
+            )
+        });
         Ok(entries.into_iter().flat_map(|(pair, _, _)| pair).collect())
     }
 
-    fn source_set_order(&mut self, id: NodeId, children: &[NodeId]) -> Result<Vec<NodeId>, AnalysisError> {
+    fn source_set_order(
+        &mut self,
+        id: NodeId,
+        children: &[NodeId],
+    ) -> Result<Vec<NodeId>, AnalysisError> {
         // A macro-computed set already has its own runtime traversal. Only
         // source reader sets acquire JVM reader traversal before lowering.
-        if self.generated.get(id.0).and_then(Option::as_ref)
+        if self
+            .generated
+            .get(id.0)
+            .and_then(Option::as_ref)
             .is_some_and(|form| !matches!(form.node().origin, Origin::Source))
         {
             return Ok(children.to_vec());
         }
         let mut entries = Vec::with_capacity(children.len());
         for &child in children {
-            let Some(data) = self.reader_datum(child)? else { return Ok(children.to_vec()); };
-            let Some(hash) = data.reader_hash() else { return Ok(children.to_vec()); };
+            let Some(data) = self.reader_datum(child)? else {
+                return Ok(children.to_vec());
+            };
+            let Some(hash) = data.reader_hash() else {
+                return Ok(children.to_vec());
+            };
             entries.push((child, matches!(data, ReaderDatum::Nil), hash));
         }
         // The nil entry precedes the hash trie. Trie nodes walk consecutive
         // five-bit partitions; equal-hash collision nodes retain insertion order.
-        entries.sort_by_key(|(_, nil, hash)| (!*nil, std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31)));
+        entries.sort_by_key(|(_, nil, hash)| {
+            (
+                !*nil,
+                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
+            )
+        });
         Ok(entries.into_iter().map(|(child, _, _)| child).collect())
     }
 
@@ -4941,30 +5124,48 @@ impl Analyzer<'_> {
             // Only source constants qualify. Quoted data is constant recursively;
             // executable collection forms and symbols retain runtime construction.
             let quoted = match self.syntax.nodes[id.0].kind {
-                NodeKind::Prefix { kind: PrefixKind::Quote, form } if !quoted_collection => {
+                NodeKind::Prefix {
+                    kind: PrefixKind::Quote,
+                    form,
+                } if !quoted_collection => {
                     id = form;
                     true
                 }
-                NodeKind::Collection { kind: CollectionKind::List, ref children }
-                    if !quoted_collection && children.len() == 2
-                        && matches!(self.syntax.nodes[children[0].0].kind, NodeKind::Symbol)
-                        && self.spelling(children[0]) == "quote" => {
+                NodeKind::Collection {
+                    kind: CollectionKind::List,
+                    ref children,
+                } if !quoted_collection
+                    && children.len() == 2
+                    && matches!(self.syntax.nodes[children[0].0].kind, NodeKind::Symbol)
+                    && self.spelling(children[0]) == "quote" =>
+                {
                     id = children[1];
                     true
                 }
                 _ => quoted_collection,
             };
-            let compiler_integer = self.generated.get(id.0).and_then(Option::as_ref)
-                .is_some_and(|form| matches!(
-                    form.data().inspect(),
-                    DatumView::CompilerLiteral(CompilerLiteralKind::BigInteger)
-                ));
-            if !quoted && !compiler_integer && !matches!(
-                self.syntax.nodes[id.0].kind,
-                NodeKind::Nil | NodeKind::Boolean(_) | NodeKind::Number(_)
-                    | NodeKind::SymbolicValue(_) | NodeKind::Character(_)
-                    | NodeKind::String(_) | NodeKind::Keyword { .. }
-            )
+            let compiler_integer = self
+                .generated
+                .get(id.0)
+                .and_then(Option::as_ref)
+                .is_some_and(|form| {
+                    matches!(
+                        form.data().inspect(),
+                        DatumView::CompilerLiteral(CompilerLiteralKind::BigInteger)
+                    )
+                });
+            if !quoted
+                && !compiler_integer
+                && !matches!(
+                    self.syntax.nodes[id.0].kind,
+                    NodeKind::Nil
+                        | NodeKind::Boolean(_)
+                        | NodeKind::Number(_)
+                        | NodeKind::SymbolicValue(_)
+                        | NodeKind::Character(_)
+                        | NodeKind::String(_)
+                        | NodeKind::Keyword { .. }
+                )
             {
                 return Ok(false);
             }
@@ -5320,9 +5521,21 @@ impl Analyzer<'_> {
                 ) {
                     self.check_set_members(children, true)?;
                 }
-                let ordered = if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Map, .. }) {
+                let ordered = if matches!(
+                    node.kind,
+                    NodeKind::Collection {
+                        kind: CollectionKind::Map,
+                        ..
+                    }
+                ) {
                     self.source_map_order(id, children)?
-                } else if matches!(node.kind, NodeKind::Collection { kind: CollectionKind::Set, .. }) {
+                } else if matches!(
+                    node.kind,
+                    NodeKind::Collection {
+                        kind: CollectionKind::Set,
+                        ..
+                    }
+                ) {
                     self.source_set_order(id, children)?
                 } else {
                     children.clone()
@@ -5347,7 +5560,8 @@ impl Analyzer<'_> {
                     }
                 ) {
                     if children.len() <= 16
-                        && self.source_constant_collision(children.iter().step_by(2).copied(), true)?
+                        && self
+                            .source_constant_collision(children.iter().step_by(2).copied(), true)?
                     {
                         ExprKind::LiteralMap(items)
                     } else {
@@ -5446,7 +5660,10 @@ impl Analyzer<'_> {
             definition_name: self.definition_name.clone(),
             definition_test: None,
             definition_test_unit: None,
-            extension_frontier: self.macro_host.session_handle().map_or(0, |s| s.extension_frontier()),
+            extension_frontier: self
+                .macro_host
+                .session_handle()
+                .map_or(0, |s| s.extension_frontier()),
         }
     }
 
@@ -5467,7 +5684,10 @@ impl Analyzer<'_> {
             // not roll back a later source declaration's live metadata/flags.
             self.program.globals[..globals.len()].clone_from_slice(&globals);
             for (index, global) in self.program.globals.iter().enumerate() {
-                self.globals.insert((global.namespace.clone(), global.name.clone()), GlobalId(index));
+                self.globals.insert(
+                    (global.namespace.clone(), global.name.clone()),
+                    GlobalId(index),
+                );
             }
             self.program.exprs[placeholder.0].kind = ExprKind::Do(vec![root]);
             self.warnings.extend(warnings);
@@ -5621,8 +5841,10 @@ impl Analyzer<'_> {
         // Deferred initializers are analyzed as independent source units. Their
         // fresh depth cannot make a declaration in this value position legal.
         if let Some(init) = initializer
-            && let NodeKind::Collection { kind: CollectionKind::List, children } =
-                &self.syntax.nodes[init.0].kind
+            && let NodeKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } = &self.syntax.nodes[init.0].kind
             && let Some(&operator) = children.first()
             && matches!(self.spelling(operator), "ns" | "ns*")
         {
@@ -5639,29 +5861,47 @@ impl Analyzer<'_> {
         let top_level = self.top_level;
         self.top_level = false;
         let init = if top_level && self.macro_host.defers_source_units() {
-            let form = initializer.map(|node| self.compiler_read_form(node)).transpose()
+            let form = initializer
+                .map(|node| self.compiler_read_form(node))
+                .transpose()
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
-            let session = self.macro_host.session_handle().expect("compilation session");
-            let unit = session.register(
-                format!("{}/{}", self.namespace, self.program.globals[global.0].name),
-                form, {
-                    let mut snapshot = self.definition_snapshot();
-                    snapshot.definition_test = test_form.clone();
-                    snapshot
-                }, self.macro_host.macro_analysis_frame(), once,
-                {
-                    let form = self.compiler_read_form(args[0]).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
-                    let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
-                    format!("{}:{}:{}", loc.source, loc.line, loc.column)
-                },
-            ).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+            let session = self
+                .macro_host
+                .session_handle()
+                .expect("compilation session");
+            let unit = session
+                .register(
+                    format!("{}/{}", self.namespace, self.program.globals[global.0].name),
+                    form,
+                    {
+                        let mut snapshot = self.definition_snapshot();
+                        snapshot.definition_test = test_form.clone();
+                        snapshot
+                    },
+                    self.macro_host.macro_analysis_frame(),
+                    once,
+                    {
+                        let form = self.compiler_read_form(args[0]).map_err(|e| {
+                            self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string()))
+                        })?;
+                        let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+                        format!("{}:{}:{}", loc.source, loc.line, loc.column)
+                    },
+                )
+                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
             Ok(unit.map(|unit| {
-                let placeholder = self.push(ExprKind::Nil, self.syntax.nodes[initializer.unwrap().0].span.clone(), ExprContext::Value);
+                let placeholder = self.push(
+                    ExprKind::Nil,
+                    self.syntax.nodes[initializer.unwrap().0].span.clone(),
+                    ExprContext::Value,
+                );
                 self.deferred.push((placeholder, unit));
                 placeholder
             }))
         } else {
-            initializer.map(|init| self.non_tail_form(init, ExprContext::Value)).transpose()
+            initializer
+                .map(|init| self.non_tail_form(init, ExprContext::Value))
+                .transpose()
         };
         self.top_level = top_level;
         self.definition_name = previous_definition;
@@ -5674,7 +5914,8 @@ impl Analyzer<'_> {
         }
         // Deferred units attach the callback while initializing the root in
         // either phase. Attaching it again here would evaluate metadata twice.
-        let test = test_form.filter(|_| !(top_level && self.macro_host.defers_source_units()))
+        let test = test_form
+            .filter(|_| !(top_level && self.macro_host.defers_source_units()))
             .map(|f| {
                 let node = self.import_form(&f)?;
                 self.non_tail_form(node, ExprContext::Value)
@@ -5793,17 +6034,47 @@ impl Analyzer<'_> {
             ));
         }
         let name = self.spelling(args[0]).to_owned();
-        if let Some((namespace, local, metadata)) = self.macro_host.reflected_macro(self.namespace, &name) {
+        if let Some((namespace, local, metadata)) =
+            self.macro_host.reflected_macro(self.namespace, &name)
+        {
             let symbol = self.data_source(&format!("{namespace}/{local}"))?;
             let c = crate::compiler_data::DataBuilder;
-            let metadata = metadata.unwrap_or_else(|| c.map(&[(c.keyword(crate::compiler_data::Name::new(None, "macro")), c.boolean(true))]).unwrap());
-            let quoted = c.list(&[c.symbol(crate::compiler_data::Name::new(None, "quote")), metadata]).unwrap();
-            let original = self.compiler_read_form(id).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
-            let expanded = Form::from_expansion(quoted, &original, crate::compiler_data::Name::new(None, "var"));
+            let metadata = metadata.unwrap_or_else(|| {
+                c.map(&[(
+                    c.keyword(crate::compiler_data::Name::new(None, "macro")),
+                    c.boolean(true),
+                )])
+                .unwrap()
+            });
+            let quoted = c
+                .list(&[
+                    c.symbol(crate::compiler_data::Name::new(None, "quote")),
+                    metadata,
+                ])
+                .unwrap();
+            let original = self
+                .compiler_read_form(id)
+                .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
+            let expanded = Form::from_expansion(
+                quoted,
+                &original,
+                crate::compiler_data::Name::new(None, "var"),
+            );
             let node = self.import_form(&expanded)?;
             let metadata = self.non_tail_form(node, ExprContext::Value)?;
-            let callee = self.push(ExprKind::CoreFn(CoreFnId::CompilerMacroVar), self.syntax.nodes[id.0].span.clone(), ExprContext::Value);
-            return Ok(self.push(ExprKind::Call { callee, args: vec![symbol, metadata] }, self.syntax.nodes[id.0].span.clone(), context));
+            let callee = self.push(
+                ExprKind::CoreFn(CoreFnId::CompilerMacroVar),
+                self.syntax.nodes[id.0].span.clone(),
+                ExprContext::Value,
+            );
+            return Ok(self.push(
+                ExprKind::Call {
+                    callee,
+                    args: vec![symbol, metadata],
+                },
+                self.syntax.nodes[id.0].span.clone(),
+                context,
+            ));
         }
         let locals = std::mem::take(&mut self.env);
         let previous_var = self.resolving_var;
@@ -5929,7 +6200,13 @@ impl Analyzer<'_> {
             ));
         };
         let name = self.spelling(symbol).to_owned();
-        if self.macro_host.reflected_macro(self.namespace, &name).is_some() { return self.var_form(id, &[symbol], context); }
+        if self
+            .macro_host
+            .reflected_macro(self.namespace, &name)
+            .is_some()
+        {
+            return self.var_form(id, &[symbol], context);
+        }
         let resolved = self.existence_target(symbol)?;
         let value = if let ExprKind::Local(local) = resolved {
             let (line, column) = crate::LineIndex::new(self.source)
@@ -6146,11 +6423,7 @@ impl Analyzer<'_> {
             // a computed boolean neither changes compiler state nor mutates the
             // runtime Var. Diagnostics and macro expansion still run on the RHS.
             self.non_tail_form(args[1], ExprContext::Value)?;
-            return Ok(self.push(
-                ExprKind::Nil,
-                self.syntax.nodes[id.0].span.clone(),
-                context,
-            ));
+            return Ok(self.push(ExprKind::Nil, self.syntax.nodes[id.0].span.clone(), context));
         }
         let target = if args.len() == 3 {
             let target = self.dot_form(id, &args[..2], ExprContext::Value)?;
@@ -6362,8 +6635,12 @@ impl Analyzer<'_> {
         context: ExprContext,
         definition: bool,
     ) -> Result<ExprId, AnalysisError> {
-        let NodeKind::Collection { children, .. } = self.syntax.nodes[expanded.0].kind.clone() else {
-            return Err(self.error(expanded, AnalysisErrorKind::InvalidForm("invalid multimethod expansion")));
+        let NodeKind::Collection { children, .. } = self.syntax.nodes[expanded.0].kind.clone()
+        else {
+            return Err(self.error(
+                expanded,
+                AnalysisErrorKind::InvalidForm("invalid multimethod expansion"),
+            ));
         };
         let target = children[1];
         if definition {
@@ -6380,43 +6657,79 @@ impl Analyzer<'_> {
             } else {
                 self.push(ExprKind::Nil, span.clone(), ExprContext::Value)
             };
-            let callee = self.push(ExprKind::CoreFn(CoreFnId::AddMethod), span.clone(), ExprContext::Value);
-            Ok(self.push(ExprKind::Call { callee, args: vec![target] }, span, context))
+            let callee = self.push(
+                ExprKind::CoreFn(CoreFnId::AddMethod),
+                span.clone(),
+                ExprContext::Value,
+            );
+            Ok(self.push(
+                ExprKind::Call {
+                    callee,
+                    args: vec![target],
+                },
+                span,
+                context,
+            ))
         }
     }
 
     // A value-position owner (let/if/try/etc.) installs nested definitions only
     // when demanded. Keep its already analyzed IR: replaying the source would
     // expand macros twice and lose the original expansion frontier.
-    fn catalog_definition_group(&mut self, id: NodeId, expr: ExprId) -> Result<ExprId, AnalysisError> {
-        let Some(session) = self.macro_host.session_handle() else { return Ok(expr); };
+    fn catalog_definition_group(
+        &mut self,
+        id: NodeId,
+        expr: ExprId,
+    ) -> Result<ExprId, AnalysisError> {
+        let Some(session) = self.macro_host.session_handle() else {
+            return Ok(expr);
+        };
         let mut products = Vec::new();
         let mut pending = vec![expr];
         while let Some(value) = pending.pop() {
             match &self.program.exprs[value.0].kind {
                 // Function/method bodies install definitions on invocation, not
                 // when the enclosing function or object is constructed.
-                ExprKind::Fn { .. } | ExprKind::Reify { .. } | ExprKind::DefType { .. } | ExprKind::ExtendType { .. } => continue,
-                ExprKind::Def { global, init: Some(_), .. }
-                    if !products.contains(global) => { products.push(*global); }
+                ExprKind::Fn { .. }
+                | ExprKind::Reify { .. }
+                | ExprKind::DefType { .. }
+                | ExprKind::ExtendType { .. } => continue,
+                ExprKind::Def {
+                    global,
+                    init: Some(_),
+                    ..
+                } if !products.contains(global) => {
+                    products.push(*global);
+                }
                 _ => (),
             }
             pending.extend(crate::program_fragment::children(&self.program, value));
         }
-        if products.is_empty() { return Ok(expr); }
-        let form = self.compiler_read_form(id)
+        if products.is_empty() {
+            return Ok(expr);
+        }
+        let form = self
+            .compiler_read_form(id)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
-        session.register_bundle(
-            &self.program,
-            crate::compilation_session::BundleRegistration {
-                products: &products, extensions: &[], once: false, form,
-                snapshot: self.definition_snapshot(),
-                host: self.macro_host.macro_analysis_frame(),
-                location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
-                analyzed: Some(crate::program_fragment::expression_snapshot(&self.program, Some(expr))),
-            },
-        ).map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        session
+            .register_bundle(
+                &self.program,
+                crate::compilation_session::BundleRegistration {
+                    products: &products,
+                    extensions: &[],
+                    once: false,
+                    form,
+                    snapshot: self.definition_snapshot(),
+                    host: self.macro_host.macro_analysis_frame(),
+                    location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
+                    analyzed: Some(crate::program_fragment::expression_snapshot(
+                        &self.program,
+                        Some(expr),
+                    )),
+                },
+            )
+            .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         Ok(expr)
     }
 
@@ -6435,17 +6748,23 @@ impl Analyzer<'_> {
         let mut work = vec![expr];
         while let Some(value) = work.pop() {
             match &self.program.exprs[value.0].kind {
-                ExprKind::Def { global, once: true, .. } => {
+                ExprKind::Def {
+                    global, once: true, ..
+                } => {
                     products.push(*global);
                     once = true;
                 }
                 ExprKind::Call { callee, args }
-                    if matches!(self.program.exprs[callee.0].kind, ExprKind::CoreFn(CoreFnId::AddMethod)) =>
+                    if matches!(
+                        self.program.exprs[callee.0].kind,
+                        ExprKind::CoreFn(CoreFnId::AddMethod)
+                    ) =>
                 {
                     let target = args.first().and_then(|target| {
                         if let ExprKind::Global(global) = self.program.exprs[target.0].kind {
                             let binding = &self.program.globals[global.0];
-                            session.multifn_target(&format!("{}/{}", binding.namespace, binding.name))
+                            session
+                                .multifn_target(&format!("{}/{}", binding.namespace, binding.name))
                         } else {
                             None
                         }
@@ -6455,7 +6774,10 @@ impl Analyzer<'_> {
                     extensions.push((
                         target.map_or_else(|| "multifn:*".into(), |name| format!("multifn:{name}")),
                         None,
-                        format!("method@{}:{}", self.source_index, self.syntax.nodes[id.0].span.start),
+                        format!(
+                            "method@{}:{}",
+                            self.source_index, self.syntax.nodes[id.0].span.start
+                        ),
                     ));
                 }
                 ExprKind::DefProtocol {
@@ -6536,7 +6858,10 @@ impl Analyzer<'_> {
             .register_bundle(
                 &self.program,
                 crate::compilation_session::BundleRegistration {
-                    products: &products, extensions: &extensions, once, form,
+                    products: &products,
+                    extensions: &extensions,
+                    once,
+                    form,
                     snapshot: self.definition_snapshot(),
                     host: self.macro_host.macro_analysis_frame(),
                     location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
@@ -7070,7 +7395,6 @@ impl Analyzer<'_> {
                         | "ITransientVector"
                         | "ITransientSet"
                         | "IMultiFn"
-
                         | "IReversible"
                         | "IComparable"
                         | "IIterable"
@@ -7199,7 +7523,14 @@ impl Analyzer<'_> {
                 }
                 Err(protocol) => {
                     let arities = match (protocol.as_str(), spelling.as_str()) {
-                        ("IMultiFn", "-reset" | "-methods" | "-prefers" | "-default-dispatch-val" | "-dispatch-fn") => vec![1],
+                        (
+                            "IMultiFn",
+                            "-reset"
+                            | "-methods"
+                            | "-prefers"
+                            | "-default-dispatch-val"
+                            | "-dispatch-fn",
+                        ) => vec![1],
                         ("IMultiFn", "-remove-method" | "-get-method") => vec![2],
                         ("IMultiFn", "-add-method" | "-prefer-method") => vec![3],
                         ("IEncodeJS", "-clj->js" | "-key->js") => vec![1],
@@ -7463,9 +7794,8 @@ impl Analyzer<'_> {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            let metadata = self.data_source(&format!(
-                "{{:doc {doc:?} :arglists ([{parameters}])}}"
-            ))?;
+            let metadata =
+                self.data_source(&format!("{{:doc {doc:?} :arglists ([{parameters}])}}"))?;
             let mut provenance = Vec::new();
             self.definition_provenance(id, &mut provenance)?;
             if let ExprKind::Map(entries) = &mut self.program.exprs[metadata.0].kind {
@@ -7979,7 +8309,9 @@ impl Analyzer<'_> {
                 .iter()
                 .any(|(local, _, _)| local == &name);
         let target = core_alias.as_deref().unwrap_or(&name);
-        self.macro_host.check_macro_policy(self.namespace, target, shadow_core).map_err(error)?;
+        self.macro_host
+            .check_macro_policy(self.namespace, target, shadow_core)
+            .map_err(error)?;
         if self.macro_host.has_javascript_macro(self.namespace, target) {
             if self.macro_depth >= self.macro_host.limits.expansion_depth.min(64) {
                 return Err(error(
@@ -8235,8 +8567,13 @@ impl Analyzer<'_> {
         environment: crate::compiler_data::Datum,
     ) -> Result<crate::compiler_data::Datum, String> {
         let c = crate::compiler_data::DataBuilder;
-        let environment = self.macro_host.reader_environment(environment, self.namespace,
-            &self.resolution.refers, &self.resolution.excludes, &self.program.globals)?;
+        let environment = self.macro_host.reader_environment(
+            environment,
+            self.namespace,
+            &self.resolution.refers,
+            &self.resolution.excludes,
+            &self.program.globals,
+        )?;
         c.assoc(
             &environment,
             &c.keyword(crate::compiler_data::Name::new(
@@ -8348,12 +8685,15 @@ impl Analyzer<'_> {
             .macro_host
             .reader_aliases(self.namespace, self.aliases, self.requires);
         let globals = self.reader_bindings();
-        let source = self
-            .macro_source
-            .get_or_insert_with(|| Source::new(
-                self.resolution.source_name.as_deref().unwrap_or(self.namespace),
+        let source = self.macro_source.get_or_insert_with(|| {
+            Source::new(
+                self.resolution
+                    .source_name
+                    .as_deref()
+                    .unwrap_or(self.namespace),
                 self.source,
-            ));
+            )
+        });
         let mut view = crate::compiler_reader::NamespaceView::new(self.namespace, source);
         view.aliases = aliases
             .iter()
@@ -8699,7 +9039,9 @@ impl Analyzer<'_> {
                 self.non_tail_form(form, ExprContext::Discard)?
             });
             // Warning APIs report diagnostics before any later source failure.
-            if self.options.warning_mode { self.drain_deferred()?; }
+            if self.options.warning_mode {
+                self.drain_deferred()?;
+            }
         }
         Ok(self.push(ExprKind::Do(exprs), span, context))
     }
@@ -9357,85 +9699,103 @@ impl Analyzer<'_> {
             if let Some(name) = name {
                 self.local_kinds.insert(name, ("fn", None));
             }
-            let methods = methods
-                .iter()
-                .map(|method| self.fn_method(id, method, MethodKind::Function))
-                .collect::<Result<Vec<_>, _>>()?;
-            let diagnostic_name = name
-                .map(|name| self.program.locals[name.0].name.clone())
-                .or_else(|| self.definition_name.clone())
-                .unwrap_or_default();
-            let mut fixed = std::collections::HashSet::new();
-            let mut variadic = None;
+            // A plain loop and an out-of-line overload check keep this
+            // recursive frame small enough for accepted nesting on a 2 MiB stack.
+            let mut analyzed = Vec::with_capacity(methods.len());
             for method in &methods {
-                if method.rest.is_some() {
-                    if let Some(previous) = variadic.replace(method.params.len()) {
-                        self.warn(
-                            id,
-                            "multiple-variadic-overloads",
-                            format!("{diagnostic_name}: Can't have more than 1 variadic overload"),
-                        );
-                        if previous == method.params.len() {
-                            self.warn(
-                                id,
-                                "overload-arity",
-                                format!(
-                                    "{diagnostic_name}: Can't have 2 overloads with same arity"
-                                ),
-                            );
-                        }
-                        if self.options.warning_mode {
-                            continue;
-                        }
-                        return Err(self.error(
-                            id,
-                            AnalysisErrorKind::InvalidForm(
-                                "fn* cannot have more than one variadic overload",
-                            ),
-                        ));
-                    }
-                } else if !fixed.insert(method.params.len()) {
+                analyzed.push(self.fn_method(id, method, MethodKind::Function)?);
+            }
+            self.check_fn_overloads(id, name, &analyzed)?;
+            let span = self.syntax.nodes[id.0].span.clone();
+            Ok(self.push(
+                ExprKind::Fn {
+                    name,
+                    methods: analyzed,
+                },
+                span,
+                context,
+            ))
+        })();
+        self.env.scopes.pop();
+        result
+    }
+
+    #[inline(never)]
+    fn check_fn_overloads(
+        &mut self,
+        id: NodeId,
+        name: Option<LocalId>,
+        methods: &[FnMethod],
+    ) -> Result<(), AnalysisError> {
+        let diagnostic_name = name
+            .map(|name| self.program.locals[name.0].name.clone())
+            .or_else(|| self.definition_name.clone())
+            .unwrap_or_default();
+        let mut fixed = std::collections::HashSet::new();
+        let mut variadic = None;
+        for method in methods {
+            if method.rest.is_some() {
+                if let Some(previous) = variadic.replace(method.params.len()) {
                     self.warn(
                         id,
-                        "overload-arity",
-                        format!("{diagnostic_name}: Can't have 2 overloads with same arity"),
+                        "multiple-variadic-overloads",
+                        format!("{diagnostic_name}: Can't have more than 1 variadic overload"),
                     );
+                    if previous == method.params.len() {
+                        self.warn(
+                            id,
+                            "overload-arity",
+                            format!("{diagnostic_name}: Can't have 2 overloads with same arity"),
+                        );
+                    }
                     if self.options.warning_mode {
                         continue;
                     }
                     return Err(self.error(
                         id,
                         AnalysisErrorKind::InvalidForm(
-                            "fn* cannot have two overloads with the same arity",
+                            "fn* cannot have more than one variadic overload",
                         ),
                     ));
                 }
-            }
-            if variadic.is_some_and(|max| fixed.iter().any(|&arity| arity > max)) {
-                self.warn(id, "variadic-max-arity", format!("{diagnostic_name}: Can't have fixed arity function with more params than variadic function"));
-                if !self.options.warning_mode {
-                    return Err(self.error(
-                        id,
-                        AnalysisErrorKind::InvalidForm(
-                            "fn* fixed arity cannot exceed the variadic fixed prefix",
-                        ),
-                    ));
-                }
-            }
-            if self.generated.get(id.0).and_then(Option::as_ref).is_none()
-                && variadic.is_some_and(|prefix| fixed.contains(&(prefix + 1)))
-            {
+            } else if !fixed.insert(method.params.len()) {
                 self.warn(
                     id,
                     "overload-arity",
                     format!("{diagnostic_name}: Can't have 2 overloads with same arity"),
                 );
+                if self.options.warning_mode {
+                    continue;
+                }
+                return Err(self.error(
+                    id,
+                    AnalysisErrorKind::InvalidForm(
+                        "fn* cannot have two overloads with the same arity",
+                    ),
+                ));
             }
-            let span = self.syntax.nodes[id.0].span.clone();
-            Ok(self.push(ExprKind::Fn { name, methods }, span, context))
-        })();
-        self.env.scopes.pop();
-        result
+        }
+        if variadic.is_some_and(|max| fixed.iter().any(|&arity| arity > max)) {
+            self.warn(id, "variadic-max-arity", format!("{diagnostic_name}: Can't have fixed arity function with more params than variadic function"));
+            if !self.options.warning_mode {
+                return Err(self.error(
+                    id,
+                    AnalysisErrorKind::InvalidForm(
+                        "fn* fixed arity cannot exceed the variadic fixed prefix",
+                    ),
+                ));
+            }
+        }
+        if self.generated.get(id.0).and_then(Option::as_ref).is_none()
+            && variadic.is_some_and(|prefix| fixed.contains(&(prefix + 1)))
+        {
+            self.warn(
+                id,
+                "overload-arity",
+                format!("{diagnostic_name}: Can't have 2 overloads with same arity"),
+            );
+        }
+        Ok(())
     }
 
     fn fn_method(
@@ -9690,8 +10050,13 @@ pub(crate) fn analyze_interactive_form(
 ) -> Result<Program, AnalysisError> {
     analyze_input(
         form.span().source().text(),
-        &SyntaxTree { nodes: vec![], roots: vec![] },
-        host, options, warnings,
+        &SyntaxTree {
+            nodes: vec![],
+            roots: vec![],
+        },
+        host,
+        options,
+        warnings,
         AnalysisInputState {
             owned_form: Some(form),
             definition_view: Some(definition_view),

@@ -101,7 +101,8 @@ impl CompilationSession {
                 let (program, _) = session.analyze(id as usize, Some(&active))?;
                 let unit = session.catalog.borrow().units[id as usize].clone();
                 let mut unit = unit.borrow_mut();
-                Ok(unit.emission
+                Ok(unit
+                    .emission
                     .get_or_insert_with(|| crate::emitter::emit_deferred_unit(&program))
                     .clone())
             })
@@ -137,15 +138,20 @@ impl CompilationSession {
         Ok(())
     }
     pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
-        self.catalog.borrow().units.iter().map(|unit| {
-            let unit = unit.borrow();
-            crate::analyzer::CompilationUse {
-                name: unit.name.clone(),
-                generation: unit.request.generation,
-                analyses: unit.analyses,
-                emissions: usize::from(unit.emission.is_some()),
-            }
-        }).collect()
+        self.catalog
+            .borrow()
+            .units
+            .iter()
+            .map(|unit| {
+                let unit = unit.borrow();
+                crate::analyzer::CompilationUse {
+                    name: unit.name.clone(),
+                    generation: unit.request.generation,
+                    analyses: unit.analyses,
+                    emissions: usize::from(unit.emission.is_some()),
+                }
+            })
+            .collect()
     }
     pub fn extension_frontier(&self) -> usize {
         self.catalog.borrow().bundle_count
@@ -159,7 +165,14 @@ impl CompilationSession {
         registration: BundleRegistration<'_>,
     ) -> Result<usize, String> {
         let BundleRegistration {
-            products, extensions, once, form, snapshot, host, location, analyzed,
+            products,
+            extensions,
+            once,
+            form,
+            snapshot,
+            host,
+            location,
+            analyzed,
         } = registration;
         fn quoted(s: &str) -> String {
             let mut out = String::from("\"");
@@ -276,7 +289,11 @@ impl CompilationSession {
             let test_name = format!("{name} :test#{}", self.catalog.borrow().units.len());
             snapshot.definition_test_unit = self.register(
                 test_name,
-                Some(test), snapshot.clone(), host.macro_analysis_frame(), false, location.clone(),
+                Some(test),
+                snapshot.clone(),
+                host.macro_analysis_frame(),
+                false,
+                location.clone(),
             )?;
         }
         let test = snapshot.definition_test_unit;
@@ -311,12 +328,24 @@ impl CompilationSession {
                 c.multifn_targets.remove(&name);
                 c.active.insert(name.clone(), id.is_some());
             }
-            c.registrations
-                .push(Registration::Root(name.clone(), id, test, once, location.clone()));
+            c.registrations.push(Registration::Root(
+                name.clone(),
+                id,
+                test,
+                once,
+                location.clone(),
+            ));
             (id, c.bootstrap.clone())
         };
         if let Some(bootstrap) = bootstrap {
-            Self::install(bootstrap.evaluator.as_ref(), &name, id, test, once, &location)?;
+            Self::install(
+                bootstrap.evaluator.as_ref(),
+                &name,
+                id,
+                test,
+                once,
+                &location,
+            )?;
         }
         Ok(id)
     }

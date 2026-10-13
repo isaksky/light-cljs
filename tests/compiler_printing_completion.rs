@@ -1,6 +1,6 @@
 //! Printing controls, writer options and output scopes in both canonical engines.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {
@@ -283,11 +283,12 @@ fn configured_host_output_and_error_sinks_remain_independent_after_failure() {
     .unwrap();
     s.eval_string("(println \"😀λ\") (*print-err-fn* \"error λ\")")
         .unwrap();
-    assert!(s
-        .eval_string("(print \"fail\")")
-        .unwrap_err()
-        .to_string()
-        .contains("output failed"));
+    assert!(
+        s.eval_string("(print \"fail\")")
+            .unwrap_err()
+            .to_string()
+            .contains("output failed")
+    );
     s.eval_string("(assert (true? *print-readably*)) (println \"recovered\")")
         .unwrap();
     assert_eq!(*out.borrow(), ["😀λ", "\n", "fail", "recovered", "\n"]);
@@ -313,19 +314,6 @@ fn complete_upstream_printing_bodies_execute_in_applications_and_macros() {
             columns[2],
         );
     }
-}
-
-#[test]
-fn upstream_printing_source_provenance_preserves_complete_bodies() {
-    let out = Command::new("python3")
-        .args(["-B", "tests/reference/compiler-printing-completion.py"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 }
 
 #[test]

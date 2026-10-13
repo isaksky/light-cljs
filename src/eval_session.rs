@@ -148,7 +148,11 @@ impl From<EvalError> for EvalDiagnostic {
 impl From<crate::compiler_data::ReadError> for EvalDiagnostic {
     fn from(error: crate::compiler_data::ReadError) -> Self {
         // Preserve the public reader message while adding an owned location.
-        Self { message: error.to_string(), location: Some(error.span), data: None }
+        Self {
+            message: error.to_string(),
+            location: Some(error.span),
+            data: None,
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -342,13 +346,13 @@ impl EvalSession {
                 let _ = self.engine.release(last);
                 last = result?.value;
             }
-            return Ok(EvalResult { value: last, namespace: self.namespace() });
+            return Ok(EvalResult {
+                value: last,
+                namespace: self.namespace(),
+            });
         }
         self.engine.input_action("clearError", 0)?;
-        let requests = self
-            .compiler
-            .borrow_mut()
-            .directive(form)?;
+        let requests = self.compiler.borrow_mut().directive(form)?;
         if requests.is_some() {
             self.sync_namespace()?;
         }

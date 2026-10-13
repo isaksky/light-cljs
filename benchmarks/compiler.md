@@ -380,8 +380,8 @@ python3 -B benchmarks/measure_compiler_language.py \
 
 ## Evaluator migration gate — October 10, 2026
 
-The native-disabled execution gate and its completed local evidence are
-recorded in [the migration verification](../tests/reference/evaluator-migration/verification.md).
+The native-disabled execution gate was run at this point; its verification
+notes were removed from the tree and remain in git history.
 Historical native macro/collector timings above remain historical; production
 macros and evaluation consumers execute compiler-emitted JavaScript in QuickJS.
 The native bench targets and runner scripts were physically removed under light-cljs-115.

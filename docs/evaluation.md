@@ -24,12 +24,12 @@ expose their corresponding stages. An `AnalyzedForm` can execute only in its
 originating session. `EvalResult` reports the last value ID and final namespace.
 `EvalDiagnostic` owns its message, supported finite exception data and optional source span and remains useful
 after session teardown. Runtime `eval` and macroexpand calls return to these Rust
-compiler services; there is no JavaScript language evaluator or native fallback.
+compiler services; there is no separate language interpreter.
 
 `fresh_session` reuses immutable options and creates independent roots/heaps.
 `reset` replaces the session and invalidates every previous ID. Sharing the same
 session explicitly shares application state. There is no implicit cross-heap
-clone and no native fork family. `ValueId` contains an owner generation; foreign,
+clone. `ValueId` contains an owner generation; foreign,
 released and dropped-owner IDs cannot be used in another session. `value` and
 `data` convert finite compiler data using the structured form bridge, preserving
 UTF-16 names/strings and metadata; arbitrary functions/atoms/objects remain IDs.
@@ -62,8 +62,8 @@ Sources load only through the explicit provider. `ns` and `require` use ordinary
 sources are bundled. No ambient filesystem, npm, Node, DOM or JVM is introduced.
 Compiled `data_readers` are one-argument source functions installed in the reader
 compilation service and canonical runtime reader. `default_data_reader` receives
-the tag and value for unknown tags; named and built-in readers take precedence. Source macros use `defmacro`;
-native callback macros are replaced by compiler source macros.
+the tag and value for unknown tags; named and built-in readers take precedence.
+Macros are always source `defmacro` definitions; there are no host callback macros.
 
 `load_file(path)` and language `load-file` use `EvalOptions.file_provider`, which
 receives an opaque path and requesting namespace and returns `SourceInput`.
@@ -80,9 +80,9 @@ default, with a maximum of 1024 accepted events per drain. Emitted programs can
 inject `rt.core.configureHostHooks({clock, random, tapSchedule, maxPendingTaps})`;
 the scheduler owns admission and delivery timing. Dynamic `*exec-tap-fn*` can
 also supply scheduling. Console printing requires a supplied host console;
-process arguments remain explicit `EvalOptions.arguments`. See the
-[host hook contract](../tests/reference/compiler-host-hooks.md) for callback,
-delivery, recovery and macro-heap isolation details.
+process arguments remain explicit `EvalOptions.arguments`. Clock and random options
+configure the application heap; the macro-expansion heap has its own host
+environment.
 
 `NamePolicy` checks resolved compiler names, including core references, aliases,
 Vars, quoted `resolve`, macros and explicitly exposed host bindings. Deny wins;
@@ -102,8 +102,7 @@ usable. Long host callbacks must poll `HostCall::control()` cooperatively.
 
 `compiler` bounds macro expansions, generated nodes and expansion depth.
 `max_source_bytes` and `max_output_bytes` bound input and emitted/returned print
-text. Conversion also has finite node/depth bounds. These controls do not retain
-the native interpreter's fuel/allocation unit meanings. Rust compiler allocation
+text. Conversion also has finite node/depth bounds. Rust compiler allocation
 is not measured by the JS heap limit. Input providers return a nonempty chunk,
 EOF or an owned error; canonical reader cursors handle parsing and line state.
 No input/output capability is connected implicitly.
@@ -122,44 +121,18 @@ configured Rust output callbacks receive UTF-8 text. The Rust `print` display
 API escapes isolated surrogate units while preserving valid pairs. `flush` is the upstream
 no-op stub; `newline` invokes it when newline flushing is enabled.
 
-## Native API migration map
+## Numbers
 
-The `interpreter` module and `native_form_adapter` have been removed, along with
-their native-only tests and benchmark harnesses. No feature flag restores them.
-The CLI and embedding API use compiler-backed sessions; unsupported emitted code
-reports an error without a native fallback. The table below maps retired API names
-to the current surface; the left column is not available in this checkout.
-
-| Legacy API or contract | Supported replacement or retirement |
-| --- | --- |
-| `Context::new/init`, `ContextOptions` | `EvalSession::new(EvalOptions)` |
-| `merge_opts`, mutable provider/limit/policy setters | Configure `EvalOptions` and create a fresh session; `bind` updates runtime bindings explicitly |
-| `eval_string`, `eval_source`, `eval_form`, plus variants | Corresponding session methods returning `EvalResult`/owned `EvalDiagnostic` |
-| `analyze_form`, `eval_analyzed`, `AnalyzedForm` counters | `analyze`/`evaluate`; native expression/local counters retired |
-| `invoke`, `invoke_native`, `register_native`, `native_function`, `NativeDefinition` | `invoke`, configured `HostFunction`/`HostCall` and `HostArity` |
-| Native macro callbacks | Source `defmacro`; macroexpand services use the compiler |
-| `MacroHost::context_mut`, `register_macro`, `load_namespace`/native `Reload` | Source `defmacro` and ordinary `:require`; `compile_namespace_with_macros` reloads source definitions into fresh roots on every clean compilation |
-| Native reader callback registration | `MacroHost::register_compiler_data_reader`/`register_compiler_default_data_reader`, or session data-reader options; handlers execute compiled source functions |
-| `RootedValue`, `ValueView`, scalar/collection constructors | Session `ValueId`, typed accessors and compiler `Datum`; no native heap types |
-| `fork`, shared owner families, reset/reuse stats, collector tracing APIs | `fresh_session`/`reset`; native owner/GC/reuse counters retired |
-| `SourceProvider`, filesystem roots and load state | Compiler-owned provider requests and explicit host implementation; `ns`/`require` load once per session |
-| namespace/Var lookup, intern, dynamic/metadata APIs | `namespace`, `bindings`, `lookup`, `bind`, `with_bindings`; canonical language Vars/scopes/metadata |
-| `bind_io`, native stream constructors and buffers | Configured input/output callbacks, canonical `read`/`read-line`/`with-in-str`/`with-out-str`; host owns buffers |
-| Native reader cursor compact/recover methods | Canonical reader stream operations; native cursor representation retired |
-| Native cancellation token/poll/checkpoint/charge methods | `ExecutionControl`, explicit engine/compiler/output limits; callbacks poll shared control |
-| Native integer/ratio/class descriptors and builtin-write ownership flags | JavaScript Number and canonical CLJS/JS types; exact ratios, native descriptor identity and native ownership flags retired |
-
-`(/ 1 2)` is Number `0.5`; `(+ 9007199254740992 1)` is
-`9007199254740992`. This is the deliberate numeric migration, not an exact-native
-compatibility claim. See the runnable [embedding example](../examples/embedding.rs)
-and [execution provenance](../tests/reference/eval-sessions.md).
+All arithmetic uses JavaScript Number: `(/ 1 2)` is `0.5` and
+`(+ 9007199254740992 1)` is `9007199254740992`. There are no exact ratios or
+arbitrary-precision integers. See the runnable
+[embedding example](../examples/embedding.rs) (`cargo run --example embedding`).
 
 ## Script and REPL commands
 
 `light-cljs --eval [OPTIONS] [FILE|-]`, `--eval --text SOURCE`, and
 `--repl [OPTIONS]` compile each form with Rust and execute emitted JavaScript in
-embedded QuickJS. Tokenize/parse/analyze/compile commands retain their existing
-behavior. No Node/JVM is needed by evaluation. `.clj` files receive a migration
+embedded QuickJS. No Node/JVM is needed. `.clj` files receive a migration
 error; use `.cljs` or `.cljc`, ordinary `:require` for helpers/macros, and `:cljs`
 conditionals. Stdin and text use the portable CLJS dialect with conditionals.
 
@@ -191,7 +164,7 @@ Successfully evaluated and rendered forms rotate `*1`, `*2`, `*3` (initially nil
 Errors leave them unchanged and update `*e`. Application throws retain their actual
 value and `ex-data`; read/analysis diagnostics become ExceptionInfo with phase and
 available source location. Success preserves `*e`. Definitions return their CLJS
-initializer value; native Var return/printing conventions are retired.
+initializer value.
 
 | Flag | Default | Unit/behavior |
 | --- | ---: | --- |
@@ -205,15 +178,14 @@ initializer value; native Var return/printing conventions are retired.
 | `--print-level N` | 20 | Result collection depth bound |
 
 Numbers are nonnegative integers; zero is a real bound. Startup rejects a heap
-limit below its supported minimum. Native `--fuel`, `--allocation-limit`,
-`--call-depth` and `--evaluation-depth` are rejected with explicit replacement
-controls; units are not equivalent. `--output-limit` retains its spelling but
-now measures UTF-8 bytes. Engine poll/deadline/memory failures, uncaught stack failures or cancellation
+limit below its supported minimum. The obsolete `--fuel`, `--allocation-limit`,
+`--call-depth` and `--evaluation-depth` flags are rejected with a pointer to the
+replacement control. Engine poll/deadline/memory failures, uncaught stack failures or cancellation
 terminate the command nonzero; a fresh invocation allocates a fresh session.
 Language errors remain recoverable in the REPL. Source input/host stream failures
 are fatal. Read, evaluation and result rendering are separate operations; nested
 macros/callbacks share their enclosing budget. Blocking host IO is cooperative,
-not preempted by an engine deadline. Native exact numbers, descriptors, JVM catch
-classes and native allocator/fork/GC guarantees are explicitly retired.
+not preempted by an engine deadline.
 
-See [CLI execution evidence](../tests/reference/eval-cli.md) for scope and commands.
+The CLI is tested by `tests/eval_cli.rs` (subprocess runs, Rust only) and
+`tests/eval_examples.rs`, which runs the scripts in `examples/native`.

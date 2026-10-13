@@ -21,8 +21,11 @@ fn compile(
     ));
     fs::create_dir_all(root.join("edn_stream")).unwrap();
     fs::write(root.join("edn_stream/main.cljs"), source).unwrap();
-    let result =
-        light_cljs::compile_namespace_with_macros("edn-stream.main", std::slice::from_ref(&root), host);
+    let result = light_cljs::compile_namespace_with_macros(
+        "edn-stream.main",
+        std::slice::from_ref(&root),
+        host,
+    );
     fs::remove_dir_all(root).unwrap();
     result
 }

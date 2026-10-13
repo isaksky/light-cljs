@@ -34,14 +34,23 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
 }
 
 fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
-    let raw = program.strings.iter().map(|s| String::from_utf16_lossy(s)).collect::<String>();
+    let raw = program
+        .strings
+        .iter()
+        .map(|s| String::from_utf16_lossy(s))
+        .collect::<String>();
     let mut index = 0;
     let parameter = loop {
         let candidate = format!("__lightSessionRuntime{index}");
-        if !raw.contains(&candidate) { break candidate; }
+        if !raw.contains(&candidate) {
+            break candidate;
+        }
         index += 1;
     };
-    format!("({parameter}) => {}", emit_js_mode(program, Some(&parameter), demand_roots, false, None))
+    format!(
+        "({parameter}) => {}",
+        emit_js_mode(program, Some(&parameter), demand_roots, false, None)
+    )
 }
 
 fn emit_js_mode(
@@ -73,7 +82,9 @@ fn emit_js_mode(
         .push_str("(() => {\n  const truth = (value) => value != null && value !== false;\n");
     let prelude_end = emitter.output.len();
     for global in 0..program.globals.len() {
-        if application_roots { break; }
+        if application_roots {
+            break;
+        }
         if application.is_some_and(|(globals, _)| !globals[global]) {
             continue;
         }
@@ -84,7 +95,10 @@ fn emit_js_mode(
     if emitter.needs_host {
         let host = "  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n";
         for range in &mut emitter.raw_segments {
-            if range.start >= prelude_end { range.start += host.len(); range.end += host.len(); }
+            if range.start >= prelude_end {
+                range.start += host.len();
+                range.end += host.len();
+            }
         }
         emitter.output.insert_str(prelude_end, host);
     }
@@ -153,7 +167,10 @@ fn emit_js_mode(
 
     // Raw JavaScript is an escape hatch, but its user-authored identifiers must
     // not accidentally capture compiler locals or be captured by our helpers.
-    if emitter.used.iter().any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
+    if emitter
+        .used
+        .iter()
+        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
     {
         hygienic_js(emitter.output, emitter.raw_segments)
     } else {
@@ -232,12 +249,21 @@ impl Emitter<'_> {
         } else if self.application_roots {
             self.output.push_str("globalThis.__lightApplicationRoots[");
             let global = &self.program.globals[id.0];
-            self.string_units(&format!("{}/{}", global.namespace, global.name).encode_utf16().collect::<Vec<_>>());
+            self.string_units(
+                &format!("{}/{}", global.namespace, global.name)
+                    .encode_utf16()
+                    .collect::<Vec<_>>(),
+            );
             self.output.push(']');
         } else if self.demand_roots {
-            self.output.push_str("globalThis[\"__lightCompilerRoots\"][");
+            self.output
+                .push_str("globalThis[\"__lightCompilerRoots\"][");
             let global = &self.program.globals[id.0];
-            self.string_units(&format!("{}/{}", global.namespace, global.name).encode_utf16().collect::<Vec<_>>());
+            self.string_units(
+                &format!("{}/{}", global.namespace, global.name)
+                    .encode_utf16()
+                    .collect::<Vec<_>>(),
+            );
             self.output.push(']');
         } else {
             write!(self.output, "g{}", id.0).unwrap();
@@ -263,14 +289,21 @@ impl Emitter<'_> {
     }
 
     fn compiler_binding(&self, id: ExprId) -> bool {
-        self.demand_roots && matches!(self.program.exprs[id.0].kind,
+        self.demand_roots
+            && matches!(self.program.exprs[id.0].kind,
             ExprKind::Global(g) if !self.program.globals[g.0].name.contains('.'))
     }
 
     fn binding_name(&mut self, id: ExprId) {
-        let ExprKind::Global(g) = self.program.exprs[id.0].kind else { unreachable!() };
+        let ExprKind::Global(g) = self.program.exprs[id.0].kind else {
+            unreachable!()
+        };
         let global = &self.program.globals[g.0];
-        self.string_units(&format!("{}/{}", global.namespace, global.name).encode_utf16().collect::<Vec<_>>());
+        self.string_units(
+            &format!("{}/{}", global.namespace, global.name)
+                .encode_utf16()
+                .collect::<Vec<_>>(),
+        );
     }
 
     fn assignable(&mut self, id: ExprId) {
@@ -334,7 +367,12 @@ impl Emitter<'_> {
         }
         if let Some(namespace) = self.program.namespace_entries.get(&id) {
             self.indentation();
-            writeln!(self.output, "rt.core.currentNs = rt.core.theNs(rt.symbol(null, {}));", js_string(namespace)).unwrap();
+            writeln!(
+                self.output,
+                "rt.core.currentNs = rt.core.theNs(rt.symbol(null, {}));",
+                js_string(namespace)
+            )
+            .unwrap();
         }
         match &self.program.exprs[id.0].kind {
             ExprKind::JsTemplate { segments, args } => {
@@ -376,10 +414,13 @@ impl Emitter<'_> {
                     self.indentation();
                     write!(self.output, "const saved{i} = ").unwrap();
                     if self.compiler_binding(*target) {
-                        self.output.push_str("globalThis.__lightSaveCompilerBinding(");
+                        self.output
+                            .push_str("globalThis.__lightSaveCompilerBinding(");
                         self.binding_name(*target);
                         self.output.push(')');
-                    } else { self.value(*target); }
+                    } else {
+                        self.value(*target);
+                    }
                     writeln!(self.output, "; let installed{i} = false;").unwrap();
                 }
                 for (i, (_, init)) in bindings.iter().enumerate() {
@@ -413,7 +454,8 @@ impl Emitter<'_> {
                     self.indentation();
                     write!(self.output, "if (installed{i}) ").unwrap();
                     if self.compiler_binding(*target) {
-                        self.output.push_str("globalThis.__lightRestoreCompilerBinding(");
+                        self.output
+                            .push_str("globalThis.__lightRestoreCompilerBinding(");
                         self.binding_name(*target);
                         writeln!(self.output, ", saved{i});").unwrap();
                     } else {
@@ -1437,22 +1479,26 @@ impl Emitter<'_> {
             ExprKind::DefinitionTest { value, unit } => {
                 if self.demand_roots {
                     write!(self.output, "globalThis.__lightCompilerTest({unit})").unwrap();
-                } else { self.value(*value); }
+                } else {
+                    self.value(*value);
+                }
             }
             ExprKind::WithMeta { value, metadata } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
-                self.output.push_str(if matches!(
-                    self.program.exprs[value.0].kind,
-                    ExprKind::ReaderLiteral {
-                        kind: K::JsArray | K::JsObject,
-                        quoted: true,
-                        ..
-                    }
-                ) {
-                    "rt.compilerForms.withMeta("
-                } else {
-                    "rt.core.withMeta("
-                });
+                self.output.push_str(
+                    if matches!(
+                        self.program.exprs[value.0].kind,
+                        ExprKind::ReaderLiteral {
+                            kind: K::JsArray | K::JsObject,
+                            quoted: true,
+                            ..
+                        }
+                    ) {
+                        "rt.compilerForms.withMeta("
+                    } else {
+                        "rt.core.withMeta("
+                    },
+                );
                 self.value(*value);
                 self.output.push_str(", ");
                 self.value(*metadata);
@@ -1485,13 +1531,21 @@ impl Emitter<'_> {
                     self.value(*metadata);
                 }
                 if self.demand_roots && *definition {
-                    if metadata.is_none() { self.output.push_str(", null"); }
-                    self.output.push_str(", globalThis.__lightCompilerVarMetadata(");
-                    let namespace = literal.namespace
+                    if metadata.is_none() {
+                        self.output.push_str(", null");
+                    }
+                    self.output
+                        .push_str(", globalThis.__lightCompilerVarMetadata(");
+                    let namespace = literal
+                        .namespace
                         .map(|id| String::from_utf16_lossy(&self.program.strings[id.0]))
                         .unwrap_or_default();
                     let name = String::from_utf16_lossy(&self.program.strings[literal.name.0]);
-                    self.string_units(&format!("{namespace}/{name}").encode_utf16().collect::<Vec<_>>());
+                    self.string_units(
+                        &format!("{namespace}/{name}")
+                            .encode_utf16()
+                            .collect::<Vec<_>>(),
+                    );
                     self.output.push(')');
                 }
                 self.output.push(')');
@@ -1533,13 +1587,13 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::LiteralMap(items) | ExprKind::LiteralSet(items) => {
-                self.output.push_str(if matches!(
-                    self.program.exprs[id.0].kind, ExprKind::LiteralMap(_)
-                ) {
-                    "rt.constantMapFromArray(["
-                } else {
-                    "rt.constantSetFromArray(["
-                });
+                self.output.push_str(
+                    if matches!(self.program.exprs[id.0].kind, ExprKind::LiteralMap(_)) {
+                        "rt.constantMapFromArray(["
+                    } else {
+                        "rt.constantSetFromArray(["
+                    },
+                );
                 self.arguments(items);
                 self.output.push_str("])");
             }
@@ -1592,11 +1646,13 @@ impl Emitter<'_> {
                     *value
                 };
                 if self.compiler_binding(value) {
-                    self.output.push_str(if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
-                        "globalThis.__lightHasCompilerRoot("
-                    } else {
-                        "globalThis.__lightCompilerRootExists("
-                    });
+                    self.output.push_str(
+                        if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
+                            "globalThis.__lightHasCompilerRoot("
+                        } else {
+                            "globalThis.__lightCompilerRootExists("
+                        },
+                    );
                     self.binding_name(value);
                     self.output.push(')');
                     return;
@@ -1635,9 +1691,14 @@ impl Emitter<'_> {
                 once,
             } => {
                 if self.demand_roots && !self.program.globals[global.0].name.contains('.') {
-                    self.output.push_str("globalThis.__lightDefineCompilerRoot(");
+                    self.output
+                        .push_str("globalThis.__lightDefineCompilerRoot(");
                     let binding = &self.program.globals[global.0];
-                    self.string_units(&format!("{}/{}", binding.namespace, binding.name).encode_utf16().collect::<Vec<_>>());
+                    self.string_units(
+                        &format!("{}/{}", binding.namespace, binding.name)
+                            .encode_utf16()
+                            .collect::<Vec<_>>(),
+                    );
                     self.output.push_str(", ");
                     if let Some(init) = init {
                         self.output.push_str("() => ");
@@ -1652,7 +1713,9 @@ impl Emitter<'_> {
                             self.value(*init);
                             self.output.push(')');
                         }
-                    } else { self.output.push_str("null"); }
+                    } else {
+                        self.output.push_str("null");
+                    }
                     write!(self.output, ", {once})").unwrap();
                     return;
                 }
@@ -1776,9 +1839,13 @@ impl Emitter<'_> {
             }
             ExprKind::Fn { name, methods } => {
                 let macro_function = self.program.macro_functions.contains(&id);
-                if macro_function { self.output.push_str("rt.core.macroReaderFunction("); }
+                if macro_function {
+                    self.output.push_str("rt.core.macroReaderFunction(");
+                }
                 self.function(*name, methods, macro_function);
-                if macro_function { self.output.push(')'); }
+                if macro_function {
+                    self.output.push(')');
+                }
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
@@ -1890,12 +1957,23 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
 
 /// Interactive application roots live in the application heap, never the macro heap.
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    let body = emit_js_mode(program, Some("__lightInteractiveRuntime"), false, true, None);
-    format!("(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return {body}; }}")
+    let body = emit_js_mode(
+        program,
+        Some("__lightInteractiveRuntime"),
+        false,
+        true,
+        None,
+    );
+    format!(
+        "(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return {body}; }}"
+    )
 }
 
 fn js_string(text: &str) -> String {
     let mut out = String::from("\"");
-    for unit in text.encode_utf16() { write!(out, "\\u{unit:04x}").unwrap(); }
-    out.push('"'); out
+    for unit in text.encode_utf16() {
+        write!(out, "\\u{unit:04x}").unwrap();
+    }
+    out.push('"');
+    out
 }

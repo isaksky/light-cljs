@@ -38,7 +38,7 @@ are not an absolute transitive heap-byte limit. Supplied data and Vars can
 reference larger graphs. Active finite fuel/allocation limits, reduced analysis
 depth, execution polling and cleanup bypass optional analysis reuse. Definitions
 and **all** macros, including builtins, remain uncached. The
-[API contract](../../../../docs/interpreter.md#bounded-analysis-reuse) explains
+API contract in the removed `docs/interpreter.md` (git history) explains
 invalidation, counters, manual clearing and scratch retention.
 
 ## Repeated saved-binary measurements

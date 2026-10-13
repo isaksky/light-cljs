@@ -1,1 +1,0 @@
-[(bit-set 0 31) (bit-test 2147483648 31) (bit-shift-left 1 32) (bit-shift-left 1 -1) (bit-shift-right 2147483648 1) (unsigned-bit-shift-right -1 1) (bit-shift-right-zero-fill -1 0) (bit-count -1) (bit-count 4294967296) (bit-not ##Inf) (bit-or "3" nil)]

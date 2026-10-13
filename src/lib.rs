@@ -4,7 +4,7 @@
 //! Tokens retain raw byte spans, including quotes, escapes, and reader prefixes.
 //! Whitespace and commas are skipped; comments are emitted. Atom classification,
 //! escape decoding/validation, delimiter matching, and reader-macro semantics
-//! belong to the parser or subsequent reader expansion. See README.md for the
+//! belong to the parser or subsequent reader expansion. See docs/lexer.md for the
 //! token contract and docs/parser.md for the syntax/semantics boundary.
 
 use std::{iter::FusedIterator, ops::Range};
@@ -12,19 +12,21 @@ use std::{iter::FusedIterator, ops::Range};
 pub mod analyzer;
 pub mod application;
 mod char_classes;
+mod compilation_session;
 pub mod compiler;
 mod compiler_binding_macros;
-mod compilation_session;
-mod program_fragment;
 pub mod compiler_data;
 mod compiler_destructuring;
 mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
 pub mod emitter;
-pub mod evaluator;
 pub mod eval_session;
-pub use eval_session::{EvalSession, EvalOptions, EvalResult, EvalDiagnostic, HostFunction, HostArity, HostCall};
+pub mod evaluator;
+mod program_fragment;
+pub use eval_session::{
+    EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
+};
 mod eval_compiler;
 pub mod form_bridge;
 mod literals;
@@ -39,7 +41,9 @@ pub use analyzer::{
     NamespaceInput, Program, Span, StringId, analyze, analyze_namespaces,
     analyze_namespaces_with_macros, analyze_with_macros,
 };
-pub use application::{ApplicationOptions, ApplicationStats, PreparedApplication, prepare_application};
+pub use application::{
+    ApplicationOptions, ApplicationStats, PreparedApplication, prepare_application,
+};
 pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_with_macros,
     compile_with_macros,

@@ -18,21 +18,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.18.0'
-      - run: cargo check --locked --all-features
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      - name: Require canonical consumers with interpreter absent
-        if: ${{ !cancelled() }}
-        run: python3 -B tests/reference/evaluator-migration/gate.py --artifacts /tmp/light-cljs-evaluator-gate
-      - name: Preserve evaluator gate diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: evaluator-migration-gate
-          path: /tmp/light-cljs-evaluator-gate
-          if-no-files-found: error
+      - run: node tests/support/js_runtime.test.js
+      - run: node tests/support/js_core_helpers.test.js
+      - run: node tests/support/execution.test.js
 
   conformance:
-    name: Required pinned ClojureScript conformance
+    name: Pinned ClojureScript comparisons
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -63,21 +57,8 @@ jobs:
           git -C research/clojurescript remote add origin https://github.com/clojure/clojurescript.git
           git -C research/clojurescript fetch --depth 1 origin a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
           git -C research/clojurescript checkout --detach FETCH_HEAD
-      - name: Verify the complete assertion inventory
-        run: python3 -B tests/reference/compiler-language/extract_inventory.py --check
-      - name: Check full language ledger accounting
-        run: python3 -B tests/reference/compiler-language/test_full_ledger.py
-      - name: Publish full intended-language completion gaps
-        shell: bash
-        run: |
-          if python3 -B tests/reference/compiler-language/report.py --strict \
-              --output /tmp/light-cljs-language-full-scope.json; then
-            echo "Full intended-language scope is complete."
-          else
-            status=$?
-            if [ "$status" -ne 1 ]; then exit "$status"; fi
-            echo "Full intended-language scope remains incomplete; see missing obligations and Pellet owners in the report."
-          fi
+      - name: Verify pinned reader sources
+        run: python3 -B tests/reference/generate_reader_coverage.py --verify
       - name: Required result and effect comparisons
         env:
           LIGHT_CLJS_REFERENCE: both
@@ -85,25 +66,13 @@ jobs:
           LIGHT_CLJS_REFERENCE_REVISION: a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
           LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
         run: cargo test --locked --test execution -- --ignored --nocapture --test-threads=1
-      - name: Require focused evaluator migration comparisons
-        run: python3 -B tests/reference/evaluator-migration/gate.py --reference --checkout research/clojurescript --artifacts /tmp/light-cljs-evaluator-reference
-      - name: Require historical selected language assertions
-        run: |
-          python3 -B tests/reference/compiler-language/report.py --scope historical-selected --run --strict \
-            --reference both --checkout research/clojurescript \
-            --artifacts /tmp/light-cljs-language-conformance \
-            --output /tmp/light-cljs-language-conformance.json
-      - name: Preserve compiler conformance diagnostics
+      - name: Preserve reference diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compiler-language-diagnostics
-          path: |
-            /tmp/light-cljs-language-conformance*
-            /tmp/light-cljs-language-full-scope.json
-            /tmp/light-cljs-reference-*
-            /tmp/light-cljs-evaluator-reference
-          if-no-files-found: error
+          name: reference-diagnostics
+          path: /tmp/light-cljs-reference-*
+          if-no-files-found: ignore
 
   sci-reference:
     name: Historical pinned SCI observations

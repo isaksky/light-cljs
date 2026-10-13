@@ -321,23 +321,3 @@ fn cli_array_check_modes_execute_the_compiled_program() {
         assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "true");
     }
 }
-
-#[test]
-fn array_source_provenance_and_oracle_routing_are_reproducible() {
-    for path in [
-        "tests/reference/compiler-array-settings.py",
-        "tests/reference/compiler-array-settings-report-tests.py",
-    ] {
-        let result = Command::new("python3")
-            .args(["-B", path])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
-}

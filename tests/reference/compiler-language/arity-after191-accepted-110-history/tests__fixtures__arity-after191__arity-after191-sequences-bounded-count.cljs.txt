@@ -1,1 +1,0 @@
-(do (assert (let [a (atom []) s (map #(do (swap! a conj %) %) '(0 1 2 3 4))] (and (= (bounded-count 2 s) 2) (= @a [0 1 2]) (= (bounded-count 2 [0 1 2 3 4]) 5)))) true)

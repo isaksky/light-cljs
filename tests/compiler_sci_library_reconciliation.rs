@@ -36,7 +36,9 @@ fn unhex(value: &str) -> String {
     String::from_utf8(
         value
             .as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect(),
     )

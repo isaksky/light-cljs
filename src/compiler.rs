@@ -167,11 +167,7 @@ impl NamespaceSource {
             .map(|p| Ok((self.simple_symbol(p[0])?, self.simple_symbol(p[1])?)))
             .collect()
     }
-    fn read_spec(
-        &self,
-        spec: NodeId,
-        only: bool,
-    ) -> Result<RequireSpec, NamespaceCompileError> {
+    fn read_spec(&self, spec: NodeId, only: bool) -> Result<RequireSpec, NamespaceCompileError> {
         let items = if self.symbol(spec).is_some() {
             vec![spec]
         } else {
@@ -850,23 +846,24 @@ impl Loader {
             }
             LoadState::Unseen => {}
         }
-        let (path, source) =
-            if let Some(path) = locate_source(&self.roots, name, &["cljs", "cljc"])? {
-                let source = fs::read_to_string(&path).map_err(|error| {
-                    NamespaceCompileError::new(format!("cannot read {}: {error}", path.display()))
-                })?;
-                (path, source)
-            } else if let Some(source) = crate::compiler_libraries::source(name) {
-                (
-                    PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
-                    source.to_owned(),
-                )
-            } else {
-                return Err(NamespaceCompileError::new(format!(
-                    "namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
-                    name.replace('.', "/").replace('-', "_")
-                )));
-            };
+        let (path, source) = if let Some(path) =
+            locate_source(&self.roots, name, &["cljs", "cljc"])?
+        {
+            let source = fs::read_to_string(&path).map_err(|error| {
+                NamespaceCompileError::new(format!("cannot read {}: {error}", path.display()))
+            })?;
+            (path, source)
+        } else if let Some(source) = crate::compiler_libraries::source(name) {
+            (
+                PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
+                source.to_owned(),
+            )
+        } else {
+            return Err(NamespaceCompileError::new(format!(
+                "namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
+                name.replace('.', "/").replace('-', "_")
+            )));
+        };
         let cljc = path.extension().is_some_and(|ext| ext == "cljc");
         let mut parser = crate::Parser::new(&source).retaining_discards();
         let mut roots = Vec::new();
@@ -882,7 +879,9 @@ impl Loader {
         };
         if cljc {
             crate::compiler_reader::select_cljs(&source, &mut syntax, &mut discards).map_err(
-                |error| NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span),
+                |error| {
+                    NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
+                },
             )?;
         }
         let mut file = NamespaceSource {
@@ -1127,19 +1126,29 @@ pub fn compile_namespace_with_macro_warnings(
                     if macros.source_binding_private(&import.namespace, original) {
                         return Err(error(
                             spec.span.clone(),
-                            format!("{}/{original} is private; :refer requires a public binding", import.namespace),
+                            format!(
+                                "{}/{original} is private; :refer requires a public binding",
+                                import.namespace
+                            ),
                         ));
                     }
-                    if macros.has_macro(&import.namespace, original)
+                    if macros
+                        .has_macro(&import.namespace, original)
                         .map_err(|m| error(spec.span.clone(), m))?
                     {
-                        let local = spec.renames.iter()
+                        let local = spec
+                            .renames
+                            .iter()
                             .find(|(from, _)| from == original)
                             .map_or(original, |(_, to)| to);
                         if local == original {
                             import.refers.push(original.clone());
                         } else {
-                            renamed_macros.push((local.clone(), import.namespace.clone(), original.clone()));
+                            renamed_macros.push((
+                                local.clone(),
+                                import.namespace.clone(),
+                                original.clone(),
+                            ));
                         }
                     }
                 }
@@ -1169,7 +1178,8 @@ pub fn compile_namespace_with_macro_warnings(
             }
             for (local, namespace, original) in &file.resolution.refers {
                 if matches!(namespace.as_str(), "cljs.core" | "clojure.core")
-                    && macros.has_macro(namespace, original)
+                    && macros
+                        .has_macro(namespace, original)
                         .map_err(|m| error(header_span.clone(), m))?
                 {
                     renamed_macros.push((local.clone(), namespace.clone(), original.clone()));

@@ -12,7 +12,7 @@ fn canonical(context: &rquickjs::Context, value: &str) -> String {
 fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
-    let catalog = include_str!("reference/compiler-language/literal-map-traversal-contracts.json");
+    let catalog = include_str!("fixtures/contracts/literal-map-traversal-contracts.json");
     let extract = format!(
         "(() => {{ const c=JSON.parse({catalog:?}); return c.sources.filter(s => !c.nonpassing_neighbors[s.id]).map(s => [s.id,s.source,JSON.stringify(c.canonical_expected.find(p=>p.id===s.id))]); }})()"
     );

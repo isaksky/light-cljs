@@ -63,8 +63,7 @@ fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() 
 
 #[test]
 fn complete_collection_fixture_preserves_typed_values_and_printing_in_both_engines() {
-    // Both pinned references establish the complete value and exact set order;
-    // see reference/evaluator-collection-contract.md for the historical failure.
+    // Both pinned references establish the complete value and exact set order.
     let p = program(COLLECTION_SOURCE);
     let observer = include_str!("support/evaluator_collection_observation.js");
     let expected = include_str!("fixtures/evaluator-collection-observation.json").trim();

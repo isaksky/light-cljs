@@ -1,6 +1,6 @@
 //! Public positional construction in both canonical execution phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {

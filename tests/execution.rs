@@ -1026,21 +1026,29 @@ struct ReferenceResult {
 fn reference_results(label: &str, args: &[&str], driver: &str) -> Vec<ReferenceResult> {
     // Oracle programs use the preserved upstream source dialect. The local
     // compiler's ordinary dual-use imports intentionally use separate inputs.
-    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces");
+    let reference_root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces");
     let mut args = args.to_vec();
     let reference_root_text = reference_root.to_str().unwrap();
     if args.first() == Some(&"program")
-        && args.get(1).is_some_and(|root| root.ends_with("tests/fixtures/namespaces"))
+        && args
+            .get(1)
+            .is_some_and(|root| root.ends_with("tests/fixtures/namespaces"))
     {
         args[1] = reference_root_text;
     }
     let macro_roots = if args.first() == Some(&"program") {
         vec![
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces/collections"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces/shared"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces/functions"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces/definitions"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces/integrated"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reference-namespaces/collections"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reference-namespaces/shared"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reference-namespaces/functions"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reference-namespaces/definitions"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/reference-namespaces/integrated"),
         ]
     } else {
         Vec::new()
@@ -1380,8 +1388,7 @@ fn map_encoder_checks_count_duplicates_types_and_unordered_entries_independently
 fn map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics() {
     // Both canonical pins preserve reader-distinct numeric literal entries.
     // Direct hash-map groups keys before values; a small source map interleaves
-    // each key and value. Whole original sources and old packets are retained in
-    // reference/compiler-language/literal-execution-historical-before193.json.
+    // each key and value.
     let cases = [
         Case {
             id: "map-literal-number-collision".into(),
@@ -1660,10 +1667,17 @@ fn collection_namespace_macros_match_standard_clojurescript_typed_outcomes() {
         "globalThis.lightInspectValue = value => lightProgramInspectValue(value);\n{}",
         collection_program_driver("observe => { loadProgram(); return lightProgramRun(observe); }")
     );
-    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces").join(root.file_name().unwrap());
+    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reference-namespaces")
+        .join(root.file_name().unwrap());
     let references = reference_results_with_macro_roots(
         "collection-program",
-        &["program", reference_root.to_str().unwrap(), "batch.main", "run"],
+        &[
+            "program",
+            reference_root.to_str().unwrap(),
+            "batch.main",
+            "run",
+        ],
         &driver,
         std::slice::from_ref(&reference_root),
     );
@@ -1745,7 +1759,9 @@ fn shared_namespaces_and_macro_inference_match_standard_clojurescript() {
         node(&light_cljs::compile_namespace("shared.main", std::slice::from_ref(&root)).unwrap());
     let expected = "leaf\nlogic\nmain\n7 7 9 13 13 6 8 9\n5 7 3 42 42 42 20 23 23 23 23\ntrue true true true new/ :shared.portable/key namespace doc 5\n";
     assert_eq!(actual, expected);
-    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces").join(root.file_name().unwrap());
+    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reference-namespaces")
+        .join(root.file_name().unwrap());
     for reference in reference_results_with_macro_roots(
         "shared-namespaces",
         &["program", reference_root.to_str().unwrap(), "shared.main"],
@@ -1765,7 +1781,7 @@ fn shared_namespaces_and_macro_inference_match_standard_clojurescript() {
 fn resolved_numeric_functions_evaluate_each_argument_once_in_order() {
     // This compiler's core is ordinary functions. Upstream's direct comparison
     // macros may elide/duplicate expressions; saved upstream functions are the
-    // differential contract for evaluation order (see compiler-numeric.md).
+    // differential contract for evaluation order.
     let js = compile(
         "(js/console.log (< (do (js/console.log 9) 9) (do (js/console.log 4) 4) (do (js/console.log 2) 2)))\n\
          (js/console.log (< (do (js/console.log 1) 1)))",
@@ -1979,10 +1995,16 @@ fn compiled_overloads_match_pinned_values_effects_and_stdout() {
     let actual = node(
         &light_cljs::compile_namespace("functions.main", std::slice::from_ref(&root)).unwrap(),
     );
-    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces").join(root.file_name().unwrap());
+    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reference-namespaces")
+        .join(root.file_name().unwrap());
     for reference in reference_results_with_macro_roots(
         "overload-namespaces",
-        &["program", reference_root.to_str().unwrap(), "functions.main"],
+        &[
+            "program",
+            reference_root.to_str().unwrap(),
+            "functions.main",
+        ],
         "",
         std::slice::from_ref(&reference_root),
     ) {
@@ -2829,10 +2851,16 @@ fn compiled_definitions_namespaces_match_pinned_clojurescript() {
     );
     let expected = "7 nil false\n[2 2] 1\n[true true] false\n3 4\n[4 9 9] [4 4 4]\ntrue true :value\n8 1\n11 11\n2 1\n";
     assert_eq!(actual, expected);
-    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference-namespaces").join(root.file_name().unwrap());
+    let reference_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reference-namespaces")
+        .join(root.file_name().unwrap());
     for reference in reference_results_with_macro_roots(
         "definitions-namespaces",
-        &["program", reference_root.to_str().unwrap(), "definitions.main"],
+        &[
+            "program",
+            reference_root.to_str().unwrap(),
+            "definitions.main",
+        ],
         "",
         std::slice::from_ref(&reference_root),
     ) {

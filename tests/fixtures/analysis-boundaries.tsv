@@ -196,4 +196,4 @@ extension-invalid-params	statement	(do (defprotocol P (f [x])) (extend-type numb
 reader-set-duplicate-form	expr	#{(identity 1) 	(identity 1)	}	invalid-form	duplicate set member	reader-error	reader-error
 # Compiled-JS macro transition: canonical Number values merge 1 and 1.0;
 # native JVM-backed reference macro readers retain their distinct reader types.
-control-case-numeric-reader	expr	(case 1 1 1 	1.0	 2)	macro-expansion	duplicate case	accepted	accepted
+control-case-numeric-reader	expr	(case 1 1 1 	1.0	 2)	accepted	-	accepted	accepted

@@ -278,17 +278,41 @@ fn pure_function_expansion_locates_forward_reference_at_original_symbol() {
     assert_eq!(&source[forward.span.clone()], "future");
 }
 
-
 #[test]
 fn deferred_warning_placeholders_reuse_later_definition_identity() {
     let source = "(defn f [] future) (def future 42) (f)";
     let mut warnings = vec![];
-    let program = analyze_with_warnings(source, &parse(source).unwrap(), AnalysisOptions {
-        warning_mode: true, checked_arrays: false,
-        ..AnalysisOptions::default()
-    }, &mut warnings).unwrap();
-    assert_eq!(program.globals.iter().filter(|g| g.name == "future").count(), 1);
-    assert_eq!(warnings.iter().filter(|w| w.kind == "undeclared-var").count(), 1);
+    let program = analyze_with_warnings(
+        source,
+        &parse(source).unwrap(),
+        AnalysisOptions {
+            warning_mode: true,
+            checked_arrays: false,
+            ..AnalysisOptions::default()
+        },
+        &mut warnings,
+    )
+    .unwrap();
+    assert_eq!(
+        program
+            .globals
+            .iter()
+            .filter(|g| g.name == "future")
+            .count(),
+        1
+    );
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| w.kind == "undeclared-var")
+            .count(),
+        1
+    );
     let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    assert_eq!(evaluator.number(evaluator.evaluate(&program).unwrap()).unwrap(), 42.0);
+    assert_eq!(
+        evaluator
+            .number(evaluator.evaluate(&program).unwrap())
+            .unwrap(),
+        42.0
+    );
 }

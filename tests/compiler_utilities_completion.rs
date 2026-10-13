@@ -1,6 +1,6 @@
 //! Public parsing, scalar, random and array contracts in canonical JS phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {
@@ -100,7 +100,8 @@ fn public_utilities_execute_in_applications_and_macros() {
 
 #[test]
 fn array_initializers_preserve_lazy_demand_holes_and_receiver_effects() {
-    both(r#"
+    both(
+        r#"
       (defn array-witness []
         (let [events (atom [])]
           (letfn [(items [n] (lazy-seq (swap! events conj n) (cons n (items (inc n)))))]
@@ -111,7 +112,9 @@ fn array_initializers_preserve_lazy_demand_holes_and_receiver_effects() {
                (js* "Object.hasOwn(~{}, 2)" b)]))))
       (defmacro array-phase [] (array-witness))
       [(array-witness) (array-phase)]
-    "#, "[[[0 1 2] [0 1 2 10] [0 1] [] [7 8 nil nil] false] [[0 1 2] [0 1 2 10] [0 1] [] [7 8 nil nil] false]]");
+    "#,
+        "[[[0 1 2] [0 1 2 10] [0 1] [] [7 8 nil nil] false] [[0 1 2] [0 1 2 10] [0 1] [] [7 8 nil nil] false]]",
+    );
     both(
         r#"
       (let [events (atom []) s #js {}]
@@ -124,13 +127,16 @@ fn array_initializers_preserve_lazy_demand_holes_and_receiver_effects() {
 
 #[test]
 fn scalar_conversions_saved_functions_and_metadata_remain_public() {
-    both(r#"
+    both(
+        r#"
       (let [i int l long d double f float c char]
         [(i 2147483648) (i ##Inf) (l -1.9) (l ##Inf) (js/isNaN (l ##NaN))
          (js/Object.is (js* "-0") (l (js* "-0"))) (d "x") (f 1.2) (c 65)
          (str (:arglists (meta #'parse-long))) (str (:arglists (meta #'int-array)))
          (str (:arglists (meta #'clone)))])
-    "#, "[-2147483648 0 -1 ##Inf true true \"x\" 1.2 \"A\" \"([s])\" \"([size-or-seq] [size init-val-or-seq])\" \"([value])\"]");
+    "#,
+        "[-2147483648 0 -1 ##Inf true true \"x\" 1.2 \"A\" \"([s])\" \"([size-or-seq] [size init-val-or-seq])\" \"([value])\"]",
+    );
 }
 
 #[test]

@@ -164,10 +164,11 @@ fn traversal_limits_and_session_recovery() {
     let sources = Sources::new();
     let bad = sources.compile("(try (w/prewalk (fn [x] [x]) 1) (catch js/Error e (.-message e)))");
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert!(e
-        .string(e.evaluate_js(&bad).unwrap())
-        .unwrap()
-        .contains("walk depth limit"));
+    assert!(
+        e.string(e.evaluate_js(&bad).unwrap())
+            .unwrap()
+            .contains("walk depth limit")
+    );
     assert_eq!(e.number(e.evaluate_js("40+2").unwrap()).unwrap(), 42.0);
     let infinite = sources.compile("(w/postwalk identity (range))");
     let e = Evaluator::new(EvaluatorOptions {
@@ -322,9 +323,8 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
 #[test]
 fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     use light_cljs::{
-        compile_with_macros,
+        MacroHost, compile_with_macros,
         compiler_data::{Name, Origin, Source},
-        MacroHost,
     };
     let mut host = MacroHost::new();
     host.register_compiler_data_reader(
@@ -374,10 +374,12 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
             "(let [n (atom 0)] (fn [x] (swap! n inc)))",
         )
         .unwrap();
-    assert!(discarded
-        .read_compiler_form(&Source::new("discard.cljs", "#_ #count 1"))
-        .unwrap()
-        .is_none());
+    assert!(
+        discarded
+            .read_compiler_form(&Source::new("discard.cljs", "#_ #count 1"))
+            .unwrap()
+            .is_none()
+    );
     let form = discarded
         .read_compiler_form(&Source::new("after.cljs", "#count 1"))
         .unwrap()

@@ -8,8 +8,7 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path.insert(0, str(HERE / "compiler-language"))
-from extract_inventory import Reader, REVISION, short_head
+from clj_reader import Reader, REVISION, short_head
 
 FILES = (
     "src/test/cljs/cljs/reader_test.cljs",

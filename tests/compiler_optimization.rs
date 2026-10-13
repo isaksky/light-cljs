@@ -1,4 +1,4 @@
-//! Rust application preparation regressions. See reference/compiler-optimization.md.
+//! Rust application preparation regressions.
 use light_cljs::{
     ApplicationOptions, GlobalId, MacroHost, Program, analyze, analyze_with_macros,
     compile_namespace, emit_js, parse, prepare_application,

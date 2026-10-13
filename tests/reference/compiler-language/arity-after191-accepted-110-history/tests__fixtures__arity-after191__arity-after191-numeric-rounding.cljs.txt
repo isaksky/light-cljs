@@ -1,1 +1,0 @@
-[(int 2147483648) (int 4294967297.9) (long 4294967297.9) (unchecked-int 4294967297.9) (unchecked-long -0.4) (int ##Inf) (long ##Inf) (int ##NaN) (long ##NaN) (byte 300) (short 65537) (float "3") (double false)]

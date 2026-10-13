@@ -1,9 +1,9 @@
 //! Compiler-owned namespace reflection, source identity and phase separation.
 use light_cljs::{
-    analyze_with_macros,
+    MacroHost, analyze_with_macros,
     emitter::emit_js_unit,
     evaluator::{Evaluator, EvaluatorOptions},
-    parse, MacroHost,
+    parse,
 };
 use std::{
     io::Write,
@@ -167,8 +167,8 @@ fn namespace_view_contains_core_binding_kinds_without_engine_roots() {
 #[test]
 fn namespace_refers_use_actual_public_var_identity() {
     use light_cljs::{
-        source_provider::{LoadRequest, SourceInput},
         EvalOptions, EvalSession,
+        source_provider::{LoadRequest, SourceInput},
     };
     use std::rc::Rc;
     let mut session = EvalSession::new(EvalOptions {

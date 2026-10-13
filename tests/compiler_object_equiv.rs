@@ -1,6 +1,6 @@
 //! Persistent collection Object equiv methods execute in both engines and phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
     io::Write,
     process::{Command, Stdio},

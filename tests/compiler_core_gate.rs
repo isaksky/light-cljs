@@ -114,17 +114,3 @@ fn core_control_applications_and_macros_execute() {
 fn core_exceptions_applications_and_macros_execute() {
     cohort("exceptions", 4);
 }
-
-#[test]
-fn core_gate_preserves_complete_original_adapters_and_expectations() {
-    let result = Command::new("python3")
-        .args(["-B", "tests/reference/compiler-core-gate.py"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-}

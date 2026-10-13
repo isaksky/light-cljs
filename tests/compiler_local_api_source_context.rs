@@ -1,7 +1,7 @@
 //! Whole original SCI sources and independent retained outcome/effect literals.
 //! Alias checks are additional observations, never substitutes for source runs.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-use light_cljs::{compile_namespace_with_macros, MacroHost};
+use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -12,7 +12,9 @@ fn unhex(value: &str) -> String {
     String::from_utf8(
         value
             .as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -81,8 +83,9 @@ fn original_local_api_sources_execute_in_both_phases_and_host_lifecycles(start: 
                 } else {
                     &mut reused
                 };
-                let javascript = compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
-                    .unwrap_or_else(|error| panic!("{id} {host_kind} {phase}: {error}"));
+                let javascript =
+                    compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
+                        .unwrap_or_else(|error| panic!("{id} {host_kind} {phase}: {error}"));
                 std::fs::write(root.join("compiled.js"), &javascript).unwrap();
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let actual = evaluator

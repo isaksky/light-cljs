@@ -1,9 +1,9 @@
 //! Public metadata observations are independent of the generated table.
 use light_cljs::{
-    analyze_with_macros,
+    MacroHost, analyze_with_macros,
     emitter::emit_js_unit,
     evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
-    parse, MacroHost,
+    parse,
 };
 use std::process::Command;
 

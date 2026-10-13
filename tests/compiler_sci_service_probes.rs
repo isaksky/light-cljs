@@ -65,10 +65,10 @@ fn audit_original_sci_macroexpand_phase_services() {
 }
 
 use light_cljs::{
-    analyze_with_macros,
+    MacroHost, analyze_with_macros,
     emitter::emit_js_unit,
     evaluator::{Evaluator, EvaluatorOptions},
-    parse, MacroHost,
+    parse,
 };
 use std::{
     io::Write,
@@ -121,13 +121,24 @@ fn quoted_expansion_runs_without_services_in_application_and_macro_phases() {
         ("(seq? (macroexpand-1 '(letfn [(f [x] x)] (f 1))))", "true"),
     ] {
         both(source, expected);
-        both(&format!("(def state (atom 0)) (defmacro service-probe [] (swap! state inc) (list 'quote (do {source}))) [(service-probe) @state]"), &format!("[{expected} 0]"));
+        both(
+            &format!(
+                "(def state (atom 0)) (defmacro service-probe [] (swap! state inc) (list 'quote (do {source}))) [(service-probe) @state]"
+            ),
+            &format!("[{expected} 0]"),
+        );
     }
 }
 #[test]
 fn quoted_expansion_contract_and_dynamic_host_service_are_independent() {
-    both("[(macroexpand-1 '(unknown x)) (macroexpand '(+ 1 2)) (macroexpand-1 '()) (macroexpand '42) (macroexpand-1 '[1 2]) (macroexpand '(when true 7))]", "[(unknown x) (+ 1 2) () 42 [1 2] (if true (do 7))]");
-    both("(defmacro one [] '(two)) (defmacro two [] 42) [(macroexpand-1 '(one)) (macroexpand '(one))]", "[(two) 42]");
+    both(
+        "[(macroexpand-1 '(unknown x)) (macroexpand '(+ 1 2)) (macroexpand-1 '()) (macroexpand '42) (macroexpand-1 '[1 2]) (macroexpand '(when true 7))]",
+        "[(unknown x) (+ 1 2) () 42 [1 2] (if true (do 7))]",
+    );
+    both(
+        "(defmacro one [] '(two)) (defmacro two [] 42) [(macroexpand-1 '(one)) (macroexpand '(one))]",
+        "[(two) 42]",
+    );
     both(
         "(let [macroexpand-1 (fn [x] :local)] (macroexpand-1 '(let [] 1)))",
         ":local",

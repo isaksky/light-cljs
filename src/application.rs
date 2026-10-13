@@ -137,7 +137,9 @@ fn inert(program: &Program, id: ExprId) -> bool {
         }
         Do(items) | List(items) | Vector(items) => items.iter().all(|id| inert(program, *id)),
         Map(items) | LiteralMap(items) => items
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .all(|pair| scalar(program, pair[0]) && inert(program, pair[1])),
         Set(items) | LiteralSet(items) => items.iter().all(|id| scalar(program, *id)),
         // Non-scalar hashing, reader literals, metadata and unknown operations

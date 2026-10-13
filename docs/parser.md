@@ -98,7 +98,7 @@ branches. Context-specific interpretation has separate compatibility tests in
 `tests/compiler_reader.rs`; these execute the compiler-owned Rust reader,
 canonical macro computation, and emitted JavaScript independently of parsing.
 
-## Evidence
+## Tests and reference data
 
 Tests cover incremental reading, every node family, source/child-span invariants,
 UTF-16 values, invalid literals, discards, contextual argument boundaries,
@@ -112,16 +112,15 @@ Normal tests need no Java or research checkout.
 The committed [complete reader corpus](../tests/reference/reader-sources.tsv)
 pins seven upstream source files, 137 complete bodies and their UTF-8 byte spans,
 including reader/tag/syntax-quote/metadata tests and both vendored tools.reader
-implementations. `python3 -B tests/reference/generate_reader_coverage.py --verify`
-checks hashes, spans and generated execution fixtures using only Python. Its
-`--check` mode regenerates against the pinned Git objects; neither mode runs a
-JVM reader or establishes a semantic pass. `tests/parser_corpus.rs` independently
+implementations; `tests/reference/generate_reader_coverage.py` regenerates it
+(`--verify` checks the stored data). `tests/parser_corpus.rs` independently
 checks parsing, token progress, incremental body locations and fused EOF.
 `tests/parser.rs` truncates every reader family at every UTF-8 boundary and
 verifies rollback and terminal behavior after malformed partial forms.
 
-The optional corpus test parses all 296 `.clj`, `.cljs`, and `.cljc` files in the
-reference checkout at `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`: 2,834,491 bytes,
-343,327 retained nodes, and 6,594 top-level forms. This is structural coverage,
-not proof of semantic equivalence. See [benchmark results](../benchmarks/parser.md)
+The ignored corpus tests (`cargo test --release --test corpus -- --ignored` and
+`--test parser_corpus`) parse every `.clj`, `.cljs` and `.cljc` file in the
+gitignored `research/clojurescript` checkout pinned at
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. This is structural coverage, not
+proof of semantic equivalence. See [benchmark results](../benchmarks/parser.md)
 for allocation and construction measurements.

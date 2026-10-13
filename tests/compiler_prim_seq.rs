@@ -1,9 +1,9 @@
 //! Public prim-seq fixed arities execute in both isolated compiler phases.
 use light_cljs::{
-    analyze_with_macros,
+    MacroHost, analyze_with_macros,
     emitter::emit_js_unit,
     evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
-    parse, MacroHost,
+    parse,
 };
 use std::{
     io::Write,
@@ -72,12 +72,15 @@ fn prim_seq_preserves_original_probe_and_separate_phase_roots() {
         &format!("(defmacro prim-probe [] (list (quote quote) {literal})) (prim-probe)"),
         r#"[[4 5] [5] nil nil ["a" "b"] ["b"]]"#,
     );
-    both(&mut host, r#"(def events (atom []))
+    both(
+        &mut host,
+        r#"(def events (atom []))
       (defn probe [] (vec (prim-seq (do (swap! events conj :input) #js [4 5])
                                   (do (swap! events conj :start) 1))))
       (defmacro phase [] (list 'quote [(probe) @events]))
       [(phase) @events (probe) @events (phase) @events]"#,
-      "[[[5] [:input :start]] [] [5] [:input :start] [[5] [:input :start :input :start]] [:input :start]]");
+        "[[[5] [:input :start]] [] [5] [:input :start] [[5] [:input :start :input :start]] [:input :start]]",
+    );
 }
 
 #[test]

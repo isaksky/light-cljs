@@ -1,5 +1,5 @@
-//! Exact diagnostics shared by the analyzer/API and CLI. Upstream classifications
-//! and per-rule provenance/dispositions live in reference/boundary-evidence.md.
+//! Exact diagnostics shared by the analyzer/API and CLI. The last two fixture
+//! columns record the upstream classification for each source.
 use light_cljs::{
     AnalysisErrorKind, CompileError, LineIndex, analyze, compile, compile_namespace, parse,
 };
@@ -46,7 +46,9 @@ fn expression_boundaries_retain_exact_diagnostics_in_unselected_branches() {
                 compile(&source).unwrap_or_else(|error| panic!("{id}: {error}"));
                 continue;
             }
-            let error = analyze(&source, &syntax).unwrap_err();
+            let Err(error) = analyze(&source, &syntax) else {
+                panic!("{id}: expected {expected}, but analysis accepted {source:?}");
+            };
             assert_eq!(category(&error.kind), expected, "{id}: {error}");
             assert_eq!(error.span, span, "{id}: {error}");
             assert_eq!(

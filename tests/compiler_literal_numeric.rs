@@ -12,7 +12,9 @@ fn hex(s: &str) -> String {
 fn unhex(s: &str) -> String {
     String::from_utf8(
         s.as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -171,10 +173,13 @@ fn literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts() {
                 fs::write(folder.join("user.cljc"), &source).unwrap();
                 let mut fresh = MacroHost::new();
                 let host = if reuse { &mut reused } else { &mut fresh };
-                let error =
-                    light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&folder), host)
-                        .unwrap_err()
-                        .to_string();
+                let error = light_cljs::compile_namespace_with_macros(
+                    "user",
+                    std::slice::from_ref(&folder),
+                    host,
+                )
+                .unwrap_err()
+                .to_string();
                 fs::write(folder.join("rejection.txt"), &error).unwrap();
                 let recovery = "(defmacro literal-recovery [] (+ 20 22)) (literal-recovery)";
                 fs::write(folder.join("recovery.cljs"), recovery).unwrap();

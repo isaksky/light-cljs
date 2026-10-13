@@ -1,13 +1,15 @@
 //! Complete receiver dispatch contracts; no native-function -invoke controls.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::io::Write;
 use std::process::{Command, Stdio};
 const FIXTURE: &str = include_str!("fixtures/compiler-ifn-public-context.tsv");
 fn unhex(text: &str) -> String {
     String::from_utf8(
         text.as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|part| u8::from_str_radix(std::str::from_utf8(part).unwrap(), 16).unwrap())
             .collect(),
     )

@@ -27,13 +27,99 @@ source macros do not provide bare-runtime `eval` or loading capabilities.
 
 `MacroHost::evaluator_options` contains reusable configuration;
 `MacroHost::new_evaluator()` creates a fresh heap. CLI scripts, the REPL and public
-`EvalSession` embedding use compiler-emitted JavaScript. The native interpreter
-and its adapters have been removed; engine failure never falls back to native
-evaluation. `Evaluator::active(ctx)` borrows the
+`EvalSession` embedding use compiler-emitted JavaScript; there is no other
+evaluator to fall back to. `Evaluator::active(ctx)` borrows the
 already-entered context for nested compilation, without reacquiring its runtime
 lock. `install_unit_service` installs a reentrant `Fn` receiving that context and
 an owned request ID. It catches panics, preserves owned failure diagnostics, and
 shares sticky cancellation/resource limits with the outer operation.
+
+## Compile-time phase contract
+
+Rust owns reading, source metadata, name resolution, analysis, semantic IR,
+optimization and JavaScript emission. QuickJS only executes the emitted code; it
+does not implement the language or core library. Macros and the ordinary helpers
+they call run as compiler-emitted JavaScript using the same canonical
+`src/js_runtime.js` operations as applications, so both phases share lowering and
+JavaScript Number semantics.
+
+- `defmacro` in a `.cljs`/`.cljc` file declares a compile-time binding. It
+  produces no application function or initializer and evaluates to nil. Its Var
+  identity and metadata are reflectable; using the macro as a runtime value,
+  `apply`ing, dereferencing or assigning it is a located phase error.
+- Ordinary `:require` (with `:as`, `:refer`, `:rename`) imports both macros and
+  runtime functions from the same namespace, and macros can call that namespace's
+  ordinary helpers. Source lookup prefers `.cljs` over `.cljc` and never loads
+  `.clj`; legacy macro-import clauses get migration diagnostics. Both phases
+  select the `:cljs` (then `:default`) branch of `.cljc` reader conditionals;
+  `.cljs` files reject reader conditionals.
+- Definitions become visible in source order, including inside top-level `do`
+  and macro-generated declarations. Locals shadow unqualified macros. Macro
+  declarations under runtime lexical or conditional code are rejected.
+- An ordinary definition is initialized at compile time only when executing
+  macro code demands its value. Quoting, Var identity/metadata lookup, analysis
+  and untaken branches do not initialize it. Each deferred definition keeps its
+  definition-site resolution snapshot, so delayed analysis never resolves names in
+  a later caller's environment.
+- Roots are pending, initializing, ready or failed. Functions can become ready
+  before their bodies run (allowing recursion); reading an initializing value
+  reports an initialization cycle with its demand path. A failed generation keeps
+  its diagnostic and does not repeat effects; redefinition starts a new
+  generation. Compile-time `defonce` keeps any existing generation.
+- `binding`/`with-redefs` overlays take precedence over root forcing and restore
+  the exact previous root state without forcing it.
+- `defprotocol`, `deftype`, `defrecord`, `extend-type` and `extend-protocol` are
+  declaration bundles: demand initializes the whole bundle and publishes it only
+  after installation succeeds; failures roll back dispatch patches. Protocol
+  calls and `satisfies?` force only the source-visible extensions relevant to that
+  protocol.
+- Compile-time and application state are separate: roots, mutations, lazy caches
+  and dispatch tables are not shared, standalone top-level effects are never
+  replayed to prepare macro state, and every clean compilation (even on a reused
+  `MacroHost`) starts with fresh roots. Application initialization keeps
+  source/dependency order, and compile-time use alone does not make a helper an
+  application root.
+- ECMAScript intrinsics are available during expansion; DOM, Node globals, npm,
+  JVM classes and ambient filesystem/network/process access are not.
+
+Examples (each runs today):
+
+```clojure
+(def factor (+ 1 1))
+(defn twice [x] (* factor x))
+(def connection (js/connect))
+(defmacro doubled [x] (twice x))
+[(doubled 21) (twice 21)]
+;; Compilation demands twice and factor without calling connect; the application
+;; calls connect once, in order, and returns [42 42].
+
+(def hits (atom 0))
+(defn next-id [] (swap! hits inc))
+(defmacro id [] (next-id))
+[(id) (id) @hits]
+;; => [1 2 0] on every clean compilation: macro-time swaps do not touch the
+;; application's atom.
+```
+
+```clojure
+;; tools.cljc
+(ns tools)
+#?(:cljs (def factor 2)
+   :clj (def factor jvm-only-placeholder))
+(defn twice [x] (* factor x))
+(defmacro doubled [x] (twice x))
+
+;; app.cljs
+(ns app (:require [tools :as t :refer [doubled]]))
+[(doubled 21) (t/doubled 21) (t/twice 21)]
+;; => [42 42 42]
+```
+
+Core macros bootstrap from the first-party `src/compiler_core_macros.cljs` and
+`src/compiler_sequence_macros.cljs`, which this compiler analyzes and emits
+(using a bounded Rust seed for primitive and binding/destructuring forms) and
+installs in QuickJS. Only the emitted strings are cached in memory; there is no
+disk or bytecode cache.
 
 ## Ownership and capabilities
 
@@ -77,7 +163,7 @@ the hidden `&form`/`&env` ABI followed by call arguments. `compiler_environment`
 builds bounded lexical IDs/names/kinds/arguments, shadow records, context,
 namespace/import information and line/column using compiler data alone. Source
 macro registration and the default core bootstrap both execute compiler-emitted
-JavaScript. The native interpreter and adapter APIs no longer exist.
+JavaScript.
 
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;
@@ -98,9 +184,8 @@ Normal collection operations remain JavaScript operations. Gensym shares one
 session counter and avoids imported call/environment symbol names; exact spelling
 is not an API promise. Syntax quote retains the reader's definition-site view.
 
-Focused bridge execution checks are hand-authored in
-`tests/compiler_macros.rs::javascript_form_bridge`; their provenance and precise
-scope are recorded in `tests/reference/compiler-macros.md`.
+Focused bridge execution checks are in
+`tests/compiler_macros.rs` (`javascript_form_bridge`).
 
 ## Resource controls
 
@@ -116,8 +201,7 @@ bounded pathological matching tests verify budget, deadline and cross-thread
 cancellation. This is cooperative interruption, not a hard latency guarantee
 for every builtin: pattern compilation and string copying can run until their
 next poll or return. The host checks controls again after return. Emitted Node
-applications use their embedding's resource controls. See the
-[regex phase and resource evidence](../tests/reference/compiler-regex.md).
+applications use their embedding's resource controls.
 
 Allocation accounting wraps the upstream `RustAllocator` with a small documented
 unsafe boundary. It rejects over-budget allocation before allocation and marks
@@ -143,21 +227,17 @@ cycles, fresh roots and repeatable live engine allocation counts.
 fresh-session, reused-session and bounded-loop/reset/recovery costs as total
 nanoseconds and iteration counts. Use `--iterations 1` for a smoke run. The
 reused phase retains one application heap; the recovery phase validates a terminal
-poll limit followed by reset and successful evaluation. These are current
-compiler-backed measurements, not comparable native collector/fuel units.
+poll limit followed by reset and successful evaluation.
 
 `cargo test --locked --release --test evaluator startup_measurement -- --ignored --nocapture`
 is a focused cold-session startup/heap measurement; it is deliberately not a
-flaky timing gate. Existing CI runs the evaluator with all ordinary tests and
-checks the all-features build. `node tests/support/js_runtime.test.js` exercises
-the same canonical source and bootstrap hooks independently. See
-[evaluator measurement record](../benchmarks/results/evaluator-2026-10-10.md).
+flaky timing gate. `node tests/support/js_runtime.test.js` exercises the same
+canonical runtime source and bootstrap hooks directly in Node. A past measurement
+run is recorded in [benchmarks/results](../benchmarks/results/evaluator-2026-10-10.md).
 
 Upstream implementation provenance: [rquickjs 0.14.0 source](https://docs.rs/crate/rquickjs/0.14.0/source/)
 and [rquickjs-core 0.14.0 source](https://docs.rs/crate/rquickjs-core/0.14.0/source/),
 especially synchronous runtime/context, allocator and function callback tracing.
-No new dependencies or engine-selection experiment are prerequisites for the
-remaining compiler integration.
 
 ## Deferred compiler units
 
@@ -211,14 +291,11 @@ computed aliases remain protocol-specific deferred candidates. Ready products,
 method calls and cached target values stay in JS. Reentrant analysis scopes
 restore the dispatch frontier on every nonterminal exit. Runtime output receives
 the same analyzed declaration IR with ordinary source-order effects and an
-independent canonical runtime. The [bundle validation](../tests/reference/compiler-declaration-demand.md)
-records failure, cancellation, replacement and saved-dispatch execution.
+independent canonical runtime.
 
-The [helper demand validation](../tests/reference/compiler-helper-demand.md)
-records value paths, source effects, scope restoration and cancellation recovery.
-
-Execution evidence and the focused commands are recorded in
-[deferred unit validation](../tests/reference/compiler-deferred-units.md).
+These paths are exercised by the `reentrant_deferred_units`,
+`ordinary_helper_demand` and `declaration_bundle_demand` test modules in
+`tests/compiler_macros.rs`.
 
 ## Explicit reader capabilities
 
@@ -231,6 +308,5 @@ Callbacks must retain only Rust data and poll control during potentially long
 provider work. The provider never discovers stdin or filesystem access.
 
 The ordinary namespace resolver supplies compiler-owned `cljs.reader` and the
-strict `clojure.edn` compatibility facade. See
-[reader validation](../tests/reference/compiler-edn.md) for exact profiles,
-reader limits, source provenance and intentional numeric/host adaptations.
+strict `clojure.edn` compatibility facade; see
+[compiler-owned libraries](compiler.md) for the reader profiles.

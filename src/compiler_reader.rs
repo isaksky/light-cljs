@@ -193,8 +193,8 @@ pub(crate) fn select_cljs(
 
 // Compiler semantic reader. Construction uses owned data only, never evaluation.
 use crate::compiler_data::{
-    CompilerLiteralKind, DataBuilder, Datum, DatumView, Form, FormId, FormKind,
-    FormNode, Name, Origin, ReadError, Source, SourceSpan,
+    CompilerLiteralKind, DataBuilder, Datum, DatumView, Form, FormId, FormKind, FormNode, Name,
+    Origin, ReadError, Source, SourceSpan,
 };
 use crate::parser::{Node, NumberKind, PrefixKind, SymbolicValue};
 use std::{
@@ -274,20 +274,52 @@ impl Lowerer<'_> {
     fn reader_equal(&self, a: FormId, b: FormId) -> bool {
         // Source spelling carries reader numeric categories; Datum equality is
         // the canonical JS data model and may already equate distinct categories.
-        let number = |id: FormId| self.syntax.nodes().iter().find_map(|node| {
-            if node.span == self.spans[id.0].bytes()
-                && let NodeKind::Number(kind) = node.kind {
-                crate::reader_literals::number_key(self.spans[id.0].text(), kind)
-            } else { None }
-        });
-        if let (Some(a), Some(b)) = (number(a), number(b)) { return a == b; }
+        let number = |id: FormId| {
+            self.syntax.nodes().iter().find_map(|node| {
+                if node.span == self.spans[id.0].bytes()
+                    && let NodeKind::Number(kind) = node.kind
+                {
+                    crate::reader_literals::number_key(self.spans[id.0].text(), kind)
+                } else {
+                    None
+                }
+            })
+        };
+        if let (Some(a), Some(b)) = (number(a), number(b)) {
+            return a == b;
+        }
         match (&self.nodes[a.0].kind, &self.nodes[b.0].kind) {
-            (FormKind::Collection { kind: ak, children: ac }, FormKind::Collection { kind: bk, children: bc }) => {
-                if ac.len() != bc.len() { return false; }
+            (
+                FormKind::Collection {
+                    kind: ak,
+                    children: ac,
+                },
+                FormKind::Collection {
+                    kind: bk,
+                    children: bc,
+                },
+            ) => {
+                if ac.len() != bc.len() {
+                    return false;
+                }
                 match (ak, bk) {
-                    (CollectionKind::List | CollectionKind::Vector, CollectionKind::List | CollectionKind::Vector) => ac.iter().zip(bc.iter()).all(|(&a, &b)| self.reader_equal(a, b)),
-                    (CollectionKind::Map, CollectionKind::Map) => ac.as_chunks::<2>().0.iter().all(|[a, v]| bc.as_chunks::<2>().0.iter().any(|[b, w]| self.reader_equal(*a, *b) && self.reader_equal(*v, *w))),
-                    (CollectionKind::Set, CollectionKind::Set) => ac.iter().all(|&a| bc.iter().any(|&b| self.reader_equal(a, b))),
+                    (
+                        CollectionKind::List | CollectionKind::Vector,
+                        CollectionKind::List | CollectionKind::Vector,
+                    ) => ac
+                        .iter()
+                        .zip(bc.iter())
+                        .all(|(&a, &b)| self.reader_equal(a, b)),
+                    (CollectionKind::Map, CollectionKind::Map) => {
+                        ac.as_chunks::<2>().0.iter().all(|[a, v]| {
+                            bc.as_chunks::<2>().0.iter().any(|[b, w]| {
+                                self.reader_equal(*a, *b) && self.reader_equal(*v, *w)
+                            })
+                        })
+                    }
+                    (CollectionKind::Set, CollectionKind::Set) => ac
+                        .iter()
+                        .all(|&a| bc.iter().any(|&b| self.reader_equal(a, b))),
                     _ => false,
                 }
             }
@@ -420,7 +452,10 @@ impl Lowerer<'_> {
             let step = 2;
             for i in (0..values.len()).step_by(step) {
                 let bucket = seen.entry(values[i].value_hash()).or_default();
-                if let Some(&first) = bucket.iter().find(|&&j| self.reader_equal(children[i], children[j])) {
+                if let Some(&first) = bucket
+                    .iter()
+                    .find(|&&j| self.reader_equal(children[i], children[j]))
+                {
                     let mut e = self.error(
                         LowerErrorKind::DuplicateMapKey,
                         self.spans[children[i].0].bytes(),
@@ -986,7 +1021,9 @@ impl Lowerer<'_> {
             self.quote_call("quote", vec![symbol], span.clone())?
         } else if matches!(
             self.values[id.0].inspect(),
-            DatumView::CompilerLiteral(CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject)
+            DatumView::CompilerLiteral(
+                CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject
+            )
         ) {
             // A #js literal is atomic syntax-quote data. Quote it explicitly so
             // emission preserves the descriptor instead of constructing a host value.
@@ -1473,7 +1510,9 @@ impl NamespaceView {
             && (crate::compiler_names::core_macro(&text)
                 || crate::compiler_names::is_definition_macro("cljs.core", &text)
                 || core_metadata(&text).is_some()
-                || self.core_bindings.contains_key(&Name::new(Some("cljs.core"), &text)))
+                || self
+                    .core_bindings
+                    .contains_key(&Name::new(Some("cljs.core"), &text)))
         {
             return Name::from_utf16(
                 Some(&"cljs.core".encode_utf16().collect::<Vec<_>>()),
@@ -1508,10 +1547,21 @@ impl NamespaceView {
 }
 /// The pinned public declaration universe. Availability comes from the compiler registry.
 pub(crate) fn core_public_bindings() -> impl Iterator<Item = (&'static str, BindingKind)> {
-    include_str!("core_public_bindings.tsv").lines().filter_map(|line| {
-        let (name, kind) = line.split_once('\t')?;
-        Some((name, match kind { "Macro" => BindingKind::Macro, "Protocol" => BindingKind::Protocol, "Type" => BindingKind::Type, "Record" => BindingKind::Record, _ => BindingKind::Value }))
-    })
+    include_str!("core_public_bindings.tsv")
+        .lines()
+        .filter_map(|line| {
+            let (name, kind) = line.split_once('\t')?;
+            Some((
+                name,
+                match kind {
+                    "Macro" => BindingKind::Macro,
+                    "Protocol" => BindingKind::Protocol,
+                    "Type" => BindingKind::Type,
+                    "Record" => BindingKind::Record,
+                    _ => BindingKind::Value,
+                },
+            ))
+        })
 }
 /// Source metadata is resolution data; querying it cannot initialize a runtime.
 pub fn core_metadata(name: &str) -> Option<&'static str> {

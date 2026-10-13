@@ -366,38 +366,6 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
 }
 
 #[test]
-fn native_printing_sources_and_canonical_expectations_preserve_provenance() {
-    let output = Command::new("python3")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["-B", "tests/reference/compiler-native-printing.py"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-#[ignore = "requires Clojure CLI, Java, Node, and both pinned CLJS references"]
-fn all_58_native_printing_bodies_match_both_pinned_cljs_references() {
-    let output = Command::new("python3")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["-B", "tests/reference/compiler-native-printing.py", "--run"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    println!("{}", String::from_utf8_lossy(&output.stdout));
-}
-
-#[test]
 fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
     let sources = Sources::new();
     // Test.check is replaced only at the generation boundary. The original

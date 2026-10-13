@@ -1,5 +1,12 @@
 # SCI fixture attribution
 
+This notice is kept for attribution of SCI-derived material (see the adjacent
+`SCI-LICENSE.txt`). The `tests/interpreter_*.rs` files it names belonged to the
+removed native interpreter and no longer exist; the adapted fixture rows they
+describe remain in `tests/fixtures/sci-outcomes.tsv`, with per-row origins in
+`tests/reference/fixture-origins.tsv`. References below to "README.md" mean the
+mapping now kept in `fixture-origins.tsv`.
+
 Some assertions in `tests/fixtures/sci-outcomes.tsv` are adapted from SCI
 (`https://github.com/babashka/sci`), revision
 `5fe89056384418be50d232b4278344cb3a1a526b`.

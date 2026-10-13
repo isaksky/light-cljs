@@ -1,16 +1,30 @@
 //! Cross-type equality, representative retention, public hashes and metadata in both phases.
-use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE}, parse};
+use light_cljs::{
+    MacroHost, analyze_with_macros,
+    emitter::emit_js_unit,
+    evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
+    parse,
+};
 use std::process::Command;
 
 fn both(source: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(evaluator.print(evaluator.evaluate(&p).unwrap()).unwrap(), "true");
-    let script = format!("const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));", emit_js_unit(&p));
+    assert_eq!(
+        evaluator.print(evaluator.evaluate(&p).unwrap()).unwrap(),
+        "true"
+    );
+    let script = format!(
+        "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
+        emit_js_unit(&p)
+    );
     let out = Command::new("node").args(["-e", &script]).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "true");
 }
 
@@ -99,7 +113,9 @@ true
 #[test]
 fn canonical_values_hash_metadata_and_effects_in_both_phases() {
     both(CONTRACT);
-    both(&format!("(defmacro equality-contract [] {CONTRACT}) (equality-contract)"));
+    both(&format!(
+        "(defmacro equality-contract [] {CONTRACT}) (equality-contract)"
+    ));
 }
 
 #[test]
@@ -136,5 +152,7 @@ fn custom_protocols_records_and_vars_in_both_phases() {
     true))
 "#;
     both(&format!("{source} (check)"));
-    both(&format!("{source} (defmacro check-macro [] (check)) (check-macro)"));
+    both(&format!(
+        "{source} (defmacro check-macro [] (check)) (check-macro)"
+    ));
 }

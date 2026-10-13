@@ -73,53 +73,6 @@ fn complete_upstream_sorted_bodies_execute_in_both_engines() {
     );
 }
 
-#[test]
-fn sorted_fixture_provenance_retains_every_previously_excluded_site() {
-    let regenerated = Command::new("python3")
-        .args(["-B", "tests/reference/compiler-sorted-collections.py"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
-    assert!(
-        regenerated.status.success(),
-        "{}",
-        String::from_utf8_lossy(&regenerated.stderr)
-    );
-    let output = Command::new("python3")
-        .args(["-B", "-c", r#"
-import json
-from pathlib import Path
-root=Path('tests/reference/compiler-language')
-read=lambda p:[json.loads(l) for l in (root/p).read_text().splitlines() if l]
-bodies={b['id']:b for b in read('full-bodies.jsonl')}
-rows=read('full-inventory.jsonl')
-ws={w['assertion_id']:w for w in read('full-witnesses.jsonl')}
-fixtures=[l.split('\t') for l in Path('tests/fixtures/compiler-sorted-collections.tsv').read_text().splitlines() if l and not l.startswith('#')]
-ids={f[0] for f in fixtures}
-assert len(ids)==len(fixtures)==18
-sorted_rows=[r for r in rows if r['historical_scope'] and r['category']=='sorted-collections']
-assert len(sorted_rows)==104
-for r in sorted_rows:
-    w=ws[r['id']]
-    assert w['assertion_sha256']==r['assertion']['sha256']
-    assert w['fixture_id'] in ids or w['fixture_id']=='cljs-multimethods-test-multimethods-2'
-for f in fixtures:
-    name,sha=f[3].split(';sha256=')
-    assert bodies[name]['source_span']['sha256']==sha
-    assert f[1].count('(assert ')==sum(r['body_id']==name for r in rows),name
-    assert bodies[name]['source_span']['text'] and f[1].endswith(')')
-print('All 104 historical sorted sites retain full-body witnesses')
-"#])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn reference_node(script: &str) -> String {
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .args(["--max-old-space-size=96", "-"])

@@ -1,9 +1,0 @@
-{
-  "driver_copy": "tests/reference/compiler-language/integer_predicate_after191_initial_unconfigured_ns.rs.txt",
-  "driver_sha256": "933e499483577978a8e422f8f83193af26da76268af06555595a15af45cabc85",
-  "artifact_root": "/tmp/light-cljs-125-integer-predicate-after191-actual",
-  "actual_log_sha256": "0c878d7139ac168126adebbbe6b51fb637c322ccd6efcc364c8eab19632c21c5",
-  "status": "four namespace API rejections; zero assertion observations",
-  "all_original_site_credit": 0,
-  "reason": "compile_with_macros is expression API; full ns requires namespace compiler"
-}

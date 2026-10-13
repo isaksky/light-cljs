@@ -1,5 +1,5 @@
-//! Checkout map destructuring has explicit release/checkout differences; see
-//! reference/compiler-destructuring-completion.md. These are regression probes,
+//! Checkout map destructuring has explicit release/checkout differences (see
+//! docs/compiler.md). These are regression probes,
 //! not a claim that the pinned assertion inventory has executable witnesses.
 use light_cljs::compile;
 use std::process::Command;

@@ -79,7 +79,10 @@ impl MacroHost {
         &self,
     ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
         if let Some(control) = &self.interactive_control {
-            crate::evaluator::Evaluator::interactive_with_control(self.evaluator_options.clone(), control.clone())
+            crate::evaluator::Evaluator::interactive_with_control(
+                self.evaluator_options.clone(),
+                control.clone(),
+            )
         } else if self.interactive {
             crate::evaluator::Evaluator::interactive(self.evaluator_options.clone())
         } else {
@@ -152,7 +155,11 @@ impl MacroHost {
             }
             message
         })?;
-        self.generated_nodes.set(self.generated_nodes.get().saturating_add(expanded.nodes().len()));
+        self.generated_nodes.set(
+            self.generated_nodes
+                .get()
+                .saturating_add(expanded.nodes().len()),
+        );
         if self.generated_nodes.get() > self.limits.generated_nodes {
             return Err("compiler macro generated-node limit exceeded".into());
         }
@@ -194,9 +201,13 @@ impl MacroHost {
             let mut end = 0;
             for &discard in &discards {
                 let span = &syntax.nodes[discard.0].span;
-                if span.start < end { continue; }
+                if span.start < end {
+                    continue;
+                }
                 self.lower_form_in_view(
-                    source, &syntax, discard,
+                    source,
+                    &syntax,
+                    discard,
                     &crate::compiler_reader::NamespaceView::new("cljs.user", source),
                     &discards,
                 )?;
@@ -235,7 +246,10 @@ impl MacroHost {
     }
     /// Fallback for unknown tags, called with the tag symbol and immutable value.
     /// Named readers take precedence; built-in literal tags retain their reader.
-    pub fn register_compiler_default_data_reader(&mut self, function_source: &str) -> Result<(), String> {
+    pub fn register_compiler_default_data_reader(
+        &mut self,
+        function_source: &str,
+    ) -> Result<(), String> {
         let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
         let mut readers = self.compiler_data_readers.borrow_mut();
@@ -257,21 +271,41 @@ impl MacroHost {
                 let mut readers = self.compiler_data_readers.borrow_mut();
                 let fallback = !readers.units.contains_key(tag);
                 let unit = if fallback {
-                    if tag.namespace().is_none() && matches!(String::from_utf16_lossy(tag.name()).as_ref(), "inst" | "uuid" | "js" | "queue") { return Ok(None); }
+                    if tag.namespace().is_none()
+                        && matches!(
+                            String::from_utf16_lossy(tag.name()).as_ref(),
+                            "inst" | "uuid" | "js" | "queue"
+                        )
+                    {
+                        return Ok(None);
+                    }
                     readers.default_unit.clone()
-                } else { readers.units.get(tag).cloned() };
-                let Some(unit) = unit else { return Ok(None); };
+                } else {
+                    readers.units.get(tag).cloned()
+                };
+                let Some(unit) = unit else {
+                    return Ok(None);
+                };
                 if readers.evaluator.is_none() {
                     readers.evaluator = Some(std::rc::Rc::new(
                         self.new_evaluator().map_err(|e| e.to_string())?,
                     ));
                 }
                 let evaluator = readers.evaluator.as_ref().unwrap().clone();
-                let cached = if fallback { readers.default_function } else { readers.functions.get(tag).copied() };
-                let function = if let Some(function) = cached { function } else {
+                let cached = if fallback {
+                    readers.default_function
+                } else {
+                    readers.functions.get(tag).copied()
+                };
+                let function = if let Some(function) = cached {
+                    function
+                } else {
                     let function = evaluator.evaluate_unit(&unit).map_err(|e| e.to_string())?;
-                    if fallback { readers.default_function = Some(function); }
-                    else { readers.functions.insert(tag.clone(), function); }
+                    if fallback {
+                        readers.default_function = Some(function);
+                    } else {
+                        readers.functions.insert(tag.clone(), function);
+                    }
                     function
                 };
                 (evaluator, function, fallback)
@@ -284,15 +318,28 @@ impl MacroHost {
                 .import_data(value, limits)
                 .map_err(|e| e.to_string())?;
             let tag_argument = if fallback {
-                match evaluator.import_data(&crate::compiler_data::DataBuilder.symbol(tag.clone()), limits) {
+                match evaluator.import_data(
+                    &crate::compiler_data::DataBuilder.symbol(tag.clone()),
+                    limits,
+                ) {
                     Ok(value) => Some(value),
-                    Err(error) => { let _ = evaluator.release(argument); return Err(error.to_string()); }
+                    Err(error) => {
+                        let _ = evaluator.release(argument);
+                        return Err(error.to_string());
+                    }
                 }
-            } else { None };
-            let result = if let Some(tag_argument) = tag_argument { evaluator.call(function, &[tag_argument, argument]) }
-                else { evaluator.call(function, &[argument]) };
+            } else {
+                None
+            };
+            let result = if let Some(tag_argument) = tag_argument {
+                evaluator.call(function, &[tag_argument, argument])
+            } else {
+                evaluator.call(function, &[argument])
+            };
             let _ = evaluator.release(argument);
-            if let Some(tag_argument) = tag_argument { let _ = evaluator.release(tag_argument); }
+            if let Some(tag_argument) = tag_argument {
+                let _ = evaluator.release(tag_argument);
+            }
             let result = result.map_err(|e| e.to_string())?;
             let data = evaluator
                 .export_data(result, limits)
@@ -348,17 +395,32 @@ impl MacroHost {
     }
     /// Configure imports without loading or evaluating code. Filesystem compilation
     /// registers source dependencies first.
-    pub(crate) fn set_interactive_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
+    pub(crate) fn set_interactive_imports(
+        &mut self,
+        caller: &str,
+        imports: Vec<MacroImport>,
+    ) -> Result<(), String> {
         let current = self.imports.entry(caller.to_owned()).or_default();
         for import in imports {
             if let Some(alias) = &import.alias
-                && current.iter().any(|old| old.alias.as_ref() == Some(alias) && old.namespace != import.namespace)
+                && current.iter().any(|old| {
+                    old.alias.as_ref() == Some(alias) && old.namespace != import.namespace
+                })
             {
                 return Err(format!("conflicting namespace alias: {alias}"));
             }
-            if let Some(old) = current.iter_mut().find(|old| old.namespace == import.namespace && old.alias == import.alias) {
-                for name in import.refers { if !old.refers.contains(&name) { old.refers.push(name); } }
-            } else { current.push(import); }
+            if let Some(old) = current
+                .iter_mut()
+                .find(|old| old.namespace == import.namespace && old.alias == import.alias)
+            {
+                for name in import.refers {
+                    if !old.refers.contains(&name) {
+                        old.refers.push(name);
+                    }
+                }
+            } else {
+                current.push(import);
+            }
         }
         Ok(())
     }
@@ -445,7 +507,9 @@ impl MacroHost {
             bootstrap_seed: true,
             javascript_macros: self.javascript_macros.clone(),
             source_bindings: self.source_bindings.clone(),
-            session_ref: self.session_handle().map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
+            session_ref: self
+                .session_handle()
+                .map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
             ..Self::default()
@@ -454,7 +518,9 @@ impl MacroHost {
     pub(crate) fn defers_source_units(&self) -> bool {
         !self.bootstrap_seed
     }
-    pub(crate) fn session_handle(&self) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
+    pub(crate) fn session_handle(
+        &self,
+    ) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
         self.session.clone().or_else(|| self.session_ref.upgrade())
     }
     pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
@@ -603,7 +669,10 @@ impl MacroHost {
         if matches!(namespace, "cljs.core" | "clojure.core") {
             return Ok(core_macro(name));
         }
-        if self.javascript_macros.contains_key(&format!("{namespace}/{name}")) {
+        if self
+            .javascript_macros
+            .contains_key(&format!("{namespace}/{name}"))
+        {
             return Ok(!self.source_binding_private(namespace, name));
         }
         Ok(false)
@@ -705,7 +774,11 @@ impl MacroHost {
                 return Err("compiler macro expansion limit exceeded".into());
             }
             self.expansions.set(self.expansions.get() + 1);
-            self.generated_nodes.set(self.generated_nodes.get().saturating_add(expanded.nodes().len()));
+            self.generated_nodes.set(
+                self.generated_nodes
+                    .get()
+                    .saturating_add(expanded.nodes().len()),
+            );
             if self.generated_nodes.get() > self.limits.generated_nodes {
                 return Err("compiler macro generated-node limit exceeded".into());
             }
@@ -713,14 +786,25 @@ impl MacroHost {
         Ok(expanded)
     }
     /// Macro identity/metadata is source reflection; its executable closure remains private.
-    pub(crate) fn reflected_macro(&self, caller: &str, requested: &str) -> Option<(String, String, Option<crate::compiler_data::Datum>)> {
+    pub(crate) fn reflected_macro(
+        &self,
+        caller: &str,
+        requested: &str,
+    ) -> Option<(String, String, Option<crate::compiler_data::Datum>)> {
         if let Some(key) = self.source_macro_key(caller, requested)
-            && let Some(declaration) = self.javascript_macros.get(&key) {
+            && let Some(declaration) = self.javascript_macros.get(&key)
+        {
             let (namespace, name) = key.split_once('/')?;
             return Some((namespace.into(), name.into(), declaration.metadata.clone()));
         }
-        let (namespace, name) = requested.split_once('/').unwrap_or(("cljs.core",requested));
-        if matches!(namespace, "cljs.core" | "clojure.core") && !self.has_source_value(caller, requested) && crate::CoreFnId::resolve(name).is_none() && (core_macro(name) || is_definition_macro(namespace, name)) {
+        let (namespace, name) = requested
+            .split_once('/')
+            .unwrap_or(("cljs.core", requested));
+        if matches!(namespace, "cljs.core" | "clojure.core")
+            && !self.has_source_value(caller, requested)
+            && crate::CoreFnId::resolve(name).is_none()
+            && (core_macro(name) || is_definition_macro(namespace, name))
+        {
             return Some(("cljs.core".into(), name.into(), None));
         }
         None
@@ -732,7 +816,10 @@ impl MacroHost {
     ) -> Result<Option<Form>, String> {
         let operation = String::from_utf16_lossy(name.name());
         let operation = operation.strip_prefix("compiler-").unwrap_or(&operation);
-        if !matches!(operation, "ns-publics" | "ns-interns" | "ns-imports" | "ns-refers") {
+        if !matches!(
+            operation,
+            "ns-publics" | "ns-interns" | "ns-imports" | "ns-refers"
+        ) {
             return Ok(None);
         }
         let run = || -> Result<_, Box<dyn std::error::Error>> {
@@ -756,7 +843,10 @@ impl MacroHost {
             };
             let namespace = String::from_utf16(namespace.name())?;
             let mut declarations = if operation == "ns-refers" {
-                self.reader_refers(&namespace).into_iter().map(|(local, ns, original)| (local, format!("{ns}/{original}"))).collect()
+                self.reader_refers(&namespace)
+                    .into_iter()
+                    .map(|(local, ns, original)| (local, format!("{ns}/{original}")))
+                    .collect()
             } else if operation == "ns-imports" {
                 self.namespace_imports
                     .get(&namespace)
@@ -773,11 +863,24 @@ impl MacroHost {
             };
             if matches!(operation, "ns-interns" | "ns-publics") {
                 if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
-                    declarations.extend(crate::compiler_reader::core_public_bindings().filter(|(local, _)| crate::CoreFnId::resolve(local).is_some() || crate::compiler_names::core_macro(local) || crate::compiler_names::is_definition_macro("cljs.core", local)).map(|(local, _)| (local.into(), format!("cljs.core/{local}"))));
+                    declarations.extend(
+                        crate::compiler_reader::core_public_bindings()
+                            .filter(|(local, _)| {
+                                crate::CoreFnId::resolve(local).is_some()
+                                    || crate::compiler_names::core_macro(local)
+                                    || crate::compiler_names::is_definition_macro(
+                                        "cljs.core",
+                                        local,
+                                    )
+                            })
+                            .map(|(local, _)| (local.into(), format!("cljs.core/{local}"))),
+                    );
                 }
                 declarations.extend(self.javascript_macros.keys().filter_map(|key| {
                     let (ns, local) = key.split_once('/')?;
-                    (ns == namespace && (operation == "ns-interns" || !self.source_binding_private(ns, local))).then(|| (local.into(), key.clone()))
+                    (ns == namespace
+                        && (operation == "ns-interns" || !self.source_binding_private(ns, local)))
+                    .then(|| (local.into(), key.clone()))
                 }));
             }
             declarations.sort();
@@ -805,10 +908,21 @@ impl MacroHost {
         for (index, key) in names.into_iter().enumerate() {
             let (namespace, local) = key.split_once('/').unwrap();
             let name = Name::new(Some(namespace), local);
-            let binding = crate::compiler_reader::ResolvedBinding { id: crate::compiler_reader::BindingId(usize::MAX / 2 - index), kind: crate::compiler_reader::BindingKind::Macro, name: name.clone() };
+            let binding = crate::compiler_reader::ResolvedBinding {
+                id: crate::compiler_reader::BindingId(usize::MAX / 2 - index),
+                kind: crate::compiler_reader::BindingKind::Macro,
+                name: name.clone(),
+            };
             view.bindings.insert(name.clone(), binding.clone());
-            if view.namespace == Name::new(None, namespace) { view.bindings.insert(Name::new(None, local), binding.clone()); }
-            for (local, target) in &view.refers { if target == &name { view.bindings.insert(local.clone(), binding.clone()); } }
+            if view.namespace == Name::new(None, namespace) {
+                view.bindings
+                    .insert(Name::new(None, local), binding.clone());
+            }
+            for (local, target) in &view.refers {
+                if target == &name {
+                    view.bindings.insert(local.clone(), binding.clone());
+                }
+            }
         }
     }
     pub(crate) fn reader_refers(&self, namespace: &str) -> Vec<(String, String, String)> {
@@ -850,24 +964,69 @@ impl MacroHost {
     }
     pub(crate) fn source_macro_names(&self, namespace: &str) -> Vec<String> {
         let prefix = format!("{namespace}/");
-        let mut names = self.javascript_macros.keys().filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned)).collect::<Vec<_>>();
+        let mut names = self
+            .javascript_macros
+            .keys()
+            .filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned))
+            .collect::<Vec<_>>();
         names.sort();
         names
     }
 
     pub(crate) fn reader_environment(
-        &self, environment: crate::compiler_data::Datum, namespace: &str,
-        refers: &[(String, String, String)], excludes: &[String], globals: &[crate::GlobalBinding],
+        &self,
+        environment: crate::compiler_data::Datum,
+        namespace: &str,
+        refers: &[(String, String, String)],
+        excludes: &[String],
+        globals: &[crate::GlobalBinding],
     ) -> Result<crate::compiler_data::Datum, String> {
         let c = crate::compiler_data::DataBuilder;
         let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
         let key = |s| c.keyword(Name::new(None, s));
-        let context = c.map(&[
-            (key("refers"), c.vector(&refers.iter().chain(self.reader_refers(namespace).iter()).map(|(local, ns, name)| c.vector(&[string(local), string(ns), string(name)])).collect::<Result<Vec<_>, _>>()?).map_err(|e| e.to_string())?),
-            (key("excludes"), c.vector(&excludes.iter().map(|s| string(s)).collect::<Vec<_>>()).map_err(|e| e.to_string())?),
-            (key("bindings"), c.vector(&globals.iter().filter(|g| g.namespace == namespace).map(|g| string(&g.name)).chain(self.source_macro_names(namespace).iter().map(|name| string(name))).collect::<Vec<_>>()).map_err(|e| e.to_string())?),
-        ]).map_err(|e| e.to_string())?;
-        c.assoc(&environment, &c.keyword(Name::new(Some("light-cljs"), "reader-context")), &context)
+        let context = c
+            .map(&[
+                (
+                    key("refers"),
+                    c.vector(
+                        &refers
+                            .iter()
+                            .chain(self.reader_refers(namespace).iter())
+                            .map(|(local, ns, name)| {
+                                c.vector(&[string(local), string(ns), string(name)])
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                ),
+                (
+                    key("excludes"),
+                    c.vector(&excludes.iter().map(|s| string(s)).collect::<Vec<_>>())
+                        .map_err(|e| e.to_string())?,
+                ),
+                (
+                    key("bindings"),
+                    c.vector(
+                        &globals
+                            .iter()
+                            .filter(|g| g.namespace == namespace)
+                            .map(|g| string(&g.name))
+                            .chain(
+                                self.source_macro_names(namespace)
+                                    .iter()
+                                    .map(|name| string(name)),
+                            )
+                            .collect::<Vec<_>>(),
+                    )
+                    .map_err(|e| e.to_string())?,
+                ),
+            ])
+            .map_err(|e| e.to_string())?;
+        c.assoc(
+            &environment,
+            &c.keyword(Name::new(Some("light-cljs"), "reader-context")),
+            &context,
+        )
     }
 
     pub fn compiler_environment(
@@ -1039,13 +1198,24 @@ mod compiler_pure_tests {
 }
 
 impl MacroHost {
-    pub(crate) fn check_macro_policy(&self, namespace: &str, target: &str, shadow_core: bool) -> Result<(), String> {
-        let Some(policy) = &self.name_policy else { return Ok(()) };
-        let name = self.source_macro_key(namespace, target)
-            .or_else(|| self.macro_name(namespace, target, shadow_core).map(|(ns,name)| format!("{ns}/{name}")));
+    pub(crate) fn check_macro_policy(
+        &self,
+        namespace: &str,
+        target: &str,
+        shadow_core: bool,
+    ) -> Result<(), String> {
+        let Some(policy) = &self.name_policy else {
+            return Ok(());
+        };
+        let name = self.source_macro_key(namespace, target).or_else(|| {
+            self.macro_name(namespace, target, shadow_core)
+                .map(|(ns, name)| format!("{ns}/{name}"))
+        });
         if let Some(name) = name {
-            let (ns,member) = name.split_once('/').unwrap();
-            if !policy.permits(&Name::new(Some(ns),member), false) { return Err(format!("name policy denies {name}")); }
+            let (ns, member) = name.split_once('/').unwrap();
+            if !policy.permits(&Name::new(Some(ns), member), false) {
+                return Err(format!("name policy denies {name}"));
+            }
         }
         Ok(())
     }
@@ -1059,22 +1229,43 @@ mod compiler_default_reader_tests {
     #[test]
     fn default_reader_is_compiled_typed_and_preserves_reader_precedence() {
         fn number(form: &Form) -> f64 {
-            match form.data().kind() { DatumKind::Integer(n) => *n as f64, DatumKind::Double(n) => *n, _ => panic!("expected number") }
+            match form.data().kind() {
+                DatumKind::Integer(n) => *n as f64,
+                DatumKind::Double(n) => *n,
+                _ => panic!("expected number"),
+            }
         }
         let mut host = MacroHost::new();
-        host.register_compiler_default_data_reader("(fn [tag value] [(str tag) value])").unwrap();
-        host.register_compiler_data_reader(Name::new(None, "named"), "(fn [value] (+ value 1))").unwrap();
-        let read = |host: &mut MacroHost, text: &str| host.read_compiler_form(&Source::new("reader.cljs",text)).unwrap().unwrap();
+        host.register_compiler_default_data_reader("(fn [tag value] [(str tag) value])")
+            .unwrap();
+        host.register_compiler_data_reader(Name::new(None, "named"), "(fn [value] (+ value 1))")
+            .unwrap();
+        let read = |host: &mut MacroHost, text: &str| {
+            host.read_compiler_form(&Source::new("reader.cljs", text))
+                .unwrap()
+                .unwrap()
+        };
         let form = read(&mut host, "#demo/missing 7");
         let children = form.children();
-        assert!(matches!(children[0].data().kind(), DatumKind::String(text) if String::from_utf16_lossy(text) == "demo/missing"));
-        assert_eq!(number(&children[1]),7.0);
-        assert_eq!(number(&read(&mut host,"#named 7")),8.0);
-        assert!(matches!(read(&mut host,"#inst \"2020-01-01\"").data().kind(), DatumKind::CompilerLiteral { .. }));
+        assert!(
+            matches!(children[0].data().kind(), DatumKind::String(text) if String::from_utf16_lossy(text) == "demo/missing")
+        );
+        assert_eq!(number(&children[1]), 7.0);
+        assert_eq!(number(&read(&mut host, "#named 7")), 8.0);
+        assert!(matches!(
+            read(&mut host, "#inst \"2020-01-01\"").data().kind(),
+            DatumKind::CompilerLiteral { .. }
+        ));
         host.begin_compilation();
-        assert!(host.compiler_data_readers.borrow().default_function.is_none());
-        assert_eq!(read(&mut host,"#unknown 9").children().len(),2);
-        host.register_compiler_default_data_reader("(fn [tag value] 42)").unwrap();
-        assert_eq!(number(&read(&mut host,"#unknown 9")),42.0);
+        assert!(
+            host.compiler_data_readers
+                .borrow()
+                .default_function
+                .is_none()
+        );
+        assert_eq!(read(&mut host, "#unknown 9").children().len(), 2);
+        host.register_compiler_default_data_reader("(fn [tag value] 42)")
+            .unwrap();
+        assert_eq!(number(&read(&mut host, "#unknown 9")), 42.0);
     }
 }

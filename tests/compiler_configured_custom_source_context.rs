@@ -1,6 +1,6 @@
 //! Complete original custom-reader CLJC module and original reader configuration.
 //! Explicit compile-reader branch; no general JVM companion/library parity.
-use light_cljs::{compiler_data::Name, MacroHost};
+use light_cljs::{MacroHost, compiler_data::Name};
 use std::{
     fs,
     io::Write,
@@ -26,7 +26,9 @@ fn unhex(value: &str) -> String {
     String::from_utf8(
         value
             .as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
             .collect(),
     )

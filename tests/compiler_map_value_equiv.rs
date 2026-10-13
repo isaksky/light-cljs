@@ -12,7 +12,9 @@ fn hex(s: &str) -> String {
 fn unhex(s: &str) -> String {
     String::from_utf8(
         s.as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -187,7 +189,7 @@ fn canonical(context: &rquickjs::Context, value: &str) -> String {
 fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
-    let catalog = include_str!("reference/compiler-language/map-value-equiv-contracts.json");
+    let catalog = include_str!("fixtures/contracts/map-value-equiv-contracts.json");
     let extract = format!(
         "(() => {{ const c=JSON.parse({catalog:?}); return c.sources.map(s => [s.id,s.source,JSON.stringify(s.canonical_expected)]); }})()"
     );

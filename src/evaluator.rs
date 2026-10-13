@@ -64,7 +64,9 @@ impl ExecutionControl {
     pub fn poll(&self) -> Result<(), EvalError> {
         let cause = if self.0.cancelled.load(Ordering::Relaxed) {
             1
-        } else if self.0.clock_origin.elapsed().as_nanos() >= u128::from(self.0.deadline_nanos.load(Ordering::Relaxed)) {
+        } else if self.0.clock_origin.elapsed().as_nanos()
+            >= u128::from(self.0.deadline_nanos.load(Ordering::Relaxed))
+        {
             2
         } else if self
             .0
@@ -126,17 +128,31 @@ impl Evaluator {
     pub(crate) fn interactive(options: EvaluatorOptions) -> Result<Self, EvalError> {
         Self::create(options, true, None)
     }
-    pub(crate) fn interactive_with_control(options: EvaluatorOptions, control: ExecutionControl) -> Result<Self, EvalError> {
+    pub(crate) fn interactive_with_control(
+        options: EvaluatorOptions,
+        control: ExecutionControl,
+    ) -> Result<Self, EvalError> {
         Self::create(options, true, Some(control))
     }
-    fn create(options: EvaluatorOptions, preserve_language_errors: bool, shared: Option<ExecutionControl>) -> Result<Self, EvalError> {
-        if options.memory_limit < 1024 * 1024 { return Err(EvalError("JavaScript memory limit must be at least 1048576 bytes for engine startup".into())); }
+    fn create(
+        options: EvaluatorOptions,
+        preserve_language_errors: bool,
+        shared: Option<ExecutionControl>,
+    ) -> Result<Self, EvalError> {
+        if options.memory_limit < 1024 * 1024 {
+            return Err(EvalError(
+                "JavaScript memory limit must be at least 1048576 bytes for engine startup".into(),
+            ));
+        }
         let control = shared.unwrap_or(ExecutionControl(Arc::new(ControlState {
             cancelled: AtomicBool::new(false),
             terminal: AtomicU8::new(0),
             remaining: AtomicU64::new(options.poll_budget),
             clock_origin: Instant::now(),
-            deadline_nanos: AtomicU64::new(u64::try_from(options.timeout.as_nanos()).map_err(|_| EvalError("invalid session timeout".into()))?),
+            deadline_nanos: AtomicU64::new(
+                u64::try_from(options.timeout.as_nanos())
+                    .map_err(|_| EvalError("invalid session timeout".into()))?,
+            ),
         })));
         let runtime = Runtime::new_with_alloc(LimitedAllocator {
             used: 0,
@@ -232,13 +248,28 @@ impl Evaluator {
         self.control.clone()
     }
     pub(crate) fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
-        if self.control.0.terminal.load(Ordering::Relaxed) != 0 || self.control.0.cancelled.load(Ordering::Relaxed) {
+        if self.control.0.terminal.load(Ordering::Relaxed) != 0
+            || self.control.0.cancelled.load(Ordering::Relaxed)
+        {
             return self.control.poll();
         }
-        let deadline = self.control.0.clock_origin.elapsed().as_nanos().checked_add(options.timeout.as_nanos())
-            .and_then(|n|u64::try_from(n).ok()).ok_or_else(|| EvalError("invalid operation timeout".into()))?;
-        self.control.0.deadline_nanos.store(deadline, Ordering::Relaxed);
-        self.control.0.remaining.store(options.poll_budget, Ordering::Relaxed);
+        let deadline = self
+            .control
+            .0
+            .clock_origin
+            .elapsed()
+            .as_nanos()
+            .checked_add(options.timeout.as_nanos())
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| EvalError("invalid operation timeout".into()))?;
+        self.control
+            .0
+            .deadline_nanos
+            .store(deadline, Ordering::Relaxed);
+        self.control
+            .0
+            .remaining
+            .store(options.poll_budget, Ordering::Relaxed);
         self.control.poll()
     }
 
@@ -325,17 +356,28 @@ impl Evaluator {
     }
     pub(crate) fn error_data(&self) -> Option<Datum> {
         self.with_active(|active| {
-            let index=active.enter(|ctx| { let f: Function=ctx.eval("__lightEvaluator.errorData")?; f.call(()) })?;
-            let id=ValueId {session:self.generation,index};
-            let result=active.export_data(id,ConversionLimits::default());
-            let _=active.release(id);
+            let index = active.enter(|ctx| {
+                let f: Function = ctx.eval("__lightEvaluator.errorData")?;
+                f.call(())
+            })?;
+            let id = ValueId {
+                session: self.generation,
+                index,
+            };
+            let result = active.export_data(id, ConversionLimits::default());
+            let _ = active.release(id);
             result
-        }).ok().filter(|data| !matches!(data.kind(),crate::compiler_data::DatumKind::Nil))
+        })
+        .ok()
+        .filter(|data| !matches!(data.kind(), crate::compiler_data::DatumKind::Nil))
     }
     pub(crate) fn validate(&self, id: ValueId) -> Result<(), EvalError> {
         self.with_active(|active| {
-            let id=active.check(id)?;
-            active.enter(|ctx| { let f: Function=ctx.eval("__lightEvaluator.validate")?; f.call((id,)) })
+            let id = active.check(id)?;
+            active.enter(|ctx| {
+                let f: Function = ctx.eval("__lightEvaluator.validate")?;
+                f.call((id,))
+            })
         })
     }
     pub(crate) fn bind(&self, name: &str, id: ValueId, core: bool) -> Result<(), EvalError> {
@@ -547,29 +589,60 @@ impl Evaluator {
         self.enter(|ctx| {
             let callback = Function::new(ctx.clone(), move |ctx: Ctx<'_>, ids: Vec<u64>| {
                 if !arity.accepts(ids.len()) {
-                    return Err(rquickjs::Exception::throw_message(&ctx, &format!("{name}: invalid arity {}", ids.len())));
+                    return Err(rquickjs::Exception::throw_message(
+                        &ctx,
+                        &format!("{name}: invalid arity {}", ids.len()),
+                    ));
                 }
                 let call = HostCall {
-                    active: ActiveEvaluator { ctx: ctx.clone(), control: &control, generation, bridge: &bridge, preserve_language_errors: true },
+                    active: ActiveEvaluator {
+                        ctx: ctx.clone(),
+                        control: &control,
+                        generation,
+                        bridge: &bridge,
+                        preserve_language_errors: true,
+                    },
                     owned: RefCell::new(Vec::new()),
                     unit_exception: RefCell::new(None),
                 };
-                let args = ids.into_iter().map(|index| ValueId { session: generation, index }).collect::<Vec<_>>();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&call, &args)));
+                let args = ids
+                    .into_iter()
+                    .map(|index| ValueId {
+                        session: generation,
+                        index,
+                    })
+                    .collect::<Vec<_>>();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&call, &args)
+                }));
                 let result = match result {
                     Ok(result) => result.and_then(|id| call.active.check(id)),
-                    Err(_) => { control.invalidate(); Err(EvalError(format!("{name}: host callback panicked"))) }
-                }.and_then(|index| { control.poll()?; Ok(index) });
+                    Err(_) => {
+                        control.invalidate();
+                        Err(EvalError(format!("{name}: host callback panicked")))
+                    }
+                }
+                .and_then(|index| {
+                    control.poll()?;
+                    Ok(index)
+                });
                 let owned = call.owned.into_inner();
                 match result {
-                    Ok(index) => Ok(std::iter::once(index).chain(owned.into_iter().map(|id| id.index)).collect::<Vec<_>>()),
+                    Ok(index) => Ok(std::iter::once(index)
+                        .chain(owned.into_iter().map(|id| id.index))
+                        .collect::<Vec<_>>()),
                     Err(error) => {
-                        for id in owned { let _ = call.active.release(id); }
+                        for id in owned {
+                            let _ = call.active.release(id);
+                        }
                         if let Some(exception) = call.unit_exception.into_inner() {
                             let rethrow: Function = ctx.eval("__lightEvaluator.rethrowError")?;
                             return rethrow.call((exception, format!("{name}: {error}")));
                         }
-                        Err(rquickjs::Exception::throw_message(&ctx, &format!("{name}: {error}")))
+                        Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            &format!("{name}: {error}"),
+                        ))
                     }
                 }
             })?;
@@ -578,7 +651,10 @@ impl Evaluator {
             // Save through the same registry without exposing engine handles.
             let save: Function = ctx.eval("__lightEvaluator.save")?;
             let index = save.call((function,))?;
-            Ok(ValueId { session: generation, index })
+            Ok(ValueId {
+                session: generation,
+                index,
+            })
         })
     }
 
@@ -628,7 +704,10 @@ impl Evaluator {
             })
         })
     }
-    pub(crate) fn input_window(&self, more: bool) -> Result<(String, usize, bool, usize), EvalError> {
+    pub(crate) fn input_window(
+        &self,
+        more: bool,
+    ) -> Result<(String, usize, bool, usize), EvalError> {
         self.enter(|ctx| {
             let f: Function = ctx.eval("__lightEvaluator.inputWindow")?;
             let a: Array = f.call((more,))?;
@@ -644,7 +723,10 @@ impl Evaluator {
     pub(crate) fn last_exception(&self) -> Result<ValueId, EvalError> {
         self.enter(|ctx| {
             let f: Function = ctx.eval("__lightEvaluator.lastError")?;
-            Ok(ValueId { session: self.generation, index: f.call(())? })
+            Ok(ValueId {
+                session: self.generation,
+                index: f.call(())?,
+            })
         })
     }
     /// Live engine allocation accounting, useful for focused retention measurements.
@@ -669,7 +751,9 @@ pub trait MacroEvaluator {
     fn release(&self, id: ValueId) -> Result<(), EvalError>;
 }
 impl MacroEvaluator for Evaluator {
-    fn control(&self) -> ExecutionControl { Evaluator::control(self) }
+    fn control(&self) -> ExecutionControl {
+        Evaluator::control(self)
+    }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_unit(self, source)
     }
@@ -696,7 +780,9 @@ impl MacroEvaluator for Evaluator {
     }
 }
 impl MacroEvaluator for ActiveEvaluator<'_, '_> {
-    fn control(&self) -> ExecutionControl { ActiveEvaluator::control(self) }
+    fn control(&self) -> ExecutionControl {
+        ActiveEvaluator::control(self)
+    }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         ActiveEvaluator::evaluate_unit(self, source)
     }
@@ -804,13 +890,27 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     pub(crate) fn bind(&self, name: &str, id: ValueId, core: bool) -> Result<(), EvalError> {
         let id = self.check(id)?;
         self.enter(|ctx| {
-            let f: Function = ctx.eval(if core { "__lightEvaluator.coreBinding" } else { "__lightEvaluator.bind" })?;
+            let f: Function = ctx.eval(if core {
+                "__lightEvaluator.coreBinding"
+            } else {
+                "__lightEvaluator.bind"
+            })?;
             f.call((name, id))
         })
     }
     pub(crate) fn lookup(&self, name: &str, core: bool) -> Result<ValueId, EvalError> {
-        let index = self.enter(|ctx| { let f: Function = ctx.eval(if core { "__lightEvaluator.coreLookup" } else { "__lightEvaluator.lookup" })?; f.call((name,)) })?;
-        Ok(ValueId { session: self.generation, index })
+        let index = self.enter(|ctx| {
+            let f: Function = ctx.eval(if core {
+                "__lightEvaluator.coreLookup"
+            } else {
+                "__lightEvaluator.lookup"
+            })?;
+            f.call((name,))
+        })?;
+        Ok(ValueId {
+            session: self.generation,
+            index,
+        })
     }
     pub fn number(&self, id: ValueId) -> Result<f64, EvalError> {
         let id = self.check(id)?;
@@ -1124,11 +1224,18 @@ mod active_tests {
         let error = evaluator.evaluate_js(work).unwrap_err();
         assert!(error.0.contains("deadline exceeded"), "{error}");
         assert!(
-            evaluator.evaluate_js("42").unwrap_err().0.contains("deadline exceeded")
+            evaluator
+                .evaluate_js("42")
+                .unwrap_err()
+                .0
+                .contains("deadline exceeded")
         );
         assert!(
-            evaluator.begin_operation(&EvaluatorOptions::default())
-                .unwrap_err().0.contains("deadline exceeded")
+            evaluator
+                .begin_operation(&EvaluatorOptions::default())
+                .unwrap_err()
+                .0
+                .contains("deadline exceeded")
         );
 
         // Recovery has its own normal operation timeout, preserving the short
@@ -1136,19 +1243,34 @@ mod active_tests {
         let fresh = host.new_evaluator().unwrap();
         fresh.begin_operation(&host.evaluator_options).unwrap();
         assert_eq!(
-            fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(), 42.0
+            fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(),
+            42.0
         );
         assert!(
-            evaluator.evaluate_js("42").unwrap_err().0.contains("deadline exceeded")
+            evaluator
+                .evaluate_js("42")
+                .unwrap_err()
+                .0
+                .contains("deadline exceeded")
         );
     }
 }
 
 /// Arity checked before entering an embedding callback.
 #[derive(Clone, Copy, Debug)]
-pub enum HostArity { Exact(usize), AtLeast(usize), Range { min: usize, max: usize } }
+pub enum HostArity {
+    Exact(usize),
+    AtLeast(usize),
+    Range { min: usize, max: usize },
+}
 impl HostArity {
-    fn accepts(self, n: usize) -> bool { match self { Self::Exact(a) => n == a, Self::AtLeast(a) => n >= a, Self::Range { min, max } => n >= min && n <= max } }
+    fn accepts(self, n: usize) -> bool {
+        match self {
+            Self::Exact(a) => n == a,
+            Self::AtLeast(a) => n >= a,
+            Self::Range { min, max } => n >= min && n <= max,
+        }
+    }
 }
 /// Engine-neutral view of one active callback. It never reacquires the engine
 /// lock; recursive invocation uses the already active context. IDs created here
@@ -1160,18 +1282,36 @@ pub struct HostCall<'a, 'js> {
 }
 impl HostCall<'_, '_> {
     fn own(&self, value: Result<ValueId, EvalError>) -> Result<ValueId, EvalError> {
-        let value = value?; self.owned.borrow_mut().push(value); Ok(value)
+        let value = value?;
+        self.owned.borrow_mut().push(value);
+        Ok(value)
     }
-    pub fn number(&self, value: ValueId) -> Result<f64, EvalError> { self.active.number(value) }
-    pub fn string(&self, value: ValueId) -> Result<String, EvalError> { self.active.string(value) }
-    pub fn print(&self, value: ValueId) -> Result<String, EvalError> { self.active.print(value) }
-    pub fn data(&self, value: ValueId) -> Result<Datum, EvalError> { self.active.export_data(value, ConversionLimits::default()) }
-    pub fn value(&self, data: &Datum) -> Result<ValueId, EvalError> { self.own(self.active.import_data(data, ConversionLimits::default())) }
-    pub fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalError> { self.own(self.active.call(function, args)) }
-    pub fn control(&self) -> ExecutionControl { self.active.control() }
+    pub fn number(&self, value: ValueId) -> Result<f64, EvalError> {
+        self.active.number(value)
+    }
+    pub fn string(&self, value: ValueId) -> Result<String, EvalError> {
+        self.active.string(value)
+    }
+    pub fn print(&self, value: ValueId) -> Result<String, EvalError> {
+        self.active.print(value)
+    }
+    pub fn data(&self, value: ValueId) -> Result<Datum, EvalError> {
+        self.active.export_data(value, ConversionLimits::default())
+    }
+    pub fn value(&self, data: &Datum) -> Result<ValueId, EvalError> {
+        self.own(self.active.import_data(data, ConversionLimits::default()))
+    }
+    pub fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalError> {
+        self.own(self.active.call(function, args))
+    }
+    pub fn control(&self) -> ExecutionControl {
+        self.active.control()
+    }
     pub(crate) fn release_scoped(&self, value: ValueId) -> Result<(), EvalError> {
         let mut owned = self.owned.borrow_mut();
-        let index = owned.iter().position(|id| *id == value)
+        let index = owned
+            .iter()
+            .position(|id| *id == value)
             .ok_or_else(|| EvalError("value is not owned by this callback".into()))?;
         self.active.release(value)?;
         owned.swap_remove(index);
@@ -1181,8 +1321,12 @@ impl HostCall<'_, '_> {
         self.unit_exception.borrow_mut().take();
         let result = self.active.evaluate_unit(source);
         if result.is_err()
-            && let Ok(read) = self.active.ctx.eval::<Function, _>("__lightEvaluator.errorValue")
-            && let Ok(exception) = read.call(()) {
+            && let Ok(read) = self
+                .active
+                .ctx
+                .eval::<Function, _>("__lightEvaluator.errorValue")
+            && let Ok(exception) = read.call(())
+        {
             *self.unit_exception.borrow_mut() = Some(exception);
         }
         self.own(result)

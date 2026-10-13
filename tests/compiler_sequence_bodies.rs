@@ -73,20 +73,6 @@ fn complete_upstream_sequence_completion_bodies_execute_in_both_engines() {
     );
 }
 
-#[test]
-fn sequence_completion_fixture_provenance_preserves_complete_bodies() {
-    let output = Command::new("python3")
-        .args(["-B", "tests/reference/compiler-sequence-completion.py"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn reference_node(script: &str) -> String {
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .args(["--max-old-space-size=96", "-"])

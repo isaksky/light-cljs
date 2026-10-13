@@ -135,14 +135,28 @@ fn install(unit: &str, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), 
     e.release(values).map_err(|e| e.to_string())?;
     Ok(())
 }
-fn build(options: crate::evaluator::EvaluatorOptions, cache: bool, interactive: bool, control: Option<crate::evaluator::ExecutionControl>) -> Result<Bootstrap, String> {
+fn build(
+    options: crate::evaluator::EvaluatorOptions,
+    cache: bool,
+    interactive: bool,
+    control: Option<crate::evaluator::ExecutionControl>,
+) -> Result<Bootstrap, String> {
     let cached = if cache {
         UNITS.with(|u| u.borrow().clone())
     } else {
         None
     };
     let mut bootstrap = Bootstrap {
-        evaluator: Rc::new((if let Some(control) = control { Evaluator::interactive_with_control(options, control) } else if interactive { Evaluator::interactive(options) } else { Evaluator::new(options) }).map_err(|e| e.to_string())?),
+        evaluator: Rc::new(
+            (if let Some(control) = control {
+                Evaluator::interactive_with_control(options, control)
+            } else if interactive {
+                Evaluator::interactive(options)
+            } else {
+                Evaluator::new(options)
+            })
+            .map_err(|e| e.to_string())?,
+        ),
         functions: HashMap::new(),
     };
     let mut host = MacroHost::new();
@@ -186,7 +200,12 @@ impl MacroHost {
                 .session_handle()
                 .and_then(|session| session.bootstrap());
             if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self.evaluator_options.clone(), true, self.interactive, self.interactive_control.clone())?);
+                self.bootstrap = Some(build(
+                    self.evaluator_options.clone(),
+                    true,
+                    self.interactive,
+                    self.interactive_control.clone(),
+                )?);
             }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
@@ -214,17 +233,12 @@ impl MacroHost {
         // they are expanding, or observe later user protocol replacements.
         // Keep source macros on their normal declaration frontier, and restore
         // any installed extensions (including executed mutations) on return.
-        let _frontier = self.session_handle()
+        let _frontier = self
+            .session_handle()
             .filter(|session| session.extension_frontier() != 0)
             .map(|_| crate::compilation_session::FrontierGuard::bootstrap(engine))
             .transpose()?;
-        let result = self.expand_javascript(
-            engine,
-            declaration.function,
-            call,
-            env,
-            origin,
-        );
+        let result = self.expand_javascript(engine, declaration.function, call, env, origin);
         if result.is_err() {
             self.bootstrap = None;
         }
@@ -365,7 +379,12 @@ impl MacroHost {
                 .session_handle()
                 .and_then(|session| session.bootstrap());
             if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self.evaluator_options.clone(), true, self.interactive, self.interactive_control.clone())?);
+                self.bootstrap = Some(build(
+                    self.evaluator_options.clone(),
+                    true,
+                    self.interactive,
+                    self.interactive_control.clone(),
+                )?);
             }
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
@@ -378,7 +397,10 @@ impl MacroHost {
                 .map_err(|e| e.to_string())?;
         let function = engine
             .unwrap_or(bootstrap.evaluator.as_ref())
-            .evaluate_unit(&format!("rt => rt.core.macroReaderFunction(({})(rt))", crate::emitter::emit_deferred_unit(&program)))
+            .evaluate_unit(&format!(
+                "rt => rt.core.macroReaderFunction(({})(rt))",
+                crate::emitter::emit_deferred_unit(&program)
+            ))
             .map_err(|e| e.to_string())?;
         self.javascript_macros.insert(
             format!("{namespace}/{name}"),
@@ -397,7 +419,9 @@ impl MacroHost {
             return Some(format!("{target}/{member}"));
         }
         if self.has_source_value(namespace, name)
-            || self.javascript_macros.contains_key(&format!("{namespace}/{name}"))
+            || self
+                .javascript_macros
+                .contains_key(&format!("{namespace}/{name}"))
         {
             return Some(format!("{namespace}/{name}"));
         }
@@ -416,13 +440,19 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
-        let key = self.source_macro_key(namespace, name)
+        let key = self
+            .source_macro_key(namespace, name)
             .ok_or_else(|| format!("macro {name} is not visible in namespace {namespace}"))?;
-        let declaration = self.javascript_macros.get(&key)
-            .ok_or_else(|| format!("compile-time macro {key} is not declared"))?.clone();
+        let declaration = self
+            .javascript_macros
+            .get(&key)
+            .ok_or_else(|| format!("compile-time macro {key} is not declared"))?
+            .clone();
         let (owner, member) = key.split_once('/').unwrap();
         if owner != namespace && self.source_binding_private(owner, member) {
-            return Err(format!("{key} is private; macros can only be imported from public bindings"));
+            return Err(format!(
+                "{key} is private; macros can only be imported from public bindings"
+            ));
         }
         let bootstrap = self
             .bootstrap
@@ -455,8 +485,7 @@ mod tests {
             "(def hits (atom 0)) (defn h [] (swap! hits inc) (js/cancelDemand 0)) (defmacro m [] (h))",
             "(def hits (atom 0)) (let [] (def value (do (swap! hits inc) (js/cancelDemand 0)))) (defmacro m [] (try value (catch :default e 42)))",
         ] {
-            crate::compile_with_macros(source, &mut host)
-            .unwrap();
+            crate::compile_with_macros(source, &mut host).unwrap();
             let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
             let control = evaluator.control();
             evaluator

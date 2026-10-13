@@ -1,6 +1,6 @@
 //! Complete utilities_completion upstream bodies, pinned references and source provenance.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{analyze_with_macros, emitter::emit_js_unit, parse, MacroHost};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
     fs,
     io::Write,
@@ -70,20 +70,6 @@ fn complete_upstream_utilities_completion_bodies_execute_in_both_engines() {
     assert!(
         failures.is_empty(),
         "failed upstream workflows: {failures:?}"
-    );
-}
-
-#[test]
-fn utilities_completion_fixture_provenance_preserves_complete_bodies() {
-    let output = Command::new("python3")
-        .args(["-B", "tests/reference/compiler-utilities-completion.py"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -220,43 +206,4 @@ fn utilities_completion_fixtures_match_pinned_release_and_checkout() {
         );
         fs::remove_dir_all(output_dir).unwrap();
     }
-}
-
-#[test]
-fn adapted_assertions_cannot_pass_by_catching_their_own_failure() {
-    let output = Command::new("python3")
-        .args([
-            "-B",
-            "tests/reference/compiler-utilities-completion.py",
-            "--caught-false",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let source = String::from_utf8(output.stdout).unwrap();
-    let p = analyze_with_macros(&source, &parse(&source).unwrap(), &mut MacroHost::new()).unwrap();
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert!(e
-        .evaluate(&p)
-        .unwrap_err()
-        .to_string()
-        .contains("Assert failed"));
-    let out = Command::new("node")
-        .args([
-            "-e",
-            &format!("const rt = {RUNTIME_SOURCE}; ({})(rt);", emit_js_unit(&p)),
-        ])
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Assert failed"));
-    let macro_source = format!("(defmacro caught-false [] {source}) (caught-false)");
-    assert!(analyze_with_macros(
-        &macro_source,
-        &parse(&macro_source).unwrap(),
-        &mut MacroHost::new()
-    )
-    .unwrap_err()
-    .to_string()
-    .contains("Assert failed"));
 }

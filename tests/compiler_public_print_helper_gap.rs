@@ -45,18 +45,21 @@ fn public_print_helper_rejection_and_actual_macro_recovery() {
                 fs::create_dir_all(&folder).unwrap();
                 let source = if phase {
                     format!(
-                    "(ns user)\n(defmacro upstream [] (list 'quote (do {original})))\n(defn run [] (upstream))\nrun\n"
-                )
+                        "(ns user)\n(defmacro upstream [] (list 'quote (do {original})))\n(defn run [] (upstream))\nrun\n"
+                    )
                 } else {
                     format!("(ns user)\n(defn run [] (do {original}))\nrun\n")
                 };
                 fs::write(folder.join("user.cljs"), &source).unwrap();
                 let mut fresh = MacroHost::new();
                 let host = if reuse { &mut reused } else { &mut fresh };
-                let error =
-                    light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&folder), host)
-                        .unwrap_err()
-                        .to_string();
+                let error = light_cljs::compile_namespace_with_macros(
+                    "user",
+                    std::slice::from_ref(&folder),
+                    host,
+                )
+                .unwrap_err()
+                .to_string();
                 assert!(
                     error.contains(&format!("unresolved symbol: {missing}")),
                     "{variant}: {error}"

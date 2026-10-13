@@ -53,7 +53,7 @@ These files are hashed in the manifest and must already exist. Their absence
 does not prevent the default synthetic frontend suite. Existing
 `benches/{tokenizer,parser,interpreter_gc}.rs` remain available unchanged.
 The GC harness separately covers cyclic workloads at different collection
-cadences; see [the reclamation contract](../docs/interpreter.md).
+cadences; see the reclamation contract in the removed `docs/interpreter.md` (git history).
 
 For individual measurements:
 

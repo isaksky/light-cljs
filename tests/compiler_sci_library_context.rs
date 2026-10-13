@@ -9,7 +9,9 @@ fn unhex(text: &str) -> String {
     assert_eq!(text.len() % 2, 0);
     String::from_utf8(
         text.as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect(),
     )
@@ -34,7 +36,7 @@ fn script(
  (set-print-fn! (fn [text] (js/globalThis.lightLibraryWrite text)))
  (set-print-err-fn! (fn [text] (js/globalThis.lightLibraryWriteErr text)))
  {source})"#,
-        include_str!("reference/compiler-language/sci_library_inspection.cljs")
+        include_str!("fixtures/contracts/sci_library_inspection.cljs")
     );
     fs::write(root.join("user.cljs"), fixture).unwrap();
     let compiled = light_cljs::compile_namespace_with_macros(

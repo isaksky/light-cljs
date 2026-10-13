@@ -96,7 +96,17 @@ fn validate_origin(row: &str) -> Result<[&str; 9], &'static str> {
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| "expected nine provenance columns")?;
-    let [_, ids, origin, repository, commit, path, anchor, rationale, behavior] = fields;
+    let [
+        _,
+        ids,
+        origin,
+        repository,
+        commit,
+        path,
+        anchor,
+        rationale,
+        behavior,
+    ] = fields;
     if fields.iter().any(|field| field.trim().is_empty())
         || ids.split(',').any(|id| id.is_empty())
         || rationale == "-"
@@ -205,23 +215,23 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     );
                     covered_cases.insert((local_path, id));
                 }
-                "tests/reference/compiler-language/namespace-cases.jsonl" => assert!(
-                    include_str!("reference/compiler-language/namespace-cases.jsonl")
+                "tests/fixtures/contracts/namespace-cases.jsonl" => assert!(
+                    include_str!("fixtures/contracts/namespace-cases.jsonl")
                         .contains(&format!("\"id\":\"{id}\"")),
                     "unknown namespace witness: {id}"
                 ),
-                "tests/reference/compiler-language/diagnostic-cases.jsonl" => assert!(
-                    include_str!("reference/compiler-language/diagnostic-cases.jsonl")
+                "tests/fixtures/contracts/diagnostic-cases.jsonl" => assert!(
+                    include_str!("fixtures/contracts/diagnostic-cases.jsonl")
                         .contains(&format!("\"id\":\"{id}\"")),
                     "unknown diagnostic witness: {id}"
                 ),
-                "tests/reference/compiler-language/warning-cases.jsonl" => assert!(
-                    include_str!("reference/compiler-language/warning-cases.jsonl")
+                "tests/fixtures/contracts/warning-cases.jsonl" => assert!(
+                    include_str!("fixtures/contracts/warning-cases.jsonl")
                         .contains(&format!("\"id\":\"{id}\"")),
                     "unknown warning witness: {id}"
                 ),
-                "tests/reference/compiler-language/boundary-support.jsonl" => assert!(
-                    include_str!("reference/compiler-language/boundary-support.jsonl")
+                "tests/fixtures/contracts/boundary-support.jsonl" => assert!(
+                    include_str!("fixtures/contracts/boundary-support.jsonl")
                         .contains(&format!("\"id\":\"{id}\"")),
                     "unknown supplemental boundary witness: {id}"
                 ),

@@ -7,10 +7,21 @@ use crate::analyzer::*;
 /// Existing global IDs remain stable; a fragment definition updates its flags,
 /// and supplied metadata replaces metadata on the matching global.
 pub(crate) fn append(target: &mut Program, fragment: &Program) -> ExprId {
-    for namespace in &fragment.namespaces { if !target.namespaces.contains(namespace) { target.namespaces.push(namespace.clone()); } }
-    target.reader_contexts.extend(fragment.reader_contexts.clone());
+    for namespace in &fragment.namespaces {
+        if !target.namespaces.contains(namespace) {
+            target.namespaces.push(namespace.clone());
+        }
+    }
+    target
+        .reader_contexts
+        .extend(fragment.reader_contexts.clone());
     let expr_offset = target.exprs.len();
-    target.namespace_entries.extend(fragment.namespace_entries.iter().map(|(id, ns)| (ExprId(id.0 + expr_offset), ns.clone())));
+    target.namespace_entries.extend(
+        fragment
+            .namespace_entries
+            .iter()
+            .map(|(id, ns)| (ExprId(id.0 + expr_offset), ns.clone())),
+    );
     let mut remap = Remap {
         map_expr: |id: ExprId| ExprId(id.0 + expr_offset),
         local: target.locals.len(),
@@ -207,14 +218,29 @@ pub(crate) fn interactive_resolution_snapshot(program: &Program) -> Program {
     // Declaration metadata normally contains only data. Executable metadata
     // retains its local arenas; ordinary snapshots must not accumulate every
     // prior function's locals and recur tables on each fragment append.
-    if snapshot.exprs.iter().all(|expr| matches!(expr.kind,
-        ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Number(_) | ExprKind::String(_)
-        | ExprKind::ReaderLiteral { .. } | ExprKind::WithMeta { .. }
-        | ExprKind::Keyword(_) | ExprKind::Symbol(_) | ExprKind::List(_)
-        | ExprKind::Vector(_) | ExprKind::Map(_) | ExprKind::Set(_)
-        | ExprKind::LiteralMap(_) | ExprKind::LiteralSet(_)
-        | ExprKind::CoreFn(_) | ExprKind::Global(_) | ExprKind::JsGlobal(_)
-        | ExprKind::Var { .. })) {
+    if snapshot.exprs.iter().all(|expr| {
+        matches!(
+            expr.kind,
+            ExprKind::Nil
+                | ExprKind::Bool(_)
+                | ExprKind::Number(_)
+                | ExprKind::String(_)
+                | ExprKind::ReaderLiteral { .. }
+                | ExprKind::WithMeta { .. }
+                | ExprKind::Keyword(_)
+                | ExprKind::Symbol(_)
+                | ExprKind::List(_)
+                | ExprKind::Vector(_)
+                | ExprKind::Map(_)
+                | ExprKind::Set(_)
+                | ExprKind::LiteralMap(_)
+                | ExprKind::LiteralSet(_)
+                | ExprKind::CoreFn(_)
+                | ExprKind::Global(_)
+                | ExprKind::JsGlobal(_)
+                | ExprKind::Var { .. }
+        )
+    }) {
         snapshot.locals.clear();
         snapshot.recur_targets.clear();
         snapshot.field_bindings.clear();
@@ -239,7 +265,9 @@ fn compact_snapshot_literals(program: &mut Program) {
     let mut named = |id: &mut NamedLiteralId, string: &mut dyn FnMut(&mut StringId)| {
         *id = *named_ids.entry(id.0).or_insert_with(|| {
             let mut literal = old_named[id.0].clone();
-            if let Some(ns) = &mut literal.namespace { string(ns); }
+            if let Some(ns) = &mut literal.namespace {
+                string(ns);
+            }
             string(&mut literal.name);
             let next = NamedLiteralId(program.named_literals.len());
             program.named_literals.push(literal);
@@ -249,8 +277,10 @@ fn compact_snapshot_literals(program: &mut Program) {
     for expr in &mut program.exprs {
         match &mut expr.kind {
             ExprKind::String(id) | ExprKind::Assert { form: id, .. } => string(id),
-            ExprKind::Keyword(id) | ExprKind::Symbol(id) | ExprKind::Var { symbol: id, .. } => named(id, &mut string),
-            _ => {},
+            ExprKind::Keyword(id) | ExprKind::Symbol(id) | ExprKind::Var { symbol: id, .. } => {
+                named(id, &mut string)
+            }
+            _ => {}
         }
     }
 }
@@ -261,7 +291,8 @@ pub(crate) fn children(program: &Program, id: ExprId) -> Vec<ExprId> {
     identity_remap(program, |child| {
         children.borrow_mut().push(child);
         child
-    }).kind(&mut program.exprs[id.0].kind.clone());
+    })
+    .kind(&mut program.exprs[id.0].kind.clone());
     children.into_inner()
 }
 
@@ -350,8 +381,10 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             Local(id) => self.local(id),
             Global(id) => self.global(id),
             JsGlobal(id) => {
-                if !self.js.is_empty() { *id = self.js[id.0]; }
-            },
+                if !self.js.is_empty() {
+                    *id = self.js[id.0];
+                }
+            }
             ReaderLiteral { items, .. }
             | List(items)
             | Vector(items)
@@ -389,9 +422,8 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
                 self.expr(key);
             }
             QualifiedMethod { class, .. } => self.expr(class),
-            CopyArguments(id) | WithOutStr(id) | Exists(id) | BindingExists(id) | BooleanHint(id) | Throw(id) => {
-                self.expr(id)
-            }
+            CopyArguments(id) | WithOutStr(id) | Exists(id) | BindingExists(id)
+            | BooleanHint(id) | Throw(id) => self.expr(id),
             DefProtocol {
                 global, methods, ..
             } => {
