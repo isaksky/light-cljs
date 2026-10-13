@@ -24,6 +24,16 @@ the light-cljs outcome, effects, stdout, stderr, and a reason with
 
 Only `portable` and `adapted` rows count as coverage.
 
+A `gap` row tagged `kind=canonical-dialect-difference` is one where light-cljs
+follows canonical ClojureScript and SCI (on the JVM) differs, for example
+`clojure.string/join` with a nil separator.
+
+Rows listed in `STACK_DEPTH_DEPENDENT` (in the test) end in QuickJS stack
+exhaustion. The number of effects before it depends on native frame sizes and
+therefore on the build profile (16 with unoptimized dependencies, 142 with the
+default test profile on an Apple Silicon Mac). These rows are compared by shape:
+a stack-exhaustion diagnostic after at least two `false` effects, with no output.
+
 ## Commands
 
 ```sh

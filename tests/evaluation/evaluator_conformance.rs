@@ -220,6 +220,98 @@ fn quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies() {
     }
 }
 
+// Rows whose evaluator observation ends in QuickJS stack exhaustion. How many
+// re-entrant realizations fit in the 1 MiB engine stack, and whether JavaScript
+// or the observe host callback reaches the limit first, depend on native frame
+// sizes and so on the build profile (for example the opt-level of QuickJS). The
+// rows keep a recorded observation but are compared by shape.
+const STACK_DEPTH_DEPENDENT: &[&str] = &["sci-deferred-lazy-reentry"];
+const STACK_EXHAUSTED: [&str; 2] = [
+    "Error: Maximum call stack size exceeded",
+    "Error: user/observe: Error: Maximum call stack size exceeded",
+];
+const REALIZING: &str = " (bool false)";
+
+fn wire(text: &str) -> String {
+    protocol::Value::String(text.encode_utf16().collect()).wire()
+}
+
+/// The number of `false` effects (each realization observes that it is not yet
+/// realized before re-entering) for a stack-exhaustion diagnostic without
+/// output; `None` for any other observation.
+fn stack_exhaustion_depth(fields: &str) -> Option<usize> {
+    let [outcome, effects, stdout, stderr] = fields.split('\t').collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let exhausted = STACK_EXHAUSTED
+        .iter()
+        .any(|message| outcome == format!("(diagnostic {})", wire(message)));
+    let effects = effects.strip_prefix("(vector")?.strip_suffix(')')?;
+    let depth = effects.len() / REALIZING.len();
+    (exhausted && effects == REALIZING.repeat(depth) && stdout == wire("") && stderr == wire(""))
+        .then_some(depth)
+}
+
+/// A recorded stack-exhaustion row matches any observation of the same shape
+/// that re-entered at least once, whatever its depth.
+fn stack_depth_reconciliation(row: &[&str], observed: &str) -> bool {
+    STACK_DEPTH_DEPENDENT.contains(&row[0])
+        && stack_exhaustion_depth(&row[9..13].join("\t")).is_some()
+        && stack_exhaustion_depth(observed).is_some_and(|depth| depth >= 2)
+}
+
+#[test]
+fn stack_depth_accounting_requires_exhaustion_after_reentry() {
+    let row = ACCOUNTING
+        .lines()
+        .find(|line| line.starts_with("sci-deferred-lazy-reentry\t"))
+        .unwrap();
+    let row: Vec<_> = row.split('\t').collect();
+    let recorded = row[9..13].join("\t");
+    assert!(stack_exhaustion_depth(&recorded).is_some_and(|depth| depth >= 2));
+    let observation = |message: &str, effects: &str, stdout: &str| {
+        format!(
+            "(diagnostic {})\t(vector{effects})\t{}\t{}",
+            wire(message),
+            wire(stdout),
+            wire("")
+        )
+    };
+    for message in STACK_EXHAUSTED {
+        for depth in [2, 16, 142, 1_000] {
+            let observed = observation(message, &REALIZING.repeat(depth), "");
+            assert!(stack_depth_reconciliation(&row, &observed), "{depth}");
+        }
+    }
+    let exhausted = STACK_EXHAUSTED[0];
+    for observed in [
+        observation(exhausted, "", ""),
+        observation(exhausted, REALIZING, ""),
+        observation(exhausted, &format!("{REALIZING}{REALIZING} nil"), ""),
+        observation(exhausted, &format!("{REALIZING} (bool true)"), ""),
+        observation(exhausted, &REALIZING.repeat(3), "x"),
+        observation("Error: boom", &REALIZING.repeat(3), ""),
+        observation(
+            "Error: user/observe: Maximum call stack size exceeded",
+            &REALIZING.repeat(3),
+            "",
+        ),
+        // SCI's inner first returns nil, so its realization completes.
+        "(return nil)\t(vector (bool false) nil (bool true))\t(string u)\t(string u)".into(),
+        "(resource-bound lazy-cycle)\t(vector (bool false) (bool false))\t(string u)\t(string u)"
+            .into(),
+    ] {
+        assert!(!stack_depth_reconciliation(&row, &observed), "{observed}");
+    }
+    let observed = observation(exhausted, &REALIZING.repeat(3), "");
+    let mut other = row.clone();
+    other[0] = "sci-deferred-lazy-self";
+    assert!(!stack_depth_reconciliation(&other, &observed));
+    let mut returned = row.clone();
+    returned[9] = "(return nil)";
+    assert!(!stack_depth_reconciliation(&returned, &observed));
+}
+
 #[test]
 fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
     let cases = protocol::cases(CORPUS).unwrap();
@@ -298,23 +390,21 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
         } else {
             row[9..13].join("\t")
         };
-        if actual
+        let observed = actual.as_ref().map(evaluator::Observation::fields);
+        let matches = observed
             .as_ref()
-            .map(evaluator::Observation::fields)
-            .as_ref()
-            .ok()
-            != Some(&expected)
-        {
-            let actual_text = match &actual {
-                Ok(observation) => observation.fields(),
-                Err(error) => error.clone(),
+            .is_ok_and(|fields| *fields == expected || stack_depth_reconciliation(&row, fields));
+        if !matches {
+            let actual_text = match &observed {
+                Ok(fields) => fields,
+                Err(error) => *error,
             };
             let brief = |text: &str| text.chars().take(1_200).collect::<String>();
             failures.push(format!(
                 "{} [{status}]: {}\nactual {}\nexpected {}\n{}",
                 case.id,
                 row[8],
-                brief(&actual_text),
+                brief(actual_text),
                 brief(&expected),
                 row[13]
             ));
