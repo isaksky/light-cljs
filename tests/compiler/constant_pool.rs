@@ -258,11 +258,11 @@ fn reader_distinct_constants_are_distinct_entries() {
     let declarations = declarations(&advanced);
     for expected in [
         "rt$hashed(rt$constantSetFromArray([1, 1]), ",
-        "rt$hashed(rt$setFromArray([1]), ",
+        "rt$hashed(rt$arraySetFromArray([1]), ",
         "rt$hashed(rt$arrayMapFromArray([1, k",
         "rt$hashed(rt$constantMapFromArray([1, k",
         "rt$hashed(rt$constantSetFromArray([k",
-        "rt$hashed(rt$setFromArray([k",
+        "rt$hashed(rt$arraySetFromArray([k",
     ] {
         assert!(
             declarations.iter().any(|line| line.contains(expected)),
@@ -448,7 +448,8 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     // interned but still looked up per site); at `Advanced` the constant
     // parts are built once, and only the map with a dynamic value is built
     // per iteration, on its key shape (light-cljs-220), and the constant map
-    // by `arrayMapFromArray` (light-cljs-230). The row passes through
+    // by `arrayMapFromArray` (light-cljs-230), the constant set by
+    // `arraySetFromArray` (light-cljs-231). The row passes through
     // `identity`: read directly, the lookups of its constant values and their
     // counts fold, and no row is built at all (light-cljs-221).
     let source = r#"
@@ -465,14 +466,15 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         "arrayMapFromArray",
         "mapFromShape",
         "setFromArray",
+        "arraySetFromArray",
         "keyword",
         "makeVector",
     ];
     let program = program(source);
     let expected = [
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":1,"mapFromArray":0,"arrayMapFromArray":1,"mapFromShape":1000,"setFromArray":1,"keyword":10,"makeVector":2}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":1,"mapFromArray":0,"arrayMapFromArray":1,"mapFromShape":1000,"setFromArray":0,"arraySetFromArray":1,"keyword":10,"makeVector":2}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(
@@ -494,7 +496,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
              [-1388402092, 1771418977, -864607220, 767870958, 1499536964]);",
             "6 = rt$keyword(null, \"b\");",
             "7 = rt$keyword(null, \"a\");",
-            "8 = rt$hashed(rt$setFromArray([k6, k7]), 551401264);",
+            "8 = rt$hashed(rt$arraySetFromArray([k6, k7]), 551401264);",
             "9 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
             "10 = rt$keyword(null, \"kind\");",
             "11 = rt$keyword(null, \"row\");",
@@ -510,7 +512,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             composites: 3,
             functions: 0,
             lazy: 0,
-            bytes: 700
+            bytes: 705
         }
     );
     assert_eq!(
@@ -522,7 +524,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         .to_string()
         .lines()
         .nth(1),
-        Some("constant pool: 14 entries (3 composite, 0 lazy), 700 bytes")
+        Some("constant pool: 14 entries (3 composite, 0 lazy), 705 bytes")
     );
     assert_eq!(table.bytes, table_bytes(&advanced));
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {

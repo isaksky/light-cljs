@@ -394,9 +394,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
         assert_eq!(listed, expected, "`when:` of unit `{}`", unit.name);
         checked += 1;
     }
-    // The record methods, the four type hooks, the kind hooks and the
+    // The record methods, the five type hooks, the kind hooks and the
     // protocol hooks.
-    assert_eq!(checked, 75);
+    assert_eq!(checked, 79);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -472,16 +472,19 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("lookupTransient", Kind::Stores(&["transients"])),
     ("lookupTree", Kind::Units(&["treeMapConstructor"])),
     ("entryIndex", Kind::Stores(&["maps", "sets"])),
-    // Maps and sets of the hash-map kind, and records.
+    // Maps and sets of the hash-map kind, and records. A set has another
+    // kind than array-map only where `putMember` promoted it or the public
+    // constructor (`publicHashSet`) took its map's kind (light-cljs-231).
     (
         "hashTraversal",
-        Kind::Units(&["PersistentHashMapValue", "PersistentHashSetValue"]),
+        Kind::Units(&["PersistentHashMapValue", "publicHashSet", "putMember"]),
     ),
     (
         "hashEntryIndex",
         Kind::Units(&[
             "PersistentHashMapValue",
-            "PersistentHashSetValue",
+            "publicHashSet",
+            "putMember",
             "makeType",
         ]),
     ),
@@ -489,9 +492,17 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         "putHashEntry",
         Kind::Units(&[
             "PersistentHashMapValue",
-            "PersistentHashSetValue",
+            "publicHashSet",
+            "putMember",
             "makeTransient",
         ]),
+    ),
+    // The map of a set of another kind than array-map.
+    ("hashSetMap", Kind::Units(&["publicHashSet", "putMember"])),
+    // Sets with public slots, which only the public constructors build.
+    (
+        "countPublicSet",
+        Kind::Units(&["publicHashSet", "treeSetConstructor"]),
     ),
     ("nthChunk", Kind::Stores(&["chunks"])),
     ("nthTransient", Kind::Stores(&["transients"])),

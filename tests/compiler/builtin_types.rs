@@ -19,7 +19,10 @@
 //! dispatchers and protocol tests answer natively, vectors and maps answer
 //! their host-facing methods from their own items, the printer reads options
 //! only from its public entries, and `str`, `atom` and map literals keep no
-//! printer, option parsing or hash map of their own.
+//! printer, option parsing or hash map of their own. Since light-cljs-231
+//! sets do the same, a small set literal builds an array set, and a
+//! membership test of a small set literal compares the tested value with its
+//! members in value position too.
 use super::optimization::execute;
 use light_cljs::runtime_manifest::RuntimeManifest;
 use light_cljs::{
@@ -389,6 +392,191 @@ fn maps_answer_host_facing_methods_from_their_entries() {
         ),
         "[[1 2 3 nil] \"Index out of bounds\" 7 true [[:z 26]] [:z nil] 1 [4 5 nil] 1]",
     );
+}
+
+#[test]
+fn sets_answer_host_facing_methods_from_their_members() {
+    // light-cljs-231: without protocol implementations a set iterates
+    // (`keys`, `values`, `entries`) and searches (`has`) its own members in
+    // the order `seq` walks them, compares its count without `count`, and
+    // builds its `hash-map` field as a map of its kind: array, hash and
+    // sorted sets, sets the public constructors built from maps of every
+    // kind and from other values, and quoted literals.
+    every_level(
+        &[
+            DRAIN,
+            r#"
+             (let [it (fn [s] [(vec (js/Array.from s)) (drain (.keys s)) (drain (.values s))
+                               (mapv #(if (array? %) (vec %) %) (drain (.entries s)))
+                               (.has s 1) (.has s 7)])
+                   big (into #{} (range 10))
+                   pub (cljs.core/PersistentHashSet. nil {1 nil :a nil} nil)
+                   pubh (cljs.core/PersistentHashSet. nil (into {} (map vector (range 10) (range 10))) nil)
+                   tree (cljs.core/PersistentTreeSet. nil (sorted-map 3 nil 1 nil) nil)
+                   vsrc (cljs.core/PersistentHashSet. nil [1 2 3] nil)
+                   sorted (cljs.core/PersistentHashSet. nil (sorted-map 1 nil 2 nil) nil)
+                   none (cljs.core/PersistentHashSet. nil nil nil)]
+               (pr-str [(it #{1 :a}) (it big) (it (sorted-set 3 1 2)) (it pub) (it pubh) (it tree) (it #{})
+                        (it #{nil 1}) (it (disj big 3)) (it (conj #{1} 2)) (it '#{1 "a"})
+                        (.equiv #{1 2} #{2 1}) (.equiv #{1 2} #{1}) (= #{1 2} pub) (= pub #{1 :a})
+                        (= big (set (range 10))) (= vsrc #{}) (= #{} vsrc) (= tree #{1 3}) (= #{1 3} tree)
+                        (count vsrc) (.-hash-map #{1 :a}) (.-hash-map big) (.-hash-map pub)
+                        (.-hash-map (persistent! (transient pub))) (.call #{1 2} nil 2) (.call #{1 2} nil 3 :none)
+                        (contains? sorted 1) (contains? sorted 3) (count sorted) (conj sorted 5) (disj sorted 1)
+                        (contains? none 1) (conj none 1) (persistent! (conj! (transient none) 3))
+                        (contains? (persistent! (conj! (transient none) 3)) 3)]))"#,
+        ]
+        .concat(),
+        "[[[1 :a] [1 :a nil] [1 :a nil] [[1 1] [:a :a] nil] true false] \
+         [[0 1 2 3 4 5 6 7 8 9] [0 1 2 3 4 5 6 7 8 9 nil] [0 1 2 3 4 5 6 7 8 9 nil] \
+         [[0 0] [1 1] [2 2] [3 3] [4 4] [5 5] [6 6] [7 7] [8 8] [9 9] nil] true true] \
+         [[1 2 3] [1 2 3 nil] [1 2 3 nil] [[1 1] [2 2] [3 3] nil] true false] \
+         [[1 :a] [1 :a nil] [1 :a nil] [[1 1] [:a :a] nil] true false] \
+         [[0 1 2 3 4 5 6 7 8 9] [0 1 2 3 4 5 6 7 8 9 nil] [0 1 2 3 4 5 6 7 8 9 nil] \
+         [[0 0] [1 1] [2 2] [3 3] [4 4] [5 5] [6 6] [7 7] [8 8] [9 9] nil] true true] \
+         [[1 3] [1 3 nil] [1 3 nil] [[1 1] [3 3] nil] true false] [[] [nil] [nil] [nil] false false] \
+         [[nil 1] [nil 1 nil] [nil 1 nil] [[nil nil] [1 1] nil] true false] \
+         [[0 1 2 4 5 6 7 8 9] [0 1 2 4 5 6 7 8 9 nil] [0 1 2 4 5 6 7 8 9 nil] \
+         [[0 0] [1 1] [2 2] [4 4] [5 5] [6 6] [7 7] [8 8] [9 9] nil] true true] \
+         [[1 2] [1 2 nil] [1 2 nil] [[1 1] [2 2] nil] true false] \
+         [[1 \"a\"] [1 \"a\" nil] [1 \"a\" nil] [[1 1] [\"a\" \"a\"] nil] true false] \
+         true false false true true true false true true 3 {1 nil, :a nil} \
+         {0 nil, 1 nil, 2 nil, 3 nil, 4 nil, 5 nil, 6 nil, 7 nil, 8 nil, 9 nil} {1 nil, :a nil} \
+         {1 nil, :a nil} 2 :none true false 2 #{1 2 5} #{2} false #{1} #{3} true]",
+    );
+    // With protocol implementations the generic methods dispatch to them,
+    // and they take receivers of another type.
+    every_level(
+        &[
+            DRAIN,
+            r#"
+             (extend-type PersistentHashSet ICounted (-count [_] 7))
+             (extend-type PersistentTreeSet ISeqable (-seq [_] (list 9 8)))
+             (let [s #{1 2} t (sorted-set 1 2)]
+               (pr-str [(drain (.call (aget s js/Symbol.iterator) s)) (drain (.keys t)) (vec (js/Array.from t))
+                        (mapv vec (drain (.entries s))) (.has s 1) (.has t 9) (= s (hash-set 1 2))
+                        (= (hash-set 2 1) s) (= s (conj #{1} 2)) (count s) (drain (.call (.-keys s) '(4 5)))
+                        (.call (.-has s) {:a 1} :a) (mapv vec (drain (.call (.-entries s) [6 7])))]))"#,
+        ]
+        .concat(),
+        "[[1 2 nil] [9 8 nil] [9 8] [[1 1] [2 2] []] true false false false false 7 [4 5 nil] true \
+         [[6 6] [7 7] []]]",
+    );
+}
+
+/// A set literal's `has` and iteration through the host.
+const SET_SOURCE: &str = "(js/console.log (.has #{1 2} 2) (.join (js/Array.from #{1 2}) \" \"))";
+
+#[test]
+fn a_set_keeps_no_seq_hash_map_or_hashing() {
+    // light-cljs-231: it iterates and searches its members itself, compares
+    // them without `count`, builds an array map for its `hash-map` field, and
+    // its literal is an array set, which no promotion makes a hash set, so it
+    // keeps neither seqs, nor a hash map, nor hashing.
+    let kept = assert_keeps_none(
+        SET_SOURCE,
+        &[
+            "seq",
+            "first",
+            "next",
+            "count",
+            "nth",
+            "es6Iterator",
+            "es6EntriesIterator",
+            "makeSet.seq",
+            "IndexedSeqValue",
+            "mapFromArray",
+            "PersistentHashMapValue",
+            "hash",
+            "hashNodeAssoc",
+            "ensureHashRoot",
+            "PersistentHashMapValue.traversal",
+            "PersistentHashMapValue.entryIndex",
+            "PersistentHashMapValue.put",
+            "putMember",
+            "setFromArray",
+            "publicHashSet",
+        ],
+    );
+    for unit in PROTOCOL_MACHINERY {
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    for unit in [
+        "arraySetFromArray",
+        "setIterator",
+        "makeSet.equiv",
+        "setCount",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    every_level(SET_SOURCE, "true 1 2\nundefined");
+    // A program naming the type keeps its public constructor, and a larger
+    // literal keeps promotion and hashing.
+    for source in [
+        "(js/console.log (cljs.core/PersistentHashSet. nil {1 nil} nil))",
+        "(js/console.log (instance? PersistentHashSet #{1}))",
+        "(js/console.log #{1 2 3 4 5 6 7 8 9})",
+    ] {
+        let units = units(source);
+        assert!(units.contains(&"hash"), "{source}: {units:?}");
+    }
+    assert!(!units("(js/console.log #{} (.-EMPTY (type #{})))").contains(&"publicHashSet"));
+}
+
+#[test]
+fn membership_in_value_position_keeps_no_set() {
+    // light-cljs-231: `(contains? s x)`, `(s x)` and `(get s x)` on a set
+    // literal of at most 8 keywords, strings or numbers compare the value
+    // with its members wherever the result goes, so no set is built.
+    let source = r#"
+      (def ^:const modes #{:fast :safe})
+      (defn kw [k] [(contains? #{:fast :safe :a/b} k) (#{:fast :safe :a/b} k) (get #{:fast :safe :a/b} k)
+                    (contains? modes k) (modes k) (let [s #{:x}] (s k)) (contains? #{} k) (get #{:only} k)
+                    (if (contains? #{:fast :safe} k) :in :out) (if (#{:fast} k) 1 2)
+                    (and (contains? #{:fast :safe} k) :both)])
+      (defn st [s] [(contains? #{"fast" "safe"} s) (#{"fast" "safe"} s) (get #{"fast" "safe"} s)
+                    (if (contains? #{"fast" "safe"} s) :in :out) (contains? #{"x"} s)])
+      (defn nm [n] [(contains? #{1 2 -1 1.5} n) (#{1 2 -1 1.5} n) (get #{0} n) (contains? #{##NaN} n)
+                    (if (#{1 2} n) :in :out) (contains? #{1 "1"} n) (#{1 "1"} n)])
+      (def calls (atom 0))
+      (defn tick [x] (swap! calls inc) x)
+      (set! (.-kw js/globalThis) kw)
+      (set! (.-st js/globalThis) st)
+      (set! (.-nm js/globalThis) nm)
+      (pr-str [(map js/globalThis.kw [:fast :safe :slow :a/b :b "fast" 'fast nil (keyword "fast")
+                                      (keyword "a" "b") {:fast 1} [:fast] :x :only])
+               (map js/globalThis.st ["fast" "safe" "slow" :fast nil 1 "x"])
+               (map js/globalThis.nm [1 2 -1 1.5 3 0 -0 ##NaN "1" nil :a])
+               (contains? #{:a :b} (tick :a)) (#{1 2} (tick 2)) (get #{"a" "b"} (tick "c")) @calls
+               (let [m (fn [x] (#{:a :b :c} (tick x)))] [(m :b) (m :d)]) @calls])"#;
+    every_level(
+        source,
+        "[([true :fast :fast true :fast nil false nil :in 1 :both] \
+         [true :safe :safe true :safe nil false nil :in 2 :both] [false nil nil false nil nil false nil :out 2 false] \
+         [true :a/b :a/b false nil nil false nil :out 2 false] [false nil nil false nil nil false nil :out 2 false] \
+         [false nil nil false nil nil false nil :out 2 false] [false nil nil false nil nil false nil :out 2 false] \
+         [false nil nil false nil nil false nil :out 2 false] [true :fast :fast true :fast nil false nil :in 1 :both] \
+         [true :a/b :a/b false nil nil false nil :out 2 false] [false nil nil false nil nil false nil :out 2 false] \
+         [false nil nil false nil nil false nil :out 2 false] [false nil nil false nil :x false nil :out 2 false] \
+         [false nil nil false nil nil false :only :out 2 false]) \
+         ([true \"fast\" \"fast\" :in false] [true \"safe\" \"safe\" :in false] [false nil nil :out false] \
+         [false nil nil :out false] [false nil nil :out false] [false nil nil :out false] [false nil nil :out true]) \
+         ([true 1 nil false :in true 1] [true 2 nil false :in false nil] [true -1 nil false :out false nil] \
+         [true 1.5 nil false :out false nil] [false nil nil false :out false nil] [false nil 0 false :out false nil] \
+         [false nil 0 false :out false nil] [false nil nil false :out false nil] [false nil nil false :out true \"1\"] \
+         [false nil nil false :out false nil] [false nil nil false :out false nil]) true 2 nil 3 [:b nil] 5]",
+    );
+    let units = assert_keeps_none(
+        "(set! (.-f js/globalThis) (fn [k] [(contains? #{:fast :safe} k) (#{\"a\" \"b\"} k) (get #{1 2} k)]))",
+        &[
+            "makeSet",
+            "PersistentHashSetValue",
+            "contains",
+            "get",
+            "lookup",
+        ],
+    );
+    assert!(units.contains(&"keywordFqn"), "{units:?}");
 }
 
 #[test]

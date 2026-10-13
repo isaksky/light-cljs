@@ -2320,3 +2320,96 @@ Node / QuickJS): `constant-literals` 3.3 / 71.4 before and 3.2 / 67.4 after,
 `benchmarks/fixtures/compiler/collections/value.cljs` 14.1 and 13.5 ms,
 `closed-params` 15.1 and 14.6 ms, `vector-only` 13.3 and 13.2 ms. The build
 script writes the terse runtime (470 KB of Rust source) in about 0.1 s.
+
+## Builtin types, sets — October 13, 2026
+
+light-cljs-231 gives sets what light-cljs-230 gave vectors and maps ("Phase
+2 builtin types, sets" in the [design](../docs/advanced-optimization.md)).
+At `--optimize advanced`:
+
+- a set answers iteration, `keys`, `values`, `entries` and `has` from its
+  members, and compares two sets without `count` or `contains`, where the
+  program has no protocol implementation;
+- a set has the hash-map kind only where `putMember` promoted it or the
+  public constructor (`publicHashSet`, kept where the program names
+  `PersistentHashSet`) gave it, so the hash hooks belong to those two
+  instead of the set type, and its `hash-map` field is an array map for an
+  array set;
+- a set literal of at most 8 constants calls `arraySetFromArray`;
+- membership in a set literal of at most 8 keywords, or of strings and
+  numbers, compares the value with each member in value position too, and
+  an `if` on membership in a string or number set is a `switch`.
+
+The new ratchet fixture `set-only` searches and iterates a set literal:
+
+```clojure
+(js/console.log (.has #{1 2 3} 2) (.join (js/Array.from #{1 2 3}) " "))
+```
+
+**Sizes**, raw and `gzip -9` bytes (of stdin) of `--compile --optimize
+LEVEL`. "Before" is master `58f8c05` (after light-cljs-215). `prepare`
+equals `none` for every fixture but `pure-defs`, which is 78 bytes smaller
+there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 385,908 / 91,790 | 388,296 / 92,339 | 151 / 140 | 151 / 140 | 389,000 / 389,000 / 200 |
+| println-hi | 385,795 / 91,719 | 388,183 / 92,268 | 21,456 / 6,737 | 21,456 / 6,737 | 389,000 / 389,000 / 22,000 |
+| vector-printed | 385,820 / 91,729 | 388,208 / 92,278 | 24,932 / 7,794 | 24,932 / 7,794 | 389,000 / 389,000 / 25,000 |
+| map-printed | 385,823 / 91,723 | 388,211 / 92,271 | 28,170 / 8,654 | 28,179 / 8,662 | 389,000 / 389,000 / 29,000 |
+| seq-pipeline | 386,139 / 91,836 | 388,527 / 92,388 | 33,742 / 10,138 | 33,742 / 10,138 | 389,000 / 389,000 / 34,000 |
+| add | 385,748 / 91,713 | 388,136 / 92,260 | 19 / 39 | 19 / 39 | 389,000 / 389,000 / 100 |
+| rest-fn | 386,092 / 91,844 | 388,480 / 92,395 | 11,423 / 3,709 | 11,423 / 3,709 | 389,000 / 389,000 / 12,000 |
+| keyword-case | 386,380 / 91,862 | 388,768 / 92,417 | 4,343 / 1,647 | 4,343 / 1,647 | 389,000 / 389,000 / 4,400 |
+| record-protocol | 386,701 / 92,032 | 389,089 / 92,586 | 5,750 / 2,423 | 5,750 / 2,423 | 390,000 / 390,000 / 5,800 |
+| pure-defs | 387,337 / 92,134 | 389,725 / 92,692 | 5,640 / 2,372 | 5,640 / 2,372 | 390,000 / 390,000 / 5,700 |
+| keyword-lookups | 386,872 / 91,966 | 389,260 / 92,521 | 34,465 / 10,409 | 34,474 / 10,416 | 390,000 / 390,000 / 35,000 |
+| constant-literals | 386,649 / 91,917 | 389,037 / 92,471 | 29,502 / 8,968 | 29,502 / 8,968 | 390,000 / 390,000 / 30,000 |
+| constant-lookups | 387,067 / 92,048 | 389,455 / 92,606 | 4,723 / 1,775 | 4,723 / 1,775 | 390,000 / 390,000 / 4,800 |
+| three-records | 388,838 / 92,315 | 391,226 / 92,876 | 5,757 / 2,422 | 5,757 / 2,422 | 392,000 / 392,000 / 5,800 |
+| constant-keys | 386,865 / 91,904 | 389,253 / 92,458 | 45,095 / 13,539 | 45,280 / 13,599 | 390,000 / 390,000 / 46,000 |
+| event-maps | 386,397 / 91,877 | 388,785 / 92,431 | 35,048 / 10,567 | 35,057 / 10,573 | 389,000 / 389,000 / 36,000 |
+| vector-only | 385,947 / 91,809 | 388,335 / 92,358 | 5,883 / 2,321 | 5,883 / 2,321 | 389,000 / 389,000 / 5,900 |
+| keyword-only | 385,915 / 91,792 | 388,303 / 92,341 | 4,270 / 1,617 | 4,270 / 1,617 | 389,000 / 389,000 / 4,300 |
+| map-only | 385,953 / 91,799 | 388,341 / 92,349 | 11,068 / 3,820 | 11,077 / 3,829 | 389,000 / 389,000 / 12,000 |
+| atom-str | 385,963 / 91,799 | 388,351 / 92,349 | 2,284 / 904 | 2,284 / 904 | 389,000 / 389,000 / 2,300 |
+| set-only | 385,984 / 91,819 | 388,372 / 92,369 | 27,704 / 8,537 | 11,961 / 3,934 | 389,000 / 389,000 / 12,000 |
+| raw-js | 386,747 / 91,956 | 389,135 / 92,510 | 36 / 54 | 36 / 54 | 390,000 / 390,000 / 100 |
+| multi-arity | 388,576 / 92,210 | 390,964 / 92,771 | 318 / 212 | 318 / 212 | 391,000 / 391,000 / 400 |
+| closed-params | 388,311 / 92,356 | 390,699 / 92,913 | 37,754 / 12,276 | 37,763 / 12,282 | 391,000 / 391,000 / 38,000 |
+| debug-logging | 387,067 / 92,141 | 389,455 / 92,697 | 31 / 51 | 31 / 51 | 390,000 / 390,000 / 100 |
+| local-arities | 388,999 / 92,301 | 391,387 / 92,865 | 490 / 278 | 490 / 278 | 392,000 / 392,000 / 500 |
+
+Small programs at `advanced`, raw and gzip bytes (the membership rows
+export `f` and call it once):
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(js/console.log #{1 2})` | 27,667 / 8,512 | 11,924 / 3,910 |
+| `(js/console.log {:a 1})` | 11,061 / 3,817 | 11,070 / 3,826 |
+| `(js/console.log #{1 2 3 4 5 6 7 8 9})` | 27,680 / 8,525 | 28,011 / 8,586 |
+| `(js/console.log (conj #{1} 2))` | 34,457 / 10,450 | 34,780 / 10,503 |
+| `(js/console.log (conj [1] 2))` | 16,867 / 5,280 | 16,867 / 5,280 |
+| `(defn f [k] (if (contains? #{:fast :safe} k) 1 0))` | 4,444 / 1,690 | 4,444 / 1,690 |
+| `(defn f [k] (contains? #{:fast :safe} k))` | 28,666 / 8,796 | 4,412 / 1,679 |
+| `(defn f [k] (#{:fast :safe} k))` | 28,670 / 8,792 | 4,437 / 1,689 |
+| `(defn f [n] (contains? #{1 2} n))` | 27,755 / 8,547 | 241 / 181 |
+| `(defn f [s] (contains? #{"fast" "safe"} s))` | 27,769 / 8,553 | 256 / 186 |
+
+`#{1 2}` now keeps 104 runtime units instead of 188: those of `{:a 1}` but
+its keyword's, which the array map of the `hash-map` field brings (about 5
+KB), and 14 of the set's own; no seq, hash map or hashing. A membership
+test in value position keeps no set at all. A program that builds larger
+or dynamic sets keeps the native methods besides the generic ones and
+hashing: `#{1 ... 9}`, `(conj #{1} 2)` and `constant-keys` grow by 185 to
+331 bytes. Programs that keep `contains` and equality, every map program
+among them, gain the 9-byte install of `hostHooks.has`. The vector and map
+programs that keep both native and generic paths (`(conj [1] 2)`,
+`closed-params`) do not change.
+
+The shared runtime grows by 2,388 bytes (0.6%), 555 gzipped: the sets'
+native methods, the public constructor split from the set type, the
+array-set builder and the new hooks. The `none` and `prepare` ceilings
+rise by 1,000 to 3,000 for that growth (each to its new size rounded up to
+the next 1,000); the `advanced` ceilings do not change, and `set-only`'s is
+12,000.

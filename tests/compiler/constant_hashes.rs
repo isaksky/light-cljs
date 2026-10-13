@@ -545,7 +545,7 @@ fn hashes_are_embedded_only_at_advanced_with_intact_core_protocols() {
         declarations,
         [
             "  const k0 = rt$keyword(null, \"a\");",
-            "  const k1 = rt$hashed(rt$setFromArray([2]), -2073014043);",
+            "  const k1 = rt$hashed(rt$arraySetFromArray([2]), -2073014043);",
             "  const k2 = rt$hashed(rt$arrayMapFromArray([k0, k1]), -689938007);",
             "  const k3 = rt$hashed(rt$listFromArray([3]), -1025653387);",
             "  const k4 = rt$hashed(rt$vectorFromArray([4]), 385458271);",

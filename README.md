@@ -227,12 +227,12 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   method a call selects, keeps only the runtime types a program can
   build, and folds constants, dead branches, `goog-define` values and
   lookups in constant collections and inlines small functions.
-  `(js/console.log (+ 1 2))` drops from about 360 KB to about 200 bytes, a
-  small record and protocol program to about
-  12 KB, a program that only builds a keyword to 10 KB, a vector to 14 KB
-  and a map literal to 26 KB; a program that prints keeps the printer
-  (about 44 KB), and one that uses the generic sequence operations most of
-  the collection machinery (60-100 KB).
+  `(js/console.log (+ 1 2))` drops from about 390 KB to about 150 bytes, a
+  small record and protocol program to about 6 KB, a program that only
+  builds a keyword to 4 KB, a vector to 6 KB and a map or set literal to
+  12 KB; a program that prints keeps the printer (about 21 KB), and one
+  that uses the generic sequence operations most of the collection
+  machinery (30-50 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
