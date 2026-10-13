@@ -1,66 +1,12 @@
 import init, { compile, version } from "./pkg/light_cljs_playground.js";
+import { EXAMPLES } from "./examples.js";
 
 const STORAGE_KEY = "light-cljs-playground";
 const RUN_TIMEOUT_MS = 10_000;
 
-const EXAMPLE = {
-  entry: "demo.main",
-  files: [
-    {
-      path: "demo/main.cljs",
-      source: `(ns demo.main
-  (:require [demo.math :as math]
-            [demo.macros :refer [twice unless]]
-            [clojure.string :as str]))
-
-;; As in ClojureScript, println needs a print function: this one is console.log.
-(enable-console-print!)
-
-(defn describe [x]
-  (str x " doubled is " (twice x)))
-
-(println "squares:" (mapv math/square (range 1 6)))
-(println (str/join ", " (map describe [1 2 3])))
-(unless (empty? math/primes)
-  (println "primes below 30:" math/primes))
-
-;; The entry's last form is the program's value.
-{:total (reduce + (map math/square (range 1 6)))
- :words (str/split "the quick brown fox" #" ")
- :sorted (into (sorted-map) {:b 2 :a 1 :c 3})}
-`,
-    },
-    {
-      path: "demo/math.cljs",
-      source: `(ns demo.math)
-
-(defn square [x] (* x x))
-
-(defn prime? [n]
-  (and (> n 1)
-       (not-any? #(zero? (rem n %)) (range 2 (inc (js/Math.floor (js/Math.sqrt n)))))))
-
-(def primes (vec (filter prime? (range 30))))
-`,
-    },
-    {
-      path: "demo/macros.cljs",
-      source: `(ns demo.macros)
-
-;; Macros are ordinary defmacros in .cljs files; the compiler runs them in
-;; its embedded JavaScript engine while compiling.
-(defmacro twice [x]
-  \`(let [v# ~x] (+ v# v#)))
-
-(defmacro unless [test & body]
-  \`(if ~test nil (do ~@body)))
-`,
-    },
-  ],
-};
-
 const el = (id) => document.getElementById(id);
 const ui = {
+  examples: el("examples"),
   entry: el("entry"),
   optimize: el("optimize"),
   warnings: el("warnings"),
@@ -76,7 +22,7 @@ const ui = {
   diagnosticsText: el("diagnostics-text"),
 };
 
-let state = load() || structuredClone(EXAMPLE);
+let state = load() || fromExample(EXAMPLES[0]);
 let active = 0;
 let worker = null;
 let runTimer = null;
@@ -107,6 +53,53 @@ const jsEditor = CodeMirror(el("js-editor"), {
   readOnly: true,
   lineWrapping: true,
 });
+
+function fromExample(example) {
+  return { example: example.id, entry: example.entry, files: structuredClone(example.files) };
+}
+
+function currentExample() {
+  return EXAMPLES.find((example) => example.id === state.example) || null;
+}
+
+// Whether the files differ from the example they came from.
+function edited() {
+  const example = currentExample();
+  if (!example) return true;
+  return (
+    state.entry !== example.entry ||
+    state.files.length !== example.files.length ||
+    state.files.some((file, index) => file.path !== example.files[index].path || file.source !== example.files[index].source)
+  );
+}
+
+function loadExample(example, { ask = true } = {}) {
+  if (ask && edited() && !confirm(`Replace all files with "${example.title}"?`)) {
+    renderExamples();
+    return;
+  }
+  const options = { optimize: state.optimize, warnings: state.warnings, pseudo: state.pseudo, sizes: state.sizes };
+  state = Object.assign(fromExample(example), options);
+  save();
+  applyState();
+}
+
+function renderExamples() {
+  ui.examples.innerHTML = "";
+  for (const example of EXAMPLES) {
+    const option = document.createElement("option");
+    option.value = example.id;
+    option.textContent = example.title;
+    ui.examples.appendChild(option);
+  }
+  if (!currentExample()) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "(your files)";
+    ui.examples.appendChild(option);
+  }
+  ui.examples.value = state.example && currentExample() ? state.example : "";
+}
 
 function load() {
   try {
@@ -304,7 +297,8 @@ function compileAndRun(andRun) {
 }
 
 function applyState() {
-  ui.entry.value = state.entry || EXAMPLE.entry;
+  ui.entry.value = state.entry || "";
+  renderExamples();
   ui.optimize.value = state.optimize || "prepare";
   ui.warnings.checked = !!state.warnings;
   ui.pseudo.checked = !!state.pseudo;
@@ -315,11 +309,13 @@ function applyState() {
 ui.run.onclick = () => compileAndRun(true);
 ui.compile.onclick = () => compileAndRun(false);
 ui.stop.onclick = stopRun;
+ui.examples.onchange = () => {
+  const example = EXAMPLES.find((candidate) => candidate.id === ui.examples.value);
+  if (example) loadExample(example);
+};
 ui.reset.onclick = () => {
-  if (!confirm("Replace all files with the example?")) return;
-  state = structuredClone(EXAMPLE);
-  save();
-  applyState();
+  const example = currentExample() || EXAMPLES[0];
+  loadExample(example);
 };
 document.querySelectorAll("#results .tab").forEach((tab) => (tab.onclick = () => showView(tab.dataset.view)));
 document.addEventListener("keydown", (event) => {

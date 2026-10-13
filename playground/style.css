@@ -66,6 +66,12 @@ input[type="text"], select {
 
 #entry { font-family: var(--font); }
 
+.toolbar .separator {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+}
+
 button {
   font: inherit;
   padding: 3px 10px;

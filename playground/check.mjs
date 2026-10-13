@@ -1,7 +1,7 @@
 // Checks a built playground/dist from Node: loads the wasm package, compiles
-// a small multi-namespace program with a macro at every optimization level,
-// runs the output, and checks a located error. `bb playground/build.bb check`
-// runs it; CI runs it after the build.
+// every example in examples.js at every optimization level, runs the output
+// and compares the program's value, then checks a located error and a missing
+// namespace. `bb playground/build.bb check` runs it; CI runs it after the build.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,21 +9,8 @@ import { fileURLToPath } from "node:url";
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "dist");
 const pkg = path.join(dist, "pkg");
 const { default: init, compile, version } = await import(path.join(pkg, "light_cljs_playground.js"));
+const { EXAMPLES } = await import(path.join(dist, "examples.js"));
 await init({ module_or_path: fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm")) });
-
-const paths = ["demo/main.cljs", "demo/math.cljc", "demo/macros.cljs"];
-const sources = [
-  `(ns demo.main (:require [demo.math :as math] [demo.macros :refer [twice unless]] [clojure.string :as str]))
-   (enable-console-print!)
-   (println "squares:" (mapv math/square (range 1 6)))
-   (unless (empty? math/primes) (println "primes:" math/primes))
-   {:total (reduce + (map math/square (range 1 6))) :words (str/split "a b c" #" ") :t (twice 21)}`,
-  `(ns demo.math)
-   (defn square [x] (* x x))
-   (defn prime? [n] (and (> n 1) (not-any? #(zero? (rem n %)) (range 2 (inc (js/Math.floor (js/Math.sqrt n)))))))
-   (def primes (vec (filter prime? (range 30))))`,
-  "(ns demo.macros) (defmacro twice [x] `(let [v# ~x] (+ v# v#))) (defmacro unless [test & body] `(if ~test nil (do ~@body)))",
-];
 
 let failures = 0;
 function check(condition, message) {
@@ -33,25 +20,45 @@ function check(condition, message) {
   }
 }
 
-console.log(`playground ${version()}`);
-for (const level of ["none", "prepare", "advanced"]) {
-  const result = compile(paths, sources, "demo.main", level, true, false, level === "advanced", false);
-  check(result.error == null, `${level}: ${result.error}`);
-  check(result.warnings === "", `${level}: unexpected warnings ${result.warnings}`);
-  if (result.js == null) continue;
-  const printed = [];
+function runQuietly(js) {
   const log = console.log;
-  console.log = (...args) => printed.push(args.join(" "));
-  let value;
+  console.log = () => {};
   try {
-    value = (0, eval)(result.js);
+    return (0, eval)(js);
   } finally {
     console.log = log;
   }
-  check(String(value) === '{:total 55, :words ["a" "b" "c"], :t 42}', `${level}: value ${String(value)}`);
-  check(printed.join("\n") === "squares: [1 4 9 16 25]\nprimes: [2 3 5 7 11 13 17 19 23 29]", `${level}: printed ${printed}`);
-  check(level !== "advanced" || result.size_report.includes("runtime slice"), "advanced: no size report");
-  console.log(`${level}: ${result.millis.toFixed(0)} ms, ${result.js.length} bytes`);
+}
+
+console.log(`playground ${version()}`);
+check(EXAMPLES.length > 0, "no examples");
+for (const example of EXAMPLES) {
+  for (const level of ["none", "prepare", "advanced"]) {
+    const label = `${example.id} @ ${level}`;
+    const result = compile(
+      example.files.map((file) => file.path),
+      example.files.map((file) => file.source),
+      example.entry,
+      level,
+      true,
+      false,
+      level === "advanced",
+      false,
+    );
+    check(result.error == null, `${label}: ${result.error}`);
+    check(result.warnings === "", `${label}: unexpected warnings ${result.warnings}`);
+    if (result.js == null) continue;
+    let value;
+    try {
+      value = runQuietly(result.js);
+    } catch (error) {
+      check(false, `${label}: threw ${error && error.stack ? error.stack : error}`);
+      continue;
+    }
+    check(String(value) === example.expect, `${label}: value ${String(value)}, expected ${example.expect}`);
+    check(level !== "advanced" || result.size_report.includes("runtime slice"), `${label}: no size report`);
+    console.log(`${label}: ${result.millis.toFixed(0)} ms, ${result.js.length} bytes`);
+  }
 }
 
 const broken = compile(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x)"], "demo.main", "prepare", false, false, false, false);

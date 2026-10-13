@@ -10,10 +10,11 @@ playground/
   crate/        the wasm crate: light-cljs plus a thin wasm-bindgen wrapper
   index.html    the page (CodeMirror from a CDN, no npm)
   app.js        files, compile options, result views, local-storage persistence
+  examples.js   the example programs in the dropdown, smallest first
   worker.js     runs one compiled program in a worker the page can terminate
   style.css
   build.bb      builds crate + page into playground/dist and serves it
-  check.mjs     Node check of a built dist (CI runs it)
+  check.mjs     Node check of a built dist: every example at every level (CI runs it)
   dist/         the built site (ignored by git)
 ```
 
@@ -38,6 +39,12 @@ Two things differ from the native build:
   per run, `console.*` relayed to the page, terminated on completion or after
   10 seconds. Call `(enable-console-print!)` before printing, as in
   ClojureScript.
+
+The example dropdown replaces all files with one of the programs in
+`examples.js`, from a single namespace up to a calculator spread over several;
+each entry carries the value its program must produce, and `check.mjs` compiles
+and runs all of them at every optimization level. To add one, append to
+`EXAMPLES` and run `bb playground/build.bb check`.
 
 Compile time in the browser is a few hundred milliseconds for the first
 compile (the macro bootstrap) and tens of milliseconds after that. The wasm

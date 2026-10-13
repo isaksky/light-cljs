@@ -11,6 +11,11 @@
   <header>
     <h1>light-cljs <span class="muted">playground</span></h1>
     <div class="toolbar">
+      <label>example
+        <select id="examples" title="Replace all files with an example"></select>
+      </label>
+      <button id="reset" title="Reload the chosen example's files">Reset</button>
+      <span class="separator"></span>
       <label>entry <input id="entry" type="text" spellcheck="false" size="14"></label>
       <label>optimize
         <select id="optimize">
@@ -25,7 +30,6 @@
       <button id="run" class="primary" title="Cmd/Ctrl+Enter">Compile &amp; run</button>
       <button id="compile" title="Shift+Cmd/Ctrl+Enter">Compile</button>
       <button id="stop" disabled>Stop</button>
-      <button id="reset" title="Replace all files with the example">Example</button>
     </div>
     <div id="status" class="muted">loading wasm…</div>
   </header>
