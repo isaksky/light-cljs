@@ -24,6 +24,7 @@ pub mod core_operations;
 pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;
+pub mod inference;
 mod program_fragment;
 pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,

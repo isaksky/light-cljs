@@ -156,6 +156,11 @@ impl Type {
         Self(self.0 & other.0)
     }
 
+    /// The values of `self` that are not values of `other`.
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// Whether every value of `other` is a value of `self`.
     pub const fn contains(self, other: Self) -> bool {
         other.0 & !self.0 == 0
@@ -610,6 +615,11 @@ mod tests {
         assert!(Type::ANY.contains(seqish) && seqish.contains(Type::LIST));
         assert!(!seqish.contains(Type::VECTOR));
         assert_eq!(seqish.intersection(Type::LIST.union(Type::MAP)), Type::LIST);
+        assert_eq!(
+            seqish.difference(Type::NIL.union(Type::MAP)),
+            Type::SEQ.union(Type::LIST)
+        );
+        assert_eq!(Type::ANY.difference(Type::ANY), Type::NEVER);
         assert_eq!(Type::parse("any"), Some(Type::ANY));
         assert_eq!(Type::parse("never"), Some(Type::NEVER));
         assert_eq!(Type::parse(&Type::ANY.to_string()), Some(Type::ANY));

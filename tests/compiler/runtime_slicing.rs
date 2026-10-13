@@ -63,7 +63,7 @@ fn slice(units: &[(UnitId, RootUse)], bindings: &[&str]) -> (String, String) {
 /// compiler forms, Vars, metadata, protocols, types, records, reify,
 /// variadic functions, `case`, `assert` and `with-out-str`.
 const PROGRAMS: &[&str] = &[
-    "(+ 1 2)",
+    "(max 1 2)",
     "(defn kind [k] (case k :a 1 :b 2 3)) (pr-str [(kind :a) (kind :c) (case 2 1 :x 2 :y)])",
     r#"(pr-str {:a 1} #{:b} '(c) [1 2] (with-meta [1] {:m 1}) (var inc))"#,
     r#"(with-out-str (print #queue [1 2] #uuid "00000000-0000-0000-0000-000000000000"
@@ -206,7 +206,7 @@ fn levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
 fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
     let manifest = manifest();
     // `*ns*` reaches reflection, so the output registers its namespaces.
-    let source = r#"#js {"a" 1} (+ 1 2) *ns*"#;
+    let source = r#"#js {"a" 1} (mod 7 2) *ns*"#;
     let report = prepared(source, OptimizationLevel::Advanced).retention();
     let expression = |text: &str| {
         let start = source.find(text).unwrap();
@@ -235,7 +235,7 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
                 RuntimeName::direct("jsObject", None),
                 Some(expression(r#"#js {"a" 1}"#))
             ),
-            (RuntimeName::direct("add", None), Some(expression("+"))),
+            (RuntimeName::direct("mod", None), Some(expression("mod"))),
             (
                 RuntimeName::direct("coreCells", Some("currentNs")),
                 Some(expression("*ns*"))
@@ -257,8 +257,8 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
             .collect::<Vec<_>>()
     };
     assert_eq!(attributed(0), ["jsObject"]);
-    // `+` is only called, so it keeps its own unit and not its variadic arity.
-    assert_eq!(attributed(1), ["add"]);
+    // `mod` is a unit of its own.
+    assert_eq!(attributed(1), ["mod"]);
     let units = report
         .roots
         .iter()
@@ -315,15 +315,15 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
             "missing row {expected:?}:\n{table}"
         );
     }
-    let (start, end) = expression("+");
-    let add_row = format!(" rt$add(...) source 0, bytes {start}..{end}");
+    let (start, end) = expression("mod");
+    let mod_row = format!(" rt$mod(...) source 0, bytes {start}..{end}");
     assert!(
         rows.iter()
             .any(|row| row.starts_with("rt$theNs ") && row.ends_with(" namespace registration")),
         "{table}"
     );
     assert_eq!(
-        rows.iter().filter(|row| row.ends_with(&add_row)).count(),
+        rows.iter().filter(|row| row.ends_with(&mod_row)).count(),
         attributed(1).len()
     );
 }
@@ -402,8 +402,16 @@ fn same_at_every_level(source: &str) -> String {
 #[test]
 fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
     for (called, applied, install) in [
-        ("(+ 1 2 3)", "(apply + [1 2 3])", "add.variadic"),
-        ("(< 1 2 3)", "(apply < [1 2 3])", "less.variadic"),
+        (
+            "(bit-xor 1 2 4)",
+            "(apply bit-xor [1 2 4])",
+            "bitXor.variadic",
+        ),
+        (
+            "(bit-and 1 2 4)",
+            "(apply bit-and [1 2 4])",
+            "bitAnd.variadic",
+        ),
         ("(bit-or 1 2 4)", "(apply bit-or [1 2 4])", "bitOr.variadic"),
     ] {
         let call = prepared(called, OptimizationLevel::Advanced);
@@ -416,6 +424,26 @@ fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
         // `numericFold`) and nothing else: without reflection there is no
         // namespace registration.
         assert!(report.units.len() <= 3, "{called}:\n{report}");
+        let apply = prepared(applied, OptimizationLevel::Advanced);
+        assert!(embedded(&apply).contains(&install), "{applied}");
+        assert_eq!(
+            same_at_every_level(called),
+            same_at_every_level(applied),
+            "{called}"
+        );
+    }
+    // Calls of `+` and `<` are JavaScript operators at `Advanced`
+    // (light-cljs-210) and read no runtime; their values keep the install.
+    for (called, applied, install) in [
+        ("(+ 1 2 3)", "(apply + [1 2 3])", "add.variadic"),
+        ("(< 1 2 3)", "(apply < [1 2 3])", "less.variadic"),
+    ] {
+        let call = prepared(called, OptimizationLevel::Advanced);
+        assert_eq!(
+            call.retention().embedding,
+            RuntimeEmbedding::None,
+            "{called}"
+        );
         let apply = prepared(applied, OptimizationLevel::Advanced);
         assert!(embedded(&apply).contains(&install), "{applied}");
         assert_eq!(

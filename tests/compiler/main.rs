@@ -165,6 +165,7 @@ mod test_metadata;
 mod transducer_contracts;
 mod transducers;
 mod transients;
+mod type_inference;
 mod types;
 mod utilities_bodies;
 mod utilities_completion;

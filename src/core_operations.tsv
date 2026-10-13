@@ -408,10 +408,10 @@ JsDelete	js-delete	fn	-	any	any	effect	invoke	jsDelete
 JsInvoke	js-invoke	fn	-	any	any	effect	invoke	jsInvoke
 ;;
 ;; Sequences
-Seq	seq	fn	[seqable]	nil|seq|list	any	allocates	dispatch	seq
+Seq	seq	fn	[seqable]	nil|seq|list	nil|seq|list|record|object	allocates	dispatch	seq
 First	first	fn	[seqable]	any	any	allocates	dispatch	first
-Rest	rest	fn	[seqable]	seq|list	any	allocates	dispatch	rest
-Next	next	fn	[seqable]	nil|seq|list	any	allocates	dispatch	next
+Rest	rest	fn	[seqable]	seq|list	seq|list|record|object	allocates	dispatch	rest
+Next	next	fn	[seqable]	nil|seq|list	nil|seq|list|record|object	allocates	dispatch	next
 Second	second	fn	[seqable]	any	any	allocates	dispatch	second
 Fnext	fnext	fn	[seqable]	any	any	allocates	dispatch	fnext
 Last	last	fn	[seqable]	any	any	allocates	dispatch	last
@@ -427,7 +427,7 @@ Nth	nth	fn	[seqable number] [seqable number any]	any	any	throws	dispatch	nth
 Get	get	fn	[scalar|fn|coll any] [scalar|fn|coll any any]	any	any	pure	dispatch	get
 GetIn	get-in	fn	[scalar|fn|coll seqable] [scalar|fn|coll seqable any]	any	any	pure	dispatch	getIn
 Find	find	fn	[nil|map|vector any]	nil|vector	any	allocates	dispatch	find
-Contains	contains?	fn	[scalar|fn|coll any]	boolean	any	pure	dispatch	contains
+Contains	contains?	fn	[scalar|fn|coll any]	boolean	boolean	pure	dispatch	contains
 Keys	keys	fn	[nil|map]	nil|seq	any	allocates	-	keys
 Vals	vals	fn	[nil|map]	nil|seq	any	allocates	-	vals
 KeyProtocol	-key	fn	[vector]	any	any	throws	-	keyProtocol
@@ -448,7 +448,7 @@ Flatten	flatten	fn	[any]	seq|list	any	allocates	dispatch	flatten
 Doall	doall	fn	[seqable] [number seqable]	seqable	any	pure	dispatch	doall
 Dorun	dorun	fn	[seqable] [number seqable]	nil	any	pure	dispatch	dorun
 NotEmpty	not-empty	fn	[seqable]	seqable	any	pure	dispatch	notEmpty
-IsEmpty	empty?	fn	[seqable]	boolean	any	pure	dispatch	isEmpty
+IsEmpty	empty?	fn	[seqable]	boolean	boolean	pure	dispatch	isEmpty
 SeqToMap	seq-to-map-for-destructuring	fn	-	any	any	effect	invoke	seqToMap
 ;;
 ;; Lazy sequence functions and transducers: they capture their function arguments
@@ -492,9 +492,9 @@ ReduceKv	reduce-kv	fn	[fn any nil|map|vector]	any	any	throws	invoke	reduceKv
 Transduce	transduce	fn	[fn fn seqable] [fn fn any seqable]	any	any	throws	invoke	transduce
 Mapv	mapv	fn	[fn seqable & seqable]	vector	any	allocates	invoke	mapv
 Filterv	filterv	fn	[fn seqable]	vector	any	allocates	invoke	filterv
-Every	every?	fn	[fn seqable]	boolean	any	pure	invoke	every
-NotEvery	not-every?	fn	[fn seqable]	boolean	any	pure	invoke	notEvery
-NotAny	not-any?	fn	[fn seqable]	boolean	any	pure	invoke	notAny
+Every	every?	fn	[fn seqable]	boolean	boolean	pure	invoke	every
+NotEvery	not-every?	fn	[fn seqable]	boolean	boolean	pure	invoke	notEvery
+NotAny	not-any?	fn	[fn seqable]	boolean	boolean	pure	invoke	notAny
 Some	some	fn	[fn seqable]	any	any	allocates	invoke	some
 Run	run!	fn	[fn seqable]	nil	any	pure	invoke	run
 Apply	apply	fn	[fn & any]	any	any	throws	invoke	apply
@@ -522,7 +522,7 @@ Fnil	fnil	fn	[fn any] [fn any any] [fn any any any]	fn	any	allocates	-	fnil
 ;; Equality, hashing, comparison
 Equal	=	fn	[any & any]	boolean	boolean	pure	dispatch	equal
 NotEqual	not=	fn	[any & any]	boolean	boolean	pure	dispatch	notEqual
-IsDistinct	distinct?	fn	[any & any]	boolean	any	pure	dispatch	isDistinct
+IsDistinct	distinct?	fn	[any & any]	boolean	boolean	pure	dispatch	isDistinct
 Identical	identical?	fn	[any any]	boolean	boolean	pure	-	identical
 KeywordIdentical	keyword-identical?	fn	[any any]	boolean	boolean	pure	-	keywordIdentical
 SymbolIdentical	symbol-identical?	fn	[any any]	boolean	boolean	pure	-	symbolIdentical

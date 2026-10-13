@@ -26,7 +26,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "console-log-sum",
         source: "(js/console.log (+ 1 2))",
-        ceilings: [362_000, 362_000, 800],
+        ceilings: [362_000, 362_000, 200],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
@@ -62,7 +62,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [362_000, 362_000, 600],
+        ceilings: [362_000, 362_000, 100],
         removed: [0, 0, 0],
         printed: "3\n",
     },
@@ -77,7 +77,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [362_000, 362_000, 122_000],
+        ceilings: [362_000, 362_000, 121_000],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -86,7 +86,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
                  (area (->Rect 3 4))",
-        ceilings: [363_000, 363_000, 150_000],
+        ceilings: [363_000, 363_000, 149_000],
         removed: [0, 0, 0],
         printed: "12\n",
     },
@@ -113,7 +113,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [363_000, 363_000, 132_000],
+        ceilings: [363_000, 363_000, 131_000],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -124,7 +124,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [363_000, 363_000, 1_500],
+        ceilings: [363_000, 363_000, 900],
         removed: [0, 0, 1],
         printed: "3\n",
     },

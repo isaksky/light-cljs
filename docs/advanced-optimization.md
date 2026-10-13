@@ -4,8 +4,9 @@ Status: design, October 2026. Phase 0's optimization levels, size ratchet,
 differential test, runtime retention report and startup benchmark are
 implemented (see "Phase 0 extension points"), and so are Phase 1's unit
 manifest and advanced-mode runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
-extension points") and Phase 2's core operation table (see "Phase 2 core
-operation table extension points"); the rest is not. The work items are
+extension points") and Phase 2's core operation table and type inference (see
+"Phase 2 core operation table extension points" and "Phase 2 type inference
+extension points"); the rest is not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
 
@@ -173,7 +174,10 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   `truth()` unless it is a `BooleanHint`; keywords allocate per evaluation;
   properties are emitted as bracketed string literals. (Since step 7 of
   Phase 1 the runtime interns literal keywords at every level, and `Advanced`
-  declares keyword and symbol literals once in a constant table.)
+  declares keyword and symbol literals once in a constant table. Since step 3
+  of Phase 2, `Advanced` uses `truth()` only for tests that may be numbers,
+  strings or host values, and writes arithmetic, comparisons and typed `=`,
+  `count`, `nth` and record lookups without calling the runtime.)
 - `src/js_runtime.js` is one closure: 659 top-level declarations, about 97
   top-level effect statements, a 693-key `core` hub object that is
   `Object.seal`ed and mutable through `set!`, eager prototype patching and
@@ -805,7 +809,10 @@ literals (Pellets 218-221) extend the same table.
   literal comes first and no program extends `IEquiv` to `Keyword` (the
   condition from 209). The identity check succeeds for literals. The
   fallback is a `WeakMap` read and a string comparison, never the protocol
-  dispatch of `equal`.
+  dispatch of `equal`. Since light-cljs-210 `Advanced` emits this lowering,
+  also when `x` can be no program type or no program type implements
+  `IEquiv`, since `=` then runs only the runtime's implementations (see
+  "Phase 2 type inference extension points").
 
   The `constant_table` suite in `tests/compiler/` pins every identity above
   at every level, across REPL inputs and against `read-string`.
@@ -920,6 +927,125 @@ Step 2 is implemented (light-cljs-209). Later steps read it:
   `-contains-key?`, `-count`, ...) stay unknown, since they return whatever
   an implementation returns.
 
+#### Phase 2 type inference extension points
+
+Step 3 is implemented (light-cljs-210) in `src/inference.rs`, at `Advanced`
+only. `prepare_application` infers types over the prepared program, after
+definition removal and call specialization, and emission reads them. `None`
+and `Prepare` output does not change.
+
+- **API.** `PreparedApplication::inference()` is the `Inference` of the
+  program `PreparedApplication::program()` emits, built by
+  `Inference::new(program, ProgramFacts::new(program, top))`.
+  `value(expr)` is an `Inferred`: a `core_operations::Type` and a `Known`
+  representation that refines one of its classes. The representations are
+  `Function(fn expr)` for the functions a `fn` makes, `Instance(type global)`
+  for instances of a program type defined once, `Vector` for flat persistent
+  vectors (literals and `vector`, never map entries or subvectors), and
+  `Array` for JavaScript arrays (`#js [...]`, `array`). An expression's value
+  is the one it has where it is evaluated, after narrowing. Further methods:
+  - `local(l)`: the type a local is bound to;
+  - `returns(program, fn)`: what a `fn` returns;
+  - `callee(program, call)`: the `fn` a call invokes;
+  - `uses(l)`: how many expressions read a local;
+  - `facts()`: the program-wide conditions.
+
+  Rapid type analysis (211) reads `Known::Instance` and
+  `ProgramFacts::implementors` for receivers. Call shapes (212) read
+  `callee`, and the folder (221) reads operand types. `Inferred::truth_is_js`
+  says whether JavaScript truthiness agrees with Clojure's: the type has no
+  number, string or host class.
+- **Sources.**
+  - Literals, collection literals and `fn` have their own types.
+  - Core calls go through the table: `Operation::call` for the argument
+    types, joined with `returns`, so results grow monotonically.
+  - A call of a known `fn` returns the union of its method bodies.
+  - `BooleanHint` and calls of `^boolean` globals are `boolean`. These tags
+    are trusted, as upstream trusts them.
+  - Positional, map and `new` constructors of program types build instances
+    of their type.
+  - A global that is defined once and never assigned has its `def` site's
+    type. A later top-level form reads the initializer's type; every other
+    read may see `nil` first.
+  - Locals bound by `let`, `loop` and `letfn` join their initializer and
+    their `recur` arguments. Parameters, `catch` and `this-as` bindings are
+    `any`.
+- **Narrowing.** In an `if`'s branches, a local the test examines is
+  narrowed. This is modeled on upstream's `infer-if` and `and_or` pass. The
+  tests are:
+  - truthiness;
+  - the exact class predicates, in both branches: `nil?`, `some?`, `string?`,
+    `number?`, `keyword?`, `symbol?` and `boolean?`;
+  - `true?`, `false?` and `array?`, in the then branch;
+  - the protocol predicates `vector?`, `map?`, `set?`, `seq?` and
+    `record?`, in the then branch while core protocols are intact. Program
+    types pass them too;
+  - `instance?` of a program type;
+  - `satisfies?` of a program protocol, which narrows to the classes of its
+    implementations, and to the type when one program type is its only
+    implementation.
+
+  Tests combine through `not`, through the temporary of `and` and `or`, and
+  through a local bound to a test. Some locals are `any` and never narrowed:
+  type fields, locals that `set!`, `binding` or a `js*` hole may assign, and
+  the parameters of functions that read `(js-arguments)`, which aliases them.
+- **Fixed point.** Locals and expressions start at `never` and grow until
+  nothing changes. Every transfer is monotone over a finite lattice, and
+  calling `nil` gives `never`, so recursive functions converge. After
+  `ROUND_LIMIT` rounds, everything is `any`.
+- **Program-wide conditions.** `ProgramFacts` is the scan `Inert` used,
+  moved here. It records:
+  - replaced core operations, whose calls are `any`;
+  - whether core protocols are extended beyond the program's types. If they
+    are, `dispatch` and `invoke` calls are `any`;
+  - sole definitions;
+  - `ILookup` implementations per program type;
+  - whether any program type implements `IEquiv`;
+  - the implementations of each program protocol.
+- **Lowerings.** At `Advanced` the emitter:
+  - tests a value directly instead of with `truth` when its type allows it.
+    Output that never calls `truth` does not declare it;
+  - writes `(and a b)` as `(a && b)` and `(or a b)` as `(a || b)` when `a`'s
+    type allows it and only the expansion reads its temporary. In value
+    position the expansion's function scope goes away, so neither operand may
+    read `arguments` or hold raw JavaScript;
+  - writes `+ - * /`, `< <= > >=`, `inc`, `dec`, `identical?`, `nil?`,
+    `some?`, `zero?`, `pos?` and `neg?` as JavaScript operators, whatever the
+    operand types, because their runtime definitions are those operators. A
+    comparison chain needs operands that can be read twice;
+  - writes `(not x)` as `!x` when `x`'s type allows it;
+  - writes `(= a b)` and `not=` as `===` and `!==` when a non-nil primitive
+    decides it. For a keyword literal it uses 208's lowering, `x === k<n> ||
+    rt$keywordFqn(x) === "k"`, or only the spelling test when `x` cannot be
+    read twice. The literal may come second only when `a` is no program type
+    or no program type implements `IEquiv`;
+  - writes `==` on numbers as `===`;
+  - writes `(count x)` as `.length` of a string or array, or of a flat
+    vector's payload;
+  - writes `(nth v i)` on a flat vector with a number index as the runtime's
+    direct path, `rt$vectorNth(rt$vectors.get(v), i, rt$missing)`;
+  - writes `(:k rec)` and `(get rec :k)` as the field's property when `rec`
+    is a record of a known type with a field `k` and no program `ILookup`.
+
+  Except for the operators, these lowerings need core protocols intact. A
+  replaced operation keeps its call.
+- **Table rows.** The `otherwise` column now gives the classes a call outside
+  the domain can return for `seq`, `next`, `rest`, `contains?`, `empty?`,
+  `every?`, `not-every?`, `not-any?` and `distinct?`. So `(if (seq xs) ...)`
+  tests directly whatever `xs` is. The `core_operations` suite checks these
+  rows on samples.
+- **`invoke` rows.** `Inert` finishes step 6's `invoke` rows. `mapv`,
+  `filterv`, `every?`, `not-every?`, `not-any?`, `some`, `group-by` and
+  `run!` are inert when their collections are plain data and their function,
+  a `fn` literal or core operation, is inert on the elements. `Shape` now
+  carries the element types of literal collections.
+- **Tests.** The `type_inference` suite in `tests/compiler/` runs every
+  lowering at every level on adversarial values (`0`, `-0`, `NaN`, `""`,
+  `undefined`, BigInts, host objects, built keywords, records with their own
+  `ILookup`, programs that extend core protocols), and checks the lowered text.
+- **Measured.** `(js/console.log (+ 1 2))` needs no runtime at `Advanced`
+  and is 192 bytes; `raw-js` is 856. See `benchmarks/compiler.md`.
+
 #### Phase 2 pure initializer and `js*` extension points
 
 Steps 6 and 7 are implemented (light-cljs-213) in `src/application.rs`, at
@@ -937,12 +1063,15 @@ under `js*` below.
   result), the `hash-map` macro's expansion `PersistentHashMap.fromArrays`
   through the `hash-map` row, and `new T` or `->T` of a type defined once by a
   top-level `deftype` or `defrecord` that runs earlier and is never
-  reassigned. `throws`, `effect` and `invoke` rows, calls outside a row's
-  domain, global reads, `map->T` and everything else stay effectful (an
-  `invoke` row needs the purity of its function arguments, which waits for
-  inference). Each expression gets a `Shape` (lattice type and plain-data
-  flag); a later inference pass (step 3) can replace it.
-- **Program-wide conditions.** `Inert::new` scans every expression once: a
+  reassigned. `throws` and `effect` rows, calls outside a row's domain,
+  global reads, `map->T` and everything else stay effectful. Since
+  light-cljs-210, element-wise `invoke` rows are inert when their function
+  argument is (see "Phase 2 type inference extension points"). Each
+  expression gets a `Shape` (lattice type, plain-data flag and, for literal
+  collections, element type).
+- **Program-wide conditions.** `Inert::new` scans every expression once
+  (since light-cljs-210 through `inference::ProgramFacts`, which inference
+  shares): a
   core operation that is the target of `set!` or `with-redefs`, whose property
   is assigned, or that appears as a `js*` hole (raw text may assign its holes)
   is not trusted, and an `extend-type` or `specify!` of a core protocol (a
@@ -1084,6 +1213,10 @@ upstream states that advanced mode is unsafe for certain patterns.
   identifier for `eval`, patching host or runtime prototypes so that core
   operations run program code) is unsupported, and a definition only such
   text reads may be removed.
+- `^boolean` tags are trusted, as upstream trusts them: a call of a function
+  tagged `^boolean` is tested without `truth`, so one that returns a
+  JavaScript-falsy value other than `false` (`0`, `""`) takes the other
+  branch at `Advanced`. Since light-cljs-210.
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification
@@ -1108,5 +1241,8 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Whether the sliced runtime should be emitted as top-level `const`s in the
   output closure or as a nested factory, considering QuickJS and V8 parse
   costs for large closures.
-- How deep type inference should go before diminishing returns; start with
-  booleans, numbers, strings and record types, measure, then decide.
+- How deep type inference should go before diminishing returns. Step 3
+  infers booleans, numbers, strings, collections and program types within a
+  function. Parameters stay `any`, so arithmetic lowers without types and
+  typed `=`, `count` and `nth` mostly apply to locals. Parameter types from
+  call sites need the escape analysis of call shapes (212).

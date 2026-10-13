@@ -201,11 +201,12 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md);
   `--optimize advanced` so far drops unused definitions with pure initializers
   and the runtime units a program does not reach, declares each keyword and
-  symbol literal once, and leaves out the compiler's namespace registry unless
-  the program uses reflection and the printer unless it prints.
-  `(js/console.log (+ 1 2))` drops from about 360 KB to under 1 KB, but a
-  program that builds a value still pulls in the collection machinery
-  (120-150 KB).
+  symbol literal once, leaves out the compiler's namespace registry unless
+  the program uses reflection and the printer unless it prints, and infers
+  types to write truth tests, arithmetic, comparisons and typed core calls as
+  plain JavaScript. `(js/console.log (+ 1 2))` drops from about 360 KB to
+  about 200 bytes, but a program that builds a value still pulls in the
+  collection machinery (120-150 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

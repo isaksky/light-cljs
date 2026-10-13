@@ -70,20 +70,28 @@ fn core_runtime_names() -> BTreeSet<String> {
 }
 
 #[test]
-fn console_log_sum_calls_the_add_unit_directly() {
-    let source = "(js/console.log (+ 1 2))";
+fn console_log_max_calls_the_max_unit_directly() {
+    // `(+ 1 2)` no longer reads the runtime at `Advanced`: its operation is
+    // the JavaScript operator (light-cljs-210), so the output embeds no runtime.
+    let sum = advanced_matches_none("(js/console.log (+ 1 2))");
+    assert!(
+        sum.contains("(host(\"console\")[\"log\"])((1 + 2))"),
+        "{sum}"
+    );
+    assert!(!sum.contains("rt$"), "{sum}");
+    let source = "(js/console.log (max 1 2))";
     let js = advanced_matches_none(source);
     assert!(
-        js.contains("(host(\"console\")[\"log\"])(rt$add(1, 2))"),
+        js.contains("(host(\"console\")[\"log\"])(rt$max(1, 2))"),
         "{js}"
     );
     let advanced = prepared(source, OptimizationLevel::Advanced);
     let report = advanced.retention();
-    assert_eq!(report.roots[0].name, RuntimeName::direct("add", None));
+    assert_eq!(report.roots[0].name, RuntimeName::direct("max", None));
     assert!(report.units.iter().all(|unit| unit.name != CORE_HUB));
-    assert!(report.units.iter().any(|unit| unit.name == "add"));
+    assert!(report.units.iter().any(|unit| unit.name == "max"));
     let prepare = prepared(source, OptimizationLevel::Prepare).emit_js();
-    assert!(prepare.contains("(rt.core.add).call(null, 1, 2)"));
+    assert!(prepare.contains("(rt.core.max).call(null, 1, 2)"));
     // The slice keeps less than half of the runtime; the rest of the way to a
     // few kilobytes is demand-driven effects and namespace registration
     // (Phase 1 steps 4 and 5).
@@ -283,10 +291,12 @@ fn replaced_core_operations_read_through_output_cells() {
          (pr-str [(.-probe cljs.core/PersistentHashMap) (count (hash-map 1 2))])",
     );
 
-    // A program that assigns nothing reads every operation directly.
+    // A program that assigns nothing reads every operation directly; a call
+    // of `inc` is the operator (light-cljs-210).
     let js = advanced_matches_none("(pr-str [(inc 5) (mapv inc [1 2])])");
     assert!(!cell_reads(&js), "{js}");
-    assert!(js.contains("rt$inc(5)"), "{js}");
+    assert!(js.contains("(5 + 1)"), "{js}");
+    assert!(js.contains("rt$mapv(rt$inc, "), "{js}");
 }
 
 #[test]
@@ -318,11 +328,11 @@ fn dynamic_vars_and_redefinition_hooks_keep_their_runtime_cells() {
 #[test]
 fn raw_javascript_cannot_capture_direct_reads_or_cells() {
     let js = advanced_matches_none(
-        r#"(js* "globalThis.rt$add = 'user add'; globalThis.core$inc = 'user cell'")
+        r#"(js* "globalThis.rt$max = 'user max'; globalThis.core$inc = 'user cell'")
            (set! cljs.core/inc dec)
-           (pr-str [(+ 1 2) (inc 5) (js* "rt$add") (js* "core$inc")])"#,
+           (pr-str [(max 1 2) (inc 5) (js* "rt$max") (js* "core$inc")])"#,
     );
-    assert!(js.contains("__light0_rt$add(1, 2)"), "{js}");
+    assert!(js.contains("__light0_rt$max(1, 2)"), "{js}");
     assert!(
         js.contains("let __light0_core$inc = __light0_rt$inc;"),
         "{js}"

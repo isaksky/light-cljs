@@ -1,7 +1,8 @@
 //! Conservative, optional application preparation over Rust semantic IR.
 //! Compile-time unit emission never enters this boundary.
-use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, MethodDispatch, Program};
+use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, Program};
 use crate::core_operations::{Calls, Purity, Type};
+use crate::inference::{Definition, Inference, ProgramFacts, TypeRole};
 use crate::program_fragment::children;
 use std::collections::HashMap;
 
@@ -27,8 +28,10 @@ pub enum OptimizationLevel {
     /// construct program types, and does not treat retained `js*` as an
     /// escape. Emission reads runtime bindings directly and embeds just the
     /// runtime units the program reaches (`crate::runtime_slice`); core
-    /// operations the program may replace read through a cell. Later passes of
-    /// that design hook in through
+    /// operations the program may replace read through a cell. Types inferred
+    /// over the prepared program ([`crate::inference`]) let emission drop
+    /// `truth()` and write core operators, typed `=`, `count`, `nth` and record
+    /// lookups directly. Later passes of that design hook in through
     /// [`OptimizationLevel::advanced`].
     Advanced,
 }
@@ -120,6 +123,8 @@ pub struct PreparedApplication {
     calls: HashMap<ExprId, usize>,
     /// `Advanced`: runtime names of the core operations the program assigns.
     replaced_core: Vec<&'static str>,
+    /// `Advanced`: the types of the prepared program.
+    inference: Option<Inference>,
     stats: ApplicationStats,
 }
 impl PreparedApplication {
@@ -130,6 +135,7 @@ impl PreparedApplication {
             &self.calls,
             self.level,
             &self.replaced_core,
+            self.inference.as_ref(),
             module,
         )
     }
@@ -163,6 +169,17 @@ impl PreparedApplication {
     pub fn replaced_core(&self) -> &[&'static str] {
         &self.replaced_core
     }
+    /// At `Advanced`, the inferred types of the prepared program (see
+    /// [`crate::inference`]), which emission uses to lower truth tests and core
+    /// calls. `None` below `Advanced`.
+    pub fn inference(&self) -> Option<&Inference> {
+        self.inference.as_ref()
+    }
+    /// The program this application emits: the analyzed program after
+    /// definition removal and call specialization.
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
     /// The level this application was prepared at. Level-specific emission
     /// (for example runtime slicing under `Advanced`) reads it here.
     pub fn level(&self) -> OptimizationLevel {
@@ -184,6 +201,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         globals: vec![false; program.globals.len()],
         calls: HashMap::new(),
         replaced_core: Vec::new(),
+        inference: None,
         stats: ApplicationStats::default(),
     };
     let mut top = Vec::new();
@@ -259,8 +277,15 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
     // and retained `js*` is not an escape; emission also slices the runtime.
     // Emission reads the runtime directly and keeps a mutable cell for each core
     // operation the program may replace (the scan `Inert` trusts).
+    // Type inference (Phase 2 step 3) runs over the prepared program, whose
+    // emission lowers truth tests and core calls with it.
     if level.advanced() {
-        prepared.replaced_core = inert.replaced_names();
+        let mut top = Vec::new();
+        flatten(&prepared.program, prepared.program.root, true, &mut top);
+        let top: Vec<ExprId> = top.into_iter().map(|(id, _)| id).collect();
+        let facts = ProgramFacts::new(&prepared.program, &top);
+        prepared.replaced_core = facts.replaced_names();
+        prepared.inference = Some(Inference::new(&prepared.program, facts));
     }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();
@@ -277,13 +302,16 @@ fn flatten(program: &Program, id: ExprId, result: bool, out: &mut Vec<(ExprId, b
     }
 }
 /// What an inert expression evaluates to, as far as the calls that consume it
-/// need to know: its type in the core operation lattice and whether it is
-/// *plain data* (see `crate::core_operations`), which `dispatch` operations
-/// hash, compare and traverse without running program code.
+/// need to know: its type in the core operation lattice, whether it is *plain
+/// data* (see `crate::core_operations`), which `dispatch` operations hash,
+/// compare and traverse without running program code, and for a literal
+/// collection the type of its elements, which `invoke` operations pass to
+/// their function argument.
 #[derive(Clone, Copy)]
 struct Shape {
     ty: Type,
     plain: bool,
+    elements: Type,
 }
 impl Shape {
     /// A value of type `ty`, plain when every value of that type is a scalar.
@@ -291,10 +319,23 @@ impl Shape {
         Self {
             ty,
             plain: SCALAR.contains(ty),
+            elements: Type::ANY,
         }
     }
     fn opaque(ty: Type) -> Self {
-        Self { ty, plain: false }
+        Self {
+            ty,
+            plain: false,
+            elements: Type::ANY,
+        }
+    }
+    /// A collection of type `ty` with elements of type `elements`.
+    fn collection(ty: Type, plain: bool, elements: Type) -> Self {
+        Self {
+            ty,
+            plain,
+            elements,
+        }
     }
 }
 const SCALAR: Type = Type::NIL
@@ -326,8 +367,10 @@ struct Constructor {
 /// `with-meta` row, calls of core operations whose row in
 /// `src/core_operations.tsv` is `pure` or `allocates` for the argument types
 /// and whose arguments run no code (`-` calls, or `dispatch` over plain data),
-/// and `new` or `->T` of a [`Constructor`] after its definition. `throws`,
-/// `effect` and `invoke` rows stay effectful.
+/// element-wise `invoke` calls (`mapv`, `filterv`, `every?`, ...) of a `fn`
+/// literal or core operation that is inert on the elements of plain
+/// collections, and `new` or `->T` of a [`Constructor`] after its definition.
+/// `throws` and `effect` rows stay effectful.
 ///
 /// The core rows hold under the program-wide conditions of the
 /// `crate::core_operations` module docs, checked here: a core operation that
@@ -349,18 +392,6 @@ struct Inert<'p> {
     position: usize,
 }
 impl<'p> Inert<'p> {
-    /// The runtime names of the core operations the program may replace,
-    /// sorted and without duplicates (operations can share a runtime name).
-    fn replaced_names(&self) -> Vec<&'static str> {
-        let mut names = CoreFnId::ALL
-            .into_iter()
-            .filter(|core| self.replaced[core.table_row()])
-            .map(CoreFnId::runtime_name)
-            .collect::<Vec<_>>();
-        names.sort_unstable();
-        names.dedup();
-        names
-    }
     fn new(program: &'p Program, top: &[(ExprId, bool)], advanced: bool) -> Self {
         let mut inert = Self {
             program,
@@ -374,93 +405,34 @@ impl<'p> Inert<'p> {
         if !advanced {
             return inert;
         }
-        // Program-wide, including code that may never run: how often each
-        // global is defined, which globals and core operations may be
-        // reassigned, and which targets core protocols are extended to.
-        let mut definitions = vec![0usize; program.globals.len()];
-        let mut assigned = vec![false; program.globals.len()];
-        let mut replaced = vec![false; CoreFnId::ALL.len()];
-        let mut extended = Vec::new();
-        // Extensions name core protocols and their methods by `Builtin` keys,
-        // and also mark the program's own protocols with arity-0 `ns/Name` ones.
-        let markers: Vec<_> = program
-            .protocols
-            .keys()
-            .map(|protocol| {
-                let binding = &program.globals[protocol.0];
-                format!("{}/{}", binding.namespace, binding.name)
-            })
+        // Program-wide, including code that may never run: which globals are
+        // defined once, which core operations may be reassigned, and which
+        // targets core protocols are extended to.
+        let top_ids: Vec<ExprId> = top.iter().map(|(id, _)| *id).collect();
+        let facts = ProgramFacts::new(program, &top_ids);
+        inert.replaced = CoreFnId::ALL
+            .into_iter()
+            .map(|core| facts.replaced(core))
             .collect();
-        let core_protocol = |(dispatch, method): &(MethodDispatch, crate::analyzer::FnMethod)| {
-            matches!(dispatch, MethodDispatch::Builtin(key)
-                if !(method.params.is_empty() && method.rest.is_none() && markers.contains(key)))
-        };
-        // Assigning a property of a core value (`PersistentHashMap.fromArrays`)
-        // counts as replacing it.
-        let mut assign = |target: &ExprId| {
-            let target = match program.exprs[target.0].kind {
-                ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } => {
-                    receiver
-                }
-                _ => *target,
-            };
-            match program.exprs[target.0].kind {
-                ExprKind::CoreFn(core) => replaced[core.table_row()] = true,
-                ExprKind::Global(global) => assigned[global.0] = true,
-                _ => (),
-            }
-        };
-        for expr in &program.exprs {
-            match &expr.kind {
-                ExprKind::SetGlobal { target, .. } => assign(target),
-                ExprKind::Binding { bindings, .. } => {
-                    bindings.iter().for_each(|(target, _)| assign(target))
-                }
-                // Raw text may assign its holes.
-                ExprKind::JsTemplate { args, .. } => args.iter().for_each(&mut assign),
-                ExprKind::ExtendType {
-                    target, methods, ..
-                } if methods.iter().any(core_protocol) => extended.push(*target),
-                ExprKind::Global(_) => (),
-                kind => {
-                    for global in globals(kind) {
-                        definitions[global.0] += 1;
-                    }
-                }
-            }
-        }
-        inert.replaced = replaced;
         inert.locals = vec![None; program.locals.len()];
         inert.constructors = vec![None; program.globals.len()];
-        let sole = |global: GlobalId| definitions[global.0] == 1 && !assigned[global.0];
-        for (position, &(id, _)) in top.iter().enumerate() {
-            if let ExprKind::DefType {
+        for global in 0..program.globals.len() {
+            if let Definition::Type {
+                definition,
+                role: role @ (TypeRole::Constructor | TypeRole::Factory),
                 record,
-                global,
-                constructor,
                 ..
-            } = program.exprs[id.0].kind
-                && sole(global)
+            } = facts.definition(GlobalId(global))
+                && let Some(position) = facts.top_position(definition)
             {
-                let instance = if record { Type::RECORD } else { Type::OBJECT };
-                inert.constructors[global.0] = Some(Constructor {
+                inert.constructors[global] = Some(Constructor {
                     position,
-                    factory: false,
-                    instance,
+                    factory: role == TypeRole::Factory,
+                    instance: if record { Type::RECORD } else { Type::OBJECT },
                 });
-                if let Some(factory) = constructor.filter(|factory| sole(*factory)) {
-                    inert.constructors[factory.0] = Some(Constructor {
-                        position,
-                        factory: true,
-                        instance,
-                    });
-                }
             }
         }
-        inert.core_calls = extended.iter().all(|target| {
-            matches!(program.exprs[target.0].kind, ExprKind::Global(global)
-                if inert.constructors[global.0].is_some_and(|c| !c.factory))
-        });
+        inert.core_calls = facts.core_protocols_intact();
         inert
     }
 
@@ -492,16 +464,18 @@ impl<'p> Inert<'p> {
                 last
             }
             List(items) | Vector(items) => {
-                let mut plain = true;
+                let (mut plain, mut elements) = (true, Type::NEVER);
                 for item in items {
-                    plain &= self.shape(*item)?.plain;
+                    let item = self.shape(*item)?;
+                    plain &= item.plain;
+                    elements = elements.union(item.ty);
                 }
                 let ty = if matches!(program.exprs[id.0].kind, List(_)) {
                     Type::LIST
                 } else {
                     Type::VECTOR
                 };
-                Shape { ty, plain }
+                Shape::collection(ty, plain, elements)
             }
             Map(items) | LiteralMap(items) => {
                 let mut plain = true;
@@ -511,19 +485,18 @@ impl<'p> Inert<'p> {
                     }
                     plain &= self.shape(pair[1])?.plain;
                 }
-                Shape {
-                    ty: Type::MAP,
-                    plain,
-                }
+                // Its elements are map entries.
+                Shape::collection(Type::MAP, plain, Type::VECTOR)
             }
             Set(items) | LiteralSet(items) => {
                 if !items.iter().all(|id| scalar(program, *id)) {
                     return None;
                 }
-                Shape {
-                    ty: Type::SET,
-                    plain: true,
+                let mut elements = Type::NEVER;
+                for item in items {
+                    elements = elements.union(self.shape(*item)?.ty);
                 }
+                Shape::collection(Type::SET, true, elements)
             }
             // Non-scalar hashing, reader literals, metadata and unknown operations
             // may throw or dispatch user code and are deliberately not pure here.
@@ -538,10 +511,11 @@ impl<'p> Inert<'p> {
             If { test, yes, no } => {
                 self.shape(*test)?;
                 let (yes, no) = (self.shape(*yes)?, self.shape(*no)?);
-                Shape {
-                    ty: yes.ty.union(no.ty),
-                    plain: yes.plain && no.plain,
-                }
+                Shape::collection(
+                    yes.ty.union(no.ty),
+                    yes.plain && no.plain,
+                    yes.elements.union(no.elements),
+                )
             }
             WithMeta { value, metadata } => {
                 let arguments = [self.shape(*value)?, self.shape(*metadata)?];
@@ -556,7 +530,7 @@ impl<'p> Inert<'p> {
                     .map(|arg| self.shape(*arg))
                     .collect::<Option<Vec<_>>>()?;
                 match program.exprs[callee.0].kind {
-                    CoreFn(core) => Shape::of(self.core_call(core, &arguments)?),
+                    CoreFn(core) => self.core_call_shape(core, args, &arguments)?,
                     Global(global) => Shape::opaque(self.construct(global, true)?),
                     _ => return None,
                 }
@@ -588,6 +562,98 @@ impl<'p> Inert<'p> {
             Calls::Invoke => false,
         };
         (call.purity <= Purity::Allocates && runs_no_code).then_some(call.returns)
+    }
+
+    /// The shape of an inert call of `core` on `args`, whose shapes are
+    /// `arguments`. An `invoke` row is inert when the operation calls its first
+    /// argument on one element of each further argument, those are plain
+    /// collections, and the function argument, a `fn` literal or a core
+    /// operation, is inert on their elements (light-cljs-210).
+    fn core_call_shape(
+        &mut self,
+        core: CoreFnId,
+        args: &[ExprId],
+        arguments: &[Shape],
+    ) -> Option<Shape> {
+        let types: Vec<_> = arguments.iter().map(|shape| shape.ty).collect();
+        let call = core.operation().call(&types);
+        if call.calls != Calls::Invoke {
+            return Some(Shape::of(self.core_call(core, arguments)?));
+        }
+        let element_wise = matches!(
+            core,
+            CoreFnId::Mapv
+                | CoreFnId::Filterv
+                | CoreFnId::Every
+                | CoreFnId::NotEvery
+                | CoreFnId::NotAny
+                | CoreFnId::Some
+                | CoreFnId::GroupBy
+                | CoreFnId::Run
+        );
+        if !element_wise
+            || !self.core_calls
+            || self.replaced[core.table_row()]
+            || call.purity > Purity::Allocates
+        {
+            return None;
+        }
+        let collections = arguments.get(1..)?;
+        if collections.is_empty() || !collections.iter().all(|shape| shape.plain) {
+            return None;
+        }
+        let elements: Vec<_> = collections
+            .iter()
+            .map(|collection| Shape::collection(collection.elements, true, Type::ANY))
+            .collect();
+        let result = self.invoke(args[0], &elements)?;
+        Some(match core {
+            CoreFnId::Mapv => Shape::collection(Type::VECTOR, result.plain, result.ty),
+            CoreFnId::Filterv => Shape::collection(Type::VECTOR, true, elements[0].ty),
+            CoreFnId::Some => {
+                Shape::collection(result.ty.union(Type::NIL), result.plain, result.elements)
+            }
+            // The results are the keys of the map it builds.
+            CoreFnId::GroupBy if result.plain => Shape::collection(Type::MAP, true, Type::VECTOR),
+            CoreFnId::GroupBy => return None,
+            _ => Shape::of(call.returns),
+        })
+    }
+
+    /// The shape of what calling `function`, a `fn` literal or a core
+    /// operation, on arguments of these shapes returns, when the call is
+    /// inert. A `fn` with one fixed method takes any number of arguments
+    /// (missing ones are nil); one with several needs a fixed method of that
+    /// many, since a mismatch throws (variadic methods are not followed).
+    fn invoke(&mut self, function: ExprId, arguments: &[Shape]) -> Option<Shape> {
+        let program = self.program;
+        match &program.exprs[function.0].kind {
+            ExprKind::CoreFn(core) => {
+                let types: Vec<_> = arguments.iter().map(|shape| shape.ty).collect();
+                if core.operation().call(&types).calls == Calls::Invoke {
+                    return None;
+                }
+                Some(Shape::of(self.core_call(*core, arguments)?))
+            }
+            ExprKind::Fn { methods, .. } if !program.macro_functions.contains(&function) => {
+                let method = match methods.as_slice() {
+                    [method] if method.rest.is_none() => method,
+                    _ => methods.iter().find(|method| {
+                        method.rest.is_none() && method.params.len() == arguments.len()
+                    })?,
+                };
+                for (index, param) in method.params.iter().enumerate() {
+                    self.locals[param.0] = Some(
+                        arguments
+                            .get(index)
+                            .copied()
+                            .unwrap_or(Shape::of(Type::NIL)),
+                    );
+                }
+                self.shape(method.body)
+            }
+            _ => None,
+        }
     }
 
     /// A `hash-map` call that its compiler macro expanded: the `array` calls
@@ -666,7 +732,8 @@ fn scalar(program: &Program, id: ExprId) -> bool {
             | ExprKind::Symbol(_)
     )
 }
-fn globals(kind: &ExprKind) -> Vec<GlobalId> {
+/// The globals an expression of this kind reads or defines.
+pub(crate) fn globals(kind: &ExprKind) -> Vec<GlobalId> {
     match kind {
         ExprKind::Global(g) | ExprKind::Def { global: g, .. } => vec![*g],
         ExprKind::DefProtocol {
@@ -964,12 +1031,34 @@ mod tests {
             removed("(def a (let [x (inc 1)] (if (pos? x) (do x [x]) ^:m {:x x}))) 42"),
             [0, 1]
         );
-        // `throws`, `effect` and `invoke` rows, calls outside a row's domain and
+        // `throws` and `effect` rows, calls outside a row's domain and
         // `dispatch` rows over data that is not plain stay.
         assert_eq!(
             removed(
-                "(def a (into [] [1])) (def b (mapv inc [1])) (def c (inc \"x\")) \
+                "(def a (into [] [1])) (def c (inc \"x\")) \
                  (def d (count (vector 1))) (def e (count [(fn [] 1)])) 42"
+            ),
+            [0, 0]
+        );
+        // Element-wise `invoke` rows are inert when their function, a `fn`
+        // literal or a core operation, is inert on the elements of plain
+        // collections (light-cljs-210).
+        assert_eq!(
+            removed(
+                "(def a (mapv inc [1 2])) (def b (filterv (fn [x] (pos? x)) [1 -1])) \
+                 (def c (mapv (fn [x y] [x y]) [1] '(:a))) (def d (every? keyword? #{:a})) \
+                 (def e (group-by count [[1] [2 3]])) (def f (some #(when (pos? %) [%]) [0 1])) 42"
+            ),
+            [0, 6]
+        );
+        // Not when the function may throw on an element, has no method for the
+        // arity, is not a literal, or the collection is not plain data.
+        assert_eq!(
+            removed(
+                "(def a (mapv inc [\"x\"])) (def b (mapv (fn ([] 1) ([x y] 2)) [1])) \
+                 (def c (mapv identity (range 3))) (defn g [x] x) (def d (mapv g [1])) \
+                 (def e (mapv (fn [x] (inc x)) [[1]])) (def f (group-by identity [(fn [])])) \
+                 (def h (reduce + [1 2])) 42"
             ),
             [0, 0]
         );

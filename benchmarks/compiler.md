@@ -1129,3 +1129,73 @@ grows by 1,084 bytes, so every fixture's `none` and `prepare` ceiling rises
 by 1,000: `printHooks` and `printNumber`, the install unit, `displayStr` and
 its export, and the longer `toString` and message call sites. The `advanced`
 ceilings fall to the sizes above, rounded up.
+
+## Type inference — October 13, 2026
+
+light-cljs-210 implements Phase 2 step 3 of the
+[design](../docs/advanced-optimization.md): `--optimize advanced` infers a
+type for every expression of the prepared program (`src/inference.rs`) and
+emits `if` tests without `truth()` where JavaScript truthiness agrees,
+`(and a b)` as `(a && b)`, arithmetic, comparisons and `inc`/`dec`/`nil?`/
+`zero?`/... as JavaScript operators, and typed `=`, `not`, `count`, `nth` and
+record lookups without calling the runtime. Output that never calls `truth`
+leaves out its declaration. Below `Advanced` nothing changes.
+
+**Sizes**, raw and `gzip -9` bytes of the ratchet fixtures at `advanced`;
+"before" is master `857471a` (after light-cljs-207). `none` and `prepare` do
+not change.
+
+| Fixture | Advanced before | Advanced after | Advanced ceiling |
+| --- | ---: | ---: | ---: |
+| console-log-sum | 713 / 431 | 192 / 161 | 200 |
+| add | 553 / 345 | 32 / 52 | 100 |
+| raw-js | 1,404 / 582 | 856 / 319 | 900 |
+| keyword-case | 121,084 / 27,796 | 120,164 / 27,472 | 121,000 |
+| record-protocol | 149,461 / 33,808 | 148,802 / 33,565 | 149,000 |
+| pure-defs | 145,279 / 32,717 | 145,151 / 32,679 | 146,000 |
+| keyword-lookups | 131,057 / 30,087 | 130,993 / 30,060 | 131,000 |
+| println-hi | 134,836 / 30,947 | 134,775 / 30,925 | 135,000 |
+| rest-fn | 119,919 / 27,408 | 119,858 / 27,384 | 120,000 |
+| seq-pipeline | 138,105 / 31,675 | 138,044 / 31,652 | 139,000 |
+
+`(js/console.log (+ 1 2))` reads no runtime any more: it is
+`(host("console")["log"])((1 + 2))` inside the output closure, below the
+design's 1,000-byte target for that row. `add` and `raw-js` likewise lose the
+`add` unit. Elsewhere the slice loses the units of the lowered operations
+(`add`, `multiply` and `numericFold` in `keyword-case`) and the output its
+`truth` prelude; the programs that build values still keep the collection and
+printing core.
+
+**Startup and steady state.** `--levels` runs on master `d94515b`, before
+light-cljs-207 landed, from an exported tree and then with this change, one
+directly after the other. The machine was busy, more
+so during the "before" run (median one-minute load 8.5 against 4.6), so small
+differences favor "after". All tables are in
+[before](results/type-inference-2026-10-13/before/summary.md) and
+[after](results/type-inference-2026-10-13/after/summary.md), next to their
+`samples.csv`.
+
+Parse plus first execution at `advanced`, median ms, Node / QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| console-log-sum | 0.670 / 0.046 | 0.570 / 0.020 |
+| add | 0.145 / 0.036 | 0.110 / 0.008 |
+| raw-js | 0.168 / 0.080 | 0.135 / 0.051 |
+| record-protocol | 3.236 / 8.475 | 3.191 / 8.121 |
+| pure-defs | 3.242 / 8.215 | 2.929 / 7.842 |
+
+Steady state at `advanced`, median ms per call:
+
+| Workload | n | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| seq-pipeline | 200 | 5.54 | 5.40 | 29.62 | 29.15 |
+| record-protocol | 2,000 | 9.74 | 9.94 | 20.52 | 18.93 |
+| keyword-lookups | 2,000 | 19.26 | 18.70 | 108.35 | 108.29 |
+
+Only `record-protocol` changes beyond the noise, in QuickJS: its `area`
+multiplies with `*` instead of calling the runtime's `multiply`, which saves
+8%. Node inlines the small runtime functions itself. The other workloads spend
+their time in the sequence and map runtime, which the lowerings do not touch;
+their parameters are untyped, so `=`, `count` and `nth` on them keep the
+runtime call.

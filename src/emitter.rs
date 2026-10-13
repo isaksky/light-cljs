@@ -10,6 +10,8 @@ use crate::analyzer::{
     PACKAGE_REGISTRY, Program, RecurTargetId, StringId,
 };
 use crate::application::OptimizationLevel;
+use crate::core_operations::Type;
+use crate::inference::{Inference, Known};
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
 use crate::runtime_slice::{EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots};
 
@@ -39,6 +41,7 @@ pub(crate) fn emit_application(
     calls: &std::collections::HashMap<ExprId, usize>,
     level: OptimizationLevel,
     replaced_core: &[&'static str],
+    inference: Option<&Inference>,
     module: bool,
 ) -> (String, EmittedRuntime) {
     emit_js_mode(
@@ -50,6 +53,7 @@ pub(crate) fn emit_application(
             globals,
             calls,
             direct: level.advanced().then_some(replaced_core),
+            inference: inference.filter(|_| level.advanced()),
         }),
         module,
     )
@@ -66,6 +70,9 @@ struct Application<'a> {
     /// runtime names of the core operations the program may replace, sorted; their
     /// reads and writes go through an output-level cell, `core$<name>`.
     direct: Option<&'a [&'static str]>,
+    /// At `Advanced`: the program's inferred types, which lower truth tests
+    /// and core calls.
+    inference: Option<&'a Inference>,
 }
 
 /// Emit one ES module for a bundler instead of a bare expression. Each package
@@ -123,6 +130,9 @@ fn emit_js_mode(
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
+    let inference = application
+        .and_then(|application| application.inference)
+        .filter(|_| direct.is_some());
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool| {
         let mut emitter = Emitter {
@@ -153,11 +163,12 @@ fn emit_js_mode(
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
             site: None,
+            inference,
+            truth_used: false,
         };
-        emitter
-            .output
-            .push_str("(() => {\n  const truth = (value) => value != null && value !== false;\n");
-        let prelude_end = emitter.output.len();
+        emitter.output.push_str(PRELUDE_OPEN);
+        emitter.output.push_str(PRELUDE_TRUTH);
+        let mut prelude_end = emitter.output.len();
         for global in 0..program.globals.len() {
             if application_roots {
                 break;
@@ -168,6 +179,18 @@ fn emit_js_mode(
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
         emitter.emit(program.root, ExprContext::Return);
+        // `Advanced` output that tests no value with `truth` does not declare it.
+        if emitter.inference.is_some() && !emitter.truth_used {
+            let start = PRELUDE_OPEN.len();
+            emitter
+                .output
+                .replace_range(start..start + PRELUDE_TRUTH.len(), "");
+            prelude_end -= PRELUDE_TRUTH.len();
+            for range in &mut emitter.raw_segments {
+                range.start -= PRELUDE_TRUTH.len();
+                range.end -= PRELUDE_TRUTH.len();
+            }
+        }
         (emitter, prelude_end)
     };
     // Advanced output registers its namespaces only when the program reaches
@@ -384,6 +407,12 @@ fn emit_js_mode(
     };
     (output, runtime)
 }
+
+/// The opening of every emitted expression, followed by [`PRELUDE_TRUTH`].
+const PRELUDE_OPEN: &str = "(() => {\n";
+/// Clojure truthiness, which `if` tests use unless the test's type makes
+/// JavaScript truthiness agree.
+const PRELUDE_TRUTH: &str = "  const truth = (value) => value != null && value !== false;\n";
 
 /// Whether some emitted expression is of a kind whose emission reads the
 /// runtime. Below `Advanced` this decides whether the whole runtime is embedded.
@@ -647,6 +676,10 @@ struct Emitter<'a> {
     runtime: RuntimeRoots,
     /// The innermost expression being emitted, to which runtime reads are attributed.
     site: Option<ExprId>,
+    /// At `Advanced`: the program's inferred types (`crate::inference`).
+    inference: Option<&'a Inference>,
+    /// Whether the output calls the prelude's `truth`.
+    truth_used: bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -1009,14 +1042,349 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// An `if` test: `truth(test)`, or the test itself when it is a
+    /// `BooleanHint` or, at `Advanced`, when its inferred type makes JavaScript
+    /// truthiness agree with Clojure's (no number, string or host value).
     fn condition(&mut self, id: ExprId) {
         if let ExprKind::BooleanHint(value) = self.program.exprs[id.0].kind {
             self.value(value);
+        } else if self
+            .inference
+            .is_some_and(|inference| inference.value(id).truth_is_js())
+        {
+            self.value(id);
         } else {
+            self.truth_used = true;
             self.output.push_str("truth(");
             self.value(id);
             self.output.push(')');
         }
+    }
+
+    /// At `Advanced`, the operands of `(and a b)` or `(or a b)` that emit as
+    /// `(a && b)` or `(a || b)`, and whether it is `and`: the expansion
+    /// `(let [t a] (if t b t))` returns the same value when `a`'s type makes
+    /// JavaScript truthiness agree with Clojure's and `t` is read only there
+    /// (upstream's `and`/`or` pass). In value position the expansion's function
+    /// scope goes away, so neither operand may read the enclosing `arguments`
+    /// or contain raw JavaScript.
+    fn short_circuit(&self, id: ExprId, value: bool) -> Option<(ExprId, ExprId, bool)> {
+        let inference = self.inference?;
+        let ExprKind::Let { bindings, body } = &self.program.exprs[id.0].kind else {
+            return None;
+        };
+        let (temporary, init, other, and) =
+            crate::inference::short_circuit(self.program, bindings, *body)?;
+        if inference.uses(temporary) != 2 || !inference.value(init).truth_is_js() {
+            return None;
+        }
+        if value
+            && [init, other]
+                .into_iter()
+                .any(|id| reads_function_scope(self.program, id))
+        {
+            return None;
+        }
+        Some((init, other, and))
+    }
+
+    fn short_circuit_value(&mut self, (init, other, and): (ExprId, ExprId, bool)) {
+        self.output.push('(');
+        self.value(init);
+        self.output.push_str(if and { " && " } else { " || " });
+        self.value(other);
+        self.output.push(')');
+    }
+
+    /// `(a op b op ...)`.
+    fn infix(&mut self, operator: &str, args: &[ExprId]) {
+        self.output.push('(');
+        for (index, &arg) in args.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str(operator);
+            }
+            self.value(arg);
+        }
+        self.output.push(')');
+    }
+
+    /// `(prefix value suffix)`.
+    fn wrapped(&mut self, prefix: &str, value: ExprId, suffix: &str) {
+        self.output.push('(');
+        self.output.push_str(prefix);
+        self.value(value);
+        self.output.push_str(suffix);
+        self.output.push(')');
+    }
+
+    /// Whether reading `id` twice is reading it once: a literal or a local
+    /// other than a mutable type field.
+    fn repeatable(&self, id: ExprId) -> bool {
+        match self.program.exprs[id.0].kind {
+            ExprKind::Local(local) => !self.program.field_bindings.contains_key(&local),
+            ExprKind::Nil
+            | ExprKind::Bool(_)
+            | ExprKind::Number(_)
+            | ExprKind::String(_)
+            | ExprKind::Keyword(_) => true,
+            _ => false,
+        }
+    }
+
+    /// At `Advanced`, a call that emission writes as JavaScript operators or a
+    /// field read instead of calling the runtime (docs/advanced-optimization.md,
+    /// "Phase 2 type inference extension points"); whether it wrote one.
+    fn lowered_call(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
+        let Some(inference) = self.inference else {
+            return false;
+        };
+        match self.program.exprs[callee.0].kind {
+            ExprKind::Keyword(literal) => match args {
+                [receiver] => self.field_read(inference, *receiver, literal),
+                _ => false,
+            },
+            ExprKind::CoreFn(core) if !self.replaced(core.runtime_name()) => {
+                self.lowered_core_call(inference, core, args)
+            }
+            _ => false,
+        }
+    }
+
+    fn lowered_core_call(
+        &mut self,
+        inference: &Inference,
+        core: crate::CoreFnId,
+        args: &[ExprId],
+    ) -> bool {
+        use crate::CoreFnId as C;
+        // Operations whose runtime definition is a JavaScript operator on its
+        // arguments (src/js_runtime.js): a call with these many arguments is
+        // that operator, whatever the argument types.
+        let comparison = match core {
+            C::Less => Some(" < "),
+            C::LessEqual => Some(" <= "),
+            C::Greater => Some(" > "),
+            C::GreaterEqual => Some(" >= "),
+            _ => None,
+        };
+        match (core, args) {
+            (C::Add, []) => self.output.push('0'),
+            (C::Multiply, []) => self.output.push('1'),
+            (C::Add | C::Multiply, [value]) => self.value(*value),
+            (C::Add, _) => self.infix(" + ", args),
+            (C::Multiply, _) => self.infix(" * ", args),
+            (C::Subtract, [value]) => self.wrapped("- ", *value, ""),
+            (C::Subtract, [_, _, ..]) => self.infix(" - ", args),
+            (C::Divide, [value]) => self.wrapped("1 / ", *value, ""),
+            (C::Divide, [_, _, ..]) => self.infix(" / ", args),
+            (C::Inc, [value]) => self.wrapped("", *value, " + 1"),
+            (C::Dec, [value]) => self.wrapped("", *value, " - 1"),
+            (_, [value]) if comparison.is_some() => self.wrapped("", *value, ", true"),
+            (_, [_, _]) if comparison.is_some() => self.infix(comparison.unwrap(), args),
+            // A chain compares neighbors, short-circuiting like the runtime's
+            // loop, which reads each argument once.
+            (_, [_, _, _, ..])
+                if comparison.is_some() && args.iter().all(|arg| self.repeatable(*arg)) =>
+            {
+                self.output.push('(');
+                for (index, pair) in args.windows(2).enumerate() {
+                    if index > 0 {
+                        self.output.push_str(" && ");
+                    }
+                    self.value(pair[0]);
+                    self.output.push_str(comparison.unwrap());
+                    self.value(pair[1]);
+                }
+                self.output.push(')');
+            }
+            (C::Identical, [_, _]) => self.infix(" === ", args),
+            (C::IsNil, [value]) => self.wrapped("", *value, " == null"),
+            (C::IsSome, [value]) => self.wrapped("", *value, " != null"),
+            (C::IsZero, [value]) => self.wrapped("", *value, " === 0"),
+            (C::IsPositive, [value]) => self.wrapped("", *value, " > 0"),
+            (C::IsNegative, [value]) => self.wrapped("", *value, " < 0"),
+            // Typed lowerings. `not` is `x == null || x === false`.
+            (C::Not, [value]) if inference.value(*value).truth_is_js() => {
+                self.wrapped("!", *value, "")
+            }
+            (C::Equal | C::NotEqual, [left, right]) => {
+                return self.equality(inference, *left, *right, core == C::NotEqual);
+            }
+            (C::NumericEqual, [_, _])
+                if inference.facts().core_protocols_intact()
+                    && args
+                        .iter()
+                        .all(|arg| Type::NUMBER.contains(inference.ty(*arg))) =>
+            {
+                self.infix(" === ", args)
+            }
+            (C::Count, [value]) => return self.count(inference, *value),
+            (C::Nth, [vector, index] | [vector, index, _]) => {
+                return self.nth(inference, *vector, *index, args.get(2).copied());
+            }
+            (C::Get, [receiver, key]) => match self.program.exprs[key.0].kind {
+                ExprKind::Keyword(literal) => {
+                    return self.field_read(inference, *receiver, literal);
+                }
+                _ => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
+
+    /// `(= a b)` (or `not=`): `===` when a primitive (boolean, number or
+    /// string) decides it, and for a keyword literal the lowering that 208's
+    /// constant table documents, `x === k<n> || rt$keywordFqn(x) === "k"`
+    /// (or only the spelling test when `x` cannot be read twice). Both need the
+    /// core protocols intact, since `=` dispatches `IEquiv` on its first
+    /// operand; with the primitive or literal second, the first must not be an
+    /// instance of a program type when the program implements `IEquiv`.
+    fn equality(&mut self, inference: &Inference, left: ExprId, right: ExprId, not: bool) -> bool {
+        let facts = inference.facts();
+        if !facts.core_protocols_intact() {
+            return false;
+        }
+        let primitive = Type::BOOLEAN.union(Type::NUMBER).union(Type::STRING);
+        let program_types = Type::RECORD.union(Type::OBJECT);
+        let (left_type, right_type) = (inference.ty(left), inference.ty(right));
+        let plain_left =
+            !facts.implements_equiv() || left_type.intersection(program_types).is_never();
+        if primitive.contains(left_type) || primitive.contains(right_type) && plain_left {
+            self.infix(if not { " !== " } else { " === " }, &[left, right]);
+            return true;
+        }
+        let literal = |id: ExprId| match self.program.exprs[id.0].kind {
+            ExprKind::Keyword(literal) => Some(literal),
+            _ => None,
+        };
+        let (value, literal) = match (literal(left), literal(right)) {
+            (_, Some(literal)) if plain_left => (left, literal),
+            (Some(literal), _) => (right, literal),
+            _ => return false,
+        };
+        let name = &self.program.named_literals[literal.0];
+        let mut spelling = Vec::new();
+        if let Some(namespace) = name.namespace {
+            spelling.extend_from_slice(&self.program.strings[namespace.0]);
+            spelling.push('/' as u16);
+        }
+        spelling.extend_from_slice(&self.program.strings[name.name.0]);
+        if not {
+            self.output.push('!');
+        }
+        self.output.push('(');
+        if self.repeatable(value) {
+            self.value(value);
+            self.output.push_str(" === ");
+            self.named_literal(literal, false);
+            self.output.push_str(" || ");
+        }
+        self.rt(RuntimeName::export("keywordFqn"));
+        self.output.push('(');
+        self.value(value);
+        self.output.push_str(") === ");
+        self.string_units(&spelling);
+        self.output.push(')');
+        true
+    }
+
+    /// `(count x)`: `.length` of a string or JavaScript array, and of a flat
+    /// vector's payload.
+    fn count(&mut self, inference: &Inference, value: ExprId) -> bool {
+        if !inference.facts().core_protocols_intact() {
+            return false;
+        }
+        let inferred = inference.value(value);
+        if Type::STRING.contains(inferred.ty)
+            || inferred.known == Known::Array && Type::HOST.contains(inferred.ty)
+        {
+            self.output.push('(');
+            self.value(value);
+            self.output.push_str(").length");
+            return true;
+        }
+        if inferred.known == Known::Vector && Type::VECTOR.contains(inferred.ty) {
+            self.rt(RuntimeName::export("vectors"));
+            self.output.push_str(".get(");
+            self.value(value);
+            self.output.push_str(").length");
+            return true;
+        }
+        false
+    }
+
+    /// `(nth v i)` and `(nth v i not-found)` on a flat vector with a number
+    /// index: the runtime's direct index path, `vectorNth` on the payload.
+    fn nth(
+        &mut self,
+        inference: &Inference,
+        vector: ExprId,
+        index: ExprId,
+        not_found: Option<ExprId>,
+    ) -> bool {
+        let inferred = inference.value(vector);
+        if !inference.facts().core_protocols_intact()
+            || inferred.known != Known::Vector
+            || !Type::VECTOR.contains(inferred.ty)
+            || !Type::NUMBER.contains(inference.ty(index))
+        {
+            return false;
+        }
+        self.rt(RuntimeName::export("vectorNth"));
+        self.output.push('(');
+        self.rt(RuntimeName::export("vectors"));
+        self.output.push_str(".get(");
+        self.value(vector);
+        self.output.push_str("), ");
+        self.value(index);
+        self.output.push_str(", ");
+        match not_found {
+            Some(not_found) => self.value(not_found),
+            None => self.rt(RuntimeName::export("missing")),
+        }
+        self.output.push(')');
+        true
+    }
+
+    /// `(:k rec)` or `(get rec :k)` on a record of a known program type with a
+    /// field `k`: the field's property, which the record's `ILookup` reads.
+    fn field_read(
+        &mut self,
+        inference: &Inference,
+        receiver: ExprId,
+        literal: NamedLiteralId,
+    ) -> bool {
+        let inferred = inference.value(receiver);
+        let facts = inference.facts();
+        let Known::Instance(global) = inferred.known else {
+            return false;
+        };
+        if !Type::RECORD.contains(inferred.ty)
+            || !facts.core_protocols_intact()
+            || facts.implements_lookup(global)
+        {
+            return false;
+        }
+        let Some((definition, true)) = facts.program_type(global) else {
+            return false;
+        };
+        let program = self.program;
+        let ExprKind::DefType { fields, .. } = &program.exprs[definition.0].kind else {
+            return false;
+        };
+        let name = &program.named_literals[literal.0];
+        let Ok(spelling) = String::from_utf16(&program.strings[name.name.0]) else {
+            return false;
+        };
+        if name.namespace.is_some() || !fields.contains(&spelling) {
+            return false;
+        }
+        self.output.push('(');
+        self.value(receiver);
+        self.output.push(')');
+        self.member(&crate::analyzer::munge_js_member(&spelling));
+        true
     }
 
     fn string(&mut self, id: StringId) {
@@ -1065,6 +1433,15 @@ impl<'a> Emitter<'a> {
             && self.replaced_core.is_some()
             && matches!(self.program.exprs[id.0].kind, ExprKind::Nil)
         {
+            return;
+        }
+        if let Some(parts) = self.short_circuit(id, false) {
+            self.indentation();
+            if context == ExprContext::Return {
+                self.output.push_str("return ");
+            }
+            self.short_circuit_value(parts);
+            self.output.push_str(";\n");
             return;
         }
         match &self.program.exprs[id.0].kind {
@@ -1837,6 +2214,10 @@ impl<'a> Emitter<'a> {
 
     fn value_expr(&mut self, id: ExprId) {
         self.used.insert(id);
+        if let Some(parts) = self.short_circuit(id, true) {
+            self.short_circuit_value(parts);
+            return;
+        }
         match &self.program.exprs[id.0].kind {
             ExprKind::Nil => self.output.push_str("null"),
             ExprKind::Construct { callee, args } => {
@@ -1865,8 +2246,13 @@ impl<'a> Emitter<'a> {
                 message,
                 form,
             } => {
-                self.output.push_str("(() => { if (!truth(");
-                self.value(*test);
+                if self.inference.is_some() {
+                    self.output.push_str("(() => { if (!(");
+                    self.condition(*test);
+                } else {
+                    self.output.push_str("(() => { if (!truth(");
+                    self.value(*test);
+                }
                 self.output
                     .push_str(")) throw new Error(\"Assert failed: \" + ");
                 if let Some(message) = message {
@@ -2623,6 +3009,9 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
+                if self.lowered_call(*callee, args) {
+                    return;
+                }
                 if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind
                     && self.known_unit(core)
                 {
@@ -2662,6 +3051,23 @@ impl<'a> Emitter<'a> {
             }
         }
     }
+}
+
+/// Whether the value of `id` may read the `arguments` of the function it is
+/// emitted in, or holds raw JavaScript (which may read `this`), outside
+/// nested functions.
+fn reads_function_scope(program: &Program, id: ExprId) -> bool {
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        match program.exprs[id.0].kind {
+            ExprKind::JsArguments | ExprKind::CopyArguments(_) | ExprKind::JsTemplate { .. } => {
+                return true;
+            }
+            ExprKind::Fn { .. } => (),
+            _ => pending.extend(crate::program_fragment::children(program, id)),
+        }
+    }
+    false
 }
 
 // The compiler emits only quoted strings and ordinary identifier tokens outside

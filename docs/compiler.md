@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword and quoted symbol literal once (the constant table, below), registers its namespaces only when the program reaches reflection, and gives collections a printing `toString` only when the program can print (below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword and quoted symbol literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, and infers types to write truth tests and core calls as JavaScript (below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -185,7 +185,7 @@ registers its namespaces with the runtime and switches `*ns*` as each
 namespace loads, and its registered namespaces list only the definitions the
 output keeps, so a removed definition no longer shadows a `cljs.core` name in
 the reader's syntax quote. Any other program has no namespace registration:
-`(js/console.log (+ 1 2))` is the `add` function and the call, under 1 KB.
+`(js/console.log (+ 1 2))` reads no runtime at all and is about 200 bytes.
 `resolve`, `ns-publics`, `ns-interns`, `ns-imports` and `ns-refers` expand to
 Vars at compile time and are not reflection in this sense. The protocol,
 multimethod and type paths of the runtime call the declaration hooks of the
@@ -234,10 +234,14 @@ branches, adds metadata, calls core operations that the core operation table
 (`src/core_operations.tsv`) marks `pure` or `allocates` for the argument types
 without running code the arguments supply (`(str "n" (+ 1 2))`,
 `(hash-map :a 1)`, `(count [1 2])`), or constructs a program type with `new`
-or its positional factory after the type's only definition. Operations that may
-throw (`into`, `conj`, a `hash-map` call missing a value), that call function
-arguments (`mapv`) or that are called outside their documented argument types
-stay, as do calls of an operation the program `set!`s, `with-redefs` or passes to
+or its positional factory after the type's only definition. `mapv`, `filterv`,
+`every?`, `not-every?`, `not-any?`, `some`, `group-by` and `run!` over literal
+collections of plain data are removable when their function, a `fn` literal or a
+core operation, is itself inert on the elements (`(mapv inc [1 2])`). Operations
+that may throw (`into`, `conj`, `reduce`, a `hash-map` call missing a value),
+that call other function arguments, or that are called outside their documented
+argument types stay, as do calls of an operation the program `set!`s,
+`with-redefs` or passes to
 a `js*` hole, and every core call in a program that extends a core protocol to a
 type it does not define (`extend-type number IHash`, `PersistentVector`, `default`,
 `specify!`). Retained `js*` is an opaque leaf at `Advanced`: hygiene keeps raw
@@ -250,6 +254,30 @@ functions and aliases to already-resolved core operations. Fixed entries retain
 `.call(null)` and source-order argument evaluation. Missing arities, mutable
 roots, deferred function-body calls and unknown protocol targets keep ordinary
 shared lowering. Single fixed-arity functions already have no dispatcher.
+
+`Advanced` infers a type for every expression of the prepared program
+(`src/inference.rs`, `PreparedApplication::inference()`): from literals, the
+core operation table, known functions, program types, definitions made once,
+and the tests of enclosing `if`s (`string?`, `nil?`, `instance?`, `satisfies?`,
+truthiness, through `and`, `or` and `not`). Emission uses the types:
+
+- An `if` tests a value directly instead of through `truth()` when it cannot
+  be a number, string or host value (`(< a b)`, `(seq xs)`, a keyword), and
+  `(and a b)`/`(or a b)` become `(a && b)`/`(a || b)` when `a` is such a value.
+- `+ - * /`, `< <= > >=`, `inc`, `dec`, `identical?`, `nil?`, `some?`,
+  `zero?`, `pos?` and `neg?` become the JavaScript operators that their runtime
+  definitions are, whatever the operand types.
+- `(not x)` becomes `!x`, `(= a b)` becomes `===` when a non-nil primitive
+  decides it, and `(= x :k)` compares `x` with the table constant and then the
+  keyword's spelling (`rt$keywordFqn`).
+- `(count x)` reads `.length` of a string, array or vector literal, `(nth v i)`
+  on a vector literal reads its payload, and `(:k rec)` on a record of a known
+  type reads the field.
+
+A program that `set!`s an operation keeps its calls, and one that extends a
+core protocol to a type it does not define keeps every lowering that dispatches
+(`=`, `count`, `nth`, record lookups). See "Phase 2 type inference extension
+points" in [advanced-optimization.md](advanced-optimization.md).
 
 `Program::compilation_uses` records deferred ordinary-unit names, generations,
 analysis counts and compile-time emission counts. Analysis for application

@@ -331,7 +331,8 @@ fn optimize_rejects_unknown_levels_and_non_compile_modes() {
 
 #[test]
 fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
-    let source = "(js/console.log (+ 1 2))";
+    // `+` is an operator at `Advanced`; `max` still reads the runtime.
+    let source = "(js/console.log (+ 1 (max 2 3)))";
     let program = analyze(source, &parse(source).unwrap()).unwrap();
     let root = "examples/namespaces";
     let namespace = analyze_namespace_entry(
