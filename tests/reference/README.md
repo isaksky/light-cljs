@@ -40,7 +40,7 @@ cargo test --test execution -- --ignored --nocapture
 `CLOJURE`, `NODE` and `LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS` override the tools
 and timeout. `analysis_boundaries.clj` is loaded by `execution.clj`'s analysis
 mode. `compiler-array-settings/original/` holds unchanged upstream array-access
-test programs used by `tests/compiler_array_settings.rs`.
+test programs used by `tests/compiler/array_settings.rs`.
 
 ## Reader and parser data
 

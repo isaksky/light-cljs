@@ -239,20 +239,20 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     include_str!("execution.rs").contains(&format!("\nfn {id}()")),
                     "unknown execution test: {id}"
                 ),
-                "tests/compiler_macros.rs" => assert!(
-                    contains_rust_test(include_str!("compiler_macros.rs"), id),
+                "tests/compiler/macros.rs" => assert!(
+                    contains_rust_test(include_str!("compiler/macros.rs"), id),
                     "unknown compiler macro test: {id}"
                 ),
-                "tests/compiler_reader.rs" => assert!(
-                    contains_rust_test(include_str!("compiler_reader.rs"), id),
+                "tests/compiler/reader.rs" => assert!(
+                    contains_rust_test(include_str!("compiler/reader.rs"), id),
                     "unknown compiler reader test: {id}"
                 ),
-                "tests/compiler_public_protocols.rs" => assert!(
-                    contains_rust_test(include_str!("compiler_public_protocols.rs"), id),
+                "tests/compiler/public_protocols.rs" => assert!(
+                    contains_rust_test(include_str!("compiler/public_protocols.rs"), id),
                     "unknown public protocol test: {id}"
                 ),
-                "tests/compiler_core_var_metadata.rs" => assert!(
-                    contains_rust_test(include_str!("compiler_core_var_metadata.rs"), id),
+                "tests/compiler/core_var_metadata.rs" => assert!(
+                    contains_rust_test(include_str!("compiler/core_var_metadata.rs"), id),
                     "unknown core metadata test: {id}"
                 ),
                 "tests/fixtures/compiler-core-var-metadata.cljs" => assert!(
@@ -274,16 +274,16 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     contains_rust_test(include_str!("../src/compiler_bootstrap.rs"), id),
                     "unknown compiler bootstrap test: {id}"
                 ),
-                "tests/namespaces.rs" => assert!(
-                    include_str!("namespaces.rs").contains(&format!("#[test]\nfn {id}()")),
+                "tests/frontend/namespaces.rs" => assert!(
+                    include_str!("frontend/namespaces.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown namespace test: {id}"
                 ),
-                "tests/analyzer.rs" => assert!(
-                    include_str!("analyzer.rs").contains(&format!("#[test]\nfn {id}()")),
+                "tests/frontend/analyzer.rs" => assert!(
+                    include_str!("frontend/analyzer.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown analyzer test: {id}"
                 ),
-                "tests/eval_cli.rs" => assert!(
-                    include_str!("eval_cli.rs").contains(&format!("#[test]\nfn {id}()")),
+                "tests/evaluation/eval_cli.rs" => assert!(
+                    include_str!("evaluation/eval_cli.rs").contains(&format!("#[test]\nfn {id}()")),
                     "unknown native CLI test: {id}"
                 ),
                 _ => panic!("register a local fixture source before using it: {local_path}"),

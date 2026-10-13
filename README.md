@@ -193,21 +193,47 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 
 ## Testing
 
+The tests need Node.js (on `PATH` or in `$NODE`) and the pinned upstream checkout
+in the gitignored `research/clojurescript`, whose sources some tests include (see
+[tests/reference/README.md](tests/reference/README.md)). Run them with
+[cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked` or
+`brew install cargo-nextest`), which runs every test in its own process and all
+binaries in parallel; the full suite takes about 1.5 minutes on the 24-vCPU
+development machine. Plain `cargo test` runs the same tests in about 4 minutes.
+
 ```sh
-cargo test                       # unit and integration tests (Node.js must be on PATH or in $NODE)
-cargo test --test eval_cli       # CLI subprocess suite (Rust only)
+cargo nextest run                                  # full suite
+cargo nextest run --test compiler                  # one test binary
+cargo nextest run --test compiler records::        # one suite (module) of a binary
+cargo nextest run records::record_updates          # tests whose name contains this
+cargo nextest run --no-fail-fast -j 8              # keep going after failures; 8 at a time
+cargo test --test compiler records::               # the same tests through plain cargo test
 cargo clippy --all-targets -- -D warnings
-node tests/support/js_runtime.test.js   # runtime tests directly in Node
+node tests/support/js_runtime.test.js              # runtime tests directly in Node
 ```
 
+Integration tests are grouped into a few binaries so they build and link once:
+`compiler` (`tests/compiler/`), `evaluation` (evaluator, `--eval` CLI and SCI
+reference suites, `tests/evaluation/`), `frontend` (tokenizer, parser, analyzer
+and namespaces, `tests/frontend/`), plus `execution`, `cli`, `provenance` and
+`benchmark_variants`. Add a suite as a module file in the matching directory and
+register it with `mod <name>;` in that directory's `main.rs`. Long fixture loops
+can declare one test per row or row range with `row_tests!`
+(`tests/compiler/main.rs`). [.config/nextest.toml](.config/nextest.toml) runs 16
+tests at a time, starts the slowest tests first and sets the slow-test timeout;
+the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
+every failure.
+
+Some tests bound macro expansion and evaluation by wall-clock deadlines, so on a
+heavily loaded machine run fewer tests at once (`-j`) or rerun a failure alone.
+
 Optional comparisons against standard ClojureScript need Java, the Clojure CLI
-and, for some, the upstream source checkout in the gitignored
-`research/clojurescript`; they are `#[ignore]`d by default:
+and, for some, the upstream checkout; they are `#[ignore]`d by default:
 
 ```sh
 cargo test --test execution -- --ignored --nocapture          # vs. ClojureScript 1.12.134
-cargo test --release --test corpus -- --ignored --nocapture   # tokenize the upstream sources
-cargo test --release --test parser_corpus -- --ignored --nocapture
+cargo test --release --test frontend corpus::clojurescript_checkout_has_no_lexical_errors -- --ignored --nocapture
+cargo test --release --test frontend parser_corpus::parse_clojurescript_checkout -- --ignored --nocapture
 ```
 
 See [tests/reference/README.md](tests/reference/README.md) for the reference

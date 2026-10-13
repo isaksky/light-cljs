@@ -185,7 +185,7 @@ session counter and avoids imported call/environment symbol names; exact spellin
 is not an API promise. Syntax quote retains the reader's definition-site view.
 
 Focused bridge execution checks are in
-`tests/compiler_macros.rs` (`javascript_form_bridge`).
+`tests/compiler/macros.rs` (`javascript_form_bridge`).
 
 ## Resource controls
 
@@ -216,7 +216,7 @@ clean. Compiler callers must poll the same control during their Rust work.
 
 ## Verification and measurements
 
-`cargo test --locked --test evaluator` compares compiler-produced arithmetic,
+`cargo test --locked --test evaluation evaluator::` compares compiler-produced arithmetic,
 collections, closures/apply, state, exceptions, lazy sequences, protocols, types,
 records and interop against direct expected values in QuickJS and Node. It also
 checks cross-session/released IDs, explicit capabilities, cancellation in caught
@@ -229,7 +229,7 @@ nanoseconds and iteration counts. Use `--iterations 1` for a smoke run. The
 reused phase retains one application heap; the recovery phase validates a terminal
 poll limit followed by reset and successful evaluation.
 
-`cargo test --locked --release --test evaluator startup_measurement -- --ignored --nocapture`
+`cargo test --locked --release --test evaluation evaluator::startup_measurement -- --ignored --nocapture`
 is a focused cold-session startup/heap measurement; it is deliberately not a
 flaky timing gate. `node tests/support/js_runtime.test.js` exercises the same
 canonical runtime source and bootstrap hooks directly in Node. A past measurement
@@ -295,7 +295,7 @@ independent canonical runtime.
 
 These paths are exercised by the `reentrant_deferred_units`,
 `ordinary_helper_demand` and `declaration_bundle_demand` test modules in
-`tests/compiler_macros.rs`.
+`tests/compiler/macros.rs`.
 
 ## Explicit reader capabilities
 

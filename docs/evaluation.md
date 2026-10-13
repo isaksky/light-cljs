@@ -196,5 +196,5 @@ are fatal. Read, evaluation and result rendering are separate operations; nested
 macros/callbacks share their enclosing budget. Blocking host IO is cooperative,
 not preempted by an engine deadline.
 
-The CLI is tested by `tests/eval_cli.rs` (subprocess runs, Rust only) and
-`tests/eval_examples.rs`, which runs the scripts in `examples/native`.
+The CLI is tested by `tests/evaluation/eval_cli.rs` (subprocess runs, Rust only) and
+`tests/evaluation/eval_examples.rs`, which runs the scripts in `examples/native`.

@@ -1,0 +1,412 @@
+//! Whole-corpus accounting for the compiler-backed evaluator migration.
+#[path = "../support/sci_evaluator.rs"]
+mod evaluator;
+use crate::protocol;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+const CORPUS: &str = include_str!("../fixtures/sci-outcomes.tsv");
+
+fn adapted_source(source: &str) -> String {
+    let mut adapted = source
+        .replace("(catch Exception ", "(catch :default ")
+        .replace("(catch Throwable ", "(catch :default ")
+        .replace("(catch clojure.lang.ExceptionInfo ", "(catch :default ");
+    // SCI's fixture environment preinstalls these namespaces. Compiler sessions
+    // use the ordinary explicit loader; preserve that setup as visible source.
+    for library in [
+        "clojure.string",
+        "clojure.set",
+        "clojure.walk",
+        "clojure.edn",
+    ] {
+        if source.contains(&format!("{library}/")) {
+            adapted = format!("(require '{library}) {adapted}");
+        }
+    }
+    adapted
+}
+
+#[test]
+#[ignore = "explicit migration audit; prints observations, never updates expectations"]
+fn audit_historical_corpus_with_compiler_evaluator() {
+    let cases = protocol::cases(CORPUS).unwrap();
+    let selected_ids = std::env::var("LIGHT_CLJS_SCI_AUDIT_IDS")
+        .ok()
+        .map(|ids| ids.split(',').map(str::to_owned).collect::<HashSet<_>>());
+    let mut report = String::new();
+    for case in cases {
+        if selected_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(case.id))
+        {
+            continue;
+        }
+        let source = adapted_source(case.source);
+        let actual = evaluator::run(case.id, &source, case.profile)
+            .unwrap_or_else(|error| panic!("{}: {error}", case.id));
+        let compatible = evaluator::Observation::portable(&case).as_ref().ok() == Some(&actual);
+        let status = if compatible {
+            if source == case.source {
+                "portable"
+            } else {
+                "adapted"
+            }
+        } else {
+            "gap"
+        };
+        report.push_str(&format!(
+            "{}\t{status}\t{source}\t{}\n",
+            case.id,
+            actual.fields()
+        ));
+    }
+    let path = std::env::temp_dir().join("light-cljs-evaluator-corpus-audit.tsv");
+    std::fs::write(&path, report).unwrap();
+    println!("Audit written to {}", path.display());
+}
+
+#[test]
+#[ignore = "explicit supplemental library migration audit; never updates expectations"]
+fn audit_explicit_library_import_adaptations() {
+    let mut report = String::new();
+    for case in protocol::cases(CORPUS).unwrap() {
+        let source = adapted_source(case.source);
+        if ![
+            "clojure.string",
+            "clojure.set",
+            "clojure.walk",
+            "clojure.edn",
+        ]
+        .iter()
+        .any(|library| case.source.contains(&format!("{library}/")))
+        {
+            continue;
+        }
+        let actual = evaluator::run(case.id, &source, case.profile).unwrap();
+        let status = if evaluator::Observation::portable(&case).as_ref().ok() == Some(&actual) {
+            if source == case.source {
+                "portable"
+            } else {
+                "adapted"
+            }
+        } else {
+            "gap"
+        };
+        report.push_str(&format!(
+            "{}\t{status}\t{source}\t{}\n",
+            case.id,
+            actual.fields()
+        ));
+    }
+    let path = std::env::temp_dir().join("light-cljs-evaluator-library-audit.tsv");
+    std::fs::write(&path, report).unwrap();
+    println!("Supplemental library audit written to {}", path.display());
+}
+
+// Filled from an explicitly reviewed audit. These rows retain the original
+// seven SCI fields verbatim, then status, evaluator source and observation.
+const ACCOUNTING: &str = include_str!("../reference/sci/evaluator-dispositions.tsv");
+
+// A reviewed canonical reader difference, separate from the immutable original
+// SCI row and historical migration observation. Match the entire retained body,
+// including its source, expectation, effects/output and provenance rationale.
+const ANONYMOUS_NONPOSITIVE_BODY: &str = concat!(
+    "sci-reader-anonymous-nonpositive\tportable\t",
+    "(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])\t",
+    "(return (vector (int 0) (int 2)))\t(vector)\t(string u)\t(string u)\tportable\t",
+    "(let [f '#(%0 %-1)] [(count (second f)) (count (nth f 2))])\t",
+    "(return (vector (float 0000000000000000) (float 4000000000000000)))\t",
+    "(vector)\t(string u)\t(string u)\t",
+    "owner=light-cljs-114; kind=matching-observation; family=sci-reader; SCI observation agrees under the documented CLJS Number/character/finite-sequence projection; original source and provenance retained."
+);
+const ANONYMOUS_NONPOSITIVE_CANONICAL: &str = concat!(
+    "(return (vector (float 4000000000000000) (float 4000000000000000)))\t",
+    "(vector)\t(string u)\t(string u)"
+);
+
+fn canonical_anonymous_contract(row: &[&str]) -> Option<&'static str> {
+    (row.join("\t") == ANONYMOUS_NONPOSITIVE_BODY).then_some(ANONYMOUS_NONPOSITIVE_CANONICAL)
+}
+
+fn canonical_anonymous_reconciliation(row: &[&str], observed: &str) -> Option<&'static str> {
+    (canonical_anonymous_contract(row) == Some(observed)).then_some("canonical-dialect-difference")
+}
+
+#[test]
+fn canonical_anonymous_accounting_requires_exact_body_and_complete_observation() {
+    assert!(
+        ACCOUNTING
+            .lines()
+            .any(|line| line == ANONYMOUS_NONPOSITIVE_BODY)
+    );
+    let row: Vec<_> = ANONYMOUS_NONPOSITIVE_BODY.split('\t').collect();
+    assert_eq!(
+        canonical_anonymous_reconciliation(&row, ANONYMOUS_NONPOSITIVE_CANONICAL),
+        Some("canonical-dialect-difference")
+    );
+    assert_ne!(row[9..13].join("\t"), ANONYMOUS_NONPOSITIVE_CANONICAL);
+    for index in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+        let mut changed = row.clone();
+        changed[index] = "changed";
+        assert_eq!(
+            canonical_anonymous_reconciliation(&changed, ANONYMOUS_NONPOSITIVE_CANONICAL),
+            None,
+            "changed body column {index}"
+        );
+    }
+    let fields: Vec<_> = ANONYMOUS_NONPOSITIVE_CANONICAL.split('\t').collect();
+    for (index, value) in [
+        (0, row[9]),
+        (1, "(vector (int 1))"),
+        (2, "(string u0078)"),
+        (3, "(string u0078)"),
+    ] {
+        let mut changed = fields.clone();
+        changed[index] = value;
+        assert_eq!(
+            canonical_anonymous_reconciliation(&row, &changed.join("\t")),
+            None,
+            "changed observation column {index}"
+        );
+    }
+}
+
+// Diagnostic migration receipts preserve the entire historical row. They are
+// still nonpassing gaps; revised compiler attribution cannot count as parity.
+const QUOTED_MACRO_DIAGNOSTICS: &str =
+    include_str!("../reference/sci/quoted-macro-diagnostic-reconciliation.tsv");
+
+fn current_quoted_macro_diagnostic(row: &[&str]) -> Option<String> {
+    QUOTED_MACRO_DIAGNOSTICS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .find_map(|line| {
+            let receipt: Vec<_> = line.split('\t').collect();
+            assert_eq!(receipt.len(), 19, "complete diagnostic reconciliation");
+            (receipt[..14] == *row).then(|| receipt[14..18].join("\t"))
+        })
+}
+
+#[test]
+fn quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies() {
+    let rows: Vec<_> = QUOTED_MACRO_DIAGNOSTICS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .collect();
+    assert_eq!(rows.len(), 6);
+    let mut ids = HashSet::new();
+    for receipt in rows {
+        let fields: Vec<_> = receipt.split('\t').collect();
+        assert_eq!(fields.len(), 19);
+        assert!(ids.insert(fields[0]));
+        let original = fields[..14].join("\t");
+        assert!(ACCOUNTING.lines().any(|line| line == original));
+        assert_eq!(fields[7], "gap");
+        assert_eq!(fields[2], fields[8], "no source adaptation");
+        assert!(fields[14].starts_with("(diagnostic (string u"));
+        assert_eq!(fields[10..13], fields[15..18], "effects/output retained");
+        assert_ne!(fields[9], fields[14], "current attribution is distinct");
+        assert!(fields[18].contains("never a SCI conformance or intended-language pass"));
+        let row = &fields[..14];
+        assert_eq!(
+            current_quoted_macro_diagnostic(row),
+            Some(fields[14..18].join("\t"))
+        );
+        for column in 0..14 {
+            let mut changed = row.to_vec();
+            changed[column] = "changed";
+            assert_eq!(current_quoted_macro_diagnostic(&changed), None);
+        }
+    }
+}
+
+#[test]
+fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
+    let cases = protocol::cases(CORPUS).unwrap();
+    let source_rows: HashMap<_, _> = CORPUS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .map(|line| (line.split('\t').next().unwrap(), line))
+        .collect();
+    let mut dispositions = HashMap::new();
+    for line in ACCOUNTING
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
+        let fields: Vec<_> = line.split('\t').collect();
+        assert_eq!(fields.len(), 14, "accounting field count: {}", fields[0]);
+        assert!(
+            dispositions.insert(fields[0], fields).is_none(),
+            "duplicate disposition"
+        );
+    }
+    assert_eq!(
+        dispositions.len(),
+        cases.len(),
+        "every historical row needs explicit accounting"
+    );
+    let mut counts = BTreeMap::<&str, usize>::new();
+    let mut matching_families = BTreeMap::<String, usize>::new();
+    let mut failures = vec![];
+    let mut provenance_ids = HashSet::new();
+    for line in include_str!("../reference/fixture-origins.tsv")
+        .lines()
+        .filter(|line| line.starts_with("tests/fixtures/sci-outcomes.tsv\t"))
+    {
+        provenance_ids.extend(line.split('\t').nth(1).unwrap().split(','));
+    }
+    for case in &cases {
+        assert!(
+            provenance_ids.contains(case.id),
+            "missing inherited SCI provenance: {}",
+            case.id
+        );
+        let row = dispositions.remove(case.id).unwrap();
+        assert_eq!(
+            row[..7].join("\t"),
+            source_rows[case.id],
+            "stale SCI observation {}",
+            case.id
+        );
+        let status = row[7];
+        assert!(
+            matches!(status, "portable" | "adapted" | "gap" | "retired"),
+            "unknown disposition {status}"
+        );
+        assert!(!row[13].is_empty(), "missing reason {}", case.id);
+        assert!(
+            row[13].contains("owner=light-cljs-")
+                && row[13].contains("kind=")
+                && row[13].contains("family="),
+            "missing explicit ownership/kind/family {}",
+            case.id
+        );
+        let actual = evaluator::run(case.id, row[8], case.profile);
+        // Select the expected canonical contract from the immutable row alone.
+        // A regression back to SCI's [0 2] must fail this canonical comparison.
+        let canonical = canonical_anonymous_contract(&row);
+        let status = if canonical.is_some() {
+            "canonical-dialect-difference"
+        } else {
+            status
+        };
+        *counts.entry(status).or_default() += 1;
+        let expected = if let Some(expected) = canonical {
+            expected.to_owned()
+        } else if let Some(current) = current_quoted_macro_diagnostic(&row) {
+            current
+        } else {
+            row[9..13].join("\t")
+        };
+        if actual
+            .as_ref()
+            .map(evaluator::Observation::fields)
+            .as_ref()
+            .ok()
+            != Some(&expected)
+        {
+            let actual_text = match &actual {
+                Ok(observation) => observation.fields(),
+                Err(error) => error.clone(),
+            };
+            let brief = |text: &str| text.chars().take(1_200).collect::<String>();
+            failures.push(format!(
+                "{} [{status}]: {}\nactual {}\nexpected {}\n{}",
+                case.id,
+                row[8],
+                brief(&actual_text),
+                brief(&expected),
+                row[13]
+            ));
+        }
+        if status == "portable" || status == "adapted" {
+            let family = case.id.split('-').take(2).collect::<Vec<_>>().join("-");
+            *matching_families.entry(family).or_default() += 1;
+            let projected = evaluator::Observation::portable(case)
+                .unwrap_or_else(|error| panic!("{} is not portable: {error}", case.id));
+            assert_eq!(
+                expected,
+                projected.fields(),
+                "passing disposition cannot replace SCI expectations: {}",
+                case.id
+            );
+            assert_eq!(
+                status == "portable",
+                row[8] == case.source,
+                "source adaptation classification {}",
+                case.id
+            );
+            if status == "adapted" {
+                assert_eq!(
+                    row[8],
+                    adapted_source(case.source),
+                    "unreviewed source substitution {}",
+                    case.id
+                );
+            }
+        } else {
+            assert_ne!(
+                evaluator::Observation::portable(case)
+                    .ok()
+                    .map(|o| o.fields()),
+                Some(expected),
+                "{} now agrees with the SCI projection: migrate its disposition",
+                case.id
+            );
+        }
+    }
+    assert!(dispositions.is_empty(), "orphaned evaluator dispositions");
+    assert!(
+        counts.get("portable").copied().unwrap_or(0) >= 1_000,
+        "broad portable corpus required: {counts:?}"
+    );
+    for family in [
+        "sci-lazy",
+        "sci-xf",
+        "sci-control",
+        "sci-binding",
+        "sci-coll",
+        "sci-seq",
+        "sci-state",
+        "sci-string",
+        "sci-data",
+    ] {
+        assert!(
+            matching_families.get(family).copied().unwrap_or(0) >= 30,
+            "retained meaningful {family} observations cannot disappear from matching coverage"
+        );
+    }
+    println!(
+        "Evaluator accounting (gaps/retirements/canonical differences are not SCI conformance passes): {counts:?}"
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn cljs_projection_keeps_numeric_bits_and_explicitly_rejects_jvm_only_numbers() {
+    use protocol::Value;
+    assert_eq!(
+        evaluator::portable(&Value::Int(42)).unwrap(),
+        Value::Float(42f64.to_bits())
+    );
+    assert_eq!(
+        evaluator::portable(&Value::Float((-0f64).to_bits())).unwrap(),
+        Value::Float((-0f64).to_bits())
+    );
+    for value in [
+        Value::Int(i64::MAX),
+        Value::Ratio(1, 2),
+        Value::BigInt("1".into()),
+        Value::Decimal("120".into(), 2),
+    ] {
+        assert!(evaluator::portable(&value).is_err());
+    }
+    assert_eq!(
+        evaluator::portable(&Value::Char(0xd800)).unwrap(),
+        Value::String(vec![0xd800])
+    );
+    assert_eq!(
+        evaluator::portable(&Value::Seq(vec![])).unwrap(),
+        Value::List(vec![])
+    );
+}

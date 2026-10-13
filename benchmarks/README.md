@@ -114,7 +114,7 @@ cargo clippy --all-targets -- -D warnings
 cargo bench --bench tokenizer -- --samples 9 --ms 150 > /tmp/lexer.csv
 
 # Requires research/clojurescript:
-cargo test --release --test corpus -- --ignored --nocapture
+cargo test --release --test frontend corpus::clojurescript_checkout_has_no_lexical_errors -- --ignored --nocapture
 cargo bench --bench tokenizer -- --samples 9 --ms 150 \
   research/clojurescript/src/main/cljs/cljs/core.cljs \
   research/clojurescript/src/main/clojure/cljs/analyzer.cljc > /tmp/lexer-source.csv

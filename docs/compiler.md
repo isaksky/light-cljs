@@ -1673,16 +1673,18 @@ macros can inspect `(:light-cljs/unchecked-arrays &env)`.
 ## Testing
 
 ```sh
-cargo test                                   # all fast Rust + Node tests
-cargo test --test execution                  # shared tiny-program execution fixtures
+cargo nextest run                            # all fast Rust + Node tests, in parallel
+cargo test                                   # the same through the standard runner
+cargo nextest run --test execution           # shared tiny-program execution fixtures
 cargo clippy --all-targets -- -D warnings
 node tests/support/js_runtime.test.js        # direct runtime assertions
 node tests/support/js_core_helpers.test.js
 ```
 
 Compiler execution tests run emitted JavaScript in Node.js; it must be on `PATH`,
-or `NODE` must name its executable. Evaluator tests (`eval_*`, `evaluator*`) need
-only Rust, since they run QuickJS in-process.
+or `NODE` must name its executable. Evaluator tests (`--test evaluation`) need
+only Rust, since they run QuickJS in-process. README "Testing" lists the test
+binaries and how to run one suite or test.
 
 `tests/fixtures/execution.tsv` contains shared tiny programs and their expected
 JSON values/effect traces. The harness wraps each program in `(fn* [observe] ...)`
@@ -1732,6 +1734,6 @@ The lexer and parser corpus tests read the gitignored upstream checkout at
 `research/clojurescript`:
 
 ```sh
-cargo test --release --test corpus -- --ignored --nocapture
-cargo test --release --test parser_corpus -- --ignored --nocapture
+cargo test --release --test frontend corpus::clojurescript_checkout_has_no_lexical_errors -- --ignored --nocapture
+cargo test --release --test frontend parser_corpus::parse_clojurescript_checkout -- --ignored --nocapture
 ```

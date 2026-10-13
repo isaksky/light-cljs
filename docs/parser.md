@@ -95,7 +95,7 @@ example, metadata is a node rather than merged properties, and this parser
 validates conditional feature/pair structure even though reference `:preserve`
 mode can retain malformed branch lists. It validates literal spelling in all
 branches. Context-specific interpretation has separate compatibility tests in
-`tests/compiler_reader.rs`; these execute the compiler-owned Rust reader,
+`tests/compiler/reader.rs`; these execute the compiler-owned Rust reader,
 canonical macro computation, and emitted JavaScript independently of parsing.
 
 ## Tests and reference data
@@ -113,13 +113,14 @@ The committed [complete reader corpus](../tests/reference/reader-sources.tsv)
 pins seven upstream source files, 137 complete bodies and their UTF-8 byte spans,
 including reader/tag/syntax-quote/metadata tests and both vendored tools.reader
 implementations; `tests/reference/generate_reader_coverage.py` regenerates it
-(`--verify` checks the stored data). `tests/parser_corpus.rs` independently
+(`--verify` checks the stored data). `tests/frontend/parser_corpus.rs` independently
 checks parsing, token progress, incremental body locations and fused EOF.
-`tests/parser.rs` truncates every reader family at every UTF-8 boundary and
+`tests/frontend/parser.rs` truncates every reader family at every UTF-8 boundary and
 verifies rollback and terminal behavior after malformed partial forms.
 
-The ignored corpus tests (`cargo test --release --test corpus -- --ignored` and
-`--test parser_corpus`) parse every `.clj`, `.cljs` and `.cljc` file in the
+The ignored corpus tests (`corpus::clojurescript_checkout_has_no_lexical_errors`
+and `parser_corpus::parse_clojurescript_checkout` in `cargo test --release --test
+frontend -- --ignored`) parse every `.clj`, `.cljs` and `.cljc` file in the
 gitignored `research/clojurescript` checkout pinned at
 `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. This is structural coverage, not
 proof of semantic equivalence. See [benchmark results](../benchmarks/parser.md)

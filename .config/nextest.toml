@@ -1,0 +1,35 @@
+# cargo-nextest settings (https://nexte.st/docs/configuration/). nextest runs each
+# test in its own process and tests from every binary in parallel; see README
+# "Testing" for the commands.
+
+[profile.default]
+# On the 24-vCPU development VM, QuickJS-heavy tests slow down sharply beyond about
+# 16 concurrent processes (and wall-clock macro deadlines start to expire), while 16
+# finishes as fast as 24. Override with `-j N` or NEXTEST_TEST_THREADS.
+test-threads = 16
+# Report tests still running after 60s; kill any test still running after 10 minutes.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The slowest tests start first so they overlap the rest of the run instead of
+# extending its tail. Keep this list in step when these suites are renamed or split.
+[[profile.default.overrides]]
+filter = '''
+(binary(compiler) & (
+    test(/^arity_after\d+::/)
+    | test(/^(hash_branch_effects|runtime_map_order|residual_source_context|map_value_equiv)::/)
+    | test(=public_constructors::public_constructor_api_arities_and_macro_phase_execute)))
+| (binary(evaluation) & test(=evaluator_conformance::every_historical_sci_case_has_an_executable_evaluator_disposition))
+| (binary(execution) & test(=tiny_programs_execute_with_expected_values_and_effects))
+'''
+priority = 50
+
+# Runs four QuickJS/Node fixture executions on its own threads.
+[[profile.default.overrides]]
+filter = 'binary(compiler) & test(/^sci_library_context::/)'
+threads-required = 4
+
+[profile.ci]
+test-threads = "num-cpus"
+# Report every failure of a CI run, with output repeated at the end.
+fail-fast = false
+failure-output = "immediate-final"
