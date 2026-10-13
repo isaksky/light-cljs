@@ -1,7 +1,8 @@
 # Advanced optimization design
 
 Status: design, October 2026. Phase 0's optimization levels, size ratchet and
-differential test are implemented (see "Phase 0 extension points"); the rest is
+differential test are implemented (see "Phase 0 extension points"), and so is
+Phase 1's unit manifest (see "Phase 1 manifest extension points"); the rest is
 not. The work items are tracked as Pellets in the `advanced-optimization`
 group; this document is the shared context those pellets cite.
 
@@ -260,6 +261,7 @@ to under 1 KB and beat every upstream ceiling on its own.
    an identifier outside its declared set plus ECMAScript globals; the test
    fails on drift. The full runtime remains concatenable from the units for
    the shared/REPL path, so the anchor text stays stable.
+   Implemented; see "Phase 1 manifest extension points" below.
 2. **Slice in advanced mode.** Roots are the runtime names referenced by
    emitted expressions (every `CoreFnId::runtime_name`, the emitter's
    hardcoded `rt.*` references, protocol/type/reify constructors). Emit only
@@ -287,6 +289,42 @@ to under 1 KB and beat every upstream ceiling on its own.
    table at the top of the output. `case` on keywords switches on identity.
    Collection literals with only constant parts may be hoisted the same way
    when their construction is proven inert.
+
+#### Phase 1 manifest extension points
+
+Step 1 is implemented (light-cljs-202). Later steps build on it:
+
+- **Format.** `//@unit <name>[ effect[: <bindings>]][ requires: <bindings>]`
+  headers in `src/js_runtime.js`, with `//@ ` continuation lines and a final
+  `//@exports` section; the module docs of `src/runtime_manifest.rs` give the
+  rules. A unit that declares bindings is named after its first one (today
+  each is one top-level declaration statement). `requires:` lists exactly the
+  other units' bindings the body references.
+- **Effects.** A unit with top-level statements other than declarations is
+  marked `effect`. Bare `effect` mutates its own bindings; `effect: a, b`
+  belongs to other units' bindings, is named `<target>.<what>` by convention
+  (`add.variadic`, `builtinTypes.statics`, `core.seal`), and is kept whenever
+  a unit declaring a target is kept. Step 4 replaces these units with install
+  functions that constructors and operations require.
+- **API.** `RuntimeManifest::embedded()` parses the compiled-in runtime once.
+  `unit_of(binding)` maps a runtime name to its `UnitId` (dense, in file
+  order); `dependencies`, `attached_effects` and `reachable(roots)`, which
+  returns a `Vec<bool>` over units, give the slicing closure. A sliced runtime
+  is the prologue, the kept bodies (`&source()[unit.body_range]`) in `UnitId`
+  order, so initialization order is preserved, and a replacement for the
+  export section (`exports.names` lists today's exports). `runtime_text()` is
+  the full shared runtime.
+- **Embedding.** `build.rs` strips every header line, so
+  `runtime_manifest::RUNTIME` (`evaluator::RUNTIME_SOURCE`, the emitter's
+  shared runtime) is the file without headers, and the anchors and the size
+  ratchet do not see them.
+- **Maintenance.** The `runtime_manifest` suite in `tests/compiler/` fails
+  on drift; after editing the runtime run
+  `LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::`
+  and review the rewritten `requires:` lists. When step 5 stops exporting
+  compile-time machinery, list its units in `UNREACHABLE_FROM_EXPORTS`
+  there. Per-unit sizes and reach are in `benchmarks/compiler.md` (the
+  `print_runtime_unit_sizes` ignored test prints them).
 
 ### Phase 2: whole-program analysis over the IR
 

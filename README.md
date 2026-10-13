@@ -47,7 +47,8 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 - **Application preparation** (`src/application.rs`) conservatively removes
   unused inert definitions and specializes some calls, preserving effect order.
 - **Emitter** (`src/emitter.rs`) writes the JavaScript expression; the shared
-  runtime is `src/js_runtime.js`. Bundled `clojure.string`, `clojure.set`,
+  runtime is `src/js_runtime.js`, split into units with declared dependencies
+  (`src/runtime_manifest.rs`). Bundled `clojure.string`, `clojure.set`,
   `clojure.walk`, `clojure.edn` and `cljs.reader` live in
   `src/compiler_libraries/`.
 - **Evaluation** (`src/eval_session.rs`, `eval_compiler.rs`, `eval_cli.rs`)
@@ -218,6 +219,8 @@ cargo nextest run --no-fail-fast -j 8              # keep going after failures; 
 cargo test --test compiler records::               # the same tests through plain cargo test
 cargo clippy --all-targets -- -D warnings
 node tests/support/js_runtime.test.js              # runtime tests directly in Node
+# after editing src/js_runtime.js: rewrite its unit `requires:` headers, then review the diff
+LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::
 ```
 
 Integration tests are grouped into a few binaries so they build and link once:

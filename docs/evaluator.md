@@ -12,7 +12,8 @@ embedded execution. Node remains an independent runtime in execution tests.
 
 `emitter::emit_js` retains self-contained application output. `emit_js_unit`
 returns a function accepting a canonical runtime instance; `Evaluator::evaluate`
-uses this form. Each session loads the exact `src/js_runtime.js` factory once.
+uses this form. Each session loads the exact `src/js_runtime.js` factory once
+(without its `//@unit` manifest headers, which `build.rs` removes).
 Collections, functions and dispatch tables therefore share brands across units,
 while separate sessions have separate state. No alternate macro core exists.
 Canonical `gensym` has a session-local counter. `setMacroexpandServices` explicitly

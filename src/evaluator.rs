@@ -16,7 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const RUNTIME_SOURCE: &str = include_str!("js_runtime.js");
+/// The shared runtime factory: `src/js_runtime.js` without its unit manifest
+/// headers (see [`crate::runtime_manifest`]).
+pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::RUNTIME;
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]

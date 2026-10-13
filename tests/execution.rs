@@ -1636,7 +1636,8 @@ fn collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_sta
         node(&isolation),
         "data\nops\nmain\ndata\nops\nmain\nisolated\n"
     );
-    let runtime_bytes = include_str!("../src/js_runtime.js").len();
+    // The embedded runtime, which excludes the source file's manifest headers.
+    let runtime_bytes = light_cljs::evaluator::RUNTIME_SOURCE.len();
     assert!(
         outputs
             .iter()

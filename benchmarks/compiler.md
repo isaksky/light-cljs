@@ -479,3 +479,69 @@ Every fixture embeds the whole runtime, so the sizes differ by a few hundred
 bytes of program code. The three levels are equal because none of these
 programs has an unused definition or a specializable call; gzip is the same at
 every level.
+
+## Runtime units — October 12, 2026
+
+light-cljs-202 split `src/js_runtime.js` into units with `//@unit` headers;
+[`src/runtime_manifest.rs`](../src/runtime_manifest.rs) documents the format
+and validates every header against a lexical scope analysis of its body. The
+headers are build-time annotations: `build.rs` strips them, so every emitted
+program still embeds the same **350,414-byte** runtime, byte for byte, and the
+size ratchet above is unchanged. The
+annotated source is 408,980 bytes, of which 58,566 bytes are 936 header lines.
+
+| Partition | Count |
+| --- | ---: |
+| Units | 691 |
+| Declaration units (one top-level declaration statement each) | 658 |
+| of which also carry effects on their own bindings | 6 |
+| Effect units that belong to other units' bindings | 33 |
+| Top-level bindings | 730 |
+| Declared `requires` edges | 3,351 |
+
+Unit bodies hold 349,584 bytes; the prologue and the export section hold the
+other 830. Effect units are the 24 `variadicCore` registrations (one per
+operation, each kept with its operation), the builtin type installs and
+`EMPTY` constants (`builtinTypes.*`), the reader and host/namespace
+registrations on `core`, `Object.seal(core)`, protocol defaults, the `Var`
+prototype and the `cljs.core` namespace. Bytes include each unit's comments
+and blank lines.
+
+| Largest units | Bytes | Requires | Reach units | Reach bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `core.reader` (EDN/code reader) | 35,060 | 18 | 665 | 334,504 |
+| `builtinTypes.prototypes` | 13,021 | 65 | 665 | 334,504 |
+| `core` (the hub literal) | 12,573 | 403 | 665 | 334,504 |
+| `compilerFormBridge` | 11,650 | 38 | 665 | 334,504 |
+| `readerCoreNames` | 9,366 | 0 | 1 | 9,366 |
+| `builtinCoreImplementation` | 6,880 | 85 | 50 | 12,623 |
+| `reduce` | 4,905 | 19 | 665 | 334,504 |
+| `printWriterImpl` | 4,061 | 28 | 665 | 334,504 |
+| `installMethods` | 3,967 | 12 | 665 | 334,504 |
+| `withMeta` | 3,719 | 42 | 665 | 334,504 |
+
+"Reach" is what [`RuntimeManifest::reachable`](../src/runtime_manifest.rs)
+keeps for that unit alone: the closure over `requires`, plus every effect unit
+that targets a kept binding. Today any value constructor keeps nearly
+everything: `keyword`, `symbol`, `vectorFromArray`, `mapFromArray`,
+`setFromArray`, `hash`, `equal`, `str` and `print` each reach the same 665
+units (334,504 bytes, 95.7%). Leaf units such as `truth` (59 bytes) and
+`invalidArity` (73 bytes) reach only themselves; 200 units reach fewer than 50
+units and 468 reach at least 400. The shortest paths name the edges that the
+next Phase 1 steps cut:
+
+- `keyword → makeKeyword → builtinValue → builtinType`, which references every
+  builtin constructor, so every constructor's prototype comes along;
+- `vectorFromArray → makeVector → vectorPrototype → print`: collection
+  `toString` reaches the printer (step 6);
+- `print → core` and `ChunkedCons → core`: the `core` hub requires 403
+  bindings, and its effect units (`core.reader`, `core.hostAndNamespaces`)
+  follow it (step 3);
+- `builtinType → builtinTypes`, whose install effects require 65 more (step 4).
+
+The [full table](results/runtime-units-2026-10-12/units.tsv) lists every
+unit's bytes, requires count, effect targets and reach. Reproduce it with:
+
+```sh
+cargo test --test compiler runtime_manifest::print_runtime_unit_sizes -- --ignored --nocapture
+```

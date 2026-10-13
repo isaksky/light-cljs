@@ -33,6 +33,7 @@ mod literals;
 pub mod macro_host;
 pub mod parser;
 mod reader_literals;
+pub mod runtime_manifest;
 pub mod source_provider;
 
 pub use analyzer::{

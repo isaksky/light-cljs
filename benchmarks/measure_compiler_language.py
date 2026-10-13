@@ -55,7 +55,9 @@ for _ in range(9):
     assert result.stdout == expected, "benchmark changed value, effects, or stdout"
     samples.append(json.loads(result.stderr.rstrip().split("\n")[-1]))
 sha = lambda data: hashlib.sha256(data).hexdigest()
-runtime = (ROOT / "src/js_runtime.js").read_bytes()
+# The embedded runtime: the source without its `//@` manifest header lines (see build.rs).
+runtime = b"".join(line for line in (ROOT / "src/js_runtime.js").read_bytes().splitlines(keepends=True)
+                   if not line.lstrip().startswith(b"//@"))
 small_programs = []
 for label, source, expected_value in [("primitive", "42", 42), ("core-call", "(+ 1 2)", 3)]:
     emitted = subprocess.check_output([str(binary), "--compile", "--text", source], cwd=ROOT, timeout=30)

@@ -24,7 +24,9 @@ args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 subprocess.run(['cargo', 'build', '--quiet'], cwd=ROOT, check=True)
 binary = ROOT / 'target/debug/light-cljs'
-runtime = (ROOT / 'src/js_runtime.js').read_bytes()
+# The embedded runtime: the source without its `//@` manifest header lines (see build.rs).
+runtime = b''.join(line for line in (ROOT / 'src/js_runtime.js').read_bytes().splitlines(keepends=True)
+                   if not line.lstrip().startswith(b'//@'))
 sha = lambda value: hashlib.sha256(value).hexdigest()
 report = {'node': subprocess.check_output(['node', '--version'], text=True).strip(),
           'platform': platform.platform(), 'machine': platform.machine(),

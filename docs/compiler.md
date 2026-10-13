@@ -474,7 +474,11 @@ lone surrogates, rather than being sliced from the macro call's text.
 `src/js_runtime.js` is embedded once inside the output IIFE when the resolved
 program contains a collection, named literal or core value. It has no imports,
 external global core, host runtime dependency or package dependency.
-Primitive-only output omits it. Owned arrays/cells and base callable storage are
+Primitive-only output omits it. The source file is partitioned into units by
+`//@unit` header comments that declare each unit's runtime dependencies;
+`src/runtime_manifest.rs` documents the format and validates the headers
+against the code, and `build.rs` removes the header lines, so the embedded
+runtime is the file without them. Owned arrays/cells and base callable storage are
 frozen; per-type extension prototypes and public value wrappers remain extensible
 for protocol and JavaScript property writes. Those properties do not replace the
 private collection payloads; private brands prevent host arrays or objects from

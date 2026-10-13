@@ -3,39 +3,74 @@
 (() => {
   "use strict";
 
+  //@unit keywords
   // Brands and payloads stay private: copying fields or inheriting a value's
   // prototype cannot turn a host object into a language value.
   const keywords = new WeakMap();
+  //@unit vectors
   const vectors = new WeakMap();
+  //@unit symbols
   const symbols = new WeakMap();
+  //@unit maps
   const maps = new WeakMap();
+  //@unit mapKinds
   const mapKinds = new WeakMap();
+  //@unit sortedComparators
   const sortedComparators = new WeakMap();
+  //@unit mapEntries
   const mapEntries = new WeakSet();
+  //@unit sets
   const sets = new WeakMap();
+  //@unit setKinds
   const setKinds = new WeakMap();
+  //@unit transients
   const transients = new WeakMap();
+  //@unit cells
   const cells = new WeakMap();
+  //@unit views
   const views = new WeakMap();
+  //@unit reducedValues
   const reducedValues = new WeakMap();
+  //@unit constructorHashes
   const constructorHashes = new WeakMap();
+  //@unit publicCollectionSlots
   const publicCollectionSlots = new WeakMap();
+  //@unit iterateUnrealizedSeed
   const iterateUnrealizedSeed = Object.freeze({});
+  //@unit vectorRoots
   const vectorRoots = new WeakMap();
+  //@unit canonicalVectorRoots
   const canonicalVectorRoots = new WeakMap();
+  //@unit metadataValues
   const metadataValues = new WeakMap();
+  //@unit deferredVarMetadata
   const deferredVarMetadata = new WeakMap();
+  //@unit uuids
   const uuids = new WeakMap();
+  //@unit uuidHashes
   const uuidHashes = new WeakMap();
+  //@unit vars
   const vars = new WeakMap();
+  //@unit atoms
   const atoms = new WeakMap(), volatiles = new WeakMap();
+  //@unit queues
   const queues = new WeakMap();
+  //@unit lazyValues
   const lazyValues = new WeakMap(), delays = new WeakMap();
+  //@unit eductions
   const eductions = new WeakMap();
+  //@unit ifnValues
   const ifnValues = new WeakMap(), ifnVariadics = new WeakMap();
+  //@unit metaFunctions
   const metaFunctions = new WeakMap();
+  //@unit typeNames
   const typeNames = new WeakMap();
+  //@unit typeFields
   const typeFields = new WeakMap(), recordTypes = new WeakMap(), reifyValues = new WeakSet();
+  //@unit publicConstructors requires: ChunkedSeqValue, CycleValue, EmptyListValue, IterateValue,
+  //@ KeywordValue, ListValue, PersistentArrayMapValue, PersistentHashMapValue,
+  //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, RepeatValue,
+  //@ StringBufferWriter, SubvecValue
   // Extension prototypes are public and mutable; immutable collection payloads
   // and their base callability remain private and frozen.
   const publicConstructors = {List: ListValue, EmptyList: EmptyListValue, Keyword: KeywordValue,
@@ -43,7 +78,12 @@
     Subvec: SubvecValue, ChunkedSeq: ChunkedSeqValue, PersistentQueue: PersistentQueueValue,
     PersistentArrayMap: PersistentArrayMapValue, PersistentHashMap: PersistentHashMapValue, PersistentHashSet: PersistentHashSetValue,
     StringBufferWriter};
+  //@unit builtinTypes
   const builtinTypes = {};
+  //@unit builtinType requires: arrayChunk, builtinTypes, ChunkBuffer, ChunkedCons, Cons, Delay,
+  //@ Eduction, IndexedSeqValue, IntegerRangeValue, LazySeq, mapEntry, publicConstructors,
+  //@ RangeValue, Reduced, SymbolValue, treeMapConstructor, treeMapSeqConstructor,
+  //@ treeSetConstructor, uuidValue
   function builtinType(name, base) {
     if (!builtinTypes[name]) {
       const Type = publicConstructors[name] ?? (name === "Cons" ? Cons : name === "Symbol" ? SymbolValue : name === "Reduced" ? Reduced : name === "UUID" ? function (text, cachedHash) { return uuidValue(text, cachedHash); } : name === "Delay" ? Delay : name === "LazySeq" ? LazySeq : name === "Eduction" ? Eduction : name === "ChunkBuffer" ? ChunkBuffer : name === "ArrayChunk" ? arrayChunk : name === "ChunkedCons" ? ChunkedCons : name === "IndexedSeq" ? IndexedSeqValue : name === "PersistentTreeMap" ? treeMapConstructor : name === "PersistentTreeSet" ? treeSetConstructor : name === "PersistentTreeMapSeq" ? treeMapSeqConstructor : name === "MapEntry" ? function (key, value) { return mapEntry(key, value); } : name === "Range" ? RangeValue : name === "IntegerRange" ? IntegerRangeValue : function () {});
@@ -53,21 +93,30 @@
     }
     return builtinTypes[name];
   }
+  //@unit builtinValue requires: builtinType
   function builtinValue(name, base) { return Object.create(builtinType(name, base).prototype); }
+  //@unit reducedPrototype
   const reducedPrototype = Object.freeze({});
+  //@unit sequencePrototype requires: count, objectEquiv, print, sequentialIndex
   const sequencePrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     toString() { return print(this, true); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
   });
+  //@unit emptyList effect requires: builtinValue, cells, sequencePrototype
   const emptyList = builtinValue("EmptyList", sequencePrototype);
   cells.set(emptyList, Object.freeze({kind: "list", count: 0}));
+  //@unit missing
   const missing = Object.freeze({});
+  //@unit truth
   const truth = value => value != null && value !== false;
+  //@unit invalidArity
   const invalidArity = n => { throw new Error("Invalid arity: " + n); };
+  //@unit outOfBounds
   const outOfBounds = () => { throw new Error("Index out of bounds"); };
 
+  //@unit keywordPrototype requires: get, invalidArity, keywords, objectEquiv
   const keywordPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
@@ -86,6 +135,7 @@
     }
   });
 
+  //@unit symbolPrototype requires: get, invalidArity, objectEquiv, symbols
   const symbolPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
@@ -104,6 +154,8 @@
     }
   });
 
+  //@unit SymbolValue requires: builtinValue, constructorHashes, invalidArity, metadataValues,
+  //@ symbolPrototype, symbols
   // Positional constructors retain the supplied slots; unlike cons/symbol they
   // do not normalize a tail or derive the printed spelling from name/namespace.
   function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
@@ -115,6 +167,8 @@
     return value;
   }
 
+  //@unit Cons requires: builtinValue, cells, constructorHashes, invalidArity, metadataValues,
+  //@ sequencePrototype
   function Cons(metadata, head, tail, cachedHash) {
     if (arguments.length !== 4) return invalidArity(arguments.length);
     const value = builtinValue("Cons", sequencePrototype);
@@ -124,33 +178,40 @@
     return value;
   }
 
+  //@unit constructorSlots requires: constructorHashes, metadataValues, publicCollectionSlots
   function constructorSlots(value, slots, metadata, cachedHash) {
     publicCollectionSlots.set(value, slots);
     metadataValues.set(value, metadata);
     constructorHashes.set(value, cachedHash);
     return value;
   }
+  //@unit ListValue requires: builtinValue, cells, constructorSlots, sequencePrototype
   function ListValue(metadata, head, tail, suppliedCount, cachedHash) {
     const value = builtinValue("List", sequencePrototype);
     cells.set(value, Object.freeze({kind: "list", head, tail, count: suppliedCount}));
     return constructorSlots(value, {}, metadata, cachedHash);
   }
+  //@unit EmptyListValue requires: builtinValue, cells, metadataValues, sequencePrototype
   function EmptyListValue(metadata) {
     const value = builtinValue("EmptyList", sequencePrototype);
     cells.set(value, Object.freeze({kind: "list", count: 0}));
     metadataValues.set(value, metadata);
     return value;
   }
+  //@unit KeywordValue requires: constructorHashes, makeKeyword
   function KeywordValue(namespace, name, spelling, cachedHash) {
     const value = makeKeyword(namespace, name, spelling);
     constructorHashes.set(value, cachedHash);
     return value;
   }
+  //@unit CycleValue requires: cycleNode, metadataValues
   function CycleValue(metadata, all, previous, current, following) {
     const value = cycleNode(all, previous, current, following);
     metadataValues.set(value, metadata);
     return value;
   }
+  //@unit RepeatValue requires: builtinValue, cells, constructorHashes, emptyList, metadataValues,
+  //@ sequencePrototype
   function RepeatValue(metadata, remaining, head, following, cachedHash) {
     const value = builtinValue("Repeat", sequencePrototype), state = {following};
     cells.set(value, Object.freeze({kind: "repeat", remaining, head, state,
@@ -159,11 +220,13 @@
     metadataValues.set(value, metadata); constructorHashes.set(value, cachedHash);
     return value;
   }
+  //@unit IterateValue requires: iterateNode, iterateUnrealizedSeed, metadataValues
   function IterateValue(metadata, fn, previous, seed, following) {
     const value = iterateNode(fn, previous, seed, seed !== iterateUnrealizedSeed, following);
     metadataValues.set(value, metadata);
     return value;
   }
+  //@unit PersistentVectorValue requires: constructorSlots, makeVector, vectorRoots
   // Root slots are opaque canonical tokens, never an upstream trie-node ABI.
   function PersistentVectorValue(metadata, cnt, shift, root, tail, cachedHash) {
     const prefix = vectorRoots.get(root) ?? [], tailOffset = cnt < 32 ? 0 : ((cnt - 1) >>> 5) << 5;
@@ -173,6 +236,8 @@
     const value = makeVector(items);
     return constructorSlots(value, {cnt, shift, root, tail}, metadata, cachedHash);
   }
+  //@unit SubvecValue requires: builtinType, constructorSlots, makeVector, nth, subvecSources,
+  //@ vectorPrototype
   function SubvecValue(metadata, source, start, end, cachedHash) {
     const items = Array.from({length: Math.max(0, end - start)});
     for (let i = 0; i < items.length; i++) Object.defineProperty(items, i, {enumerable: true, get: () => nth(source, start + i)});
@@ -181,37 +246,44 @@
     subvecSources.set(value, source);
     return constructorSlots(value, {start, end}, metadata, cachedHash);
   }
+  //@unit ChunkedSeqValue requires: constructorSlots, view
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
     const value = view(node, offset, false, "chunked");
     return constructorSlots(value, {vec: source, node, i: index, off: offset}, metadata, cachedHash);
   }
+  //@unit PersistentQueueValue requires: constructorSlots, queueFromArray
   function PersistentQueueValue(metadata, cnt, front, rear, cachedHash) {
     const value = queueFromArray([]);
     return constructorSlots(value, {count: cnt, front, rear}, metadata, cachedHash);
   }
+  //@unit PersistentArrayMapValue requires: constructorSlots, hash, makeMap
   function PersistentArrayMapValue(metadata, cnt, array, cachedHash) {
     const entries = [];
     // Positional arrays retain duplicate keys and their first-match lookup.
     for (let i = 0; i < array.length; i += 2) entries.push(Object.freeze({get key() { return array[i]; }, get value() { return array[i + 1]; }, get hash() { return hash(array[i]); }}));
     return constructorSlots(makeMap(entries, "array-map"), {cnt, arr: array}, metadata, cachedHash);
   }
+  //@unit PersistentHashMapValue requires: constructorSlots, hashRoots, makeMap, maps
   function PersistentHashMapValue(metadata, cnt, root, hasNil, nilValue, cachedHash) {
     const entries = root == null ? [] : (maps.get(root) ?? []).filter(e => e.key != null).slice();
     if (root != null && hashRoots.has(maps.get(root))) hashRoots.set(entries, hashRoots.get(maps.get(root)));
     if (hasNil) entries.unshift(Object.freeze({key: null, value: nilValue, hash: 0}));
     return constructorSlots(makeMap(entries, "hash-map"), {cnt, root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
   }
+  //@unit PersistentHashSetValue requires: constructorSlots, ensureHashRoot, makeSet, mapKinds, maps
   function PersistentHashSetValue(metadata, source, cachedHash) {
     const entries = (maps.get(source) ?? []).map(e => Object.freeze({key: e.key, hash: e.hash}));
     if (mapKinds.get(source) === "hash-map") ensureHashRoot(entries);
     return constructorSlots(makeSet(entries, mapKinds.get(source)), {"hash-map": source}, metadata, cachedHash);
   }
 
+  //@unit Reduced requires: invalidArity, reduced
   function Reduced(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     return reduced(value);
   }
 
+  //@unit symbol requires: builtinValue, symbolPrototype, symbols
   function symbol(namespace, name) {
     const value = builtinValue("Symbol", symbolPrototype);
     symbols.set(value, Object.freeze({namespace, name,
@@ -219,6 +291,7 @@
     return value;
   }
 
+  //@unit symbolCore requires: invalidArity, keywords, symbol, symbols, vars
   function symbolCore(namespace, name) {
     switch (arguments.length) {
       case 1: {
@@ -239,8 +312,11 @@
     }
   }
 
+  //@unit gensymCounter
   let gensymCounter = 0;
+  //@unit generatedNames
   const generatedNames = new Set();
+  //@unit gensym requires: generatedNames, gensymCounter, invalidArity, str, symbolCore
   function gensym(prefix) {
     if (arguments.length > 1) return invalidArity(arguments.length);
     const base = str(arguments.length === 0 ? "G__" : prefix);
@@ -249,9 +325,11 @@
     return symbolCore(name);
   }
 
+  //@unit macroexpandServices
   // Evaluators install their expansion services without replacing core or
   // coupling this runtime to a particular compiler or JavaScript engine.
   let macroexpandServices = {};
+  //@unit setMacroexpandServices requires: macroexpandServices
   function setMacroexpandServices(services) {
     const next = services == null ? {} : services;
     if (typeof next !== "object") throw new TypeError("Expected macroexpand services object");
@@ -261,6 +339,7 @@
     }
     macroexpandServices = {macroexpand, macroexpand1};
   }
+  //@unit expansionService requires: invalidArity, macroexpandServices
   function expansionService(name, displayName) {
     return function (form) {
       if (arguments.length !== 1) return invalidArity(arguments.length);
@@ -269,9 +348,13 @@
       return service.call(null, form);
     };
   }
+  //@unit macroexpand requires: expansionService
   const macroexpand = expansionService("macroexpand", "macroexpand");
+  //@unit macroexpand1 requires: expansionService
   const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
 
+  //@unit cons requires: builtinValue, cells, count, implementsProtocol, ISeq, seq,
+  //@ sequencePrototype
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
@@ -282,20 +365,27 @@
     return value;
   }
 
+  //@unit listFromArray requires: cons, emptyList
   function listFromArray(items) {
     let result = emptyList;
     for (let i = items.length - 1; i >= 0; i--) result = cons(items[i], result, "list");
     return result;
   }
 
+  //@unit list requires: listFromArray
   function list(...items) { return listFromArray(items); }
 
+  //@unit view requires: builtinValue, sequencePrototype, views
   function view(storage, offset, indexed, kind = "indexed", tail = null) {
     const value = builtinValue(kind === "indexed" ? "IndexedSeq" : kind === "chunked" ? "ChunkedSeq" : kind === "hash-map" ? "NodeSeq" : kind === "sorted-map" ? "PersistentTreeMapSeq" : "IndexedSeq", sequencePrototype);
     views.set(value, Object.freeze({storage, offset, indexed, kind, tail}));
     return value;
   }
 
+  //@unit seq requires: builtinType, cells, concat, deferredValue, iteratorSeq, lazyValues,
+  //@ mapEntries, mapKinds, maps, mapTraversal, publicCollectionSlots, publicMethod, queues, sets,
+  //@ setTraversal, subvecSources, treeMapPush, treeMapSeqConstructor, vector, vectorPrototype,
+  //@ vectors, view, views
   function seq(value) {
     if (value == null) return null;
     const method = publicMethod(value, "ISeqable/-seq", 1, true);
@@ -343,6 +433,7 @@
     throw new Error(String(value) + " is not ISeqable");
   }
 
+  //@unit iteratorSeq requires: installMethods
   // CLJS reprobes a nil tail; only successful nonempty tails are memoized.
   function iteratorSeq(iterator) {
     const item = iterator.next();
@@ -355,6 +446,8 @@
         return tail;
       }; })()]]);
   }
+  //@unit first requires: builtin, cells, chunks, implementsProtocol, ISeq, lazyValues,
+  //@ publicCollectionSlots, publicMethod, queues, seq, views
   function first(value) {
     if (value == null) return null;
     const method = implementsProtocol(ISeq, value) ? publicMethod(value, "ISeq/-first", 1) : null;
@@ -373,6 +466,9 @@
     throw new Error("ISeq.-first not supported on this type");
   }
 
+  //@unit rest requires: builtin, cells, ChunkedSeqValue, emptyList, implementsProtocol, ISeq,
+  //@ lazyValues, meta, ownedChunkRest, publicCollectionSlots, publicMethod, seq, view, views,
+  //@ withMeta
   function rest(value) {
     if (value == null) return emptyList;
     const method = implementsProtocol(ISeq, value) ? publicMethod(value, "ISeq/-rest", 1) : null;
@@ -396,6 +492,8 @@
     return slice.kind === "queue" ? withMeta(tail, meta(current)) : tail;
   }
 
+  //@unit next requires: cells, implementsProtocol, INext, lazyValues, publicCollectionSlots,
+  //@ publicMethod, rest, seq
   function next(value) {
     if (value == null) return null;
     const method = implementsProtocol(INext, value) ? publicMethod(value, "INext/-next", 1) : null;
@@ -407,6 +505,7 @@
     return seq(rest(value));
   }
 
+  //@unit seqToMap requires: first, into, mapFromArray, next, seq, toArray
   function seqToMap(value) {
     // Upstream first probes next, then realizes exactly this argument sequence.
     // A singleton is its value (including nil); an odd trailing value is conjoined.
@@ -416,16 +515,23 @@
     return trailing == null ? base : into(base, trailing);
   }
 
+  //@unit reduced requires: builtinValue, reducedPrototype, reducedValues
   function reduced(value) {
     const marker = builtinValue("Reduced", reducedPrototype);
     reducedValues.set(marker, value);
     return marker;
   }
 
+  //@unit isReduced requires: reducedValues
   function isReduced(value) { return reducedValues.has(value); }
+  //@unit ensureReduced requires: isReduced, reduced
   function ensureReduced(value) { return isReduced(value) ? value : reduced(value); }
+  //@unit unreduced requires: isReduced, reducedValues
   function unreduced(value) { return isReduced(value) ? reducedValues.get(value) : value; }
+  //@unit deref requires: derefProtocol
   function deref(value) { return derefProtocol(value); }
+  //@unit derefProtocol requires: atoms, builtin, deferredValue, delays, isReduced, reducedValues,
+  //@ vars, volatiles
   function derefProtocol(value) {
     const method = builtin(value, "IDeref/-deref", 1);
     if (method) return method.call(value, value);
@@ -436,6 +542,7 @@
     return reducedValues.get(value);
   }
 
+  //@unit add
   function add(x, y) {
     if (arguments.length === 0) return 0;
     if (arguments.length === 1) return x;
@@ -444,6 +551,7 @@
     return result;
   }
 
+  //@unit numericFold
   // Numeric core functions use JavaScript Number/coercion rules. In particular,
   // single-arity CLJS functions accept missing/extra JS arguments, and the
   // variadic dispatcher falls through to its two leading slots at arity zero.
@@ -452,16 +560,20 @@
     for (const item of more) value = operation(value, item);
     return value;
   }
+  //@unit subtract requires: numericFold
   function subtract(x, y, ...more) {
     return arguments.length === 1 ? -x : numericFold((a, b) => a - b, x, y, more);
   }
+  //@unit multiply requires: numericFold
   function multiply(x, y, ...more) {
     if (arguments.length === 0) return 1;
     return arguments.length === 1 ? x : numericFold((a, b) => a * b, x, y, more);
   }
+  //@unit divide requires: numericFold
   function divide(x, y, ...more) {
     return arguments.length === 1 ? 1 / x : numericFold((a, b) => a / b, x, y, more);
   }
+  //@unit comparison requires: first, next, seq, variadicCore
   function comparison(test) {
     const fn = function (x, y, ...more) {
       if (arguments.length === 1) return true;
@@ -479,15 +591,18 @@
       return true;
     });
   }
+  //@unit extrema requires: numericFold
   function extrema(test) {
     return function (x, y, ...more) {
       if (arguments.length === 1) return x;
       return numericFold((a, b) => isNaN(a) ? a : isNaN(b) ? b : test(a, b) ? a : b, x, y, more);
     };
   }
+  //@unit isInteger
   // parseInt/parseFloat are intentional: CLJS integer? excludes numbers printed
   // in exponent notation even when Number.isInteger would accept them.
   const isInteger = x => typeof x === "number" && !isNaN(x) && x !== Infinity && parseFloat(x) === parseInt(x, 10);
+  //@unit isClosureInteger
   // Closure classes belong to an explicit embedding. Resolve at call time: the
   // genuine loader can initialize them after this runtime has been created.
   function isClosureInteger(x) {
@@ -498,27 +613,36 @@
       ? goog.module.get("goog.math.Long") : goog?.math?.Long;
     return typeof Long === "function" && x instanceof Long;
   }
+  //@unit fix
   const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
+  //@unit mod
   const mod = (n, d) => ((n % d) + d) % d;
+  //@unit quot requires: fix
   const quot = (n, d) => fix((n - n % d) / d);
+  //@unit isEven requires: isInteger
   function isEven(n) {
     if (!isInteger(n)) throw new Error("Argument must be an integer: " + n);
     return (n & 1) === 0;
   }
+  //@unit char
   function char(x) {
     if (typeof x === "number") return String.fromCharCode(x);
     if (typeof x === "string" && x.length === 1) return x;
     throw new Error("Argument to char must be a character or number");
   }
+  //@unit bitOperation requires: foldSeq, numericFold, variadicCore
   function bitOperation(operation) {
     return variadicCore((x, y, ...more) => numericFold(operation, x, y, more), 2,
       (x, y, more) => foldSeq(operation, x, y, more));
   }
+  //@unit bitCount
   function bitCount(v) {
     v = v - ((v >> 1) & 0x55555555);
     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
     return (((v + (v >> 4)) & 0x0f0f0f0f) * 0x01010101) >> 24;
   }
+  //@unit numeric requires: add, bitCount, bitOperation, char, comparison, divide, equal, extrema,
+  //@ fix, isClosureInteger, isEven, isInteger, mod, multiply, quot, subtract
   const numeric = {
     subtract, multiply, divide, inc: x => x + 1, dec: x => x - 1,
     less: comparison((x, y) => x < y), lessEqual: comparison((x, y) => x <= y),
@@ -560,8 +684,14 @@
     isInfinite: x => x === Infinity || x === -Infinity, isNaN: x => isNaN(x)
   };
 
+  //@unit isIdent requires: keywords, symbols
   const isIdent = x => keywords.has(x) || symbols.has(x);
+  //@unit isColl requires: cells, directMethod, lazyValues, maps, queues, sets, vectors, views
   const isColl = x => !!directMethod(x, "ICollection", 0) || vectors.has(x) || cells.has(x) || views.has(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
+  //@unit predicates requires: core, equal, equalPair, Fn, IAssociative, IChunkedSeq, ICollection,
+  //@ ICounted, IFind, IFn, IIndexed, IList, IMap, IMapEntry, implementsProtocol, IRecord, IReduce,
+  //@ IReversible, isColl, ISeq, ISeqable, ISequential, ISet, isIdent, ISorted, IVector, keywords,
+  //@ namespace, reducedValues, satisfies, seq, symbols, uuids, vars
   const predicates = {
     boolean: x => x != null && x !== false, not: x => x == null || x === false,
     isBoolean: x => x === true || x === false, isTrue: x => x === true, isFalse: x => x === false,
@@ -594,6 +724,9 @@
     isEmpty: x => x == null || (satisfies(ICounted, x) ? core.countProtocol(x) === 0 : seq(x) === null)
   };
 
+  //@unit reduce requires: builtinCoreImplementation, cells, chunks, core, deref, first, IIterable,
+  //@ invalidArity, IReduce, isReduced, iterator, lazyValues, next, publicCollectionSlots,
+  //@ publicMethod, satisfies, seq, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -695,6 +828,7 @@
     return initialized ? result : rf.call(null);
   }
 
+  //@unit reducingFunction requires: invalidArity
   // Reducers and transforms use the same .call ABI as emitted functions and
   // custom IFn values. State is allocated when a transform receives its reducer.
   function reducingFunction(rf, step, complete = result => rf.call(null, result)) {
@@ -707,22 +841,26 @@
       }
     };
   }
+  //@unit transform
   function transform(factory) {
     return function (rf) {
       return factory(rf);
     };
   }
+  //@unit completing requires: invalidArity, reducingFunction
   function completing(rf, cf) {
     if (arguments.length === 1) cf = result => result;
     else if (arguments.length !== 2) return invalidArity(arguments.length);
     return reducingFunction(rf, (result, input) => rf.call(null, result, input), result => cf.call(null, result));
   }
+  //@unit transduce requires: invalidArity, reduce
   function transduce(xf, rf, init, coll) {
     if (arguments.length === 3) { coll = init; init = rf.call(null); }
     else if (arguments.length !== 4) return invalidArity(arguments.length);
     const transformed = xf.call(null, rf);
     return transformed.call(null, reduce(transformed, init, coll));
   }
+  //@unit indexedTransform requires: reducingFunction, transform
   function indexedTransform(fn, keepOnly, indexed) {
     return transform(rf => {
       let index = -1;
@@ -732,6 +870,8 @@
       });
     });
   }
+  //@unit bufferedTransform requires: equalPair, isReduced, keyword, predicates, reducingFunction,
+  //@ transform, unreduced, vectorFromArray
   function bufferedTransform(group) {
     return transform(rf => {
       const none = keyword("cljs.core", "none");
@@ -757,6 +897,8 @@
       });
     });
   }
+  //@unit haltWhen requires: contains, get, hashMap, invalidArity, keyword, predicates, reduced,
+  //@ reducingFunction, transform, truth
   function haltWhen(pred, retf) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     const halt = keyword("cljs.core", "halt");
@@ -766,6 +908,8 @@
         : rf.call(null, result, input),
       result => predicates.isMap(result) && contains(result, halt) ? get(result, halt) : rf.call(null, result)));
   }
+  //@unit dedupe requires: cons, equalPair, first, invalidArity, keyword, lazySequence,
+  //@ reducingFunction, rest, seq, transform
   function dedupe(coll) {
     if (arguments.length === 0) return transform(rf => {
       let prior = keyword("cljs.core", "none");
@@ -785,6 +929,7 @@
     });
     return step(coll, keyword("cljs.core", "none"));
   }
+  //@unit randomSample requires: core, filter, invalidArity
   function randomSample(prob, coll) {
     const pred = () => core.rand.call(null) < prob;
     if (arguments.length === 1) return filter(pred);
@@ -792,6 +937,8 @@
     return invalidArity(arguments.length);
   }
 
+  //@unit reduceKv requires: core, deref, isReduced, mapEntries, mapTraversal, publicMethod, reduce,
+  //@ vectors
   function reduceKv(rf, init, collection) {
     const method = publicMethod(collection, "IKVReduce/-kv-reduce", 3);
     if (method) return method.call(collection, collection, rf, init);
@@ -806,7 +953,10 @@
     }
     return init;
   }
+  //@unit subvecSources
   const subvecSources = new WeakMap();
+  //@unit subvec requires: builtinType, count, nth, predicates, subvecSources, vectorFromArray,
+  //@ vectorPrototype
   function subvec(value, start, end = count(value)) {
     if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
     start = start | 0; end = end | 0;
@@ -817,7 +967,9 @@
     subvecSources.set(result, subvecSources.get(value) ?? value);
     return result;
   }
+  //@unit iteratorInit
   const iteratorInit = {}, iteratorStart = {};
+  //@unit SeqIter requires: first, iteratorInit, iteratorStart, next, seq
   class SeqIter {
     constructor(current, following) { this._seq = current; this._next = following; }
     hasNext() {
@@ -832,6 +984,7 @@
     }
     remove() { return new Error("Unsupported operation"); }
   }
+  //@unit RangedIterator requires: vectors
   class RangedIterator {
     constructor(i, base, arr, v, start, end) {
       Object.assign(this, {i, base, arr, v, start, end});
@@ -845,11 +998,15 @@
       const value = this.arr[this.i & 31]; this.i++; return value;
     }
   }
+  //@unit rangedIterator requires: count, RangedIterator, vectors
   function rangedIterator(value, start, end) {
     const base = start - start % 32;
     return new RangedIterator(start, base, start < count(value) ? vectors.get(value).slice(base, base + 32) : null, value, start, end);
   }
+  //@unit seqIter requires: iteratorInit, SeqIter
   function seqIter(value) { return new SeqIter(iteratorInit, value); }
+  //@unit iterator requires: builtin, count, iteratorInit, mapEntry, publicCollectionSlots,
+  //@ rangedIterator, SeqIter, subvecSources, vectors
   function iterator(value) {
     const method = builtin(value, "IIterable/-iterator", 1);
     if (method) return method.call(value, value);
@@ -864,6 +1021,7 @@
     const source = subvecSources.get(value) ?? value;
     return vectors.has(source) ? rangedIterator(value, 0, count(value)) : new SeqIter(iteratorInit, value);
   }
+  //@unit equivMap requires: count, equalPair, first, get, missing, next, nth, predicates, seq
   function equivMap(value, other) {
     if (!predicates.isMap(other)) return false;
     let n = 0;
@@ -874,6 +1032,10 @@
     return n === count(other);
   }
 
+  //@unit conj requires: assoc, builtin, cells, cons, copyEntries, emptyList, lazyValues, makeSet,
+  //@ makeVector, mapConj, maps, meta, PersistentHashSetValue, PersistentQueueValue, preserveMeta,
+  //@ publicCollectionSlots, putCollectionEntry, queueFromArray, queues, setKinds, sets,
+  //@ sortedComparators, subvecSources, SubvecValue, treeSetConstructor, vector, vectors, views
   function conj(...args) {
     if (args.length === 0) return vector();
     let result = args[0];
@@ -911,6 +1073,9 @@
     return result;
   }
 
+  //@unit assoc requires: builtin, contains, copyEntries, makeVector, mapFromArray, maps, meta,
+  //@ outOfBounds, preserveMeta, publicCollectionSlots, putCollectionEntry, subvecSources,
+  //@ SubvecValue, updatedMap, vectors, withMeta
   function assoc(value, key, item, ...pairs) {
     const method = value == null ? null : builtin(value, "IAssociative/-assoc", 3);
     if (method) {
@@ -952,6 +1117,8 @@
     return preserveMeta(value, makeVector(items));
   }
 
+  //@unit mapPrototype requires: contains, es6EntriesIterator, es6Iterator, get, invalidArity, keys,
+  //@ lookup, maps, objectEquiv, print, vals
   const mapPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
@@ -972,19 +1139,24 @@
     }
   });
 
+  //@unit hashRoots
   // Routing nodes preserve observable key tests and rehashes at trie splits.
   // Immutable nodes can be shared by old collections and transient copies.
   // Transient capacity affects expansion timing.
   const hashRoots = new WeakMap();
+  //@unit hashTraversals
   const hashTraversals = new WeakMap();
+  //@unit copyEntries requires: hashRoots
   function copyEntries(entries) {
     const copy = entries.slice();
     if (hashRoots.has(entries)) hashRoots.set(copy, hashRoots.get(entries));
     return copy;
   }
+  //@unit bitmapNode
   function bitmapNode(slots = [], edit = null, capacity = slots.filter(Boolean).length) {
     return {kind: "bitmap", slots, edit, capacity};
   }
+  //@unit hashNodeAssoc requires: bitmapNode, equalPair, hash
   function hashNodeAssoc(node, shift, keyHash, entry, edit, result, effects = true) {
     node ??= bitmapNode();
     if (node.kind === "collision") {
@@ -1044,12 +1216,14 @@
     }
     return bitmapNode(slots, edit, edit && node.edit !== edit ? n + 1 : node.capacity);
   }
+  //@unit hashNodeFind requires: equalPair
   function hashNodeFind(node, shift, keyHash, key) {
     if (!node) return null;
     if (node.kind === "collision") return node.entries.find(entry => equalPair(key, entry.key)) ?? null;
     const slot = node.slots[(keyHash >>> shift) & 31];
     return !slot ? null : slot.node ? hashNodeFind(slot.node, shift + 5, keyHash, key) : equalPair(key, slot.entry.key) ? slot.entry : null;
   }
+  //@unit hashNodeRemove requires: bitmapNode
   function hashNodeRemove(node, shift, keyHash, removed, edit) {
     if (!node) return null;
     if (node.kind === "collision") {
@@ -1074,6 +1248,7 @@
     if (node.kind === "array") return n <= 8 && !slots[index] ? bitmapNode(slots, edit, edit ? 2 * (n - 1) : n - 1) : {...node, slots};
     return bitmapNode(slots, edit, edit && node.edit !== edit ? n + 1 : node.capacity);
   }
+  //@unit ensureHashRoot requires: hashNodeAssoc, hashRoots
   function ensureHashRoot(entries) {
     if (!hashRoots.has(entries)) {
       let root = null;
@@ -1082,12 +1257,15 @@
     }
     return hashRoots.get(entries);
   }
+  //@unit mapTraversal requires: collectionTraversal, mapKinds, maps
   function mapTraversal(value) {
     return collectionTraversal(maps.get(value), mapKinds.get(value));
   }
+  //@unit setTraversal requires: collectionTraversal, setKinds, sets
   function setTraversal(value) {
     return collectionTraversal(sets.get(value), setKinds.get(value));
   }
+  //@unit collectionTraversal requires: ensureHashRoot, hashTraversals
   function collectionTraversal(entries, kind) {
     // Array maps, positional constants, and sorted collections retain their
     // storage order. Hash-map promotion stays observable after removals.
@@ -1108,23 +1286,28 @@
     }
     return hashTraversals.get(entries);
   }
+  //@unit hashEntryIndex requires: ensureHashRoot, hash, hashNodeFind
   function hashEntryIndex(entries, key, keyHash) {
     if (key == null) return entries.findIndex(entry => entry.key == null);
     const root = ensureHashRoot(entries);
     if (!root) return -1;
     return entries.indexOf(hashNodeFind(root, 0, keyHash ?? hash(key), key));
   }
+  //@unit removeHashEntry requires: ensureHashRoot, hashNodeRemove, hashRoots
   function removeHashEntry(entries, index, edit) {
     const entry = entries[index];
     if (entry.key != null) hashRoots.set(entries, hashNodeRemove(ensureHashRoot(entries), 0, entry.hash, entry, edit));
     entries.splice(index, 1);
   }
+  //@unit promoteEntries requires: putEntry
   function promoteEntries(entries, edit) {
     const promoted = [];
     for (const entry of entries) putEntry(promoted, entry.key, entry.value, "hash-map", edit);
     return promoted;
   }
 
+  //@unit makeMap requires: builtinValue, compareKeys, mapKinds, mapPrototype, maps,
+  //@ sortedComparators
   function makeMap(entries, kind = entries.length <= 8 ? "array-map" : "hash-map", comparator = compareKeys) {
     const value = builtinValue(kind === "hash-map" ? "PersistentHashMap" : kind === "sorted-map" ? "PersistentTreeMap" : "PersistentArrayMap", mapPrototype);
     maps.set(value, Object.freeze(entries));
@@ -1133,6 +1316,7 @@
     return value;
   }
 
+  //@unit entryIndex requires: equalPair
   function entryIndex(entries, key, keyHash, kind) {
     // Canonical array maps compare keys without a hash guard. Keyword equality uses
     // fqn, while hashing uses namespace/name; unusual equal keywords can have
@@ -1143,6 +1327,7 @@
     return entries.findIndex(entry => entry.hash === keyHash && equalPair(key, entry.key));
   }
 
+  //@unit putEntry requires: ensureHashRoot, entryIndex, hash, hashNodeAssoc, hashRoots
   // Builders mutate only fresh unpublished arrays. Entry cells and retained
   // equivalent keys are shared by subsequent immutable versions.
   function putEntry(entries, key, value, kind, edit = null) {
@@ -1167,6 +1352,7 @@
     hashRoots.set(entries, root);
   }
 
+  //@unit mapFromArray requires: makeMap, putEntry, str
   function mapFromArray(pairs, kind = pairs.length <= 16 ? "array-map" : "hash-map") {
     if (pairs.length % 2) throw new Error("No value supplied for key: " + str(pairs[pairs.length - 1]));
     const entries = [];
@@ -1175,9 +1361,12 @@
     return makeMap(entries, kind);
   }
 
+  //@unit hashMap requires: mapFromArray
   function hashMap(...pairs) { return mapFromArray(pairs, "hash-map"); }
+  //@unit arrayMap requires: mapFromArray
   function arrayMap(...pairs) { return mapFromArray(pairs, "array-map"); }
 
+  //@unit mapFromArrays requires: mapFromArray
   // Source hash-map literals evaluate all reader-ordered keys before values.
   // This emitter helper preserves the ordinary runtime constructor semantics.
   function mapFromArrays(keys, values) {
@@ -1186,6 +1375,7 @@
     return mapFromArray(pairs, "hash-map");
   }
 
+  //@unit constantMapFromArray requires: PersistentArrayMapValue
   // The analyzer has checked distinct source constants. Character/string and
   // numeric reader categories can lower to equal JS values, so literal storage
   // retains positional entries and the array map's first-match lookup.
@@ -1193,12 +1383,15 @@
     return PersistentArrayMapValue(null, pairs.length / 2, pairs, null);
   }
 
+  //@unit constantSetFromArray requires: constantMapFromArray, PersistentHashSetValue
   function constantSetFromArray(items) {
     const pairs = [];
     for (const item of items) pairs.push(item, null);
     return PersistentHashSetValue(null, constantMapFromArray(pairs), null);
   }
 
+  //@unit dissoc requires: builtin, collectionEntryIndex, copyEntries, equalPair, hashRoots,
+  //@ keyword, mapKinds, maps, recordTypes, removeHashEntry, updatedMap
   function dissoc(value, ...keys) {
     if (value != null && builtin(value, "IMap/-dissoc", 2)) return keys.reduce((result, key) => {
       const method = result == null ? null : builtin(result, "IMap/-dissoc", 2);
@@ -1229,6 +1422,7 @@
     return updatedMap(value, entries, removeRecord);
   }
 
+  //@unit mapConj requires: assoc, core, first, next, predicates, seq
   function mapConj(value, member) {
     if (member == null) return value;
     if (predicates.isVector(member)) return assoc(value, core.nthProtocol(member, 0), core.nthProtocol(member, 1));
@@ -1241,6 +1435,8 @@
     return result;
   }
 
+  //@unit setPrototype requires: contains, es6EntriesIterator, es6Iterator, invalidArity, lookup,
+  //@ objectEquiv, print, sets
   const setPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
@@ -1260,6 +1456,8 @@
     }
   });
 
+  //@unit makeSet requires: builtinValue, compareKeys, setKinds, setPrototype, sets,
+  //@ sortedComparators
   function makeSet(entries, kind = entries.length > 8 ? "hash-map" : "array-map", comparator = compareKeys) {
     const value = builtinValue(kind === "sorted-set" ? "PersistentTreeSet" : "PersistentHashSet", setPrototype);
     sets.set(value, Object.freeze(entries));
@@ -1268,6 +1466,7 @@
     return value;
   }
 
+  //@unit putMember requires: entryIndex, hashRoots, promoteEntries, putEntry
   function putMember(entries, key, edit = null) {
     if (!hashRoots.has(entries)) {
       if (entries.length < 8 || entryIndex(entries, key, undefined, "array-map") >= 0) {
@@ -1280,6 +1479,7 @@
     putEntry(entries, key, null, "hash-map", edit);
   }
 
+  //@unit setFromArray requires: makeSet, putMember
   function setFromArray(items) {
     const entries = [];
     const edit = {};
@@ -1287,6 +1487,7 @@
     return makeSet(entries);
   }
 
+  //@unit literalSetFromArray requires: makeSet, putMember, str
   function literalSetFromArray(items) {
     const entries = [], edit = {};
     for (const item of items) {
@@ -1297,8 +1498,12 @@
     return makeSet(entries);
   }
 
+  //@unit hashSet requires: setFromArray
   function hashSet(...items) { return setFromArray(items); }
 
+  //@unit disj requires: builtin, collectionEntryIndex, copyEntries, dissoc, hashRoots, makeSet,
+  //@ meta, PersistentHashSetValue, preserveMeta, publicCollectionSlots, removeHashEntry, setKinds,
+  //@ sets, sortedComparators, treeSetConstructor
   function disj(value, ...keys) {
     if (value != null && builtin(value, "ISet/-disjoin", 2)) return keys.reduce((result, key) => builtin(result, "ISet/-disjoin", 2).call(result, result, key), value);
     if (arguments.length === 0) return null;
@@ -1321,6 +1526,7 @@
     return preserveMeta(value, makeSet(entries, setKinds.get(value), sortedComparators.get(value)));
   }
 
+  //@unit transientPrototype requires: invalidArity, print, transientLookup
   // Transient payloads own a private mutable copy of canonical collection
   // storage. Persistence freezes that storage; no persistent alias can mutate it.
   const transientPrototype = Object.freeze({
@@ -1331,24 +1537,30 @@
       return transientLookup(this, key, arguments.length === 2 ? null : notFound);
     }
   });
+  //@unit makeTransient requires: builtinValue, transientPrototype, transients
   function makeTransient(kind, entries, mapKind) {
     const name = kind === "vector" ? "TransientVector" : kind === "set" ? "TransientHashSet" : mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap";
     const result = builtinValue(name, transientPrototype);
     transients.set(result, {kind, entries, mapKind, editable: true, edit: {}});
     return result;
   }
+  //@unit editableTransient requires: transients
   function editableTransient(value, operation) {
     const state = transients.get(value);
     if (!state?.editable) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
     return state;
   }
+  //@unit transient requires: core
   function transient(value) { return core.asTransientProtocol(value); }
+  //@unit asTransient requires: copyEntries, makeTransient, mapKinds, maps, setKinds, sets, vectors
   function asTransient(value) {
     if (vectors.has(value)) return makeTransient("vector", vectors.get(value).slice());
     if (maps.has(value)) return makeTransient("map", copyEntries(maps.get(value)), mapKinds.get(value));
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
   }
+  //@unit persistentBang requires: core
   function persistentBang(value) { return core.persistentBangProtocol(value); }
+  //@unit persistTransient requires: editableTransient, makeMap, makeSet, makeVector
   function persistTransient(value) {
     const state = editableTransient(value, "persistent!");
     state.editable = false;
@@ -1356,6 +1568,7 @@
     if (state.kind === "map") return makeMap(state.entries, state.mapKind);
     return makeSet(state.entries, state.mapKind);
   }
+  //@unit transientNth requires: editableTransient, missing, transients, vectorNth
   function transientNth(value, index, fallback) {
     const state = transients.get(value);
     // Pinned CLJS's three-argument -nth returns an out-of-range fallback
@@ -1364,6 +1577,8 @@
     editableTransient(value, "nth");
     return vectorNth(state.entries, index, fallback);
   }
+  //@unit transientLookup requires: editableTransient, entryIndex, hashEntryIndex, transientNth,
+  //@ transients
   function transientLookup(value, key, notFound) {
     const state = transients.get(value);
     // TransientHashMap (and its set wrapper) retains readable lookup after
@@ -1373,6 +1588,8 @@
     const index = state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
     return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
   }
+  //@unit assocTransient requires: editableTransient, entryIndex, makeTransient, outOfBounds,
+  //@ putEntry, transients
   function assocTransient(value, key, item, indexed = false) {
     const state = transients.get(value);
     if (state.kind === "vector") {
@@ -1392,6 +1609,8 @@
     }
     return value;
   }
+  //@unit conjTransient requires: core, editableTransient, first, next, predicates, putMember, seq,
+  //@ truth
   function conjTransient(value, member) {
     const state = editableTransient(value, "conj!");
     if (state.kind === "vector") { state.entries.push(member); return value; }
@@ -1408,6 +1627,8 @@
     }
     return value;
   }
+  //@unit removeTransient requires: editableTransient, entryIndex, hashEntryIndex, hashRoots,
+  //@ removeHashEntry
   function removeTransient(value, key, operation) {
     const state = editableTransient(value, operation), index = state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
     if (index >= 0) {
@@ -1417,33 +1638,41 @@
     }
     return value;
   }
+  //@unit popTransient requires: editableTransient
   function popTransient(value) {
     const state = editableTransient(value, "pop!");
     if (!state.entries.length) throw new Error("Can't pop empty vector");
     state.entries.pop(); return value;
   }
+  //@unit conjBang requires: core, transient, vector
   function conjBang(value, ...members) {
     if (!arguments.length) return transient(vector());
     for (const member of members) value = core.conjBangProtocol(value, member);
     return value;
   }
+  //@unit assocBang requires: core
   function assocBang(value, key, item, ...pairs) {
     value = core.assocBangProtocol(value, key, item);
     for (let i = 0; i < pairs.length; i += 2) value = core.assocBangProtocol(value, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
     return value;
   }
+  //@unit dissocBang requires: core
   function dissocBang(value, key, ...keys) {
     value = core.dissocBangProtocol(value, key);
     for (const key of keys) value = core.dissocBangProtocol(value, key);
     return value;
   }
+  //@unit disjBang requires: core
   function disjBang(value, key, ...keys) {
     value = core.disjoinBangProtocol(value, key);
     for (const key of keys) value = core.disjoinBangProtocol(value, key);
     return value;
   }
+  //@unit popBang requires: core
   function popBang(value) { return core.popBangProtocol(value); }
 
+  //@unit vectorPrototype requires: count, es6Iterator, invalidArity, mapEntries, missing,
+  //@ objectEquiv, outOfBounds, print, sequentialIndex, vectorNth, vectors
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     [Symbol.iterator]() { return es6Iterator(this); },
@@ -1465,34 +1694,40 @@
     }
   });
 
+  //@unit makeKeyword requires: builtinValue, keywordPrototype, keywords
   function makeKeyword(namespace, name, spelling) {
     const value = builtinValue("Keyword", keywordPrototype);
     keywords.set(value, Object.freeze({namespace, name, spelling}));
     return value;
   }
 
+  //@unit keyword requires: makeKeyword
   // Literal construction receives separately owned namespace/name strings.
   function keyword(namespace, name) {
     return makeKeyword(namespace, name,
       namespace == null ? name : namespace + "/" + name);
   }
 
+  //@unit makeVector requires: builtinValue, vectorPrototype, vectors
   function makeVector(items) {
     const value = builtinValue("PersistentVector", vectorPrototype);
     vectors.set(value, Object.freeze(items));
     return value;
   }
 
+  //@unit vector requires: makeVector
   function vector(...items) {
     return makeVector(items);
   }
 
+  //@unit vectorFromArray requires: makeVector
   // Literal emission uses an array to avoid the host's argument-count limit.
   // Copy even when a test/host caller supplies its own array.
   function vectorFromArray(items) {
     return makeVector(Array.from(items));
   }
 
+  //@unit keywordCore requires: invalidArity, keyword, keywords, makeKeyword, symbols
   function keywordCore(namespace, name) {
     switch (arguments.length) {
       case 1: {
@@ -1520,6 +1755,7 @@
     }
   }
 
+  //@unit name requires: builtin, implementsProtocol, INamed, keywords, multiFns, symbols
   function name(value) {
     if (multiFns.has(value)) return name(value.name);
     const method = implementsProtocol(INamed, value) ? builtin(value, "INamed/-name", 1) : null;
@@ -1530,6 +1766,7 @@
     throw new Error("Doesn't support name on this type");
   }
 
+  //@unit subs requires: invalidArity
   // ClojureScript subs delegates index coercion and bounds to JS substring.
   function subs(value, start, end) {
     switch (arguments.length) {
@@ -1539,6 +1776,7 @@
     }
   }
 
+  //@unit namespace requires: builtin, implementsProtocol, INamed, keywords, multiFns, symbols
   function namespace(value) {
     if (multiFns.has(value)) return namespace(value.name);
     const method = implementsProtocol(INamed, value) ? builtin(value, "INamed/-namespace", 1) : null;
@@ -1548,6 +1786,9 @@
     throw new Error("Doesn't support namespace on this type");
   }
 
+  //@unit count requires: accumulatingCount, builtin, cells, chunkBuffers, chunks,
+  //@ editableTransient, implementsProtocol, ISeqable, lazyValues, maps, next,
+  //@ publicCollectionSlots, publicMethod, queues, sets, subvecSources, transients, vectors, views
   function count(value) {
     const method = value == null ? null : publicMethod(value, "ICounted/-count", 1, true, true);
     if (method) return method.call(value, value);
@@ -1582,6 +1823,7 @@
     throw new Error("count not supported on this type");
   }
 
+  //@unit accumulatingCount requires: core, ICounted, next, satisfies, seq
   function accumulatingCount(value) {
     let result = 0;
     for (let current = seq(value); current != null; current = next(current), result++) {
@@ -1590,12 +1832,16 @@
     return result;
   }
 
+  //@unit vectorNth requires: missing, outOfBounds
   function vectorNth(items, index, notFound) {
     if (index >= 0 && index < items.length) return items[Math.trunc(index)];
     if (notFound === missing) return outOfBounds();
     return notFound;
   }
 
+  //@unit nth requires: cells, chunkNth, chunks, core, first, IIndexed, implementsProtocol,
+  //@ invalidArity, ISeq, ISequential, mapEntries, missing, next, outOfBounds, publicMethod,
+  //@ satisfies, seq, transientNth, transients, vectorNth, vectors, views
   function nth(value, index, notFound) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -1644,6 +1890,8 @@
     throw new Error("nth not supported on this type");
   }
 
+  //@unit lookup requires: collectionEntryIndex, mapEntries, maps, publicCollectionSlots, sets,
+  //@ sortedComparators, transientLookup, transients, vectors
   function lookup(value, key, notFound) {
     const slots = publicCollectionSlots.get(value);
     if (maps.has(value) && slots && "tree" in slots) {
@@ -1676,6 +1924,7 @@
     return notFound;
   }
 
+  //@unit get requires: invalidArity, lookup, publicMethod
   function get(value, key, notFound) {
     const method = value == null ? null : publicMethod(value, "ILookup/-lookup", arguments.length, true);
     if (method) return method.call(value, ...arguments);
@@ -1690,6 +1939,7 @@
     }
   }
 
+  //@unit contains requires: get, missing, publicMethod, vectors
   function contains(value, key) {
     const method = publicMethod(value, "IAssociative/-contains-key?", 2);
     if (method) return method.call(value, value, key);
@@ -1698,10 +1948,13 @@
     return get(value, key, missing) !== missing;
   }
 
+  //@unit every requires: first, next, seq, truth
   function every(predicate, value) {
     for (let current = seq(value); current !== null; current = next(current)) if (!truth(predicate.call(null, first(current)))) return false;
     return true;
   }
+  //@unit find requires: collectionEntryIndex, contains, get, mapEntry, maps, predicates,
+  //@ publicMethod, publicTree, recordTypes, sortedComparators
   function find(value, key) {
     const method = publicMethod(value, "IFind/-find", 2);
     if (method) return method.call(value, value, key);
@@ -1725,6 +1978,7 @@
     return mapEntry(key, get(value, key));
   }
 
+  //@unit getIn requires: first, get, invalidArity, missing, next, seq
   function getIn(value, keys, notFound) {
     if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length);
     const fallback = arguments.length === 3;
@@ -1734,21 +1988,25 @@
     }
     return value;
   }
+  //@unit assocIn requires: assoc, first, get, next, seq
   function assocIn(value, path, item) {
     const current = seq(path), key = first(current), more = next(current);
     return assoc(value, key, more == null ? item : assocIn(get(value, key), more, item));
   }
+  //@unit updateIn requires: apply, fnRest, updatePath
   function updateIn(value, path, fn, ...args) {
     const variadic = arguments.length < 3 || arguments.length > 6;
     return updatePath(value, path, old => variadic
       ? apply(fn, old, args[0], args[1], args[2], fnRest(args, 3))
       : fn.call(null, old, ...args));
   }
+  //@unit updatePath requires: assoc, first, get, next, seq
   function updatePath(value, path, updateLeaf) {
     const current = seq(path), key = first(current), more = next(current);
     const old = get(value, key);
     return assoc(value, key, more == null ? updateLeaf(old) : updatePath(old, more, updateLeaf));
   }
+  //@unit selectKeys requires: assoc, first, get, makeMap, meta, missing, next, seq, withMeta
   function selectKeys(value, keyseq) {
     let result = makeMap([]);
     for (let current = seq(keyseq); current != null; current = next(current)) {
@@ -1757,6 +2015,8 @@
     }
     return withMeta(result, meta(value));
   }
+  //@unit mergeMaps requires: assoc, conj, contains, core, first, get, makeMap, missing, next,
+  //@ reduce, seq, truth
   function mergeMaps(values, combine) {
     // `some identity` precedes reduction, including its sequence effects.
     let present = false;
@@ -1773,14 +2033,17 @@
       }, target, seq(right));
     }, values);
   }
+  //@unit someVals requires: assoc, reduceKv
   function someVals(value) {
     return reduceKv((result, key, item) => item == null ? result : assoc(result, key, item), null, value);
   }
+  //@unit requiredGet requires: get, missing, str
   function requiredGet(value, key) {
     const result = get(value, key, missing);
     if (result === missing) throw new Error("Missing required key: " + str(key));
     return result;
   }
+  //@unit keyExtreme requires: first, next, seq
   function keyExtreme(less, key, x, y, more) {
     let result = (less ? key.call(null, x) < key.call(null, y) : key.call(null, x) > key.call(null, y)) ? x : y;
     for (let s = seq(more); s !== null; s = next(s)) {
@@ -1789,8 +2052,12 @@
     }
     return result;
   }
+  //@unit minKey requires: fnRest, keyExtreme
   function minKey(key, x, y, ...more) { return arguments.length === 2 ? x : keyExtreme(true, key, x, y, fnRest(more, 0)); }
+  //@unit maxKey requires: fnRest, keyExtreme
   function maxKey(key, x, y, ...more) { return arguments.length === 2 ? x : keyExtreme(false, key, x, y, fnRest(more, 0)); }
+  //@unit reductions requires: cons, first, invalidArity, lazySequence, list, reducedValues, rest,
+  //@ seq
   function reductions(fn, initial, coll) {
     if (arguments.length === 2) return lazySequence(() => {
       const s = seq(initial);
@@ -1803,6 +2070,7 @@
       return s === null ? null : reductions(fn, fn.call(null, initial, first(s)), rest(s));
     }));
   }
+  //@unit replace requires: assoc, collectionArity, count, find, mapSeq, nth, predicates
   function replace(substitutions, coll) {
     const replaceOne = value => { const entry = find(substitutions, value); return entry == null ? value : nth(entry, 1); };
     if (arguments.length === 1) return mapSeq(replaceOne);
@@ -1817,6 +2085,8 @@
     }
     return mapSeq(replaceOne, coll);
   }
+  //@unit distinct requires: conj, cons, contains, first, invalidArity, lazySequence, makeSet,
+  //@ reducingFunction, rest, seq, transform
   function distinct(coll) {
     if (arguments.length === 0) return transform(rf => {
       let seen = makeSet([]);
@@ -1836,6 +2106,7 @@
     });
     return step(coll, makeSet([]));
   }
+  //@unit distinctMore requires: conj, contains, equalPair, first, hashSet, next
   function distinctMore(x, y, more) {
     if (equalPair(x, y)) return false;
     let seen = hashSet(x, y), s = more;
@@ -1846,9 +2117,11 @@
       seen = conj(seen, value); s = following;
     }
   }
+  //@unit isDistinct requires: distinctMore, fnRest
   function isDistinct(x, y, ...more) {
     return arguments.length === 1 ? true : distinctMore(x, y, fnRest(more, 0));
   }
+  //@unit fnComparator requires: compareKeys, truth
   function fnComparator(fn) {
     if (fn === compareKeys) return fn;
     return (x, y) => {
@@ -1856,6 +2129,8 @@
       return typeof result === "number" ? result : truth(result) ? -1 : truth(fn.call(null, y, x)) ? 1 : 0;
     };
   }
+  //@unit sort requires: compareKeys, emptyList, fnComparator, invalidArity, meta, seq, toArray,
+  //@ withMeta
   function sort(fn, coll) {
     if (arguments.length === 1) { coll = fn; fn = compareKeys; }
     else if (arguments.length !== 2) return invalidArity(arguments.length);
@@ -1864,72 +2139,92 @@
     values.sort(fnComparator(fn));
     return withMeta(seq(values), meta(coll));
   }
+  //@unit sortBy requires: compareKeys, fnComparator, invalidArity, sort
   function sortBy(key, fn, coll) {
     if (arguments.length === 2) { coll = fn; fn = compareKeys; }
     else if (arguments.length !== 3) return invalidArity(arguments.length);
     return sort((x, y) => fnComparator(fn)(key.call(null, x), key.call(null, y)), coll);
   }
+  //@unit comparator requires: truth
   function comparator(predicate) {
     return (x, y) => truth(predicate.call(null, x, y)) ? -1 : truth(predicate.call(null, y, x)) ? 1 : 0;
   }
+  //@unit rand requires: invalidArity
   function rand(n) {
     if (arguments.length === 0) return Math.random();
     if (arguments.length === 1) return Math.random() * n;
     return invalidArity(arguments.length);
   }
+  //@unit randInt
   // Public core utilities follow the pinned core.cljs Number/UTF-16 contracts.
   function randInt(n) { return Math.floor(Math.random() * n); }
+  //@unit randNth requires: count, nth, randInt
   function randNth(coll) { return nth(coll, randInt(count(coll))); }
+  //@unit isJsSymbol
   function isJsSymbol(value) {
     return typeof value === "symbol" || (typeof Symbol !== "undefined" && value instanceof Symbol);
   }
+  //@unit specialSymbols
   const specialSymbols = new Set("if def fn* do let* loop* letfn* throw try catch finally recur new set! ns deftype* defrecord* . js* & quote case* var ns*".split(" "));
+  //@unit isSpecialSymbol requires: specialSymbols, symbols
   function isSpecialSymbol(value) {
     const data = symbols.get(value);
     return !!data && data.namespace === null && specialSymbols.has(data.name);
   }
+  //@unit parsingString
   function parsingString(value) {
     if (typeof value !== "string") throw new Error("Expected string, got: " + (value == null ? "nil" : Array.isArray(value) ? "array" : typeof value));
     return value;
   }
+  //@unit parseLong requires: parsingString
   function parseLong(value) {
     const s = parsingString(value);
     if (/^[+-]?\d+$/.exec(s)?.[0] !== s) return null;
     const n = parseInt(s, 10);
     return n <= Number.MAX_SAFE_INTEGER && n >= Number.MIN_SAFE_INTEGER ? n : null;
   }
+  //@unit parseDouble requires: parsingString
   function parseDouble(value) {
     const s = parsingString(value);
     if (/^[\x00-\x20]*[+-]?NaN[\x00-\x20]*$/.test(s)) return NaN;
     return /^[\x00-\x20]*[+-]?(Infinity|((\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)[dDfF]?)[\x00-\x20]*$/.test(s) ? parseFloat(s) : null;
   }
+  //@unit parseUuid requires: parsingString, uuid
   function parseUuid(value) {
     const s = parsingString(value);
     return s.length === 36 && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s) ? uuid(s) : null;
   }
+  //@unit parseBoolean requires: parsingString
   function parseBoolean(value) {
     const s = parsingString(value);
     return s === "true" ? true : s === "false" ? false : null;
   }
+  //@unit groupBy requires: assoc, conj, get, mapFromArray, reduce, vector
   function groupBy(fn, coll) {
     return reduce((result, value) => {
       const key = fn.call(null, value);
       return assoc(result, key, conj(get(result, key, vector()), value));
     }, mapFromArray([]), coll);
   }
+  //@unit frequencies requires: assoc, get, mapFromArray, reduce
   function frequencies(coll) {
     return reduce((result, value) => assoc(result, value, get(result, value, 0) + 1), mapFromArray([]), coll);
   }
+  //@unit updateVals requires: assoc, mapFromArray, mapKinds, meta, reduceKv, withMeta
   function updateVals(coll, fn) {
     const kind = mapKinds.get(coll);
     const initial = kind === "array-map" || kind === "hash-map" ? coll : mapFromArray([]);
     return withMeta(reduceKv((result, key, value) => assoc(result, key, fn.call(null, value)), initial, coll), meta(coll));
   }
+  //@unit updateKeys requires: assoc, mapFromArray, meta, reduceKv, withMeta
   function updateKeys(coll, fn) {
     return withMeta(reduceKv((result, key, value) => assoc(result, fn.call(null, key), value), mapFromArray([]), coll), meta(coll));
   }
+  //@unit merge requires: fnRest, mergeMaps, missing
   function merge(...values) { return mergeMaps(fnRest(values, 0), missing); }
+  //@unit mergeWith requires: fnRest, mergeMaps
   function mergeWith(fn, ...values) { return mergeMaps(fnRest(values, 0), fn); }
+  //@unit zipmap requires: assoc, first, makeMap, next, seq
   function zipmap(keys, values) {
     let result = makeMap([]);
     let ks = seq(keys), vs = seq(values);
@@ -1940,6 +2235,7 @@
     }
     return result;
   }
+  //@unit set requires: first, makeSet, next, predicates, putMember, seq, withMeta
   function set(value) {
     if (predicates.isSet(value)) return withMeta(value, null);
     const entries = [];
@@ -1947,6 +2243,8 @@
     for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current), edit);
     return makeSet(entries);
   }
+  //@unit objectEquiv requires: builtin, cells, equalPair, keywords, maps, sequential, sets,
+  //@ structuralEqualPair, symbols
   // Object.equiv calls the receiver's IEquiv implementation directly, even
   // when an extension rejects an identical value. Language = keeps its own
   // identity shortcut. Saved Object methods dispatch on the borrowed receiver.
@@ -1961,6 +2259,7 @@
       (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind))
       ? structuralEqualPair(value, other) : equalPair(value, other);
   }
+  //@unit equalPair requires: builtin, structuralEqualPair
   function equalPair(left, right) {
     if (left == null) return right == null;
     if (left === right) return true;
@@ -1968,6 +2267,9 @@
     if (equiv) return equiv.call(left, left, right);
     return structuralEqualPair(left, right);
   }
+  //@unit structuralEqualPair requires: cells, contains, count, equalPair, first, get, ICounted,
+  //@ keywords, mapKinds, maps, mapTraversal, missing, next, predicates, recordTypes, satisfies,
+  //@ seq, sequential, sets, symbols, uuids, vars
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     if (uuids.has(left)) return uuids.has(right) && uuids.get(left) === uuids.get(right);
@@ -2014,6 +2316,7 @@
     return false;
   }
 
+  //@unit equal requires: equalPair
   function equal(...values) {
     for (let i = 1; i < values.length; i++) {
       if (!equalPair(values[i - 1], values[i])) return false;
@@ -2021,12 +2324,16 @@
     return true;
   }
 
+  //@unit sequential requires: cells, lazyValues, queues, vectors, views
   function sequential(value) {
     return vectors.has(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
   }
 
+  //@unit identityHashes
   const identityHashes = new WeakMap();
+  //@unit identityCounter
   let identityCounter = 0;
+  //@unit stringHash
   function stringHash(value) {
     if (value == null) return 0;
     let result = 0;
@@ -2034,47 +2341,62 @@
     return result;
   }
 
+  //@unit rotateLeft
   // ClojureScript's public Murmur3 collection/name hashes. Number hashes
   // follow the JavaScript Number profile, including signed zero and nonfinite values.
   function rotateLeft(value, distance) { return (value << distance) | (value >>> (32 - distance)); }
+  //@unit mixK1 requires: rotateLeft
   function mixK1(value) { return Math.imul(rotateLeft(Math.imul(value, 0xcc9e2d51), 15), 0x1b873593); }
+  //@unit mixH1 requires: rotateLeft
   function mixH1(hash, value) { return (Math.imul(rotateLeft(hash ^ value, 13), 5) + 0xe6546b64) | 0; }
+  //@unit fmix
   function fmix(hash, length) {
     hash ^= length;
     hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
     hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35);
     return hash ^ (hash >>> 16);
   }
+  //@unit hashInt requires: fmix, mixH1, mixK1
   function hashInt(value) { return value === 0 ? 0 : fmix(mixH1(0, mixK1(value)), 4); }
+  //@unit hashChars requires: fmix, mixH1, mixK1
   function hashChars(value) {
     let h = 0, i = 1;
     for (; i < value.length; i += 2) h = mixH1(h, mixK1(value.charCodeAt(i - 1) | (value.charCodeAt(i) << 16)));
     if (value.length & 1) h ^= mixK1(value.charCodeAt(value.length - 1));
     return fmix(h, value.length * 2);
   }
+  //@unit hashNamed requires: hashChars, stringHash
   function hashNamed(value) {
     const seed = hashChars(value.name);
     return seed ^ (stringHash(value.namespace) + 0x9e3779b9 + (seed << 6) + (seed >> 2));
   }
+  //@unit hashDouble
   function hashDouble(value) {
     const buffer = new ArrayBuffer(8), view = new DataView(buffer);
     // Upstream reads native little-endian Float64 bytes as big-endian int32s.
     view.setFloat64(0, value, true);
     return view.getInt32(0) ^ view.getInt32(4);
   }
+  //@unit mixCollectionHash requires: fmix, mixH1, mixK1
   function mixCollectionHash(basis, count) { return fmix(mixH1(0, mixK1(basis)), count); }
+  //@unit hashOrderedColl requires: first, hash, mixCollectionHash, next, seq
   function hashOrderedColl(value) {
     let result = 1, n = 0;
     for (let current = seq(value); current !== null; current = next(current), n++)
       result = (Math.imul(result, 31) + hash(first(current))) | 0;
     return mixCollectionHash(result, n);
   }
+  //@unit hashUnorderedColl requires: first, hash, mixCollectionHash, next, seq
   function hashUnorderedColl(value) {
     let result = 0, n = 0;
     for (let current = seq(value); current !== null; current = next(current), n++)
       result = (result + hash(first(current))) | 0;
     return mixCollectionHash(result, n);
   }
+  //@unit hash requires: builtin, cells, constructorHashes, hashDouble, hashInt, hashNamed,
+  //@ hashOrderedColl, identityCounter, identityHashes, IHash, implementsProtocol, keywords,
+  //@ lazyValues, maps, mapTraversal, mixCollectionHash, publicCollectionSlots, sequential, sets,
+  //@ stringHash, symbols, uuidHashes, uuids, vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
@@ -2141,6 +2463,11 @@
     return identityHashes.get(value);
   }
 
+  //@unit compilerFormBridge requires: atoms, builtinValue, cells, deferredValue, emptyList,
+  //@ generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues, listFromArray,
+  //@ mapFromArray, maps, mapTraversal, metadataValues, name, queueFromArray, queues, recordTypes,
+  //@ reifyValues, rePattern, sequencePrototype, setFromArray, sets, setTraversal, symbol, symbols,
+  //@ toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectors, view, views, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -2338,6 +2665,9 @@
       }});
   }
 
+  //@unit inspect requires: atoms, cells, first, isReduced, keywords, mapTraversal, next, nth,
+  //@ recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars, vectors, views,
+  //@ volatiles
   // Private test adapter. Production emission keeps this factory local; only
   // the observation harness registers inspect. Exposed storage remains frozen.
   function inspect(value) {
@@ -2363,12 +2693,14 @@
     return null;
   }
 
+  //@unit queueFromArray requires: builtinValue, queues, sequencePrototype
   function queueFromArray(items) {
     const value = builtinValue("PersistentQueue", sequencePrototype);
     queues.set(value, Object.freeze(items.slice()));
     return value;
   }
 
+  //@unit jsObject
   function jsObject(pairs) {
     const result = {};
     for (let i = 0; i < pairs.length; i += 2) {
@@ -2381,21 +2713,45 @@
     return result;
   }
 
+  //@unit IChunk
   const IChunk = function () {}, IChunkedNext = function () {}, IDrop = function () {};
+  //@unit IMapEntry
   const IMapEntry = function () {}, IFind = function () {}, ISorted = function () {}, IChunkedSeq = function () {};
+  //@unit IEncodeJS
   const IEncodeJS = function () {}, IEncodeClojure = function () {};
+  //@unit IRecord
   const IRecord = function () {}, ICloneable = function () {}, IPrintWithWriter = function () {}, IWriter = function () {};
+  //@unit INamed
   const INamed = function () {};
+  //@unit Inst
   const Inst = function () {}, IUUID = function () {}, ASeq = function () {}, IDerefWithTimeout = function () {};
+  //@unit IMeta
   const IMeta = function () {}, IWithMeta = function () {}, IHash = function () {}, IEquiv = function () {};
+  //@unit IPending
   const IPending = function () {}, IDeref = function () {}, IAtom = function () {}, IReset = function () {}, ISwap = function () {}, IVolatile = function () {}, IWatchable = function () {};
+  //@unit Fn
   const Fn = function () {}, IList = function () {}, IFn = function () {}, ISeqable = function () {}, ISeq = function () {}, INext = function () {}, ICounted = function () {}, IIndexed = function () {}, ILookup = function () {}, ISequential = function () {}, IAssociative = function () {};
+  //@unit IReduce
   const IReduce = function () {}, IKVReduce = function () {}, IVector = function () {}, IMap = function () {}, ICollection = function () {}, IEmptyableCollection = function () {}, ISet = function () {}, IStack = function () {}, IReversible = function () {}, IComparable = function () {}, IIterable = function () {};
+  //@unit IMultiFn
   const IMultiFn = function () {};
+  //@unit IEditableCollection
   const IEditableCollection = function () {}, ITransientCollection = function () {}, ITransientAssociative = function () {}, ITransientMap = function () {}, ITransientVector = function () {}, ITransientSet = function () {};
+  //@unit coreProtocolNames requires: ASeq, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
+  //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDerefWithTimeout, IDrop,
+  //@ IEditableCollection, IEmptyableCollection, IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn,
+  //@ IHash, IIndexed, IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, IMultiFn,
+  //@ INamed, INext, Inst, IPending, IPrintWithWriter, IRecord, IReduce, IReset, IReversible, ISeq,
+  //@ ISeqable, ISequential, ISet, ISorted, IStack, ISwap, ITransientAssociative,
+  //@ ITransientCollection, ITransientMap, ITransientSet, ITransientVector, IUUID, IVector,
+  //@ IVolatile, IWatchable, IWithMeta, IWriter
   const coreProtocolNames = new Map([[Inst, "Inst"], [IUUID, "IUUID"], [ASeq, "ASeq"], [IDerefWithTimeout, "IDerefWithTimeout"], [INamed, "INamed"], [IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
+  //@unit coreProtocolsByName requires: coreProtocolNames
   const coreProtocolsByName = new Map([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
+  //@unit protocolDefaults effect: IMeta, Fn, ICounted, IHash, IEquiv requires: Fn, ICounted,
+  //@ IEquiv, IHash, IMeta
   IMeta.function = true; Fn.function = true; ICounted.null = true; IHash._ = true; IEquiv._ = true;
+  //@unit meta requires: assoc, atoms, deferredVarMetadata, keyword, metadataValues, publicMethod
   // Metadata belongs to values, never structural equality or hash payloads.
   function meta(value) {
     const method = value == null ? null : publicMethod(value, "IMeta/-meta", 1);
@@ -2408,6 +2764,9 @@
     }
     return atoms.has(value) ? value.meta : metadataValues.has(value) ? metadataValues.get(value) : null;
   }
+  //@unit empty requires: cells, emptyList, lazyValues, makeMap, makeSet, mapEntries, mapKinds,
+  //@ maps, meta, preserveMeta, publicCollectionSlots, publicMethod, queueFromArray, queues,
+  //@ recordTypes, setKinds, sets, sortedComparators, vector, vectors, views, withMeta
   function empty(value) {
     const method = value == null ? null : publicMethod(value, "IEmptyableCollection/-empty", 1);
     if (method) return method.call(value, value);
@@ -2422,6 +2781,7 @@
       return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? withMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
+  //@unit peek requires: builtin, cells, first, publicCollectionSlots, queues, vectors
   function peek(value) {
     const method = value == null ? null : builtin(value, "IStack/-peek", 1);
     if (method) return method.call(value, value);
@@ -2431,6 +2791,9 @@
     if (queues.has(value) || cells.get(value)?.kind === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
+  //@unit pop requires: builtin, cells, count, makeVector, meta, next, PersistentQueueValue,
+  //@ preserveMeta, publicCollectionSlots, queueFromArray, queues, rest, seq, subvecSources,
+  //@ SubvecValue, vector, vectors
   function pop(value) {
     const method = value == null ? null : builtin(value, "IStack/-pop", 1);
     if (method) return method.call(value, value);
@@ -2454,6 +2817,7 @@
     }
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
+  //@unit rseq requires: builtin, maps, sortedComparators, toArray, vectors, view, views
   function rseq(value) {
     const method = builtin(value, "IReversible/-rseq", 1);
     if (method) return method.call(value, value);
@@ -2462,6 +2826,8 @@
     const items = Object.freeze(toArray(value).reverse());
     return items.length ? view(items, 0, false, maps.has(value) ? "sorted-map" : "reverse") : null;
   }
+  //@unit mapProjection requires: cells, core, emptyList, INext, next, satisfies, seq,
+  //@ sequencePrototype
   function mapProjection(value, index, alreadySeq = false) {
     const entries = alreadySeq ? value : seq(value);
     if (entries === null) return null;
@@ -2474,14 +2840,18 @@
       }}));
     return result;
   }
+  //@unit keys requires: mapProjection
   function keys(value) { return mapProjection(value, 0); }
+  //@unit vals requires: mapProjection
   function vals(value) { return mapProjection(value, 1); }
+  //@unit repeat requires: emptyList, invalidArity, RepeatValue
   function repeat(n, item) {
     if (arguments.length === 1) { item = n; n = -1; }
     if (arguments.length < 1 || arguments.length > 2) return invalidArity(arguments.length);
     if (arguments.length === 2 && !(n > 0)) return emptyList;
     return RepeatValue(null, n, item, null, null);
   }
+  //@unit cycleNode requires: builtinValue, cells, first, next, sequencePrototype, truth
   function cycleNode(all, previous, current, following = null) {
     const value = builtinValue("Cycle", sequencePrototype), state = {current, following};
     const currentValue = () => truth(state.current) ? state.current : (state.current = next(previous) ?? all);
@@ -2491,10 +2861,12 @@
       get tail() { return state.following ?? (state.following = cycleNode(all, currentValue(), null)); }}));
     return value;
   }
+  //@unit cycle requires: cycleNode, emptyList, seq
   function cycle(collection) {
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
+  //@unit compareKeys requires: builtin, keywords, str, symbols, uuids, vectors
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
@@ -2519,6 +2891,7 @@
     if (!(Array.isArray(a) && Array.isArray(b)) && (typeof a !== typeof b || !["string", "boolean"].includes(typeof a))) return cannotCompare();
     return a < b ? -1 : a > b ? 1 : 0;
   }
+  //@unit sequentialIndex requires: count, equalPair, nth
   function sequentialIndex(coll, value, start, reverse) {
     const length = count(coll);
     if (reverse) {
@@ -2531,9 +2904,11 @@
     }
     return -1;
   }
+  //@unit treeRoots
   // Comparator equality controls sorted membership; structural hashes remain
   // attached to the retained key for unordered collection equality/hash.
   const treeRoots = new WeakMap(), treeSetMaps = new WeakMap();
+  //@unit publicTree requires: mapEntry, maps, publicCollectionSlots, treeRoots
   function publicTree(value) {
     const slots = publicCollectionSlots.get(value);
     if (slots && "tree" in slots) return slots.tree;
@@ -2550,6 +2925,7 @@
     }
     return treeRoots.get(value);
   }
+  //@unit deferredEntries
   // A public positional constructor stores its tree/backing-map immediately,
   // without traversing nodes, hashing keys or calling the comparator. Only
   // operations that consume entries demand this private array facade.
@@ -2561,6 +2937,8 @@
       has(_target, property) { return Reflect.has(demand(), property); }
     });
   }
+  //@unit treeMapConstructor requires: constructorSlots, deferredEntries, hash, makeMap, maps, nth,
+  //@ sortedComparators
   function treeMapConstructor(comparator, tree, suppliedCount, metadata, cachedHash) {
     const value = makeMap([], "sorted-map", comparator);
     sortedComparators.set(value, comparator);
@@ -2576,15 +2954,20 @@
     }));
     return constructorSlots(value, {tree, cnt: suppliedCount}, metadata, cachedHash);
   }
+  //@unit treeSetConstructor requires: constructorSlots, deferredEntries, makeSet, maps, sets,
+  //@ sortedComparators
   function treeSetConstructor(metadata, treeMap, cachedHash) {
     const value = makeSet([], "sorted-set", sortedComparators.get(treeMap));
     sets.set(value, deferredEntries(() => treeMap == null ? [] : maps.get(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
     return constructorSlots(value, {"tree-map": treeMap}, metadata, cachedHash);
   }
+  //@unit treeMapPush requires: conj, truth
   function treeMapPush(tree, stack, ascending) {
     while (tree != null) { stack = conj(stack, tree); tree = truth(ascending) ? tree.left : tree.right; }
     return stack;
   }
+  //@unit treeMapSeqConstructor requires: builtinValue, cells, constructorSlots, emptyList, first,
+  //@ next, peek, sequencePrototype, treeMapPush, truth
   function treeMapSeqConstructor(metadata, stack, ascending, suppliedCount, cachedHash) {
     const value = builtinValue("PersistentTreeMapSeq", sequencePrototype);
     cells.set(value, {kind: "tree-seq", get head() { return peek(stack); }, get tail() {
@@ -2593,6 +2976,7 @@
     }});
     return constructorSlots(value, {stack, "ascending?": ascending, cnt: suppliedCount}, metadata, cachedHash);
   }
+  //@unit sortedPosition
   function sortedPosition(entries, key, comparator) {
     let lo = 0, hi = entries.length;
     while (lo < hi) {
@@ -2602,6 +2986,8 @@
     }
     return lo;
   }
+  //@unit collectionEntryIndex requires: entryIndex, hashEntryIndex, mapKinds, setKinds,
+  //@ sortedComparators, sortedPosition
   function collectionEntryIndex(value, entries, key) {
     const comparator = sortedComparators.get(value);
     if (!comparator) {
@@ -2617,6 +3003,7 @@
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
   }
+  //@unit putSortedEntry requires: equalPair, hash, sortedPosition
   function putSortedEntry(entries, key, value, comparator, member = false) {
     const i = sortedPosition(entries, key, comparator);
     const exists = i < entries.length && comparator.call(null, entries[i].key, key) === 0;
@@ -2626,6 +3013,8 @@
     if (exists) entries[i] = entry;
     else entries.splice(i, 0, entry);
   }
+  //@unit putCollectionEntry requires: entryIndex, hashRoots, mapKinds, promoteEntries, putEntry,
+  //@ putMember, putSortedEntry, sortedComparators
   function putCollectionEntry(coll, entries, key, value, member = false) {
     const comparator = sortedComparators.get(coll);
     if (comparator) putSortedEntry(entries, key, value, comparator, member);
@@ -2644,24 +3033,32 @@
       putEntry(entries, key, value, array ? "array-map" : undefined);
     }
   }
+  //@unit buildSortedMap requires: makeMap, putSortedEntry
   function buildSortedMap(comparator, pairs) {
     const entries = [];
     for (let i = 0; i < pairs.length; i += 2) putSortedEntry(entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null, comparator);
     return makeMap(entries, "sorted-map", comparator);
   }
+  //@unit sortedMap requires: buildSortedMap, compareKeys
   function sortedMap(...pairs) { return buildSortedMap(compareKeys, pairs); }
+  //@unit sortedMapBy requires: buildSortedMap, fnComparator
   function sortedMapBy(comparator, ...pairs) {
     return buildSortedMap(fnComparator(comparator), pairs);
   }
+  //@unit buildSortedSet requires: makeSet, putSortedEntry
   function buildSortedSet(comparator, items) {
     const entries = [];
     for (const item of items) putSortedEntry(entries, item, undefined, comparator, true);
     return makeSet(entries, "sorted-set", comparator);
   }
+  //@unit sortedSet requires: buildSortedSet, compareKeys
   function sortedSet(...items) { return buildSortedSet(compareKeys, items); }
+  //@unit sortedSetBy requires: buildSortedSet, fnComparator
   function sortedSetBy(comparator, ...items) {
     return buildSortedSet(fnComparator(comparator), items);
   }
+  //@unit sortedSeqFrom requires: mapEntry, maps, mapSeq, predicates, sets, sortedComparators,
+  //@ sortedPosition, truth, view
   function sortedSeqFrom(value, key, ascending) {
     const entries = maps.get(value) ?? sets.get(value), comparator = sortedComparators.get(value);
     let i = sortedPosition(entries, key, comparator);
@@ -2673,10 +3070,12 @@
     const selected = truth(ascending) ? entries.slice(i) : entries.slice(0, i + 1).reverse();
     return sets.has(value) ? mapSeq(entry => entry.key, selected) : view(Object.freeze(selected.map(entry => mapEntry(entry.key, entry.value))), 0, false, "sorted-map");
   }
+  //@unit mkBoundFn requires: core, invalidArity, truth
   function mkBoundFn(sc, test, key) {
     if (arguments.length !== 3) return invalidArity(arguments.length);
     return entry => truth(test.call(null, core.comparatorProtocol(sc).call(null, core.entryKeyProtocol(sc, entry), key), 0));
   }
+  //@unit subseq requires: core, first, invalidArity, mkBoundFn, next, numeric, takeWhile
   function subseq(sc, test, key, endTest, endKey) {
     if (arguments.length !== 3 && arguments.length !== 5) return invalidArity(arguments.length);
     const include = mkBoundFn(sc, test, key);
@@ -2687,6 +3086,7 @@
     if (!include(first(s))) s = next(s);
     return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, endTest, endKey), s);
   }
+  //@unit rsubseq requires: core, first, invalidArity, mkBoundFn, next, numeric, takeWhile
   function rsubseq(sc, test, key, endTest, endKey) {
     if (arguments.length !== 3 && arguments.length !== 5) return invalidArity(arguments.length);
     if (arguments.length === 3 && test !== numeric.less && test !== numeric.lessEqual)
@@ -2697,21 +3097,31 @@
     if (!include(first(s))) s = next(s);
     return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, test, key), s);
   }
+  //@unit metaSupported requires: atoms, builtin, cells, lazyValues, maps, metaFunctions, queues,
+  //@ reifyValues, sets, symbols, vars, vectors, views
   function metaSupported(value) {
     return typeof value === "function" || !!builtin(value, "IMeta/-meta", 1) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
   }
+  //@unit withMetaSupported requires: builtin, cells, lazyValues, maps, metaFunctions, queues,
+  //@ reifyValues, sets, symbols, vars, vectors, views
   function withMetaSupported(value) {
     return !!builtin(value, "IWithMeta/-with-meta", 2) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
   }
+  //@unit declarationDemand
   let declarationDemand = null;
+  //@unit declarationTransactions
   const declarationTransactions = [];
+  //@unit setDeclarationDemand requires: declarationDemand
   function setDeclarationDemand(demand) { declarationDemand = demand; }
+  //@unit demandProtocol requires: declarationDemand, typeNames
   function demandProtocol(key, value) {
     if (!declarationDemand) return;
     const name = typeNames.get(value?.constructor);
     declarationDemand(key, value, name);
   }
+  //@unit declarationReceiver requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
+  //@unit patchDeclaration requires: declarationTransactions
   function patchDeclaration(value, key, descriptor) {
     const transaction = declarationTransactions.at(-1);
     if (transaction) {
@@ -2720,11 +3130,13 @@
     }
     Object.defineProperty(value, key, descriptor);
   }
+  //@unit setDeclaration requires: declarationTransactions
   function setDeclaration(store, key, value) {
     const transaction = declarationTransactions.at(-1), present = store.has(key), previous = store.get(key);
     if (transaction) transaction.push({undo: () => present ? store.set(key, previous) : store.delete(key), redo: () => store.set(key, value), snapshot: () => { const saved = store.get(key), has = store.has(key); return () => has ? store.set(key, saved) : store.delete(key); }});
     store.set(key, value);
   }
+  //@unit declarationTransaction requires: declarationTransactions
   function declarationTransaction(run, capture = false) {
     const undo = [];
     declarationTransactions.push(undo);
@@ -2734,23 +3146,30 @@
       throw error;
     } finally { declarationTransactions.pop(); }
   }
+  //@unit applyDeclarationPatches
   function applyDeclarationPatches(patches, forward) {
     if (forward) for (const patch of patches) patch.redo();
     else for (let i = patches.length - 1; i >= 0; i--) patches[i].undo();
   }
+  //@unit snapshotDeclarationPatches
   function snapshotDeclarationPatches(patches) { return patches.map(patch => patch.snapshot()); }
+  //@unit restoreDeclarationPatches
   function restoreDeclarationPatches(saved) { for (let i = saved.length - 1; i >= 0; i--) saved[i](); }
+  //@unit protocolPredicate requires: demandProtocol, directMethod, nativeType
   function protocolPredicate(protocol, key, value, direct) {
     demandProtocol(key, value);
     if (directMethod(value, key, 0)) return true;
     if (direct) return false;
     return !!(protocol[nativeType(value)] || protocol._);
   }
+  //@unit implementsProtocol requires: coreProtocolImplementation, directMethod, protocolNames
   function implementsProtocol(protocol, value) {
     const key = protocolNames.get(protocol);
     if (key) return !!directMethod(value, key, 0);
     return coreProtocolImplementation(protocol, value);
   }
+  //@unit satisfies requires: coreProtocolNames, demandProtocol, implementsProtocol, nativeMethods,
+  //@ nativeType, ownedProtocolValue, protocolMaskNames, protocolNames
   function satisfies(protocol, value) {
     demandProtocol(protocolNames.get(protocol) ?? coreProtocolNames.get(protocol), value);
     if (implementsProtocol(protocol, value)) return true;
@@ -2762,8 +3181,13 @@
     if (index >= 0 && value?.["cljs$lang$protocol_mask$partition" + (index >> 5) + "$"]) return false;
     return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get("_")) : false;
   }
+  //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
+  //@unit cloneablePayload requires: cells, mapEntries, maps, queues, recordTypes, sets, vectors,
+  //@ views
   function cloneablePayload(value) { return (vectors.has(value) && !mapEntries.has(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(views.get(value)?.kind); }
+  //@unit coreProtocolImplementation requires: builtinCoreImplementation, coreProtocolNames,
+  //@ directMethod, protocolMaskNames
   function coreProtocolImplementation(protocol, value) {
     const name = coreProtocolNames.get(protocol);
     const maskIndex = protocolMaskNames.lastIndexOf(name);
@@ -2771,6 +3195,17 @@
     if (name && directMethod(value, name, 0)) return true;
     return builtinCoreImplementation(protocol, value);
   }
+  //@unit builtinCoreImplementation requires: ASeq, atoms, cells, chunkBuffers, chunks,
+  //@ cloneablePayload, delays, directMethod, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
+  //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDrop,
+  //@ IEditableCollection, IEmptyableCollection, IEquiv, IFind, IFn, ifnMethods, IHash, IIndexed,
+  //@ IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, IMultiFn, INamed, INext, Inst,
+  //@ IPending, IPrintWithWriter, IReduce, IReset, IReversible, ISeq, ISeqable, ISequential, ISet,
+  //@ isIdent, ISorted, IStack, ISwap, ITransientAssociative, ITransientCollection, ITransientMap,
+  //@ ITransientSet, ITransientVector, IUUID, IVector, IVolatile, IWatchable, IWithMeta, keywords,
+  //@ lazyValues, mapEntries, mapKinds, maps, metaFunctions, multiFns, ownedProtocolValue,
+  //@ publicCollectionSlots, queues, recordTypes, reducedValues, reifyValues, sets,
+  //@ sortedComparators, subvecSources, symbols, transients, uuids, vars, vectors, views, volatiles
   function builtinCoreImplementation(protocol, value) {
     if (protocol === Inst) return value instanceof Date;
     if (protocol === IUUID) return uuids.has(value);
@@ -2834,24 +3269,31 @@
     if (protocol === IWatchable) return atoms.has(value);
     return false;
   }
+  //@unit metaProtocol requires: meta, metaSupported
   function metaProtocol(value) {
     if (!metaSupported(value)) throw new Error("No protocol method IMeta.-meta defined for this value");
     return meta(value);
   }
+  //@unit withMetaProtocol requires: withMeta, withMetaSupported
   function withMetaProtocol(value, metadata) {
     if (!withMetaSupported(value)) throw new Error("No protocol method IWithMeta.-with-meta defined for this value");
     return withMeta(value, metadata);
   }
+  //@unit preserveMeta requires: meta, metadataValues
   function preserveMeta(original, result) {
     const metadata = meta(original);
     if (metadata != null || metadataValues.has(original)) metadataValues.set(result, metadata);
     return result;
   }
+  //@unit varyMeta requires: apply, meta, withMeta
   function varyMeta(value, fn, ...args) { return withMeta(value, apply(fn, meta(value), args)); }
+  //@unit resetMeta
   // CLJS reference metadata operations assign .meta; Var uses a separate
   // immutable _meta, so reset-meta! does not change what (meta #'x) observes.
   function resetMeta(value, metadata) { value.meta = metadata; return metadata; }
+  //@unit alterMeta requires: apply, resetMeta
   function alterMeta(value, fn, ...args) { return resetMeta(value, apply(fn, value.meta, args)); }
+  //@unit Atom requires: atoms, objectEquiv
   class Atom {
     equiv(other) { return objectEquiv(this, other); }
     constructor(state, meta, validator, watches) {
@@ -2859,40 +3301,52 @@
       atoms.set(this, this);
     }
   }
+  //@unit Volatile requires: volatiles
   class Volatile {
     constructor(state) { this.state = state; volatiles.set(this, this); }
   }
+  //@unit atomFactory requires: Atom
   function atomFactory(state, meta, validator, watches) { return new Atom(state, meta, validator, watches); }
+  //@unit atom requires: Atom, get, keyword, listFromArray, seqToMap
   function atom(state, ...options) {
     const opts = seqToMap(listFromArray(options));
     // Construction does not validate the initial state in ClojureScript.
     return new Atom(state, get(opts, keyword(null, "meta")), get(opts, keyword(null, "validator")), null);
   }
+  //@unit globalHierarchy
   // Hierarchies are ordinary immutable language maps. The global reference,
   // multimethods and caches belong to this runtime factory (one phase/session).
   let globalHierarchy = null;
+  //@unit multiFns
   const multiFns = new WeakSet();
+  //@unit makeHierarchy requires: invalidArity, keyword, mapFromArray
   function makeHierarchy() {
     if (arguments.length) return invalidArity(arguments.length);
     return mapFromArray([keyword(null, "parents"), mapFromArray([]), keyword(null, "ancestors"), mapFromArray([]), keyword(null, "descendants"), mapFromArray([])]);
   }
+  //@unit getGlobalHierarchy requires: atom, globalHierarchy, invalidArity, makeHierarchy
   function getGlobalHierarchy() {
     if (arguments.length) return invalidArity(arguments.length);
     return globalHierarchy ??= atom(makeHierarchy());
   }
+  //@unit hierarchyPart requires: get, keyword
   function hierarchyPart(h, part) { return get(h, keyword(null, part)); }
+  //@unit bases requires: invalidArity, listFromArray
   function bases(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (value == null || value === false) return null;
     const base = Object.getPrototypeOf(value);
     return base == null ? null : listFromArray([base]);
   }
+  //@unit supers requires: bases, first, invalidArity, setFromArray
   function supers(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     const result = [];
     for (let pending = bases(value); pending != null; pending = bases(first(pending))) result.push(first(pending));
     return result.length ? setFromArray(result) : null;
   }
+  //@unit isa requires: contains, deref, equalPair, get, getGlobalHierarchy, hierarchyPart,
+  //@ invalidArity, supers, toArray, vectors
   function isa(h, child, parent) {
     if (arguments.length === 2) return isa(deref(getGlobalHierarchy()), h, child);
     if (arguments.length !== 3) return invalidArity(arguments.length);
@@ -2904,6 +3358,8 @@
     const cv = vectors.get(child), pv = vectors.get(parent);
     return !!(cv && pv && cv.length === pv.length && cv.every((v, i) => isa(h, v, pv[i])));
   }
+  //@unit hierarchyRel requires: bases, count, deref, get, getGlobalHierarchy, hierarchyPart,
+  //@ invalidArity, setFromArray, supers, toArray
   function hierarchyRel(part, h, tag, arity) {
     if (arity === 1) { tag = h; h = deref(getGlobalHierarchy()); }
     else if (arity !== 2) return invalidArity(arity);
@@ -2917,9 +3373,15 @@
     }
     return count(result) ? result : null;
   }
+  //@unit parents requires: hierarchyRel
   function parents(h, tag) { return hierarchyRel("parents", h, tag, arguments.length); }
+  //@unit ancestors requires: hierarchyRel
   function ancestors(h, tag) { return hierarchyRel("ancestors", h, tag, arguments.length); }
+  //@unit descendants requires: hierarchyRel
   function descendants(h, tag) { return hierarchyRel("descendants", h, tag, arguments.length); }
+  //@unit derive requires: assoc, conj, contains, deref, equalPair, get, getGlobalHierarchy,
+  //@ hierarchyPart, invalidArity, isIdent, keyword, mapFromArray, namespace, print, reset,
+  //@ setFromArray, toArray
   function derive(h, tag, parent) {
     if (arguments.length === 2) {
       parent = tag; tag = h;
@@ -2939,6 +3401,8 @@
     }
     return mapFromArray([keyword(null, "parents"), assoc(p, tag, conj(get(p, tag, setFromArray([])), parent)), keyword(null, "ancestors"), closure(a, tag, d, parent, a), keyword(null, "descendants"), closure(d, parent, a, tag, d)]);
   }
+  //@unit underive requires: assoc, contains, count, deref, derive, disj, dissoc, get,
+  //@ getGlobalHierarchy, hierarchyPart, invalidArity, makeHierarchy, nth, reset, toArray
   function underive(h, tag, parent) {
     if (arguments.length === 2) { const ref = getGlobalHierarchy(); reset(ref, underive(deref(ref), h, tag)); return null; }
     if (arguments.length !== 3) return invalidArity(arguments.length);
@@ -2949,6 +3413,7 @@
     for (const entry of toArray(updated)) for (const ancestor of toArray(nth(entry, 1))) result = derive(result, nth(entry, 0), ancestor);
     return result;
   }
+  //@unit MultiFn requires: core, multiFns, print, truth
   class MultiFn {
     constructor(name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy) {
       this.name = name; this.dispatch_fn = dispatchFn; this.default_dispatch_val = defaultDispatchVal;
@@ -2963,7 +3428,9 @@
     }
     apply(_self, args) { return this.call(null, ...Array.from(args)); }
   }
+  //@unit demandMulti requires: declarationDemand, print
   function demandMulti(mf) { if (declarationDemand) declarationDemand("multifn:" + print(mf.name, false), mf); }
+  //@unit multiState requires: atoms, declarationTransactions, reset
   function multiState(ref, value) {
     // Journal compiler declaration table/cache writes for failed bundles and
     // source-frontier rewinds; ordinary runtime mutations retain source order.
@@ -2974,28 +3441,36 @@
     }
     return reset(ref, value);
   }
+  //@unit resetMultiCache requires: deref, multiState
   function resetMultiCache(mf) {
     multiState(mf.method_cache, deref(mf.method_table));
     return multiState(mf.cached_hierarchy, deref(mf.hierarchy));
   }
+  //@unit resetMulti requires: demandMulti, mapFromArray, multiState
   function resetMulti(mf) {
     demandMulti(mf);
     multiState(mf.method_table, mapFromArray([])); multiState(mf.method_cache, mapFromArray([]));
     multiState(mf.prefer_table, mapFromArray([])); multiState(mf.cached_hierarchy, null); return mf;
   }
+  //@unit addMethod requires: assoc, declarationTransactions, demandMulti, deref, multiState,
+  //@ resetMultiCache
   function addMethod(mf, dispatch, method) {
     // Bundle installation must not demand itself or later method declarations.
     if (!declarationTransactions.length) demandMulti(mf);
     multiState(mf.method_table, assoc(deref(mf.method_table), dispatch, method)); resetMultiCache(mf); return mf;
   }
+  //@unit removeMethod requires: demandMulti, deref, dissoc, multiState, resetMultiCache
   function removeMethod(mf, dispatch) {
     demandMulti(mf); multiState(mf.method_table, dissoc(deref(mf.method_table), dispatch)); resetMultiCache(mf); return mf;
   }
+  //@unit multiPrefers requires: deref, get, truth
   function multiPrefers(mf, x, y) {
     // The pinned CLJS prefers* loops do not return recursive matches: only the
     // direct preference is effective, unlike Clojure's inherited preference.
     return truth(get(get(deref(mf.prefer_table), x), y));
   }
+  //@unit preferMethod requires: assoc, conj, demandMulti, deref, get, multiPrefers, multiState,
+  //@ print, resetMultiCache, setFromArray
   function preferMethod(mf, x, y) {
     demandMulti(mf);
     if (multiPrefers(mf, y, x)) throw new Error("Preference conflict in multimethod '" + print(mf.name, false) + "': " + print(y, false) + " is already preferred to " + print(x, false));
@@ -3003,6 +3478,8 @@
     multiState(mf.prefer_table, assoc(table, x, conj(get(table, x, setFromArray([])), y)));
     return resetMultiCache(mf);
   }
+  //@unit getMethod requires: assoc, demandMulti, deref, equalPair, get, isa, multiPrefers,
+  //@ multiState, nth, print, resetMultiCache, toArray, truth
   function getMethod(mf, dispatch) {
     demandMulti(mf);
     for (;;) {
@@ -3026,16 +3503,20 @@
     }
   }
 
+  //@unit stateProtocol requires: builtin
   function stateProtocol(value, key, args) {
     const method = builtin(value, key, args.length + 1);
     if (!method) throw new Error("No protocol method " + key + " defined for this value");
     return method.call(value, value, ...args);
   }
+  //@unit resetProtocol requires: stateProtocol
   function resetProtocol(value, state) { return stateProtocol(value, "IReset/-reset!", [state]); }
+  //@unit swapProtocol requires: invalidArity, stateProtocol
   function swapProtocol(value, fn, ...args) {
     if (arguments.length < 2 || arguments.length > 5) return invalidArity(arguments.length);
     return stateProtocol(value, "ISwap/-swap!", [fn, ...args]);
   }
+  //@unit notifyWatches requires: atoms, builtin, first, next, nth, seq, stateProtocol
   function notifyWatches(value, oldState, state) {
     const method = builtin(value, "IWatchable/-notify-watches", 3);
     if (method) return method.call(value, value, oldState, state);
@@ -3047,6 +3528,7 @@
     }
     return null;
   }
+  //@unit addWatchProtocol requires: assoc, atoms, builtin, stateProtocol
   function addWatchProtocol(value, key, fn) {
     const method = builtin(value, "IWatchable/-add-watch", 3);
     if (method) return method.call(value, value, key, fn);
@@ -3054,14 +3536,18 @@
     value.watches = assoc(value.watches, key, fn);
     return value;
   }
+  //@unit removeWatchProtocol requires: atoms, builtin, dissoc, stateProtocol
   function removeWatchProtocol(value, key) {
     const method = builtin(value, "IWatchable/-remove-watch", 2);
     if (method) return method.call(value, value, key);
     if (!atoms.has(value)) return stateProtocol(value, "IWatchable/-remove-watch", [key]);
     return value.watches = dissoc(value.watches, key);
   }
+  //@unit addWatch requires: addWatchProtocol
   function addWatch(value, key, fn) { addWatchProtocol(value, key, fn); return value; }
+  //@unit removeWatch requires: removeWatchProtocol
   function removeWatch(value, key) { removeWatchProtocol(value, key); return value; }
+  //@unit resetAtom requires: notifyWatches, truth, vector
   function resetAtom(value, state, pair) {
     const validator = value.validator;
     if (validator != null && !truth(validator.call(null, state))) throw new Error("Validator rejected reference state");
@@ -3071,8 +3557,12 @@
     if (value.watches != null) notifyWatches(value, oldState, state);
     return pair ? vector(oldState, state) : state;
   }
+  //@unit reset requires: atoms, resetAtom, resetProtocol
   function reset(value, state) { return atoms.has(value) ? resetAtom(value, state, false) : resetProtocol(value, state); }
+  //@unit resetVals requires: atoms, deref, resetAtom, resetProtocol, vector
   function resetVals(value, state) { return atoms.has(value) ? resetAtom(value, state, true) : vector(deref(value), resetProtocol(value, state)); }
+  //@unit swapState requires: apply, atoms, deref, first, next, resetAtom, rest, stateProtocol,
+  //@ toArray, vector
   function swapState(value, fn, args, pair, variadic = false) {
     if (atoms.has(value)) {
       const state = variadic ? apply(fn, value.state, first(args), first(next(args)), rest(next(args))) : fn.call(null, value.state, ...toArray(args));
@@ -3083,41 +3573,54 @@
     const result = stateProtocol(value, "ISwap/-swap!", inputs);
     return pair ? vector(oldState, result) : result;
   }
+  //@unit swap requires: cons, fnRest, swapState
   function swap(value, fn, ...args) {
     if (arguments.length < 2) return swapState(value, fn, cons(undefined, cons(undefined, null)), false, true);
     return swapState(value, fn, fnRest(args, 0), false, args.length > 2);
   }
+  //@unit swapVals requires: cons, fnRest, swapState
   function swapVals(value, fn, ...args) {
     if (arguments.length < 2) return swapState(value, fn, cons(undefined, cons(undefined, null)), true, true);
     return swapState(value, fn, fnRest(args, 0), true, args.length > 2);
   }
+  //@unit compareAndSet requires: deref, equalPair, reset
   function compareAndSet(value, oldState, state) {
     // Both pinned CLJS runtimes use = here, including equal distinct collections.
     if (!equalPair(deref(value), oldState)) return false;
     reset(value, state);
     return true;
   }
+  //@unit setValidator requires: deref, truth
   function setValidator(value, validator) {
     if (validator != null && !truth(validator.call(null, deref(value)))) throw new Error("Validator rejected reference state");
     return value.validator = validator;
   }
+  //@unit getValidator
   function getValidator(value) { return value.validator; }
+  //@unit volatile requires: Volatile
   function volatile(state) { return new Volatile(state); }
+  //@unit volatileFactory requires: Volatile
   function volatileFactory(state) { return new Volatile(state); }
+  //@unit isVolatile requires: volatiles
   function isVolatile(value) { return volatiles.has(value); }
+  //@unit vreset requires: vresetProtocol
   function vreset(value, state) { return vresetProtocol(value, state); }
+  //@unit vresetProtocol requires: builtin, stateProtocol, volatiles
   function vresetProtocol(value, state) {
     const method = builtin(value, "IVolatile/-vreset!", 2);
     if (method) return method.call(value, value, state);
     if (volatiles.has(value)) return value.state = state;
     return stateProtocol(value, "IVolatile/-vreset!", [state]);
   }
+  //@unit update requires: apply, assoc, fnRest, get
   function update(value, key, fn, ...args) {
     const old = get(value, key);
     return assoc(value, key, arguments.length >= 3 && arguments.length <= 6
       ? fn.call(null, old, ...args)
       : apply(fn, old, args[0], args[1], args[2], fnRest(args, 3)));
   }
+  //@unit updatedMap requires: constructorSlots, equalPair, keyword, makeMap, mapKinds, maps, meta,
+  //@ preserveMeta, publicCollectionSlots, recordTypes, sortedComparators
   function updatedMap(original, entries, removeRecord = false) {
     const Type = !removeRecord && recordTypes.get(original);
     if (mapKinds.get(original) === "sorted-map") {
@@ -3140,6 +3643,13 @@
     }
     return preserveMeta(original, result);
   }
+  //@unit withMeta requires: apply, builtin, canonicalVectorRoots, cells, ChunkedCons,
+  //@ ChunkedSeqValue, constructorHashes, cycleNode, field, ifnValues, IntegerRangeValue,
+  //@ iterateNode, LazySeq, lazyValues, makeIFn, mapEntries, mapKinds, maps, meta, metadataValues,
+  //@ metaFunctions, protocolImplementations, publicCollectionSlots, queues, rangeChunks,
+  //@ RangeValue, recordTypes, reifyValues, RepeatValue, seq, setKinds, sets, sortedComparators,
+  //@ subvecSources, symbols, treeRoots, treeSetMaps, typeFields, vars, vectorFromArray, vectors,
+  //@ views
   function withMeta(value, metadata) {
     if (value == null) return null;
     const method = typeof value === "function" ? null : builtin(value, "IWithMeta/-with-meta", 2);
@@ -3201,11 +3711,14 @@
     metadataValues.set(result, metadata);
     return result;
   }
+  //@unit uuidPrototype requires: uuids
   const uuidPrototype = Object.freeze({toString() { return uuids.get(this); }});
+  //@unit uuid requires: uuidValue
   function uuid(text) {
     if (typeof text !== "string") throw new Error("UUID expects a string");
     return uuidValue(text.toLowerCase(), null);
   }
+  //@unit uuidValue requires: builtinValue, uuidHashes, uuidPrototype, uuids
   function uuidValue(text, cachedHash) {
     const value = builtinValue("UUID", uuidPrototype);
     uuids.set(value, text);
@@ -3214,12 +3727,18 @@
       __hash: {get() { return uuidHashes.has(this) ? uuidHashes.get(this) : cachedHash; }, set(hash) { uuidHashes.set(this, hash); }}});
     return value;
   }
+  //@unit tapListeners
   // Explicit embedding hooks. Scheduling is optional; the default dispatches
   // synchronously, with a finite drain budget even when taps enqueue more taps.
   const tapListeners = new Set(), tapQueue = [];
+  //@unit tapDraining
   let tapDraining = false, tapDelivered = 0, tapPending = 0;
+  //@unit tapLimit
   let tapLimit = 1024;
+  //@unit defaultTapSchedule
   function defaultTapSchedule(task) { task.call(null); return true; }
+  //@unit configureHostHooks requires: core, defaultHostClock, defaultHostRandom,
+  //@ defaultTapSchedule, tapLimit
   function configureHostHooks(options = {}) {
     for (const key of ["clock", "random", "tapSchedule"]) {
       if (Object.hasOwn(options, key) && options[key] !== null && typeof options[key] !== "function") throw new TypeError(key + " hook must be a function or null");
@@ -3231,46 +3750,60 @@
     if (Object.hasOwn(options, "maxPendingTaps")) tapLimit = options.maxPendingTaps;
     return null;
   }
+  //@unit defaultHostClock
   function defaultHostClock() {
     return typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
   }
+  //@unit defaultHostRandom
   function defaultHostRandom() { return Math.random(); }
+  //@unit systemTime requires: core, invalidArity
   function systemTime() {
     if (arguments.length) return invalidArity(arguments.length);
     const value = core.hostClock.call(null);
     if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("clock hook must return a finite number");
     return value;
   }
+  //@unit hostRandom requires: core
   function hostRandom() {
     const value = core.hostRandom.call(null);
     if (typeof value !== "number" || !(value >= 0 && value < 1)) throw new TypeError("random hook must return a number in [0, 1)");
     return value;
   }
+  //@unit hostRand requires: hostRandom, invalidArity
   function hostRand(n) {
     if (arguments.length > 1) return invalidArity(arguments.length);
     return arguments.length ? hostRandom() * n : hostRandom();
   }
+  //@unit hostRandInt requires: hostRandom, invalidArity
   function hostRandInt(n) { if (arguments.length !== 1) return invalidArity(arguments.length); return Math.floor(hostRandom() * n); }
+  //@unit hostRandNth requires: count, hostRandInt, invalidArity, nth
   function hostRandNth(coll) { if (arguments.length !== 1) return invalidArity(arguments.length); return nth(coll, hostRandInt(count(coll))); }
+  //@unit hostShuffle requires: hostRandInt, invalidArity, toArray, vectorFromArray
   function hostShuffle(coll) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     const items = toArray(coll);
     for (let i = items.length - 1; i > 0; i--) { const j = hostRandInt(i + 1); [items[i], items[j]] = [items[j], items[i]]; }
     return vectorFromArray(items);
   }
+  //@unit hostRandomUuid requires: hostRandInt, invalidArity, uuid
   function hostRandomUuid() {
     if (arguments.length) return invalidArity(arguments.length);
     return uuid("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, digit => { const value = hostRandInt(16); return (digit === "x" ? value : (value & 3) | 8).toString(16); }));
   }
+  //@unit addTap requires: invalidArity, tapListeners
   function addTap(listener) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (listener == null || typeof listener.call !== "function") throw new TypeError("add-tap requires a callable value");
     tapListeners.add(listener); return null;
   }
+  //@unit removeTap requires: invalidArity, tapListeners
   function removeTap(listener) { if (arguments.length !== 1) return invalidArity(arguments.length); tapListeners.delete(listener); return null; }
+  //@unit deliverTap
   function deliverTap(listeners, value) {
     for (const listener of listeners) { try { listener.call(null, value); } catch (_) { /* One listener cannot suppress the others. */ } }
   }
+  //@unit tapGreater requires: core, defaultTapSchedule, drainTaps, invalidArity, tapDelivered,
+  //@ tapDraining, tapLimit, tapPending, tapQueue, truth
   function tapGreater(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (tapPending + tapQueue.length + (tapDraining ? tapDelivered : 0) >= tapLimit) return false;
@@ -3292,6 +3825,8 @@
     }
     tapQueue.push(value); drainTaps(); return true;
   }
+  //@unit drainTaps requires: deliverTap, tapDelivered, tapDraining, tapLimit, tapListeners,
+  //@ tapQueue
   function drainTaps() {
     if (tapDraining) return;
     tapDraining = true; tapDelivered = 0;
@@ -3302,6 +3837,7 @@
       }
     } finally { tapQueue.length = 0; tapDraining = false; tapDelivered = 0; }
   }
+  //@unit makeVar requires: apply, makeIFn, metadataValues, varPrototype, vars
   function makeVar(get, symbol, metadata = null) {
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return get.call(null).call(null, ...args); };
@@ -3312,6 +3848,8 @@
     metadataValues.set(value, metadata);
     return value;
   }
+  //@unit definitionVar requires: assoc, deferredVarMetadata, into, keyword, listFromArray, makeVar,
+  //@ mapFromArray, name, namespace, symbolCore, truth
   function definitionVar(get, symbol, metadata = null, deferredMetadata = null) {
     const root = deferredMetadata ? null : get.call(null);
     const base = mapFromArray([keyword(null, "ns"), symbolCore(namespace(symbol)), keyword(null, "name"), symbolCore(name(symbol)),
@@ -3320,13 +3858,16 @@
     if (deferredMetadata) deferredVarMetadata.set(value, deferredMetadata);
     return value;
   }
+  //@unit Var requires: makeVar, metadataValues
   function Var(get, symbol, metadata) { const value = makeVar(get, symbol, metadata); metadataValues.set(value, metadata); return value; }
+  //@unit test requires: get, keyword, meta, truth, vars
   function test(value) {
     const fn = vars.has(value) ? get(meta(value), keyword(null, "test"))
       : value == null ? null : value.cljs$lang$test;
     if (truth(fn)) { fn.call(null); return keyword(null, "ok"); }
     return keyword(null, "no-test");
   }
+  //@unit varPrototype requires: ifnApply, ifnPrototype, meta, Var, vars
   const varPrototype = Object.freeze({
     constructor: Var,
     isMacro() { return vars.get(this).get.call(null).cljs$lang$macro; },
@@ -3337,9 +3878,13 @@
     call(_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); },
     toString() { return "#'" + vars.get(this).symbol; }
   });
+  //@unit Var.prototype effect: Var requires: Var, varPrototype
   Var.prototype = varPrototype;
+  //@unit namespaces
   // Namespace identities are session-owned, with source registration from emitted units.
   const namespaces = new Map();
+  //@unit Namespace effect requires: equalPair, hash, installMethods, keyword, makeVar,
+  //@ mapFromArray, mungeStr, str, symbol
   function Namespace(obj, name) {
     if (!(this instanceof Namespace)) return new Namespace(obj, name);
     this.obj = obj; this.name = name;
@@ -3354,6 +3899,7 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
+  //@unit createNs requires: invalidArity, Namespace, namespaces, str, symbols
   function createNs(name, obj = null) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     if (!symbols.has(name)) throw new TypeError("create-ns requires a symbol");
@@ -3362,9 +3908,11 @@
     else if (obj != null) namespaces.get(key).obj = obj;
     return namespaces.get(key);
   }
+  //@unit readerCoreNames
   // Pinned source names from core_public_bindings.tsv and core_var_metadata.tsv.
   // Qualification describes source identity and does not demand a core value.
   const readerCoreNames = new Set("* *1 *2 *3 *assert* *clojurescript-version* *command-line-args* *e *eval* *exec-tap-fn* *flush-on-newline* *loaded-libs* *main-cli-fn* *ns* *out* *print-dup* *print-err-fn* *print-fn* *print-fn-bodies* *print-length* *print-level* *print-meta* *print-namespace-maps* *print-newline* *print-readably* *unchecked-arrays* *unchecked-if* *warn-on-infer* + - --destructure-map -> ->> ->ArrayChunk ->ArrayIter ->Atom ->ChunkBuffer ->ChunkedCons ->ChunkedSeq ->Cons ->Cycle ->Delay ->ES6EntriesIterator ->ES6Iterator ->ES6IteratorSeq ->ES6SetEntriesIterator ->Eduction ->Empty ->EmptyList ->IndexedSeq ->IndexedSeqIterator ->IntegerRange ->IntegerRangeChunk ->Iterate ->KeySeq ->Keyword ->LazySeq ->List ->Many ->MapEntry ->MetaFn ->MultiFn ->MultiIterator ->Namespace ->PersistentArrayMap ->PersistentArrayMapIterator ->PersistentArrayMapSeq ->PersistentHashMap ->PersistentHashSet ->PersistentQueue ->PersistentQueueIter ->PersistentQueueSeq ->PersistentTreeMap ->PersistentTreeMapSeq ->PersistentTreeSet ->PersistentVector ->RSeq ->Range ->RangeIterator ->RangedIterator ->RecordIter ->Reduced ->Repeat ->SeqIter ->Single ->StringBufferWriter ->StringIter ->Subvec ->Symbol ->TaggedLiteral ->TransformerIterator ->UUID ->ValSeq ->Var ->Volatile -add-method -add-watch -as-transient -assoc -assoc! -assoc-n -assoc-n! -chunked-first -chunked-next -chunked-rest -clj->js -clone -comparator -compare -conj -conj! -contains-key? -count -default-dispatch-val -deref -deref-with-timeout -disjoin -disjoin! -dispatch-fn -dissoc -dissoc! -drop -drop-first -empty -entry-key -equiv -find -first -flush -get-method -hash -invoke -iterator -js->clj -key -key->js -kv-reduce -lookup -meta -methods -name -namespace -next -notify-watches -nth -peek -persistent! -pop -pop! -pr-writer -prefer-method -prefers -realized? -reduce -remove-method -remove-watch -reset -reset! -rest -rseq -seq -sorted-seq -sorted-seq-from -swap! -val -vreset! -with-meta -write .. / < <= = == > >= APersistentVector ASeq ArrayChunk ArrayIter Atom CHAR_MAP ChunkBuffer ChunkedCons ChunkedSeq Cons Cycle DEMUNGE_MAP DEMUNGE_PATTERN Delay ES6EntriesIterator ES6Iterator ES6IteratorSeq ES6SetEntriesIterator Eduction Empty EmptyList ExceptionInfo Fn IAssociative IAtom IChunk IChunkedNext IChunkedSeq ICloneable ICollection IComparable ICounted IDeref IDerefWithTimeout IDrop IEditableCollection IEmptyableCollection IEncodeClojure IEncodeJS IEquiv IFind IFn IHash IIndexed IIterable IKVReduce IList ILookup IMap IMapEntry IMeta IMultiFn INIT INamed INext IPending IPrintWithWriter IRecord IReduce IReset IReversible ISeq ISeqable ISequential ISet ISorted IStack ISwap ITransientAssociative ITransientCollection ITransientMap ITransientSet ITransientVector IUUID IVector IVolatile IWatchable IWithMeta IWriter IndexedSeq IndexedSeqIterator Inst IntegerRange IntegerRangeChunk Iterate KeySeq Keyword LazySeq List LongImpl MODULE_INFOS MODULE_URIS Many MapEntry MetaFn MultiFn MultiIterator NS_CACHE NaN? Namespace NodeSeq PROTOCOL_SENTINEL PersistentArrayMap PersistentArrayMapIterator PersistentArrayMapSeq PersistentHashMap PersistentHashSet PersistentQueue PersistentQueueIter PersistentQueueSeq PersistentTreeMap PersistentTreeMapSeq PersistentTreeSet PersistentVector RSeq Range RangeIterator RangedIterator RecordIter Reduced Repeat START SeqIter Single StringBufferWriter StringIter Subvec Symbol TaggedLiteral Throwable->map TransformerIterator UUID ValSeq Var Volatile abs aclone add-tap add-to-string-hash-cache add-watch aget alength alter-meta! amap ancestors and any? apply apply-to areduce array array-chunk array-index-of array-iter array-list array-map array-seq array? as-> aset assert assoc assoc! assoc-in associative? atom await bases binding bit-and bit-and-not bit-clear bit-count bit-flip bit-not bit-or bit-set bit-shift-left bit-shift-right bit-shift-right-zero-fill bit-test bit-xor boolean boolean? booleans bounded-count butlast byte bytes case cat char char? chars checked-aget checked-aget' checked-aset checked-aset' chunk chunk-append chunk-buffer chunk-cons chunk-first chunk-next chunk-rest chunked-seq chunked-seq? clj->js clone cloneable? coercive-= coercive-boolean coercive-not coercive-not= coll? comment comp comparator compare compare-and-set! complement completing concat cond cond-> cond->> condp conj conj! cons constantly contains? copy-arguments count counted? create-ns cycle dec declare dedupe default-dispatch-val defmacro defmethod defmulti defn defn- defonce defprotocol defrecord deftype delay delay? demunge deref derive descendants destructure disj disj! dispatch-fn dissoc dissoc! distinct distinct? divide doall dorun doseq dotimes doto double double-array double? doubles drop drop-last drop-while dt->et eduction empty empty? enable-console-print! ensure-reduced equiv-map es6-entries-iterator es6-iterable es6-iterator es6-iterator-seq es6-set-entries-iterator eval even? every-pred every? ex-cause ex-data ex-info ex-message exists? extend-protocol extend-type false? ffirst filter filterv find find-macros-ns find-ns find-ns-obj first flatten float float? floats flush fn fn? fnext fnil for force frequencies gen-apply-to gen-apply-to-simple gensym gensym_counter get get-global-hierarchy get-in get-method get-validator goog-define group-by halt-when hash hash-combine hash-double hash-keyword hash-long hash-map hash-ordered-coll hash-set hash-string hash-string* hash-unordered-coll ident? identical? identity if-let if-not if-some ifind? ifn? implements? import imul inc indexed? infinite? inst-ms inst-ms* inst? instance? int int-array int-rotate-left int? integer? interleave interpose into into-array ints is_proto_ isa? iter iterable? iterate iteration js->clj js-arguments js-comment js-debugger js-delete js-fn? js-in js-inline-comment js-invoke js-iterable? js-keys js-mod js-obj js-reserved js-str js-symbol? juxt keep keep-indexed key key->js key-test keys keyword keyword-identical? keyword? last lazy-cat lazy-seq let letfn list list* list? load-file load-file* locking long long-array longs loop m3-C1 m3-C2 m3-fmix m3-hash-int m3-hash-unencoded-chars m3-mix-H1 m3-mix-K1 m3-seed macroexpand macroexpand-1 make-array make-hierarchy map map-entry? map-indexed map? mapcat mapv max max-key memfn memoize merge merge-with meta methods min min-key missing-protocol mix-collection-hash mk-bound-fn mod munge munge-str name namespace nat-int? native-satisfies? neg-int? neg? newline next nfirst nil-iter nil? nnext not not-any? not-empty not-every? not-native not= ns-imports ns-interns ns-interns* ns-name ns-publics ns-unmap nth nthnext nthrest number? object-array object? odd? or parents parse-boolean parse-double parse-long parse-uuid partial partition partition-all partition-by partitionv partitionv-all peek persistent! persistent-array-map-seq pop pop! pos-int? pos? pr pr-seq-writer pr-sequential-writer pr-str pr-str* pr-str-with-opts prefer-method prefers prim-seq print print-map print-meta? print-prefix-map print-str println println-str prn prn-str prn-str-with-opts qualified-ident? qualified-keyword? qualified-symbol? quot rand rand-int rand-nth random-sample random-uuid range ranged-iterator re-find re-matches re-pattern re-seq realized? record? reduce reduce-kv reduceable? reduced reduced? reductions refer-clojure refer-global regexp? reify rem remove remove-all-methods remove-method remove-tap remove-watch repeat repeatedly replace replicate req! require require-global require-macros reset! reset-meta! reset-vals! resolve rest reverse reversible? rseq rsubseq run! satisfies? second select-keys selector seq seq-iter seq-to-map-for-destructuring seq? seqable? sequence sequential? set set-from-indexed-seq set-lite-check set-print-err-fn! set-print-fn! set-validator! set? short shorts shuffle simple-benchmark simple-ident? simple-keyword? simple-symbol? some some-> some->> some-fn some-vals some? sort sort-by sorted-map sorted-map-by sorted-set sorted-set-by sorted? special-symbol? specify specify! split-at split-with splitv-at spread str str_ string-hash-cache string-hash-cache-count string-iter string-print string? subs subseq subvec supers swap! swap-vals! symbol symbol-identical? symbol? system-time tagged-literal tagged-literal? take take-last take-nth take-while tap> test this-as time to-array to-array-2d trampoline transduce transformer-iterator transient tree-seq true? truth_ type type->str unchecked-add unchecked-add-int unchecked-byte unchecked-char unchecked-dec unchecked-dec-int unchecked-divide-int unchecked-double unchecked-float unchecked-get unchecked-inc unchecked-inc-int unchecked-int unchecked-long unchecked-max unchecked-min unchecked-multiply unchecked-multiply-int unchecked-negate unchecked-negate-int unchecked-remainder-int unchecked-set unchecked-short unchecked-subtract unchecked-subtract-int undefined? underive unreduced unsafe-bit-and unsafe-cast unsigned-bit-shift-right update update-in update-keys update-vals uri? use use-macros uuid uuid? val vals var? vary-meta vec vec-lite vector vector-lite vector? volatile! volatile? vreset! vswap! when when-first when-let when-not when-some while with-meta with-out-str with-redefs write-all zero? zipmap".split(" "));
+  //@unit registerReaderNamespace requires: createNs, symbol
   function registerReaderNamespace(name, context) {
     const ns = createNs(symbol(null, name));
     ns.readerContext = {aliases: new Map(context.aliases ?? []),
@@ -3372,10 +3920,12 @@
       excludes: new Set(context.excludes ?? []), bindings: new Set(context.bindings ?? [])};
     return ns;
   }
+  //@unit macroReaderFunction requires: withMacroReaderContext
   function macroReaderFunction(fn) {
     const wrapped = function (...args) { return withMacroReaderContext(fn, args); };
     return Object.assign(wrapped, fn);
   }
+  //@unit withMacroReaderContext requires: core, createNs, get, keyword, nth, str, toArray
   function withMacroReaderContext(fn, args) {
     const saved = core.currentNs, env = get(args[1], keyword(null, "ns"));
     const name = get(env, keyword(null, "name"));
@@ -3396,6 +3946,7 @@
     try { return Reflect.apply(fn, null, args); }
     finally { ns.readerContext = previous; core.currentNs = saved; }
   }
+  //@unit findNs requires: invalidArity, Namespace, namespaces, str, symbols
   function findNs(name) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (name == null) return null;
@@ -3403,6 +3954,7 @@
     if (!symbols.has(name)) throw new TypeError("find-ns requires a symbol or Namespace");
     return namespaces.get(str(name)) ?? null;
   }
+  //@unit nsName requires: invalidArity, symbols
   function nsName(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     // Pinned ns-name reads .name: metadata symbols expose their string name,
@@ -3410,58 +3962,72 @@
     if (symbols.has(value)) return symbols.get(value).name;
     return value.name;
   }
+  //@unit theNs requires: findNs, invalidArity, str
   function theNs(name) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     const value = findNs(name);
     if (!value) throw new Error("No namespace: " + str(name));
     return value;
   }
+  //@unit allNs requires: invalidArity, listFromArray, namespaces
   function allNs() { if (arguments.length) return invalidArity(arguments.length); return listFromArray([...namespaces.values()]); }
+  //@unit compilerMacroVar requires: into, invalidArity, keyword, makeVar, mapFromArray, name,
+  //@ namespace, str, symbolCore
   function compilerMacroVar(sym, metadata) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
     const base = mapFromArray([keyword(null, "ns"), symbolCore(namespace(sym)), keyword(null, "name"), symbolCore(name(sym)), keyword(null, "macro"), true]);
     return makeVar(() => { throw new Error("compile-time macro cannot be consumed as a runtime value: " + str(sym)); }, sym, into(base, metadata), true);
   }
+  //@unit rePattern
   function rePattern(pattern) {
     if (pattern instanceof RegExp) return pattern;
     if (typeof pattern !== "string") throw new TypeError("regex pattern requires a string");
     const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
     return new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : "");
   }
+  //@unit reMatch requires: vectorFromArray
   function reMatch(re, text, full) {
     if (typeof text !== "string") throw new TypeError("regex matching requires a string");
     const result = re.exec(text);
     if (result === null || (full && result[0] !== text)) return null;
     return result.length === 1 ? result[0] : vectorFromArray(Array.from(result));
   }
+  //@unit deferredValue requires: truth
   function deferredValue(state, lazy = false) {
     // Assignment occurs only after success; failures leave the thunk installed.
     // Reentrant calls are ordinary calls, matching CLJS's observable behavior.
     if (lazy ? state.thunk != null : truth(state.thunk)) { state.value = state.thunk.call(null); state.thunk = null; }
     return state.value;
   }
+  //@unit Delay requires: builtinValue, delays
   function Delay(thunk, result) {
     const value = builtinValue("Delay", Object.prototype);
     delays.set(value, {thunk, value: result});
     return value;
   }
+  //@unit LazySeq requires: builtinValue, lazyValues, metadataValues, sequencePrototype
   function LazySeq(metadata, thunk, result, cachedHash) {
     const value = builtinValue("LazySeq", sequencePrototype);
     lazyValues.set(value, {thunk, value: result, hash: cachedHash});
     metadataValues.set(value, metadata);
     return value;
   }
+  //@unit lazySequence requires: LazySeq
   function lazySequence(thunk) { return new LazySeq(null, thunk, null, null); }
+  //@unit force requires: delays, deref
   function force(value) { return delays.has(value) ? deref(value) : value; }
+  //@unit nthrest requires: rest, seq
   function nthrest(value, n) {
     while (n > 0) { const current = seq(value); if (current == null) break; value = rest(current); n--; }
     return value;
   }
+  //@unit nthnext requires: next, seq
   function nthnext(value, n) {
     value = seq(value);
     while (n > 0 && value != null) { value = next(value); n--; }
     return value;
   }
+  //@unit reSeq requires: cells, lazySequence, sequencePrototype, vectorFromArray
   function reSeq(re, text) {
     if (typeof text !== "string") throw new TypeError("regex matching requires a string");
     const match = re.exec(text);
@@ -3476,16 +4042,20 @@
     cells.set(result, Object.freeze({kind: "cons", head: value, tail}));
     return result;
   }
+  //@unit toArray requires: first, next, seq
   function toArray(value) {
     const result = [];
     for (let current = seq(value); current !== null; current = next(current)) result.push(first(current));
     return result;
   }
+  //@unit vec requires: core, into, predicates, vector, withMeta
   function vec(value) {
     if (predicates.isMapEntry(value)) return vector(core.keyProtocol(value), core.valProtocol(value));
     if (predicates.isVector(value)) return withMeta(value, null);
     return into(vector(), value);
   }
+  //@unit concatTwo requires: chunkCons, chunkFirst, chunkRest, cons, first, IChunkedSeq,
+  //@ implementsProtocol, lazySequence, rest, seq
   function concatTwo(x, y) {
     return lazySequence(() => {
       const s = seq(x);
@@ -3493,6 +4063,8 @@
       return implementsProtocol(IChunkedSeq, s) ? chunkCons(chunkFirst(s), concatTwo(chunkRest(s), y)) : cons(first(s), concatTwo(rest(s), y));
     });
   }
+  //@unit concatMany requires: chunkCons, chunkFirst, chunkRest, cons, first, IChunkedSeq,
+  //@ implementsProtocol, lazySequence, next, rest, seq
   function concatMany(current, remaining) {
     return lazySequence(() => {
       const s = seq(current);
@@ -3500,13 +4072,17 @@
       return remaining == null ? null : concatMany(first(remaining), next(remaining));
     });
   }
+  //@unit treeSeq requires: cons, lazySequence, mapcat, truth
   function treeSeq(branch, children, root) {
     const walk = node => lazySequence(() => cons(node,
       truth(branch.call(null, node)) ? mapcat(walk, children.call(null, node)) : null));
     return walk(root);
   }
+  //@unit flatten requires: filter, predicates, rest, seq, treeSeq
   function flatten(value) { return filter(x => !predicates.isSequential(x), rest(treeSeq(predicates.isSequential, seq, value))); }
+  //@unit concat requires: callable, concatMany, concatTwo, lazySequence
   const concat = callable(2, {0: () => lazySequence(() => null), 1: x => lazySequence(() => x), 2: concatTwo}, (x, y, more) => concatMany(concatTwo(x, y), more));
+  //@unit es6Iterator requires: first, next, seq
   function es6Iterator(value) {
     let current = seq(value);
     return {next() {
@@ -3516,6 +4092,7 @@
       return {value, done: false};
     }};
   }
+  //@unit es6EntriesIterator requires: es6Iterator, nth
   function es6EntriesIterator(value, setEntries = false) {
     const iterator = es6Iterator(value);
     return {next() {
@@ -3524,6 +4101,8 @@
       return item;
     }};
   }
+  //@unit sequenceIterator requires: core, IIterable, iteratorInit, predicates, satisfies, SeqIter,
+  //@ str
   function sequenceIterator(value) {
     if (satisfies(IIterable, value)) return core.iteratorProtocol(value);
     if (value == null) return {hasNext() { return false; }, next() { return new Error("No such element"); }, remove() { return new Error("Unsupported operation"); }};
@@ -3534,6 +4113,7 @@
     if (predicates.isSeqable(value)) return new SeqIter(iteratorInit, value);
     throw new Error("Cannot create iterator from " + str(value));
   }
+  //@unit transformedIterator requires: invalidArity, isReduced
   function transformedIterator(xform, sources) {
     let buffer = [], offset = 0, ready = false, item, completed = false;
     const sink = function (acc, value) {
@@ -3572,6 +4152,7 @@
       }
     };
   }
+  //@unit chunkIteratorSequence requires: arrayChunk, chunkCons, lazySequence
   function chunkIteratorSequence(iter) {
     return lazySequence(() => {
       if (!iter.hasNext()) return null;
@@ -3582,10 +4163,13 @@
       return chunkCons(arrayChunk(values), chunkIteratorSequence(iter));
     });
   }
+  //@unit sequence requires: callable, chunkIteratorSequence, emptyList, predicates, seq,
+  //@ sequenceIterator, toArray, transformedIterator
   const sequence = callable(2, {
     1: value => predicates.isSeq(value) ? value : seq(value) ?? emptyList,
     2: (xform, value) => chunkIteratorSequence(transformedIterator(xform, [sequenceIterator(value)]))
   }, (xform, value, more) => chunkIteratorSequence(transformedIterator(xform, [value, ...toArray(more)].map(sequenceIterator))));
+  //@unit Eduction requires: builtinValue, eductions
   function Eduction(xform, coll) {
     // Retain only the view's inputs; each protocol call owns its traversal state.
     // This is not a collection payload with structural equality or metadata.
@@ -3594,13 +4178,16 @@
     Object.defineProperties(value, {xform: {value: xform}, coll: {value: coll}});
     return value;
   }
+  //@unit eduction requires: callable, comp, Eduction, toArray
   const eduction = callable(0, {}, args => {
     const values = toArray(args);
     return new Eduction(comp(...values.slice(0, -1)), values.length ? values.at(-1) : null);
   });
+  //@unit fnRest requires: view
   function fnRest(args, start) {
     return args.length > start ? view(Object.freeze(Array.prototype.slice.call(args, start)), 0, true) : null;
   }
+  //@unit fnApplyTo requires: first, next, rest, seq
   function fnApplyTo(delegate, fixed, args) {
     const prefix = [];
     // The final rest preserves sequence identity and laziness. For a positive
@@ -3611,6 +4198,7 @@
     }
     return delegate.call(null, ...prefix, fixed === 0 ? seq(args) : args);
   }
+  //@unit ifnInvokeEntry requires: fnApplyTo
   // This is the callable object ABI used by IFn and metadata wrappers.
   // The last method receives twenty values followed by a sequence tail.
   function ifnInvokeEntry(method) {
@@ -3623,6 +4211,7 @@
     }
     return entry;
   }
+  //@unit makeIFn requires: ifnInvokeEntry, ifnPrototype, ifnValues, reifyValues
   function makeIFn(methods, invokeMethods = methods) {
     const value = Object.create(ifnPrototype);
     ifnValues.set(value, methods);
@@ -3632,16 +4221,23 @@
     reifyValues.add(value);
     return value;
   }
+  //@unit protocolKeys
   const protocolKeys = new WeakMap(), protocolImplementations = new WeakMap();
+  //@unit protocolNames
   const protocolNames = new WeakMap(), protocolValues = new Map(), protocolFunctions = new Map(), protocolVariables = new Map(), protocolGetters = new Map();
+  //@unit nativeMethods
   const nativeMethods = new Map(), coreDispatchers = new Map();
+  //@unit protocol requires: protocolNames, protocolValues, setDeclaration
   function protocol(name) {
     const value = function () {};
     protocolNames.set(value, name); setDeclaration(protocolValues, name, value);
     return value;
   }
+  //@unit nativeType
   function nativeType(value) { return value == null ? "null" : Array.isArray(value) ? "array" : typeof value; }
+  //@unit protocolSentinel
   const protocolSentinel = Object.freeze({}), protocolSlots = new Map();
+  //@unit protocolSlot requires: mungeMember, protocolSlots
   function protocolSlot(key, arity) {
     let slots = protocolSlots.get(key);
     if (slots?.has(arity)) return slots.get(arity);
@@ -3657,14 +4253,20 @@
     const slot = arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity;
     slots.set(arity, slot); return slot;
   }
+  //@unit directMethod requires: demandProtocol, protocolSentinel, protocolSlot
   function directMethod(value, key, arity) {
     demandProtocol(arity === 0 ? key : key.slice(0, key.lastIndexOf("/")), value);
     if (value == null) return undefined;
     const method = value[protocolSlot(key, arity)];
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
+  //@unit protocolStores requires: atoms, cells, delays, keywords, lazyValues, maps, metaFunctions,
+  //@ multiFns, queues, reducedValues, sets, symbols, transients, vars, vectors, views, volatiles
   const protocolStores = [multiFns, transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  //@unit ownedProtocolValue requires: protocolStores
   function ownedProtocolValue(value) { return protocolStores.some(store => store.has(value)); }
+  //@unit builtin requires: builtinCoreImplementation, coreDispatchers, coreProtocolsByName,
+  //@ directMethod, nativeMethods, nativeType
   function builtin(value, key, arity) {
     const method = directMethod(value, key, arity);
     if (method != null) return method;
@@ -3678,6 +4280,8 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? nativeMethods.get(key)?.get(nativeType(value))?.get(arity) ?? nativeMethods.get(key)?.get("_")?.get(arity);
   }
+  //@unit publicMethod requires: builtin, builtinCoreImplementation, coreProtocolsByName, IMeta,
+  //@ implementsProtocol, satisfies
   // Public consumers test protocol membership before selecting an arity. A
   // declared but omitted method must not silently fall back to another API.
   function publicMethod(value, key, arity, fast = false, directOnly = false) {
@@ -3692,6 +4296,9 @@
       throw new Error("No protocol method " + key + " defined for this value");
     return undefined;
   }
+  //@unit protocolMethod requires: directMethod, fnRest, get, invalidArity, meta, nativeType,
+  //@ protocolFunctions, protocolGetters, protocolKeys, protocolVariables, setDeclaration,
+  //@ symbolCore, truth
   function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null) {
     const dispatch = function (receiver, ...args) {
       const fixed = arities?.filter(n => n !== (variadic == null ? -1 : variadic + 2));
@@ -3721,6 +4328,9 @@
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
     return dispatch;
   }
+  //@unit extendType requires: coreDispatchers, coreProtocolsByName, installMethods, invalidArity,
+  //@ nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolSentinel,
+  //@ protocolValues, setDeclaration
   function extendType(target, methods) {
     let result = null;
     if (typeof target === "string") {
@@ -3754,10 +4364,14 @@
     }
     return result;
   }
+  //@unit extendInstance requires: installMethods, protocolSentinel
   function extendInstance(target, methods, returnTarget) {
     installMethods(target, methods);
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
   }
+  //@unit installMethods requires: declarationTransactions, ifnInvokeEntry, ifnPrototype, ifnValues,
+  //@ ifnVariadics, invalidArity, mungeMember, patchDeclaration, protocolImplementations,
+  //@ protocolKeys, protocolSentinel, protocolSlot
   function installMethods(value, methods) {
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
     const oldImplementations = protocolImplementations.get(value), oldCalls = ifnValues.get(value);
@@ -3809,8 +4423,11 @@
     protocolImplementations.set(value, implementations);
     return value;
   }
+  //@unit makeReify requires: installMethods, reifyValues
   function makeReify(methods) { const value = installMethods({}, methods); reifyValues.add(value); return value; }
+  //@unit reifySites
   const reifySites = new Map();
+  //@unit reify requires: field, makeType, metadataValues, reifySites, reifyValues
   function reify(site, fields, values, methods, metadata = null) {
     let Type = reifySites.get(site);
     if (!Type) {
@@ -3830,30 +4447,47 @@
     reifyValues.add(value);
     return value;
   }
+  //@unit field requires: mungeMember
   function field(value, name) { return value[mungeMember(name)]; }
+  //@unit memberMunging
   const memberMunging = {"-":"_",":":"_COLON_","+":"_PLUS_",">":"_GT_","<":"_LT_","=":"_EQ_","~":"_TILDE_","!":"_BANG_","@":"_CIRCA_","#":"_SHARP_","'":"_SINGLEQUOTE_","\"":"_DOUBLEQUOTE_","%":"_PERCENT_","^":"_CARET_","&":"_AMPERSAND_","*":"_STAR_","|":"_BAR_","{":"_LBRACE_","}":"_RBRACE_","[":"_LBRACK_","]":"_RBRACK_","/":"$","\\":"_BSLASH_","?":"_QMARK_"};
+  //@unit mungeMember requires: memberMunging
   function mungeMember(name) { return Array.from(name, c => memberMunging[c] ?? c).join(""); }
+  //@unit mungeCharacters effect requires: memberMunging
   const mungeCharacters = {...memberMunging, "/": "_SLASH_"};
   // These two upstream CHAR_MAP entries are two-character strings, while the
   // public function iterates one UTF-16 character at a time.
   delete mungeCharacters['"']; delete mungeCharacters["\\"];
   mungeCharacters['\\"'] = "_DOUBLEQUOTE_"; mungeCharacters["\\\\"] = "_BSLASH_";
+  //@unit demungeCharacters requires: mungeCharacters
   const demungeCharacters = Object.fromEntries(Object.entries(mungeCharacters).map(([a, b]) => [b, a]));
+  //@unit demungePattern requires: demungeCharacters
   const demungePattern = new RegExp(Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$", "g");
+  //@unit reservedNames
   const reservedNames = new Set("arguments abstract await boolean break byte case catch char class const continue debugger default delete do double else enum export extends final finally float for function goto if implements import in instanceof int interface let long native new package private protected public return short static super switch synchronized this throw throws transient try typeof var void volatile while with yield methods null constructor".split(" "));
+  //@unit mungeStr requires: mungeCharacters
   function mungeStr(value) { let result = ""; for (let i = 0; i < value.length; i++) result += mungeCharacters[value.charAt(i)] ?? value.charAt(i); return result; }
+  //@unit munge requires: mungeStr, reservedNames, str, symbolCore, symbols
   function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbols.has(value) ? symbolCore(result) : result; }
+  //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
   function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
+  //@unit mapEntry requires: builtinType, mapEntries, vector, vectorPrototype
   // Surface records supply protocol methods just as the upstream macro does.
   // Raw defrecord* only emits a constructor; its explicit body installs methods.
   function mapEntry(key, value) { const pair = vector(key, value); Object.setPrototypeOf(pair, builtinType("MapEntry", vectorPrototype).prototype); mapEntries.add(pair); return pair; }
+  //@unit recordEntries requires: field, keyword, mapEntry, toArray
   function recordEntries(value, Type) {
     return [...Type.fieldNames.map(name => mapEntry(keyword(null, name), field(value, name))), ...toArray(value.__extmap)];
   }
+  //@unit recordCopy requires: field
   function recordCopy(value, Type, metadata, extmap, cachedHash) {
     const Constructor = Type.currentConstructor?.() ?? Type;
     return new Constructor(...Type.fieldNames.map(name => field(value, name)), metadata, extmap, cachedHash);
   }
+  //@unit recordMethods requires: assoc, conj, contains, count, dissoc, equalPair, field, get, hash,
+  //@ into, iteratorInit, keyword, mapFromArray, nth, predicates, printWriter, prSequentialWriter,
+  //@ recordCopy, recordEntries, reduce, seq, SeqIter, stringHash, typeNames, vectorFromArray,
+  //@ withMeta
   function recordMethods(Type) {
     const copy = (value, metadata, extmap, cachedHash) => recordCopy(value, Type, metadata, extmap, cachedHash);
     const fieldIndex = key => Type.fieldNames.findIndex(name => equalPair(key, keyword(null, name)));
@@ -3904,6 +4538,8 @@
     ];
     return [["IRecord", 0, null], ...Array.from(new Set(methods.map(([key]) => key.split("/")[0])), key => [key, 0, null]), ...methods];
   }
+  //@unit makeType requires: ifnValues, installMethods, mapKinds, maps, mungeMember,
+  //@ protocolMaskNames, recordMethods, recordTypes, typeFields, typeNames
   function makeType(fields, methods, record, masks = null, name = null, currentConstructor = null) {
     let implicitMasks;
     const allFields = record ? [...fields, "__meta", "__extmap", "__hash"] : fields;
@@ -3933,14 +4569,17 @@
     installMethods(Type.prototype, implementations);
     return Type;
   }
+  //@unit recordFromMap requires: dissoc, get, into, keyword, mapFromArray, predicates, seq
   function recordFromMap(Type, map) {
     let extmap = dissoc(map, ...Type.fieldNames.map(name => keyword(null, name)));
     if (predicates.isRecord(map)) extmap = into(mapFromArray([]), extmap);
     return new Type(...Type.fieldNames.map(name => get(map, keyword(null, name))), null, seq(extmap) === null ? null : extmap, null);
   }
+  //@unit ifnMethods requires: ifnValues
   function ifnMethods(value) {
     return ifnValues.get(value) ?? (value == null ? undefined : ifnValues.get(Object.getPrototypeOf(value)));
   }
+  //@unit ifnPrototype requires: ifnApply, ifnMethods, ifnVariadics, invalidArity
   const ifnPrototype = Object.freeze({
     call(_self, ...args) {
       const methods = ifnMethods(this), keys = Object.keys(methods);
@@ -3955,18 +4594,21 @@
     },
     apply(_self, args) { return ifnApply(this, args); }
   });
+  //@unit ifnApply
   // Unlike Function.apply, an IFn apply must bundle the 21st and later values
   // exactly once. Keep that path independent of .call's already-expanded ABI.
   function ifnApply(value, args) {
     const values = Array.from(args);
     return value.call(null, ...values.slice(0, 20), ...(values.length > 20 ? [values.slice(20)] : []));
   }
+  //@unit boundedCount requires: count, next, predicates, seq
   function boundedCount(n, value) {
     if (predicates.isCounted(value)) return count(value);
     let total = 0;
     for (let current = seq(value); n > 0 && current !== null; n--, current = next(current)) total++;
     return total;
   }
+  //@unit applyTo requires: first, rest, seq
   function applyTo(fn, n, args) {
     args = seq(args);
     if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error("Only up to 20 arguments supported on functions");
@@ -3974,6 +4616,7 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
+  //@unit apply requires: applyTo, boundedCount, cons, seq, toArray
   function apply(fn, ...args) {
     // The upstream variadic default also receives calls with fewer than two
     // arguments. Keep its missing leading slots rather than adding validation.
@@ -3994,6 +4637,7 @@
     const entry = fn["cljs$core$IFn$_invoke$arity$" + values.length];
     return entry ? entry.call(fn, ...values) : fn.call(fn, ...values);
   }
+  //@unit listStar requires: cons, seq
   function listStar(...args) {
     if (args.length === 0) args = [undefined, undefined, undefined, undefined, null];
     let result = args.pop();
@@ -4002,6 +4646,7 @@
     for (let i = args.length - 1; i >= 0; i--) result = cons(args[i], result);
     return result;
   }
+  //@unit iterateNode requires: builtinValue, cells, first, iterateUnrealizedSeed, sequencePrototype
   function iterateNode(fn, previous, value, realized, following = null) {
     const result = builtinValue("Iterate", sequencePrototype), state = {value, realized, following};
     cells.set(result, Object.freeze({kind: "iterate", fn, previous, state,
@@ -4010,22 +4655,30 @@
       get tail() { return state.following ?? (state.following = iterateNode(fn, first(result), iterateUnrealizedSeed, false)); }}));
     return result;
   }
+  //@unit iterate requires: iterateNode
   function iterate(fn, seed) { return iterateNode(fn, null, seed, true); }
+  //@unit chunks
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
   const chunks = new WeakMap(), chunkBuffers = new WeakMap();
+  //@unit ChunkBuffer requires: builtinValue, chunkBuffers
   function ChunkBuffer(array, end) {
     const value = builtinValue("ChunkBuffer", Object.prototype);
     chunkBuffers.set(value, {array, end});
     return value;
   }
+  //@unit chunkBuffer requires: ChunkBuffer
   function chunkBuffer(capacity) { return new ChunkBuffer(new Array(capacity), 0); }
+  //@unit chunkAppend requires: chunkBuffers
   function chunkAppend(buffer, item) { const state = chunkBuffers.get(buffer); state.array[state.end] = item; return ++state.end; }
+  //@unit chunk requires: arrayChunk, chunkBuffers
   function chunk(buffer) { const state = chunkBuffers.get(buffer), value = arrayChunk(state.array, 0, state.end); state.array = null; return value; }
+  //@unit arrayChunk requires: builtinValue, chunks
   function arrayChunk(array, offset = 0, end = array.length) {
     const result = builtinValue("ArrayChunk", Object.prototype);
     chunks.set(result, {array, offset, end});
     return result;
   }
+  //@unit chunkNth requires: chunks, missing
   function chunkNth(chunk, i, fallback = missing) {
     const state = chunks.get(chunk), size = state.end - state.offset;
     if (state.integer && fallback === missing) return state.start + i * state.step;
@@ -4034,11 +4687,16 @@
     // ArrayChunk's two-argument -nth reads the backing array directly.
     return state.array?.[state.offset + i];
   }
+  //@unit chunkFirst requires: core
   function chunkFirst(value) { return core.chunkedFirstProtocol(value); }
+  //@unit chunkRest requires: core
   function chunkRest(value) { return core.chunkedRestProtocol(value); }
+  //@unit chunkNext requires: chunkRest, core, IChunkedNext, implementsProtocol, seq
   function chunkNext(value) {
     return implementsProtocol(IChunkedNext, value) ? core.chunkedNextProtocol(value) : seq(chunkRest(value));
   }
+  //@unit ownedChunkFirst requires: arrayChunk, cells, chunks, forceRangeChunk,
+  //@ publicCollectionSlots, views
   function ownedChunkFirst(value) {
     const cell = cells.get(value);
     if (cell?.kind === "chunked-cons") return cell.chunk;
@@ -4055,7 +4713,9 @@
     const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return arrayChunk(slice.storage, slice.offset, end);
   }
+  //@unit rangeChunks
   const rangeChunks = new WeakMap();
+  //@unit forceRangeChunk requires: arrayChunk, emptyList, rangeChunks, rangeNode
   function forceRangeChunk(cell) {
     if (!rangeChunks.has(cell) || rangeChunks.get(cell).chunk == null) {
       const values = []; let current = cell.head;
@@ -4069,6 +4729,8 @@
     }
     return rangeChunks.get(cell);
   }
+  //@unit ownedChunkRest requires: cells, ChunkedSeqValue, count, emptyList, forceRangeChunk,
+  //@ publicCollectionSlots, rangeNode, vectors, view, views
   function ownedChunkRest(value) {
     const cell = cells.get(value);
     if (cell?.kind === "chunked-cons") return cell.more ?? emptyList;
@@ -4081,6 +4743,8 @@
     const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return end < slice.storage.length ? view(slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
   }
+  //@unit ChunkedCons requires: builtinValue, cells, core, count, emptyList, metadataValues, nth,
+  //@ sequencePrototype
   function ChunkedCons(chunk, more, metadata, cachedHash) {
     const value = builtinValue("ChunkedCons", sequencePrototype);
     const chunkedState = {hash: cachedHash};
@@ -4091,7 +4755,10 @@
     metadataValues.set(value, metadata);
     return value;
   }
+  //@unit chunkCons requires: ChunkedCons, count
   function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : new ChunkedCons(chunk, tail, null, null); }
+  //@unit dropOwned requires: cells, ChunkedSeqValue, count, maps, publicCollectionSlots, rangeNode,
+  //@ repeat, seq, vectors, view, views
   function dropOwned(value, n) {
     if (value == null) return null;
     if (maps.has(value)) return dropOwned(seq(value), n);
@@ -4108,12 +4775,16 @@
     const storage = items ?? slice.storage, offset = (items ? 0 : slice.offset) + n;
     return offset < storage.length ? view(storage, offset, items ? items.length <= 32 : slice.indexed, items ? items.length <= 32 ? "indexed" : "chunked" : slice.kind) : null;
   }
+  //@unit numberArgument
   function numberArgument(value) {
     if (typeof value !== "number") throw new Error("Assert failed: (number? n)");
   }
+  //@unit collectionArity requires: invalidArity
   function collectionArity(name, args) {
     if (args !== 2) return invalidArity(args);
   }
+  //@unit take requires: collectionArity, cons, ensureReduced, first, invalidArity, lazySequence,
+  //@ numberArgument, reducingFunction, rest, seq, transform
   function take(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
@@ -4131,6 +4802,8 @@
       return s === null ? null : cons(first(s), take(n - 1, rest(s)));
     });
   }
+  //@unit drop requires: collectionArity, core, emptyList, IDrop, implementsProtocol, invalidArity,
+  //@ lazySequence, numberArgument, reducingFunction, rest, seq, transform
   function drop(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
@@ -4142,6 +4815,9 @@
     if (implementsProtocol(IDrop, coll)) return (n > 0 ? core.dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
+  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkFirst, chunkRest, cons,
+  //@ count, first, IChunkedSeq, implementsProtocol, invalidArity, lazySequence, listFromArray,
+  //@ mapManySteps, nth, rest, seq, transform
   function mapSeq(fn, ...colls) {
     if (arguments.length === 0) return lazySequence(() => null);
     if (arguments.length === 1) return transform(rf => callable(2, {
@@ -4164,12 +4840,15 @@
       return cons(fn.call(null, ...sources.map(first)), mapSeq(fn, ...sources.map(rest)));
     });
   }
+  //@unit mapManySteps requires: cons, every, first, lazySequence, mapSeq, rest, seq
   function mapManySteps(collections) {
     return lazySequence(() => {
       const sources = mapSeq(seq, collections);
       return every(x => x, sources) ? cons(mapSeq(first, sources), mapManySteps(mapSeq(rest, sources))) : null;
     });
   }
+  //@unit indexedSequence requires: arrayChunk, chunkCons, chunkFirst, chunkRest, cons, count,
+  //@ first, IChunkedSeq, implementsProtocol, lazySequence, nth, rest, seq
   function indexedSequence(fn, coll, index, keepOnly, indexed = true) {
     return lazySequence(() => {
       const s = seq(coll), at = index;
@@ -4186,9 +4865,15 @@
       return null;
     });
   }
+  //@unit mapIndexed requires: collectionArity, indexedSequence, indexedTransform
   function mapIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, false, true); collectionArity("map-indexed", arguments.length); return indexedSequence(fn, coll, 0, false); }
+  //@unit keepIndexed requires: collectionArity, indexedSequence, indexedTransform
   function keepIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, true); collectionArity("keep-indexed", arguments.length); return indexedSequence(fn, coll, 0, true); }
+  //@unit keep requires: collectionArity, indexedSequence, indexedTransform
   function keep(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, false); collectionArity("keep", arguments.length); return indexedSequence(fn, coll, 0, true, false); }
+  //@unit filter requires: arrayChunk, chunkCons, chunkFirst, chunkRest, collectionArity, cons,
+  //@ count, first, IChunkedSeq, implementsProtocol, lazySequence, nth, reducingFunction, rest, seq,
+  //@ transform, truth
   function filter(pred, coll) {
     if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : result));
     collectionArity("filter", arguments.length);
@@ -4208,12 +4893,17 @@
       return null;
     });
   }
+  //@unit remove requires: collectionArity, complement, filter
   function remove(pred, coll) { if (arguments.length === 1) return filter(complement(pred)); collectionArity("remove", arguments.length); return filter(complement(pred), coll); }
+  //@unit takeWhile requires: collectionArity, cons, first, lazySequence, reduced, reducingFunction,
+  //@ rest, seq, transform, truth
   function takeWhile(pred, coll) {
     if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : reduced(result)));
     collectionArity("take-while", arguments.length);
     return lazySequence(() => { const s = seq(coll); return s !== null && truth(pred.call(null, first(s))) ? cons(first(s), takeWhile(pred, rest(s))) : null; });
   }
+  //@unit dropWhile requires: collectionArity, first, lazySequence, reducingFunction, rest, seq,
+  //@ transform, truth
   function dropWhile(pred, coll) {
     if (arguments.length === 1) return transform(rf => {
       let dropping = true;
@@ -4225,12 +4915,16 @@
     collectionArity("drop-while", arguments.length);
     return lazySequence(() => { let s = seq(coll); while (s !== null && truth(pred.call(null, first(s)))) s = seq(rest(s)); return s; });
   }
+  //@unit repeatedly requires: cons, invalidArity, lazySequence, take
   function repeatedly(n, fn) {
     if (arguments.length === 1) { fn = n; return lazySequence(() => cons(fn.call(null), repeatedly(fn))); }
     if (arguments.length === 2) return take(n, repeatedly(fn));
     return invalidArity(arguments.length);
   }
+  //@unit replicate requires: repeat, take
   function replicate(n, value) { return take(n, repeat(value)); }
+  //@unit takeNth requires: collectionArity, cons, drop, first, invalidArity, lazySequence,
+  //@ numberArgument, reducingFunction, seq, transform
   function takeNth(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
@@ -4241,11 +4935,18 @@
     collectionArity("take-nth", arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(first(s), takeNth(n, drop(n, s))); });
   }
+  //@unit dropLast requires: drop, invalidArity, mapSeq
   function dropLast(n, coll) { if (arguments.length === 1) { coll = n; n = 1; } else if (arguments.length !== 2) return invalidArity(arguments.length); return mapSeq((x, _) => x, coll, drop(n, coll)); }
+  //@unit takeLast requires: drop, next, seq
   function takeLast(n, coll) { let s = seq(coll), lead = seq(drop(n, coll)); while (lead !== null) { s = next(s); lead = next(lead); } return s; }
+  //@unit splitAt requires: drop, take, vector
   function splitAt(n, coll) { return vector(take(n, coll), drop(n, coll)); }
+  //@unit splitWith requires: dropWhile, takeWhile, vector
   function splitWith(pred, coll) { return vector(takeWhile(pred, coll), dropWhile(pred, coll)); }
+  //@unit splitVAt requires: drop, take, vec, vector
   function splitVAt(n, coll) { return vector(vec(take(n, coll)), drop(n, coll)); }
+  //@unit partitionV requires: concat, cons, count, invalidArity, lazySequence, list, nthrest, seq,
+  //@ take, vec
   function partitionV(n, step, pad, coll) {
     const arity = arguments.length;
     if (arity === 2) { coll = step; step = n; } else if (arity === 3) coll = pad; else if (arity !== 4) return invalidArity(arity);
@@ -4256,16 +4957,22 @@
       return arity === 4 ? list(vec(take(n, concat(p, pad)))) : null;
     });
   }
+  //@unit partitionVAll requires: cons, drop, invalidArity, lazySequence, partitionAll, seq, take,
+  //@ vec
   function partitionVAll(n, step, coll) {
     if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return partitionAll(n); else if (arguments.length !== 3) return invalidArity(arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(vec(take(n, coll)), partitionVAll(n, step, drop(step, s))); });
   }
+  //@unit shuffle requires: toArray, vectorFromArray
   function shuffle(coll) {
     const items = toArray(coll);
     for (let i = items.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [items[i], items[j]] = [items[j], items[i]]; }
     return vectorFromArray(items);
   }
+  //@unit jsIterable
   const jsIterable = value => value != null && value[Symbol.iterator] != null;
+  //@unit iteration requires: cons, deref, get, installMethods, isReduced, keyword, lazySequence,
+  //@ listFromArray, seqToMap, truth
   function iteration(step, ...options) {
     const opts = seqToMap(listFromArray(options)), option = (name, fallback) => get(opts, keyword(null, name), fallback);
     const somef = option("somef", value => value != null), vf = option("vf", value => value), kf = option("kf", value => value), initk = option("initk", null);
@@ -4287,6 +4994,7 @@
         return acc;
       }]]);
   }
+  //@unit partition requires: concat, cons, count, drop, invalidArity, lazySequence, list, seq, take
   function partition(n, step, pad, coll) {
     const arity = arguments.length;
     if (arity === 2) { coll = step; step = n; } else if (arity === 3) coll = pad; else if (arity !== 4) return invalidArity(arity);
@@ -4297,10 +5005,14 @@
       return arity === 4 ? list(take(n, concat(p, pad))) : null;
     });
   }
+  //@unit partitionAll requires: bufferedTransform, cons, drop, invalidArity, lazySequence, seq,
+  //@ take
   function partitionAll(n, step, coll) {
     if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return bufferedTransform({kind: "count", n}); else if (arguments.length !== 3) return invalidArity(arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(take(n, s), partitionAll(n, step, drop(step, s))); });
   }
+  //@unit partitionBy requires: bufferedTransform, collectionArity, cons, count, drop, equalPair,
+  //@ first, lazySequence, next, seq, takeWhile
   function partitionBy(fn, coll) {
     if (arguments.length === 1) return bufferedTransform({kind: "key", fn});
     collectionArity("partition-by", arguments.length);
@@ -4310,6 +5022,7 @@
       return cons(run, partitionBy(fn, lazySequence(() => drop(count(run), s))));
     });
   }
+  //@unit interleave requires: cons, emptyList, first, lazySequence, rest, seq
   function interleave(...colls) {
     if (!colls.length) return emptyList;
     if (colls.length === 1) return lazySequence(() => colls[0]);
@@ -4322,6 +5035,8 @@
       return result;
     });
   }
+  //@unit interpose requires: collectionArity, drop, interleave, isReduced, reducingFunction,
+  //@ repeat, transform
   function interpose(sep, coll) {
     if (arguments.length === 1) return transform(rf => {
       let started = false;
@@ -4334,27 +5049,36 @@
     collectionArity("interpose", arguments.length);
     return drop(1, interleave(repeat(sep), coll));
   }
+  //@unit dorun requires: invalidArity, next, seq
   function dorun(n, coll) {
     if (arguments.length === 1) { coll = n; n = Infinity; } else if (arguments.length !== 2) return invalidArity(arguments.length);
     while (seq(coll) !== null && n > 0) { coll = next(coll); n--; }
     return null;
   }
+  //@unit doall requires: dorun, invalidArity
   function doall(n, coll) { if (arguments.length === 1) { dorun(n); return n; } if (arguments.length === 2) { dorun(n, coll); return coll; } return invalidArity(arguments.length); }
+  //@unit last requires: first, next, seq
   function last(coll) { let s = seq(coll); while (s !== null) { const tail = next(s); if (tail === null) return first(s); s = tail; } return null; }
+  //@unit butlast requires: seq, toArray, vectorFromArray
   function butlast(coll) { const values = toArray(coll); values.pop(); return seq(vectorFromArray(values)); }
+  //@unit mapv requires: into, mapSeq, vector
   function mapv(fn, ...colls) { return into(vector(), mapSeq(fn, ...colls)); }
+  //@unit filterv requires: conj, reduce, truth, vector
   function filterv(fn, coll) { return reduce((v, x) => truth(fn.call(null, x)) ? conj(v, x) : v, vector(), coll); }
+  //@unit cat requires: isReduced, reduce, reduced, reducingFunction
   function cat(rf) {
     return reducingFunction(rf, (result, input) => reduce((acc, value) => {
       const ret = rf.call(null, acc, value);
       return isReduced(ret) ? reduced(ret) : ret;
     }, result, input));
   }
+  //@unit mapcat requires: apply, cat, comp, concat, invalidArity, mapSeq
   function mapcat(fn, ...colls) {
     if (arguments.length === 1) return comp(mapSeq(fn), cat);
     if (!colls.length) return invalidArity(arguments.length);
     return apply(concat, mapSeq(fn, ...colls));
   }
+  //@unit rangeNode requires: builtinValue, cells, emptyList, sequencePrototype
   function rangeNode(start, end, step, integer, suppliedCount) {
     const rangeCount = arguments.length >= 5 ? suppliedCount : Math.ceil((end - start) / step);
     const value = builtinValue(integer ? "IntegerRange" : "Range", sequencePrototype);
@@ -4363,6 +5087,7 @@
       get tail() { const following = start + step; return (step > 0 ? following < end : following > end) ? rangeNode(following, end, step, integer) : emptyList; }}));
     return value;
   }
+  //@unit IndexedSeqValue requires: builtinValue, metadataValues, sequencePrototype, views
   function IndexedSeqValue(arr, i, metadata) {
     const value = builtinValue("IndexedSeq", sequencePrototype);
     metadataValues.set(value, metadata);
@@ -4371,20 +5096,24 @@
     views.set(value, {storage: arr, offset: i, indexed: true, kind: "indexed", tail: null});
     return value;
   }
+  //@unit primSeq requires: IndexedSeqValue, invalidArity
   function primSeq(prim, start) {
     if (arguments.length === 1) start = 0;
     else if (arguments.length !== 2) return invalidArity(arguments.length);
     return start < prim.length ? IndexedSeqValue(prim, start, null) : null;
   }
+  //@unit RangeValue requires: cells, constructorSlots, rangeChunks, rangeNode
   function RangeValue(metadata, start, end, step, chunk, chunkNext, cachedHash) {
     const value = rangeNode(start, end, step, false);
     const state = {chunk, tail: chunkNext};
     rangeChunks.set(cells.get(value), state);
     return constructorSlots(value, {start, end, step}, metadata, cachedHash);
   }
+  //@unit IntegerRangeValue requires: constructorSlots, rangeNode
   function IntegerRangeValue(metadata, start, end, step, cnt, cachedHash) {
     return constructorSlots(rangeNode(start, end, step, true, cnt), {start, end, step, cnt}, metadata, cachedHash);
   }
+  //@unit range requires: emptyList, invalidArity, isInteger, rangeNode, repeat
   function range(start, end, step = 1) {
     if (arguments.length === 0) { start = 0; end = Number.MAX_VALUE; }
     if (arguments.length === 1) { end = start; start = 0; }
@@ -4393,6 +5122,7 @@
     if (!(step > 0 || step < 0)) return repeat(start);
     return rangeNode(start, end, step, isInteger(start) && isInteger(end) && isInteger(step));
   }
+  //@unit callable requires: fnApplyTo, fnRest
   // Construct the same fixed/variadic split as an emitted CLJS function. This
   // lets combinators hand an unbounded tail to a variadic target unchanged.
   function callable(fixed, methods, variadic) {
@@ -4406,13 +5136,17 @@
     fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
     return fn;
   }
+  //@unit directOrApply requires: apply, missing
   function directOrApply(fn, args, tail) { return tail === missing ? fn.call(null, ...args) : apply(fn, ...args, tail); }
+  //@unit complement requires: apply, callable
   function complement(fn) {
     const negate = value => value == null || value === false;
     return callable(2, {0: () => negate(fn.call(null)), 1: x => negate(fn.call(null, x)), 2: (x, y) => negate(fn.call(null, x, y))},
       (x, y, zs) => negate(apply(fn, x, y, zs)));
   }
+  //@unit constantly requires: callable
   function constantly(x) { return callable(2, {0: () => x, 1: () => x, 2: () => x}, () => x); }
+  //@unit predicateCombination requires: callable, first, next, seq, truth
   function predicateCombination(predicates, small, existential) {
     // The first three arguments visit each predicate in turn. CLJS's 1-3
     // predicate variants then visit each tail argument; the 4+ variant instead
@@ -4458,12 +5192,15 @@
       return truth(result) === existential ? result : tail(args);
     });
   }
+  //@unit predicateConstructor requires: callable, cons, listFromArray, predicateCombination
   function predicateConstructor(existential) {
     const build = (...ps) => predicateCombination(listFromArray(ps), true, existential);
     return callable(3, {1: p => build(p), 2: (p, q) => build(p, q), 3: (p, q, r) => build(p, q, r)},
       (p, q, r, ps) => predicateCombination(cons(p, cons(q, cons(r, ps))), false, existential));
   }
+  //@unit someFn requires: predicateConstructor
   const someFn = predicateConstructor(true), everyPred = predicateConstructor(false);
+  //@unit memoize requires: apply, assoc, callable, get, mapFromArray, missing
   function memoize(fn) {
     let cache = mapFromArray([]);
     return callable(0, {}, args => {
@@ -4474,6 +5211,7 @@
       return result;
     });
   }
+  //@unit trampolineLoop requires: predicates
   function trampolineLoop(fn) {
     for (;;) {
       const result = fn.call(null);
@@ -4481,7 +5219,9 @@
       fn = result;
     }
   }
+  //@unit trampoline requires: apply, callable, trampolineLoop
   const trampoline = callable(1, {1: trampolineLoop}, (fn, args) => trampolineLoop(() => apply(fn, args)));
+  //@unit comp requires: callable, directOrApply, missing, predicates
   function comp(...fns) {
     if (!fns.length) return predicates.identity;
     if (fns.length === 1) return fns[0];
@@ -4494,12 +5234,14 @@
     return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
       (x, y, z, tail) => run([x, y, z], tail));
   }
+  //@unit partialFixed requires: apply, callable
   function partialFixed(fn, prefix) {
     if (!prefix.length) return fn;
     const run = (...args) => fn.call(null, ...prefix, ...args);
     return callable(3, {0: () => run(), 1: x => run(x), 2: (x, y) => run(x, y), 3: (x, y, z) => run(x, y, z)},
       (x, y, z, tail) => apply(fn, ...prefix, x, y, z, tail));
   }
+  //@unit partial requires: apply, callable, concat, partialFixed
   // Constructors need the same sequence ABI as their returned functions: apply
   // may supply an infinite tail which construction must only capture.
   const partial = callable(4, {
@@ -4509,11 +5251,14 @@
     3: (fn, a, b) => partialFixed(fn, [a, b]),
     4: (fn, a, b, c) => partialFixed(fn, [a, b, c])
   }, (fn, a, b, c, more) => callable(0, {}, args => apply(fn, a, b, c, concat(more, args))));
+  //@unit juxtFixed requires: callable, directOrApply, missing, vectorFromArray
   function juxtFixed(fns) {
     const run = (args, tail) => vectorFromArray(fns.map(fn => directOrApply(fn, args, tail)));
     return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
       (x, y, z, tail) => run([x, y, z], tail));
   }
+  //@unit juxt requires: callable, directOrApply, juxtFixed, listStar, mapSeq, missing, toArray,
+  //@ vectorFromArray
   const juxt = callable(3, {
     0: () => juxtFixed([undefined, undefined, undefined]),
     1: f => juxtFixed([f]),
@@ -4525,6 +5270,7 @@
     return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
       (x, y, z, tail) => run([x, y, z], tail));
   });
+  //@unit fnil requires: apply, callable, invalidArity
   function fnil(fn, ...defaults) {
     if (defaults.length < 1 || defaults.length > 3) return invalidArity(arguments.length);
     const patch = args => args.map((x, i) => i < defaults.length && x == null ? defaults[i] : x);
@@ -4533,6 +5279,8 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
+  //@unit into requires: conj, conjBang, core, IEditableCollection, implementsProtocol,
+  //@ invalidArity, meta, persistentBang, reduce, transduce, transient, vector
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
@@ -4554,10 +5302,13 @@
       default: return invalidArity(arguments.length);
     }
   }
+  //@unit exceptionMessages
   // Match the CLJS constructor: preserve the supplied message/data/cause values
   // and Error identity, including when callers construct ExceptionInfo directly.
   const exceptionMessages = new WeakMap();
+  //@unit compilerExceptionMessage requires: exceptionMessages
   const compilerExceptionMessage = value => exceptionMessages.get(value);
+  //@unit ExceptionInfo effect requires: exceptionMessages, print, truth
   function ExceptionInfo(message, data, cause) {
     const error = new Error(message);
     const target = this == null ? globalThis : Object(this);
@@ -4575,13 +5326,19 @@
       + (truth(this.data) ? ", :data " + print(this.data, true) : "")
       + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
   };
+  //@unit exInfo requires: ExceptionInfo, invalidArity
   function exInfo(message, data, cause) {
     if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length);
     return new ExceptionInfo(message, data, arguments.length === 2 ? null : cause);
   }
+  //@unit exData requires: ExceptionInfo
   const exData = value => value instanceof ExceptionInfo ? value.data : null;
+  //@unit exMessage
   const exMessage = value => value instanceof Error ? value.message : null;
+  //@unit exCause requires: ExceptionInfo
   const exCause = value => value instanceof ExceptionInfo ? value.cause : null;
+  //@unit throwableToMap requires: exCause, ExceptionInfo, exData, exMessage, get, keyword,
+  //@ mapFromArray, symbol, truth, vectorFromArray
   function throwableToMap(error) {
     const k = name => keyword(null, name), via = [];
     let root = null;
@@ -4602,9 +5359,13 @@
     if (truth(phase)) pairs.push(k("phase"), phase);
     return mapFromArray(pairs);
   }
+  //@unit printCore requires: printItems
   function printCore(...values) { return printItems(values); }
+  //@unit setPrintFn requires: core, invalidArity
   function setPrintFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return core.printFn = fn; }
+  //@unit setPrintErrFn requires: core, invalidArity
   function setPrintErrFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return core.printErrFn = fn; }
+  //@unit enableConsolePrint requires: core, invalidArity, setPrintErrFn, setPrintFn
   function enableConsolePrint() {
     if (arguments.length !== 0) return invalidArity(arguments.length);
     core.printNewline = false;
@@ -4612,24 +5373,36 @@
     setPrintErrFn((...args) => globalThis.console.error(...args));
     return null;
   }
+  //@unit stringPrint requires: core, invalidArity
   function stringPrint(text) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (core.printFn == null) throw new Error("No *print-fn* fn set for evaluation environment");
     core.printFn.call(null, text); return null;
   }
+  //@unit printOption requires: core, get, keyword
   function printOption(options, name, root) { return options == null ? core[root] : get(options, keyword(null, name)); }
+  //@unit flush requires: invalidArity
   function flush() { if (arguments.length !== 0) return invalidArity(arguments.length); return null; }
+  //@unit newline requires: core, invalidArity, printOption, stringPrint, truth
   function newline(options = null) {
     if (arguments.length > 1) return invalidArity(arguments.length);
     stringPrint("\n");
     return truth(printOption(options, "flush-on-newline", "flushOnNewline")) ? core.flush.call(null) : null;
   }
+  //@unit pr requires: prStr, stringPrint
   function pr(...values) { return stringPrint(prStr(...values)); }
+  //@unit println requires: core, newline, printItems, truth
   function println(...values) { printItems(values); return truth(core.printNewline) ? newline() : null; }
+  //@unit prn requires: core, newline, pr, truth
   function prn(...values) { pr(...values); return truth(core.printNewline) ? newline() : null; }
+  //@unit prnStr requires: prStr
   function prnStr(...values) { return prStr(...values) + "\n"; }
+  //@unit printStr requires: core, prStr
   function printStr(...values) { const saved = core.printReadably; core.printReadably = false; try { return prStr(...values); } finally { core.printReadably = saved; } }
+  //@unit printlnStr requires: printStr
   function printlnStr(...values) { return printStr(...values) + "\n"; }
+  //@unit TaggedLiteral effect requires: equalPair, hash, installMethods, keyword, printWriter,
+  //@ prStr, str, write
   function TaggedLiteral(tag, form) {
     this.tag = tag; this.form = form;
     installMethods(this, [["IEquiv", 0, null], ["IHash", 0, null], ["ILookup", 0, null], ["IPrintWithWriter", 0, null],
@@ -4640,22 +5413,27 @@
       ["IPrintWithWriter/-pr-writer", 3, (_self, writer, options) => { write(writer, "#" + str(tag) + " "); return printWriter(form, writer, options); }]]);
   }
   TaggedLiteral.prototype.toString = function () { return prStr(this); };
+  //@unit taggedLiteral requires: symbols, TaggedLiteral
   function taggedLiteral(tag, form) { if (!symbols.has(tag)) throw new Error("Assert failed: (symbol? tag)"); return new TaggedLiteral(tag, form); }
+  //@unit printItems requires: core, prStr, stringPrint
   function printItems(values) {
     const saved = core.printReadably;
     core.printReadably = false;
     try { return stringPrint(prStr(...values)); }
     finally { core.printReadably = saved; }
   }
+  //@unit stringWriter requires: StringBufferWriter
   function stringWriter() {
     const buffer = {text: "", append(text) { this.text += text; return this; }};
     return {buffer, writer: new StringBufferWriter(buffer)};
   }
+  //@unit StringBufferWriter requires: builtinValue
   function StringBufferWriter(sb) {
     const writer = builtinValue("StringBufferWriter", Object.prototype);
     writer.sb = sb;
     return writer;
   }
+  //@unit prStrStar requires: flushWriter, prWriter, stringWriter
   function prStrStar(value) {
     // The public helper calls the protocol directly with nil options. In
     // particular, it does not use pr-str's generic native/nil printer.
@@ -4664,10 +5442,13 @@
     flushWriter(writer);
     return buffer.text;
   }
+  //@unit printMetaQ requires: IMeta, implementsProtocol, invalidArity, meta, printOption, truth
   function printMetaQ(options, value) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
     return truth(printOption(options, "meta", "printMeta")) && implementsProtocol(IMeta, value) && meta(value) != null;
   }
+  //@unit prSequentialWriter requires: core, first, get, invalidArity, keyword, next, printOption,
+  //@ seq, truth, write
   function prSequentialWriter(writer, printOne, begin, separator, end, options, coll) {
     if (arguments.length !== 7) return invalidArity(arguments.length);
     const saved = core.printLevel;
@@ -4688,6 +5469,8 @@
       return write(writer, end);
     } finally { core.printLevel = saved; }
   }
+  //@unit printMapEntries requires: core, keyword, keywords, name, printWriter, prSequentialWriter,
+  //@ symbol, symbols, truth, write
   function printMapEntries(entries, writer, options, prefix = "") {
     const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
     const ns = truth(core.printNamespaceMaps) && names.length && names[0]?.namespace;
@@ -4699,11 +5482,16 @@
       printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
     }, (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
+  //@unit printWriter requires: assoc, get, keyword, printWriterImpl, truth
   function printWriter(value, writer, options) {
     const alt = get(options, keyword(null, "alt-impl"));
     if (truth(alt)) return alt.call(null, value, writer, assoc(options, keyword(null, "fallback-impl"), printWriterImpl));
     return printWriterImpl(value, writer, options);
   }
+  //@unit printWriterImpl requires: atoms, core, delays, ExceptionInfo, keyword, keywords, maps,
+  //@ mapTraversal, meta, printMapEntries, printMetaQ, printOption, printWriter, prSequentialWriter,
+  //@ publicMethod, queues, sequential, sets, setTraversal, symbols, transients, truth, typeNames,
+  //@ uuids, vars, vectors, volatiles, write
   function printWriterImpl(value, writer, options, skipMetadata = false) {
     if (value == null) return write(writer, "nil");
     if (!skipMetadata && printMetaQ(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
@@ -4749,47 +5537,61 @@
     if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
+  //@unit prSeqWriter requires: first, invalidArity, next, printWriter, write
   function prSeqWriter(values, writer, options) {
     if (arguments.length !== 3) return invalidArity(arguments.length);
     printWriter(first(values), writer, options);
     for (let s = next(values); s != null; s = next(s)) { write(writer, " "); printWriter(first(s), writer, options); }
     return null;
   }
+  //@unit prStrWithOpts requires: flushWriter, invalidArity, prSeqWriter, seq, stringWriter
   function prStrWithOpts(values, options) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
     if (seq(values) == null) return "";
     const {buffer, writer} = stringWriter(); prSeqWriter(values, writer, options); flushWriter(writer); return buffer.text;
   }
+  //@unit prnStrWithOpts requires: invalidArity, prStrWithOpts
   function prnStrWithOpts(values, options) { if (arguments.length !== 2) return invalidArity(arguments.length); return prStrWithOpts(values, options) + "\n"; }
+  //@unit print requires: core, flushWriter, printWriterImpl, stringWriter
   function print(value, readable) {
     const saved = core.printReadably; core.printReadably = readable;
     try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
     finally { core.printReadably = saved; }
   }
+  //@unit prStr requires: prStrWithOpts
   function prStr(...values) { return prStrWithOpts(values, null); }
+  //@unit printForHost requires: prStr
   // The Rust display API returns UTF-8. Keep canonical JS printing lossless,
   // but represent isolated surrogate units as escapes at this text boundary.
   function printForHost(value) {
     return prStr(value).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
       units => units.length === 2 ? units : "\\u" + units.charCodeAt(0).toString(16).padStart(4, "0"));
   }
+  //@unit str requires: maps, print, recordTypes, sequential, sets
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? print(value, true) : String(value)).join(""); }
 
+  //@unit variadicCore requires: fnApplyTo
   function variadicCore(fn, fixed, delegate) {
     fn.cljs$lang$maxFixedArity = fixed;
     fn.cljs$lang$applyTo = args => fnApplyTo(delegate, fixed, args);
     fn.cljs$core$IFn$_invoke$arity$variadic = delegate;
     return fn;
   }
+  //@unit foldSeq requires: first, next, seq
   function foldSeq(operation, x, y, more) {
     let result = operation(x, y);
     for (let s = seq(more); s !== null; s = next(s)) result = operation(result, first(s));
     return result;
   }
+  //@unit add.variadic effect: add requires: add, foldSeq, variadicCore
   variadicCore(add, 2, (x, y, more) => foldSeq((a, b) => a + b, x, y, more));
+  //@unit subtract.variadic effect: subtract requires: foldSeq, subtract, variadicCore
   variadicCore(subtract, 2, (x, y, more) => foldSeq((a, b) => a - b, x, y, more));
+  //@unit multiply.variadic effect: multiply requires: foldSeq, multiply, variadicCore
   variadicCore(multiply, 2, (x, y, more) => foldSeq((a, b) => a * b, x, y, more));
+  //@unit divide.variadic effect: divide requires: divide, foldSeq, variadicCore
   variadicCore(divide, 2, (x, y, more) => foldSeq((a, b) => a / b, x, y, more));
+  //@unit equal.variadic effect: equal requires: equal, equalPair, first, next, seq, variadicCore
   variadicCore(equal, 2, (x, y, more) => {
     if (!equalPair(x, y)) return false;
     for (let s = seq(more); s !== null; s = next(s)) {
@@ -4799,60 +5601,86 @@
     }
     return true;
   });
+  //@unit vector.variadic effect: vector requires: toArray, variadicCore, vector, vectorFromArray
   variadicCore(vector, 0, args => vectorFromArray(toArray(args)));
+  //@unit list.variadic effect: list requires: list, listFromArray, toArray, variadicCore
   variadicCore(list, 0, args => listFromArray(toArray(args)));
+  //@unit hashMap.variadic effect: hashMap requires: hashMap, mapFromArray, toArray, variadicCore
   variadicCore(hashMap, 0, args => mapFromArray(toArray(args), "hash-map"));
+  //@unit arrayMap.variadic effect: arrayMap requires: arrayMap, mapFromArray, toArray, variadicCore
   variadicCore(arrayMap, 0, args => mapFromArray(toArray(args), "array-map"));
+  //@unit hashSet.variadic effect: hashSet requires: hashSet, setFromArray, toArray, variadicCore
   variadicCore(hashSet, 0, args => setFromArray(toArray(args)));
+  //@unit mapSeq.variadic effect: mapSeq requires: apply, cons, mapManySteps, mapSeq, variadicCore
   // Applied collection arguments remain a sequence. Materializing the rest
   // here would demand collections after the shortest input has already ended.
   variadicCore(mapSeq, 4, (fn, c1, c2, c3, colls) =>
     mapSeq(args => apply(fn, args), mapManySteps(cons(c1, cons(c2, cons(c3, colls))))));
+  //@unit mapv.variadic effect: mapv requires: apply, into, mapSeq, mapv, variadicCore, vector
   variadicCore(mapv, 4, (fn, c1, c2, c3, colls) =>
     into(vector(), apply(mapSeq, fn, c1, c2, c3, colls)));
+  //@unit str.variadic effect: str requires: first, next, seq, str, variadicCore
   variadicCore(str, 1, (x, more) => {
     let result = str(x);
     for (let s = seq(more); s !== null; s = next(s)) result += str(first(s));
     return result;
   });
 
+  //@unit printCore.variadic effect: printCore requires: printCore, printItems, toArray,
+  //@ variadicCore
   variadicCore(printCore, 0, args => printItems(toArray(args)));
+  //@unit minKey.variadic effect: minKey requires: keyExtreme, minKey, variadicCore
   variadicCore(minKey, 3, (key, x, y, more) => keyExtreme(true, key, x, y, more));
+  //@unit maxKey.variadic effect: maxKey requires: keyExtreme, maxKey, variadicCore
   variadicCore(maxKey, 3, (key, x, y, more) => keyExtreme(false, key, x, y, more));
+  //@unit isDistinct.variadic effect: isDistinct requires: distinctMore, isDistinct, variadicCore
   variadicCore(isDistinct, 2, distinctMore);
 
+  //@unit swap.variadic effect: swap requires: cons, swap, swapState, variadicCore
   variadicCore(swap, 4, (value, fn, x, y, more) => swapState(value, fn, cons(x, cons(y, more)), false, true));
+  //@unit swapVals.variadic effect: swapVals requires: cons, swapState, swapVals, variadicCore
   variadicCore(swapVals, 4, (value, fn, x, y, more) => swapState(value, fn, cons(x, cons(y, more)), true, true));
+  //@unit merge.variadic effect: merge requires: merge, mergeMaps, missing, variadicCore
   variadicCore(merge, 0, values => mergeMaps(values, missing));
+  //@unit mergeWith.variadic effect: mergeWith requires: mergeMaps, mergeWith, variadicCore
   variadicCore(mergeWith, 1, (fn, values) => mergeMaps(values, fn));
+  //@unit spreadArgs requires: cons, first, next, seq
   function spreadArgs(args) {
     if (args == null) return null;
     const following = next(args), item = first(args);
     return following == null ? seq(item) : cons(item, spreadArgs(following));
   }
+  //@unit listStar.variadic effect: listStar requires: cons, listStar, spreadArgs, variadicCore
   variadicCore(listStar, 4, (a, b, c, d, more) => cons(a, cons(b, cons(c, cons(d, spreadArgs(more))))));
+  //@unit updateIn.variadic effect: updateIn requires: apply, updateIn, updatePath, variadicCore
   variadicCore(updateIn, 6, (value, path, fn, x, y, z, more) => updatePath(value, path, old => apply(fn, old, x, y, z, more)));
+  //@unit update.variadic effect: update requires: apply, assoc, get, update, variadicCore
   variadicCore(update, 6, (value, key, fn, x, y, z, more) => assoc(value, key, apply(fn, get(value, key), x, y, z, more)));
 
+  //@unit jsSet
   // Host access follows JavaScript property conversion and receiver semantics.
   function jsSet(object, key, value) {
     if (object == null) throw new TypeError("Cannot set properties of null or undefined");
     Reflect.set(Object(object), key, value, object);
     return value;
   }
+  //@unit jsDelete
   function jsDelete(object, key) {
     if (object == null) throw new TypeError("Cannot delete properties of null or undefined");
     return Reflect.deleteProperty(Object(object), key);
   }
+  //@unit aget
   function aget(array, index, ...indices) {
     let value = array[index];
     for (const nextIndex of indices) value = value[nextIndex];
     return value;
   }
+  //@unit aset requires: jsSet
   function aset(array, index, value, ...more) {
     if (more.length === 0) return jsSet(array, index, value);
     return aset(array[index], value, ...more);
   }
+  //@unit makeArray requires: invalidArity
   function makeArray(type, size, ...dimensions) {
     if (arguments.length === 0) return invalidArity(0);
     if (arguments.length === 1) return new Array(type);
@@ -4860,17 +5688,20 @@
     if (dimensions.length) for (let i = 0; i < result.length; i++) result[i] = makeArray(null, ...dimensions);
     return result;
   }
+  //@unit aclone
   function aclone(array) {
     const result = new Array(array.length);
     for (let i = 0; i < result.length; i++) result[i] = array[i];
     return result;
   }
+  //@unit toArray2d requires: count, first, next, seq, toArray
   function toArray2d(coll) {
     const result = new Array(count(coll));
     let i = 0;
     for (let s = seq(coll); s !== null; s = next(s)) result[i++] = toArray(first(s));
     return result;
   }
+  //@unit typedArray requires: first, intoArray, invalidArity, makeArray, next, predicates, seq
   function typedArray(size, init) {
     if (arguments.length === 1) return typeof size === "number" ? typedArray(size, null) : intoArray(size);
     if (arguments.length !== 2) return invalidArity(arguments.length);
@@ -4884,14 +5715,20 @@
     }
     return result;
   }
+  //@unit intArray requires: typedArray
   function intArray(...args) { return typedArray(...args); }
+  //@unit longArray requires: typedArray
   function longArray(...args) { return typedArray(...args); }
+  //@unit doubleArray requires: typedArray
   function doubleArray(...args) { return typedArray(...args); }
+  //@unit objectArray requires: typedArray
   function objectArray(...args) { return typedArray(...args); }
+  //@unit intoArray requires: invalidArity, toArray
   function intoArray(type, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     return toArray(arguments.length === 1 ? type : coll);
   }
+  //@unit jsObj
   function jsObj(...pairs) {
     // goog.object/create accepts a single array of interleaved entries.
     if (pairs.length === 1 && Array.isArray(pairs[0])) pairs = pairs[0];
@@ -4900,12 +5737,17 @@
     for (let i = 0; i < pairs.length; i += 2) result[pairs[i]] = pairs[i + 1];
     return result;
   }
+  //@unit jsKeys
   function jsKeys(object) { const keys = []; for (const key in object) keys.push(key); return keys; }
+  //@unit jsInvoke
   function jsInvoke(object, key, ...args) { return object[key].apply(object, args); }
+  //@unit keyToJs requires: cljToJs, core, IEncodeJS, keywords, prStr, satisfies, symbols
   function keyToJs(key, primitive = cljToJs) {
     if (satisfies(IEncodeJS, key)) return core.encodeJsProtocol(key);
     return typeof key === "string" || typeof key === "number" || keywords.has(key) || symbols.has(key) ? primitive.call(null, key) : prStr(key);
   }
+  //@unit cljToJs requires: core, first, get, IEncodeJS, keyToJs, keyword, keywords, listFromArray,
+  //@ mapSeq, name, next, nth, predicates, satisfies, seq, seqToMap, str, symbols, toArray
   function cljToJs(value, ...options) {
     const opts = seqToMap(listFromArray(options)), keywordFn = get(opts, keyword(null, "keyword-fn"), name);
     const convert = value => {
@@ -4923,6 +5765,9 @@
     };
     return convert(value);
   }
+  //@unit jsToClj requires: arrayMap, assoc, core, doall, empty, get, IEncodeClojure, into, keyword,
+  //@ keywordCore, listFromArray, mapEntry, mapFromArray, mapSeq, nth, predicates, satisfies,
+  //@ seqToMap, truth, vectorFromArray
   function jsToClj(value, ...options) {
     if (arguments.length === 1) options = [keyword(null, "keywordize-keys"), false];
     const opts = seqToMap(listFromArray(options)), keywordize = truth(get(opts, keyword(null, "keywordize-keys")));
@@ -4941,33 +5786,40 @@
     };
     return convert(value);
   }
+  //@unit checkedIndex
   function checkedIndex(array, index) {
     if (!(array != null && (Array.isArray(array) || (typeof array === "object" && typeof array.length === "number"))) ||
         typeof index !== "number" || index < 0 || !(index < array.length)) throw new Error("Assert failed: array index out of bounds");
   }
+  //@unit checkedAget requires: checkedIndex, core
   function checkedAget(array, index, ...indices) {
     try { if (core.assertions) checkedIndex(array, index); }
     catch (error) { if (core.printErrFn) core.printErrFn.call(null, error); }
     const value = array[index];
     return indices.length ? checkedAget(value, ...indices) : value;
   }
+  //@unit checkedAset requires: checkedAget, checkedIndex, core, jsSet
   function checkedAset(array, index, value, ...more) {
     if (more.length) return checkedAset(checkedAget(array, index), value, ...more);
     try { if (core.assertions) checkedIndex(array, index); }
     catch (error) { if (core.printErrFn) core.printErrFn.call(null, error); }
     return jsSet(array, index, value);
   }
+  //@unit checkedAgetStrict requires: checkedIndex, core
   function checkedAgetStrict(array, index, ...indices) {
     if (core.assertions) checkedIndex(array, index);
     const value = array[index];
     return indices.length ? checkedAgetStrict(value, ...indices) : value;
   }
+  //@unit checkedAsetStrict requires: checkedIndex, core, jsSet
   function checkedAsetStrict(array, index, value, ...more) {
     if (core.assertions) checkedIndex(array, index);
     if (more.length) return checkedAsetStrict(array[index], value, ...more);
     return jsSet(array, index, value);
   }
 
+  //@unit coreMethod requires: builtin, builtinCoreImplementation, coreDispatchers,
+  //@ coreProtocolsByName, ICounted, IEquiv, IHash, invalidArity
   function coreMethod(key, arities, fallback) {
     const dispatch = function (value, ...args) {
       const arity = arities.length === 1 ? arities[0] : arguments.length;
@@ -4982,14 +5834,21 @@
     coreDispatchers.set(key, dispatch);
     return dispatch;
   }
+  //@unit write requires: coreMethod
   const write = coreMethod("IWriter/-write", [2], () => null);
+  //@unit flushWriter requires: coreMethod
   const flushWriter = coreMethod("IWriter/-flush", [1], () => null);
+  //@unit builtinTypes.StringBufferWriter effect: builtinTypes requires: builtinType, installMethods
   installMethods(builtinType("StringBufferWriter", Object.prototype).prototype, [
     ["IWriter", 0, null],
     ["IWriter/-write", 2, (writer, text) => writer.sb.append(text)],
     ["IWriter/-flush", 1, () => null]
   ]);
+  //@unit prWriter requires: coreMethod, printWriterImpl
   const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true));
+  //@unit clone requires: canonicalVectorRoots, cells, cloneablePayload, constructorHashes,
+  //@ coreMethod, IntegerRangeValue, mapEntries, mapKinds, meta, metadataValues, protocolStores,
+  //@ rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources, treeRoots, treeSetMaps
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (cells.get(value)?.kind === "range") {
       const c = cells.get(value), state = rangeChunks.get(c);
@@ -5002,7 +5861,20 @@
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
   });
+  //@unit seqProtocol requires: contains, coreMethod, count, first, get, missing, next, nth, rest,
+  //@ seq, transientNth, transients
   const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], function (value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
+  //@unit builtinTypes.prototypes effect: builtinTypes requires: builtinType, builtinTypes,
+  //@ canonicalVectorRoots, cells, chunk, chunkAppend, chunkBuffers, chunks, completing,
+  //@ constructorHashes, contains, count, deferredValue, delays, eductions, equalPair, es6Iterator,
+  //@ forceRangeChunk, get, installMethods, iterateUnrealizedSeed, keywordPrototype, keywords,
+  //@ lazyValues, makeMap, mapFromArray, mapPrototype, maps, meta, metadataValues, mungeMember, nth,
+  //@ objectEquiv, ownedProtocolValue, printWriter, prSequentialWriter, publicCollectionSlots,
+  //@ publicTree, queues, rangeChunks, reducedPrototype, reducedValues, seq, sequence,
+  //@ sequenceIterator, sequencePrototype, sequentialIndex, setKinds, setPrototype, sets,
+  //@ sortedComparators, subvecSources, symbolPrototype, symbols, transduce, transformedIterator,
+  //@ transientPrototype, treeSetMaps, uuidPrototype, vector, vectorFromArray, vectorPrototype,
+  //@ vectorRoots, vectors, views
   for (const [names, base] of [
     [["PersistentVector", "Subvec", "MapEntry"], vectorPrototype],
     [["PersistentArrayMap", "PersistentHashMap", "PersistentTreeMap"], mapPrototype],
@@ -5189,7 +6061,10 @@
     set: field === "__hash" ? function (value) { cells.get(this).chunkedState.hash = value; } : undefined
   });
   Object.defineProperty(builtinTypes.ChunkedCons.prototype, "meta", {get() { return meta(this); }});
+  //@unit realized requires: cells, coreMethod, delays, lazyValues, truth
   const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk));
+  //@unit builtinTypes.statics effect: builtinTypes requires: aclone, builtinTypes, emptyList,
+  //@ makeMap, makeSet, putEntry, queueFromArray, str, vector
   builtinTypes.List.EMPTY = emptyList;
   builtinTypes.PersistentHashSet.EMPTY = makeSet([], "array-map");
   builtinTypes.PersistentQueue.EMPTY = queueFromArray([]);
@@ -5211,12 +6086,61 @@
     }
     return makeMap(entries, "hash-map");
   };
+  //@unit positionalFactory requires: invalidArity
   function positionalFactory(Type, arity) {
     return function (...args) {
       if (args.length !== arity) return invalidArity(args.length);
       return Reflect.construct(Type, args);
     };
   }
+  //@unit core effect requires: aclone, add, addMethod, addWatch, addWatchProtocol, aget, alterMeta,
+  //@ ancestors, apply, applyTo, arrayChunk, arrayMap, ASeq, aset, assoc, assocBang, assocIn,
+  //@ assocTransient, asTransient, Atom, atom, atomFactory, bases, boundedCount,
+  //@ builtinCoreImplementation, builtinTypes, butlast, cat, cells, checkedAget, checkedAgetStrict,
+  //@ checkedAset, checkedAsetStrict, chunk, chunkAppend, ChunkBuffer, chunkBuffer, chunkCons,
+  //@ ChunkedCons, chunkFirst, chunkNext, chunkRest, chunks, cljToJs, clone, comp, comparator,
+  //@ compareAndSet, compareKeys, complement, completing, concat, conj, conjBang, conjTransient,
+  //@ cons, constantly, contains, containsProtocol, coreMethod, count, countProtocol, cycle, dedupe,
+  //@ delays, demandMulti, demunge, deref, derefProtocol, derive, descendants, disj, disjBang,
+  //@ dissoc, dissocBang, distinct, doall, dorun, doubleArray, drop, dropLast, dropOwned, dropWhile,
+  //@ eduction, empty, emptyList, enableConsolePrint, ensureReduced, equal, equalPair, equivMap,
+  //@ es6Iterator, every, everyPred, exCause, ExceptionInfo, exData, exInfo, exMessage, filter,
+  //@ filterv, find, first, firstProtocol, flatten, flush, flushWriter, Fn, fnil, force,
+  //@ frequencies, gensym, get, getGlobalHierarchy, getIn, getMethod, getValidator, groupBy,
+  //@ haltWhen, hash, hashDouble, hashMap, hashOrderedColl, hashSet, hashUnorderedColl,
+  //@ IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable,
+  //@ ICounted, IDeref, IDerefWithTimeout, IDrop, IEditableCollection, IEmptyableCollection,
+  //@ IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed, IIterable, IKVReduce, IList,
+  //@ ILookup, IMap, IMapEntry, IMeta, implementsProtocol, IMultiFn, INamed, INext, Inst, intArray,
+  //@ interleave, interpose, into, intoArray, invalidArity, IPending, IPrintWithWriter, IRecord,
+  //@ IReduce, IReset, IReversible, isa, isDistinct, ISeq, ISeqable, ISequential, ISet, isJsSymbol,
+  //@ ISorted, isReduced, isSpecialSymbol, IStack, isVolatile, ISwap, iterate, iteration, iterator,
+  //@ iteratorInit, iteratorSeq, iteratorStart, ITransientAssociative, ITransientCollection,
+  //@ ITransientMap, ITransientSet, ITransientVector, IUUID, IVector, IVolatile, IWatchable,
+  //@ IWithMeta, IWriter, jsDelete, jsInvoke, jsIterable, jsKeys, jsObj, jsSet, jsToClj, juxt, keep,
+  //@ keepIndexed, keys, keyToJs, keywordCore, last, list, listStar, longArray, lookupProtocol,
+  //@ macroexpand, macroexpand1, makeArray, makeHierarchy, mapcat, mapIndexed, mapSeq, mapv, maxKey,
+  //@ memoize, merge, mergeWith, meta, metaProtocol, minKey, mkBoundFn, MultiFn, munge, mungeStr,
+  //@ name, Namespace, namespace, newline, next, nextProtocol, notifyWatches, nth, nthnext,
+  //@ nthProtocol, nthrest, numeric, objectArray, ownedChunkFirst, ownedChunkRest, parents,
+  //@ parseBoolean, parseDouble, parseLong, parseUuid, partial, partition, partitionAll,
+  //@ partitionBy, partitionV, partitionVAll, peek, persistentBang, persistTransient, pop, popBang,
+  //@ popTransient, positionalFactory, pr, predicates, preferMethod, primSeq, printCore,
+  //@ printForHost, println, printlnStr, printMetaQ, printStr, prn, prnStr, prnStrWithOpts,
+  //@ protocolSentinel, prSequentialWriter, prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter,
+  //@ rand, randInt, randNth, randomSample, range, RangedIterator, rangedIterator, realized, reduce,
+  //@ reduced, reduceKv, reductions, reMatch, remove, removeMethod, removeTransient, removeWatch,
+  //@ removeWatchProtocol, rePattern, repeat, repeatedly, replace, replicate, requiredGet, reSeq,
+  //@ reset, resetMeta, resetMulti, resetProtocol, resetVals, rest, restProtocol, rotateLeft, rseq,
+  //@ rsubseq, satisfies, selectKeys, seq, SeqIter, seqIter, seqProtocol, seqToMap, sequence,
+  //@ sequenceIterator, set, setPrintErrFn, setPrintFn, sets, setValidator, shuffle, someFn,
+  //@ someVals, sort, sortBy, sortedComparators, sortedMap, sortedMapBy, sortedSeqFrom, sortedSet,
+  //@ sortedSetBy, splitAt, splitVAt, splitWith, str, StringBufferWriter, stringHash, stringPrint,
+  //@ subs, subseq, subvec, supers, swap, swapProtocol, swapVals, symbolCore, TaggedLiteral,
+  //@ taggedLiteral, take, takeLast, takeNth, takeWhile, test, throwableToMap, toArray, toArray2d,
+  //@ trampoline, transduce, transient, treeSeq, truth, underive, unreduced, update, updateIn,
+  //@ updateKeys, updateVals, uuid, vals, Var, vars, varyMeta, vec, vector, view, Volatile,
+  //@ volatile, volatileFactory, vreset, vresetProtocol, withMeta, withMetaProtocol, write, zipmap
   const core = {...builtinTypes, IMultiFn, MultiFn, makeHierarchy, getGlobalHierarchy, isa, parents, ancestors, descendants, derive, underive, bases, supers,
     removeAllMethods: coreMethod("IMultiFn/-reset", [1], resetMulti),
     addMethod: coreMethod("IMultiFn/-add-method", [3], addMethod),
@@ -5324,7 +6248,11 @@
   core.NamespaceFactory = positionalFactory(Namespace, 2);
   core.TaggedLiteralFactory = positionalFactory(core.TaggedLiteral, 2);
 
+  //@unit compilerForms requires: compilerFormBridge
   const compilerForms = compilerFormBridge();
+  //@unit core.reader effect: core requires: cells, compilerForms, core, inspect, keyword, keywords,
+  //@ listFromArray, mapFromArray, maps, readerCoreNames, setFromArray, sets, symbol, symbols,
+  //@ uuids, vectorFromArray, vectors, views
   // First-party bounded EDN and explicit synchronous input capability runtime.
   Object.assign(core, (rt => {
   const c = rt.core, inspect = rt.inspect;
@@ -5902,6 +6830,11 @@
 
 
 
+  //@unit core.hostAndNamespaces effect: core requires: addTap, allNs, compilerMacroVar,
+  //@ configureHostHooks, core, createNs, defaultHostClock, defaultHostRandom, defaultTapSchedule,
+  //@ findNs, hostRand, hostRandInt, hostRandNth, hostRandomUuid, hostShuffle, invalidArity,
+  //@ macroReaderFunction, Namespace, nsName, registerReaderNamespace, removeTap, symbol,
+  //@ systemTime, tapGreater, theNs
   Object.assign(core, {
     configureHostHooks, hostClock: defaultHostClock, hostRandom: defaultHostRandom,
     systemTime, addTap, removeTap, tapGreater, execTapFn: defaultTapSchedule,
@@ -5911,7 +6844,10 @@
   });
   Object.assign(core, {Namespace, registerReaderNamespace, macroReaderFunction, createNs, findNs, nsName, theNs, allNs, compilerMacroVar,
     currentNs: createNs(symbol(null, "cljs.user")), assertions: true});
+  //@unit namespaces.cljsCore effect: namespaces requires: createNs, symbol
   createNs(symbol(null, "cljs.core"));
+  //@unit core.seal effect: core requires: core
   Object.seal(core);
+  //@exports
   return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

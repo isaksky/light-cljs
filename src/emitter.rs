@@ -154,7 +154,7 @@ fn emit_js_mode(
         )
     }) {
         let runtime = if let Some(parameter) = shared { format!("  const rt = {parameter};\n") } else {
-            format!("  const rt = {};\n", include_str!("js_runtime.js").trim())
+            format!("  const rt = {};\n", crate::runtime_manifest::RUNTIME.trim())
         };
         let source_length = runtime.len();
         let mut runtime = runtime;
