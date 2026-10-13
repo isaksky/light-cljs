@@ -1406,3 +1406,91 @@ embed. In QuickJS the devirtualized `area` call saves another 9% at
 the method from the record instead of going through `protocolMethod`'s
 dispatcher, with its arity checks. Node inlines the dispatcher either way.
 The other fixtures and workloads do not change beyond the noise.
+
+## Constant hashes — October 13, 2026
+
+light-cljs-219 implements tier 3 of "Constant collection literals" in the
+[design](../docs/advanced-optimization.md). At every level the runtime's
+`hash` now keeps the hash of a vector, set or queue once computed, as it
+already did for maps, lists, keywords and symbols; before, a constant vector
+or set used as a key was rehashed on every lookup. At `--optimize advanced`
+each composite constant of the pool is declared with the hash the compiler
+computes for it (`src/value_hash.rs`, a bit-exact port of the runtime's
+hashing): `const k6 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);`.
+The new ratchet fixture and `--levels` workload `constant-keys` looks up a
+36-entry hash map keyed by maps, vectors and sets with constant keys:
+
+```clojure
+(def table (zipmap (concat (map (fn [i] {:id i :kind :row}) (range 12))
+                           (map (fn [i] [:pos i (inc i)]) (range 12))
+                           (map (fn [i] #{i :tag}) (range 12)))
+                   (range 36)))
+(+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
+   (get table {:id 11 :kind :row} 0))
+```
+
+**Sizes**, bytes of `--compile --optimize advanced --text`; "before" is
+master `fcfd2ae` (after light-cljs-211). Below `Advanced` every fixture is
+124 bytes smaller, because `hash` lost its per-kind cache checks
+(`pure-defs` at `prepare` falls from 364,106 to 363,982, so its ceiling
+becomes 364,000). At `Advanced` a program that embeds `hash` saves 222 bytes
+and pays 109 for the `hashed` unit and its binding and 22-24 per composite
+constant (`constant-literals` has 5). `console-log-sum`, `add`, `raw-js` and,
+since 211, `record-protocol`, `pure-defs` and `three-records` embed neither
+and do not change.
+
+| Fixture | Advanced before | Advanced after | Ceiling before | Ceiling after |
+| --- | ---: | ---: | ---: | ---: |
+| println-hi | 134,840 | 134,618 | 135,000 | 135,000 |
+| vector-printed | 134,919 | 134,830 | 135,000 | 135,000 |
+| map-printed | 134,921 | 134,699 | 135,000 | 135,000 |
+| seq-pipeline | 138,109 | 137,887 | 139,000 | 138,000 |
+| rest-fn | 119,923 | 119,701 | 120,000 | 120,000 |
+| keyword-case | 120,229 | 120,007 | 121,000 | 121,000 |
+| keyword-lookups | 131,092 | 131,026 | 132,000 | 132,000 |
+| constant-literals | 132,742 | 132,746 | 133,000 | 133,000 |
+| constant-keys | 124,785 | 124,762 | — | 125,000 |
+
+`constant-keys` gets [364,000, 364,000, 125,000]. The 13-entry table of the
+allocation fixture in `tests/compiler/constant_pool.rs` grows from 515 to 583
+bytes for its 3 composite entries.
+
+**Steady state and startup.** `--levels --samples 9 --warmups 1` on the
+exported master tree `ecbb3c2` with the new fixture and workload, then on
+this change before it was rebased onto light-cljs-211, one directly after the
+other; the one-minute load average had a median of
+3.65 and 2.81. Every table is in
+[before](results/constant-hashes-2026-10-13/before/summary.md) and
+[after](results/constant-hashes-2026-10-13/after/summary.md), next to their
+`samples.csv`. The workload ran with n = 2,000, which takes about a second
+per QuickJS call, so it now runs n = 200. Median ms per call:
+
+| Workload | n | Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| constant-keys | 2,000 | none | 173.12 | 168.98 | 1,039.51 | 1,013.55 |
+| constant-keys | 2,000 | prepare | 172.70 | 168.32 | 1,044.85 | 1,010.43 |
+| constant-keys | 2,000 | advanced | 147.87 | 106.64 | 949.53 | 692.69 |
+| constant-literals | 2,000 | advanced | 41.73 | 40.96 | 257.77 | 251.86 |
+| keyword-lookups | 2,000 | advanced | 18.47 | 18.03 | 105.00 | 103.32 |
+| record-protocol | 2,000 | advanced | 9.92 | 9.40 | 19.01 | 18.85 |
+| seq-pipeline | 200 | advanced | 5.27 | 5.07 | 29.02 | 28.39 |
+
+At `Advanced` the lookups take 28% less time in Node and 27% less in QuickJS:
+the pooled vector and set keys are no longer rehashed per lookup (the map
+keys' hashes were already cached), and each key's first hash is the embedded
+one. What remains is mostly the structural `=` against the stored key. Below
+`Advanced` every lookup builds its key, which is hashed once either way, so
+those levels move by about as much as the other workloads, 2-4%, which the
+lower load of the second run explains. Parse plus first execution, median ms:
+
+| Fixture | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: |
+| constant-keys, none | 12.83 | 11.88 | 31.06 | 29.00 |
+| constant-keys, advanced | 8.30 | 8.08 | 14.95 | 13.62 |
+| constant-literals, advanced | 4.83 | 4.77 | 8.39 | 7.96 |
+| keyword-lookups, advanced | 3.55 | 3.41 | 6.79 | 6.33 |
+| vector-printed, advanced | 3.63 | 3.50 | 6.72 | 6.30 |
+
+Startup improves by 2-9% at every level, `none` included, so the difference
+is mostly the load; seeding the constants' hashes adds no cost that this run
+can resolve.

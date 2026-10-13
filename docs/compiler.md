@@ -173,9 +173,12 @@ the output reads is declared once after the runtime, `const k0 = rt$keyword(null
 (see "Phase 1 constant table extension points" in
 [advanced-optimization.md](advanced-optimization.md)). The same table holds
 each distinct constant collection literal, reader metadata on one and `#uuid`
-literal, built once from the entries of its parts:
-`const k1 = rt$vectorFromArray([1, k0]);`. Equal literals at different sites
-are therefore one value, which the advanced-mode contract allows. A constant
+literal, built once from the entries of its parts, with the hash the runtime
+would compute for it: `const k1 = rt$hashed(rt$vectorFromArray([1, k0]),
+-1713415597);` (`src/value_hash.rs` ports the runtime's hashing; a program
+that extends a core protocol beyond its own types embeds no hashes). Equal
+literals at different sites are therefore one value, which the advanced-mode
+contract allows. A constant
 of 1,024 or more nodes is built on its first read instead,
 `let c2; const k2 = () => c2 ??= ...;`, read as `k2()`. A literal with a
 local, global or call inside, a set literal whose members are not all

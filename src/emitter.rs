@@ -16,6 +16,7 @@ use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManife
 use crate::runtime_slice::{
     ConstantPool, EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots,
 };
+use crate::value_hash::ConstantHashes;
 
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
@@ -152,6 +153,9 @@ fn emit_js_mode(
                 lazy: Vec::new(),
                 composites: 0,
                 classes: vec![ConstantClass::Unknown; program.exprs.len()],
+                hashes: inference
+                    .is_some_and(|inference| inference.facts().core_protocols_intact())
+                    .then(ConstantHashes::default),
             }),
             output: String::new(),
             indent: 1,
@@ -643,7 +647,7 @@ enum ConstantKey<'a> {
 /// How a composite constant is built, which is how its sites build it below
 /// `Advanced`, so a pooled value differs from a per-site one only in identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Composite {
+pub(crate) enum Composite {
     /// `vectorFromArray([items])`.
     Vector,
     /// `listFromArray([items])`, a quoted list.
@@ -671,7 +675,7 @@ enum Composite {
 /// A part of a composite constant: an inline scalar, an empty collection
 /// singleton or another table entry.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum ConstantPart<'a> {
+pub(crate) enum ConstantPart<'a> {
     Nil,
     Bool(bool),
     /// The bits of the number, with one NaN; `-0` and `0` stay distinct.
@@ -684,7 +688,7 @@ enum ConstantPart<'a> {
 /// The empty collections every level reads from the runtime's `EMPTY`
 /// singletons instead of allocating (light-cljs-218 tier 1), as upstream does.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum EmptyCollection {
+pub(crate) enum EmptyCollection {
     Vector,
     Map,
     Set,
@@ -881,6 +885,11 @@ struct ConstantTable<'a> {
     composites: usize,
     /// What the pool knows about each expression, by `ExprId`.
     classes: Vec<ConstantClass>,
+    /// The entries' hashes, which composite initializers embed
+    /// (light-cljs-219), when the program extends no core protocol beyond its
+    /// own types: then the runtime's `hash` of a constant is a function of
+    /// its structure, which `crate::value_hash` computes.
+    hashes: Option<ConstantHashes<'a>>,
 }
 
 struct Emitter<'a> {
@@ -1125,7 +1134,11 @@ impl<'a> Emitter<'a> {
         let number = self.constant_entry(key, false, |emitter| {
             emitter.construct_named(literal, symbol)
         });
-        self.constants.as_mut().unwrap().named[literal.0][usize::from(symbol)] = Some(number);
+        let constants = self.constants.as_mut().unwrap();
+        constants.named[literal.0][usize::from(symbol)] = Some(number);
+        if let Some(hashes) = &mut constants.hashes {
+            hashes.named(number, symbol, namespace, name);
+        }
         number
     }
 
@@ -1181,11 +1194,37 @@ impl<'a> Emitter<'a> {
                     constructor,
                     parts: parts.clone(),
                 };
-                ConstantPart::Entry(self.constant_entry(key, lazy, |emitter| {
+                let (mut created, mut hash) = (false, None);
+                let number = self.constant_entry(key, lazy, |emitter| {
+                    created = true;
+                    hash = emitter
+                        .constants
+                        .as_ref()
+                        .unwrap()
+                        .hashes
+                        .as_ref()
+                        .and_then(|hashes| hashes.composite_hash(constructor, &parts));
+                    // `withMeta` copies its value's hash, and a `#uuid`
+                    // caches its own.
+                    let seeded = hash
+                        .filter(|_| !matches!(constructor, Composite::WithMeta | Composite::Uuid));
+                    if seeded.is_some() {
+                        emitter.rt(RuntimeName::export("hashed"));
+                        emitter.output.push('(');
+                    }
                     emitter.construct(constructor, parts.len(), |emitter, index| {
                         emitter.part(parts[index]);
                     });
-                }))
+                    if let Some(hash) = seeded {
+                        write!(emitter.output, ", {hash})").unwrap();
+                    }
+                });
+                if let Some(hashes) = &mut self.constants.as_mut().unwrap().hashes
+                    && created
+                {
+                    hashes.composite(number, constructor, parts, hash);
+                }
+                ConstantPart::Entry(number)
             }
         }
     }

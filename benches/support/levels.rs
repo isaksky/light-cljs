@@ -42,9 +42,9 @@ struct Steady {
     expected: fn(u64) -> u64,
 }
 
-/// The ratchet's seq-pipeline, record-protocol, keyword-lookups and
-/// constant-literals fixtures, as workloads over `n`.
-const STEADY: [Steady; 4] = [
+/// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
+/// constant-literals and constant-keys fixtures, as workloads over `n`.
+const STEADY: [Steady; 5] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -86,7 +86,25 @@ const STEADY: [Steady; 4] = [
         input: 2_000,
         expected: constant_literals,
     },
+    Steady {
+        name: "constant-keys",
+        source: "(def table (zipmap (concat (map (fn [i] {:id i :kind :row}) (range 12))
+                                        (map (fn [i] [:pos i (inc i)]) (range 12))
+                                        (map (fn [i] #{i :tag}) (range 12)))
+                                (range 36)))
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (recur (inc i) (+ total (get table {:id 3 :kind :row}) (get table [:pos 5 6])
+                                               (get table #{7 :tag}) (get table {:id 11 :kind :row} 0)))
+                             total)))",
+        input: 200,
+        expected: constant_keys,
+    },
 ];
+
+fn constant_keys(n: u64) -> u64 {
+    62 * n
+}
 
 fn constant_literals(n: u64) -> u64 {
     7 * n

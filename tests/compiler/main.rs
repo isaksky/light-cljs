@@ -44,6 +44,7 @@ mod cljc_prefixes;
 mod compile_time_units;
 mod configured_custom_source_context;
 mod configured_source_context;
+mod constant_hashes;
 mod constant_pool;
 mod constant_table;
 mod control;

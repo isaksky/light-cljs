@@ -27,6 +27,9 @@
 //!    transients, `with-meta`, hashes and printing, can also be rendered with
 //!    their first item behind `identity` (`Literals::Built`), which no level
 //!    pools. P so rendered records exactly what P records, at every level.
+//!    Since light-cljs-219 a read also compares a literal with one built at
+//!    its site and throws if they are `=` but hash apart, so the hashes
+//!    `Advanced` embeds in pooled constants meet the runtime's.
 //!
 //! Failures print the seed, every namespace's source and the three output
 //! sizes. Replay a seed with `LIGHT_CLJS_GENERATED_SEED=<u64>` (it runs in
@@ -133,7 +136,7 @@ struct Compiled {
 
 /// Load the program's entry namespace and its dependencies from a temporary
 /// source root, as `--compile --entry` does.
-fn analyze(program: &NamespaceProgram, sources: &[(String, String)]) -> Program {
+pub(super) fn analyze(program: &NamespaceProgram, sources: &[(String, String)]) -> Program {
     let root = Sources::new();
     for (path, source) in sources {
         root.write(path, source);
@@ -312,11 +315,30 @@ fn pool_composites(js: &str) -> usize {
 
 /// Bytes of `js` without the digits inside identifiers, so outputs that differ
 /// only in compiler numbering (`g12`, `l3`, `r4_0`, `__light2_`) have the same
-/// size. Digits of numeric literals count.
+/// size, and without the hashes constant declarations embed
+/// (`rt$hashed(<value>, <hash>)`, light-cljs-219), whose length varies with
+/// the source paths in var metadata. Digits of other numeric literals count.
 fn normalized_len(js: &str) -> usize {
     let mut length = 0;
     let mut identifier = false;
-    for byte in js.bytes() {
+    let unhashed: String = js
+        .split_inclusive('\n')
+        .map(|line| {
+            let Some(body) = line
+                .strip_suffix(");\n")
+                .filter(|_| line.contains("rt$hashed("))
+            else {
+                return line;
+            };
+            match body.rsplit_once(", ") {
+                Some((value, hash)) if hash.trim_start_matches('-').parse::<u32>().is_ok() => {
+                    &line[..value.len()]
+                }
+                _ => line,
+            }
+        })
+        .collect();
+    for byte in unhashed.bytes() {
         if byte.is_ascii_digit() {
             if !identifier {
                 length += 1;
@@ -629,6 +651,15 @@ fn checks_reject_changed_records_surviving_garbage_and_residue() {
         normalized_len("g10 = l3 + 3;")
     );
     assert_ne!(normalized_len("g1 = 3;"), normalized_len("g1 = 30;"));
+    // Nor are the digits of an embedded constant hash.
+    assert_eq!(
+        normalized_len("  const k1 = rt$hashed(rt$vectorFromArray([10]), -1);\n"),
+        normalized_len("  const k1 = rt$hashed(rt$vectorFromArray([10]), 123456789);\n")
+    );
+    assert_ne!(
+        normalized_len("  const k1 = rt$hashed(rt$vectorFromArray([1]), 5);\n"),
+        normalized_len("  const k1 = rt$hashed(rt$vectorFromArray([10]), 5);\n")
+    );
 }
 
 #[test]

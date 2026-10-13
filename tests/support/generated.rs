@@ -1095,7 +1095,11 @@ impl Builder {
     /// printed length, hash, equality with a repeated or other literal, a
     /// transient built from it, or `with-meta` on it, each also checking that
     /// the literal itself is unchanged. Sometimes the literal is partially
-    /// constant: a vector holding a local among constant items.
+    /// constant: a vector holding a local among constant items. Since
+    /// light-cljs-219 a read may also compare it with the same or another
+    /// literal built at its site in both renderings, and throws if they are
+    /// `=` but hash apart, so a pooled constant's precomputed hash meets the
+    /// runtime's hash of a fresh value.
     fn literal_read(&mut self, locals: &[String]) -> String {
         let literal = if !locals.is_empty() && self.literal_rng.choose(4) == 0 {
             let local = locals[self.literal_rng.choose(locals.len())].clone();
@@ -1111,7 +1115,7 @@ impl Builder {
                 "(let [v {text}] (+ (count (persistent! ({update} (transient v) {added}))) (count v)))"
             )
         };
-        match (self.literal_rng.choose(6), literal.collection()) {
+        match (self.literal_rng.choose(7), literal.collection()) {
             (1, _) if !literal.has_set() => format!("(count (pr-str {text}))"),
             (2, _) => format!("(mod (hash {text}) 97)"),
             (3, _) => {
@@ -1128,6 +1132,18 @@ impl Builder {
             (5, Literal::Vector(_) | Literal::Map(_) | Literal::Set(_)) => format!(
                 "(let [v {text}] (+ (count (meta (with-meta v {{:x 1}}))) (count (meta v))))"
             ),
+            (6, _) => {
+                let other = if self.literal_rng.choose(2) == 0 {
+                    literal.clone()
+                } else {
+                    self.constant_literal(2)
+                };
+                format!(
+                    "(let [a {text} b {}] (if (= a b) (if (= (hash a) (hash b)) 1 \
+                     (throw (js/Error. \"equal values hash apart\"))) 0))",
+                    other.render(true)
+                )
+            }
             _ => format!("(count {text})"),
         }
     }

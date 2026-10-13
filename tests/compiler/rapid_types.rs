@@ -396,3 +396,13 @@ fn callable_types_and_reify_keep_their_invoke_machinery() {
         "[ 1, 2 ]",
     );
 }
+
+#[test]
+fn an_extension_without_methods_whose_value_is_used_compiles() {
+    // Its value is the last form of a function, so every method would be
+    // kept; with none, there are none to keep (found by light-cljs-219).
+    every_level(
+        "(defn f [] (deftype T []) (extend-type T)) (array (nil? (f)))",
+        "[ true ]",
+    );
+}

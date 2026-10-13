@@ -2645,8 +2645,8 @@
   }
   //@unit hash requires: builtin, cells, constructorHashes, hashDouble, hashInt, hashNamed,
   //@ hashOrderedColl, identityCounter, identityHashes, IHash, implementsProtocol, keywords,
-  //@ lazyValues, maps, mapTraversal, mixCollectionHash, publicCollectionSlots, sequential, sets,
-  //@ stringHash, symbols, uuidHashes, uuids, vars
+  //@ lazyValues, maps, mapTraversal, mixCollectionHash, publicCollectionSlots, queues, sequential,
+  //@ sets, stringHash, symbols, uuidHashes, uuids, vars, vectors
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
@@ -2664,12 +2664,11 @@
       return uuidHashes.get(value);
     }
     if (vars.has(value)) return hash(vars.get(value).symbol);
-    if (constructorHashes.has(value) && constructorHashes.get(value) != null) return constructorHashes.get(value) | 0;
+    const cached = constructorHashes.get(value);
+    if (cached != null) return cached | 0;
     const named = keywords.get(value) || symbols.get(value);
     if (named) {
       if (symbols.has(value) || keywords.has(value)) {
-        const cached = constructorHashes.get(value);
-        if (cached != null) return cached | 0;
         const result = (hashNamed(named) + (keywords.has(value) ? 0x9e3779b9 : 0)) | 0;
         constructorHashes.set(value, result);
         return result;
@@ -2689,13 +2688,11 @@
       let result = 0;
       for (const entry of members) result = (result + entry.hash) | 0;
       const resultHash = mixCollectionHash(result, members.length);
-      if (publicCollectionSlots.has(value)) constructorHashes.set(value, resultHash);
+      constructorHashes.set(value, resultHash);
       return resultHash;
     }
     if (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind)) {
-      if (["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
-        const cached = constructorHashes.get(value);
-        if (cached != null) return cached | 0;
+      if (vectors.has(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
         const result = hashOrderedColl(value);
         constructorHashes.set(value, result);
         return result;
@@ -2712,6 +2709,9 @@
     if (!identityHashes.has(value)) identityHashes.set(value, ++identityCounter);
     return identityHashes.get(value);
   }
+
+  //@unit hashed requires: constructorHashes
+  function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
   //@ EmptyListValue, generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues,
@@ -7563,5 +7563,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()

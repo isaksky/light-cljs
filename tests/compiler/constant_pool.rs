@@ -202,11 +202,11 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
     assert_eq!(
         declarations(&advanced),
         [
-            "0 = rt$vectorFromArray([1, 2]);",
+            "0 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
             "1 = rt$keyword(null, \"k\");",
-            "2 = rt$mapFromArray([k1, k0]);",
-            "3 = rt$vectorFromArray([k0, k2]);",
-            "4 = rt$listFromArray([1, 2]);",
+            "2 = rt$hashed(rt$mapFromArray([k1, k0]), 1918603281);",
+            "3 = rt$hashed(rt$vectorFromArray([k0, k2]), 1067525070);",
+            "4 = rt$hashed(rt$listFromArray([1, 2]), 1185709346);",
         ]
     );
     // The sites read the entries; no site builds a literal.
@@ -218,7 +218,7 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
         ApplicationOptions::new(OptimizationLevel::Advanced),
     )
     .emit_esm();
-    assert!(esm.contains("  const k3 = rt$vectorFromArray([k0, k2]);\n"));
+    assert!(esm.contains("  const k3 = rt$hashed(rt$vectorFromArray([k0, k2]), 1067525070);\n"));
     // Below `Advanced` each evaluation builds its literal, as before.
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         let js = emit(&program, level);
@@ -248,12 +248,12 @@ fn reader_distinct_constants_are_distinct_entries() {
     let advanced = emit(&program(source), OptimizationLevel::Advanced);
     let declarations = declarations(&advanced);
     for expected in [
-        "rt$constantSetFromArray([1, 1]);",
-        "rt$setFromArray([1]);",
-        "rt$mapFromArray([1, k",
-        "rt$constantMapFromArray([1, k",
-        "rt$constantSetFromArray([k",
-        "rt$setFromArray([k",
+        "rt$hashed(rt$constantSetFromArray([1, 1]), ",
+        "rt$hashed(rt$setFromArray([1]), ",
+        "rt$hashed(rt$mapFromArray([1, k",
+        "rt$hashed(rt$constantMapFromArray([1, k",
+        "rt$hashed(rt$constantSetFromArray([k",
+        "rt$hashed(rt$setFromArray([k",
     ] {
         assert!(
             declarations.iter().any(|line| line.contains(expected)),
@@ -383,10 +383,16 @@ fn large_constants_are_lazy_cells_built_on_first_read() {
     assert_eq!(declarations.len(), 3, "{declarations:?}");
     assert_eq!(
         declarations[0],
-        "0 = () => c0 ??= rt$vectorFromArray([7, 8, 9]);"
+        "0 = () => c0 ??= rt$hashed(rt$vectorFromArray([7, 8, 9]), 298402038);"
     );
-    assert!(declarations[1].starts_with("1 = () => c1 ??= rt$vectorFromArray([k0(), 0, 1, 2, "));
-    assert_eq!(declarations[2], "2 = rt$vectorFromArray([1, 2]);");
+    assert!(
+        declarations[1]
+            .starts_with("1 = () => c1 ??= rt$hashed(rt$vectorFromArray([k0(), 0, 1, 2, ")
+    );
+    assert_eq!(
+        declarations[2],
+        "2 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);"
+    );
     assert!(advanced.contains("  let c1; const k1 = () => c1 ??= "));
     assert!(advanced.contains("return k1();") && advanced.contains("return k0();"));
     assert_eq!(
@@ -465,15 +471,15 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             "1 = rt$keyword(null, \"tags\");",
             "2 = rt$keyword(null, \"b\");",
             "3 = rt$keyword(null, \"a\");",
-            "4 = rt$setFromArray([k2, k3]);",
+            "4 = rt$hashed(rt$setFromArray([k2, k3]), 551401264);",
             "5 = rt$keyword(null, \"pos\");",
-            "6 = rt$vectorFromArray([1, 2]);",
+            "6 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
             "7 = rt$keyword(null, \"empty\");",
             "8 = rt$keyword(null, \"meta\");",
             "9 = rt$keyword(null, \"kind\");",
             "10 = rt$keyword(null, \"row\");",
             "11 = rt$keyword(null, \"dims\");",
-            "12 = rt$mapFromArray([k9, k10, k11, k6]);",
+            "12 = rt$hashed(rt$mapFromArray([k9, k10, k11, k6]), 1014014460);",
         ]
     );
     let table = pool(&program, OptimizationLevel::Advanced);
@@ -483,7 +489,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             entries: 13,
             composites: 3,
             lazy: 0,
-            bytes: 515
+            bytes: 583
         }
     );
     assert_eq!(
@@ -495,7 +501,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         .to_string()
         .lines()
         .nth(1),
-        Some("constant pool: 13 entries (3 composite, 0 lazy), 515 bytes")
+        Some("constant pool: 13 entries (3 composite, 0 lazy), 583 bytes")
     );
     assert_eq!(table.bytes, table_bytes(&advanced));
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {

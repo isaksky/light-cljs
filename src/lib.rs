@@ -39,6 +39,7 @@ mod reader_literals;
 pub mod runtime_manifest;
 pub mod runtime_slice;
 pub mod source_provider;
+pub mod value_hash;
 
 pub use analyzer::{
     AnalysisError, AnalysisErrorKind, CoreFnId, Expr, ExprContext, ExprId, ExprKind, GlobalBinding,

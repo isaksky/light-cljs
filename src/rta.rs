@@ -418,6 +418,10 @@ impl Walker<'_> {
                     }
                 }
                 if all {
+                    // Also when there are none to keep.
+                    self.kept
+                        .entry(id)
+                        .or_insert_with(|| vec![false; methods.len()]);
                     for (index, _) in methods.iter().enumerate() {
                         self.activate(Entry {
                             owner: id,

@@ -323,7 +323,11 @@ retention report covers runtime units. Later phases plug in here:
   come from a stream of their own: repeated and nested constants, reader
   metadata, partially constant vectors holding a local, read through
   `count`, `pr-str`, `hash`, `=`, transients and `with-meta`, each read also
-  checking that the literal itself is unchanged. Observations are host values only (numbers
+  checking that the literal itself is unchanged. Since 219 a read also
+  compares a literal with the same or another literal built at its site and
+  throws if they are `=` but hash apart, and the sizes ignore the digits of
+  the hashes constant declarations embed, which follow the source paths in
+  var metadata. Observations are host values only (numbers
   and `pr-str` strings), so the harness does not depend on the runtime anchor
   and keeps working when advanced output slices the runtime.
 
@@ -1251,13 +1255,15 @@ under `js*` below.
 
 Tracked as Pellets 218-221 after keyword interning (208), whose constant
 table they extend (see "Phase 1 constant table extension points"). Tiers 1
-and 2 are implemented (218, below). Before them every literal was rebuilt per
-evaluation: `[1 2 3]` copies, freezes and wraps a fresh array; `{:a 1}`
-allocates the map each time (its keyword is interned since 208); `[]`
-allocated although the runtime has `EMPTY` singletons. Below `Advanced`
-non-empty literals still are. No hash cache exists for vectors, maps or
-sets. Sharing is safe because payload arrays are frozen, `withMeta` returns
-a new or unchanged object, and transients copy.
+and 2 are implemented (218, below), and tier 3 (219). Before them every
+literal was rebuilt per evaluation: `[1 2 3]` copies, freezes and wraps a
+fresh array; `{:a 1}` allocates the map each time (its keyword is interned
+since 208); `[]` allocated although the runtime has `EMPTY` singletons.
+Below `Advanced` non-empty literals still are. Before 219 maps, lists,
+records and positional constructions cached their hash, but vectors and
+sets did not, so a constant vector used as a key was rehashed on every
+lookup. Sharing is safe because payload arrays are frozen, `withMeta`
+returns a new or unchanged object, and transients copy.
 
 Precedents: upstream hoists only keywords and symbols and maps empty
 literals to `EMPTY`. shadow-cljs has an opt-in `:shadow-optimize-constants`
@@ -1315,7 +1321,7 @@ fixtures pin per-evaluation allocation counts and pool bytes.
 
 #### Constant pool extension points
 
-Tiers 1 and 2 are implemented (light-cljs-218).
+Tiers 1 and 2 are implemented (light-cljs-218), and tier 3 (light-cljs-219).
 
 - **Empty singletons (tier 1).** At every level, and in the REPL, macro host
   and deferred units, which share the emitter, `[]`, `{}`, `#{}` and `()`
@@ -1368,18 +1374,40 @@ Tiers 1 and 2 are implemented (light-cljs-218).
   declarations, and `--size-report` prints
   `constant pool: N entries (C composite, L lazy), B bytes` under its
   summary line. Below `Advanced` it is empty.
-- **For 219 (hash caching).** A composite entry's key holds its constructor
-  and parts, and parts precede their entries, so a Rust port of the runtime
-  hash can compute each entry's hash from its parts' hashes in entry order
-  (keywords and symbols from their spelling) and pass it to the entry's
-  initializer. Pool values are built by the ordinary constructors, so the
-  runtime hash cache applies to them unchanged.
+- **Hash caching (tier 3, light-cljs-219).** At every level the runtime's
+  `hash` keeps the hash of a vector, set or queue in `constructorHashes`, as
+  it already did for maps, lists, keywords and symbols (records keep theirs
+  in `__hash`). The values are immutable: `withMeta` copies the hash,
+  metadata does not take part, and updates and `persistent!` make new
+  values. Sequence views are not cached, because `(seq #js [...])` reads a
+  host array. A collection holding a value whose hash can change (a `Date`,
+  a mutable `deftype`) keeps its first hash, as upstream's `__hash` does.
+- **Precomputed hashes (tier 3).** `src/value_hash.rs` ports the runtime's
+  hashing bit for bit (Murmur3 mixing, string, number, keyword and symbol
+  hashes, ordered and unordered collections, map entries) and
+  `ConstantHashes` applies it to the pool: parts precede their entries, so
+  each composite's hash is computed from its parts' hashes as it is
+  declared. Its initializer stores it, `rt$hashed(rt$vectorFromArray([1,
+  k0]), -1713415597)`, where the runtime's `hashed` seeds the cache, so the
+  first hash of a pooled constant is a lookup too. `withMeta` entries inherit
+  their value's hash, and `#uuid` entries cache their own on first use. Map
+  and set literals merge equal keys as their builders do (first key, last
+  value); when the pool cannot tell whether two keys are `=` (NaN, keys that
+  are maps or sets, unequal keywords with equal spellings) the entry and the
+  entries containing it get no hash. Precomputation needs the program to
+  extend core protocols only to its own top-level types
+  (`ProgramFacts::core_protocols_intact`): `hash` dispatches `IHash` and walks
+  collections with `seq`, so an extension to a host or runtime type could
+  change what it computes.
 - **For 220 (key shapes).** A map literal with constant keys and dynamic
   values is built at its site, with its keys read from the table. A shape is
   another `ConstantKey` variant (the keys' parts), declared with
   `constant_entry` from the map site in `value_expr`; `constant_nodes` tells
   which items are constant. The generator's `Literal` in
   `tests/support/generated.rs` is where shaped maps with colliding keys go.
+  A shape's key hashes come from `ConstantHashes::part` (219), when the
+  table has `hashes`, and `ConstantHashes::composite_hash` shows how the
+  builders merge equal keys.
 - **For 221 (folding).** `constant_nodes` and `constant_part` give the value
   of any constant expression as parts, which a folder can evaluate `get`,
   `count`, `nth` and `contains?` against, keeping the throws of out-of-range
@@ -1387,6 +1415,17 @@ Tiers 1 and 2 are implemented (light-cljs-218).
 - **For 212.** Hoisted functions are entries under a new key variant;
   `constant_entry`'s initializer may reference globals only inside function
   bodies, and a function entry should never be lazy.
+- **Hash tests.** `tests/compiler/constant_hashes.rs` rewrites the output's
+  `hashed` to compare each embedded hash with the runtime's own, in Node and
+  in QuickJS, for edge cases (`-0`, NaN, large and non-safe integers, non-BMP
+  strings and lone surrogates, namespaced keywords and symbols, nested empty
+  collections, reader-distinct `1`/`1.0` keys, merged keys, metadata, a lazy
+  cell), seeded random scalars, every constant of the language and execution
+  corpora and the generated programs; it also checks that cached hashes do
+  not go stale and that `=` values hash alike, pooled or built. The
+  generator's literal reads compare a literal with a built one in both
+  renderings and throw if they are `=` but hash apart. `value_hash`'s unit
+  tests pin runtime values.
 - **Tests.** `tests/compiler/constant_pool.rs` pins the empty singletons at
   every level and in the REPL, the table of a nested program, reader-distinct
   entries, metadata, transients, equality and hashes on pooled values,
@@ -1454,6 +1493,12 @@ upstream states that advanced mode is unsafe for certain patterns.
   transients are unaffected. Mutating a pooled value through host interop
   (`set!` of a property, `reset-meta!`) is visible at every site that reads
   it.
+- The `__hash` field of a pooled collection holds its hash before its first
+  `hash`, because the compiler computed it (light-cljs-219), as upstream's
+  `_hash` of a keyword does, and assigning the `_hash` or `__hash` field of a
+  keyword, symbol or collection through interop does not change the hash of
+  a pooled constant that contains it. At every level a collection's `__hash`
+  is nil until it is hashed and its hash afterwards.
 - `set!` on a core operation forces indirection for that operation only.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the hygiene pass renames every name the compiler binds away from it.

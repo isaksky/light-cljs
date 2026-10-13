@@ -55,7 +55,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "seq-pipeline",
         source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
                  (drop 1) (mapcat identity) into-array))",
-        ceilings: [363_000, 363_000, 139_000],
+        ceilings: [363_000, 363_000, 138_000],
         removed: [0, 0, 0],
         printed: "[ 6, 8 ]\nundefined\n",
     },
@@ -102,7 +102,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [365_000, 365_000, 12_000],
+        ceilings: [365_000, 364_000, 12_000],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -145,6 +145,21 @@ pub const FIXTURES: &[Fixture] = &[
         ceilings: [366_000, 366_000, 12_000],
         removed: [0, 0, 0],
         printed: "9\n",
+    },
+    // Constant collections as keys of a hash map (light-cljs-219): the
+    // runtime caches each key's hash, and at `Advanced` the pooled keys carry
+    // their hashes from the compiler.
+    Fixture {
+        name: "constant-keys",
+        source: "(def table (zipmap (concat (map (fn [i] {:id i :kind :row}) (range 12))
+                                        (map (fn [i] [:pos i (inc i)]) (range 12))
+                                        (map (fn [i] #{i :tag}) (range 12)))
+                                (range 36)))
+                 (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
+                    (get table {:id 11 :kind :row} 0))",
+        ceilings: [364_000, 364_000, 125_000],
+        removed: [0, 0, 0],
+        printed: "62\n",
     },
     // Retained raw JavaScript is an escape below `Advanced` only.
     Fixture {

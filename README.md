@@ -124,8 +124,9 @@ functions directly, embeds just the runtime units the program reaches,
 registers namespaces with the runtime only for programs that use reflection
 such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
 a printing `toString` on collections) only for programs that print,
-builds each distinct constant literal once, and drops the methods and types
-of the program that no instance can use (see
+builds each distinct constant literal once, with its hash computed by the
+compiler, and drops the methods and types of the program that no instance
+can use (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
