@@ -8,11 +8,14 @@ use std::{
 };
 
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_warnings};
-use light_cljs::{LineIndex, TokenKind, Tokenizer, compile_namespace, emit_js, parse};
+use light_cljs::{
+    ApplicationOptions, LineIndex, MacroHost, OptimizationLevel, TokenKind, Tokenizer, parse,
+    prepare_application,
+};
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode (currently the same as prepare).\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -27,9 +30,19 @@ fn print_warnings(warnings: &[AnalysisWarning]) {
     }
 }
 
+fn optimization_level(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<OptimizationLevel, Box<dyn Error>> {
+    let level = args
+        .next()
+        .ok_or("--optimize requires a level: none, prepare or advanced")?;
+    Ok(level.to_string_lossy().parse()?)
+}
+
 fn run_namespace(
     mut args: impl Iterator<Item = std::ffi::OsString>,
     options: AnalysisOptions,
+    mut level: OptimizationLevel,
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = None;
     let mut roots = Vec::new();
@@ -37,6 +50,7 @@ fn run_namespace(
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--esm") => esm = true,
+            Some("--optimize") => level = optimization_level(&mut args)?,
             Some("--entry") => {
                 if entry.is_some() {
                     return Err("--entry may only be specified once".into());
@@ -55,30 +69,22 @@ fn run_namespace(
         }
     }
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
-    let output = if esm {
-        let mut warnings = Vec::new();
-        let result = light_cljs::compiler::compile_namespace_esm_with_warnings(
-            &entry,
-            &roots,
-            options,
-            &mut warnings,
-        );
-        if options.warning_mode {
-            print_warnings(&warnings);
-        }
-        result?
-    } else if options.warning_mode {
-        let mut warnings = Vec::new();
-        let result = light_cljs::compiler::compile_namespace_with_warnings(
-            &entry,
-            &roots,
-            options,
-            &mut warnings,
-        );
+    let mut warnings = Vec::new();
+    let program = light_cljs::compiler::analyze_namespace_entry(
+        &entry,
+        &roots,
+        &mut MacroHost::new(),
+        options,
+        &mut warnings,
+    );
+    if options.warning_mode {
         print_warnings(&warnings);
-        result?
+    }
+    let prepared = prepare_application(&program?, ApplicationOptions::new(level));
+    let output = if esm {
+        prepared.emit_esm()
     } else {
-        compile_namespace(&entry, &roots)?
+        prepared.emit_js()
     };
     io::stdout().lock().write_all(output.as_bytes())?;
     Ok(())
@@ -117,6 +123,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     if mode != "tokens" {
         first = args.next();
     }
+    let mut level = OptimizationLevel::default();
+    while first.as_deref().and_then(|arg| arg.to_str()) == Some("--optimize") {
+        if mode != "compile" {
+            return Err("--optimize requires --compile".into());
+        }
+        level = optimization_level(&mut args)?;
+        first = args.next();
+    }
     if matches!(
         first.as_deref().and_then(|arg| arg.to_str()),
         Some("--entry" | "--source-root" | "--esm")
@@ -124,7 +138,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         if mode != "compile" {
             return Err("namespace options require --compile".into());
         }
-        return run_namespace(first.into_iter().chain(args), options);
+        return run_namespace(first.into_iter().chain(args), options, level);
     }
     let source_name = match first.as_deref() {
         Some(arg) if arg == "--text" => "<text>.cljc".to_owned(),
@@ -151,8 +165,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             source
         }
     };
-    if args.next().is_some() {
-        return Err(USAGE.into());
+    while let Some(arg) = args.next() {
+        if mode != "compile" || arg != "--optimize" {
+            return Err(USAGE.into());
+        }
+        level = optimization_level(&mut args)?;
     }
 
     let stdout = io::stdout();
@@ -189,7 +206,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )
             })?;
             if mode == "compile" {
-                write!(out, "{}", emit_js(&program))?;
+                let prepared = prepare_application(&program, ApplicationOptions::new(level));
+                write!(out, "{}", prepared.emit_js())?;
             } else {
                 writeln!(out, "{program:#?}")?;
             }

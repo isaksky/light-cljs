@@ -1,5 +1,10 @@
+use light_cljs::compiler::analyze_namespace_entry;
+use light_cljs::{
+    ApplicationOptions, MacroHost, OptimizationLevel, analyze, parse, prepare_application,
+};
 use std::{
     io::Write,
+    path::Path,
     process::{Command, Stdio},
 };
 
@@ -201,4 +206,125 @@ fn vector_keyword_acceptance_compiles_and_executes_from_cli() {
     let result = child.wait_with_output().unwrap();
     assert!(result.status.success());
     assert_eq!(result.stdout, b"2\n");
+}
+
+fn light_cljs(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn compiled(args: &[&str]) -> String {
+    let output = light_cljs(args);
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn optimize_selects_the_application_level_for_text_and_namespace_compiles() {
+    let source = r#"(def unused "OPTIMIZE_CLI_SENTINEL") 42"#;
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let root = "examples/namespaces";
+    let namespace = analyze_namespace_entry(
+        "demo.main",
+        &[Path::new(env!("CARGO_MANIFEST_DIR")).join(root)],
+        &mut MacroHost::new(),
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    for level in OptimizationLevel::ALL {
+        let name = level.name();
+        let expected = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            expected.contains("OPTIMIZE_CLI_SENTINEL"),
+            level == OptimizationLevel::None,
+            "{level}"
+        );
+        // The flag may come before or after the input.
+        for args in [
+            ["--compile", "--optimize", name, "--text", source],
+            ["--compile", "--text", source, "--optimize", name],
+        ] {
+            assert_eq!(compiled(&args), expected, "{args:?}");
+        }
+        let result = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .args(["--print", &expected])
+            .output()
+            .unwrap();
+        assert_eq!(result.stdout, b"42\n", "{level}");
+
+        let expected = prepare_application(&namespace, ApplicationOptions::new(level)).emit_js();
+        for args in [
+            [
+                "--compile",
+                "--optimize",
+                name,
+                "--entry",
+                "demo.main",
+                "--source-root",
+                root,
+            ],
+            [
+                "--compile",
+                "--entry",
+                "demo.main",
+                "--source-root",
+                root,
+                "--optimize",
+                name,
+            ],
+        ] {
+            assert_eq!(compiled(&args), expected, "{args:?}");
+        }
+    }
+    assert_eq!(
+        compiled(&["--compile", "--text", source]),
+        prepare_application(&program, ApplicationOptions::default()).emit_js(),
+        "prepare is the default"
+    );
+}
+
+#[test]
+fn optimize_rejects_unknown_levels_and_non_compile_modes() {
+    for (args, message) in [
+        (
+            &["--compile", "--optimize", "fast", "--text", "1"][..],
+            "unknown optimization level \"fast\": expected none, prepare or advanced",
+        ),
+        (
+            &["--compile", "--text", "1", "--optimize"][..],
+            "--optimize requires a level: none, prepare or advanced",
+        ),
+        (
+            &[
+                "--compile",
+                "--entry",
+                "demo.main",
+                "--optimize",
+                "ADVANCED",
+            ][..],
+            "unknown optimization level \"ADVANCED\"",
+        ),
+        (
+            &["--parse", "--optimize", "none", "--text", "1"][..],
+            "--optimize requires --compile",
+        ),
+        (
+            &["--analyze", "--text", "1", "--optimize", "none"][..],
+            "Usage:",
+        ),
+    ] {
+        let output = light_cljs(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
 }

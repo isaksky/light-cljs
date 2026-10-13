@@ -451,3 +451,31 @@ unsuitable for claiming a reliable speedup or regression from these samples.
 These are application preparation/emission and fresh Node measurements, not
 macro compilation, persistent QuickJS throughput, allocation or native GC
 measurements.
+
+## Optimization-level size ratchet — October 12, 2026
+
+Baseline for the [advanced optimization](../docs/advanced-optimization.md)
+work (light-cljs-201). `--optimize none|prepare|advanced` selects the
+application level; `advanced` does not change output yet. The ratchet in
+[tests/compiler/size_ratchet.rs](../tests/compiler/size_ratchet.rs) pins these
+sizes with ceilings rounded up to the next 1,000 bytes; later pellets lower
+them and add rows here. Raw bytes are the emitted expression
+(`emit_js()`, equal to `--compile --optimize LEVEL --text` output); gzip is
+`gzip -9`.
+
+| Fixture | Source | Raw bytes, none / prepare / advanced | Gzip bytes | Ceiling |
+| --- | --- | ---: | ---: | ---: |
+| console-log-sum | `(js/console.log (+ 1 2))` | 350,927 / 350,927 / 350,927 | 83,881 | 351,000 |
+| println-hi | `(enable-console-print!) (println "hi")` | 350,814 / 350,814 / 350,814 | 83,823 | 351,000 |
+| vector-printed | `(enable-console-print!) (println [1 2 3])` | 350,839 / 350,839 / 350,839 | 83,831 | 351,000 |
+| map-printed | `(enable-console-print!) (println {})` | 350,829 / 350,829 / 350,829 | 83,824 | 351,000 |
+| seq-pipeline | upstream `trivial/core6.cljs` expression | 351,158 / 351,158 / 351,158 | 83,941 | 352,000 |
+| add | `(+ 1 2)` | 350,767 / 350,767 / 350,767 | 83,802 | 351,000 |
+| rest-fn | `(fn [& xs] xs)` | 351,111 / 351,111 / 351,111 | 83,934 | 352,000 |
+| keyword-case | `case` on keywords in a `defn` | 351,399 / 351,399 / 351,399 | 83,958 | 352,000 |
+| record-protocol | `defrecord` with a protocol call | 351,720 / 351,720 / 351,720 | 84,122 | 352,000 |
+
+Every fixture embeds the whole runtime, so the sizes differ by a few hundred
+bytes of program code. The three levels are equal because none of these
+programs has an unused definition or a specializable call; gzip is the same at
+every level.

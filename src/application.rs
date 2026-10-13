@@ -7,16 +7,93 @@ use std::collections::HashMap;
 #[cfg(test)]
 thread_local! { static PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-#[derive(Clone, Debug)]
+/// How much whole-program work application preparation does before emission.
+/// Levels are ordered: each one includes everything the previous one does.
+/// See docs/advanced-optimization.md for the roadmap behind `Advanced`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OptimizationLevel {
+    /// Emit every definition and call as analyzed. This output is the
+    /// differential oracle that every other level must agree with.
+    None,
+    /// Conservative preparation: remove discarded definitions with inert
+    /// initializers and specialize eager top-level calls. The default.
+    #[default]
+    Prepare,
+    /// Release mode. It accepts the deliberate semantic differences listed
+    /// under "Advanced-mode contract" in docs/advanced-optimization.md. Until
+    /// the passes of that design land it emits exactly what `Prepare` emits;
+    /// they hook in through [`OptimizationLevel::advanced`].
+    Advanced,
+}
+impl OptimizationLevel {
+    /// Every level from weakest to strongest, for differential tests.
+    pub const ALL: [Self; 3] = [Self::None, Self::Prepare, Self::Advanced];
+
+    /// The CLI spelling accepted by `--optimize` and [`str::parse`].
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Prepare => "prepare",
+            Self::Advanced => "advanced",
+        }
+    }
+    /// Whether the conservative removal and specialization passes run.
+    pub fn prepares(self) -> bool {
+        self >= Self::Prepare
+    }
+    /// Whether release-only passes may run. They must preserve results
+    /// relative to `None` except under the advanced-mode contract.
+    pub fn advanced(self) -> bool {
+        self >= Self::Advanced
+    }
+}
+/// `false` is [`OptimizationLevel::None`] and `true` is
+/// [`OptimizationLevel::Prepare`], the meaning of the former boolean option.
+impl From<bool> for OptimizationLevel {
+    fn from(optimize: bool) -> Self {
+        if optimize { Self::Prepare } else { Self::None }
+    }
+}
+impl std::fmt::Display for OptimizationLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+/// An optimization level name other than `none`, `prepare` or `advanced`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownOptimizationLevel(pub String);
+impl std::fmt::Display for UnknownOptimizationLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown optimization level {:?}: expected none, prepare or advanced",
+            self.0
+        )
+    }
+}
+impl std::error::Error for UnknownOptimizationLevel {}
+impl std::str::FromStr for OptimizationLevel {
+    type Err = UnknownOptimizationLevel;
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|level| level.name() == name)
+            .ok_or_else(|| UnknownOptimizationLevel(name.to_owned()))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct ApplicationOptions {
-    pub optimize: bool,
+    pub optimize: OptimizationLevel,
     /// Keep these runtime binding identities and all their source generations.
     pub exports: Vec<GlobalId>,
 }
-impl Default for ApplicationOptions {
-    fn default() -> Self {
+impl ApplicationOptions {
+    /// Options at `optimize` without explicit exports. Accepts a level or the
+    /// former boolean (`false` is `None`, `true` is `Prepare`).
+    pub fn new(optimize: impl Into<OptimizationLevel>) -> Self {
         Self {
-            optimize: true,
+            optimize: optimize.into(),
             exports: Vec::new(),
         }
     }
@@ -30,6 +107,7 @@ pub struct ApplicationStats {
 /// An owned semantic program plus emission decisions computed entirely in Rust.
 /// Repeated emission does not rerun preparation or execute compiler callbacks.
 pub struct PreparedApplication {
+    level: OptimizationLevel,
     program: Program,
     globals: Vec<bool>,
     calls: HashMap<ExprId, usize>,
@@ -46,6 +124,11 @@ impl PreparedApplication {
     pub fn stats(&self) -> &ApplicationStats {
         &self.stats
     }
+    /// The level this application was prepared at. Level-specific emission
+    /// (for example runtime slicing under `Advanced`) reads it here.
+    pub fn level(&self) -> OptimizationLevel {
+        self.level
+    }
 }
 
 /// Preserve the entry result, explicit exports, and ordered observable effects.
@@ -55,7 +138,9 @@ impl PreparedApplication {
 pub fn prepare_application(program: &Program, options: ApplicationOptions) -> PreparedApplication {
     #[cfg(test)]
     PREPARATIONS.with(|count| count.set(count.get() + 1));
+    let level = options.optimize;
     let mut prepared = PreparedApplication {
+        level,
         program: program.clone(),
         globals: vec![false; program.globals.len()],
         calls: HashMap::new(),
@@ -72,7 +157,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         } = program.exprs[id.0].kind
         {
             definitions[global.0].push(id);
-            if options.optimize
+            if level.prepares()
                 && !result
                 && test.is_none()
                 && init.is_none_or(|i| inert(program, i))
@@ -113,12 +198,15 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
             prepared.stats.removed_definitions += 1;
         }
     }
-    if options.optimize && !raw {
+    if level.prepares() && !raw {
         specialize(&mut prepared, &top);
     }
-    if !options.optimize {
+    if !level.prepares() {
         prepared.globals.fill(true);
     }
+    // Release-only passes (docs/advanced-optimization.md, Phases 1-3) run here,
+    // after conservative preparation, under `level.advanced()`. None exist yet,
+    // so `Advanced` output is byte-identical to `Prepare` output.
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();
     prepared
@@ -301,6 +389,42 @@ fn specialize(prepared: &mut PreparedApplication, top: &[(ExprId, bool)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn optimization_levels_parse_print_order_and_convert_from_the_former_boolean() {
+        for level in OptimizationLevel::ALL {
+            assert_eq!(level.name().parse(), Ok(level));
+            assert_eq!(level.to_string(), level.name());
+        }
+        assert_eq!(
+            "Advanced".parse::<OptimizationLevel>(),
+            Err(UnknownOptimizationLevel("Advanced".into()))
+        );
+        assert!(OptimizationLevel::None < OptimizationLevel::Prepare);
+        assert!(OptimizationLevel::Prepare < OptimizationLevel::Advanced);
+        assert_eq!(
+            OptimizationLevel::ALL.map(|l| (l.prepares(), l.advanced())),
+            [(false, false), (true, false), (true, true)]
+        );
+        assert_eq!(OptimizationLevel::from(false), OptimizationLevel::None);
+        assert_eq!(OptimizationLevel::from(true), OptimizationLevel::Prepare);
+        assert_eq!(
+            ApplicationOptions::default().optimize,
+            OptimizationLevel::Prepare
+        );
+        let p = crate::analyze(
+            "(def unused 1) 2",
+            &crate::parse("(def unused 1) 2").unwrap(),
+        )
+        .unwrap();
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&p, ApplicationOptions::new(level));
+            assert_eq!(prepared.level(), level);
+            assert_eq!(
+                prepared.stats().removed_definitions,
+                usize::from(level.prepares())
+            );
+        }
+    }
     #[test]
     fn macro_calls_do_not_prepare_applications_or_recompile_unchanged_units() {
         let source = "(def factor 2) (defn helper [x] (* factor x)) (defmacro twice [x] (helper x)) (twice 21) (twice 21) (twice 21)";

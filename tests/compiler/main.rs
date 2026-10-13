@@ -144,6 +144,7 @@ mod sequence_object_equiv;
 mod sequence_transducers;
 mod sequences;
 mod set_project;
+mod size_ratchet;
 mod sorted_collections;
 mod sorted_contracts;
 mod source_metadata;

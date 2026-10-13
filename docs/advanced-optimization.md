@@ -1,8 +1,9 @@
 # Advanced optimization design
 
-Status: design, October 2026. Nothing in this document is implemented. The
-work items are tracked as Pellets in the `advanced-optimization` group; this
-document is the shared context those pellets cite.
+Status: design, October 2026. Phase 0's optimization levels, size ratchet and
+differential test are implemented (see "Phase 0 extension points"); the rest is
+not. The work items are tracked as Pellets in the `advanced-optimization`
+group; this document is the shared context those pellets cite.
 
 ## Goal
 
@@ -20,14 +21,17 @@ pinned clone), which are the only published size facts in that repo.
 | Program | Upstream ceiling | light-cljs today | Target |
 |---|---:|---:|---:|
 | `(js/console.log (+ 1 2))` | 10,240 | 350,927 | < 1,000 |
-| `(println "hi")` | 10,240 | ~350,800 | < 5,000 |
-| `[1 2 3]` printed | 92,160 (lite mode: 16,384) | ~351,000 | < 15,000 |
-| `{}` printed | 92,160 (lite mode: 32,768) | ~351,000 | < 20,000 |
-| map/filter/partition pipeline | 34,000 (lite mode) | ~351,000 | < 25,000 |
+| `(println "hi")` | 10,240 | 350,814 | < 5,000 |
+| `[1 2 3]` printed | 92,160 (lite mode: 16,384) | 350,839 | < 15,000 |
+| `{}` printed | 92,160 (lite mode: 32,768) | 350,829 | < 20,000 |
+| map/filter/partition pipeline | 34,000 (lite mode) | 351,158 | < 25,000 |
 
 Every program that uses one collection, keyword or core function today
 embeds the full 350,414-byte runtime (84 KB gzipped), so the current numbers
-are all the same number.
+are all the same number. The rows are the first five fixtures of
+`tests/compiler/size_ratchet.rs`, measured at `prepare`: the printing rows call
+`(enable-console-print!)` and then `println`, and the pipeline row logs
+upstream's `trivial/core6.cljs` expression with `js/console.log`.
 
 ## What upstream does
 
@@ -210,6 +214,40 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   attributes bytes after the fact.
 - Startup benchmark: parse-plus-execute time in Node and QuickJS for the
   fixture set, recorded under `benchmarks/`.
+
+#### Phase 0 extension points
+
+The first three items are implemented. Later phases plug in here:
+
+- **Level.** `OptimizationLevel` in `src/application.rs` is ordered
+  `None < Prepare < Advanced`. `level.prepares()` gates today's conservative
+  passes; gate release-only work on `level.advanced()`. Never change what
+  `None` emits: it is the oracle.
+- **Passes.** `prepare_application` marks where `Advanced` passes run, after
+  conservative preparation. Emission that depends on the level (runtime
+  slicing, the constant table, terse emission) reads
+  `PreparedApplication::level()`; thread it into `emit_application` in
+  `src/emitter.rs` when the first such pass lands. Until then `Advanced`
+  output is byte-identical to `Prepare` output.
+- **CLI.** `--optimize` is parsed in `src/main.rs` for single-file `--compile`
+  and `--compile --entry`, with or without `--esm`. Namespace builds go through
+  `compiler::analyze_namespace_entry` and `prepare_application`, so the CLI
+  holds the `PreparedApplication`; add level-dependent reports such as a
+  retention report next to it. `--eval` and `--repl` have no level.
+- **Ratchet.** `tests/compiler/size_ratchet.rs` holds `FIXTURES`: the five
+  Targets rows, `(+ 1 2)`, `(fn [& xs] xs)`, a keyword `case` and a
+  `defrecord` with a protocol call, each with `ceilings: [none, prepare,
+  advanced]` in bytes of `emit_js()` output. When output shrinks, lower the
+  ceiling to the new size rounded up to the next 100 bytes (next 1,000 from
+  10,000 up) and record the sizes in `benchmarks/compiler.md`. Add rows for
+  new fixtures there. `--no-capture` prints the size table.
+- **Differential.** The same file runs every fixture in Node at every level
+  and compares against `None` and a pinned expected output. Observations must
+  not depend on compiler-owned ABI names (functions print as `#function`).
+  `both` and the per-level loops in `tests/compiler/optimization.rs` run the
+  preparation regressions at every level, and
+  `npm_packages::bundler_modules_run_at_every_optimization_level` runs a
+  bundler module built with `--esm --optimize LEVEL` for each level.
 
 ### Phase 1: runtime partitioning
 

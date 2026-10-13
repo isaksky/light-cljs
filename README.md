@@ -110,6 +110,14 @@ String libspecs such as `["react" :as r]` read host-supplied packages from
 module for a bundler instead, with static package imports and the entry value as
 its default export (see [JavaScript packages](docs/compiler.md#javascript-packages)).
 
+`--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
+builds, with or without `--esm`) picks the optimization level. `prepare`, the
+default, removes unused definitions with inert initializers and specializes
+top-level calls; `none` emits everything as analyzed; `advanced` is the release
+mode being built from [docs/advanced-optimization.md](docs/advanced-optimization.md)
+and for now emits the same output as `prepare` (see
+[Application preparation](docs/compiler.md#application-preparation)).
+
 Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
 Vars and arity conflicts become warnings instead of errors), or with
 `--checked-arrays-warn`/`--checked-arrays-error` for array-operand checks.
@@ -180,8 +188,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   resolution or CommonJS conversion.
 - **No build tooling:** no per-namespace module output, source maps or advanced
   optimization; output is one JavaScript expression, or one ES module with `--esm`.
-  A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md)
-  but not implemented.
+  A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md);
+  `--optimize advanced` is accepted but does not shrink output yet.
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
@@ -223,6 +231,11 @@ can declare one test per row or row range with `row_tests!`
 tests at a time, starts the slowest tests first and sets the slow-test timeout;
 the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
 every failure.
+
+`size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
+small programs at each `--optimize` level and runs them at every level in Node;
+`cargo nextest run --test compiler size_ratchet:: --no-capture` prints the size
+table.
 
 Some tests bound macro expansion and evaluation by wall-clock deadlines, so on a
 heavily loaded machine run fewer tests at once (`-j`) or rerun a failure alone.

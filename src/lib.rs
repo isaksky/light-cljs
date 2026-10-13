@@ -42,7 +42,8 @@ pub use analyzer::{
     analyze_namespaces_with_macros, analyze_with_macros,
 };
 pub use application::{
-    ApplicationOptions, ApplicationStats, PreparedApplication, prepare_application,
+    ApplicationOptions, ApplicationStats, OptimizationLevel, PreparedApplication,
+    prepare_application,
 };
 pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_esm,

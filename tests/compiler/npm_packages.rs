@@ -1,8 +1,13 @@
 //! JavaScript package libspecs: registry lowering, bundler ES modules, the REPL
 //! and diagnostics. Contract rows live in tests/fixtures/contracts.
 use light_cljs::analyzer::AnalysisOptions;
-use light_cljs::compiler::{compile_namespace_esm, compile_namespace_with_warnings};
-use light_cljs::{EvalOptions, EvalSession, PACKAGE_REGISTRY, compile_namespace};
+use light_cljs::compiler::{
+    analyze_namespace_entry, compile_namespace_esm, compile_namespace_with_warnings,
+};
+use light_cljs::{
+    ApplicationOptions, EvalOptions, EvalSession, MacroHost, OptimizationLevel, PACKAGE_REGISTRY,
+    compile_namespace, prepare_application,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -362,6 +367,65 @@ fn bundler_module_imports_only_surviving_package_references() {
     let bundled = fs::read_to_string(bundled).unwrap();
     assert!(bundled.contains("\"el:\""));
     assert!(!bundled.contains("UNUSED_EXPORT_BODY"));
+}
+
+#[test]
+fn bundler_modules_run_at_every_optimization_level() {
+    let root = manifest(ROOT);
+    let dir = TempDir::new();
+    write_stub_packages(&dir);
+    dir.write(
+        "node_modules/only-in-removed-code/package.json",
+        "{\"name\": \"only-in-removed-code\", \"type\": \"module\", \"main\": \"index.js\"}",
+    );
+    dir.write(
+        "node_modules/only-in-removed-code/index.js",
+        "export function anything() { return 0; }\n",
+    );
+    for level in OptimizationLevel::ALL {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["--compile", "--esm", "--optimize", level.name()])
+            .args(["--entry", "npm.bundle", "--source-root"])
+            .arg(&root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{level}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let module = String::from_utf8(output.stdout).unwrap();
+        let program = analyze_namespace_entry(
+            "npm.bundle",
+            std::slice::from_ref(&root),
+            &mut MacroHost::new(),
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            module,
+            prepare_application(&program, ApplicationOptions::new(level)).emit_esm(),
+            "{level}: the CLI emits the library module"
+        );
+        // Only `none` keeps the unused definition and so imports its packages.
+        assert_eq!(
+            module.contains("from \"only-in-removed-code\""),
+            level == OptimizationLevel::None,
+            "{level}"
+        );
+        let name = format!("bundle-{level}.mjs");
+        dir.write(&name, &module);
+        dir.write(
+            "main.mjs",
+            &format!("import value from \"./{name}\";\nconsole.log(value);\n"),
+        );
+        assert_eq!(
+            run_node(node().arg(dir.0.join("main.mjs"))),
+            "el:div state:1 scoped:2 debounce-label 42 false\n",
+            "{level}"
+        );
+    }
 }
 
 #[test]

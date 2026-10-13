@@ -1,6 +1,6 @@
 //! Resident phases; raw output is consumed by benchmarks/run_compiler.py.
 use light_cljs::{
-    ApplicationOptions, MacroHost, NamespaceInput, Program, SyntaxTree, analyze,
+    ApplicationOptions, MacroHost, NamespaceInput, OptimizationLevel, Program, SyntaxTree, analyze,
     analyze_namespaces, analyze_with_macros, compile, compile_namespace,
     compile_namespace_with_macros, compile_with_macros, emit_js, parse, prepare_application,
 };
@@ -178,20 +178,12 @@ fn application_phases(
 ) -> Result<(), Box<dyn Error>> {
     let tree = parse(source)?;
     let program = analyze(source, &tree)?;
-    let unoptimized = prepare_application(
-        &program,
-        ApplicationOptions {
-            optimize: false,
-            exports: vec![],
-        },
-    );
+    let unoptimized =
+        prepare_application(&program, ApplicationOptions::new(OptimizationLevel::None));
     let expected = application_node(&unoptimized.emit_js());
     for optimize in [false, true] {
         let scenario = format!("{name}-{}", if optimize { "on" } else { "off" });
-        let options = ApplicationOptions {
-            optimize,
-            exports: vec![],
-        };
+        let options = ApplicationOptions::new(optimize);
         let prepared = prepare_application(&program, options.clone());
         let js = prepared.emit_js();
         assert_eq!(application_node(&js), expected, "{scenario}");

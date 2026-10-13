@@ -1163,7 +1163,7 @@ pub fn compile_namespace_with_macro_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<String, NamespaceCompileError> {
-    namespace_program(entry, source_roots, macros, options, warnings).map(|p| emit_js(&p))
+    analyze_namespace_entry(entry, source_roots, macros, options, warnings).map(|p| emit_js(&p))
 }
 
 /// Compile an entry namespace into one ES module for a bundler. JavaScript
@@ -1189,7 +1189,7 @@ pub fn compile_namespace_esm_with_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<String, NamespaceCompileError> {
-    namespace_program(
+    analyze_namespace_entry(
         entry,
         source_roots,
         &mut MacroHost::new(),
@@ -1199,7 +1199,12 @@ pub fn compile_namespace_esm_with_warnings(
     .map(|p| crate::emitter::emit_esm(&p))
 }
 
-fn namespace_program(
+/// Load and analyze an entry namespace and its dependencies like
+/// [`compile_namespace`], but return the combined program instead of emitting
+/// it, so the caller picks the optimization level and output format:
+/// `prepare_application(&program, ApplicationOptions::new(level))` followed by
+/// `emit_js()` or `emit_esm()`. The `--compile --entry` CLI uses this.
+pub fn analyze_namespace_entry(
     entry: &str,
     source_roots: &[PathBuf],
     macros: &mut MacroHost,

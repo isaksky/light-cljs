@@ -1,7 +1,7 @@
 //! Rust application preparation regressions.
 use light_cljs::{
-    ApplicationOptions, GlobalId, MacroHost, Program, analyze, analyze_with_macros,
-    compile_namespace, emit_js, parse, prepare_application,
+    ApplicationOptions, GlobalId, MacroHost, OptimizationLevel, Program, analyze,
+    analyze_with_macros, compile_namespace, emit_js, parse, prepare_application,
 };
 use std::{
     fs,
@@ -13,7 +13,8 @@ use std::{
 fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
-fn execute(js: &str) -> String {
+/// Run `js` as a Node script and return its stdout; a nonzero exit fails.
+pub(crate) fn execute(js: &str) -> String {
     let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .args(["--eval", js])
         .output()
@@ -25,23 +26,19 @@ fn execute(js: &str) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+/// Print the value of the expression `js` with `console.log`.
 fn result(js: &str) -> String {
     execute(&format!("console.log({js});"))
 }
+/// Every optimization level prints `expected`.
 fn both(source: &str, expected: &str) {
     let program = program(source);
-    for optimize in [false, true] {
-        let prepared = prepare_application(
-            &program,
-            ApplicationOptions {
-                optimize,
-                exports: vec![],
-            },
-        );
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&program, ApplicationOptions::new(level));
         assert_eq!(
             result(&prepared.emit_js()),
             expected,
-            "optimize={optimize}: {source}"
+            "optimize={level}: {source}"
         );
     }
 }
@@ -55,19 +52,10 @@ fn macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive() {
       (expanded)"#;
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    let off = prepare_application(
-        &program,
-        ApplicationOptions {
-            optimize: false,
-            exports: vec![],
-        },
-    );
+    let off = prepare_application(&program, ApplicationOptions::new(OptimizationLevel::None));
     let on = prepare_application(
         &program,
-        ApplicationOptions {
-            optimize: true,
-            exports: vec![],
-        },
+        ApplicationOptions::new(OptimizationLevel::Prepare),
     );
     assert!(off.emit_js().contains("OPTIMIZER_MACRO_ONLY_SENTINEL"));
     assert!(!on.emit_js().contains("OPTIMIZER_MACRO_ONLY_SENTINEL"));
@@ -92,15 +80,8 @@ fn unused_initializers_and_standalone_effects_keep_order_and_run_once() {
       (js/trace.push "last")
       42"#,
     );
-    for optimize in [false, true] {
-        let js = prepare_application(
-            &program,
-            ApplicationOptions {
-                optimize,
-                exports: vec![],
-            },
-        )
-        .emit_js();
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
         assert_eq!(
             execute(&format!(
                 "globalThis.trace=[];globalThis.connect=()=>{{trace.push('connect');return 7;}};console.log({js});console.log(JSON.stringify(trace));"
@@ -117,15 +98,8 @@ fn discarded_throwing_initializer_still_aborts_after_prior_effects() {
         (def unused (throw (js/Error. "optimizer-boom")))
         (js/trace.push "after") 42"#,
     );
-    for optimize in [false, true] {
-        let js = prepare_application(
-            &program,
-            ApplicationOptions {
-                optimize,
-                exports: vec![],
-            },
-        )
-        .emit_js();
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
         assert_eq!(
             execute(&format!(
                 "globalThis.trace=[];try{{{js};}}catch(e){{console.log(e.message);}}console.log(JSON.stringify(trace));"
@@ -187,15 +161,12 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
     );
     let without = prepare_application(
         &program,
-        ApplicationOptions {
-            optimize: true,
-            exports: vec![],
-        },
+        ApplicationOptions::new(OptimizationLevel::Prepare),
     );
     let with = prepare_application(
         &program,
         ApplicationOptions {
-            optimize: true,
+            optimize: OptimizationLevel::Prepare,
             exports: vec![exported],
         },
     );
@@ -265,13 +236,7 @@ fn immutable_multi_arity_and_core_targets_specialize_in_rust() {
     ] {
         let program = program(source);
         let on = prepare_application(&program, ApplicationOptions::default());
-        let off = prepare_application(
-            &program,
-            ApplicationOptions {
-                optimize: false,
-                exports: vec![],
-            },
-        );
+        let off = prepare_application(&program, ApplicationOptions::new(OptimizationLevel::None));
         assert_eq!(on.stats().specialized_calls, 1, "{source}");
         assert_eq!(off.stats().specialized_calls, 0, "{source}");
         assert_eq!(result(&on.emit_js()), "42\n");
@@ -303,15 +268,8 @@ fn observed_definition_results_and_nonconstant_set_failures_are_preserved() {
     let source = r#"(def one 1) (def other 1)
         (def unused #{one other}) 42"#;
     let p = program(source);
-    for optimize in [false, true] {
-        let js = prepare_application(
-            &p,
-            ApplicationOptions {
-                optimize,
-                exports: vec![],
-            },
-        )
-        .emit_js();
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&p, ApplicationOptions::new(level)).emit_js();
         assert_eq!(
             execute(&format!(
                 "try {{{js};}} catch (e) {{console.log(e.message.includes('Duplicate'));}}"

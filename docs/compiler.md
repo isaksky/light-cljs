@@ -31,8 +31,10 @@ emitted bytes and runtime operation costs.
 constructs a separate `Program`; `emit_js(&program)` prepares an application in
 Rust, then recursively writes one JavaScript expression into a `String`.
 `compile(source)` composes these stages and distinguishes parser errors from
-analysis errors. `--compile` accepts files, stdin, or `--text`; `--analyze`
-prints the resolved representation.
+analysis errors. `--compile` accepts files, stdin, or `--text`, and
+`--optimize none|prepare|advanced` selects the [application
+preparation](#application-preparation) level; `--analyze` prints the resolved
+representation.
 
 `Program` owns `Vec<Expr>`, lexical/global binding records, JavaScript paths, and
 UTF-16 string/name values. `NamedLiteralId` identifies an owned namespace/name pair;
@@ -119,12 +121,27 @@ reject auto-resolved/syntax-quote forms.
 ### Application preparation
 
 `prepare_application(&program, ApplicationOptions::default())` is the public
-pre-emission boundary. `emit_js` uses this default; callers can retain the
-`PreparedApplication` and call its `emit_js()` repeatedly without rerunning the
-pass. `ApplicationOptions { optimize: false, exports: vec![] }` provides an
-unoptimized comparison, while `exports: Vec<GlobalId>` explicitly keeps runtime
-binding identities and their source generations. Exports are retention roots;
-this API does not add a JavaScript module export wrapper.
+pre-emission boundary. `emit_js` and `emit_esm` use this default; callers can
+retain the `PreparedApplication` and call its `emit_js()` or `emit_esm()`
+repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
+`OptimizationLevel`, ordered so each level includes the previous one:
+
+| Level | CLI | Effect |
+| --- | --- | --- |
+| `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
+| `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently emits exactly what `Prepare` emits. |
+
+`ApplicationOptions::new(level)` builds options without exports; it also takes
+the former boolean (`false` is `None`, `true` is `Prepare`).
+`exports: Vec<GlobalId>` explicitly keeps runtime binding identities and their
+source generations. Exports are retention roots; this API does not add a
+JavaScript module export wrapper. For namespaces,
+`compiler::analyze_namespace_entry` returns the combined program to prepare at a
+chosen level; the CLI's `--compile --entry` (with or without `--esm`) and
+single-file `--compile` both accept `--optimize LEVEL`. The REPL, `--eval`,
+macro expansion and deferred units never enter this boundary and always share
+the full runtime.
 
 The entry result, all standalone expressions, unknown or effectful initializers,
 throws, definition tests, and protocol/type/extension declarations retain their
