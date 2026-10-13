@@ -130,8 +130,9 @@ shape, drops the methods and types of the program that no instance can use,
 keeps of the runtime's collection, keyword and seq types only those the
 program can build, with the parts of each operation that handle them,
 calls the program's own functions directly, without an arity
-dispatcher when nothing else sees them, and folds constants and dead
-branches and inlines single-use and small pure functions (see
+dispatcher when nothing else sees them, creating once the methods of local
+functions that capture nothing, and folds constants and dead branches and
+inlines single-use and small pure functions (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of

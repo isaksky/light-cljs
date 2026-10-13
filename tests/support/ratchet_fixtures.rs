@@ -274,4 +274,20 @@ pub const FIXTURES: &[Fixture] = &[
         removed: [0, 0, 3],
         printed: "12\n",
     },
+    // Local and named functions with several methods that are only called: at
+    // `Advanced` their methods are entries with no dispatcher, those that
+    // capture nothing in the constant table (light-cljs-228).
+    Fixture {
+        name: "local-arities",
+        source: "(defn score [n lo hi]
+                   (let [clamp (fn clamp ([x] (clamp x lo hi)) ([x l h] (if (< x l) l (if (> x h) h x))))
+                         area (fn area ([w] (area w w)) ([w h] (* w h)))]
+                     (letfn [(walk ([i] (walk i 0))
+                                   ([i acc] (if (< i n) (recur (inc i) (+ acc (clamp i) (area i 2))) acc)))]
+                       (+ (walk -3) (area 3)))))
+                 (score 12 0 10)",
+        ceilings: [389_000, 389_000, 1_300],
+        removed: [0, 0, 0],
+        printed: "194\n",
+    },
 ];

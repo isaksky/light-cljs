@@ -363,9 +363,18 @@ method their argument count selects, at every call site:
   properties exist only when the function's value escapes: when the program
   reads the global other than to call it (`apply`, `var`, a higher-order
   argument), uses the value of its `def`, exports it, or calls it with an
-  argument count that selects no method. They then call the same entries,
-  which needs a `def` that runs once, at top level; otherwise the function
-  keeps its usual shape.
+  argument count that selects no method. They then call the same entries; a
+  `def` that may run more than once gives its dispatcher the entries of its
+  own evaluation.
+- A named function, `(def f (fn self ...))`, calls the entries through its
+  name too, when its `def` runs once at top level and the name is only
+  called; otherwise it keeps its usual shape.
+- A function with several methods or rest arguments bound by `let` or
+  `letfn`, whose local and name are only called with counts that select a
+  method (no `reify` in their scope), has no dispatcher either. A method that
+  captures nothing is a function entry of the constant table, created once
+  (`k4(a)`); one that reads its scope is a `const` next to the binding,
+  `const l5_1 = function (...) {...}`, created at each evaluation as before.
 - A method whose body holds `js*` keeps `.call(null, ...)`, since a plain call
   passes `undefined` as `this`. Unknown callees keep `.call(null, ...)`.
 - A `do` in value position is a comma expression instead of a function, so a

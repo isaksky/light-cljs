@@ -260,8 +260,11 @@ pub struct ConstantPool {
     /// Declared entries, `k<n>`.
     pub entries: usize,
     /// Entries that are collection literals, reader metadata on them or
-    /// `#uuid` literals; the rest are keywords and quoted symbols.
+    /// `#uuid` literals.
     pub composites: usize,
+    /// Entries that are methods of local functions hoisted out of their scope
+    /// (light-cljs-228). The rest are keywords and quoted symbols.
+    pub functions: usize,
     /// Entries built on first read rather than while the output loads.
     pub lazy: usize,
     /// Bytes of the declarations.
@@ -489,9 +492,14 @@ impl fmt::Display for RetentionReport {
         )?;
         let pool = &self.constants;
         if pool.entries > 0 {
+            let functions = if pool.functions > 0 {
+                format!(", {} functions", thousands(pool.functions))
+            } else {
+                String::new()
+            };
             writeln!(
                 f,
-                "constant pool: {} entries ({} composite, {} lazy), {} bytes",
+                "constant pool: {} entries ({} composite, {} lazy{functions}), {} bytes",
                 thousands(pool.entries),
                 thousands(pool.composites),
                 thousands(pool.lazy),

@@ -7,7 +7,10 @@
 //! method (`g3_1(a)`) without `.call(null, ...)`, functions whose value never
 //! escapes have no `arguments.length` dispatcher, and a `do` in value position
 //! is a comma expression. Generic shapes must stay where the function is
-//! redefined, assigned or escapes from a definition that may run twice.
+//! redefined or assigned. Local and named functions with several methods
+//! (light-cljs-228) call their methods' entries, hoisted to the constant table
+//! when they capture nothing and bound next to their `let` otherwise, and keep
+//! their dispatcher when their value escapes.
 use super::optimization::{Sources, execute};
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry;
@@ -74,6 +77,17 @@ fn global(program: &Program, name: &str) -> String {
         .position(|binding| binding.name == name)
         .unwrap_or_else(|| panic!("no global {name}"));
     format!("g{id}")
+}
+
+/// The output name of the first local named `name` (`l5`): the binding of a
+/// `let`, or of a `letfn`, whose functions are named after their bindings.
+fn local(program: &Program, name: &str) -> String {
+    let id = program
+        .locals
+        .iter()
+        .position(|binding| binding.name == name)
+        .unwrap_or_else(|| panic!("no local {name}"));
+    format!("l{id}")
 }
 
 /// Known functions are called through the method their call selects, with no
@@ -231,9 +245,11 @@ fn escaping_functions_keep_their_dispatcher_over_the_same_entries() {
 }
 
 /// Redefinition, assignment and dynamic binding keep generic calls, which read
-/// the binding at the time of the call, and so does a function whose value
-/// escapes from a definition that may run more than once. A function that
-/// does not escape may be defined anywhere: its entries are rebound together.
+/// the binding at the time of the call. A function that does not escape may be
+/// defined anywhere: its entries are rebound together. One whose value escapes
+/// from a definition that may run more than once binds entries too
+/// (light-cljs-228), but its dispatcher holds the entries of its own
+/// evaluation, so `made` keeps calling the first definition's methods.
 #[test]
 fn redefined_assigned_and_rerun_definitions() {
     let source = r#"
@@ -265,15 +281,7 @@ fn redefined_assigned_and_rerun_definitions() {
         source,
         "[1 2 8 2 6 5 1 6 1 1 7 [1 11] [2 12] 1 2 11]",
     );
-    for name in [
-        "redefined",
-        "assigned",
-        "dynamic",
-        "redefs",
-        "once",
-        "raw",
-        "outer",
-    ] {
+    for name in ["redefined", "assigned", "dynamic", "redefs", "once", "raw"] {
         let name = global(&program, name);
         assert!(
             text.contains(&format!("{name}).call(null")),
@@ -284,6 +292,17 @@ fn redefined_assigned_and_rerun_definitions() {
     let inner = global(&program, "inner");
     assert!(text.contains(&format!("{inner}_0()")), "{text}");
     assert!(text.contains(&format!("{inner}_0 = ")), "{text}");
+    // `js*` turns on the hygiene renames.
+    let text = text.replace("__light0_", "");
+    let [outer, made] = ["outer", "made"].map(|name| global(&program, name));
+    for shape in [
+        format!("{outer}_0()"),
+        format!("{outer} = (() => {{"),
+        format!("const m0 = {outer}_0;"),
+        format!("({made}).call(null, 10)"),
+    ] {
+        assert!(text.contains(&shape), "{shape}: {text}");
+    }
 }
 
 /// A call that runs before the definition still throws a `TypeError`.
@@ -404,16 +423,332 @@ fn exports_keep_their_dispatcher() {
     assert_eq!(execute(&format!("console.log({text});")), "2\n");
 }
 
+/// Local functions with several methods or rest arguments (light-cljs-228)
+/// whose local and name are read only as the callee of calls that select a
+/// method have no dispatcher, and their calls name their methods' entries. A
+/// method that captures nothing, or only hoisted methods (itself, a sibling, a
+/// `letfn` peer), is a function entry of the constant table, `k3`, created
+/// once; one that reads its scope is a `const` next to the binding,
+/// `const l5_1 = ...`, created at each evaluation of the scope, so closures
+/// made in a loop see their own iteration. Methods no call selects are left
+/// out.
+#[test]
+fn local_functions_call_the_entries_of_their_methods() {
+    let source = r#"
+        (defn locals [n]
+          (let [pure (fn ([x] (* x 2)) ([x y] (* x y)))
+                mixed (fn ([x] (pure x 1)) ([x y] (+ x y n)))
+                rest-only (fn [& xs] (count xs))
+                varied (fn ([] :none) ([a & more] [a more]))
+                named (fn self ([x] (self x 0)) ([x acc] (if (zero? x) acc (self (dec x) (+ acc x)))))
+                wrapped (do (fn ([] n) ([x] (+ x n)) ([x y] :unused)))]
+            [(pure 3) (pure 3 4) (mixed 1) (mixed 1 2) (rest-only) (rest-only 1 2 3) (varied) (varied 1)
+             (varied 1 2 3) (named 4) (wrapped) (wrapped 1)]))
+        (defn mutual [n]
+          (letfn [(ev? ([x] (if (zero? x) true (od? (dec x)))) ([x y] (ev? (+ x y))))
+                  (od? ([x] (if (zero? x) false (ev? (dec x)))) ([x y] (od? (+ x y n))))]
+            [(ev? 4) (od? 3) (ev? 1 1) (od? 1 1)]))
+        (defn closures []
+          (loop [i 0 acc []]
+            (if (< i 3)
+              (let [per-turn (fn ([] (fn [] i)) ([x] (+ x i)))]
+                (recur (inc i) (conj acc (per-turn) (per-turn 10))))
+              (mapv #(if (fn? %) (%) %) acc))))
+        (pr-str [(locals 5) (mutual 1) (closures)])"#;
+    let program = program(source);
+    let (text, stats) = every_level(
+        &program,
+        source,
+        "[[6 12 1 8 0 3 :none [1 nil] [1 (2 3)] 10 5 6] [true true true true] [0 10 1 11 2 12]]",
+    );
+    assert!(!text.contains("switch (arguments.length)"), "{text}");
+    let [
+        pure,
+        mixed,
+        rest_only,
+        varied,
+        named,
+        wrapped,
+        even,
+        odd,
+        turn,
+    ] = [
+        "pure",
+        "mixed",
+        "rest-only",
+        "varied",
+        "named",
+        "wrapped",
+        "ev?",
+        "od?",
+        "per-turn",
+    ]
+    .map(|name| local(&program, name));
+    // Methods that read `n` or `i` stay in their scope, under their local.
+    for shape in [
+        format!("const {mixed}_1 = "),
+        format!("{mixed}_1(1, 2)"),
+        format!("const {wrapped}_0 = "),
+        format!("{wrapped}_1(1)"),
+        format!("const {odd}_1 = "),
+        format!("{odd}_1(1, 1)"),
+        format!("const {turn}_0 = "),
+        format!("{turn}_1(10)"),
+    ] {
+        assert!(text.contains(&shape), "{shape}: {text}");
+    }
+    // The rest are hoisted, and no local binds the function itself.
+    for name in [&pure, &rest_only, &varied, &named, &even] {
+        assert!(!text.contains(&format!("{name}_")), "{name}: {text}");
+    }
+    for name in [
+        &pure, &mixed, &rest_only, &varied, &named, &wrapped, &even, &odd, &turn,
+    ] {
+        assert!(
+            !text.contains(&format!("const {name} = ")),
+            "{name}: {text}"
+        );
+        assert!(!text.contains(&format!("let {name};")), "{name}: {text}");
+    }
+    assert!(!text.contains(&format!("{mixed}_0")), "{text}");
+    assert!(!text.contains(&format!("{wrapped}_2")), "{text}");
+    assert!(!text.contains(":unused"), "{text}");
+    for arguments in [
+        "3, 4",
+        "null",
+        "rt$fnRest([1, 2, 3], 0)",
+        "1, rt$fnRest([2, 3], 0)",
+        "4",
+    ] {
+        assert!(calls_entry(&text, arguments), "{arguments}: {text}");
+    }
+    assert_eq!(stats.dispatchers_removed, 9, "{stats:?}");
+    assert_eq!(stats.hoisted_methods, 11, "{stats:?}");
+    let pool = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .retention()
+    .constants;
+    assert_eq!(pool.functions, 11, "{pool:?}");
+}
+
+/// Whether `text` calls a constant table entry with these arguments,
+/// `k3(1, 2)`.
+fn calls_entry(text: &str, arguments: &str) -> bool {
+    text.match_indices(&format!("({arguments})"))
+        .any(|(at, _)| {
+            let before = text[..at].trim_end_matches(|c: char| c.is_ascii_digit());
+            before.len() < at
+                && before.strip_suffix('k').is_some_and(|rest| {
+                    !rest.ends_with(|c: char| c.is_alphanumeric() || "_$".contains(c))
+                })
+        })
+}
+
+/// Hoisted methods are table entries even when the output reads no runtime,
+/// and so has no runtime slice for the table to follow.
+#[test]
+fn hoisted_methods_need_no_runtime() {
+    let source = "(let [f (fn ([] 1) ([x] (* 2 x)))] (+ (f) (f 3)))";
+    let (text, stats) = source_at_every_level(source, "7");
+    assert!(!text.contains("rt$"), "{text}");
+    assert!(calls_entry(&text, "3"), "{text}");
+    assert_eq!(stats.hoisted_methods, 2, "{stats:?}");
+}
+
+/// A local function keeps its dispatcher when its value escapes: a
+/// higher-order argument, `apply`, a value in a collection, an alias, a read
+/// of its name as a value, a `reify` in its scope (whose object holds every
+/// visible local), a method of `extend-type` that captures it, a `loop`
+/// binding (which `recur` rebinds), a call whose count selects no method at
+/// compile time (an invalid arity, or fewer arguments than the variadic
+/// method's fixed parameters), and a `fn` literal called in place.
+#[test]
+fn local_functions_whose_value_escapes_keep_their_dispatcher() {
+    let source = r#"
+        (deftype Box [v])
+        (defn escapes [k]
+          (let [mapped (fn ([x] (inc x)) ([x y] (+ x y)))
+                applied (fn ([] 0) ([x & more] (apply + x more)))
+                returned (fn ([] k) ([x] x))
+                aliased (fn ([] 1) ([x] x))
+                alias aliased
+                self-read (fn self ([] self) ([x] x))
+                reified (fn ([] k) ([x] (+ x k)))
+                r (reify Object (toString [_] (str (reified) (reified 1))))
+                extended (fn ([] 1) ([x] (+ x k)))
+                invalid (fn ([] 0) ([a b] 1))
+                under (fn ([a] [a]) ([a b c & r] [a b c r]))]
+            (extend-type Box IFn (-invoke ([this n] (extended (+ n (.-v this))))))
+            [(mapv mapped [1 2]) (mapped 1 2) (apply applied 1 [2 3]) (applied 4) ((first [returned]) 7)
+             (alias) (alias 2) (fn? (self-read)) (self-read 3) (str r) (reified 5) ((Box. 5) 3) (extended)
+             (try (invalid 1) (catch :default e (.-message e))) (invalid) (under 1 2) (under 1)
+             ((fn ([] 1) ([x] x)) 2)
+             (loop [f (fn ([] 1) ([x] x)) i 0] (if (< i 2) (recur f (inc i)) [(f) (f i)]))]))
+        (pr-str (escapes 10))"#;
+    let (text, stats) = source_at_every_level(
+        source,
+        "[[2 3] 3 6 4 7 1 2 true 3 \"1011\" 15 18 1 \"Invalid arity: 1\" 0 [1 2 nil nil] [1] 2 [1 2]]",
+    );
+    assert_eq!(
+        text.matches("switch (arguments.length)").count(),
+        11,
+        "{text}"
+    );
+    assert_eq!(stats.dispatchers_removed, 0, "{stats:?}");
+    assert_eq!(stats.hoisted_methods, 0, "{stats:?}");
+}
+
+/// A method stays in its scope when it reads a local from outside itself
+/// (also from a nested function), calls a function there with one method or a
+/// scoped method, or holds `js*`, which cannot move; a method that holds `js*`
+/// keeps `.call(null, ...)` on its entry. `this-as` and `(js-arguments)` read
+/// the method's own receiver and arguments, so those methods are hoisted. A
+/// `reify` in a method holds every visible local, which then escapes.
+#[test]
+fn methods_that_read_their_scope_or_hold_raw_text_stay_in_it() {
+    let source = r#"
+        (defn scopes [k]
+          (let [triple (fn [x] (* 3 x))
+                raw (fn ([] (js* "this === null || this === globalThis")) ([x] x))
+                this-as-fn (fn ([] (this-as t (identical? t js/globalThis))) ([x] x))
+                args (fn ([a] (alength (js-arguments))) ([a b & r] (alength (js-arguments))))
+                nested (fn ([] (fn [] k)) ([x] x))
+                single (fn ([] (triple 2)) ([x] x))
+                reads-k (fn ([] k) ([x] (+ x k)))
+                through (fn ([] (reads-k)) ([x] (reads-k 1)))
+                hoisted (fn ([] (through 1)) ([x] (inc x)))]
+            [(raw) (raw 1) (this-as-fn) (this-as-fn 1) (args 1) (args 1 2) (args 1 2 3 4) ((nested))
+             (nested 1) (single) (single 1) (reads-k) (reads-k 1) (through) (through 1) (hoisted)
+             (hoisted 1)]))
+        (defn reified [k]
+          (let [reifies (fn ([] (str (reify Object (toString [_] (str "r" k))))) ([x] x))
+                alone (fn ([] (str (reify Object (toString [_] "s")))) ([x] x))]
+            [(reifies) (reifies 1) (alone) (alone 1)]))
+        (pr-str [(scopes 10) (reified 2)])"#;
+    let program = program(source);
+    let (text, stats) = every_level(
+        &program,
+        source,
+        "[[true 1 true 1 1 3 3 10 1 6 1 10 11 10 11 11 2] [\"r2\" 1 \"s\" 1]]",
+    );
+    // `js*` turns on the hygiene renames.
+    let text = text.replace("__light0_", "");
+    let [
+        raw,
+        this_as,
+        args,
+        nested,
+        single,
+        reads_k,
+        through,
+        hoisted,
+        reifies,
+        alone,
+    ] = [
+        "raw",
+        "this-as-fn",
+        "args",
+        "nested",
+        "single",
+        "reads-k",
+        "through",
+        "hoisted",
+        "reifies",
+        "alone",
+    ]
+    .map(|name| local(&program, name));
+    for shape in [
+        format!("{raw}_0.call(null)"),
+        format!("const {nested}_0 = "),
+        format!("const {single}_0 = "),
+        format!("const {reads_k}_1 = "),
+        format!("const {through}_0 = "),
+        format!("const {through}_1 = "),
+        // Calls `through`'s scoped method.
+        format!("const {hoisted}_0 = "),
+        format!("const {alone}_0 = "),
+        format!("({reifies}).call(null)"),
+    ] {
+        assert!(text.contains(&shape), "{shape}: {text}");
+    }
+    for name in [&this_as, &args] {
+        assert!(!text.contains(&format!("{name}_")), "{name}: {text}");
+    }
+    for name in [&raw, &nested, &single, &hoisted, &alone] {
+        assert!(!text.contains(&format!("{name}_1")), "{name}: {text}");
+    }
+    assert!(calls_entry(&text, "1, 2, null"), "{text}");
+    // `this-as` in a table entry, at the top level.
+    assert!(text.contains(" = (function() {\n    { const l"), "{text}");
+    assert_eq!(stats.dispatchers_removed, 9, "{stats:?}");
+    assert_eq!(stats.hoisted_methods, 9, "{stats:?}");
+}
+
+/// A named global function with several methods (light-cljs-228) calls its
+/// entries through its name when its `def` is a top-level form and the name
+/// is read only as the callee of calls that select a method; the global's
+/// dispatcher stays only when the global escapes. A name read as a value, a
+/// call through the name that selects no method, and a `def` that may run
+/// again (whose name is that evaluation's function) keep the generic shape.
+#[test]
+fn named_functions_call_their_entries_through_the_name() {
+    let source = r#"
+        (def named (fn self ([x] (self x 0)) ([x acc] (if (zero? x) acc (self (dec x) (+ acc x))))))
+        (def escaping (fn self ([] 1) ([x] (+ x (self)))))
+        (def self-value (fn self ([] self) ([x] x)))
+        (def bad-count (fn self ([] (self 1 2 3)) ([x] x)))
+        (declare inner)
+        (defn make [n] (def inner (fn self ([] (self n 0)) ([x y] (+ x y)))) nil)
+        (make 1)
+        (def first-inner (inner))
+        (make 2)
+        (pr-str [(named 4) (mapv escaping [1 2]) (escaping) (fn? (self-value)) (self-value 2)
+                 (try (bad-count) (catch :default e (.-message e))) first-inner (inner) (inner 3 4)])"#;
+    let program = program(source);
+    let (text, stats) = every_level(
+        &program,
+        source,
+        "[10 [2 3] 1 true 2 \"Invalid arity: 3\" 1 2 7]",
+    );
+    let [named, escaping, self_value, bad_count, inner] =
+        ["named", "escaping", "self-value", "bad-count", "inner"]
+            .map(|name| global(&program, name));
+    for shape in [
+        format!("return {named}_1(l"),
+        format!("{named}_0(4)"),
+        format!("({escaping}_0 = "),
+        format!("+ {escaping}_0())"),
+        format!(", {escaping} = function("),
+        format!("({self_value}).call(null, 2)"),
+        format!("({bad_count}).call(null)"),
+        format!("({inner}).call(null, 3, 4)"),
+    ] {
+        assert!(text.contains(&shape), "{shape}: {text}");
+    }
+    assert!(!text.contains(&format!("let {named};")), "{text}");
+    for name in [&self_value, &bad_count, &inner] {
+        assert!(!text.contains(&format!("{name}_0")), "{name}: {text}");
+    }
+    assert_eq!(stats.dispatchers_removed, 1, "{stats:?}");
+}
+
 /// Below `Advanced` nothing changes.
 #[test]
 fn levels_below_advanced_keep_the_generic_shapes() {
-    let program = program("(defn f ([] 0) ([x] x)) (def x (do 1 2)) (f 1)");
+    let program = program(
+        "(defn f ([] 0) ([x] x)) (def x (do 1 2)) (let [g (fn ([] 0) ([y] y))] [(f 1) (g 2)])",
+    );
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         let prepared = prepare_application(&program, ApplicationOptions::new(level));
         let js = prepared.emit_js();
         assert!(js.contains("switch (arguments.length)"), "{level}");
         assert!(js.contains("(function () {"), "{level}");
+        let g = local(&program, "g");
+        assert!(js.contains(&format!("({g}).call(null, 2)")), "{level}");
         assert!(prepared.call_shapes().is_none(), "{level}");
         assert_eq!(prepared.stats().direct_calls, 0, "{level}");
+        assert_eq!(prepared.stats().hoisted_methods, 0, "{level}");
     }
 }

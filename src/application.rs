@@ -143,8 +143,13 @@ pub struct ApplicationStats {
     /// and call it directly (`crate::call_shapes`).
     pub direct_calls: usize,
     /// `Advanced`: functions with several methods or rest arguments whose
-    /// value never escapes, defined without an `arguments.length` dispatcher.
+    /// value never escapes, defined without an `arguments.length` dispatcher:
+    /// retained globals and, since light-cljs-228, `let` and `letfn` locals.
     pub dispatchers_removed: usize,
+    /// `Advanced`: methods of local functions without a dispatcher that
+    /// capture nothing, bound once to a constant table entry instead of at
+    /// each evaluation of their scope (light-cljs-228).
+    pub hoisted_methods: usize,
     /// `Advanced`: parameters of closed functions whose type, joined over the
     /// arguments of every call (`crate::inference`), is narrower than `any`.
     pub typed_parameters: usize,
@@ -377,7 +382,9 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
                         }
                     )
             })
-            .count();
+            .count()
+            + shapes.local_functions().len();
+        prepared.stats.hoisted_methods = shapes.hoisted_methods();
         prepared.shapes = Some(shapes);
         prepared.inference = Some(inference);
     }

@@ -2070,3 +2070,69 @@ them), the dispatchers' tests, the printer entries' wrappers and option
 hooks, the vectors' and maps' native methods and the transient and `str`
 kind hooks. The `none` and `prepare` ceilings rise by 9,000 for that growth;
 the `advanced` ceilings drop to the new sizes.
+
+## Local function entries — October 13, 2026
+
+light-cljs-228 finishes Phase 2 step 5 of the
+[design](../docs/advanced-optimization.md) ("Phase 2 call shape extension
+points"). At `--optimize advanced` a function with several methods or rest
+arguments bound by `let` or `letfn`, whose local and name are only called with
+counts that select a method, has no `arguments.length` dispatcher: its calls
+name the method they run. A method that captures nothing (other than hoisted
+methods it calls) becomes a function entry of the constant table, created
+once, `k4(a)`; one that reads its scope is a `const` next to the binding,
+`l5_1(a, b)`, created at each evaluation as the dispatcher's methods were. A
+named global function (`(def f (fn self ...))`) defined at top level calls
+its entries through its name, and an escaping function whose `def` may run
+again keeps entries with a dispatcher that holds its own evaluation's.
+
+The new ratchet fixture `local-arities` has a named local function whose
+one-argument method reads the scope and whose three-argument method does not,
+a named local function that captures nothing and a `letfn` that calls both:
+
+```clojure
+(defn score [n lo hi]
+  (let [clamp (fn clamp ([x] (clamp x lo hi)) ([x l h] (if (< x l) l (if (> x h) h x))))
+        area (fn area ([w] (area w w)) ([w h] (* w h)))]
+    (letfn [(walk ([i] (walk i 0))
+                  ([i acc] (if (< i n) (recur (inc i) (+ acc (clamp i) (area i 2))) acc)))]
+      (+ (walk -3) (area 3)))))
+(score 12 0 10)
+```
+
+At `advanced` `area`'s methods and `clamp`'s three-argument method are table
+entries, `clamp`'s one-argument method and `walk`'s methods (which call it)
+are `const`s in `score`, and every call is direct, `l14_0(-3)`, `k2(3)`.
+
+**Sizes.** `local-arities` drops from 2,864 / 672 to 1,282 / 417 bytes (raw /
+`gzip -9`) at `advanced`; ceilings 389,000 / 389,000 / 1,300 after the
+rebase onto light-cljs-214 and 230, which grew the `none` runtime. Every
+other fixture compiles to the same bytes as before, at every level.
+
+**Steady state and startup.** `--levels --samples 9 --warmups 1 --only
+local-arities,multi-arity` on this change (on top of `ec81a9e`) with local
+entries turned off (a temporary switch that gave no local function entries),
+then with them, one directly after the other; the one-minute load average
+had a median of 2.84 and 3.10. `multi-arity` is the control: its global
+functions already had entries. The new `--levels` workload `local-arities`
+runs the `multi-arity` loop with `clamp` and `area` as named local functions
+of the returned function. Both tables are in
+[before](results/local-entries-2026-10-13/before/summary.md) and
+[after](results/local-entries-2026-10-13/after/summary.md), next to their
+`samples.csv`; both binaries were built on `ec81a9e`, although the after
+summary names the rebased commit checked out when the run ended. Median µs
+per call (n = 50,000):
+
+| Workload | Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | --- | ---: | ---: | ---: | ---: |
+| local-arities | none | 6,727 | 6,743 | 148,460 | 145,570 |
+| local-arities | advanced | 3,226 | 108 | 81,741 | 43,939 |
+| multi-arity | advanced | 143 | 142 | 43,781 | 43,914 |
+
+At `advanced` the local functions now run as fast as the global ones of
+`multi-arity`: 1.9 times faster in QuickJS, and 30 times faster in Node,
+which inlines the methods once no call goes through `.call`, the
+dispatcher's `switch` and `.apply(this, arguments)`. Parse plus first
+execution of the fixture at `advanced` drops from 0.225 to 0.163 ms in Node
+and from 0.172 to 0.084 ms in QuickJS; `multi-arity` and `none` do not
+change beyond noise.

@@ -43,9 +43,10 @@ struct Steady {
 }
 
 /// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
-/// constant-literals, constant-keys, multi-arity, event-maps and closed-params
-/// fixtures, as workloads over `n`.
-const STEADY: [Steady; 8] = [
+/// constant-literals, constant-keys, multi-arity, event-maps, closed-params and
+/// local-arities fixtures, as workloads over `n`. `local-arities` runs the
+/// functions of `multi-arity` as local and named functions.
+const STEADY: [Steady; 9] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -138,6 +139,18 @@ const STEADY: [Steady; 8] = [
                              acc)))",
         input: 1_000,
         expected: closed_params,
+    },
+    Steady {
+        name: "local-arities",
+        source: "(fn [n]
+                   (let [clamp (fn clamp ([x] (clamp x 0 10)) ([x lo hi] (max lo (min hi x))))
+                         area (fn area ([w] (area w w)) ([w h] (* w h)))]
+                     (loop [i 0 total 0]
+                       (if (< i n)
+                         (recur (inc i) (+ total (clamp i) (area (rem i 7)) (area 2 i)))
+                         total))))",
+        input: 50_000,
+        expected: multi_arity,
     },
 ];
 

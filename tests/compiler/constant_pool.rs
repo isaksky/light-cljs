@@ -404,6 +404,7 @@ fn large_constants_are_lazy_cells_built_on_first_read() {
         ConstantPool {
             entries: 3,
             composites: 3,
+            functions: 0,
             lazy: 2,
             bytes: table_bytes(&advanced),
         }
@@ -497,6 +498,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         ConstantPool {
             entries: 14,
             composites: 3,
+            functions: 0,
             lazy: 0,
             bytes: 700
         }

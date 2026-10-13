@@ -1,5 +1,6 @@
 //! Call shapes: Phase 2 step 5 of docs/advanced-optimization.md
-//! (light-cljs-212), at `Advanced` only.
+//! (light-cljs-212, and light-cljs-228 for local and named functions), at
+//! `Advanced` only.
 //!
 //! Below `Advanced` every call of a program function is `(f).call(null, a)`,
 //! and a function with several methods or rest arguments is an arrow IIFE that
@@ -15,9 +16,13 @@
 //! and never assigns it otherwise: no second `def` (a `def` without a value,
 //! such as `declare`, assigns nothing and does not count), `defonce`, `set!`,
 //! `binding`, `with-redefs` or `js*` hole, no `:dynamic` metadata, no `:test`
-//! metadata, and no name with a dot (a host path). Macro functions and named
-//! functions with a dispatcher, whose methods may read the dispatcher through
-//! the name, are left alone.
+//! metadata, and no name with a dot (a host path). Macro functions are left
+//! alone. A named function with a dispatcher is known only when its `def` is a
+//! top-level form and its name is read only as the callee of calls whose
+//! argument count selects a method (light-cljs-228): the name is the function
+//! of one evaluation, which the shared entries below are only when the `def`
+//! runs once, and a method that reads the name as a value needs the
+//! dispatcher.
 //!
 //! A known function *escapes* when its value can reach code the analysis does
 //! not see: a read of the global anywhere but as the callee of a call (`apply`,
@@ -36,16 +41,45 @@
 //!   ([`FunctionShape::Entries`]). Calls choose the method at compile time:
 //!   `g3_1(a)`, or for a variadic method `g3_2(a, b, rt$fnRest([c, d], 0))`
 //!   (`null` without rest arguments), exactly the values its dispatcher would
-//!   pass. The global itself, its dispatcher and its arity properties exist
-//!   only when the function escapes; the dispatcher then calls the same
-//!   entries. Because the entries are shared, a function that escapes keeps
-//!   this shape only when its `def` is a top-level form, which runs once.
-//!   Otherwise it stays [`FunctionShape::Generic`].
+//!   pass. Calls through the name of a named function are calls of the same
+//!   entries. The global itself, its dispatcher and its arity properties exist
+//!   only when the function escapes. The dispatcher of a top-level `def`, which
+//!   runs once, calls the shared entries; one of a `def` that may run again
+//!   holds the entries of its own evaluation (`rerun`), since the next
+//!   evaluation rebinds them along with the global, and direct calls read the
+//!   current ones as calls of the global did.
 //! - Calls of a local bound to a `fn` with one fixed method, or of such a `fn`
 //!   literal, which inference knows
 //!   ([`crate::inference::Inference::callee`]), are plain calls too, when the
 //!   callee cannot be nil: calling nil keeps `.call(null, ...)` and its
 //!   `TypeError`.
+//!
+//! # Local functions
+//!
+//! A `fn` with several methods or rest arguments bound by `let` or `letfn`
+//! ([`LocalFunction`], light-cljs-228) has no dispatcher when its value goes
+//! only to that binding (through one-form `do`s, each with one parent), and
+//! its local and its name are read only as the callee of calls whose argument
+//! count selects a method (as for a global): not captured by a `reify`, whose
+//! fields expose every visible local, nor by a method of a type, `reify` or
+//! `extend-type`, whose `IFn` adapter may copy its captures into an object.
+//! The calls name the entry of the method they select. Each method is bound
+//! where its captures permit ([`Placement`]):
+//!
+//! - a method that reads no local from outside itself, except as the callee
+//!   of a call of another hoisted method (including its own), and holds no
+//!   `js*` and no expression with two parents, is hoisted to a function entry
+//!   of the `Advanced` constant table, created once when the output loads
+//!   ([`Entry::Hoisted`]). Its function value never escapes, so nothing can
+//!   tell one closure from many;
+//! - any other method is a `const` of its own next to the binding,
+//!   `const l5_0 = function (l6) {...};` ([`Entry::Scoped`]), created once per
+//!   evaluation of the scope, as the dispatcher was;
+//! - a method that no call selects is not emitted.
+//!
+//! Locals bound by `loop` (which `recur` rebinds), functions whose local or
+//! name escapes and functions called with a count that selects no method keep
+//! the dispatcher. So do `fn` literals called in place.
 //!
 //! # Soundness
 //!
@@ -58,6 +92,11 @@
 //! which only strict-mode raw JavaScript can tell apart (`this-as` maps both to
 //! the global object), so a call of a method whose body holds `js*` outside a
 //! nested `fn` keeps `.call(null, ...)` on its entry.
+//!
+//! A local function's calls are in the scope of its binding, which `let` and
+//! `letfn` evaluate before their bodies (`letfn` initializers are `fn`
+//! expressions, which call nothing), so no call of a local entry runs before
+//! the entry is bound.
 //!
 //! # For parameter types
 //!
@@ -75,7 +114,8 @@
 //!
 //! - it is the function of a known global that does not escape;
 //! - it is bound by `let` or `letfn` to a local that is read only as the
-//!   callee of calls;
+//!   callee of calls (a `reify` in its scope reads it, since its object holds
+//!   every visible local);
 //! - it is the callee of a call (`((fn [x] ...) 1)`);
 //!
 //! and, for a named `fn`, its name is read only as the callee of calls. The
@@ -103,8 +143,14 @@ pub enum FunctionShape {
     Single { function: ExprId, closed: bool },
     /// The global's sole definition binds each method of the `fn` expression
     /// `function` to its own entry, and the global to the dispatcher only
-    /// when `dispatcher` (the function escapes).
-    Entries { function: ExprId, dispatcher: bool },
+    /// when `dispatcher` (the function escapes). With `rerun` the definition
+    /// may run more than once, so its dispatcher holds the entries of its own
+    /// evaluation instead of reading their shared bindings.
+    Entries {
+        function: ExprId,
+        dispatcher: bool,
+        rerun: bool,
+    },
 }
 
 impl FunctionShape {
@@ -117,6 +163,47 @@ impl FunctionShape {
     }
 }
 
+/// The binding of the method entry that a direct call names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entry {
+    /// `g<global>_<method>`, bound at the definition of a global of
+    /// [`FunctionShape::Entries`].
+    Global { global: GlobalId, method: usize },
+    /// `l<local>_<method>`, a `const` next to the `let` or `letfn` binding of
+    /// the [`LocalFunction`] `local` ([`Placement::Scoped`]).
+    Scoped { local: LocalId, method: usize },
+    /// A function entry of the `Advanced` constant table, `k<n>`, which holds
+    /// method `method` of the `fn` expression `function`
+    /// ([`Placement::Hoisted`]).
+    Hoisted { function: ExprId, method: usize },
+}
+
+/// Where a method of a [`LocalFunction`] is bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// To a function entry of the constant table, created once: the method
+    /// captures nothing but other hoisted methods.
+    Hoisted,
+    /// To a `const` next to the binding, created at each evaluation of the
+    /// binding's scope.
+    Scoped,
+    /// Nowhere: no call selects the method.
+    Unused,
+}
+
+/// A function bound by `let` or `letfn` whose methods are bound to entries of
+/// their own, with no dispatcher (see "Local functions" in the module
+/// documentation).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalFunction {
+    /// The local that the `let` or `letfn` binds.
+    pub local: LocalId,
+    /// The `fn` expression that it binds, possibly through one-form `do`s.
+    pub function: ExprId,
+    /// Where each method is bound, by method index.
+    pub placements: Box<[Placement]>,
+}
+
 /// A call whose method is chosen at compile time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DirectCall {
@@ -124,11 +211,11 @@ pub struct DirectCall {
     pub function: ExprId,
     /// The index of that method.
     pub method: usize,
-    /// The global and method index of the entry the call names, for a
-    /// function of [`FunctionShape::Entries`]; `None` when the call names its
-    /// callee as written (a global of [`FunctionShape::Single`], a local or a
-    /// `fn` literal).
-    pub entry: Option<(GlobalId, usize)>,
+    /// The entry the call names, for a function of [`FunctionShape::Entries`]
+    /// or a [`LocalFunction`]; `None` when the call names its callee as
+    /// written (a global of [`FunctionShape::Single`], a local or a `fn`
+    /// literal).
+    pub entry: Option<Entry>,
     /// For a variadic method, its number of fixed parameters: the arguments
     /// after them become the rest sequence.
     pub rest: Option<usize>,
@@ -146,6 +233,10 @@ pub struct CallShapes {
     /// By `ExprId`: the index in `direct` of the call's shape, or `u32::MAX`.
     slots: Vec<u32>,
     direct: Vec<(ExprId, DirectCall)>,
+    /// By `LocalId`: the index in `local_functions` of the function the local
+    /// binds, or `u32::MAX`.
+    locals: Vec<u32>,
+    local_functions: Vec<LocalFunction>,
 }
 
 impl CallShapes {
@@ -189,47 +280,94 @@ impl CallShapes {
             .filter(move |(_, direct)| direct.function == function)
             .map(|(call, direct)| (*call, direct.method))
     }
+
+    /// The function that the `let` or `letfn` local `local` binds, when its
+    /// methods are bound to entries without a dispatcher.
+    pub fn local_function(&self, local: LocalId) -> Option<&LocalFunction> {
+        let index = *self.locals.get(local.0)?;
+        self.local_functions.get(index as usize)
+    }
+
+    /// The local functions whose methods are bound to entries.
+    pub fn local_functions(&self) -> &[LocalFunction] {
+        &self.local_functions
+    }
+
+    /// How many methods of local functions are hoisted to the constant table.
+    pub fn hoisted_methods(&self) -> usize {
+        self.local_functions
+            .iter()
+            .flat_map(|function| &function.placements)
+            .filter(|placement| **placement == Placement::Hoisted)
+            .count()
+    }
 }
 
 /// Decide the call shapes of `program`, the prepared program emission reads,
 /// whose types are `inference`. `exports` escape. Without `inference` (as
 /// [`crate::inlining`] asks, before types are inferred) calls of locals and
-/// `fn` literals are not direct.
+/// `fn` literals are not direct, and no local function has entries.
 pub fn analyze(
     program: &Program,
     inference: Option<&Inference>,
     exports: &[GlobalId],
 ) -> CallShapes {
+    let scan = Scan::new(program, exports);
+    let local = match inference {
+        Some(_) => LocalFunctions::new(program, &scan),
+        None => LocalFunctions::default(),
+    };
     let Scan {
         functions,
         closed,
         resolved,
+        name_resolved,
         inferred_sites,
         ..
-    } = Scan::new(program, exports);
+    } = scan;
     let count = program.exprs.len();
     let mut shapes = CallShapes {
         functions,
         closed,
         slots: vec![u32::MAX; count],
         direct: Vec::new(),
+        locals: local.locals,
+        local_functions: local.functions,
     };
     let mut this = ReceiverCache {
         methods: vec![None; count],
     };
-    for (call, global, method) in resolved {
+    for (call, global, method) in resolved.into_iter().chain(name_resolved) {
         let (function, entry) = match shapes.functions[global.0] {
             FunctionShape::Generic => continue,
             FunctionShape::Single { function, .. } => (function, None),
-            FunctionShape::Entries { function, .. } => (function, Some((global, method))),
+            FunctionShape::Entries { function, .. } => {
+                (function, Some(Entry::Global { global, method }))
+            }
         };
         let direct = this.direct(program, function, method, entry);
+        shapes.insert(call, direct);
+    }
+    for (call, index, method) in local.calls {
+        let LocalFunction {
+            local,
+            function,
+            ref placements,
+        } = shapes.local_functions[index as usize];
+        let entry = match placements[method] {
+            Placement::Hoisted => Entry::Hoisted { function, method },
+            Placement::Scoped | Placement::Unused => Entry::Scoped { local, method },
+        };
+        let direct = this.direct(program, function, method, Some(entry));
         shapes.insert(call, direct);
     }
     let Some(inference) = inference else {
         return shapes;
     };
     for call in inferred_sites {
+        if shapes.slots[call.0] != u32::MAX {
+            continue;
+        }
         let Some(function) = inference.callee(program, call) else {
             continue;
         };
@@ -298,11 +436,7 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         slots: vec![u32::MAX; count],
         calls: Vec::new(),
     };
-    // The calls of each local, in one pass.
-    let mut local_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.locals.len()];
-    for &(call, local) in &scan.local_calls {
-        local_calls[local.0].push(call);
-    }
+    let local_calls = &scan.local_calls;
     let mut global_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.globals.len()];
     for &(call, global, _) in &scan.resolved {
         global_calls[global.0].push(call);
@@ -371,13 +505,19 @@ struct Scan {
     /// The calls of known globals whose argument count selects a method, with
     /// the global and the method.
     resolved: Vec<(ExprId, GlobalId, usize)>,
+    /// The calls through the name of a known function of
+    /// [`FunctionShape::Entries`], with its global and the method.
+    name_resolved: Vec<(ExprId, GlobalId, usize)>,
     /// The calls whose callee is a local or a `fn` literal.
     inferred_sites: Vec<ExprId>,
     /// By `LocalId`: an expression reads the local other than as the callee
-    /// of a call.
+    /// of a call, or a `reify` captures it (as a field of its object).
     local_escapes: Vec<bool>,
-    /// The calls whose callee is a local, with the local.
-    local_calls: Vec<(ExprId, LocalId)>,
+    /// By `LocalId`: a method of a type, `reify` or `extend-type` captures the
+    /// local, so its emission may copy the local's value into an object.
+    object_captures: Vec<bool>,
+    /// By `LocalId`: the calls whose callee is the local.
+    local_calls: Vec<Vec<ExprId>>,
 }
 
 impl Scan {
@@ -426,13 +566,37 @@ impl Scan {
         let mut sites = Vec::new();
         let mut inferred_sites = Vec::new();
         let mut local_escapes = vec![false; program.locals.len()];
-        let mut local_calls = Vec::new();
+        let mut object_captures = vec![false; program.locals.len()];
+        let mut local_calls = vec![Vec::new(); program.locals.len()];
         for &id in &order {
             let mut assign = |target: &ExprId| {
                 if let ExprKind::Global(global) = program.exprs[target.0].kind {
                     fixed[global.0] = false;
                 }
             };
+            // Reads of locals that are not `Local` expressions: a `reify`
+            // object holds every visible local as a field, and an `IFn`
+            // adapter of an object method may copy its captures into an
+            // object (`captures3.l5`).
+            let object_methods = match &program.exprs[id.0].kind {
+                ExprKind::Reify {
+                    captures, methods, ..
+                } => {
+                    captures
+                        .iter()
+                        .for_each(|local| local_escapes[local.0] = true);
+                    methods.as_slice()
+                }
+                ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
+                    methods.as_slice()
+                }
+                _ => &[],
+            };
+            for (_, method) in object_methods {
+                for local in &method.captures {
+                    object_captures[local.0] = true;
+                }
+            }
             match &program.exprs[id.0].kind {
                 ExprKind::Def {
                     global,
@@ -461,7 +625,7 @@ impl Scan {
                 }
                 // A local that is assigned (`set!`, a `js*` hole) is read there.
                 ExprKind::Local(local) => match callee_of(id) {
-                    Some(call) => local_calls.push((call, *local)),
+                    Some(call) => local_calls[local.0].push(call),
                     None => local_escapes[local.0] = true,
                 },
                 ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
@@ -485,8 +649,10 @@ impl Scan {
             functions: vec![FunctionShape::Generic; globals],
             closed: vec![false; globals],
             resolved: Vec::new(),
+            name_resolved: Vec::new(),
             inferred_sites,
             local_escapes,
+            object_captures,
             local_calls,
         };
         let mut known = vec![None; globals];
@@ -512,8 +678,39 @@ impl Scan {
             let ExprKind::Fn { name, methods } = &program.exprs[function.0].kind else {
                 continue;
             };
-            if program.macro_functions.contains(&function) || (!single(methods) && name.is_some()) {
+            if program.macro_functions.contains(&function) {
                 continue;
+            }
+            // The name is the function of one evaluation of the `def`: its
+            // calls may name the shared entries when the `def` runs once and
+            // evaluates the `fn` once, and every read of the name is such a
+            // call.
+            if !single(methods)
+                && let Some(name) = *name
+            {
+                let resolved: Option<Vec<_>> = scan.local_calls[name.0]
+                    .iter()
+                    .map(|&call| {
+                        let ExprKind::Call { args, .. } = &program.exprs[call.0].kind else {
+                            return None;
+                        };
+                        method_for(methods, args.len())
+                            .map(|method| (call, GlobalId(global), method))
+                    })
+                    .collect();
+                match resolved {
+                    Some(calls)
+                        if top[def.0]
+                            && !scan.local_escapes[name.0]
+                            && !scan.object_captures[name.0]
+                            && scan
+                                .sole_use(program, function)
+                                .is_some_and(|(user, _)| user == def) =>
+                    {
+                        scan.name_resolved.extend(calls);
+                    }
+                    _ => continue,
+                }
             }
             known[global] = Some(function);
             if !discarded(program, def, &|id| scan.parent_of(id)) {
@@ -552,13 +749,12 @@ impl Scan {
             scan.closed[global] = closed;
             scan.functions[global] = if single(methods_of(program, function)) {
                 FunctionShape::Single { function, closed }
-            } else if !escaped[global] || definition[global].is_some_and(|def| top[def.0]) {
+            } else {
                 FunctionShape::Entries {
                     function,
                     dispatcher: escaped[global],
+                    rerun: escaped[global] && !definition[global].is_some_and(|def| top[def.0]),
                 }
-            } else {
-                FunctionShape::Generic
             };
         }
         scan
@@ -585,6 +781,284 @@ impl Scan {
     /// callee of calls.
     fn name_closed(&self, name: Option<LocalId>) -> bool {
         name.is_none_or(|name| !self.local_escapes[name.0])
+    }
+}
+
+/// The local functions of a program and the calls of their entries; see
+/// "Local functions" in the module documentation.
+#[derive(Default)]
+struct LocalFunctions {
+    /// By `LocalId`: the index in `functions` of the function the local binds,
+    /// or `u32::MAX`.
+    locals: Vec<u32>,
+    functions: Vec<LocalFunction>,
+    /// The calls through each function's local or name, with the function's
+    /// index and the method the call selects.
+    calls: Vec<(ExprId, u32, usize)>,
+}
+
+impl LocalFunctions {
+    fn new(program: &Program, scan: &Scan) -> Self {
+        let mut local = Self {
+            locals: Vec::new(),
+            functions: Vec::new(),
+            calls: Vec::new(),
+        };
+        for &id in &scan.order {
+            let (ExprKind::Let { bindings, .. } | ExprKind::LetFn { bindings, .. }) =
+                &program.exprs[id.0].kind
+            else {
+                continue;
+            };
+            'binding: for &(binding, init) in bindings {
+                let function = crate::application::unwrap_do(program, init);
+                let ExprKind::Fn { name, methods } = &program.exprs[function.0].kind else {
+                    continue;
+                };
+                if single(methods)
+                    || program.macro_functions.contains(&function)
+                    || scan.sole_use(program, function) != Some((id, init))
+                {
+                    continue;
+                }
+                let index = u32::try_from(local.functions.len()).expect("fewer than 2^32 locals");
+                let start = local.calls.len();
+                let mut placements = vec![Placement::Unused; methods.len()];
+                for reader in std::iter::once(binding).chain(*name) {
+                    if scan.local_escapes[reader.0] || scan.object_captures[reader.0] {
+                        local.calls.truncate(start);
+                        continue 'binding;
+                    }
+                    for &call in &scan.local_calls[reader.0] {
+                        let ExprKind::Call { args, .. } = &program.exprs[call.0].kind else {
+                            unreachable!("a local call")
+                        };
+                        let Some(method) = method_for(methods, args.len()) else {
+                            local.calls.truncate(start);
+                            continue 'binding;
+                        };
+                        placements[method] = Placement::Hoisted;
+                        local.calls.push((call, index, method));
+                    }
+                }
+                local.functions.push(LocalFunction {
+                    local: binding,
+                    function,
+                    placements: placements.into(),
+                });
+            }
+        }
+        if local.functions.is_empty() {
+            return local;
+        }
+        local.locals = vec![u32::MAX; program.locals.len()];
+        for (index, function) in local.functions.iter().enumerate() {
+            local.locals[function.local.0] = index as u32;
+        }
+        local.place(program, scan);
+        local
+    }
+
+    /// Bind to a `const` next to its function's binding ([`Placement::
+    /// Scoped`]) each called method that may read that scope: it holds `js*`
+    /// (raw text cannot move to the constant table) or an expression with two
+    /// parents (which could see another scope), or reads a local bound outside
+    /// it, other than as the callee of a call of a hoisted method.
+    fn place(&mut self, program: &Program, scan: &Scan) {
+        // The methods of the local functions, numbered in order.
+        let mut first = Vec::with_capacity(self.functions.len());
+        let mut methods = 0;
+        for function in &self.functions {
+            first.push(methods);
+            methods += function.placements.len();
+        }
+        let count = program.exprs.len();
+        let mut function_of = vec![u32::MAX; count];
+        for (index, function) in self.functions.iter().enumerate() {
+            function_of[function.function.0] = index as u32;
+        }
+        let mut walk = Walk {
+            target: vec![u32::MAX; count],
+            scoped: vec![false; methods],
+            callers: vec![Vec::new(); methods],
+            depth: vec![0; program.locals.len()],
+            frames: Vec::new(),
+        };
+        for &(call, index, method) in &self.calls {
+            walk.target[call.0] = (first[index as usize] + method) as u32;
+        }
+        enum Task<'p> {
+            Visit(ExprId),
+            Enter(usize, &'p FnMethod),
+            Exit,
+        }
+        let mut visited = vec![false; count];
+        // The functions in preorder, so each walk starts at an outermost one.
+        for root in self.functions.iter().map(|function| function.function) {
+            if std::mem::replace(&mut visited[root.0], true) {
+                continue;
+            }
+            let mut tasks = vec![Task::Visit(root)];
+            while let Some(task) = tasks.pop() {
+                let id = match task {
+                    Task::Visit(id) => id,
+                    Task::Enter(number, method) => {
+                        walk.frames.push(number);
+                        walk.bind(method.params.iter().chain(&method.rest).copied());
+                        continue;
+                    }
+                    Task::Exit => {
+                        walk.frames.pop();
+                        continue;
+                    }
+                };
+                let object_methods = match &program.exprs[id.0].kind {
+                    ExprKind::Local(local) => {
+                        let call = scan.parent_of(id).filter(|call| {
+                            matches!(program.exprs[call.0].kind,
+                                ExprKind::Call { callee, .. } if callee == id)
+                        });
+                        walk.read(*local, call);
+                        &[][..]
+                    }
+                    ExprKind::JsTemplate { .. } => {
+                        walk.scope_frames();
+                        &[]
+                    }
+                    ExprKind::Let { bindings, .. }
+                    | ExprKind::LetFn { bindings, .. }
+                    | ExprKind::Loop { bindings, .. } => {
+                        walk.bind(bindings.iter().map(|(local, _)| *local));
+                        &[]
+                    }
+                    ExprKind::ThisAs { binding, .. } => {
+                        walk.bind([*binding]);
+                        &[]
+                    }
+                    ExprKind::Try { catches, .. } => {
+                        walk.bind(catches.iter().map(|catch| catch.binding));
+                        &[]
+                    }
+                    ExprKind::Fn { name, methods } => {
+                        walk.bind(*name);
+                        let index = function_of[id.0];
+                        if index != u32::MAX {
+                            // A local function's methods are frames of their own.
+                            for (offset, method) in methods.iter().enumerate().rev() {
+                                let number = first[index as usize] + offset;
+                                if std::mem::replace(&mut visited[method.body.0], true)
+                                    || scan.parents[method.body.0] > 1
+                                {
+                                    walk.scoped[number] = true;
+                                }
+                                tasks.extend([
+                                    Task::Exit,
+                                    Task::Visit(method.body),
+                                    Task::Enter(number, method),
+                                ]);
+                            }
+                            continue;
+                        }
+                        for method in methods {
+                            walk.bind(method.params.iter().chain(&method.rest).copied());
+                        }
+                        &[]
+                    }
+                    // A `reify` object holds every visible local.
+                    ExprKind::Reify {
+                        captures, methods, ..
+                    } => {
+                        for &local in captures {
+                            walk.read(local, None);
+                        }
+                        methods.as_slice()
+                    }
+                    ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
+                        methods.as_slice()
+                    }
+                    _ => &[],
+                };
+                for (_, method) in object_methods {
+                    walk.bind(method.params.iter().chain(&method.rest).copied());
+                }
+                for child in children(program, id) {
+                    // An expression with two parents is emitted in both places.
+                    if scan.parents[child.0] > 1 {
+                        walk.scope_frames();
+                    }
+                    if !std::mem::replace(&mut visited[child.0], true) {
+                        tasks.push(Task::Visit(child));
+                    }
+                }
+            }
+        }
+        // A method that calls a scoped method reads the binding of its entry.
+        let Walk {
+            mut scoped,
+            callers,
+            ..
+        } = walk;
+        let mut pending: Vec<usize> = (0..methods).filter(|&method| scoped[method]).collect();
+        while let Some(method) = pending.pop() {
+            for &caller in &callers[method] {
+                if !std::mem::replace(&mut scoped[caller], true) {
+                    pending.push(caller);
+                }
+            }
+        }
+        for (function, first) in self.functions.iter_mut().zip(first) {
+            for (offset, placement) in function.placements.iter_mut().enumerate() {
+                if *placement == Placement::Hoisted && scoped[first + offset] {
+                    *placement = Placement::Scoped;
+                }
+            }
+        }
+    }
+}
+
+/// The state of [`LocalFunctions::place`]'s walk.
+struct Walk {
+    /// By call: the number of the method it runs, when it names the entry of
+    /// a local function's method, or `u32::MAX`.
+    target: Vec<u32>,
+    /// By method number: the method reads its scope.
+    scoped: Vec<bool>,
+    /// By method number: the methods that call it from outside its function's
+    /// binding, which read that binding if it is scoped.
+    callers: Vec<Vec<usize>>,
+    /// By `LocalId`: how many frames enclose the local's binding. Locals whose
+    /// binding the walk does not see are bound outside every frame.
+    depth: Vec<usize>,
+    /// The methods of local functions that enclose the expression visited,
+    /// innermost last.
+    frames: Vec<usize>,
+}
+
+impl Walk {
+    fn bind(&mut self, locals: impl IntoIterator<Item = LocalId>) {
+        for local in locals {
+            self.depth[local.0] = self.frames.len();
+        }
+    }
+
+    /// A read of `local`, as the callee of `call` if any: each frame inside
+    /// the local's binding reads it from outside, which only a call of a
+    /// hoisted method's entry does without reading the scope.
+    fn read(&mut self, local: LocalId, call: Option<ExprId>) {
+        let outside = &self.frames[self.depth[local.0].min(self.frames.len())..];
+        match call.map(|call| self.target[call.0]) {
+            Some(method) if method != u32::MAX => {
+                self.callers[method as usize].extend(outside);
+            }
+            _ => outside.iter().for_each(|&frame| self.scoped[frame] = true),
+        }
+    }
+
+    /// Every enclosing frame reads its scope.
+    fn scope_frames(&mut self) {
+        for &frame in &self.frames {
+            self.scoped[frame] = true;
+        }
     }
 }
 
@@ -683,7 +1157,7 @@ impl ReceiverCache {
         program: &Program,
         function: ExprId,
         method: usize,
-        entry: Option<(GlobalId, usize)>,
+        entry: Option<Entry>,
     ) -> DirectCall {
         let methods = methods_of(program, function);
         let receivers = self.methods[function.0].get_or_insert_with(|| {

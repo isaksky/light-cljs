@@ -790,9 +790,10 @@ literals (Pellets 218-221) extend the same table.
   order, before any definition. An entry may read only the runtime and
   earlier entries, never a program global. A function that only references
   globals in its body is fine, because the body runs later; this covers the
-  arity methods that 212 may hoist. With `lazy` set, a new entry is a lazy
-  cell instead (218): `let c<n>; const k<n> = () => c<n> ??= <initializer>;`,
-  read as `k<n>()`, which builds the value on the first read.
+  methods of local functions that light-cljs-228 hoists. With `lazy` set, a
+  new entry is a lazy cell instead (218):
+  `let c<n>; const k<n> = () => c<n> ??= <initializer>;`, read as `k<n>()`,
+  which builds the value on the first read.
 - **Names.** `k<n>` and `c<n>` names are compiler-owned. `hygienic_js`
   renames `k<digits>` and `c<digits>` tokens along with its other numbered
   prefixes. `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
@@ -903,8 +904,7 @@ keyed by names.
    `arguments.length` dispatcher when the fn value never escapes; variadic
    calls to known callees build the rest seq directly; no IIFE around `def`
    initializers; local multi-arity fns hoisted when captures permit.
-   Implemented except the hoisting; see "Phase 2 call shape extension
-   points" below.
+   Implemented; see "Phase 2 call shape extension points" below.
 6. **Pure initializer removal.** Extend `inert` to initializers that only
    call pure core operations on inert arguments, so `(def table (into {}
    ...))` disappears when unused.
@@ -1446,20 +1446,24 @@ collection's host-facing methods only where it builds another kind of seq.
 
 #### Phase 2 call shape extension points
 
-Step 5 is implemented (light-cljs-212) in `src/call_shapes.rs`, at `Advanced`
-only, except the hoisting of local functions. `prepare_application` runs it
-last, over the program that rapid type analysis rewrote, and emission reads
-it. `None` and `Prepare` output does not change; `specialize` still runs
-there and at `Advanced`, whose emission prefers the shapes below.
+Step 5 is implemented in `src/call_shapes.rs` (light-cljs-212, and
+light-cljs-228 for local and named functions), at `Advanced` only.
+`prepare_application` runs it last, over the program that rapid type analysis
+rewrote, and emission reads it. `None` and `Prepare` output does not change;
+`specialize` still runs there and at `Advanced`, whose emission prefers the
+shapes below.
 
 - **Known functions.** `call_shapes::analyze` walks the program from its root
   with each expression's parent. A global's function is known when one `def`
   binds it to a `fn` (in one-form `do`s) and nothing else assigns the global:
   no second `def`, `defonce`, `set!`, `binding`, `with-redefs`, `js*` hole,
   `:dynamic` or `:test` metadata, or host path name. A `def` without a value
-  (`declare`) assigns nothing and does not count. Macro functions and named
-  functions with several methods, whose bodies may read the dispatcher through
-  the name, stay generic.
+  (`declare`) assigns nothing and does not count. Macro functions stay
+  generic. A named function with several methods (`(def f (fn self ...))`) is
+  known only when its `def` is a direct top-level form, which runs once, and
+  its name is read only as the callee of calls whose count selects a method;
+  calls through the name then name the entries too. A method that reads the
+  name as a value needs that evaluation's dispatcher, so it stays generic.
 - **Escape.** A known function escapes when the program reads its global other
   than as a call's callee, uses the value of its `def` (the `def` is not a
   discarded form), exports it, or calls it with an argument count that selects
@@ -1474,17 +1478,71 @@ there and at `Advanced`, whose emission prefers the shapes below.
     calls name the entry their count selects. The global is bound only when
     the function escapes: to the `arguments.length` dispatcher over the same
     entries, with its arity properties, as the last items of the same comma
-    expression. A dispatcher reads the entries from their bindings, so a
-    function that escapes keeps `Entries` only when its `def` is a direct
-    top-level form, which runs once; one that does not escape may be defined
-    anywhere, since its entries are rebound together and every call reads
-    them.
+    expression. The dispatcher of a direct top-level `def`, which runs
+    once, reads the entries from their bindings. A `def` that may run again
+    (`rerun`, since light-cljs-228) rebinds the entries, so its dispatcher
+    holds the entries of its own evaluation,
+    `g3 = (() => { const m0 = g3_0; ...; return f; })()`: a dispatcher saved
+    from an earlier evaluation keeps calling its own methods, while direct
+    calls read the current entries, which are always those of the current
+    global, as calls of the global did. One that does not escape may be
+    defined anywhere, since its entries are rebound together and every call
+    reads them.
   - `Generic`: as below `Advanced`.
 
   The entry names need no new hygiene rule: `hygienic_js` renames `g` followed
   by digits and underscores, and the top-level probe of
   `optimization::raw_js_names_resolve_only_to_holes_and_host_globals` sees
   them.
+- **Local functions** (`LocalFunction`, light-cljs-228). A `fn` with several
+  methods or rest arguments bound by `let` or `letfn` has no dispatcher when:
+  - its value goes only to that binding (through one-form `do`s, each with
+    one parent);
+  - its local and its name are read only as the callee of calls whose count
+    selects a method (`method_for`, as for globals);
+  - no `reify` captures them (a `reify` object holds every visible local as a
+    field, so the analysis counts its captures as reads; this also keeps
+    229's closed functions sound), and no method of a type, `reify` or
+    `extend-type` captures them (its `IFn` adapter may copy its captures into
+    an object).
+
+  Calls through the local or the name name the entry of the method they
+  select. Each method is placed where its captures permit (`Placement`):
+  - `Hoisted`: it reads no local from outside itself, except as the callee of
+    a call of another hoisted method (itself, a sibling, a `letfn` peer), and
+    holds no `js*` (raw text cannot move into the constant table) and no
+    expression with two parents. It is a function entry of the constant table
+    under `ConstantKey::Method`, `const k4 = function (l6) {...};`, never
+    lazy, declared at its first call and numbered before its body is written,
+    so recursive and mutually recursive methods can call each other. It is
+    written as at the top level: none of the emitter's enclosing scope state
+    applies to it. The function value never escapes, so creating it once
+    instead of at each evaluation is invisible.
+  - `Scoped`: any other called method is a `const` of its own next to the
+    binding, `const l5_1 = function (l7, l8) {...};`, created at each
+    evaluation of the scope as the dispatcher's methods were, so closures
+    made in a loop see their own iteration. The local itself is not bound
+    (`letfn` skips its `let l5;`).
+  - `Unused`: a method no call selects is not emitted.
+
+  `LocalFunctions::place` decides this with one walk over the subtrees of
+  local functions, which tracks how many methods enclose each local's binding
+  (a local whose binding it does not see, such as a type field, is outside
+  every method), and a backward propagation from scoped methods to the
+  methods that call them from outside their binding. Calls cannot run before
+  their entry is bound: they are in the binding's scope, and `letfn`
+  initializers are `fn` expressions. `l<n>_<m>` names are renamed by
+  `hygienic_js` (`l` followed by digits and underscores); the
+  `local-multi-arity` probe of
+  `optimization::raw_js_names_resolve_only_to_holes_and_host_globals` runs
+  in a scoped method next to hoisted ones. `ApplicationStats::
+  dispatchers_removed` counts local functions too, and `hoisted_methods`
+  counts the hoisted methods; `ConstantPool::functions` counts the function
+  entries the output declares (the `--size-report` line adds `F functions`).
+
+  `loop` locals (which `recur` rebinds), functions whose local or name
+  escapes, calls whose count selects no method and `fn` literals called in
+  place keep the dispatcher.
 - **Calls** (`DirectCall`). A variadic method receives what its dispatcher
   would pass: the fixed arguments, then `rt$fnRest([rest...], 0)` or `null`.
   A method whose body holds `js*` outside nested functions keeps
@@ -1537,19 +1595,34 @@ there and at `Advanced`, whose emission prefers the shapes below.
   - redefinition, `set!`, `binding`, `with-redefs`, `defonce`, `js*` holes,
     and definitions inside functions;
   - calls before the definition, rest sequences and argument order;
-  - `do` in value position, local functions and calls across namespaces.
+  - `do` in value position, local functions and calls across namespaces;
+  - since light-cljs-228, local functions of every method kind, `letfn`
+    mutual recursion, named local functions, methods hoisted, scoped and left
+    out, closures made by scoped methods in a loop, every way a local function
+    escapes (higher-order arguments, `apply`, aliases, its name as a value,
+    `reify`, `extend-type`, `loop`, unselected and underfilled counts, `fn`
+    literals called in place), `js*`, `this-as` and `(js-arguments)` in local
+    methods, named global functions, and escaping definitions that run twice.
 
-  The ratchet fixture `multi-arity` pins the size, and `--levels` runs it as a
-  steady-state workload.
+  The ratchet fixtures `multi-arity` and `local-arities` pin the sizes, and
+  `--levels` runs both as steady-state workloads.
 - **Measured.** At `Advanced`, `multi-arity` drops from 3,579 to 2,040 bytes
   and `raw-js` from 856 to 271. Its steady-state loop runs 1.8 times faster in
   QuickJS and 21 times faster in Node, which now inlines it. A direct call of
   a method costs 29 ns in QuickJS where `.call(null, ...)` through a
   dispatcher cost 152. See "Direct call shapes" in `benchmarks/compiler.md`.
+  With local entries (light-cljs-228) `local-arities` drops from 2,864 to
+  1,282 bytes, and its steady-state loop runs 1.9 times faster in QuickJS and
+  30 times faster in Node, as fast as the global functions of `multi-arity`;
+  see "Local function entries" in `benchmarks/compiler.md`.
 - **Left for later.**
-  - Local functions with several methods, and named ones, keep their
-    dispatcher; hoisting them to entries when their captures permit is the
-    rest of step 5 (light-cljs-228).
+  - A method that captures only locals whose value is the same at every
+    evaluation (a constant, or a global read) stays scoped; it could be
+    hoisted with the value substituted.
+  - `fn` literals with several methods called in place, `((fn ([] 1) ([x]
+    x)) 2)`, keep their dispatcher; they could call the method literal.
+  - A named function whose name escapes, or whose `def` may run again, keeps
+    the generic shape.
   - A `def` initializer that is a `let`, `try`, `case` or `loop` is still a
     function call; top-level definitions could emit it as statements.
   - Parameter types from the direct calls of closed functions
@@ -2086,9 +2159,15 @@ tier 4 (light-cljs-220).
   `count`, `nth` and `contains?` against, keeping the throws of out-of-range
   arguments. A lookup of a constant key in a shaped map literal can fold to
   that key's value expression when the rest have no effects.
-- **For 212.** Hoisted functions are entries under a new key variant;
-  `constant_entry`'s initializer may reference globals only inside function
-  bodies, and a function entry should never be lazy.
+- **Function entries** (light-cljs-228). Methods of local functions that
+  capture nothing are entries under `ConstantKey::Method { function, method }`
+  (see "Local functions" in "Phase 2 call shape extension points"), never
+  lazy. `Emitter::hoisted_method` numbers such an entry before writing its
+  body, unlike `constant_entry`, so the body can call its own entry; the
+  body references globals and later entries only when it runs, after the
+  output has loaded. A program that reads no runtime has no runtime slice;
+  its table, then only function entries, directly follows the prelude.
+  `ConstantPool::functions` counts them.
 - **Hash tests.** `tests/compiler/constant_hashes.rs` rewrites the output's
   `hashed` to compare each embedded hash with the runtime's own, in Node and
   in QuickJS, for edge cases (`-0`, NaN, large and non-safe integers, non-BMP

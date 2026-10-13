@@ -10,7 +10,7 @@ use crate::analyzer::{
     ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, NamedLiteralId,
     PACKAGE_REGISTRY, Program, RecurTargetId, StringId,
 };
-use crate::call_shapes::{CallShapes, DirectCall, FunctionShape};
+use crate::call_shapes::{CallShapes, DirectCall, Entry, FunctionShape, LocalFunction, Placement};
 use crate::core_operations::Type;
 use crate::inference::{Inference, Known};
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
@@ -159,6 +159,7 @@ fn emit_js_mode(
                 named: vec![[None; 2]; program.named_literals.len()],
                 lazy: Vec::new(),
                 composites: 0,
+                functions: 0,
                 classes: vec![ConstantClass::Unknown; program.exprs.len()],
                 hashes: inference
                     .is_some_and(|inference| inference.facts().core_protocols_intact())
@@ -195,6 +196,7 @@ fn emit_js_mode(
             if let Some(FunctionShape::Entries {
                 function,
                 dispatcher,
+                ..
             }) = shapes.map(|shapes| shapes.function(GlobalId(global)))
             {
                 if dispatcher {
@@ -415,6 +417,21 @@ fn emit_js_mode(
                 .push(start..prelude_end + source_length - 2);
         }
         emitter.output.insert_str(prelude_end, &runtime);
+    } else if let Some(constants) = emitter
+        .constants
+        .as_ref()
+        .filter(|constants| !constants.declarations.is_empty())
+    {
+        // Without a runtime the table holds only hoisted methods
+        // (light-cljs-228), which read none.
+        let declarations = &constants.declarations;
+        for range in &mut emitter.raw_segments {
+            if range.start >= prelude_end {
+                range.start += declarations.len();
+                range.end += declarations.len();
+            }
+        }
+        emitter.output.insert_str(prelude_end, declarations);
     }
 
     // Raw JavaScript is an escape hatch, but its user-authored identifiers must
@@ -437,6 +454,7 @@ fn emit_js_mode(
         .map_or_else(ConstantPool::default, |table| ConstantPool {
             entries: table.lazy.len(),
             composites: table.composites,
+            functions: table.functions,
             lazy: table.lazy.iter().filter(|lazy| **lazy).count(),
             bytes: table.declarations.len(),
         });
@@ -679,6 +697,10 @@ enum ConstantKey<'a> {
         set: bool,
         keys: Box<[ConstantPart<'a>]>,
     },
+    /// Method `method` of the local function `function`, which captures
+    /// nothing and whose value never escapes, hoisted out of its scope
+    /// (light-cljs-228; `crate::call_shapes::Placement::Hoisted`). Never lazy.
+    Method { function: ExprId, method: usize },
 }
 
 /// How a composite constant is built, which is how its sites build it below
@@ -921,6 +943,8 @@ struct ConstantTable<'a> {
     lazy: Vec<bool>,
     /// The number of composite entries.
     composites: usize,
+    /// The number of hoisted method entries ([`ConstantKey::Method`]).
+    functions: usize,
     /// What the pool knows about each expression, by `ExprId`.
     classes: Vec<ConstantClass>,
     /// The entries' hashes, which composite initializers embed
@@ -2568,6 +2592,10 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("{\n");
                 self.indent += 1;
                 for &(local, init) in bindings {
+                    if let Some(function) = self.local_function(local) {
+                        self.local_entries(init, function);
+                        continue;
+                    }
                     self.indentation();
                     self.output.push_str("const ");
                     self.local(local);
@@ -2587,13 +2615,22 @@ impl<'a> Emitter<'a> {
                 // Each entry into the block creates fresh slots, including
                 // within recur iterations. Closures capture these slots, so
                 // every peer is visible regardless of declaration order.
+                // A local function with method entries binds those instead,
+                // which only the bodies of the peers and the block read.
                 for &(local, _) in bindings {
+                    if self.local_function(local).is_some() {
+                        continue;
+                    }
                     self.indentation();
                     self.output.push_str("let ");
                     self.local(local);
                     self.output.push_str(";\n");
                 }
                 for &(local, init) in bindings {
+                    if let Some(function) = self.local_function(local) {
+                        self.local_entries(init, function);
+                        continue;
+                    }
                     self.indentation();
                     self.local(local);
                     self.output.push_str(" = ");
@@ -2929,15 +2966,17 @@ impl<'a> Emitter<'a> {
     /// The definition of `global`, whose initializer `init` is the `fn`
     /// expression `function` in one-form `do`s, with each method bound to an
     /// entry of its own (`FunctionShape::Entries`, `crate::call_shapes`):
-    /// `(g3_0 = function() {...}, g3_1 = function(l2) {...})`. With its
+    /// `(g3_0 = function() {...}, g3_1 = function(l2) {...})`. With a
     /// `dispatcher` the global is the dispatcher over the same entries, with
-    /// its arity properties, and the value of the definition.
+    /// its arity properties, and the value of the definition. The dispatcher
+    /// reads the entries' bindings, or with `Some(true)` (a definition that
+    /// may run again, which rebinds them) holds this evaluation's entries.
     fn method_entries(
         &mut self,
         global: GlobalId,
         init: ExprId,
         function: ExprId,
-        dispatcher: bool,
+        dispatcher: Option<bool>,
     ) {
         let program = self.program;
         let mut wrapper = init;
@@ -2964,27 +3003,147 @@ impl<'a> Emitter<'a> {
             write!(self.output, "{entry} = ").unwrap();
             self.method_with_ifn_captures(None, method, false);
         }
-        if dispatcher {
-            let name = format!("g{}", global.0);
-            write!(self.output, ", {name} = ").unwrap();
-            self.dispatcher(&entries, methods, false);
-            self.arity_properties(&name, &entries, methods, false, false);
-            write!(self.output, ", {name}").unwrap();
+        match dispatcher {
+            Some(false) => {
+                let name = format!("g{}", global.0);
+                write!(self.output, ", {name} = ").unwrap();
+                self.dispatcher(&entries, methods, false);
+                self.arity_properties(&name, &entries, methods, false, false);
+                write!(self.output, ", {name}").unwrap();
+            }
+            // `g3 = (() => { const m0 = g3_0; ...; return f; })()`.
+            Some(true) => {
+                let name = format!("g{}", global.0);
+                writeln!(self.output, ", {name} = (() => {{").unwrap();
+                self.indent += 1;
+                let held: Vec<String> = (0..methods.len())
+                    .map(|index| format!("m{index}"))
+                    .collect();
+                for (held, entry) in held.iter().zip(&entries) {
+                    self.indentation();
+                    writeln!(self.output, "const {held} = {entry};").unwrap();
+                }
+                self.indentation();
+                self.output.push_str("const f = ");
+                self.dispatcher(&held, methods, false);
+                self.output.push_str(";\n");
+                self.arity_properties("f", &held, methods, false, true);
+                self.indentation();
+                self.output.push_str("return f;\n");
+                self.indent -= 1;
+                self.indentation();
+                write!(self.output, "}})(), {name}").unwrap();
+            }
+            None => (),
         }
         self.output.push(')');
         self.site = site;
     }
 
+    /// The bindings of the local function `function` with method entries,
+    /// bound by `local` to `init` (a `fn` in one-form `do`s), in place of the
+    /// local's: `const l5_0 = function(l6) {...};` for each method that a call
+    /// selects and that reads the scope ([`Placement::Scoped`]). Hoisted
+    /// methods are constant table entries, declared at their first call
+    /// ([`Emitter::hoisted_method`]).
+    fn local_entries(&mut self, init: ExprId, function: &LocalFunction) {
+        let program = self.program;
+        let mut wrapper = init;
+        while wrapper != function.function {
+            self.used.insert(wrapper);
+            let ExprKind::Do(items) = &program.exprs[wrapper.0].kind else {
+                unreachable!("a fn in one-form do forms")
+            };
+            wrapper = items[0];
+        }
+        self.used.insert(function.function);
+        let ExprKind::Fn { methods, .. } = &program.exprs[function.function.0].kind else {
+            unreachable!("entries of a fn")
+        };
+        let site = self.site.replace(function.function);
+        for (index, (method, placement)) in methods.iter().zip(&function.placements).enumerate() {
+            if *placement == Placement::Scoped {
+                self.indentation();
+                write!(self.output, "const l{}_{index} = ", function.local.0).unwrap();
+                self.method_with_ifn_captures(None, method, false);
+                self.output.push_str(";\n");
+            }
+        }
+        self.site = site;
+    }
+
+    /// The constant table entry of method `method` of the local function
+    /// `function` (`Placement::Hoisted`), `const k<n> = function(l6) {...};`,
+    /// declared on first use. The method reads no local of an enclosing
+    /// scope, so it is written as at the top level. Its entry is numbered
+    /// before its body is written, so that the body can call it and the other
+    /// hoisted methods it reaches; the body runs only after the table loads.
+    fn hoisted_method(&mut self, function: ExprId, method: usize) -> usize {
+        let key = ConstantKey::Method { function, method };
+        let constants = self
+            .constants
+            .as_mut()
+            .expect("methods are hoisted at Advanced");
+        if let Some(&number) = constants.numbers.get(&key) {
+            return number;
+        }
+        let number = constants.lazy.len();
+        constants.lazy.push(false);
+        constants.functions += 1;
+        constants.numbers.insert(key, number);
+        let program = self.program;
+        let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
+            unreachable!("a hoisted method of a fn")
+        };
+        let output = std::mem::take(&mut self.output);
+        let indent = std::mem::replace(&mut self.indent, 1);
+        let captures = std::mem::take(&mut self.captures);
+        let reify_captures = std::mem::take(&mut self.reify_captures);
+        let reify_receivers = std::mem::take(&mut self.reify_receivers);
+        let capture_resets = std::mem::take(&mut self.capture_resets);
+        let field_resets = std::mem::take(&mut self.field_resets);
+        let returned_definition = self.returned_definition.take();
+        let site = self.site.replace(function);
+        let raw = self.raw_segments.len();
+        self.method_with_ifn_captures(None, &methods[method], false);
+        debug_assert_eq!(
+            self.raw_segments.len(),
+            raw,
+            "a hoisted method holds raw JavaScript"
+        );
+        self.site = site;
+        self.returned_definition = returned_definition;
+        self.field_resets = field_resets;
+        self.capture_resets = capture_resets;
+        self.reify_receivers = reify_receivers;
+        self.reify_captures = reify_captures;
+        self.captures = captures;
+        self.indent = indent;
+        let value = std::mem::replace(&mut self.output, output);
+        let constants = self.constants.as_mut().unwrap();
+        writeln!(constants.declarations, "  const k{number} = {value};").unwrap();
+        number
+    }
+
     /// A call whose method is chosen at compile time (`crate::call_shapes`):
-    /// its entry, `g3_1(a)`, or the callee itself when it is the method,
-    /// `g3(a, b)`. A variadic method receives the rest sequence its dispatcher
-    /// would build, `g3_2(a, rt$fnRest([b, c], 0))`, or `null`. A method that
-    /// may read `this` keeps `.call(null, ...)`.
+    /// its entry, `g3_1(a)`, `l5_1(a)` or `k4(a)`, or the callee itself when it
+    /// is the method, `g3(a, b)`. A variadic method receives the rest sequence
+    /// its dispatcher would build, `g3_2(a, rt$fnRest([b, c], 0))`, or `null`.
+    /// A method that may read `this` keeps `.call(null, ...)`.
     fn direct_call(&mut self, callee: ExprId, args: &[ExprId], direct: DirectCall) {
         match direct.entry {
-            Some((global, method)) => {
+            Some(Entry::Global { global, method }) => {
                 self.used.insert(callee);
                 write!(self.output, "g{}_{method}", global.0).unwrap();
+            }
+            Some(Entry::Scoped { local, method }) => {
+                self.used.insert(callee);
+                write!(self.output, "l{}_{method}", local.0).unwrap();
+            }
+            Some(Entry::Hoisted { function, method }) => {
+                self.used.insert(callee);
+                let number = self.hoisted_method(function, method);
+                self.constant_reference(number);
             }
             // A member read, `captures3.l5`, would pass its object as `this`.
             None => match self.program.exprs[callee.0].kind {
@@ -3020,6 +3179,13 @@ impl<'a> Emitter<'a> {
             }
         }
         self.output.push(')');
+    }
+
+    /// At `Advanced`, the local function that the `let` or `letfn` local
+    /// `local` binds, when its methods are bound to entries without a
+    /// dispatcher (`crate::call_shapes`, "Local functions").
+    fn local_function(&self, local: LocalId) -> Option<&'a LocalFunction> {
+        self.shapes.and_then(|shapes| shapes.local_function(local))
     }
 
     /// Whether [`Emitter::local_value`] writes `id` as an identifier or a
@@ -3796,9 +3962,10 @@ impl<'a> Emitter<'a> {
                     && let Some(FunctionShape::Entries {
                         function,
                         dispatcher,
+                        rerun,
                     }) = self.shapes.map(|shapes| shapes.function(*global))
                 {
-                    self.method_entries(*global, *init, function, dispatcher);
+                    self.method_entries(*global, *init, function, dispatcher.then_some(rerun));
                     return;
                 }
                 self.output.push('(');

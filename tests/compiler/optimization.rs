@@ -483,7 +483,8 @@ fn probe(context: &str) -> String {
 /// definition, because the hygiene pass renames every identifier the compiler
 /// emits away from raw text (docs/advanced-optimization.md, Phase 2 step 7).
 /// This checks that claim from inside raw text: in every scope where the emitter
-/// binds names (functions, arities, loops, closures, `try`, `case`, `binding`,
+/// binds names (functions, arities, the method entries of local functions with
+/// hoisted siblings, loops, closures, `try`, `case`, `binding`,
 /// `with-out-str`, type and `reify` methods, `letfn`, `this-as`, initializers and
 /// the top level), each identifier token of the whole output, with the hygiene
 /// prefix removed, must resolve exactly as it does at global scope. A new
@@ -497,6 +498,7 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         "multi-arity-1",
         "multi-arity-2",
         "variadic",
+        "local-multi-arity",
         "loop",
         "loop-closure",
         "catch",
@@ -527,6 +529,10 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         (defn fixed [a b] {} (+ a b))
         (defn multi ([a] {} a) ([a b] {} (+ a b)))
         (defn variadic [a & more] {} (apply + a more))
+        (defn local-arities [n]
+          (let [pure (fn ([a] (* a 2)) ([a b] (* a b)))
+                scoped (fn ([a] {} (+ a n)) ([a b] (+ (pure a b) n)))]
+            [(scoped 1) (scoped 1 2) (pure 3)]))
         (defn looping [n]
           (loop [i 0 fs []]
             (if (< i n)
@@ -547,7 +553,7 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         (defn constants [] [(count (table)) (:a {{:a [1 2]}}) '(x y)])
         {}
         (pr-str [(constants) (str (T. 1)) (method (->R 1) 2) (fixed 1 2) (multi 1) (multi 1 2)
-                 (variadic 1 2 3) (looping 2) (caught) (cases :a 1 "s") (bound)
+                 (variadic 1 2 3) (local-arities 1) (looping 2) (caught) (cases :a 1 "s") (bound)
                  (redefined) (printed) (reified 3) (letfns) (this-as-fn) (let-fn)
                  initialized])"#,
         p("deftype-method"),
@@ -556,6 +562,7 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         p("multi-arity-1"),
         p("multi-arity-2"),
         p("variadic"),
+        p("local-multi-arity"),
         p("loop-closure"),
         p("loop"),
         p("catch"),
@@ -619,7 +626,8 @@ console.log(value);"#
         );
         assert_eq!(lines[1], ran, "probes that ran at {level}");
         assert_eq!(
-            lines[2], r#"[[1024 [1 2] (x y)] "t" 3 3 1 3 6 [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2]"#,
+            lines[2],
+            r#"[[1024 [1 2] (x y)] "t" 3 3 1 3 6 [2 3 6] [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2]"#,
             "{level}"
         );
     }
