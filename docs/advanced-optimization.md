@@ -4,9 +4,10 @@ Status: design, October 2026. Phase 0's optimization levels, size ratchet,
 differential test, runtime retention report and startup benchmark are
 implemented (see "Phase 0 extension points"), and so are Phase 1's unit
 manifest and advanced-mode runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
-extension points") and Phase 2's core operation table and type inference (see
-"Phase 2 core operation table extension points" and "Phase 2 type inference
-extension points"); the rest is not. The work items are
+extension points") and Phase 2's core operation table, type inference and
+rapid type analysis of program types (see "Phase 2 core operation table
+extension points", "Phase 2 type inference extension points" and "Phase 2
+rapid type analysis extension points"); the rest is not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
 
@@ -161,7 +162,8 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   collections) and specialization of eager top-level calls to fixed arity
   entries or core aliases. Any retained `js*` disables both. (Since Phase 2
   steps 6 and 7, `Advanced` also removes pure-call initializers and treats
-  `js*` as an opaque leaf.)
+  `js*` as an opaque leaf, and since step 4 `src/rta.rs` drops the methods
+  and types of a program that no instance can use.)
 - `src/emitter.rs:105-134` includes the whole runtime when any used
   expression is a keyword, symbol, collection, core reference, reader
   literal, `with-meta`, var, protocol or type form, a `case` with keyword or
@@ -396,7 +398,7 @@ to under 1 KB and beat every upstream ceiling on its own.
 
 Step 1 is implemented (light-cljs-202). Later steps build on it:
 
-- **Format.** `//@unit <name>[ compile-time][ mutator][ effect[: <bindings>]][ requires: <bindings>]`
+- **Format.** `//@unit <name>[ compile-time][ mutator][ effect[: <bindings>[ when: <bindings>]]][ requires: <bindings>]`
   headers in `src/js_runtime.js`, with `//@ ` continuation lines and a final
   `//@exports` section; the module docs of `src/runtime_manifest.rs` give the
   rules. A unit that declares bindings is named after its first one (today
@@ -408,7 +410,10 @@ Step 1 is implemented (light-cljs-202). Later steps build on it:
   (`ListValue.members`, `core.seal`), and is kept whenever a unit declaring a
   target is kept. Since step 4, calling a `mutator` while loading is an effect
   too, and `install: a, b` marks effects needed only where a target's value
-  escapes (`add.variadic`); see "Phase 1 effects extension points".
+  escapes (`add.variadic`); see "Phase 1 effects extension points". Since
+  Phase 2 step 4, `effect: a when: b, c` is kept only where one of the `when:`
+  bindings is kept as well; see "Phase 2 rapid type analysis extension
+  points".
 - **API.** `RuntimeManifest::embedded()` parses the compiled-in runtime once.
   `unit_of(binding)` maps a runtime name to its `UnitId` (dense, in file
   order); `dependencies`, `attached_effects` and `reachable(roots)`, which
@@ -867,6 +872,9 @@ keyed by names.
    calls and from `satisfies?`. Implementations of uninstantiated types and
    unreached methods are dropped. Calls whose receiver type set is a
    singleton become direct calls. Closure can do neither for protocols.
+   Implemented for program types and protocols; see "Phase 2 rapid type
+   analysis extension points" below. The runtime's builtin types are
+   light-cljs-227.
 5. **Call shape.** Direct `f(a, b)` for known targets with no `.call(null)`;
    arity entry chosen at compile time at every call site; no
    `arguments.length` dispatcher when the fn value never escapes; variadic
@@ -1053,6 +1061,140 @@ and `Prepare` output does not change.
   `ILookup`, programs that extend core protocols), and checks the lowered text.
 - **Measured.** `(js/console.log (+ 1 2))` needs no runtime at `Advanced`
   and is 192 bytes; `raw-js` is 856. See `benchmarks/compiler.md`.
+
+#### Phase 2 rapid type analysis extension points
+
+Step 4 is implemented (light-cljs-211) for program types and protocols in
+`src/rta.rs`, at `Advanced` only. `prepare_application` runs it after type
+inference, which it reads, and rewrites the prepared program that emission
+reads. The runtime's builtin types are left for light-cljs-227.
+
+- **Analysis.** `rta::analyze` walks the prepared program from its root, as
+  emission will. It enters a method body of a `deftype`, `defrecord`, `reify`
+  or `extend-type` only once the method can run, and iterates to the least
+  fixed point. Two types whose methods only construct each other therefore keep
+  neither.
+  - A program type is *instantiated* when reachable code constructs it
+    (`new T`, `->T`, `map->T`). It also is when code reads its constructor in
+    any way other than as the class of `instance?` or the target of
+    `extend-type`, because a value read escapes. Assignments count as such
+    reads, and so does a `deftype` form whose value is used. A raw `deftype*`
+    and an exported global always count.
+  - A program protocol method is *dispatched* when reachable code reads its
+    global, and *called* when it is dispatched or a call of it is
+    devirtualized. A protocol is *observed* when code reads it or tests it
+    with `satisfies?` or `implements?`. Code that names a slot as a string,
+    property or method, or in `js*` text, calls its method and observes its
+    protocol.
+  - A method entry stays when it can run:
+    - on a program type when the type is instantiated and the method called
+      (its marker: the protocol observed);
+    - on a `reify` or a `specify!` target when the method is called;
+    - on a host type, `default` or a runtime type when it is dispatched.
+  - Core protocol, `Object` and `IFn` methods stay with their instantiated
+    type. Methods are tracked by name, so a called method keeps every arity.
+- **Rewrite.** `TypeAnalysis::apply` does the following:
+  - removes dropped entries from method lists;
+  - makes a type without instances a bare constructor (no methods, record
+    methods or factories) when `instance?` or `extend-type` reads it, and
+    removes its form otherwise;
+  - removes an `extend-type` left without methods when it targets a host type
+    name or a type defined earlier at top level. The extension of a type not
+    yet defined still fails;
+  - does not define a map factory nothing reads, since `recordFromMap` keeps
+    the generic core;
+  - makes a `defprotocol` define only the protocol value and the dispatchers
+    something reads;
+  - removes a top-level definition that preparation removes when unread, once
+    only dropped methods read it.
+
+  `ApplicationStats` counts `uninstantiated_types`, `dropped_methods` and
+  `devirtualized_calls`. Removed definitions add to `removed_definitions`.
+- **Devirtualization.** Inference may type a call's receiver as an instance of
+  one program type (`Known::Instance`) that implements the method at the
+  call's arity. The call then reads the implementation from the receiver, as
+  `protocolMethod`'s dispatcher does: `(r)["ns$P$m$arity$1"](r)`. When an
+  argument cannot be read twice, it uses
+  `((r0, a1) => r0["ns$P$m$arity$2"](r0, a1))(receiver, x)`, which keeps the
+  evaluation order.
+  - Conditions: the method is defined once and never assigned, takes no rest
+    arguments, and its protocol is not `:extend-via-metadata`. Both the
+    protocol and the type are top-level forms, the protocol first, so the
+    dispatcher the original call reads exists wherever an instance does.
+  - A later `extend-type` or `specify!` replaces the slot the call reads.
+  - `rta::protocol_slot` is the Rust port of the runtime's `protocolSlot`.
+  - Parameters are still `any`, so devirtualization mostly applies to `let`
+    locals, constructor calls and receivers narrowed by `instance?` or
+    `satisfies?`. Call shapes (212) widen it.
+- **Definitions in emitted code.** `ProgramFacts` now counts definitions only
+  where the root reaches them. `defprotocol` leaves a `def` without a value
+  for each of its Vars in the arena, so before this no protocol method was
+  ever `Definition::Protocol`.
+- **Type machinery in the runtime.**
+  - `makeType`, `installMethods`, `reify` and `protocolMethod` no longer keep
+    the generic core. Through the `typeHooks` unit they read the record
+    methods, the variadic `applyTo` of callable types, metadata dispatch
+    (`metadataMethod`) and the rest arguments of variadic protocol methods
+    (`fnRest`).
+  - Each hook is set by an install unit of the providing binding. The emitter
+    keeps that binding as a `NameUse::Keep` root where the program needs it:
+    `recordMethods` for an instantiated record, `metadataMethod` and `fnRest`
+    for a protocol extendable through metadata or with a variadic method.
+    `fnApplyTo`, which every variadic function keeps anyway, sets its hook
+    wherever `ifnInvokeEntry` is kept.
+  - A new hook follows the same pattern: kept by a `when:` install of the
+    binding that provides it.
+  - Each record method is a unit (`recordMethods.hash`, ...) that adds a
+    builder to `recordMethodTable`. `recordMethods(Type)` installs every
+    record protocol's marker and the table's methods.
+- **Conditional effects.** The manifest header `effect: a when: b, c` (see
+  `src/runtime_manifest.rs`) keeps a unit only where a target is kept and so
+  is one of the `when:` bindings: runtime methods are RTA in the manifest.
+  - A record method belongs to `recordMethods`, which only a program with
+    records keeps. It lists the operations that dispatch its protocol method:
+    `recordMethods.count effect: recordMethods when: count, seqProtocol`.
+  - `RuntimeManifest::reached_by_uses` makes a conditional effect wait for
+    its condition, and `RuntimeManifest::conditions` lists a unit's
+    conditions.
+  - The `runtime_manifest` suite checks every `when:` list. A unit
+    installing protocol methods must name every unit whose body holds one of
+    their keys other than as a method entry. A hook install must name every
+    reader of its hook. A new dispatch site fails until it is listed.
+- **`getBasis`.** At `Advanced` a type gets its static `getBasis` only when
+  reachable code names it: a property read, a method call or index, a string,
+  or raw `js*` text. It builds a vector of symbols, which kept the generic
+  core for every type. See "Advanced-mode contract".
+- **Tests.**
+  - The `rapid_types` suite in `tests/compiler/` runs every program at every
+    level. It checks the `Advanced` text for what goes (with sentinel
+    strings) and for devirtualized calls. It covers:
+    - every way to construct or reach an instance;
+    - the least fixed point;
+    - host extensions;
+    - argument order;
+    - `extend-type`, `specify!` and metadata extension;
+    - munged slot names in a namespace with dashes;
+    - the record methods each operation keeps;
+    - `getBasis` and callable types.
+  - The ratchet fixture `three-records` has three records implementing one
+    protocol, of which one is constructed.
+  - The generated programs' `uninstantiated-type` and
+    `uncalled-protocol-method` garbage is `removed`.
+- **Measured.** At `Advanced`, `record-protocol` drops from 148,802 to 11,637
+  bytes, `pure-defs` from 145,151 to 11,471 and `three-records` from 150,433
+  to 11,642. A program that keeps the generic core grows by 65 bytes
+  (`typeHooks` and the `fnApplyTo` install), and the shared runtime by 1,260
+  bytes. See `benchmarks/compiler.md`.
+- **Left for later.**
+  - The runtime's builtin types (light-cljs-227): a program that builds any
+    collection, keyword or symbol keeps the 301-unit generic core (119 KB),
+    because generic operations and builtin prototypes reference every
+    collection type.
+  - A per-arity method set.
+  - `IPrintWithWriter` and the other core protocol methods of program types
+    whose operations the slice does not keep. This needs the slice before
+    emission, a second emission like the reflection one.
+  - The positional factory of a type that is only built with `new`.
 
 #### Phase 2 pure initializer and `js*` extension points
 
@@ -1323,6 +1465,20 @@ upstream states that advanced mode is unsafe for certain patterns.
   tagged `^boolean` is tested without `truth`, so one that returns a
   JavaScript-falsy value other than `false` (`0`, `""`) takes the other
   branch at `Advanced`. Since light-cljs-210.
+- Protocol slots (`cljs$user$P$m$arity$1` and the `cljs$user$P$` markers) are
+  compiler-owned names. A program type has the slots of the methods the
+  program can call on it, and a type the program never instantiates has none.
+  The program can call a method through it, or by naming its slot in a string,
+  property access, method call or `js*` text. Host code that calls a slot the
+  program does not name is unsupported, as is raw text that builds an
+  instance of a type it does not receive. Since light-cljs-211 (rapid type
+  analysis).
+- A `deftype` or `defrecord` type has its static `getBasis` method only when
+  the program names `getBasis`: in a property read or method call, as a
+  string, or in `js*` text. A name computed at run time does not count. Like
+  Closure's removal of properties nothing reads, this keeps `getBasis`'s
+  vector of symbols from pulling the collection runtime into every program
+  that defines a type. Since light-cljs-211.
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification

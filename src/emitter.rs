@@ -10,7 +10,6 @@ use crate::analyzer::{
     ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, NamedLiteralId,
     PACKAGE_REGISTRY, Program, RecurTargetId, StringId,
 };
-use crate::application::OptimizationLevel;
 use crate::core_operations::Type;
 use crate::inference::{Inference, Known};
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
@@ -36,46 +35,36 @@ pub fn emit_js(program: &Program) -> String {
 
 /// Emit a prepared application. At `Advanced` the output reads runtime
 /// bindings directly and embeds only the units those reads reach (see
-/// [`crate::runtime_slice`]); `replaced_core` lists the runtime names of the
-/// core operations the program may replace, which it reads through cells.
+/// [`crate::runtime_slice`]); see [`Application`] for the other decisions.
 pub(crate) fn emit_application(
     program: &Program,
-    globals: &[bool],
-    calls: &std::collections::HashMap<ExprId, usize>,
-    level: OptimizationLevel,
-    replaced_core: &[&'static str],
-    inference: Option<&Inference>,
+    application: Application<'_>,
     module: bool,
 ) -> (String, EmittedRuntime) {
-    emit_js_mode(
-        program,
-        None,
-        false,
-        false,
-        Some(Application {
-            globals,
-            calls,
-            direct: level.advanced().then_some(replaced_core),
-            inference: inference.filter(|_| level.advanced()),
-        }),
-        module,
-    )
+    emit_js_mode(program, None, false, false, Some(application), module)
 }
 
 /// What application preparation decided for emission.
 #[derive(Clone, Copy)]
-struct Application<'a> {
-    /// Retained globals, by `GlobalId`.
-    globals: &'a [bool],
+pub(crate) struct Application<'a> {
+    /// Retained globals, by `GlobalId`. At `Advanced` a `defprotocol` defines
+    /// only the retained ones of its protocol and methods.
+    pub globals: &'a [bool],
     /// Calls specialized to a fixed arity entry.
-    calls: &'a std::collections::HashMap<ExprId, usize>,
+    pub calls: &'a std::collections::HashMap<ExprId, usize>,
     /// At `Advanced`: read runtime bindings directly from a runtime slice. The
     /// runtime names of the core operations the program may replace, sorted; their
     /// reads and writes go through an output-level cell, `core$<name>`.
-    direct: Option<&'a [&'static str]>,
+    pub direct: Option<&'a [&'static str]>,
     /// At `Advanced`: the program's inferred types, which lower truth tests
     /// and core calls.
-    inference: Option<&'a Inference>,
+    pub inference: Option<&'a Inference>,
+    /// At `Advanced`: protocol method calls that read the implementation from
+    /// the receiver's slot (`crate::rta`), with the slot each reads.
+    pub methods: Option<&'a std::collections::HashMap<ExprId, String>>,
+    /// Whether types get their static `getBasis` method, which at `Advanced`
+    /// only a program that names it can call (`crate::rta`).
+    pub basis: bool,
 }
 
 /// Emit one ES module for a bundler instead of a bare expression. Each package
@@ -147,6 +136,13 @@ fn emit_js_mode(
             needs_package: false,
             imports: module.then(Vec::new),
             specialized_calls: application.map(|application| application.calls),
+            retained: application
+                .filter(|_| direct.is_some())
+                .map(|application| application.globals),
+            direct_methods: application
+                .and_then(|application| application.methods)
+                .filter(|_| direct.is_some()),
+            type_basis: direct.is_none() || application.is_none_or(|application| application.basis),
             replaced_core: direct,
             core_cells: Vec::new(),
             constants: direct.map(|_| ConstantTable {
@@ -900,6 +896,13 @@ struct Emitter<'a> {
     /// Bundler output binds packages with static imports instead of the registry.
     imports: Option<Vec<PackageImport>>,
     specialized_calls: Option<&'a std::collections::HashMap<ExprId, usize>>,
+    /// At `Advanced`: the retained globals, by `GlobalId`.
+    retained: Option<&'a [bool]>,
+    /// At `Advanced`: devirtualized protocol method calls and their slots.
+    direct_methods: Option<&'a std::collections::HashMap<ExprId, String>>,
+    /// Whether types get their static `getBasis` method: below `Advanced`
+    /// always, at `Advanced` when the program names it.
+    type_basis: bool,
     /// `Some` at `Advanced`: runtime reads are direct (`rt$add`), and these
     /// replaced core operations read through output-level cells.
     replaced_core: Option<&'a [&'static str]>,
@@ -936,6 +939,16 @@ impl<'a> Emitter<'a> {
     fn rt(&mut self, name: RuntimeName) {
         let text = self.runtime_read(name, self.site, NameUse::Value);
         self.output.push_str(&text);
+    }
+
+    /// At `Advanced`, keep the unit declaring `binding` in the slice although
+    /// the output does not read it: the runtime reaches it through a hook that
+    /// its install effect fills in (`typeHooks`).
+    fn keep_runtime(&mut self, binding: &'static str) {
+        if self.replaced_core.is_some() {
+            self.runtime
+                .record(RuntimeName::direct(binding, None), self.site, NameUse::Keep);
+        }
     }
 
     /// The spelling of a runtime read attributed to `site`, recorded as a root
@@ -1550,6 +1563,47 @@ impl<'a> Emitter<'a> {
             | ExprKind::Keyword(_) => true,
             _ => false,
         }
+    }
+
+    /// A devirtualized protocol method call (`crate::rta`): the receiver's
+    /// `slot` called with the receiver as `this` and first argument, as the
+    /// dispatcher calls it, `(r)["ns$P$m$arity$2"](r, x)`. Unless reading
+    /// every argument twice is reading it once, the arguments are evaluated
+    /// first, in order, as for the dispatcher call:
+    /// `((r0, a1) => r0["ns$P$m$arity$2"](r0, a1))(receiver, x)`.
+    fn direct_method_call(&mut self, slot: &str, args: &[ExprId]) {
+        let (receiver, rest) = args
+            .split_first()
+            .expect("a protocol method takes its receiver");
+        if args.iter().all(|arg| self.repeatable(*arg)) {
+            self.output.push('(');
+            self.value(*receiver);
+            self.output.push(')');
+            self.member(slot);
+            self.output.push('(');
+            self.arguments(args);
+            self.output.push(')');
+            return;
+        }
+        let names = (0..args.len())
+            .map(|index| {
+                if index == 0 {
+                    "r0".to_owned()
+                } else {
+                    format!("a{index}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(self.output, "(({names}) => r0").unwrap();
+        self.member(slot);
+        write!(self.output, "({names}))(").unwrap();
+        self.value(*receiver);
+        for arg in rest {
+            self.output.push_str(", ");
+            self.value(*arg);
+        }
+        self.output.push(')');
     }
 
     /// At `Advanced`, a call that emission writes as JavaScript operators or a
@@ -2762,6 +2816,10 @@ impl<'a> Emitter<'a> {
                 self.product(*global);
                 self.output.push_str(" = ");
                 self.rt(RuntimeName::export("makeType"));
+                if *record && constructor.is_some() {
+                    // `makeType` reads the record methods from `typeHooks`.
+                    self.keep_runtime("recordMethods");
+                }
                 self.output.push('(');
                 self.output.push('[');
                 for (index, field) in fields.iter().enumerate() {
@@ -2811,20 +2869,24 @@ impl<'a> Emitter<'a> {
                     } else {
                         self.output.push_str("(...args); ");
                     }
-                    self.product(*global);
-                    self.output.push_str(".getBasis = () => ");
-                    self.rt(RuntimeName::core("vector"));
-                    self.output.push('(');
-                    for (index, field) in fields.iter().enumerate() {
-                        if index > 0 {
-                            self.output.push_str(", ");
+                    // At `Advanced` only a program that names `getBasis` has it
+                    // (`crate::rta`), as Closure removes unread properties.
+                    if self.type_basis {
+                        self.product(*global);
+                        self.output.push_str(".getBasis = () => ");
+                        self.rt(RuntimeName::core("vector"));
+                        self.output.push('(');
+                        for (index, field) in fields.iter().enumerate() {
+                            if index > 0 {
+                                self.output.push_str(", ");
+                            }
+                            self.rt(RuntimeName::export("symbol"));
+                            self.output.push_str("(null, ");
+                            self.string_units(&field.encode_utf16().collect::<Vec<_>>());
+                            self.output.push(')');
                         }
-                        self.rt(RuntimeName::export("symbol"));
-                        self.output.push_str("(null, ");
-                        self.string_units(&field.encode_utf16().collect::<Vec<_>>());
-                        self.output.push(')');
+                        self.output.push_str("); ");
                     }
-                    self.output.push_str("); ");
                     self.product(*global);
                     self.output.push_str(".cljs$lang$type = true; ");
                     if !*record {
@@ -2905,21 +2967,33 @@ impl<'a> Emitter<'a> {
                 via_metadata,
             } => {
                 self.output.push_str("(() => { ");
-                self.product(*global);
-                self.output.push_str(" = ");
-                self.rt(RuntimeName::export("protocol"));
-                self.output.push('(');
-                let binding = &self.program.globals[global.0];
-                self.string_units(
-                    &format!("{}/{}", binding.namespace, binding.name)
-                        .encode_utf16()
-                        .collect::<Vec<_>>(),
-                );
-                self.output.push_str("); ");
+                // At `Advanced` the protocol value exists only when something
+                // reads it (`crate::rta`), and so do the dispatchers, which
+                // rapid type analysis leaves in `methods`.
+                if self.retained.is_none_or(|retained| retained[global.0]) {
+                    self.product(*global);
+                    self.output.push_str(" = ");
+                    self.rt(RuntimeName::export("protocol"));
+                    self.output.push('(');
+                    let binding = &self.program.globals[global.0];
+                    self.string_units(
+                        &format!("{}/{}", binding.namespace, binding.name)
+                            .encode_utf16()
+                            .collect::<Vec<_>>(),
+                    );
+                    self.output.push_str("); ");
+                }
                 for method in methods {
                     self.product(method.global);
                     self.output.push_str(" = ");
                     self.rt(RuntimeName::export("protocolMethod"));
+                    // The dispatcher reads these from `typeHooks`.
+                    if *via_metadata {
+                        self.keep_runtime("metadataMethod");
+                    }
+                    if method.variadic.is_some() {
+                        self.keep_runtime("fnRest");
+                    }
                     self.output.push('(');
                     self.string_units(&method.key.encode_utf16().collect::<Vec<_>>());
                     self.output.push_str(", ");
@@ -3387,6 +3461,10 @@ impl<'a> Emitter<'a> {
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
                 if self.lowered_call(*callee, args) {
+                    return;
+                }
+                if let Some(slot) = self.direct_methods.and_then(|methods| methods.get(&id)) {
+                    self.direct_method_call(slot, args);
                     return;
                 }
                 if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind

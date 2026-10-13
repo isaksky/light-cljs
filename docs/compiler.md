@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, and infers types to write truth tests and core calls as JavaScript (below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, and drops the methods and types of the program that no instance can use (rapid type analysis, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -292,6 +292,29 @@ A program that `set!`s an operation keeps its calls, and one that extends a
 core protocol to a type it does not define keeps every lowering that dispatches
 (`=`, `count`, `nth`, record lookups). See "Phase 2 type inference extension
 points" in [advanced-optimization.md](advanced-optimization.md).
+
+`Advanced` then runs rapid type analysis over the program's types and
+protocols (`src/rta.rs`). A `deftype`, `defrecord`, `reify` or `extend-type`
+method stays only when an instance can run it: its type is constructed by
+reachable code, or its constructor escapes as a value, and the program calls
+the method (or tests the protocol with `satisfies?` for its marker). It also
+does the following:
+
+- A type nothing constructs loses its methods, its factories and, unless
+  `instance?` or `extend-type` names it, its definition.
+- A `defprotocol` defines only the protocol value and the dispatchers the
+  program reads.
+- A call whose receiver inference types as an instance of one program type
+  reads the method from the receiver's slot instead of calling the
+  dispatcher.
+- A type gets its static `getBasis` only when the program names it.
+
+The runtime's record methods are units of their own, kept only where an
+operation that dispatches them is, so a record that is only constructed and
+read keeps about 11 KB of runtime instead of 145 KB. Collections still keep
+the shared core (light-cljs-227). See "Phase 2 rapid type analysis extension
+points" and the "Advanced-mode contract" in
+[advanced-optimization.md](advanced-optimization.md).
 
 `Program::compilation_uses` records deferred ordinary-unit names, generations,
 analysis counts and compile-time emission counts. Analysis for application

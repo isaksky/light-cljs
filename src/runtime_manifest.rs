@@ -25,7 +25,7 @@
 //! # Header syntax
 //!
 //! ```text
-//! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...] | install: <binding>, ...][ requires: <binding>, ...]
+//! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...[ when: <binding>, ...]] | install: <binding>, ...][ requires: <binding>, ...]
 //! //@ <binding>, ...                    continues the requires list
 //! //@exports
 //! ```
@@ -65,6 +65,14 @@
 //!   setup (`ListValue.type`), members (`ListValue.members`) and static fields
 //!   (`ListValue.statics`) travel with its constructor. A unit that declares
 //!   nothing names at least one target.
+//! - `effect: a when: b, c` is kept only where a target is kept and so is one
+//!   of the `when:` bindings: rapid type analysis for the runtime's own
+//!   methods. Each record method (`recordMethods.hash`) belongs to
+//!   `recordMethods`, which only a program with records keeps, and is needed
+//!   only where an operation that dispatches its protocol method is kept
+//!   (`when: hash, hashProtocol`). The `runtime_manifest` suite checks that
+//!   the `when:` list of a method unit names every unit whose body dispatches
+//!   one of its methods' keys.
 //! - `install: a, b` is an effect that only adds properties to the targets'
 //!   values for code that receives them, such as the variadic arity ABI of a
 //!   core function (`add.variadic`), which `apply` reads. It is kept once a
@@ -197,6 +205,10 @@ pub struct Effect<'a> {
     /// target's value escapes, not where it is only called
     /// ([`RuntimeManifest::reached_by_uses`]).
     pub install: bool,
+    /// `effect: a when: b, c`: bindings of which one must be kept as well,
+    /// the operations that can call what the effect installs. Empty for an
+    /// effect needed wherever a target is.
+    pub when: Vec<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -291,6 +303,11 @@ pub struct RuntimeManifest<'a> {
     attached: Vec<Vec<UnitId>>,
     /// Per unit: the `install:` units targeting one of its bindings.
     installs: Vec<Vec<UnitId>>,
+    /// Per unit: the units declaring its `when:` bindings, sorted.
+    conditions: Vec<Vec<UnitId>>,
+    /// Per unit: the `effect: ... when:` units naming one of its bindings
+    /// under `when:`.
+    conditional: Vec<Vec<UnitId>>,
 }
 
 /// How a program uses a root of a runtime slice
@@ -486,6 +503,8 @@ impl<'a> RuntimeManifest<'a> {
         let mut dependencies = Vec::with_capacity(units.len());
         let mut attached = vec![Vec::new(); units.len()];
         let mut installs = vec![Vec::new(); units.len()];
+        let mut conditions = vec![Vec::new(); units.len()];
+        let mut conditional = vec![Vec::new(); units.len()];
         for (index, unit) in units.iter().enumerate() {
             let mut required = unit
                 .requires
@@ -506,6 +525,14 @@ impl<'a> RuntimeManifest<'a> {
                         list[owner.0].push(UnitId(index));
                     }
                 }
+                for binding in &effect.when {
+                    if let Some(owner) = bindings.get(binding) {
+                        conditions[index].push(*owner);
+                        conditional[owner.0].push(UnitId(index));
+                    }
+                }
+                conditions[index].sort_unstable();
+                conditions[index].dedup();
             }
         }
         let names = names
@@ -524,6 +551,8 @@ impl<'a> RuntimeManifest<'a> {
             dependencies,
             attached,
             installs,
+            conditions,
+            conditional,
         })
     }
 
@@ -571,6 +600,12 @@ impl<'a> RuntimeManifest<'a> {
     /// `install:` units that target one of `unit`'s bindings, in source order.
     pub fn attached_installs(&self, unit: UnitId) -> &[UnitId] {
         &self.installs[unit.0]
+    }
+
+    /// The units declaring the `when:` bindings of an `effect: ... when:`
+    /// unit, sorted; empty for any other unit.
+    pub fn conditions(&self, unit: UnitId) -> &[UnitId] {
+        &self.conditions[unit.0]
     }
 
     /// The binding of the core protocol dispatcher registered for a protocol
@@ -624,10 +659,11 @@ impl<'a> RuntimeManifest<'a> {
 
     /// The units a program needs, with attribution as in
     /// [`RuntimeManifest::reached_by`], when it uses each root as given. A
-    /// unit's `effect:` units are kept with it. Its `install:` units are kept
-    /// once its value escapes: when it is a [`RootUse::Value`] root or another
-    /// kept unit requires it, since the runtime may pass a binding it
-    /// references anywhere. A [`RootUse::Call`] root alone keeps none.
+    /// unit's `effect:` units are kept with it, those with `when:` once one of
+    /// their `when:` units is kept too. Its `install:` units are kept once its
+    /// value escapes: when it is a [`RootUse::Value`] root or another kept unit
+    /// requires it, since the runtime may pass a binding it references
+    /// anywhere. A [`RootUse::Call`] root alone keeps none.
     pub fn reached_by_uses(&self, roots: &[(UnitId, RootUse)]) -> Vec<Option<usize>> {
         let mut first = vec![None; self.units.len()];
         let mut escaped = vec![false; self.units.len()];
@@ -644,7 +680,27 @@ impl<'a> RuntimeManifest<'a> {
                 }
                 first[unit.0] = Some(index);
                 stack.extend(self.dependencies[unit.0].iter().map(|&unit| (unit, true)));
-                stack.extend(self.attached[unit.0].iter().map(|&unit| (unit, true)));
+                let kept = |unit: &UnitId| first[unit.0].is_some();
+                // An effect with `when:` waits for one of its conditions.
+                stack.extend(
+                    self.attached[unit.0]
+                        .iter()
+                        .filter(|effect| {
+                            let conditions = &self.conditions[effect.0];
+                            conditions.is_empty() || conditions.iter().any(kept)
+                        })
+                        .map(|&unit| (unit, true)),
+                );
+                // ... and is kept once a condition is, if a target is.
+                for &effect in &self.conditional[unit.0] {
+                    let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
+                    if targets
+                        .iter()
+                        .any(|target| self.unit_of(target).is_some_and(|owner| kept(&owner)))
+                    {
+                        stack.push((effect, true));
+                    }
+                }
             }
         }
         first
@@ -766,6 +822,15 @@ impl<'a> RuntimeManifest<'a> {
                                 .into(),
                         );
                     }
+                    for (position, &binding) in effect.when.iter().enumerate() {
+                        if effect.when[..position].contains(&binding) {
+                            fail(format!("names `when:` binding `{binding}` twice"));
+                        } else if self.unit_of(binding).is_none() {
+                            fail(format!(
+                                "`when:` binding `{binding}` is not a runtime binding"
+                            ));
+                        }
+                    }
                     for (position, &target) in effect.targets.iter().enumerate() {
                         if effect.targets[..position].contains(&target) {
                             fail(format!("names effect target `{target}` twice"));
@@ -860,11 +925,16 @@ impl<'a> RuntimeManifest<'a> {
             }
             match &unit.effect {
                 Some(effect) if effect.targets.is_empty() => words.push("effect".into()),
-                Some(effect) => words.push(format!(
-                    "{}: {}",
-                    if effect.install { "install" } else { "effect" },
-                    effect.targets.join(", ")
-                )),
+                Some(effect) => {
+                    words.push(format!(
+                        "{}: {}",
+                        if effect.install { "install" } else { "effect" },
+                        effect.targets.join(", ")
+                    ));
+                    if !effect.when.is_empty() {
+                        words.push(format!("when: {}", effect.when.join(", ")));
+                    }
+                }
                 None => {}
             }
             let required = self.computed_requires(UnitId(index));
@@ -1086,7 +1156,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
             rest = after;
             loop {
                 rest = rest.trim_start();
-                if rest.starts_with("requires:") {
+                if rest.starts_with("requires:") || rest.starts_with("when:") {
                     break;
                 }
                 let end = rest
@@ -1109,7 +1179,38 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
                 return Err(format!("unit `{name}`: `{keyword}:` names no binding"));
             }
         }
-        effect = Some(Effect { targets, install });
+        let mut when = Vec::new();
+        if let Some(after) = rest.strip_prefix("when:") {
+            if install || targets.is_empty() {
+                return Err(format!(
+                    "unit `{name}`: `when:` needs `effect:` with a target"
+                ));
+            }
+            rest = after;
+            loop {
+                rest = rest.trim_start();
+                let end = rest
+                    .find(|c: char| c == ',' || c.is_whitespace())
+                    .unwrap_or(rest.len());
+                let binding = &rest[..end];
+                if !is_identifier(binding) {
+                    return Err(format!(
+                        "unit `{name}`: invalid `when:` binding `{binding}`"
+                    ));
+                }
+                when.push(binding);
+                rest = rest[end..].trim_start();
+                match rest.strip_prefix(',') {
+                    Some(after) => rest = after,
+                    None => break,
+                }
+            }
+        }
+        effect = Some(Effect {
+            targets,
+            install,
+            when,
+        });
     }
     let mut requires = Vec::new();
     if let Some(after) = rest.strip_prefix("requires:") {
@@ -2883,6 +2984,52 @@ mod tests {
         assert!(
             RuntimeManifest::parse(&INSTALLS.replace("install: f requires", "install: requires"))
                 .is_err()
+        );
+    }
+
+    /// `table` is filled for `user` by `table.entry`, which only `op` can use.
+    const CONDITIONAL: &str = "// Original bounded runtime\n(() => {\n  \"use strict\";\n\n  //@unit table\n  const table = [];\n  //@unit user requires: table\n  function user() { return table; }\n  //@unit op\n  function op() { return 1; }\n  //@unit table.entry effect: user when: op requires: op, table\n  table.push(op);\n  //@exports\n  return Object.freeze({user, op});\n})()\n";
+
+    #[test]
+    fn conditional_effects_parse_round_trip_and_wait_for_a_condition() {
+        let manifest = RuntimeManifest::parse(CONDITIONAL).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.with_computed_requires(), CONDITIONAL);
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let entry = unit("table.entry");
+        assert_eq!(
+            manifest.units[entry.0].effect.as_ref().unwrap().when,
+            ["op"]
+        );
+        assert_eq!(manifest.conditions(entry), [unit("op")]);
+        assert!(manifest.conditions(unit("user")).is_empty());
+        // The target alone, or the condition alone, keeps no entry; both do,
+        // whichever comes first.
+        assert!(!manifest.reachable([unit("user")])[entry.0]);
+        assert!(!manifest.reachable([unit("op")])[entry.0]);
+        for roots in [[unit("user"), unit("op")], [unit("op"), unit("user")]] {
+            assert!(manifest.reachable(roots)[entry.0]);
+        }
+        assert_eq!(
+            manifest.reached_by(&[unit("op"), unit("user")])[entry.0],
+            Some(1)
+        );
+
+        let error = |source: &str| match RuntimeManifest::parse(source) {
+            Err(errors) => errors[0].message.clone(),
+            Ok(manifest) => manifest.validate().unwrap_err()[0].message.clone(),
+        };
+        assert_eq!(
+            error(&CONDITIONAL.replace("when: op", "when: missing")),
+            "unit `table.entry`: `when:` binding `missing` is not a runtime binding"
+        );
+        assert_eq!(
+            error(&CONDITIONAL.replace("effect: user when: op", "effect when: op")),
+            "unit `table.entry`: `when:` needs `effect:` with a target"
+        );
+        assert_eq!(
+            error(&CONDITIONAL.replace("when: op", "when: op, op")),
+            "unit `table.entry`: names `when:` binding `op` twice"
         );
     }
 

@@ -4453,7 +4453,13 @@
     }
     return delegate.call(null, ...prefix, fixed === 0 ? seq(args) : args);
   }
-  //@unit ifnInvokeEntry requires: fnApplyTo
+  //@unit typeHooks
+  const typeHooks = {};
+  //@unit fnRest.install effect: fnRest when: protocolMethod requires: fnRest, typeHooks
+  typeHooks.rest = fnRest;
+  //@unit fnApplyTo.install effect: fnApplyTo when: ifnInvokeEntry requires: fnApplyTo, typeHooks
+  typeHooks.applyTo = fnApplyTo;
+  //@unit ifnInvokeEntry requires: typeHooks
   // This is the callable object ABI used by IFn and metadata wrappers.
   // The last method receives twenty values followed by a sequence tail.
   function ifnInvokeEntry(method) {
@@ -4462,7 +4468,7 @@
     if (delegate) {
       entry.cljs$core$IFn$_invoke$arity$variadic = function (...args) { return delegate.call(this, this, ...args); };
       entry.cljs$lang$maxFixedArity = method.cljs$lang$maxFixedArity - 1;
-      entry.cljs$lang$applyTo = args => fnApplyTo(entry.cljs$core$IFn$_invoke$arity$variadic, entry.cljs$lang$maxFixedArity, args);
+      entry.cljs$lang$applyTo = args => typeHooks.applyTo(entry.cljs$core$IFn$_invoke$arity$variadic, entry.cljs$lang$maxFixedArity, args);
     }
     return entry;
   }
@@ -4551,9 +4557,17 @@
       throw new Error("No protocol method " + key + " defined for this value");
     return undefined;
   }
-  //@unit protocolMethod mutator requires: directMethod, fnRest, get, invalidArity, meta,
-  //@ nativeType, protocolFunctions, protocolGetters, protocolKeys, protocolVariables,
-  //@ setDeclaration, symbolCore, truth
+  //@unit metadataMethod requires: get, meta, symbolCore, truth
+  // A protocol method's implementation in the receiver's metadata, or null.
+  function metadataMethod(receiver, metadataName) {
+    const implementation = get(meta(receiver), symbolCore(metadataName));
+    return truth(implementation) ? implementation : null;
+  }
+  //@unit metadataMethod.install effect: metadataMethod when: protocolMethod requires: metadataMethod,
+  //@ typeHooks
+  typeHooks.metadataMethod = metadataMethod;
+  //@unit protocolMethod mutator requires: directMethod, invalidArity, nativeType,
+  //@ protocolFunctions, protocolGetters, protocolKeys, protocolVariables, setDeclaration, typeHooks
   function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null) {
     const dispatch = function (receiver, ...args) {
       const fixed = arities?.filter(n => n !== (variadic == null ? -1 : variadic + 2));
@@ -4564,11 +4578,11 @@
         // CLJS accepts these declarations with a warning. Its macro's literal
         // signature expansion forwards the unbound ampersand and packed tail.
         const actual = [receiver, ...args];
-        args = [...Array.from({length: variadic - 1}, (_, i) => actual[i + 1]), undefined, fnRest(actual, variadic)];
+        args = [...Array.from({length: variadic - 1}, (_, i) => actual[i + 1]), undefined, typeHooks.rest(actual, variadic)];
       } else if (variadic == null && arities?.length === 1) args = Array.from({length: arity - 1}, (_, i) => args[i]);
       if (viaMetadata) {
-        const implementation = get(meta(receiver), symbolCore(metadataName));
-        if (truth(implementation)) return implementation.call(null, receiver, ...args);
+        const implementation = typeHooks.metadataMethod(receiver, metadataName);
+        if (implementation != null) return implementation.call(null, receiver, ...args);
       }
       const method = directMethod(receiver, key, arity);
       if (method != null) return method.call(receiver, receiver, ...args);
@@ -4739,62 +4753,110 @@
     const Constructor = Type.currentConstructor?.() ?? Type;
     return new Constructor(...Type.fieldNames.map(name => field(value, name)), metadata, extmap, cachedHash);
   }
-  //@unit recordMethods requires: assoc, conj, contains, count, dissoc, equalPair, field, get, hash,
-  //@ into, isVector, iteratorInit, keyword, mapFromArray, nth, printHooks, recordCopy,
-  //@ recordEntries, reduce, seq, SeqIter, stringHash, typeNames, vectorFromArray, withMeta
+  //@unit recordMethodTable
+  // Builders of record methods, each added by a unit kept where it can run.
+  const recordMethodTable = [];
+  //@unit recordMethods requires: recordMethodTable
+  // Every record protocol's marker, and the methods of the table.
   function recordMethods(Type) {
-    const copy = (value, metadata, extmap, cachedHash) => recordCopy(value, Type, metadata, extmap, cachedHash);
-    const fieldIndex = key => Type.fieldNames.findIndex(name => equalPair(key, keyword(null, name)));
-    const methods = [
-      ["ICloneable/-clone", 1, function () { return recordCopy(this, Type, this.__meta, this.__extmap, this.__hash); }],
-      ["IHash/-hash", 1, function () {
-        if (this.__hash != null) return this.__hash;
-        let result = 0;
-        for (const entry of recordEntries(this, Type)) result = (result + (hash(nth(entry, 0)) ^ hash(nth(entry, 1)))) | 0;
-        return this.__hash = result ^ stringHash(typeNames.get(Type) ?? "");
-      }],
-      ["IEquiv/-equiv", 2, function (_self, other) {
-        return other != null && this.constructor === other.constructor &&
-          Type.fieldNames.every(name => equalPair(field(this, name), field(other, name))) && equalPair(this.__extmap, other.__extmap);
-      }],
-      ["IMeta/-meta", 1, function () { return this.__meta; }],
-      ["IWithMeta/-with-meta", 2, function (_self, metadata) { return copy(this, metadata, this.__extmap, this.__hash); }],
-      ["ILookup/-lookup", 2, function (_self, key) { return get(this, key, null); }],
-      ["ILookup/-lookup", 3, function (_self, key, fallback) {
-        const index = fieldIndex(key); return index < 0 ? get(this.__extmap, key, fallback) : field(this, Type.fieldNames[index]);
-      }],
-      ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }],
-      ["ICollection/-conj", 2, function (_self, entry) {
-        if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
-        return reduce((result, pair) => conj(result, pair), this, entry);
-      }],
-      ["IAssociative/-contains-key?", 2, function (_self, key) { return fieldIndex(key) >= 0 || contains(this.__extmap, key); }],
-      ["IAssociative/-assoc", 3, function (_self, key, value) {
-        const index = fieldIndex(key);
-        if (index < 0) return copy(this, this.__meta, assoc(this.__extmap, key, value), null);
-        const Constructor = Type.currentConstructor?.() ?? Type;
-        return new Constructor(...Type.fieldNames.map((name, i) => i === index ? value : field(this, name)), this.__meta, this.__extmap, null);
-      }],
-      ["IMap/-dissoc", 2, function (_self, key) {
-        if (fieldIndex(key) >= 0) return dissoc(withMeta(into(mapFromArray([]), this), this.__meta), key);
-        const extmap = dissoc(this.__extmap, key);
-        return copy(this, this.__meta, seq(extmap) === null ? null : extmap, null);
-      }],
-      ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }],
-      ["IIterable/-iterator", 1, function () { return new SeqIter(iteratorInit, this); }],
-      ["IPrintWithWriter/-pr-writer", 3, function (_self, writer, options) {
-        const {sequentialWriter, writer: printOne} = printHooks;
-        return sequentialWriter(writer, (entry, target, opts) => sequentialWriter(target, printOne, "", " ", "", opts, entry),
-          "#" + (typeNames.get(Type) ?? "").replaceAll("/", ".") + "{", ", ", "}", options, recordEntries(this, Type));
-      }],
-      ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
-        return reduce((result, entry) => fn.call(null, result, nth(entry, 0), nth(entry, 1)), init, this);
-      }]
-    ];
-    return [["IRecord", 0, null], ...Array.from(new Set(methods.map(([key]) => key.split("/")[0])), key => [key, 0, null]), ...methods];
+    const protocols = "ICloneable IHash IEquiv IMeta IWithMeta ILookup ICounted ICollection IAssociative IMap ISeqable IIterable IPrintWithWriter IKVReduce".split(" ");
+    return [["IRecord", 0, null], ...protocols.map(key => [key, 0, null]), ...recordMethodTable.flatMap(methods => methods(Type))];
   }
+  //@unit recordMethods.install effect: recordMethods when: makeType requires: recordMethods,
+  //@ typeHooks
+  typeHooks.recordMethods = recordMethods;
+  //@unit recordFieldIndex requires: equalPair, keyword
+  function recordFieldIndex(Type, key) { return Type.fieldNames.findIndex(name => equalPair(key, keyword(null, name))); }
+  //@unit recordMethods.clone effect: recordMethods when: clone requires: recordCopy,
+  //@ recordMethodTable
+  recordMethodTable.push(Type => [
+    ["ICloneable/-clone", 1, function () { return recordCopy(this, Type, this.__meta, this.__extmap, this.__hash); }]]);
+  //@unit recordMethods.hash effect: recordMethods when: hash, hashProtocol requires: hash, nth,
+  //@ recordEntries, recordMethodTable, stringHash, typeNames
+  recordMethodTable.push(Type => [
+    ["IHash/-hash", 1, function () {
+      if (this.__hash != null) return this.__hash;
+      let result = 0;
+      for (const entry of recordEntries(this, Type)) result = (result + (hash(nth(entry, 0)) ^ hash(nth(entry, 1)))) | 0;
+      return this.__hash = result ^ stringHash(typeNames.get(Type) ?? "");
+    }]]);
+  //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol, objectEquiv requires: equalPair,
+  //@ field, recordMethodTable
+  recordMethodTable.push(Type => [
+    ["IEquiv/-equiv", 2, function (_self, other) {
+      return other != null && this.constructor === other.constructor &&
+        Type.fieldNames.every(name => equalPair(field(this, name), field(other, name))) && equalPair(this.__extmap, other.__extmap);
+    }]]);
+  //@unit recordMethods.meta effect: recordMethods when: meta, metaSupported requires: recordMethodTable
+  recordMethodTable.push(() => [
+    ["IMeta/-meta", 1, function () { return this.__meta; }]]);
+  //@unit recordMethods.withMeta effect: recordMethods when: withMeta, withMetaSupported requires: recordCopy,
+  //@ recordMethodTable
+  recordMethodTable.push(Type => [
+    ["IWithMeta/-with-meta", 2, function (_self, metadata) { return recordCopy(this, Type, metadata, this.__extmap, this.__hash); }]]);
+  //@unit recordMethods.lookup effect: recordMethods when: get, seqProtocol requires: field, get,
+  //@ recordFieldIndex, recordMethodTable
+  recordMethodTable.push(Type => [
+    ["ILookup/-lookup", 2, function (_self, key) { return get(this, key, null); }],
+    ["ILookup/-lookup", 3, function (_self, key, fallback) {
+      const index = recordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : field(this, Type.fieldNames[index]);
+    }]]);
+  //@unit recordMethods.count effect: recordMethods when: count, seqProtocol requires: count,
+  //@ recordMethodTable
+  recordMethodTable.push(Type => [
+    ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }]]);
+  //@unit recordMethods.conj effect: recordMethods when: conj, conjProtocol requires: assoc, conj,
+  //@ isVector, nth, recordMethodTable, reduce
+  recordMethodTable.push(() => [
+    ["ICollection/-conj", 2, function (_self, entry) {
+      if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
+      return reduce((result, pair) => conj(result, pair), this, entry);
+    }]]);
+  //@unit recordMethods.contains effect: recordMethods when: contains, seqProtocol requires: contains,
+  //@ recordFieldIndex, recordMethodTable
+  recordMethodTable.push(Type => [
+    ["IAssociative/-contains-key?", 2, function (_self, key) { return recordFieldIndex(Type, key) >= 0 || contains(this.__extmap, key); }]]);
+  //@unit recordMethods.assoc effect: recordMethods when: assoc, assocProtocol requires: assoc,
+  //@ field, recordCopy, recordFieldIndex, recordMethodTable
+  recordMethodTable.push(Type => [
+    ["IAssociative/-assoc", 3, function (_self, key, value) {
+      const index = recordFieldIndex(Type, key);
+      if (index < 0) return recordCopy(this, Type, this.__meta, assoc(this.__extmap, key, value), null);
+      const Constructor = Type.currentConstructor?.() ?? Type;
+      return new Constructor(...Type.fieldNames.map((name, i) => i === index ? value : field(this, name)), this.__meta, this.__extmap, null);
+    }]]);
+  //@unit recordMethods.dissoc effect: recordMethods when: dissoc, dissocProtocol requires: dissoc,
+  //@ into, mapFromArray, recordCopy, recordFieldIndex, recordMethodTable, seq, withMeta
+  recordMethodTable.push(Type => [
+    ["IMap/-dissoc", 2, function (_self, key) {
+      if (recordFieldIndex(Type, key) >= 0) return dissoc(withMeta(into(mapFromArray([]), this), this.__meta), key);
+      const extmap = dissoc(this.__extmap, key);
+      return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
+    }]]);
+  //@unit recordMethods.seq effect: recordMethods when: seq, seqProtocol requires: recordEntries,
+  //@ recordMethodTable, seq, vectorFromArray
+  recordMethodTable.push(Type => [
+    ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }]]);
+  //@unit recordMethods.iterator effect: recordMethods when: iterator, iteratorProtocol requires: iteratorInit,
+  //@ recordMethodTable, SeqIter
+  recordMethodTable.push(() => [
+    ["IIterable/-iterator", 1, function () { return new SeqIter(iteratorInit, this); }]]);
+  //@unit recordMethods.print effect: recordMethods when: printWriterImpl, prWriter requires: printHooks,
+  //@ recordEntries, recordMethodTable, typeNames
+  recordMethodTable.push(Type => [
+    ["IPrintWithWriter/-pr-writer", 3, function (_self, writer, options) {
+      const {sequentialWriter, writer: printOne} = printHooks;
+      return sequentialWriter(writer, (entry, target, opts) => sequentialWriter(target, printOne, "", " ", "", opts, entry),
+        "#" + (typeNames.get(Type) ?? "").replaceAll("/", ".") + "{", ", ", "}", options, recordEntries(this, Type));
+    }]]);
+  //@unit recordMethods.kvReduce effect: recordMethods when: kvReduceProtocol, reduceKv requires: nth,
+  //@ recordMethodTable, reduce
+  recordMethodTable.push(() => [
+    ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
+      return reduce((result, entry) => fn.call(null, result, nth(entry, 0), nth(entry, 1)), init, this);
+    }]]);
   //@unit makeType requires: ifnValues, installMethods, mapKinds, maps, mungeMember,
-  //@ protocolMaskNames, recordMethods, recordTypes, typeFields, typeNames
+  //@ protocolMaskNames, recordTypes, typeFields, typeHooks, typeNames
   function makeType(fields, methods, record, masks = null, name = null, currentConstructor = null) {
     let implicitMasks;
     const allFields = record ? [...fields, "__meta", "__extmap", "__hash"] : fields;
@@ -4815,7 +4877,7 @@
     Type.fieldNames = fields;
     if (currentConstructor) Type.currentConstructor = currentConstructor;
     if (name != null) typeNames.set(Type, name);
-    const implementations = record === true ? [...methods, ...recordMethods(Type)] : methods;
+    const implementations = record === true ? [...methods, ...typeHooks.recordMethods(Type)] : methods;
     implicitMasks = [0, 0];
     for (const [key, arity] of implementations) {
       const index = arity === 0 ? protocolMaskNames.lastIndexOf(key) : -1;
@@ -7501,5 +7563,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

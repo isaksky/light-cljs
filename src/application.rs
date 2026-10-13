@@ -113,6 +113,15 @@ pub struct ApplicationStats {
     pub removed_definitions: usize,
     pub specialized_calls: usize,
     pub retained_globals: usize,
+    /// `Advanced`: `deftype` and `defrecord` forms whose type nothing
+    /// instantiates, emitted as a bare constructor or not at all.
+    pub uninstantiated_types: usize,
+    /// `Advanced`: method entries of types, `reify` and `extend-type` that no
+    /// instance can run.
+    pub dropped_methods: usize,
+    /// `Advanced`: protocol method calls that read their implementation from
+    /// the receiver instead of calling the dispatcher.
+    pub devirtualized_calls: usize,
 }
 /// An owned semantic program plus emission decisions computed entirely in Rust.
 /// Repeated emission does not rerun preparation or execute compiler callbacks.
@@ -125,17 +134,26 @@ pub struct PreparedApplication {
     replaced_core: Vec<&'static str>,
     /// `Advanced`: the types of the prepared program.
     inference: Option<Inference>,
+    /// `Advanced`: protocol method calls that read their implementation from
+    /// the receiver's slot, with the slot (`crate::rta`).
+    direct_methods: HashMap<ExprId, String>,
+    /// `Advanced`: whether the program names `getBasis` (`crate::rta`).
+    type_basis: bool,
     stats: ApplicationStats,
 }
 impl PreparedApplication {
     fn emit(&self, module: bool) -> (String, crate::runtime_slice::EmittedRuntime) {
+        let advanced = self.level.advanced();
         crate::emitter::emit_application(
             &self.program,
-            &self.globals,
-            &self.calls,
-            self.level,
-            &self.replaced_core,
-            self.inference.as_ref(),
+            crate::emitter::Application {
+                globals: &self.globals,
+                calls: &self.calls,
+                direct: advanced.then_some(self.replaced_core.as_slice()),
+                inference: self.inference.as_ref().filter(|_| advanced),
+                methods: advanced.then_some(&self.direct_methods),
+                basis: !advanced || self.type_basis,
+            },
             module,
         )
     }
@@ -202,6 +220,8 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         calls: HashMap::new(),
         replaced_core: Vec::new(),
         inference: None,
+        direct_methods: HashMap::new(),
+        type_basis: true,
         stats: ApplicationStats::default(),
     };
     let mut top = Vec::new();
@@ -285,7 +305,20 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         let top: Vec<ExprId> = top.into_iter().map(|(id, _)| id).collect();
         let facts = ProgramFacts::new(&prepared.program, &top);
         prepared.replaced_core = facts.replaced_names();
-        prepared.inference = Some(Inference::new(&prepared.program, facts));
+        let inference = Inference::new(&prepared.program, facts);
+        // Rapid type analysis (Phase 2 step 4) drops the methods no instance
+        // can run, the types nothing instantiates and the definitions only those
+        // read, and devirtualizes calls on receivers of one program type.
+        let analysis =
+            crate::rta::analyze(&prepared.program, &inference, &candidates, &options.exports);
+        let rewrite = analysis.apply(&mut prepared.program, &mut prepared.globals, &candidates);
+        prepared.direct_methods = analysis.direct_calls().clone();
+        prepared.type_basis = analysis.names_basis();
+        prepared.stats.removed_definitions += rewrite.removed_definitions;
+        prepared.stats.uninstantiated_types = rewrite.uninstantiated_types;
+        prepared.stats.dropped_methods = rewrite.dropped_methods;
+        prepared.stats.devirtualized_calls = rewrite.devirtualized_calls;
+        prepared.inference = Some(inference);
     }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();

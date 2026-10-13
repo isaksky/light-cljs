@@ -105,13 +105,13 @@ const EXPECTED: [(GarbageTag, Class, &str); 7] = [
     ),
     (
         GarbageTag::UninstantiatedType,
-        Class::Survives,
-        "types are always retained until rapid type analysis (211)",
+        Class::Removed,
+        "rapid type analysis drops a type nothing constructs or reads, with its methods (211)",
     ),
     (
         GarbageTag::UncalledProtocolMethod,
-        Class::Survives,
-        "implementations are always installed until rapid type analysis (211)",
+        Class::Removed,
+        "rapid type analysis drops uncalled methods' implementations and dispatcher (211)",
     ),
 ];
 

@@ -1301,3 +1301,108 @@ Wrapping the cell in parentheses, `(() => ...)`, makes V8 compile it eagerly
 and removes its second parse, but QuickJS then scans the whole body twice to
 find the arrow, which cost it about 2 ms on the 4,097-node program, so the
 cell is a plain arrow function.
+
+## Rapid type analysis of program types — October 13, 2026
+
+light-cljs-211 implements Phase 2 step 4 of the
+[design](../docs/advanced-optimization.md) for program types and protocols.
+At `--optimize advanced`, `src/rta.rs` keeps a `deftype`, `defrecord`,
+`reify` or `extend-type` method only when an instance can run it. It drops
+the types nothing constructs, the protocol values and dispatchers nothing
+reads, and unread map factories. It also devirtualizes protocol calls on
+receivers of one program type into slot reads. Three runtime changes support
+this:
+
+- The type machinery (`makeType`, `installMethods`, `reify`,
+  `protocolMethod`) reaches record methods, variadic `applyTo`, metadata
+  dispatch and variadic protocol arguments only through `typeHooks`.
+- Each record method is its own unit, kept by the new manifest clause
+  `effect: recordMethods when: <operations>` only where an operation that
+  dispatches it is kept.
+- A type's `getBasis` exists only when the program names it.
+
+The new ratchet fixture `three-records` has three records implementing one
+protocol, of which only one is constructed:
+
+```clojure
+(defprotocol Shape (area [s]) (perimeter [s]))
+(defrecord Square [side] Shape (area [_] (* side side)) (perimeter [_] (* 4 side)))
+(defrecord Circle [r] Shape (area [_] (* 3 r r)) (perimeter [_] (* 6 r)))
+(defrecord Tri [a b c] Shape (area [_] (* a b)) (perimeter [_] (+ a b c)))
+(area (->Square 3))
+```
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL --text`.
+"Before" is master `ecbb3c2` (after light-cljs-218). `prepare` equals `none`
+for every fixture but `pure-defs`.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 361,495 / 86,009 | 362,755 / 86,290 | 192 / 161 | 192 / 161 | 363,000 / 363,000 / 200 |
+| add | 361,335 / 85,930 | 362,595 / 86,211 | 32 / 52 | 32 / 52 | 363,000 / 363,000 / 100 |
+| raw-js | 362,334 / 86,179 | 363,594 / 86,461 | 856 / 319 | 856 / 319 | 364,000 / 364,000 / 900 |
+| record-protocol | 362,288 / 86,255 | 363,548 / 86,537 | 148,802 / 33,565 | 11,637 / 3,786 | 364,000 / 364,000 / 12,000 |
+| pure-defs | 362,924 / 86,366 | 364,184 / 86,646 | 145,151 / 32,679 | 11,471 / 3,715 | 365,000 / 365,000 / 12,000 |
+| three-records | 364,425 / 86,556 | 365,685 / 86,837 | 150,433 / 33,806 | 11,642 / 3,780 | 366,000 / 366,000 / 12,000 |
+| println-hi | 361,382 / 85,938 | 362,642 / 86,219 | 134,775 / 30,925 | 134,840 / 30,943 | 363,000 / 363,000 / 135,000 |
+| vector-printed | 361,407 / 85,948 | 362,667 / 86,228 | 134,854 / 30,950 | 134,919 / 30,967 | 363,000 / 363,000 / 135,000 |
+| map-printed | 361,410 / 85,941 | 362,670 / 86,222 | 134,856 / 30,938 | 134,921 / 30,957 | 363,000 / 363,000 / 135,000 |
+| seq-pipeline | 361,726 / 86,057 | 362,986 / 86,338 | 138,044 / 31,652 | 138,109 / 31,669 | 363,000 / 363,000 / 139,000 |
+| rest-fn | 361,679 / 86,065 | 362,939 / 86,346 | 119,858 / 27,384 | 119,923 / 27,405 | 363,000 / 363,000 / 120,000 |
+| keyword-case | 361,967 / 86,083 | 363,227 / 86,364 | 120,164 / 27,472 | 120,229 / 27,493 | 364,000 / 364,000 / 121,000 |
+| keyword-lookups | 362,459 / 86,186 | 363,719 / 86,467 | 131,027 / 30,074 | 131,092 / 30,092 | 364,000 / 364,000 / 132,000 |
+| constant-literals | 362,236 / 86,137 | 363,496 / 86,418 | 132,677 / 30,500 | 132,742 / 30,518 | 364,000 / 364,000 / 133,000 |
+
+The record programs keep 24 runtime units instead of 350 (`record-protocol`):
+- `makeType` and `installMethods`, without the generic core;
+- the record method table and its install, with no record method, since
+  nothing dispatches one: `(:x p)` reads the field;
+- for `record-protocol` and `three-records`, no dispatcher at all, because
+  the call reads `["cljs$user$Shape$area$arity$1"]` from the receiver.
+
+`pure-defs` loses `getBasis`, whose vector of symbols kept the collection
+core, and the unread `map->Point` with `recordFromMap`.
+
+Programs that keep the generic collection core grow by 65 bytes, the
+`typeHooks` object and the `fnApplyTo` install that `installMethods` needs
+there. The shared runtime grows by 1,260 bytes:
+- the hooks and `metadataMethod`;
+- the record methods as fifteen units;
+- two exports (`recordMethods` and `metadataMethod`, which the emitter keeps
+  by name).
+
+The `none` and `prepare` ceilings rise by 1,000 for that growth. A program
+that builds a collection still keeps the 301-unit core (119 KB); its builtin
+types are light-cljs-227.
+
+**Startup and steady state.** `--levels --samples 9 --warmups 1` on master
+`ecbb3c2` (exported tree) and on this change, one directly after the other,
+under the load of other builds: the median one-minute load average was 4.1
+and 3.8. Every table is in
+[before](results/rapid-types-2026-10-13/before/summary.md) and
+[after](results/rapid-types-2026-10-13/after/summary.md), next to their
+`samples.csv`. The table gives parse plus first execution at `advanced`,
+median ms, Node / QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| record-protocol | 2.988 / 7.419 | 0.790 / 0.592 |
+| pure-defs | 2.837 / 7.284 | 0.797 / 0.576 |
+| three-records | — | 0.809 / 0.591 |
+| vector-printed | 3.649 / 6.674 | 3.649 / 6.832 |
+
+Steady state of the record-protocol workload (`(area (->Rect i 2))` in a
+loop, n = 2,000), median µs per call:
+
+| Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: |
+| none | 9,600 | 9,589 | 21,233 | 20,120 |
+| advanced | 9,874 | 9,506 | 19,203 | 16,500 |
+
+The record programs start four times faster in Node and twelve times faster
+in QuickJS. QuickJS no longer evaluates the 140 KB of runtime they used to
+embed. In QuickJS the devirtualized `area` call saves another 9% at
+`advanced` beyond the 5% that `none` moved between the two runs: it reads
+the method from the record instead of going through `protocolMethod`'s
+dispatcher, with its arity checks. Node inlines the dispatcher either way.
+The other fixtures and workloads do not change beyond the noise.

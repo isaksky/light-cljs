@@ -113,6 +113,7 @@ mod public_print_helper_gap;
 mod public_print_helpers;
 mod public_protocols;
 mod quoted_when;
+mod rapid_types;
 mod reader;
 mod record_map_constructor_metadata;
 mod record_receiver_binding;

@@ -26,6 +26,7 @@ pub mod eval_session;
 pub mod evaluator;
 pub mod inference;
 mod program_fragment;
+mod rta;
 pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
 };

@@ -1,19 +1,9 @@
 //! Literal host observations avoid flattening nominal records into encoder maps.
 use light_cljs::compile;
-use std::process::Command;
 
+/// Every optimization level prints what `None` prints.
 fn run(source: &str) -> String {
-    let js = compile(source).unwrap_or_else(|error| panic!("{source}: {error}"));
-    let output = Command::new("node")
-        .args(["-e", &format!("console.log(JSON.stringify({js}));")])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+    super::optimization::json_at_every_level(source)
 }
 
 #[test]

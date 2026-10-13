@@ -123,8 +123,9 @@ operations, does not let retained `js*` disable these passes, reads runtime
 functions directly, embeds just the runtime units the program reaches,
 registers namespaces with the runtime only for programs that use reflection
 such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
-a printing `toString` on collections) only for programs that print, and
-builds each distinct constant literal once (see
+a printing `toString` on collections) only for programs that print,
+builds each distinct constant literal once, and drops the methods and types
+of the program that no instance can use (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
@@ -205,10 +206,12 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   and the runtime units a program does not reach, declares each keyword,
   symbol and constant collection literal once, leaves out the compiler's
   namespace registry unless the program uses reflection and the printer unless
-  it prints, and infers types to write truth tests, arithmetic, comparisons
-  and typed core calls as plain JavaScript. `(js/console.log (+ 1 2))` drops
-  from about 360 KB to about 200 bytes, but a program that builds a value
-  still pulls in the collection machinery (120-150 KB).
+  it prints, infers types to write truth tests, arithmetic, comparisons
+  and typed core calls as plain JavaScript, and drops the protocol methods and
+  types no instance can use. `(js/console.log (+ 1 2))` drops from about
+  360 KB to about 200 bytes and a small record and protocol program to about
+  12 KB, but a program that builds a collection still pulls in the collection
+  machinery (120-135 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

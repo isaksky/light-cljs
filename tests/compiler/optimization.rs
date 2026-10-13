@@ -26,6 +26,26 @@ pub(crate) fn execute(js: &str) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+/// Run `source` at every optimization level in Node, printing its value as
+/// `JSON.stringify` gives it, and require every level to print what `None`
+/// (the oracle) prints; returns that output. The protocol, record, reify,
+/// type and extension suites run their programs through this, so rapid type
+/// analysis (light-cljs-211) and every other `Advanced` pass see them.
+pub(crate) fn json_at_every_level(source: &str) -> String {
+    let program = analyze(
+        source,
+        &parse(source).unwrap_or_else(|error| panic!("{source}: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("{source}: {error}"));
+    let outputs = OptimizationLevel::ALL.map(|level| {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        execute(&format!("console.log(JSON.stringify({js}));"))
+    });
+    for (level, output) in OptimizationLevel::ALL.iter().zip(&outputs).skip(1) {
+        assert_eq!(output, &outputs[0], "at {level}: {source}");
+    }
+    outputs[0].clone()
+}
 /// Print the value of the expression `js` with `console.log`.
 fn result(js: &str) -> String {
     execute(&format!("console.log({js});"))
@@ -181,12 +201,14 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-/// A temporary source root, removed on drop.
+/// A temporary source root, removed on drop. Its path has the same length for
+/// every root of one test process, since output quotes it in source metadata
+/// that size comparisons (generated_optimization) measure.
 pub(crate) struct Sources(pub(crate) PathBuf);
 impl Sources {
     pub(crate) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "light-cljs-optimization-{}-{}",
+            "light-cljs-optimization-{}-{:06}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

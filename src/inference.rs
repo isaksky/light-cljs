@@ -211,7 +211,10 @@ pub struct Implementors {
 
 /// Program-wide facts that the core operation table and inference rely on
 /// (`crate::core_operations`, "What a pass may assume"), from one scan of
-/// every expression, including code that may never run.
+/// every expression, including code that may never run. Definitions count
+/// only where the program's root reaches them, since analysis leaves
+/// scaffolding in the arena that no output contains (`defprotocol` makes a
+/// `def` without a value for each of its Vars).
 #[derive(Clone, Debug)]
 pub struct ProgramFacts {
     /// Core operations the program may replace, by table row.
@@ -291,7 +294,17 @@ impl ProgramFacts {
                 _ => (),
             }
         };
-        for expr in &program.exprs {
+        // Definitions count where emission can reach them: analysis leaves
+        // scaffolding in the arena, such as the `def` without a value that
+        // `defprotocol` makes for each Var, which no output contains.
+        let mut emitted = vec![false; program.exprs.len()];
+        let mut pending = vec![program.root];
+        while let Some(id) = pending.pop() {
+            if !std::mem::replace(&mut emitted[id.0], true) {
+                pending.extend(crate::program_fragment::children(program, id));
+            }
+        }
+        for (index, expr) in program.exprs.iter().enumerate() {
             match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => assign(target),
                 ExprKind::Binding { bindings, .. } => {
@@ -318,8 +331,10 @@ impl ProgramFacts {
                     if let ExprKind::DefType { methods, .. } = kind {
                         equiv |= methods.iter().any(implements("IEquiv"));
                     }
-                    for global in crate::application::globals(kind) {
-                        definitions[global.0] += 1;
+                    if emitted[index] {
+                        for global in crate::application::globals(kind) {
+                            definitions[global.0] += 1;
+                        }
                     }
                 }
             }
@@ -329,6 +344,9 @@ impl ProgramFacts {
         let mut lookups = vec![false; program.globals.len()];
         for (index, expr) in program.exprs.iter().enumerate() {
             let id = ExprId(index);
+            if !emitted[index] {
+                continue;
+            }
             match &expr.kind {
                 ExprKind::Def { global, .. } if sole(*global) => {
                     globals[global.0] = Definition::Def(id);

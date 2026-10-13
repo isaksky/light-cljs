@@ -26,28 +26,28 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "console-log-sum",
         source: "(js/console.log (+ 1 2))",
-        ceilings: [362_000, 362_000, 200],
+        ceilings: [363_000, 363_000, 200],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
     Fixture {
         name: "println-hi",
         source: r#"(enable-console-print!) (println "hi")"#,
-        ceilings: [362_000, 362_000, 135_000],
+        ceilings: [363_000, 363_000, 135_000],
         removed: [0, 0, 0],
         printed: "hi\nnull\n",
     },
     Fixture {
         name: "vector-printed",
         source: "(enable-console-print!) (println [1 2 3])",
-        ceilings: [362_000, 362_000, 135_000],
+        ceilings: [363_000, 363_000, 135_000],
         removed: [0, 0, 0],
         printed: "[1 2 3]\nnull\n",
     },
     Fixture {
         name: "map-printed",
         source: "(enable-console-print!) (println {})",
-        ceilings: [362_000, 362_000, 135_000],
+        ceilings: [363_000, 363_000, 135_000],
         removed: [0, 0, 0],
         printed: "{}\nnull\n",
     },
@@ -55,21 +55,21 @@ pub const FIXTURES: &[Fixture] = &[
         name: "seq-pipeline",
         source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
                  (drop 1) (mapcat identity) into-array))",
-        ceilings: [362_000, 362_000, 139_000],
+        ceilings: [363_000, 363_000, 139_000],
         removed: [0, 0, 0],
         printed: "[ 6, 8 ]\nundefined\n",
     },
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [362_000, 362_000, 100],
+        ceilings: [363_000, 363_000, 100],
         removed: [0, 0, 0],
         printed: "3\n",
     },
     Fixture {
         name: "rest-fn",
         source: "(fn [& xs] xs)",
-        ceilings: [362_000, 362_000, 120_000],
+        ceilings: [363_000, 363_000, 120_000],
         removed: [0, 0, 0],
         printed: "#function\n",
     },
@@ -77,7 +77,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [362_000, 362_000, 121_000],
+        ceilings: [364_000, 364_000, 121_000],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -86,7 +86,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
                  (area (->Rect 3 4))",
-        ceilings: [363_000, 363_000, 149_000],
+        ceilings: [364_000, 364_000, 12_000],
         removed: [0, 0, 0],
         printed: "12\n",
     },
@@ -102,7 +102,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [363_000, 363_000, 146_000],
+        ceilings: [365_000, 365_000, 12_000],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -113,7 +113,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [363_000, 363_000, 132_000],
+        ceilings: [364_000, 364_000, 132_000],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -127,9 +127,24 @@ pub const FIXTURES: &[Fixture] = &[
                  (reduce + (map (fn [i] (let [r (row i)]
                                           (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
                                 (range 10)))",
-        ceilings: [363_000, 363_000, 133_000],
+        ceilings: [364_000, 364_000, 133_000],
         removed: [0, 0, 0],
         printed: "50\n",
+    },
+    // Three records implement one protocol and only one is constructed: at
+    // `Advanced` rapid type analysis (light-cljs-211) keeps that type and the
+    // one method called, which the call reads from the receiver, and no
+    // dispatcher, protocol or record method.
+    Fixture {
+        name: "three-records",
+        source: "(defprotocol Shape (area [s]) (perimeter [s]))
+                 (defrecord Square [side] Shape (area [_] (* side side)) (perimeter [_] (* 4 side)))
+                 (defrecord Circle [r] Shape (area [_] (* 3 r r)) (perimeter [_] (* 6 r)))
+                 (defrecord Tri [a b c] Shape (area [_] (* a b)) (perimeter [_] (+ a b c)))
+                 (area (->Square 3))",
+        ceilings: [366_000, 366_000, 12_000],
+        removed: [0, 0, 0],
+        printed: "9\n",
     },
     // Retained raw JavaScript is an escape below `Advanced` only.
     Fixture {
@@ -138,7 +153,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [363_000, 363_000, 900],
+        ceilings: [364_000, 364_000, 900],
         removed: [0, 0, 1],
         printed: "3\n",
     },

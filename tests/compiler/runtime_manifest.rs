@@ -257,6 +257,121 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// compile-time machinery lists its units here.
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[];
 
+/// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
+/// with whether it is the first item of a method entry (`["IHash/-hash", 1,
+/// ...]`), which installs an implementation rather than dispatching it.
+fn method_keys(text: &str) -> Vec<(&str, bool)> {
+    let mut keys = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else { break };
+        let literal = &after[..end];
+        let entry = rest[..start].trim_end().ends_with('[');
+        if literal.starts_with('I')
+            && literal.split_once("/-").is_some_and(|(protocol, method)| {
+                protocol.chars().all(char::is_alphanumeric) && !method.is_empty()
+            })
+        {
+            keys.push((literal, entry));
+        }
+        rest = &after[end + 1..];
+    }
+    keys
+}
+
+/// An `effect: ... when:` unit installs what only some code can use, and its
+/// `when:` list must name exactly that code. A unit installing protocol
+/// methods (`recordMethods.hash` adds `IHash/-hash` for records) is needed
+/// where one of them can be dispatched: its list names every unit whose body
+/// holds one of its keys other than as a method entry. A unit filling in a
+/// hook (`typeHooks.rest = fnRest`) names every unit that reads the hook. A
+/// new dispatch site or hook read fails here until the list names it.
+#[test]
+fn conditional_effects_name_every_unit_that_can_use_them() {
+    let manifest = manifest();
+    let body = |unit: UnitId| &ANNOTATED_RUNTIME[manifest.units[unit.0].body_range.clone()];
+    let mut checked = 0;
+    for (index, unit) in manifest.units.iter().enumerate() {
+        let id = UnitId(index);
+        if unit
+            .effect
+            .as_ref()
+            .is_none_or(|effect| effect.when.is_empty())
+        {
+            continue;
+        }
+        let installed: Vec<&str> = method_keys(body(id))
+            .into_iter()
+            .filter_map(|(key, entry)| entry.then_some(key))
+            .collect();
+        let users: Vec<UnitId> = if !installed.is_empty() {
+            (0..manifest.units.len())
+                .map(UnitId)
+                .filter(|&other| {
+                    other != id
+                        && method_keys(body(other))
+                            .iter()
+                            .any(|(key, entry)| !entry && installed.contains(key))
+                })
+                .collect()
+        } else {
+            let hook = body(id)
+                .lines()
+                .find_map(|line| {
+                    line.trim()
+                        .split_once(" = ")
+                        .map(|(hook, _)| hook)
+                        .filter(|hook| hook.starts_with("typeHooks."))
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{}` installs neither protocol methods nor a hook",
+                        unit.name
+                    )
+                });
+            (0..manifest.units.len())
+                .map(UnitId)
+                .filter(|&other| other != id && body(other).contains(hook))
+                .collect()
+        };
+        let mut expected: Vec<&str> = users
+            .iter()
+            .map(|user| manifest.units[user.0].name)
+            .collect();
+        let mut listed: Vec<&str> = manifest
+            .conditions(id)
+            .iter()
+            .map(|condition| manifest.units[condition.0].name)
+            .collect();
+        expected.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(listed, expected, "`when:` of unit `{}`", unit.name);
+        checked += 1;
+    }
+    // The record methods and the four type hooks.
+    assert_eq!(checked, 19);
+}
+
+#[test]
+fn conditional_effects_wait_for_a_condition() {
+    let manifest = manifest();
+    let unit = |name: &str| manifest.unit_named(name).unwrap();
+    // A record type alone keeps no record method; `count` keeps its own.
+    let kept = manifest.reachable([unit("recordMethods")]);
+    assert!(!kept[unit("recordMethods.count").0]);
+    for roots in [
+        [unit("recordMethods"), unit("count")],
+        [unit("count"), unit("recordMethods")],
+    ] {
+        let kept = manifest.reachable(roots);
+        assert!(kept[unit("recordMethods.count").0]);
+        assert!(!kept[unit("recordMethods.print").0]);
+    }
+    // ... and `count` alone keeps none.
+    assert!(!manifest.reachable([unit("count")])[unit("recordMethodTable").0]);
+}
+
 #[test]
 fn every_unit_is_reachable_from_the_export_list() {
     let manifest = manifest();
