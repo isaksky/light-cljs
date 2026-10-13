@@ -595,3 +595,31 @@ Reproduce it with:
 cargo run --quiet -- --compile --optimize advanced --size-report \
   --text '(js/console.log (+ 1 2))' 2>&1 >/dev/null
 ```
+
+## Generated dead-code baseline — October 12, 2026
+
+Baseline of what advanced output keeps of known-dead code (light-cljs-217),
+from the twelve fixed seeds of
+[tests/compiler/generated_optimization.rs](../tests/compiler/generated_optimization.rs)
+(`--no-capture` prints the per-seed tables). Each step adds one tag's garbage
+to the program; bytes are the growth of the normalized advanced output
+(identifier digits dropped, so renumbered compiler names do not count).
+
+| Garbage tag | Items | Code survived | Bytes added per item | Class |
+| --- | ---: | ---: | ---: | --- |
+| unreferenced-namespace | 18 | 0 | 223-289 | residue |
+| unused-literal-def | 23 | 0 | 24-25 | residue |
+| unused-pure-def | 19 | 19 | 142-279 | survives |
+| unused-defn | 20 | 0 | 24-25 | residue |
+| unused-keyword | 20 | 0 | 24-25 | residue |
+| uninstantiated-type | 19 | 19 | 513-6,411 | survives |
+| uncalled-protocol-method | 16 | 16 | 193-461 | survives |
+
+Measured with advanced runtime slicing (light-cljs-203): in seeds 0, 17 and
+255 a surviving type keeps runtime units the program does not otherwise reach
+(about 5-6 KB); before slicing every type cost 509-613 bytes. The residue of a removed definition is its
+`null;` statement and its name in the namespace's `registerReaderNamespace`
+bindings; an unreferenced namespace also keeps its registration and
+`currentNs` switches. Prepare removed 8-15
+definitions per program with all garbage and specialized 1-2 calls in six of
+the twelve programs, with or without garbage.

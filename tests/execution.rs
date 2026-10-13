@@ -8,8 +8,13 @@ use std::{
 
 use light_cljs::compile;
 
+// The program generators are shared with the compiler binary, which uses the
+// namespace generator; this binary runs the v1 programs.
 #[path = "support/generated.rs"]
+#[allow(dead_code)]
 mod generated;
+#[path = "support/generated_execution.rs"]
+mod generated_execution;
 
 #[path = "support/language_combinations.rs"]
 mod language_combinations;

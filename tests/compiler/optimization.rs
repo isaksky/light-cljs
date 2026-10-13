@@ -181,9 +181,10 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+/// A temporary source root, removed on drop.
+pub(crate) struct Sources(pub(crate) PathBuf);
 impl Sources {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "light-cljs-optimization-{}-{}",
             std::process::id(),
@@ -192,8 +193,11 @@ impl Sources {
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }
-    fn write(&self, name: &str, source: &str) {
-        fs::write(self.0.join(name), source).unwrap();
+    /// Write `source` at the relative path `name`, creating its directories.
+    pub(crate) fn write(&self, name: &str, source: &str) {
+        let path = self.0.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
     }
 }
 impl Drop for Sources {

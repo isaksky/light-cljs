@@ -28,6 +28,11 @@ mod sci_protocol;
 #[path = "../support/phase_oracle.rs"]
 mod phase_oracle;
 
+// Seeded program generators, shared with the execution binary.
+#[path = "../support/generated.rs"]
+#[allow(dead_code)]
+mod generated;
+
 mod array_settings;
 mod atom_object_equiv;
 mod bootstrap;
@@ -57,6 +62,7 @@ mod equality;
 mod equality_contracts;
 mod extensions;
 mod find_effects;
+mod generated_optimization;
 mod hash_branch_effects;
 mod hash_map_from_arrays;
 mod hash_map_source;

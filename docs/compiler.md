@@ -1732,7 +1732,11 @@ or throws a stable error category. Nil/null, `undefined`, negative zero, NaN, an
 both infinities stay distinct. Only complete encoded map/set entries are sorted;
 ordinary sequence and trace order is preserved. The bounded generated programs
 in `tests/support/generated.rs` can be replayed with `LIGHT_CLJS_GENERATED_SEED`
-or `LIGHT_CLJS_GENERATED_REPLAY_TSV`.
+or `LIGHT_CLJS_GENERATED_REPLAY_TSV`, and `LIGHT_CLJS_GENERATED_COUNT=n` runs
+`n` seeds instead of the fixed twelve. Its namespace generator feeds
+`tests/compiler/generated_optimization.rs`, which compiles multi-namespace
+programs with tagged dead code at every `--optimize` level (see "Generated
+programs" in [advanced-optimization.md](advanced-optimization.md)).
 
 ### Differential comparison with upstream ClojureScript
 

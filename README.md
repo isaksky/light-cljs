@@ -246,7 +246,11 @@ every failure.
 `size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
 small programs at each `--optimize` level and runs them at every level in Node;
 `cargo nextest run --test compiler size_ratchet:: --no-capture` prints the size
-table.
+table. `generated_optimization` compiles seeded multi-namespace programs with
+tagged dead code at every level, runs them in Node and checks which dead code
+survives against an expected-survivor list; `--no-capture` prints a table per
+seed. A failure names its seed: rerun it with `LIGHT_CLJS_GENERATED_SEED=<seed>`,
+or run more seeds with `LIGHT_CLJS_GENERATED_COUNT=<n>` (for example 240).
 
 Some tests bound macro expansion and evaluation by wall-clock deadlines, so on a
 heavily loaded machine run fewer tests at once (`-j`) or rerun a failure alone.

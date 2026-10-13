@@ -256,6 +256,40 @@ runtime units. Later phases plug in here:
   preparation regressions at every level, and
   `npm_packages::bundler_modules_run_at_every_optimization_level` runs a
   bundler module built with `--esm --optimize LEVEL` for each level.
+- **Generated programs.** `tests/compiler/generated_optimization.rs` checks
+  the levels on seeded programs from `namespace_program` in
+  `tests/support/generated.rs`: 2-6 namespaces in a `:require` DAG with
+  definitions, a protocol with records, types and `extend-type number`, and
+  escapes (`var`, `with-redefs`, `set!`, `defonce`, `resolve`, functions passed
+  as values), plus garbage that is dead by construction and tagged with why
+  (unreferenced namespace, unused literal or pure def, unused defn, unused
+  keyword, uninstantiated type, uncalled protocol method). Each fixed seed is
+  one test. It checks four properties: every level records the same trace,
+  value or error category and stdout, and adding the garbage changes none of
+  them; adding one tag's garbage at a time, each step's advanced output is
+  compared with the previous step's and the tag classified as `removed` (no
+  sentinel string left and at most `SLACK` more bytes once compiler numbering
+  is ignored), `residue` (code gone, bytes left) or `survives`; garbage that
+  the escape variant wires to a reachable `var`, `resolve`, `with-redefs` or
+  protocol call on a constructed instance survives at every level; and
+  Prepare's `removed_definitions` and `specialized_calls` never fall as
+  garbage is added. Observations are host values only (numbers
+  and `pr-str` strings), so the harness does not depend on the runtime anchor
+  and keeps working when advanced output slices the runtime.
+
+  `EXPECTED` in that file is the expected-survivor list: one class per tag
+  with the pellet that should improve it. Today literal defs, defns, keywords
+  and unreferenced namespaces leave `residue` (`null;` statements, binding
+  names and namespace registration, until 206); pure-call defs survive until
+  213; uninstantiated types and uncalled methods survive until 211. Every
+  seed checks every tag exactly, so a pellet that removes more garbage fails
+  the test until it moves that row toward `removed` in the same commit. If a
+  tag's items stop sharing one class, split the tag in the generator rather
+  than loosening the row. Pellets that add constructs (208 and 218 to 221 for
+  constant literals) extend the generator, keeping the program text without
+  garbage independent of the garbage stream. Replay a failure with
+  `LIGHT_CLJS_GENERATED_SEED=<seed>`; `LIGHT_CLJS_GENERATED_COUNT=<n>` runs more
+  seeds locally.
 
 ### Phase 1: runtime partitioning
 
@@ -515,6 +549,9 @@ upstream states that advanced mode is unsafe for certain patterns.
 
 - Differential execution of the full corpus at every level.
 - Ratchet tests with ceilings per fixture and level.
+- Generated multi-namespace programs with tagged dead code, checked by
+  metamorphic properties at every level, with an expected-survivor list per
+  garbage tag that only tightens.
 - Retention report checked in under `benchmarks/results/` so size
   regressions name their cause (the first is
   `benchmarks/results/retention-2026-10-12/`).
