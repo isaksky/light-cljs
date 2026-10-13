@@ -1332,3 +1332,128 @@ impl HostCall<'_, '_> {
         self.own(result)
     }
 }
+
+// Interrupted bridge imports must release every engine value exactly once.
+// Regression coverage for the double free in the engine's `Array.prototype.find`
+// cleanup that corrupted the heap during an interrupted form import.
+#[cfg(test)]
+mod bridge_interrupt_tests {
+    use super::*;
+    use crate::compiler_data::{DatumKind, Source};
+
+    /// Compiler form whose decode builds nested array maps. Its inner map
+    /// literals drive `Array.prototype.findIndex` through the bridge's map
+    /// builder, which is where an engine interrupt used to leave the previous
+    /// element double referenced.
+    const BRIDGE_FORM: &str = r#"{:locals {x {:name x :kind :let} y {:name y :kind :arg :argument 0}} :ns {:name cljs.user} :context :expr :line 3 :column 7 :data [1 2.5 "str" \c nil true false sym ns/sym :kw :ns/kw #{1 2} (a b c) ^{:m 1} [x] #"re+" #uuid "00000000-0000-0000-0000-000000000000" #inst "2020-01-01" #js [1 2] #js {:a 1}]}"#;
+
+    /// Warm-up loop length that places the engine's 10_000-poll interrupt
+    /// counter so its next expiry lands on the loop-top poll of the second
+    /// `findIndex` iteration inside the bridge's array-map builder. The engine
+    /// is pinned exactly (rquickjs 0.14.0, quickjs-ng 0.16.2), so this is
+    /// deterministic. After an engine update, run the ignored sweep below to
+    /// locate the new value.
+    const INTERRUPT_WARMUP: usize = 1_184;
+
+    fn bridge_form(host: &mut crate::MacroHost) -> Form {
+        host.read_compiler_form(&Source::new("interrupted_bridge.cljs", BRIDGE_FORM))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Import `form` once with the engine interrupt armed to fire at the first
+    /// poll after the warm-up. The session is dropped before returning, so a
+    /// heap corrupted by the interrupted import faults here.
+    fn import_with_engine_interrupt(
+        host: &crate::MacroHost,
+        form: &Form,
+        warmup: usize,
+    ) -> (bool, Result<ValueId, EvalError>) {
+        let evaluator = host.new_evaluator().unwrap();
+        let control = evaluator.control();
+        let armed = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicBool::new(false));
+        let (arm, seen) = (armed.clone(), fired.clone());
+        evaluator
+            .runtime
+            .set_interrupt_handler(Some(Box::new(move || {
+                if arm.swap(false, Ordering::Relaxed) {
+                    seen.store(true, Ordering::Relaxed);
+                    control.cancel();
+                    true
+                } else {
+                    false
+                }
+            })));
+        let shift = evaluator
+            .evaluate_js(&format!(
+                "(() => {{ for (let i = 0; i < {warmup}; i++); return 0; }})()"
+            ))
+            .unwrap();
+        evaluator.release(shift).unwrap();
+        armed.store(true, Ordering::Relaxed);
+        let limits = ConversionLimits::default();
+        let result = evaluator.import_form(form, limits);
+        let fired = fired.load(Ordering::Relaxed);
+        if fired {
+            // Cancellation is terminal: a retry through the poisoned session
+            // cannot turn the interruption into a successful import.
+            assert!(evaluator.import_form(form, limits).is_err());
+        }
+        (fired, result)
+    }
+
+    #[test]
+    fn interrupted_bridge_array_map_build_releases_each_value_once() {
+        let mut host = crate::macro_host::MacroHost::new();
+        host.evaluator_options.poll_budget = u64::MAX;
+        let form = bridge_form(&mut host);
+
+        let (fired, result) = import_with_engine_interrupt(&host, &form, INTERRUPT_WARMUP);
+        assert!(fired, "engine interrupt did not fire at the pinned poll");
+        let error = result.expect_err("interrupted import must not succeed");
+        assert!(error.0.contains("cancelled"), "{error}");
+
+        // The interrupted session above is dropped by now. A fresh session from
+        // the same host must import and export the same form cleanly.
+        let evaluator = host.new_evaluator().unwrap();
+        let value = evaluator
+            .import_form(&form, ConversionLimits::default())
+            .unwrap();
+        assert!(matches!(
+            evaluator
+                .export_data(value, ConversionLimits::default())
+                .unwrap()
+                .kind(),
+            DatumKind::Collection { .. }
+        ));
+        evaluator.release(value).unwrap();
+    }
+
+    /// Wider interrupt-point sweep over the same bridge decode. It covers every
+    /// poll position in a counter cycle, so it both locates the pinned warm-up
+    /// above and re-checks that no other interrupted bridge cleanup releases a
+    /// value twice. Run explicitly; optionally in parallel chunks:
+    ///   cargo test --lib sweep_bridge_import_interrupt_points -- --ignored --nocapture
+    ///   SWEEP_START=0 SWEEP_END=1257 cargo test --lib ...   (8 chunks cover 0..=10_050)
+    #[test]
+    #[ignore = "stress sweep; run explicitly to cover every interrupt point"]
+    fn sweep_bridge_import_interrupt_points() {
+        let mut host = crate::macro_host::MacroHost::new();
+        host.evaluator_options.poll_budget = u64::MAX;
+        let form = bridge_form(&mut host);
+        let start: usize = std::env::var("SWEEP_START").map_or(0, |v| v.parse().unwrap());
+        let end: usize = std::env::var("SWEEP_END").map_or(1_257, |v| v.parse().unwrap());
+        let mut interrupts = 0;
+        for warmup in start..end {
+            let (fired, result) = import_with_engine_interrupt(&host, &form, warmup);
+            if fired {
+                interrupts += 1;
+                let error = result.expect_err("interrupted import must not succeed");
+                assert!(error.0.contains("cancelled"), "{error}");
+            }
+        }
+        assert!(interrupts > 0, "no interrupt fired in {start}..{end}");
+        eprintln!("sweep {start}..{end}: {interrupts} interrupts");
+    }
+}

@@ -512,6 +512,49 @@ mod tests {
     }
 
     #[test]
+    fn asynchronous_bootstrap_cancellation_recovers_reused_host() {
+        use std::time::Duration;
+
+        // Cancellation arrives from another thread while the bootstrap imports
+        // and expands its forms, the shape that produced the intermittent
+        // engine crash (light-cljs-156).
+        let mut host = MacroHost::new();
+        let evaluator = Evaluator::new(crate::evaluator::EvaluatorOptions {
+            poll_budget: u64::MAX,
+            ..crate::evaluator::EvaluatorOptions::default()
+        })
+        .unwrap();
+        let control = evaluator.control();
+        host.interactive = true;
+        host.interactive_control = Some(control.clone());
+        host.evaluator_options.poll_budget = u64::MAX;
+        host.evaluator_options.timeout = Duration::from_secs(10);
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            control.cancel();
+        });
+        let source = "(let [] (def value (loop [] (recur)))) (defmacro m [] (try value (catch :default e 42))) (m)";
+        let syntax = crate::parse(source).unwrap();
+        let error = crate::analyze_with_macros(source, &syntax, &mut host)
+            .unwrap_err()
+            .to_string();
+        canceller.join().unwrap();
+        assert!(error.contains("cancelled"), "{error}");
+
+        // The cancelled session was discarded. The same host starts a clean
+        // bootstrap and the recovered program executes to 42 in a fresh session.
+        host.interactive_control = None;
+        host.interactive = false;
+        host.evaluator_options = crate::evaluator::EvaluatorOptions::default();
+        let source = "(let [x 42] (defn value [] x)) (defmacro m [] (value)) (m)";
+        let syntax = crate::parse(source).unwrap();
+        let program = crate::analyze_with_macros(source, &syntax, &mut host).unwrap();
+        let fresh = Evaluator::new(crate::evaluator::EvaluatorOptions::default()).unwrap();
+        let value = fresh.evaluate(&program).unwrap();
+        assert_eq!(fresh.number(value).unwrap(), 42.0);
+    }
+
+    #[test]
     fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {
         let mut host = MacroHost::new();
         crate::compile_with_macros("(defmacro ready [] 42)", &mut host).unwrap();

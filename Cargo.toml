@@ -35,3 +35,7 @@ harness = false
 # QuickJS-heavy tests 2-3x faster. This crate itself stays unoptimized.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Bundled QuickJS carries a local fix; see vendor/rquickjs-sys/PATCHES.md.
+[patch.crates-io]
+rquickjs-sys = { path = "vendor/rquickjs-sys" }
