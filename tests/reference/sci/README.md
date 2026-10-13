@@ -34,6 +34,15 @@ therefore on the build profile (16 with unoptimized dependencies, 142 with the
 default test profile on an Apple Silicon Mac). These rows are compared by shape:
 a stack-exhaustion diagnostic after at least two `false` effects, with no output.
 
+Anonymous function parameters are named `p<n>__<id>#` and `rest__<id>#`, where
+`<id>` comes from a process-wide reader counter. Its value therefore depends on
+what the process read before: nextest runs each test in its own process, plain
+`cargo test` runs a binary's tests in one. Observations are compared with each such
+id replaced by its rank among the ids in the observation, so names stay equal or
+distinct and keep their read order. The `<name>__<id>__auto__` names of syntax
+quote, `binding` and destructuring come from several counters and are not ranked,
+so a recorded observation must not contain them (a test checks this).
+
 ## Commands
 
 ```sh

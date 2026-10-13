@@ -1,8 +1,8 @@
 //! Whole-corpus accounting for the compiler-backed evaluator migration.
 #[path = "../support/sci_evaluator.rs"]
 mod evaluator;
-use crate::protocol;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::protocol::{self, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const CORPUS: &str = include_str!("../fixtures/sci-outcomes.tsv");
 
@@ -312,6 +312,225 @@ fn stack_depth_accounting_requires_exhaustion_after_reentry() {
     assert!(!stack_depth_reconciliation(&returned, &observed));
 }
 
+// An anonymous function literal names its parameters `p<n>__<id>#` and
+// `rest__<id>#`. The reader draws <id> from a process-wide counter, so its value
+// depends on what the process read before: plain `cargo test` runs a binary's
+// tests in one process, nextest gives each test its own. Observations are
+// compared with every id replaced by its rank among the ids in that observation.
+// Names stay equal or distinct exactly as observed and keep their read order;
+// only the process history is dropped.
+
+/// The parameter spelling and id of an anonymous function parameter name.
+fn anonymous_parameter(name: &[u16]) -> Option<(String, u64)> {
+    let name = String::from_utf16(name).ok()?;
+    let (parameter, id) = name.strip_suffix('#')?.rsplit_once("__")?;
+    let canonical_index = |index: &str| index.parse::<i64>().is_ok_and(|n| n.to_string() == index);
+    let id = id.parse::<u64>().ok().filter(|n| n.to_string() == id)?;
+    (parameter == "rest" || parameter.strip_prefix('p').is_some_and(canonical_index))
+        .then(|| (parameter.to_owned(), id))
+}
+
+fn map_symbols(value: &Value, f: &mut impl FnMut(&[u16]) -> Option<Vec<u16>>) -> Value {
+    let mut all = |values: &[Value]| values.iter().map(|value| map_symbols(value, f)).collect();
+    match value {
+        Value::Symbol(None, name) => Value::Symbol(None, f(name).unwrap_or_else(|| name.clone())),
+        Value::List(values) => Value::List(all(values)),
+        Value::Vector(values) => Value::Vector(all(values)),
+        Value::Seq(values) => Value::Seq(all(values)),
+        Value::Set(values) => Value::Set(all(values)),
+        Value::Map(entries) => Value::Map(
+            entries
+                .iter()
+                .map(|(key, value)| (map_symbols(key, f), map_symbols(value, f)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The returned value, if any, and the effects of observation fields.
+fn observation_data(fields: &str) -> Option<(Option<Value>, Value)> {
+    let [outcome, effects, _, _] = fields.split('\t').collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let returned = outcome
+        .strip_prefix("(return ")
+        .and_then(|value| value.strip_suffix(')'));
+    Some((
+        returned.map(protocol::value).transpose().ok()?,
+        protocol::value(effects).ok()?,
+    ))
+}
+
+/// Observation fields with anonymous parameter ids ranked, in canonical order.
+fn ranked_anonymous_parameters(fields: &str) -> String {
+    let Some((returned, effects)) = observation_data(fields) else {
+        return fields.to_owned();
+    };
+    let mut ids = BTreeSet::new();
+    for value in returned.iter().chain([&effects]) {
+        map_symbols(value, &mut |name| {
+            ids.extend(anonymous_parameter(name).map(|(_, id)| id));
+            None
+        });
+    }
+    let rank: HashMap<_, _> = ids.into_iter().zip(1..).collect();
+    let mut rename = |name: &[u16]| {
+        let (parameter, id) = anonymous_parameter(name)?;
+        Some(
+            format!("{parameter}__{}#", rank[&id])
+                .encode_utf16()
+                .collect(),
+        )
+    };
+    let mut fields: Vec<_> = fields.split('\t').map(str::to_owned).collect();
+    if let Some(returned) = returned {
+        fields[0] = format!("(return {})", map_symbols(&returned, &mut rename).wire());
+    }
+    fields[1] = map_symbols(&effects, &mut rename).wire();
+    fields.join("\t")
+}
+
+fn same_observation(observed: &str, expected: &str) -> bool {
+    ranked_anonymous_parameters(observed) == ranked_anonymous_parameters(expected)
+}
+
+#[test]
+fn anonymous_parameter_ids_compare_by_rank_within_one_observation() {
+    let symbol = |name: &str| Value::Symbol(None, name.encode_utf16().collect());
+    let function = |parameter: &str, body: &str| {
+        Value::List(vec![
+            symbol("fn*"),
+            Value::Vector(vec![symbol(parameter)]),
+            Value::List(vec![symbol(body)]),
+        ])
+    };
+    let fields = |returned: Value, effects: Vec<Value>| {
+        format!(
+            "(return {})\t{}\t{}\t{}",
+            returned.wire(),
+            Value::Vector(effects).wire(),
+            wire(""),
+            wire("")
+        )
+    };
+    let pair = |a: Value, b: Value| fields(Value::Set(vec![a, b]), vec![]);
+    let duplicate = |a: &str, b: &str| pair(function(a, a), function(b, b));
+    let row = ACCOUNTING
+        .lines()
+        .find(|line| line.starts_with("sci-reader-anonymous-duplicate\t"))
+        .unwrap();
+    let recorded = row.split('\t').collect::<Vec<_>>()[9..13].join("\t");
+    assert_eq!(recorded, duplicate("p1__9#", "p1__10#"));
+    // Ids from a fresh process, after other tests in the same process, far apart.
+    for (a, b) in [
+        ("p1__1#", "p1__2#"),
+        ("p1__20#", "p1__21#"),
+        ("p1__3#", "p1__100000#"),
+    ] {
+        assert!(same_observation(&duplicate(a, b), &recorded), "{a} {b}");
+    }
+    for observed in [
+        duplicate("p1__20#", "p1__20#"),
+        pair(
+            function("p1__20#", "p1__21#"),
+            function("p1__21#", "p1__20#"),
+        ),
+        pair(
+            function("p1__20#", "p1__20#"),
+            function("p2__21#", "p2__21#"),
+        ),
+        pair(
+            function("p1__20#", "p1__20#"),
+            function("p1__21#", "p1__20#"),
+        ),
+        pair(function("p1__20#", "p1__20#"), function("x", "x")),
+        pair(function("p1__20#", "p1__20#"), function("p1__21", "p1__21")),
+        fields(Value::Set(vec![function("p1__20#", "p1__20#")]), vec![]),
+        fields(
+            Value::Set(vec![
+                function("p1__20#", "p1__20#"),
+                function("p1__21#", "p1__21#"),
+            ]),
+            vec![symbol("p1__20#")],
+        ),
+        duplicate("p1__20#", "p1__21#").replacen(&wire(""), &wire("x"), 1),
+    ] {
+        assert!(!same_observation(&observed, &recorded), "{observed}");
+    }
+    // Ids rank jointly across the value and effects and keep their read order.
+    let read =
+        |a: &str, b: &str| fields(Value::Vector(vec![symbol(a), symbol(b)]), vec![symbol(b)]);
+    assert!(same_observation(
+        &read("p1__9#", "p1__10#"),
+        &read("p1__20#", "p1__21#")
+    ));
+    assert!(!same_observation(
+        &read("p1__9#", "p1__10#"),
+        &read("p1__21#", "p1__20#")
+    ));
+    // The parameters of one literal share its id.
+    let literal = |names: [&str; 3]| fields(Value::Vector(names.map(symbol).to_vec()), vec![]);
+    let recorded = literal(["p1__4#", "p2__4#", "rest__4#"]);
+    assert!(same_observation(
+        &literal(["p1__30#", "p2__30#", "rest__30#"]),
+        &recorded
+    ));
+    assert!(!same_observation(
+        &literal(["p1__30#", "p2__31#", "rest__30#"]),
+        &recorded
+    ));
+    // Only the reader's own spelling is an anonymous parameter.
+    for name in ["p0__4#", "p-2__4#", "rest__4#"] {
+        assert!(anonymous_parameter(&name.encode_utf16().collect::<Vec<_>>()).is_some());
+    }
+    for name in [
+        "p1__04#",
+        "p01__4#",
+        "q1__4#",
+        "p__4#",
+        "p1__4",
+        "p1__#",
+        "x__4__auto__",
+    ] {
+        assert!(anonymous_parameter(&name.encode_utf16().collect::<Vec<_>>()).is_none());
+    }
+}
+
+// Syntax quote, `binding` and destructuring name their symbols
+// `<name>__<id>__auto__` from separate process-wide counters. Their ids are not
+// ranked: one name cannot tell which counter made it, and ranking across
+// counters would depend on the process history again. A recorded observation
+// must therefore not contain them.
+#[test]
+fn recorded_observations_contain_no_other_process_wide_ids() {
+    for line in ACCOUNTING
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
+        let row: Vec<_> = line.split('\t').collect();
+        let (returned, effects) = observation_data(&row[9..13].join("\t"))
+            .unwrap_or_else(|| panic!("{}: unreadable recorded observation", row[0]));
+        for value in returned.iter().chain([&effects]) {
+            map_symbols(value, &mut |name| {
+                let name = String::from_utf16_lossy(name);
+                let process_wide = name
+                    .strip_suffix("__auto__")
+                    .and_then(|name| name.rsplit_once("__"))
+                    .is_some_and(|(_, id)| {
+                        !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+                    });
+                assert!(
+                    !process_wide,
+                    "{}: {name} has a process-wide id; compare it by rank before recording it",
+                    row[0]
+                );
+                None
+            });
+        }
+    }
+}
+
 #[test]
 fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
     let cases = protocol::cases(CORPUS).unwrap();
@@ -391,9 +610,9 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
             row[9..13].join("\t")
         };
         let observed = actual.as_ref().map(evaluator::Observation::fields);
-        let matches = observed
-            .as_ref()
-            .is_ok_and(|fields| *fields == expected || stack_depth_reconciliation(&row, fields));
+        let matches = observed.as_ref().is_ok_and(|fields| {
+            same_observation(fields, &expected) || stack_depth_reconciliation(&row, fields)
+        });
         if !matches {
             let actual_text = match &observed {
                 Ok(fields) => fields,
@@ -435,11 +654,9 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
                 );
             }
         } else {
-            assert_ne!(
-                evaluator::Observation::portable(case)
-                    .ok()
-                    .map(|o| o.fields()),
-                Some(expected),
+            let projected = evaluator::Observation::portable(case).map(|o| o.fields());
+            assert!(
+                !projected.is_ok_and(|fields| same_observation(&fields, &expected)),
                 "{} now agrees with the SCI projection: migrate its disposition",
                 case.id
             );
@@ -474,7 +691,6 @@ fn every_historical_sci_case_has_an_executable_evaluator_disposition() {
 
 #[test]
 fn cljs_projection_keeps_numeric_bits_and_explicitly_rejects_jvm_only_numbers() {
-    use protocol::Value;
     assert_eq!(
         evaluator::portable(&Value::Int(42)).unwrap(),
         Value::Float(42f64.to_bits())
