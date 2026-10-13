@@ -14,6 +14,12 @@
 //!   iteration, `call`) on the kinds a small program builds;
 //! - seqs of host iterables, which the generic operations know natively;
 //! - the collection corpora of the other suites, printed with `pr-str`.
+//!
+//! Since light-cljs-230 ("Phase 2 builtin types, second pass") core
+//! dispatchers and protocol tests answer natively, vectors and maps answer
+//! their host-facing methods from their own items, the printer reads options
+//! only from its public entries, and `str`, `atom` and map literals keep no
+//! printer, option parsing or hash map of their own.
 use super::optimization::execute;
 use light_cljs::runtime_manifest::RuntimeManifest;
 use light_cljs::{
@@ -96,8 +102,22 @@ fn a_vector_keeps_no_map_set_or_protocol_machinery() {
     for unit in PROTOCOL_MACHINERY {
         assert!(!units.contains(&unit), "{unit}: {units:?}");
     }
-    // Its own branches and the seqs it builds stay.
-    for unit in ["makeVector.seq", "makeVector.equiv", "ChunkedSeqValue"] {
+    // Its host-facing methods read its items (light-cljs-230), so it keeps
+    // no seq and none of the seq types a vector builds.
+    for unit in [
+        "seq",
+        "first",
+        "next",
+        "count",
+        "nth",
+        "makeVector.seq",
+        "IndexedSeqValue",
+        "ChunkedSeqValue",
+        "equivSeqs",
+    ] {
+        assert!(!units.contains(&unit), "{unit}: {units:?}");
+    }
+    for unit in ["makeVector.equiv", "itemIterator", "vectorIndexOf"] {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
 }
@@ -140,7 +160,11 @@ fn an_empty_map_keeps_only_its_own_map_type() {
     for unit in PROTOCOL_MACHINERY {
         assert!(!units.contains(&unit), "{unit}: {units:?}");
     }
-    assert!(units.contains(&"makeMap.seq") && units.contains(&"makeMap.lookup"));
+    // It iterates its entries itself (light-cljs-230), and keeps no seq.
+    for unit in ["seq", "makeMap.seq", "mapProjection", "es6Iterator"] {
+        assert!(!units.contains(&unit), "{unit}: {units:?}");
+    }
+    assert!(units.contains(&"makeMap.lookup") && units.contains(&"mapIterator"));
 }
 
 #[test]
@@ -303,6 +327,125 @@ fn conj_assoc_and_with_meta_over_every_kind() {
            (array (f 1 2) (g 3 4) (pr-str (meta g)) (apply f 1 [2 3]) (apply + 1 2 [3 4 5])
                   (apply + (range 30)) (apply max (repeat 3 7)) (apply str (seq (js/Set. #js [\"a\" \"b\"])))))",
         "[ 3, 7, '{:m 2}', 6, 15, 435, 7, 'ab' ]",
+    );
+}
+
+/// Drains a host iterator through `.next`, with the final `value`.
+const DRAIN: &str = "(defn drain [it] (loop [acc []] (let [r (.next it)] (if (.-done r) (conj acc (.-value r)) (recur (conj acc (.-value r)))))))";
+
+#[test]
+fn vectors_answer_host_facing_methods_from_their_items() {
+    // light-cljs-230: without protocol implementations a vector iterates,
+    // counts, searches and compares its own items, as `seq` walks them,
+    // including the tail its public constructor received and a subvec's
+    // source.
+    every_level(
+        &format!(
+            "{DRAIN}
+             (let [pv (cljs.core/PersistentVector. nil 3 5 (js-obj) #js [1 2 3] nil)
+                   odd (cljs.core/PersistentVector. nil 2 5 (js-obj) #js [7 8 9] nil)
+                   none (cljs.core/PersistentVector. nil 0 5 (js-obj) #js [5] nil)
+                   sv (subvec [1 2 3 4 5] 1 4) big (vec (range 40)) e (first {{:a 1}})
+                   it (fn [v] (drain (.call (aget v js/Symbol.iterator) v)))]
+               (pr-str [(it pv) (it odd) (it none) (it sv) (count (it big)) (it e) (it [])
+                        (.indexOf pv 2) (.lastIndexOf odd 8) (.indexOf sv 4) (.lastIndexOf sv 2 -1)
+                        (.indexOf e 1) (.indexOf big 33 -10) (.lastIndexOf [1 2 1] 1 js/undefined)
+                        (.indexOf [1 2] 2 0.5) (.equiv pv [1 2 3]) (.equiv odd [7 8]) (.equiv odd odd)
+                        (.equiv sv [2 3 4]) (.equiv e [:a 1]) (.equiv [] none) (= pv [1 2 3])
+                        (= sv (subvec [0 2 3 4] 1)) (= [1 2] '(1 2)) (.-cnt pv) (.-cnt [1 2]) (.-cnt sv)]))"
+        ),
+        "[[1 2 3 nil] [7 8 9 nil] [nil] [2 3 4 nil] 41 [:a 1 nil] [nil] 1 1 2 0 1 33 2 1.5 true false true true true true true true true 3 2 nil]",
+    );
+}
+
+#[test]
+fn maps_answer_host_facing_methods_from_their_entries() {
+    // Array, hash and sorted maps, a public constructor's array map and a
+    // tree map, which takes the generic iteration.
+    every_level(
+        &format!(
+            "{DRAIN}
+             (let [it (fn [m] [(mapv vec (js/Array.from m)) (drain (.keys m)) (drain (.values m))
+                               (mapv #(if (array? %) (vec %) %) (drain (.entries m)))])]
+               (pr-str [(it {{:a 1 :b 2}}) (it (into {{}} (map vector (range 10) (range 10))))
+                        (it (sorted-map 2 :b 1 :a)) (it (cljs.core/PersistentArrayMap. nil 2 #js [:x 1 :y 2] nil))
+                        (it (cljs.core/PersistentTreeMap. compare nil 0 nil nil)) (it {{}})
+                        (.equiv {{:a 1 :b 2}} {{:b 2 :a 1}}) (.-cnt {{:a 1}})
+                        (.-cnt (cljs.core/PersistentArrayMap. nil 2 #js [:x 1 :y 2] nil))]))"
+        ),
+        "[[[[:a 1] [:b 2]] [:a :b nil] [1 2 nil] [[:a 1] [:b 2] nil]] [[[0 0] [1 1] [2 2] [3 3] [4 4] [5 5] [6 6] [7 7] [8 8] [9 9]] [0 1 2 3 4 5 6 7 8 9 nil] [0 1 2 3 4 5 6 7 8 9 nil] [[0 0] [1 1] [2 2] [3 3] [4 4] [5 5] [6 6] [7 7] [8 8] [9 9] nil]] [[[1 :a] [2 :b]] [1 2 nil] [:a :b nil] [[1 :a] [2 :b] nil]] [[[:x 1] [:y 2]] [:x :y nil] [1 2 nil] [[:x 1] [:y 2] nil]] [[] [nil] [nil] [nil]] [[] [nil] [nil] [nil]] true 1 2]",
+    );
+    // With protocol implementations the generic methods dispatch to them,
+    // and they take receivers of another type.
+    every_level(
+        &format!(
+            "{DRAIN}
+             (extend-type PersistentVector ICounted (-count [_] 7))
+             (extend-type PersistentArrayMap ISeqable (-seq [_] (list (cljs.core/MapEntry. :z 26 nil))))
+             (let [v [1 2 3] m {{:a 1}}]
+               (pr-str [(drain (.call (aget v js/Symbol.iterator) v)) (try (.lastIndexOf v 3) (catch :default e (.-message e)))
+                        (.-cnt v) (.equiv v [1 2 3]) (mapv vec (js/Array.from m)) (drain (.keys m)) (.-cnt m)
+                        (drain (.call (aget v js/Symbol.iterator) '(4 5))) (.call (.-indexOf v) '(4 5) 5)]))"
+        ),
+        "[[1 2 3 nil] \"Index out of bounds\" 7 true [[:z 26]] [:z nil] 1 [4 5 nil] 1]",
+    );
+}
+
+#[test]
+fn small_programs_keep_only_what_they_use() {
+    // A vector, a map literal, `str` of scalars, an atom without options and
+    // the printer without options keep neither seqs nor hash maps nor the
+    // protocol machinery (light-cljs-230).
+    let absent = |source: &str, extra: &[&str]| {
+        let units = assert_keeps_none(source, extra);
+        for unit in PROTOCOL_MACHINERY {
+            assert!(!units.contains(&unit), "{source} keeps `{unit}`");
+        }
+        units
+    };
+    absent(
+        "(js/console.log {:a 1})",
+        &["seq", "PersistentHashMapValue", "hash", "mapFromArray"],
+    );
+    absent(
+        "(js/console.log (str (js/Date.now) :a))",
+        &["print", "printWriterImpl", "makeVector"],
+    );
+    absent("(js/console.log (atom 1))", &["seqToMap", "into", "seq"]);
+    absent(
+        "(js/console.log (pr-str 1))",
+        &["assoc", "PersistentHashMapValue", "printOptions.writer"],
+    );
+    absent(
+        "(js/console.log (into [] (range 3)) (reduce + [1 2]) (seq? (list 1)) (coll? [1]))",
+        &[
+            "PersistentHashMapValue",
+            "makeMap.persist",
+            "makeSet.persist",
+        ],
+    );
+}
+
+#[test]
+fn printing_with_options_dispatchers_and_into() {
+    every_level(
+        "(let [alt (fn [x w opts] (if (number? x) (-write w (str \"#\" x)) ((:fallback-impl opts) x w opts)))
+               parts #js [] w (StringBufferWriter. (js-obj \"append\" (fn [t] (.push parts t) nil)))]
+           (pr-sequential-writer w (fn [x w o] (-write w (pr-str x))) \"<\" \" \" \">\" {:print-length 2 :more-marker \"~\"} [1 2 3])
+           (-flush w)
+           (pr-str [(str 1 :a \"b\" nil [1 2] {:a 1} #{2} '(3) (range 2))
+                    (pr-str-with-opts [[1 {:a 2}] \"x\"] {:alt-impl alt})
+                    (prn-str-with-opts [[1]] {:print-length 1})
+                    (print-meta? {:meta true} (with-meta [1] {:m 1}))
+                    (pr-str-with-opts [(with-meta [1] {:m 1})] {:meta true})
+                    (.join parts \"\") (satisfies? IWriter w) (implements? IWriter w)
+                    (pr-str (atom 1 :meta {:a 1})) (meta (atom 1 :meta {:a 1})) (meta (atom 1 {:meta {:b 2}}))
+                    (pr-str (into [] (range 3)) (into {} [[:a 1]]) (into #{} [1]) (into () [1 2])
+                            (into (sorted-map) {:b 1 :a 2}) (into (with-meta [] {:m 1}) [1]))
+                    (reduce + [1 2 3]) (reduce + (js/Set. #js [1 2])) (seq? '(1)) (coll? [1])
+                    (counted? nil) (empty? []) (-conj [1] 2) (-count nil) (-lookup {:a 1} :a)
+                    (try (-count 1) (catch :default e (.-message e)))]))",
+        "[\"1:ab[1 2]{:a 1}#{2}(3)(0 1)\" \"[#1 {:a #2}] x\" \"[1]\\n\" true \"^{:m 1} [1]\" \"<1 2 ~>\" true true \"#object[cljs.core.Atom {:val 1}]\" {:a 1} {:b 2} \"[0 1 2] {:a 1} #{1} (2 1) {:a 2, :b 1} [1]\" 6 3 true true true true [1 2] 0 1 \"No protocol method ICounted/-count defined for this value\"]",
     );
 }
 

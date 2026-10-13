@@ -689,7 +689,8 @@ pub(crate) enum Composite {
     Vector,
     /// `listFromArray([items])`, a quoted list.
     List,
-    /// `mapFromArray([k0, v0, ...])`, a map literal of at most 8 entries.
+    /// `mapFromArray([k0, v0, ...])`, a map literal of at most 8 entries;
+    /// `arrayMapFromArray` at `Advanced`, which builds no hash map.
     ArrayMap,
     /// `mapFromArrays([keys], [values])`, a map literal of more entries.
     HashMap,
@@ -1477,6 +1478,10 @@ impl<'a> Emitter<'a> {
         self.rt(match constructor {
             Composite::Vector => RuntimeName::export("vectorFromArray"),
             Composite::List => RuntimeName::export("listFromArray"),
+            // At `Advanced` an array-map literal keeps no hash map.
+            Composite::ArrayMap if self.replaced_core.is_some() => {
+                RuntimeName::direct("arrayMapFromArray", None)
+            }
             Composite::ArrayMap => RuntimeName::export("mapFromArray"),
             Composite::HashMap => RuntimeName::export("mapFromArrays"),
             Composite::Set => RuntimeName::export("setFromArray"),
@@ -1926,6 +1931,15 @@ impl<'a> Emitter<'a> {
                         .all(|arg| Type::NUMBER.contains(inference.ty(*arg))) =>
             {
                 self.infix(" === ", args)
+            }
+            // An atom without options has neither metadata nor a validator,
+            // so it keeps none of the option parsing (`seqToMap`, `into`).
+            (C::Atom, [value]) if !self.replaced(C::AtomType.runtime_name()) => {
+                self.output.push_str("new ");
+                self.rt(RuntimeName::core(C::AtomType.runtime_name()));
+                self.output.push('(');
+                self.value(*value);
+                self.output.push_str(", null, null, null)");
             }
             (C::Count, [value]) => return self.count(inference, *value),
             (C::Nth, [vector, index] | [vector, index, _]) => {

@@ -543,11 +543,11 @@ fn hashes_are_embedded_only_at_advanced_with_intact_core_protocols() {
         [
             "  const k0 = rt$keyword(null, \"a\");",
             "  const k1 = rt$hashed(rt$setFromArray([2]), -2073014043);",
-            "  const k2 = rt$hashed(rt$mapFromArray([k0, k1]), -689938007);",
+            "  const k2 = rt$hashed(rt$arrayMapFromArray([k0, k1]), -689938007);",
             "  const k3 = rt$hashed(rt$listFromArray([3]), -1025653387);",
             "  const k4 = rt$hashed(rt$vectorFromArray([4]), 385458271);",
             "  const k5 = rt$keyword(null, \"m\");",
-            "  const k6 = rt$hashed(rt$mapFromArray([k5, true]), 1882657429);",
+            "  const k6 = rt$hashed(rt$arrayMapFromArray([k5, true]), 1882657429);",
             "  const k7 = rt$withMeta(k4, k6);",
             "  const k8 = rt$hashed(rt$vectorFromArray([1, k2, k3, k7]), 318764438);",
         ]

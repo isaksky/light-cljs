@@ -171,7 +171,14 @@ value is embedded only with a unit that builds that kind, and its protocol
 dispatch only with `installMethods`, which every protocol implementation goes
 through, so a program keeps of the runtime's collection, keyword and seq types
 only those it can build (see "Phase 2 builtin types extension points" in
-[advanced-optimization.md](advanced-optimization.md)). Each distinct keyword and quoted symbol literal
+[advanced-optimization.md](advanced-optimization.md)). Core protocol
+dispatchers and protocol tests answer natively without protocol
+implementations, vectors and maps answer their host-facing methods from
+their own items, the printer reads options only where the program can pass
+them, `(atom x)` is a plain constructor call and a map literal of at most 8
+entries builds an array map only, so none of these keeps the protocol
+machinery, seqs or hash maps by itself ("Phase 2 builtin types, second
+pass"). Each distinct keyword and quoted symbol literal
 the output reads is declared once after the runtime, `const k0 = rt$keyword(null,
 "a");`, and its sites read `k0`; keyword `case` switches on
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it

@@ -1972,3 +1972,101 @@ expansion limits of a single file bound its size) takes 251.5 ms before and
 254.5 ms after at `advanced`, and 249.0 and 247.6 ms at `prepare`, median of
 15 release-build CLI runs each, interleaved: within the noise of the
 process, which macro expansion and the runtime dominate.
+
+## Builtin types, second pass — October 13, 2026
+
+light-cljs-230 finishes rapid type analysis of the runtime's own types
+("Phase 2 builtin types, second pass" in the
+[design](../docs/advanced-optimization.md)). At `--optimize advanced`:
+
+- core protocol dispatchers and every runtime protocol test answer natively
+  where the program has no protocol implementation, so they keep neither
+  `builtinCoreImplementation`, `builtin`, `satisfies` nor the protocol
+  objects;
+- vectors and maps answer their host-facing methods (iteration, `indexOf`,
+  `keys`, `entries`, `cnt`, `equiv` of two vectors) from their own items, so
+  a program building only vectors and maps keeps no seq;
+- the printer reads print options only where a public entry can pass them,
+  writes through a native `StringBufferWriter`, and `str` prints only the
+  collections a program builds;
+- `(atom x)` is `new rt$Atom(x, null, null, null)`, and a map literal of at
+  most 8 entries calls `arrayMapFromArray`, which builds no hash map.
+
+The new ratchet fixtures `map-only` and `atom-str` read a map literal and
+`str` an atom's value:
+
+```clojure
+(js/console.log (.get {:a 1} :a))
+(js/console.log (str @(atom 1) 2))
+```
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL`. "Before"
+is master `c45cd00` (after light-cljs-214). `prepare` equals `none` for
+every fixture but `pure-defs`, which is 78 bytes smaller there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 377,620 / 89,894 | 385,908 / 91,800 | 186 / 167 | 186 / 167 | 387,000 / 387,000 / 200 |
+| println-hi | 377,507 / 89,823 | 385,795 / 91,729 | 106,105 / 25,090 | 43,926 / 10,951 | 387,000 / 387,000 / 44,000 |
+| vector-printed | 377,532 / 89,833 | 385,820 / 91,739 | 106,317 / 25,163 | 51,502 / 12,636 | 387,000 / 387,000 / 52,000 |
+| map-printed | 377,535 / 89,827 | 385,823 / 91,733 | 106,186 / 25,103 | 58,863 / 14,369 | 387,000 / 387,000 / 59,000 |
+| seq-pipeline | 377,851 / 89,942 | 386,139 / 91,846 | 81,638 / 19,119 | 69,798 / 16,610 | 387,000 / 387,000 / 70,000 |
+| add | 377,460 / 89,815 | 385,748 / 91,723 | 26 / 56 | 26 / 56 | 387,000 / 387,000 / 100 |
+| rest-fn | 377,804 / 89,949 | 386,092 / 91,854 | 24,755 / 6,538 | 24,795 / 6,580 | 387,000 / 387,000 / 25,000 |
+| keyword-case | 378,092 / 89,968 | 386,380 / 91,872 | 10,363 / 3,302 | 10,381 / 3,311 | 388,000 / 388,000 / 11,000 |
+| record-protocol | 378,413 / 90,142 | 386,701 / 92,042 | 11,637 / 3,796 | 11,637 / 3,796 | 388,000 / 388,000 / 12,000 |
+| pure-defs | 379,049 / 90,251 | 387,337 / 92,144 | 11,471 / 3,725 | 11,471 / 3,725 | 389,000 / 388,000 / 12,000 |
+| keyword-lookups | 378,584 / 90,072 | 386,872 / 91,976 | 99,650 / 23,622 | 73,216 / 17,658 | 388,000 / 388,000 / 74,000 |
+| constant-literals | 378,361 / 90,023 | 386,649 / 91,927 | 105,878 / 24,900 | 93,957 / 22,456 | 388,000 / 388,000 / 94,000 |
+| three-records | 380,550 / 90,440 | 388,838 / 92,325 | 11,642 / 3,790 | 11,642 / 3,790 | 390,000 / 390,000 / 12,000 |
+| constant-keys | 378,577 / 90,010 | 386,865 / 91,914 | 107,665 / 25,242 | 96,023 / 22,763 | 388,000 / 388,000 / 97,000 |
+| event-maps | 378,109 / 89,985 | 386,397 / 91,887 | 86,530 / 20,468 | 73,800 / 17,792 | 388,000 / 388,000 / 74,000 |
+| vector-only | 377,659 / 89,915 | 385,947 / 91,819 | 29,333 / 7,549 | 13,940 / 4,497 | 387,000 / 387,000 / 14,000 |
+| keyword-only | 377,627 / 89,897 | 385,915 / 91,802 | 9,979 / 3,232 | 9,997 / 3,241 | 387,000 / 387,000 / 10,000 |
+| map-only | 377,665 / 89,905 | 385,953 / 91,809 | 56,368 / 14,055 | 25,808 / 7,292 | 387,000 / 387,000 / 26,000 |
+| atom-str | 377,675 / 89,905 | 385,963 / 91,809 | 132,436 / 30,859 | 5,514 / 1,938 | 387,000 / 387,000 / 5,600 |
+| raw-js | 378,459 / 90,065 | 386,747 / 91,966 | 36 / 64 | 36 / 64 | 388,000 / 388,000 / 100 |
+| multi-arity | 380,288 / 90,327 | 388,576 / 92,220 | 781 / 318 | 781 / 318 | 390,000 / 390,000 / 800 |
+| closed-params | 380,023 / 90,478 | 388,311 / 92,366 | 79,528 / 19,507 | 82,559 / 20,346 | 390,000 / 390,000 / 83,000 |
+| debug-logging | 378,779 / 90,251 | 387,067 / 92,151 | 48 / 78 | 48 / 78 | 388,000 / 388,000 / 100 |
+
+Small programs at `advanced`, raw bytes and runtime units:
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(js/console.log :a)` | 9,963 (41) | 9,981 (41) |
+| `(js/console.log [1 2 3])` | 29,293 (93) | 13,900 (59) |
+| `(js/console.log {})` | 39,501 (127) | 22,700 (86) |
+| `(js/console.log {:a 1})` | 56,355 (174) | 25,795 (97) |
+| `(js/console.log #{1 2})` | 57,854 (179) | 59,923 (188) |
+| `(conj [1] 2)` | 33,325 (104) | 35,554 (114) |
+| `(fn [& xs] xs)` | 24,755 (77) | 24,795 (80) |
+| `(assoc {} :a 1)` | 65,654 (190) | 67,369 (197) |
+| `(with-meta [1] {:a 1})` | 66,717 (201) | 54,622 (172) |
+| `(fn [x] (str x 1))` | 104,255 (312) | 1,151 (11) |
+| `(atom 1)` | 112,428 (351) | 3,993 (20) |
+| `(js/console.log (pr-str [1 {:a 2}]))` | 105,160 (315) | 59,308 (187) |
+| `(into [] (range 3))` | 116,228 (365) | 63,397 (204) |
+| `(reduce + [1 2 3])` | 55,023 (193) | 42,399 (128) |
+
+The vector (25 KB) and map (30 KB) targets are met, and `str` of a scalar
+and an atom without options keep about 1 and 4 KB (`(str 1 2)` folds at
+compile time since light-cljs-214, so the row calls `str` on a parameter).
+Programs that
+print keep the printer but no map operations, `installMethods` or protocol
+lookup: the printing fixtures drop by 47 to 62 KB. A program that builds
+other seqs as well as vectors or maps keeps the native methods and the
+generic ones: `(conj [1] 2)`, `(assoc {} :a 1)` and `#{1 2}` grow by about
+2 KB. A program with protocol implementations keeps every native protocol
+test (`builtinCoreImplementation` is a table of them) and the vectors' and
+maps' native methods besides the generic ones it uses: `closed-params`, with
+a record, vectors and keyword lookups, grows by 3 KB, and its ceiling rises
+from 80,000 to 83,000. Sets keep the generic seqs and both map types (their
+`hash-map` field builds a map), which is left for later.
+
+The shared runtime grows by 8,288 bytes (2.2%), 1,906 gzipped: one
+native test per core protocol (`builtinCoreImplementation` is now a table of
+them), the dispatchers' tests, the printer entries' wrappers and option
+hooks, the vectors' and maps' native methods and the transient and `str`
+kind hooks. The `none` and `prepare` ceilings rise by 9,000 for that growth;
+the `advanced` ceilings drop to the new sizes.

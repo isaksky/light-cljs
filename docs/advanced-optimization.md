@@ -1333,23 +1333,116 @@ the branches of the kept operations that handle it.
   - The shared runtime grows by 12,907 bytes (3.6%): the hook tables, their
     installs, the native predicates and the moved branches' wrappers.
   Per-fixture sizes and timings are in `benchmarks/compiler.md`.
-- **Left for later** (light-cljs-230).
-  - The vector program keeps 29 KB, against a target of 25 KB, and the map
-    program 39 KB, against 30 KB. Their host-facing methods (`equiv`,
-    `indexOf`, iteration, `call`) keep `seq`, `first`, `next`, `count`, `nth`,
-    structural equality and the seq types a vector builds (with ChunkedSeq
-    for vectors over 32 items); a map also keeps the vector type for its
-    entries. About 3.6 KB of the vector program is comment lines, which
-    terse emission (light-cljs-215) removes.
-  - A map literal keeps both map types and hashing: `mapFromArray` builds a
-    hash map past 8 entries. Emitting an array-map builder for literals of at
-    most 8 entries would drop them.
-  - The printer (`str`, `pr-str`; about 104 KB) dispatches
-    `IPrintWithWriter` and writes through `StringBufferWriter`, whose
-    `installMethods` keeps the protocol machinery. `into`, `reduce` (its
-    `IReduce` and `IIterable` tests), `atom` (`seqToMap`, `into`) and the
-    core dispatchers (`coreMethod` keeps `builtin` and
-    `builtinCoreImplementation`) keep it too.
+- **Left for later.** light-cljs-230 removes what was left; see the next
+  section.
+
+#### Phase 2 builtin types, second pass
+
+light-cljs-230 finishes step 4 for the runtime's own types. A program keeps
+the protocol machinery only with a protocol implementation, the printer's
+map operations only where it passes print options, and the seqs behind a
+collection's host-facing methods only where it builds another kind of seq.
+
+- **Native protocol tests.** Each core protocol has a native test,
+  `<name>Value` (`countedValue`, `lookupValue`, `editableValue`,
+  `reduceValue`, `iterableValue`, `stackValue`, `printableValue`, ...): what
+  `builtinCoreImplementation` answers for that protocol, including its
+  exceptions for cycles, repeats, ranges, chunked conses and transients.
+  `builtinCoreImplementation` is now the table `nativeImplementations` of
+  these tests.
+- **Core dispatchers.** `coreMethod(key, arities, fallback, native)` calls a
+  protocol implementation through `protocolHooks.builtin`, else `fallback`
+  where the protocol's test `native` holds (`everyValue` for IHash and IEquiv,
+  `noValue` for the protocols no runtime value implements), else throws as
+  before. A dispatcher keeps only its own test, not `builtin`,
+  `builtinCoreImplementation`, `coreProtocolsByName` and the protocol
+  objects.
+- **Protocol tests.** Every runtime test of a core protocol reads
+  `protocolHooks` and falls back to the native test, as 227's generic
+  operations do: the `is*` predicates (`seq?`, `coll?`, `map?`, `counted?`,
+  `iterable?`, `uuid?`, `inst?`, ...; `satisfies` adds a protocol's defaults,
+  such as `ICounted` of nil, so these do too), `reduce` (IReduce, IIterable),
+  `into` (IEditableCollection), the chunked seqs of `concat`, `drop` and
+  `map`, `print-meta?`, `clj->js` and `js->clj`.
+- **String writer.** `StringBufferWriter` implements `IWriter` natively
+  (the `stringBufferWriters` store, `writerValue`), without
+  `installMethods`.
+- **Print options.** Options other than nil reach the printer only from its
+  public entries `pr-str-with-opts`, `pr-seq-writer`, `pr-sequential-writer`,
+  `print-meta?` and `-pr-writer` (a protocol implementation receives the
+  printer's options and can only pass new ones through these). The printer
+  calls their bodies (`printText`, `printSeq`, `printSequential`,
+  `printsMeta`), which the entries wrap with their arity check, and reads
+  options other than nil only through `printHooks.option` and
+  `printHooks.optionsWriter` (`:alt-impl`), which the entries' `printOptions`
+  effects install. A program that prints without options keeps no `assoc`,
+  map lookup or keyword construction for them.
+- **`str` and `atom`.** `str` prints a collection through
+  `kindHooks.strCollection`, which the units building collections install,
+  so `(str 1 2)` keeps no printer. At `Advanced` the emitter writes
+  `(atom x)`, an atom without options, as `new rt$Atom(x, null, null, null)`
+  (`Emitter::lowered_core_call`), so it keeps no option parsing (`seqToMap`,
+  `into`).
+- **Transients and `into`.** `persistent!`, `conj!` and transient lookup
+  reach a map's or a set's branch through kind hooks (`persistMap`,
+  `persistSet`, `conjTransientMap`, `transientEntryIndex`, ...) that the units
+  building maps and sets install, so `(into [] ...)` keeps neither type.
+  `-with-meta` of a function reaches `fnWithMeta` through
+  `kindHooks.withMetaFn`, or `protocolHooks.fnWithMeta` with protocol
+  implementations, so `into` keeps no function metadata.
+- **Host-facing methods.** Without protocol implementations a vector answers
+  iteration, `indexOf`, `lastIndexOf` and its `cnt` field from its items as
+  `seq` walks them (`vectorStorage`, which includes the tail that the public
+  constructor received, `itemIterator`, `vectorIndexOf`, `vectorCount`), and
+  a map answers iteration, `keys`, `values`, `entries` and `cnt` from its
+  entries (`ownMap`, `mapIterator`, `mapCount`). Two vectors compare their
+  items (`kindHooks.equivVectors`, from `makeVector`) unless another
+  sequential kind or a protocol implementation exists
+  (`kindHooks.equivSequential`, from `cons.equiv`, whose targets include
+  `installMethods`). So a program that builds only vectors and maps keeps no
+  seq. With protocol implementations, for a sorted map its public
+  constructor gave a tree, and for a receiver of another type, the methods
+  call the generic operation through `hostHooks`, which effects of the
+  generic operations install (`es6Iterator.host`, `sequentialIndex.host`,
+  `count.host`, `mapProjection.host`, `es6EntriesIterator.host`, each with
+  `installMethods` among its targets). The contract below lists what this
+  leaves unsupported.
+- **Map literals.** At `Advanced` a map literal of at most 8 entries that is
+  not shaped (light-cljs-220) calls `arrayMapFromArray`, which builds only an
+  array map, so `{:a 1}` keeps no hash map.
+- **Tests.**
+  - `builtin_types`: the host-facing methods of vectors (public constructor
+    tails, subvecs, map entries, 40 items) and maps (array, hash, sorted,
+    public constructors, a tree), with and without protocol extensions;
+    printing with options, `str`, atoms with options, `into`, `reduce` and
+    dispatchers; all at every level against `None`. What small programs keep:
+    no seq for a vector or a map, no hash map for a map literal, no printer
+    for `str` of scalars, no option parsing for an atom.
+  - `runtime_manifest`: `printHooks` and `hostHooks` are hook tables that
+    the `when:` check covers; `KIND_HOOKS` lists the new kind hooks.
+  - Ratchet fixtures `map-only` and `atom-str`.
+- **Measured.** At `Advanced`, against master `c45cd00`:
+  - `(js/console.log [1 2 3])` drops from 29,293 to 13,900 bytes (target 25
+    KB), `(js/console.log {})` from 39,501 to 22,700 (target 30 KB) and
+    `(js/console.log {:a 1})` from 56,355 to 25,795.
+  - `(fn [x] (str x 1))` drops from 104,255 to 1,151 bytes (`(str 1 2)` folds
+    at compile time since light-cljs-214), `(atom 1)` from 112,428 to 3,993,
+    `println-hi` from 106,105 to 43,926, `(into [] (range 3))` from 116,228
+    to 63,397 and `seq-pipeline` from 81,638 to 69,798.
+  - A program that builds another kind of seq as well as vectors or maps
+    keeps both the native methods and the generic ones: `(conj [1] 2)` grows
+    from 33,325 to 35,554 bytes, `(assoc {} :a 1)` from 65,654 to 67,369 and
+    `#{1 2}` from 57,854 to 59,923. A program with protocol implementations
+    keeps every native test as well: `closed-params` grows from 79,528 to
+    82,559.
+  - The shared runtime grows by 8,288 bytes (2.2%; 1,906 gzipped): the
+    native tests, the printer's wrapped entries, the kind hooks and the
+    vectors' and maps' native methods.
+  Per-fixture sizes are in `benchmarks/compiler.md`.
+- **Left for later** (light-cljs-231). A set keeps the generic seqs and
+  both map types: its `hash-map` field builds a map, and `setFromArray` can
+  build a hash set. The same native methods for sets, and an array-set
+  builder for set literals, would drop them.
 
 #### Phase 2 call shape extension points
 
@@ -2136,6 +2229,13 @@ upstream states that advanced mode is unsafe for certain patterns.
 - A `goog-define`'s value comes from the build at every level, as upstream's
   `:closure-defines`; at `Advanced`, a `^:const` or `goog-define` Var read
   after its top-level definition is its value (light-cljs-214).
+- Where the program has no protocol implementation, the host-facing methods
+  of the runtime's vectors and maps (iteration, `indexOf`, `lastIndexOf`,
+  `keys`, `values`, `entries` and the `cnt` field) answer from the value's
+  own items (light-cljs-230). Applied to a receiver of another type, through
+  `.call`, `.apply` or a copied method, they run the generic operation, which
+  a program that builds no other collection does not keep; such a call is
+  unsupported there and throws a `TypeError` naming `hostHooks`.
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification

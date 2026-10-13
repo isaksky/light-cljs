@@ -204,7 +204,7 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
         [
             "0 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
             "1 = rt$keyword(null, \"k\");",
-            "2 = rt$hashed(rt$mapFromArray([k1, k0]), 1918603281);",
+            "2 = rt$hashed(rt$arrayMapFromArray([k1, k0]), 1918603281);",
             "3 = rt$hashed(rt$vectorFromArray([k0, k2]), 1067525070);",
             "4 = rt$hashed(rt$listFromArray([1, 2]), 1185709346);",
         ]
@@ -254,7 +254,7 @@ fn reader_distinct_constants_are_distinct_entries() {
     for expected in [
         "rt$hashed(rt$constantSetFromArray([1, 1]), ",
         "rt$hashed(rt$setFromArray([1]), ",
-        "rt$hashed(rt$mapFromArray([1, k",
+        "rt$hashed(rt$arrayMapFromArray([1, k",
         "rt$hashed(rt$constantMapFromArray([1, k",
         "rt$hashed(rt$constantSetFromArray([k",
         "rt$hashed(rt$setFromArray([k",
@@ -438,7 +438,8 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     // Below `Advanced` each iteration builds every literal (keywords are
     // interned but still looked up per site); at `Advanced` the constant
     // parts are built once, and only the map with a dynamic value is built
-    // per iteration, on its key shape (light-cljs-220).
+    // per iteration, on its key shape (light-cljs-220), and the constant map
+    // by `arrayMapFromArray` (light-cljs-230).
     let source = r#"
       (defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty [] :meta {:kind :row :dims [1 2]}})
       (defn total [n]
@@ -450,6 +451,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     let names = [
         "vectorFromArray",
         "mapFromArray",
+        "arrayMapFromArray",
         "mapFromShape",
         "setFromArray",
         "keyword",
@@ -457,9 +459,9 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     ];
     let program = program(source);
     let expected = [
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":1,"mapFromArray":1,"mapFromShape":1000,"setFromArray":1,"keyword":10,"makeVector":2}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":1,"mapFromArray":0,"arrayMapFromArray":1,"mapFromShape":1000,"setFromArray":1,"keyword":10,"makeVector":2}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(
@@ -486,7 +488,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             "10 = rt$keyword(null, \"kind\");",
             "11 = rt$keyword(null, \"row\");",
             "12 = rt$keyword(null, \"dims\");",
-            "13 = rt$hashed(rt$mapFromArray([k10, k11, k12, k9]), 1014014460);",
+            "13 = rt$hashed(rt$arrayMapFromArray([k10, k11, k12, k9]), 1014014460);",
         ]
     );
     let table = pool(&program, OptimizationLevel::Advanced);
@@ -496,7 +498,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             entries: 14,
             composites: 3,
             lazy: 0,
-            bytes: 695
+            bytes: 700
         }
     );
     assert_eq!(
@@ -508,7 +510,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         .to_string()
         .lines()
         .nth(1),
-        Some("constant pool: 14 entries (3 composite, 0 lazy), 695 bytes")
+        Some("constant pool: 14 entries (3 composite, 0 lazy), 700 bytes")
     );
     assert_eq!(table.bytes, table_bytes(&advanced));
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {

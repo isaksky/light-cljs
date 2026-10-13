@@ -113,7 +113,7 @@ fn undeclared_load_time_effects_fail_validation() {
             .map(|error| error.message)
             .collect::<Vec<_>>()
     };
-    let header = "  //@unit write effect requires: coreMethod\n";
+    let header = "  //@unit write effect requires: coreMethod, writerValue\n";
     assert!(ANNOTATED_RUNTIME.contains(header));
     let undeclared = ANNOTATED_RUNTIME.replace(header, &header.replace(" effect", ""));
     assert_eq!(
@@ -282,7 +282,13 @@ fn method_keys(text: &str) -> Vec<(&str, bool)> {
 
 /// The hook tables a conditional effect may fill in (`typeHooks.rest =
 /// fnRest`), each read as `<table>.<key>`.
-const HOOK_TABLES: [&str; 3] = ["typeHooks", "kindHooks", "protocolHooks"];
+const HOOK_TABLES: [&str; 5] = [
+    "typeHooks",
+    "kindHooks",
+    "protocolHooks",
+    "printHooks",
+    "hostHooks",
+];
 
 /// The `<table>.<key>` hooks a unit body fills in.
 fn installed_hooks(text: &str) -> Vec<&str> {
@@ -390,7 +396,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     }
     // The record methods, the four type hooks, the kind hooks and the
     // protocol hooks.
-    assert_eq!(checked, 60);
+    assert_eq!(checked, 75);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -416,9 +422,25 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("restQueue", Kind::Stores(&["queues"])),
     ("equivMap", Kind::Stores(&["maps"])),
     ("equivSet", Kind::Stores(&["sets"])),
+    // Collections `str` prints: sequential values, maps and sets.
+    (
+        "strCollection",
+        Kind::Stores(&[
+            "vectors",
+            "cells",
+            "views",
+            "queues",
+            "lazyValues",
+            "maps",
+            "sets",
+        ]),
+    ),
+    // Two vectors compare their items where no protocol implementation
+    // exists; other sequential values walk their seqs.
+    ("equivVectors", Kind::Stores(&["vectors"])),
     (
         "equivSequential",
-        Kind::Stores(&["vectors", "cells", "views", "queues", "lazyValues"]),
+        Kind::Stores(&["cells", "views", "queues", "lazyValues"]),
     ),
     ("metaDeferred", Kind::Stores(&["deferredVarMetadata"])),
     ("conjQueue", Kind::Stores(&["queues"])),
@@ -473,6 +495,13 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ),
     ("nthChunk", Kind::Stores(&["chunks"])),
     ("nthTransient", Kind::Stores(&["transients"])),
+    // A transient of a kind comes from a persistent value of that kind.
+    ("persistVector", Kind::Stores(&["vectors"])),
+    ("persistMap", Kind::Stores(&["maps"])),
+    ("persistSet", Kind::Stores(&["sets"])),
+    ("conjTransientMap", Kind::Stores(&["maps"])),
+    ("conjTransientSet", Kind::Stores(&["sets"])),
+    ("transientEntryIndex", Kind::Stores(&["maps", "sets"])),
     ("countTransient", Kind::Stores(&["transients"])),
     (
         "hashSequential",
@@ -604,13 +633,14 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
     let unit = |name| manifest.unit_named(name).unwrap();
     // Effects travel with the bindings they mutate, and only with them; kind
     // hooks also with the bindings that build their kind, here the sequential
-    // branches of structural equality and hashing.
+    // branches of structural equality, hashing and `str`.
     assert_eq!(
         manifest.attached_effects(unit("ListValue")),
         [
             unit("ListValue.type"),
-            unit("makeVector.equiv"),
+            unit("cons.equiv"),
             unit("makeVector.hash"),
+            unit("str.collections"),
             unit("ListValue.members"),
             unit("ListValue.statics")
         ]

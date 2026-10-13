@@ -181,7 +181,7 @@ fn shaped_maps_behave_as_maps_built_at_their_site() {
     assert!(advanced.contains("rt$mapFromShape(k"), "{advanced}");
     assert!(advanced.contains("rt$hashMapFromShape(k"));
     // The built maps' first key is not a constant.
-    assert!(advanced.contains("rt$mapFromArray([rt$identity("));
+    assert!(advanced.contains("rt$arrayMapFromArray([rt$identity("));
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn keys_the_pool_cannot_tell_apart_are_built_at_their_site() {
     let advanced = emit(&program, OptimizationLevel::Advanced);
     assert!(!advanced.contains("FromShape(k"), "{advanced}");
     // Two sites, and the pooled map keys.
-    assert_eq!(advanced.matches("rt$mapFromArray([k").count(), 4);
+    assert_eq!(advanced.matches("rt$arrayMapFromArray([k").count(), 4);
     assert_eq!(advanced.matches("rt$constantMapFromArray([").count(), 2);
 
     let extended = format!(

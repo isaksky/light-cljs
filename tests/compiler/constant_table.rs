@@ -68,11 +68,11 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
             r#"4 = rt$keyword(null, "b");"#,
             r#"5 = rt$symbol(null, "sym");"#,
             r#"6 = rt$keyword("ns", "a");"#,
-            r#"7 = rt$hashed(rt$mapFromArray([k3, 1, k4, 2, k5, 3, k6, 4]), -1458745150);"#,
+            r#"7 = rt$hashed(rt$arrayMapFromArray([k3, 1, k4, 2, k5, 3, k6, 4]), -1458745150);"#,
             r#"8 = rt$keyword(null, "c");"#,
             r#"9 = rt$symbol(null, "sym2");"#,
             r#"10 = rt$keyword(null, "m");"#,
-            r#"11 = rt$hashed(rt$mapFromArray([k10, true]), 1882657429);"#,
+            r#"11 = rt$hashed(rt$arrayMapFromArray([k10, true]), 1882657429);"#,
             r#"12 = rt$withMeta(k9, k11);"#,
             r#"13 = rt$hashed(rt$listFromArray([k5, k3]), 7800204);"#,
         ]

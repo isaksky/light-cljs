@@ -39,6 +39,8 @@
   const iteratorSeqs = new WeakMap();
   //@unit reducedValues
   const reducedValues = new WeakMap();
+  //@unit stringBufferWriters
+  const stringBufferWriters = new WeakSet();
   //@unit constructorHashes
   const constructorHashes = new WeakMap();
   //@unit publicCollectionSlots
@@ -942,63 +944,64 @@
   const keywordIdentical = (x, y) => x === y || (keywords.has(x) && keywords.has(y) && equalPair(x, y));
   //@unit symbolIdentical requires: equalPair, symbols
   const symbolIdentical = (x, y) => x === y || (symbols.has(x) && symbols.has(y) && equalPair(x, y));
-  //@unit isFn requires: Fn, satisfies
-  const isFn = x => typeof x === "function" || satisfies(Fn, x);
-  //@unit isIFn requires: IFn, isFn, satisfies
-  const isIFn = x => isFn(x) || satisfies(IFn, x);
+  //@unit isFn requires: Fn, fnValue, protocolHooks
+  // Native answers (`countedValue`) unless protocol implementations exist.
+  const isFn = x => typeof x === "function" || (protocolHooks.satisfies?.(Fn, x) ?? fnValue(x));
+  //@unit isIFn requires: IFn, ifnValue, isFn, protocolHooks
+  const isIFn = x => isFn(x) || (protocolHooks.satisfies?.(IFn, x) ?? ifnValue(x));
   //@unit isArray
   const isArray = x => Array.isArray(x);
   //@unit isObject requires: isCollectionValue, isIdent, reducedValues, uuids, vars
   const isObject = x => x != null && !isCollectionValue(x) && !isIdent(x) && !uuids.has(x) && !vars.has(x) && !reducedValues.has(x) && x.constructor === Object;
-  //@unit isColl requires: ICollection, satisfies
-  const isColl = x => x != null && satisfies(ICollection, x);
-  //@unit isSeq requires: ISeq, satisfies
-  const isSeq = x => x != null && satisfies(ISeq, x);
-  //@unit isList requires: IList, satisfies
-  const isList = x => satisfies(IList, x);
-  //@unit isSeqable requires: ISeqable, satisfies
-  const isSeqable = x => x == null || satisfies(ISeqable, x) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null;
-  //@unit isSequential requires: ISequential, satisfies
-  const isSequential = x => satisfies(ISequential, x);
-  //@unit isVector requires: IVector, satisfies
-  const isVector = x => satisfies(IVector, x);
-  //@unit isMap requires: IMap, satisfies
-  const isMap = x => x != null && satisfies(IMap, x);
-  //@unit isSet requires: ISet, satisfies
-  const isSet = x => x != null && satisfies(ISet, x);
-  //@unit isAssociative requires: IAssociative, satisfies
-  const isAssociative = x => satisfies(IAssociative, x);
-  //@unit isIFind requires: IFind, satisfies
-  const isIFind = x => satisfies(IFind, x);
-  //@unit isCounted requires: ICounted, satisfies
-  const isCounted = x => satisfies(ICounted, x);
-  //@unit isIndexed requires: IIndexed, satisfies
-  const isIndexed = x => satisfies(IIndexed, x);
-  //@unit isReduceable requires: IReduce, satisfies
-  const isReduceable = x => satisfies(IReduce, x);
-  //@unit isReversible requires: IReversible, satisfies
-  const isReversible = x => satisfies(IReversible, x);
-  //@unit isSorted requires: ISorted, satisfies
-  const isSorted = x => satisfies(ISorted, x);
-  //@unit isRecord requires: IRecord, satisfies
-  const isRecord = x => satisfies(IRecord, x);
-  //@unit isMapEntry requires: IMapEntry, implementsProtocol
-  const isMapEntry = x => implementsProtocol(IMapEntry, x);
-  //@unit isChunkedSeq requires: IChunkedSeq, implementsProtocol
-  const isChunkedSeq = x => implementsProtocol(IChunkedSeq, x);
-  //@unit isEmpty requires: countProtocol, ICounted, satisfies, seq
-  const isEmpty = x => x == null || (satisfies(ICounted, x) ? countProtocol(x) === 0 : seq(x) === null);
+  //@unit isColl requires: collectionValue, ICollection, protocolHooks
+  const isColl = x => x != null && (protocolHooks.satisfies?.(ICollection, x) ?? collectionValue(x));
+  //@unit isSeq requires: ISeq, protocolHooks, seqValue
+  const isSeq = x => x != null && (protocolHooks.satisfies?.(ISeq, x) ?? seqValue(x));
+  //@unit isList requires: IList, listValue, protocolHooks
+  const isList = x => protocolHooks.satisfies?.(IList, x) ?? listValue(x);
+  //@unit isSeqable requires: ISeqable, protocolHooks, seqableValue
+  const isSeqable = x => x == null || (protocolHooks.satisfies?.(ISeqable, x) ?? seqableValue(x)) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null;
+  //@unit isSequential requires: ISequential, protocolHooks, sequential
+  const isSequential = x => protocolHooks.satisfies?.(ISequential, x) ?? sequential(x);
+  //@unit isVector requires: IVector, protocolHooks, vectors
+  const isVector = x => protocolHooks.satisfies?.(IVector, x) ?? vectors.has(x);
+  //@unit isMap requires: IMap, maps, protocolHooks
+  const isMap = x => x != null && (protocolHooks.satisfies?.(IMap, x) ?? maps.has(x));
+  //@unit isSet requires: ISet, protocolHooks, sets
+  const isSet = x => x != null && (protocolHooks.satisfies?.(ISet, x) ?? sets.has(x));
+  //@unit isAssociative requires: associativeValue, IAssociative, protocolHooks
+  const isAssociative = x => protocolHooks.satisfies?.(IAssociative, x) ?? associativeValue(x);
+  //@unit isIFind requires: findValue, IFind, protocolHooks
+  const isIFind = x => protocolHooks.satisfies?.(IFind, x) ?? findValue(x);
+  //@unit isCounted requires: countedValue, ICounted, protocolHooks
+  const isCounted = x => protocolHooks.satisfies?.(ICounted, x) ?? (x == null || countedValue(x));
+  //@unit isIndexed requires: IIndexed, indexedValue, protocolHooks
+  const isIndexed = x => protocolHooks.satisfies?.(IIndexed, x) ?? indexedValue(x);
+  //@unit isReduceable requires: IReduce, protocolHooks, reduceValue
+  const isReduceable = x => protocolHooks.satisfies?.(IReduce, x) ?? reduceValue(x);
+  //@unit isReversible requires: IReversible, protocolHooks, reversibleValue
+  const isReversible = x => protocolHooks.satisfies?.(IReversible, x) ?? reversibleValue(x);
+  //@unit isSorted requires: ISorted, protocolHooks, sortedValue
+  const isSorted = x => protocolHooks.satisfies?.(ISorted, x) ?? sortedValue(x);
+  //@unit isRecord requires: IRecord, protocolHooks
+  const isRecord = x => protocolHooks.satisfies?.(IRecord, x) ?? false;
+  //@unit isMapEntry requires: IMapEntry, mapEntryValue, protocolHooks
+  const isMapEntry = x => protocolHooks.implementsProtocol?.(IMapEntry, x) ?? mapEntryValue(x);
+  //@unit isChunkedSeq requires: chunkedSeqValue, IChunkedSeq, protocolHooks
+  const isChunkedSeq = x => protocolHooks.implementsProtocol?.(IChunkedSeq, x) ?? chunkedSeqValue(x);
+  //@unit isEmpty requires: countedValue, countProtocol, ICounted, protocolHooks, seq
+  const isEmpty = x => x == null || ((protocolHooks.satisfies?.(ICounted, x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
 
-  //@unit reduce requires: builtinCoreImplementation, cells, chunks, deref, first, IIterable,
-  //@ invalidArity, IReduce, isReduced, iterator, iteratorProtocol, lazyValues, next, protocolHooks,
-  //@ publicCollectionSlots, satisfies, seq, vectors, views
+  //@unit reduce requires: cells, chunks, deref, first, IIterable, invalidArity, isReduced,
+  //@ iterableValue, iterator, iteratorProtocol, lazyValues, next, protocolHooks,
+  //@ publicCollectionSlots, reduceValue, seq, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     const source = arity === 3 ? collection : init;
     const method = protocolHooks.publicMethod?.(source, "IReduce/-reduce", arity, true);
     if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
-    if (!builtinCoreImplementation(IReduce, source) && !Array.isArray(source) && typeof source !== "string" && satisfies(IIterable, source)) {
+    if (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string" && (protocolHooks.satisfies?.(IIterable, source) ?? iterableValue(source))) {
       const iter = iteratorProtocol(source);
       if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
       while (iter.hasNext()) {
@@ -1052,7 +1055,7 @@
       for (; i < c.array.length; i++) { init = rf.call(null, init, c.array[i]); if (isReduced(init)) return deref(init); }
       return init;
     }
-    const sequenceReduction = cells.has(source) || lazyValues.has(source) || (!builtinCoreImplementation(IReduce, source) && !Array.isArray(source) && typeof source !== "string");
+    const sequenceReduction = cells.has(source) || lazyValues.has(source) || (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string");
     if (arity === 2 && sequenceReduction) {
       const current = seq(source);
       return current == null ? rf.call(null) : reduce(rf, first(current), next(current));
@@ -1419,16 +1422,43 @@
     return preserveMeta(value, makeVector(items));
   };
 
-  //@unit mapPrototype requires: contains, es6EntriesIterator, es6Iterator, get, invalidArity, keys,
-  //@ lookup, maps, objectEquiv, printHooks, vals
+  //@unit ownMap requires: maps, protocolHooks, publicCollectionSlots
+  // Whether a map iterates its own entries (see `hostHooks`).
+  function ownMap(value) { return !protocolHooks.builtin && maps.has(value) && !("tree" in (publicCollectionSlots.get(value) ?? {})); }
+  //@unit mapCount requires: maps, publicCollectionSlots
+  // `count` of a map without protocol implementations.
+  function mapCount(value) {
+    const slots = publicCollectionSlots.get(value);
+    if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
+    return maps.get(value).length;
+  }
+  //@unit itemIterator
+  // `es6Iterator` of a seq walking `storage` (null when empty): `item` of each.
+  function itemIterator(storage, item) {
+    let index = 0, more = storage !== null;
+    return {next() {
+      if (!more) return {value: null, done: true};
+      const result = item(storage[index]);
+      more = ++index < storage.length;
+      return {value: result, done: false};
+    }};
+  }
+  //@unit mapIterator requires: itemIterator, mapTraversal
+  // Of a map's seq (`makeMap.seq`).
+  function mapIterator(value, item) {
+    const entries = mapTraversal(value);
+    return itemIterator(entries.length ? entries : null, item);
+  }
+  //@unit mapPrototype requires: contains, get, hostHooks, invalidArity, lookup, mapEntry,
+  //@ mapIterator, maps, objectEquiv, ownMap, printHooks
   const mapPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     has(key) { return contains(this, key); },
     get(key, notFound = null) { return get(this, key, notFound); },
-    keys() { return es6Iterator(keys(this)); },
-    values() { return es6Iterator(vals(this)); },
-    entries() { return es6EntriesIterator(this); },
-    [Symbol.iterator]() { return es6Iterator(this); },
+    keys() { return ownMap(this) ? mapIterator(this, entry => entry.key) : hostHooks.keys(this); },
+    values() { return ownMap(this) ? mapIterator(this, entry => entry.value) : hostHooks.values(this); },
+    entries() { return ownMap(this) ? mapIterator(this, entry => [entry.key, entry.value]) : hostHooks.entries(this); },
+    [Symbol.iterator]() { return ownMap(this) ? mapIterator(this, entry => mapEntry(entry.key, entry.value)) : hostHooks.iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
@@ -1697,6 +1727,13 @@
     const edit = kind === "hash-map" ? {} : null;
     for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], kind, edit);
     return makeMap(kind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, entries, kind);
+  }
+  //@unit arrayMapFromArray requires: makeMap, PersistentArrayMapValue, putEntry
+  // Advanced map literals of at most 8 entries keep no hash map.
+  function arrayMapFromArray(pairs) {
+    const entries = [];
+    for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], "array-map", null);
+    return makeMap(PersistentArrayMapValue, entries, "array-map");
   }
 
   //@unit hashMap requires: mapFromArray
@@ -1969,15 +2006,24 @@
   }
   //@unit persistentBang requires: persistentBangProtocol
   function persistentBang(value) { return persistentBangProtocol(value); }
-  //@unit persistTransient requires: editableTransient, makeMap, makeSet, makeVector,
-  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue
+  //@unit persistTransient requires: editableTransient, kindHooks
   function persistTransient(value) {
     const state = editableTransient(value, "persistent!");
     state.editable = false;
-    if (state.kind === "vector") return makeVector(state.entries);
-    if (state.kind === "map") return makeMap(state.mapKind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, state.entries, state.mapKind);
-    return makeSet(PersistentHashSetValue, state.entries, state.mapKind);
+    if (state.kind === "vector") return kindHooks.persistVector(state.entries);
+    if (state.kind === "map") return kindHooks.persistMap(state.entries, state.mapKind);
+    return kindHooks.persistSet(state.entries, state.mapKind);
   }
+  //@unit makeVector.persist effect: makeVector when: persistTransient requires: kindHooks,
+  //@ makeVector
+  // A transient vector, map or set comes from a persistent one of its kind.
+  kindHooks.persistVector = entries => makeVector(entries);
+  //@unit makeMap.persist effect: makeMap, treeMapConstructor, makeType when: persistTransient
+  //@ requires: kindHooks, makeMap, PersistentArrayMapValue, PersistentHashMapValue
+  kindHooks.persistMap = (entries, kind) => makeMap(kind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, entries, kind);
+  //@unit makeSet.persist effect: makeSet, treeSetConstructor when: persistTransient requires: kindHooks,
+  //@ makeSet, PersistentHashSetValue
+  kindHooks.persistSet = (entries, kind) => makeSet(PersistentHashSetValue, entries, kind);
   //@unit transientNth requires: editableTransient, missing, transients, vectorNth
   function transientNth(value, index, fallback) {
     const state = transients.get(value);
@@ -1987,17 +2033,19 @@
     editableTransient(value, "nth");
     return vectorNth(state.entries, index, fallback);
   }
-  //@unit transientLookup requires: editableTransient, entryIndex, hashEntryIndex, transientNth,
-  //@ transients
+  //@unit transientLookup requires: editableTransient, kindHooks, transientNth, transients
   function transientLookup(value, key, notFound) {
     const state = transients.get(value);
     // TransientHashMap (and its set wrapper) retains readable lookup after
     // persistence in both pinned versions. Array maps and vectors reject it.
     if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
     if (state.kind === "vector") return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
-    const index = state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
+    const index = kindHooks.transientEntryIndex(state, key);
     return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
   }
+  //@unit makeMap.transientLookup effect: makeMap, treeMapConstructor, makeType, makeSet,
+  //@ treeSetConstructor when: transientLookup requires: entryIndex, hashEntryIndex, kindHooks
+  kindHooks.transientEntryIndex = (state, key) => state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
   //@unit assocTransient requires: editableTransient, entryIndex, makeTransient, outOfBounds,
   //@ putEntry, transients
   function assocTransient(value, key, item, indexed = false) {
@@ -2019,16 +2067,23 @@
     }
     return value;
   }
-  //@unit conjTransient requires: assocBangProtocol, editableTransient, first, isMapEntry, isVector,
-  //@ keyProtocol, next, putMember, seq, truth, valProtocol
+  //@unit conjTransient requires: editableTransient, kindHooks
   function conjTransient(value, member) {
     const state = editableTransient(value, "conj!");
     if (state.kind === "vector") { state.entries.push(member); return value; }
-    if (state.kind === "set") {
-      putMember(state.entries, member, state.edit);
-      if (state.entries.length > 8) state.mapKind = "hash-map";
-      return value;
-    }
+    return state.kind === "set" ? kindHooks.conjTransientSet(value, state, member) : kindHooks.conjTransientMap(value, member);
+  }
+  //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient requires: kindHooks,
+  //@ putMember
+  kindHooks.conjTransientSet = (value, state, member) => {
+    putMember(state.entries, member, state.edit);
+    if (state.entries.length > 8) state.mapKind = "hash-map";
+    return value;
+  };
+  //@unit makeMap.conjTransient effect: makeMap, treeMapConstructor, makeType when: conjTransient
+  //@ requires: assocBangProtocol, first, isMapEntry, isVector, keyProtocol, kindHooks, next, seq,
+  //@ truth, valProtocol
+  kindHooks.conjTransientMap = (value, member) => {
     if (isMapEntry(member)) return assocBangProtocol(value, keyProtocol(member), valProtocol(member));
     if (isVector(member)) return assocBangProtocol(value, member.call(null, 0), member.call(null, 1));
     for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) {
@@ -2036,7 +2091,7 @@
       value = assocBangProtocol(value, keyProtocol(entry), valProtocol(entry));
     }
     return value;
-  }
+  };
   //@unit removeTransient requires: editableTransient, entryIndex, hashEntryIndex, hashRoots,
   //@ removeHashEntry
   function removeTransient(value, key, operation) {
@@ -2081,15 +2136,42 @@
   //@unit popBang requires: popBangProtocol
   function popBang(value) { return popBangProtocol(value); }
 
-  //@unit vectorPrototype requires: count, es6Iterator, invalidArity, mapEntries, missing,
-  //@ objectEquiv, outOfBounds, printHooks, sequentialIndex, vectorNth, vectors
+  //@unit hostHooks
+  // Generic host-facing methods, for receivers that cannot answer natively.
+  const hostHooks = {};
+  //@unit vectorStorage requires: publicCollectionSlots, subvecSources, vectors
+  // What `seq` of a vector walks (`makeVector.seq`), or null.
+  function vectorStorage(value) {
+    const slots = publicCollectionSlots.get(value), items = vectors.get(value);
+    if (slots && !subvecSources.has(value) && slots.cnt <= 32) return slots.cnt === 0 ? null : slots.tail;
+    return items.length ? items : null;
+  }
+  //@unit vectorCount requires: publicCollectionSlots, subvecSources, vectors
+  function vectorCount(value) {
+    const slots = publicCollectionSlots.get(value);
+    if (slots && "cnt" in slots) return slots.cnt;
+    return slots && subvecSources.has(value) ? slots.end - slots.start : vectors.get(value).length;
+  }
+  //@unit vectorIndexOf requires: hostHooks, indexIn, mapEntries, missing, outOfBounds,
+  //@ protocolHooks, vectorCount, vectorNth, vectors
+  function vectorIndexOf(coll, value, start, reverse) {
+    if (protocolHooks.builtin || !vectors.has(coll)) return hostHooks.index(coll, value, start, reverse);
+    const items = vectors.get(coll), entry = mapEntries.has(coll);
+    return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(items, i, missing), value, start, reverse);
+  }
+  //@unit vectorPrototype requires: hostHooks, invalidArity, itemIterator, mapEntries, missing,
+  //@ objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf, vectorNth,
+  //@ vectors, vectorStorage
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    [Symbol.iterator]() { return es6Iterator(this); },
+    [Symbol.iterator]() { return protocolHooks.builtin || !vectors.has(this) ? hostHooks.iterator(this) : itemIterator(vectorStorage(this), item => item); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
-    indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
-    lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
+    indexOf(value, start = 0) { return vectorIndexOf(this, value, start, false); },
+    lastIndexOf(value, start) {
+      if (start === undefined) start = protocolHooks.builtin || !vectors.has(this) ? hostHooks.count(this) : vectorCount(this);
+      return vectorIndexOf(this, value, start, true);
+    },
     // The pinned fixed method accepts one index and ignores extra arguments.
     call(_self, index) {
       const items = vectors.get(this);
@@ -2254,6 +2336,10 @@
     throw new Error("count not supported on this type");
   }
 
+  //@unit count.host effect: count, installMethods when: PersistentArrayMapValue,
+  //@ PersistentHashMapValue, PersistentVectorValue, structuralEqualPair, vectorPrototype requires: count,
+  //@ hostHooks
+  hostHooks.count = count;
   //@unit accumulatingCount requires: count, countedValue, ICounted, next, protocolHooks, seq
   function accumulatingCount(value) {
     let result = 0;
@@ -2725,15 +2811,16 @@
     if (maps.has(left)) return kindHooks.equivMap(left, right);
     const leftSet = sets.get(left);
     if (leftSet) return kindHooks.equivSet(leftSet, right);
-    if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) return kindHooks.equivSequential(left, right);
-    // Primitive NaN stays unequal to itself; foreign objects use identity only.
+    if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) return (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
+    // Primitive NaN stays unequal; foreign objects use identity only.
     return false;
   }
   //@unit makeMap.equiv effect: makeMap, treeMapConstructor, makeType when: structuralEqualPair
-  //@ requires: count, equalPair, get, IMap, IRecord, kindHooks, mapKinds, maps, mapTraversal,
-  //@ missing, protocolHooks
+  //@ requires: equalPair, get, hostHooks, IMap, IRecord, kindHooks, mapCount, mapKinds, maps,
+  //@ mapTraversal, missing, protocolHooks
   kindHooks.equivMap = (left, right) => {
-    if (!(right != null && (protocolHooks.satisfies?.(IMap, right) ?? maps.has(right))) || (protocolHooks.satisfies?.(IRecord, right) ?? false) || count(left) !== count(right)) return false;
+    if (!(right != null && (protocolHooks.satisfies?.(IMap, right) ?? maps.has(right))) || (protocolHooks.satisfies?.(IRecord, right) ?? false)) return false;
+    if (protocolHooks.builtin ? hostHooks.count(left) !== hostHooks.count(right) : mapCount(left) !== mapCount(right)) return false;
     return mapTraversal(left).every(entry => {
       const found = get(right, entry.key, missing);
       // Hash/tree maps use equiv-map's right-first value dispatch. Array
@@ -2749,9 +2836,22 @@
     try { return leftSet.every(entry => contains(right, entry.key)); }
     catch (error) { if (error instanceof Error) return false; throw error; }
   };
-  //@unit makeVector.equiv effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
-  //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
-  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq when: structuralEqualPair
+  //@unit makeVector.equiv effect: makeVector when: structuralEqualPair requires: equalPair,
+  //@ kindHooks, vectorCount, vectors, vectorStorage
+  // Where no other sequential value and no protocol implementation exists.
+  kindHooks.equivVectors = (left, right) => {
+    if (!vectors.has(right) || vectorCount(left) !== vectorCount(right)) return false;
+    const a = vectorStorage(left), b = vectorStorage(right);
+    let index = 0, more = a !== null, other = b !== null;
+    while (more) {
+      if (!other || !equalPair(a[index], b[index])) return false;
+      more = ++index < a.length; other = index < b.length;
+    }
+    return !other;
+  };
+  //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
+  //@ compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq, iterateNode,
+  //@ ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, installMethods when: structuralEqualPair
   //@ requires: count, countedValue, equalPair, first, ICounted, ISequential, kindHooks, next,
   //@ protocolHooks, seq, sequential
   // Sequential values: vectors, cells, views, queues and lazy seqs.
@@ -3412,6 +3512,10 @@
   function keys(value) { return mapProjection(value, 0); }
   //@unit vals requires: mapProjection
   function vals(value) { return mapProjection(value, 1); }
+  //@unit mapProjection.host effect: mapProjection, installMethods, treeMapConstructor when: mapPrototype
+  //@ requires: es6Iterator, hostHooks, keys, vals
+  hostHooks.keys = value => es6Iterator(keys(value));
+  hostHooks.values = value => es6Iterator(vals(value));
   //@unit repeat requires: emptyList, invalidArity, RepeatValue
   function repeat(n, item) {
     if (arguments.length === 1) { item = n; n = -1; }
@@ -3459,19 +3563,25 @@
     if (!(Array.isArray(a) && Array.isArray(b)) && (typeof a !== typeof b || !["string", "boolean"].includes(typeof a))) return cannotCompare();
     return a < b ? -1 : a > b ? 1 : 0;
   }
-  //@unit sequentialIndex requires: count, equalPair, nth
+  //@unit sequentialIndex requires: count, indexIn, nth
   function sequentialIndex(coll, value, start, reverse) {
-    const length = count(coll);
+    return indexIn(count(coll), i => nth(coll, i), value, start, reverse);
+  }
+  //@unit indexIn requires: equalPair
+  function indexIn(length, at, value, start, reverse) {
     if (reverse) {
       if (length === 0) return -1;
       for (let i = start > 0 ? Math.min(length - 1, start) : start < 0 ? length + start : start; i >= 0; i--)
-        if (equalPair(nth(coll, i), value)) return i;
+        if (equalPair(at(i), value)) return i;
     } else {
       for (let i = start < 0 ? Math.max(0, length + start) : start; i < length; i++)
-        if (equalPair(nth(coll, i), value)) return i;
+        if (equalPair(at(i), value)) return i;
     }
     return -1;
   }
+  //@unit sequentialIndex.host effect: sequentialIndex, installMethods when: vectorIndexOf requires: hostHooks,
+  //@ sequentialIndex
+  hostHooks.index = sequentialIndex;
   //@unit treeRoots
   // Comparator equality controls sorted membership; structural hashes remain
   // attached to the retained key for unordered collection equality/hash.
@@ -3763,30 +3873,25 @@
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
   //@unit countedValue requires: cells, chunkBuffers, chunks, maps, queues, sets, transients,
   //@ vectors, views
-  // What `builtinCoreImplementation` answers for one core protocol, without
-  // the protocol objects: the answer of `satisfies` and `implementsProtocol`
-  // where no protocol implementation exists (`protocolHooks`). ICounted:
+  // A core protocol's native test, without the protocol objects (one per
+  // protocol, here ICounted; see `builtinCoreImplementation`).
   function countedValue(value) {
     const cell = cells.get(value);
     return transients.has(value) || cell?.kind === "tree-seq" || chunkBuffers.has(value) || chunks.has(value) || cell?.integer === true || vectors.has(value) || maps.has(value) || sets.has(value) || queues.has(value) || cell?.kind === "list" || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind));
   }
   //@unit seqValue requires: cells, chunks, iteratorSeqs, lazyValues, queues, views
-  // ISeq (see `countedValue`).
   function seqValue(value) {
     return chunks.get(value)?.integer === true || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value) || iteratorSeqs.has(value);
   }
   //@unit nextValue requires: cells, lazyValues, queues, views
-  // INext (see `countedValue`).
   function nextValue(value) {
     return cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
   }
   //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets, vectors, views
-  // ISeqable (see `countedValue`).
   function seqableValue(value) {
     return [vectors, maps, sets, cells, views, queues, lazyValues, iteratorSeqs].some(store => store.has(value));
   }
   //@unit indexedValue requires: cells, chunks, transients, vectors, views
-  // IIndexed (see `countedValue`).
   function indexedValue(value) {
     const transient = transients.get(value);
     if (transient) return transient.kind === "vector";
@@ -3795,6 +3900,99 @@
   //@unit cloneablePayload requires: cells, mapEntries, maps, queues, recordTypes, sets, vectors,
   //@ views
   function cloneablePayload(value) { return (vectors.has(value) && !mapEntries.has(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(views.get(value)?.kind); }
+  //@unit lookupValue requires: maps, sets, transients, vectors
+  const lookupValue = value => transients.has(value) || vectors.has(value) || maps.has(value) || sets.has(value);
+  //@unit associativeValue requires: maps, vectors
+  const associativeValue = value => vectors.has(value) || maps.has(value);
+  //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, vectors, views
+  const collectionValue = value => [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value));
+  //@unit emptyableValue requires: collectionValue, recordTypes
+  const emptyableValue = value => !recordTypes.has(value) && collectionValue(value);
+  //@unit editableValue requires: mapEntries, maps, recordTypes, sets, sortedComparators,
+  //@ subvecSources, vectors
+  const editableValue = value => vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
+  //@unit reduceValue requires: cells, chunks, lazyValues, maps, recordTypes, vectors, views
+  const reduceValue = value => cells.get(value)?.kind !== "chunked-cons" && (chunks.has(value) && !chunks.get(value).integer || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue"));
+  //@unit kvReduceValue requires: mapEntries, maps, vectors
+  const kvReduceValue = value => vectors.has(value) && !mapEntries.has(value) || maps.has(value);
+  //@unit iterableValue requires: cells, collectionValue
+  const iterableValue = value => !["cycle", "iterate", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && collectionValue(value);
+  //@unit stackValue requires: cells, queues, vectors
+  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && (vectors.has(value) || cells.has(value) || queues.has(value));
+  //@unit chunkedSeqValue requires: cells, views
+  const chunkedSeqValue = value => ["range", "chunked-cons"].includes(cells.get(value)?.kind) || views.get(value)?.kind === "chunked";
+  //@unit chunkValue requires: chunks
+  const chunkValue = value => chunks.has(value);
+  //@unit namedValue requires: keywords, multiFns, symbols
+  const namedValue = value => keywords.has(value) || symbols.has(value) || multiFns.has(value);
+  //@unit ifnValue requires: ifnMethods, isIdent, maps, multiFns, recordTypes, sets, transients,
+  //@ vars, vectors
+  const ifnValue = value => multiFns.has(value) || transients.has(value) || !!ifnMethods(value) || isIdent(value) || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
+  //@unit fnValue requires: metaFunctions, vars
+  const fnValue = value => metaFunctions.has(value) || vars.has(value);
+  //@unit multiFnValue requires: multiFns
+  const multiFnValue = value => multiFns.has(value);
+  //@unit transientValue requires: transients
+  const transientValue = value => transients.has(value);
+  //@unit transientAssociativeValue requires: transients
+  const transientAssociativeValue = value => transients.has(value) && transients.get(value).kind !== "set";
+  //@unit transientVectorValue requires: transients
+  const transientVectorValue = value => transients.get(value)?.kind === "vector";
+  //@unit transientMapValue requires: transients
+  const transientMapValue = value => transients.get(value)?.kind === "map";
+  //@unit transientSetValue requires: transients
+  const transientSetValue = value => transients.get(value)?.kind === "set";
+  //@unit mapEntryValue requires: mapEntries
+  const mapEntryValue = value => mapEntries.has(value);
+  //@unit sortedValue requires: sortedComparators
+  const sortedValue = value => sortedComparators.has(value);
+  //@unit findValue requires: maps, recordTypes, vectors
+  const findValue = value => vectors.has(value) || (maps.has(value) && !recordTypes.has(value));
+  //@unit reversibleValue requires: sortedComparators, vectors, views
+  const reversibleValue = value => vectors.has(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
+  //@unit dropValue requires: cells, mapKinds, vectors, views
+  const dropValue = value => mapKinds.get(value) === "array-map" || cells.get(value)?.integer === true || cells.get(value)?.kind === "repeat" || vectors.has(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind);
+  //@unit metaValue requires: atoms, cells, lazyValues, maps, metaFunctions, queues, reifyValues,
+  //@ sets, symbols, vars, vectors, views
+  const metaValue = value => [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+  //@unit withMetaValue requires: cells, lazyValues, maps, metaFunctions, queues, reifyValues, sets,
+  //@ symbols, vars, vectors, views
+  const withMetaValue = value => [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+  //@unit instValue
+  const instValue = value => value instanceof Date;
+  //@unit uuidImplementation requires: uuids
+  const uuidImplementation = value => uuids.has(value);
+  //@unit aseqValue requires: cells, publicCollectionSlots, views
+  function aseqValue(value) {
+    const cell = cells.get(value), kind = views.get(value)?.kind;
+    return publicCollectionSlots.has(value) && cell?.kind === "list" || kind === "chunked" || cell?.kind === "cons" || (cell?.kind === "list" && cell.count > 0) || cell?.kind === "chunked-cons" || kind === "indexed" || kind === "hash-map";
+  }
+  //@unit listValue requires: cells
+  const listValue = value => ["list", "cons"].includes(cells.get(value)?.kind);
+  //@unit printableValue requires: ownedProtocolValue, transients
+  const printableValue = value => !transients.has(value) && ownedProtocolValue(value);
+  //@unit hashableValue requires: cells, printableValue
+  const hashableValue = value => !["cycle", "iterate"].includes(cells.get(value)?.kind) && printableValue(value);
+  //@unit vectorValue requires: vectors
+  const vectorValue = value => vectors.has(value);
+  //@unit mapValue requires: maps
+  const mapValue = value => maps.has(value);
+  //@unit setValue requires: sets
+  const setValue = value => sets.has(value);
+  //@unit comparableValue requires: keywords, symbols, uuids, vectors
+  const comparableValue = value => vectors.has(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
+  //@unit atomValue requires: atoms, directMethod, transients
+  const atomValue = value => atoms.has(value) || !transients.has(value) && !!directMethod(value, "IAtom", 0);
+  //@unit pendingValue requires: cells, delays, lazyValues
+  const pendingValue = value => ["repeat", "cycle", "iterate"].includes(cells.get(value)?.kind) || delays.has(value) || lazyValues.has(value);
+  //@unit derefValue requires: atoms, delays, reducedValues, vars, volatiles
+  const derefValue = value => delays.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value) || reducedValues.has(value);
+  //@unit volatileValue requires: volatiles
+  const volatileValue = value => volatiles.has(value);
+  //@unit watchableValue requires: atoms
+  const watchableValue = value => atoms.has(value);
+  //@unit writerValue requires: stringBufferWriters
+  const writerValue = value => stringBufferWriters.has(value);
   //@unit coreProtocolImplementation requires: builtinCoreImplementation, coreProtocolNames,
   //@ directMethod, protocolMaskNames
   function coreProtocolImplementation(protocol, value) {
@@ -3804,91 +4002,33 @@
     if (name && directMethod(value, name, 0)) return true;
     return builtinCoreImplementation(protocol, value);
   }
-  //@unit builtinCoreImplementation requires: ASeq, atoms, cells, chunks, cloneablePayload,
-  //@ countedValue, delays, directMethod, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
-  //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDrop,
-  //@ IEditableCollection, IEmptyableCollection, IEquiv, IFind, IFn, ifnMethods, IHash, IIndexed,
-  //@ IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, IMultiFn, INamed, indexedValue,
-  //@ INext, Inst, IPending, IPrintWithWriter, IReduce, IReset, IReversible, ISeq, ISeqable,
-  //@ ISequential, ISet, isIdent, ISorted, IStack, ISwap, ITransientAssociative,
-  //@ ITransientCollection, ITransientMap, ITransientSet, ITransientVector, IUUID, IVector,
-  //@ IVolatile, IWatchable, IWithMeta, keywords, lazyValues, mapEntries, mapKinds, maps,
-  //@ metaFunctions, multiFns, nextValue, ownedProtocolValue, publicCollectionSlots, queues,
-  //@ recordTypes, reducedValues, reifyValues, seqableValue, sequential, seqValue, sets,
-  //@ sortedComparators, subvecSources, symbols, transients, uuids, vars, vectors, views, volatiles
-  function builtinCoreImplementation(protocol, value) {
-    if (protocol === Inst) return value instanceof Date;
-    if (protocol === IUUID) return uuids.has(value);
-    if (protocol === ASeq && publicCollectionSlots.has(value) && cells.get(value)?.kind === "list") return true;
-    if (protocol === ASeq && views.get(value)?.kind === "chunked") return true;
-    if (["cycle", "iterate"].includes(cells.get(value)?.kind) && [IHash, IEquiv, IStack, IIterable].includes(protocol)) return false;
-    if (["range", "tree-seq"].includes(cells.get(value)?.kind) && protocol === IStack) return false;
-    if (cells.get(value)?.kind === "repeat" && [IStack, IIterable].includes(protocol)) return false;
-    if (protocol === ASeq) return cells.get(value)?.kind === "cons" || (cells.get(value)?.kind === "list" && cells.get(value).count > 0) || cells.get(value)?.kind === "chunked-cons" || ["indexed", "hash-map"].includes(views.get(value)?.kind);
-    if (cells.get(value)?.kind === "chunked-cons" && [IReduce, IIterable, IStack].includes(protocol)) return false;
-    if (protocol === INamed) return keywords.has(value) || symbols.has(value) || multiFns.has(value);
-    if (protocol === IMultiFn) return multiFns.has(value);
-    if (protocol === IFn && multiFns.has(value)) return true;
-    const transient = transients.get(value);
-    if (protocol === IEditableCollection) return vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
-    if (protocol === ITransientCollection) return !!transient;
-    if (protocol === ITransientAssociative) return !!transient && transient.kind !== "set";
-    if (protocol === ITransientVector || protocol === IIndexed && transient) return transient?.kind === "vector";
-    if (protocol === ITransientMap) return transient?.kind === "map";
-    if (protocol === ITransientSet) return transient?.kind === "set";
-    if (transient && (protocol === ICounted || protocol === ILookup || protocol === IFn)) return true;
-    if (transient) return false;
-    if (protocol === Fn) return metaFunctions.has(value) || vars.has(value);
-    if (protocol === IList) return ["list", "cons"].includes(cells.get(value)?.kind);
-    if (protocol === IFn) return !!ifnMethods(value) || isIdent(value) || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
-    if (protocol === IChunk) return chunks.has(value);
-    if (protocol === IChunkedNext) return ["range", "chunked-cons"].includes(cells.get(value)?.kind) || views.get(value)?.kind === "chunked";
-    if (protocol === IDrop) return mapKinds.get(value) === "array-map" || cells.get(value)?.integer === true || cells.get(value)?.kind === "repeat" || vectors.has(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind);
-    if (protocol === IReduce) return chunks.has(value) && !chunks.get(value).integer || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue");
-    if (protocol === IKVReduce) return vectors.has(value) && !mapEntries.has(value) || maps.has(value);
-    if (protocol === IPrintWithWriter || protocol === IHash || protocol === IEquiv) return ownedProtocolValue(value);
-    if (protocol === IMapEntry) return mapEntries.has(value);
-    if (protocol === IFind) return vectors.has(value) || (maps.has(value) && !recordTypes.has(value));
-    if (protocol === ISorted) return sortedComparators.has(value);
-    if (protocol === IChunkedSeq) return ["range", "chunked-cons"].includes(cells.get(value)?.kind) || views.get(value)?.kind === "chunked";
-    if (protocol === ICloneable) return cloneablePayload(value);
-    if (protocol === IVector) return vectors.has(value);
-    if (protocol === IMap) return maps.has(value);
-    if (protocol === ISet) return sets.has(value);
-    if (protocol === ICollection) return [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value));
-    if (protocol === IEmptyableCollection) return !recordTypes.has(value) && builtinCoreImplementation(ICollection, value);
-    if (protocol === IStack) return vectors.has(value) || cells.has(value) || queues.has(value);
-    if (protocol === IReversible) return vectors.has(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
-    if (protocol === IIterable) return builtinCoreImplementation(ICollection, value);
-    if (protocol === IComparable) return vectors.has(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
-    if (protocol === ISeqable) return seqableValue(value);
-    if (protocol === ISeq) return seqValue(value);
-    if (protocol === INext) return nextValue(value);
-    if (protocol === ISequential) return sequential(value);
-    if (protocol === ICounted) return countedValue(value);
-    if (protocol === IIndexed) return indexedValue(value);
-    if (protocol === ILookup) return vectors.has(value) || maps.has(value) || sets.has(value);
-    if (protocol === IAssociative) return vectors.has(value) || maps.has(value);
-    if (protocol === IMeta) return [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
-    if (protocol === IWithMeta) return [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
-    if (protocol === IAtom) return atoms.has(value) || !!directMethod(value, "IAtom", 0);
-    if (protocol === IPending) return ["repeat", "cycle", "iterate"].includes(cells.get(value)?.kind) || delays.has(value) || lazyValues.has(value);
-    if (protocol === IDeref) return delays.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value) || reducedValues.has(value);
-    if (protocol === IReset) return false;
-    if (protocol === ISwap) return false;
-    if (protocol === IVolatile) return volatiles.has(value);
-    if (protocol === IWatchable) return atoms.has(value);
-    return false;
-  }
+  //@unit builtinCoreImplementation requires: ASeq, aseqValue, associativeValue, atomValue,
+  //@ chunkedSeqValue, chunkValue, cloneablePayload, collectionValue, comparableValue, countedValue,
+  //@ derefValue, dropValue, editableValue, emptyableValue, findValue, Fn, fnValue, hashableValue,
+  //@ IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable,
+  //@ ICounted, IDeref, IDrop, IEditableCollection, IEmptyableCollection, IEquiv, IFind, IFn,
+  //@ ifnValue, IHash, IIndexed, IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta,
+  //@ IMultiFn, INamed, indexedValue, INext, Inst, instValue, IPending, IPrintWithWriter, IReduce,
+  //@ IReversible, ISeq, ISeqable, ISequential, ISet, ISorted, IStack, iterableValue,
+  //@ ITransientAssociative, ITransientCollection, ITransientMap, ITransientSet, ITransientVector,
+  //@ IUUID, IVector, IVolatile, IWatchable, IWithMeta, IWriter, kvReduceValue, listValue,
+  //@ lookupValue, mapEntryValue, mapValue, metaValue, multiFnValue, namedValue, nextValue,
+  //@ pendingValue, printableValue, reduceValue, reversibleValue, seqableValue, sequential,
+  //@ seqValue, setValue, sortedValue, stackValue, transientAssociativeValue, transientMapValue,
+  //@ transientSetValue, transientValue, transientVectorValue, uuidImplementation, vectorValue,
+  //@ volatileValue, watchableValue, withMetaValue, writerValue
+  function builtinCoreImplementation(protocol, value) { return !!nativeImplementations.get(protocol)?.(value); }
+  const nativeImplementations = new Map([[Inst, instValue], [IUUID, uuidImplementation], [ASeq, aseqValue], [INamed, namedValue], [IMultiFn, multiFnValue], [IFn, ifnValue], [IEditableCollection, editableValue], [ITransientCollection, transientValue], [ITransientAssociative, transientAssociativeValue], [ITransientVector, transientVectorValue], [ITransientMap, transientMapValue], [ITransientSet, transientSetValue], [Fn, fnValue], [IList, listValue], [IChunk, chunkValue], [IChunkedNext, chunkedSeqValue], [IDrop, dropValue], [IReduce, reduceValue], [IKVReduce, kvReduceValue], [IPrintWithWriter, printableValue], [IHash, hashableValue], [IEquiv, hashableValue], [IMapEntry, mapEntryValue], [IFind, findValue], [ISorted, sortedValue], [IChunkedSeq, chunkedSeqValue], [ICloneable, cloneablePayload], [IVector, vectorValue], [IMap, mapValue], [ISet, setValue], [ICollection, collectionValue], [IEmptyableCollection, emptyableValue], [IStack, stackValue], [IReversible, reversibleValue], [IIterable, iterableValue], [IComparable, comparableValue], [ISeqable, seqableValue], [ISeq, seqValue], [INext, nextValue], [ISequential, sequential], [ICounted, countedValue], [IIndexed, indexedValue], [ILookup, lookupValue], [IAssociative, associativeValue], [IMeta, metaValue], [IWithMeta, withMetaValue], [IAtom, atomValue], [IPending, pendingValue], [IDeref, derefValue], [IVolatile, volatileValue], [IWatchable, watchableValue], [IWriter, writerValue]]);
   //@unit metaProtocol requires: meta, metaSupported
   function metaProtocol(value) {
     if (!metaSupported(value)) throw new Error("No protocol method IMeta.-meta defined for this value");
     return meta(value);
   }
-  //@unit withMetaProtocol requires: withMeta, withMetaSupported
+  //@unit withMetaProtocol requires: collectionWithMeta, kindHooks, protocolHooks, withMetaSupported
   function withMetaProtocol(value, metadata) {
     if (!withMetaSupported(value)) throw new Error("No protocol method IWithMeta.-with-meta defined for this value");
-    return withMeta(value, metadata);
+    // A function here has metadata, or a protocol implementation.
+    return typeof value === "function" ? (protocolHooks.fnWithMeta ?? kindHooks.withMetaFn)(value, metadata) : collectionWithMeta(value, metadata);
   }
   //@unit preserveMeta requires: meta, metadataValues
   function preserveMeta(original, result) {
@@ -4302,7 +4442,7 @@
     metadataValues.set(result, metadata);
     return result;
   }
-  //@unit fnWithMeta.meta effect: fnWithMeta when: collectionWithMeta requires: fnWithMeta,
+  //@unit fnWithMeta.meta effect: fnWithMeta when: collectionWithMeta, withMetaProtocol requires: fnWithMeta,
   //@ kindHooks
   kindHooks.withMetaFn = fnWithMeta;
   //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
@@ -4713,21 +4853,21 @@
     if (isVector(value)) return withMeta(value, null);
     return into(vector(), value);
   }
-  //@unit concatTwo requires: chunkCons, chunkFirst, chunkRest, cons, first, IChunkedSeq,
-  //@ implementsProtocol, lazySequence, rest, seq
+  //@unit concatTwo requires: chunkCons, chunkedSeqValue, chunkFirst, chunkRest, cons, first,
+  //@ IChunkedSeq, lazySequence, protocolHooks, rest, seq
   function concatTwo(x, y) {
     return lazySequence(() => {
       const s = seq(x);
       if (s === null) return y;
-      return implementsProtocol(IChunkedSeq, s) ? chunkCons(chunkFirst(s), concatTwo(chunkRest(s), y)) : cons(first(s), concatTwo(rest(s), y));
+      return (protocolHooks.implementsProtocol?.(IChunkedSeq, s) ?? chunkedSeqValue(s)) ? chunkCons(chunkFirst(s), concatTwo(chunkRest(s), y)) : cons(first(s), concatTwo(rest(s), y));
     });
   }
-  //@unit concatMany requires: chunkCons, chunkFirst, chunkRest, cons, first, IChunkedSeq,
-  //@ implementsProtocol, lazySequence, next, rest, seq
+  //@unit concatMany requires: chunkCons, chunkedSeqValue, chunkFirst, chunkRest, cons, first,
+  //@ IChunkedSeq, lazySequence, next, protocolHooks, rest, seq
   function concatMany(current, remaining) {
     return lazySequence(() => {
       const s = seq(current);
-      if (s !== null) return implementsProtocol(IChunkedSeq, s) ? chunkCons(chunkFirst(s), concatMany(chunkRest(s), remaining)) : cons(first(s), concatMany(rest(s), remaining));
+      if (s !== null) return (protocolHooks.implementsProtocol?.(IChunkedSeq, s) ?? chunkedSeqValue(s)) ? chunkCons(chunkFirst(s), concatMany(chunkRest(s), remaining)) : cons(first(s), concatMany(rest(s), remaining));
       return remaining == null ? null : concatMany(first(remaining), next(remaining));
     });
   }
@@ -4751,6 +4891,9 @@
       return {value, done: false};
     }};
   }
+  //@unit es6Iterator.host effect: es6Iterator, installMethods, treeMapConstructor when: mapPrototype,
+  //@ vectorPrototype requires: es6Iterator, hostHooks
+  hostHooks.iterator = es6Iterator;
   //@unit es6EntriesIterator requires: es6Iterator, nth
   function es6EntriesIterator(value, setEntries = false) {
     const iterator = es6Iterator(value);
@@ -4760,10 +4903,13 @@
       return item;
     }};
   }
-  //@unit sequenceIterator requires: displayStr, IIterable, isSeqable, iteratorInit,
-  //@ iteratorProtocol, satisfies, SeqIter
+  //@unit es6EntriesIterator.host effect: es6EntriesIterator, installMethods, treeMapConstructor
+  //@ when: mapPrototype requires: es6EntriesIterator, hostHooks
+  hostHooks.entries = es6EntriesIterator;
+  //@unit sequenceIterator requires: displayStr, IIterable, isSeqable, iterableValue, iteratorInit,
+  //@ iteratorProtocol, protocolHooks, SeqIter
   function sequenceIterator(value) {
-    if (satisfies(IIterable, value)) return iteratorProtocol(value);
+    if (protocolHooks.satisfies?.(IIterable, value) ?? iterableValue(value)) return iteratorProtocol(value);
     if (value == null) return {hasNext() { return false; }, next() { return new Error("No such element"); }, remove() { return new Error("Unsupported operation"); }};
     if (typeof value === "string" || Array.isArray(value)) {
       let index = 0;
@@ -5420,9 +5566,10 @@
   function chunkFirst(value) { return chunkedFirstProtocol(value); }
   //@unit chunkRest requires: chunkedRestProtocol
   function chunkRest(value) { return chunkedRestProtocol(value); }
-  //@unit chunkNext requires: chunkedNextProtocol, chunkRest, IChunkedNext, implementsProtocol, seq
+  //@unit chunkNext requires: chunkedNextProtocol, chunkedSeqValue, chunkRest, IChunkedNext,
+  //@ protocolHooks, seq
   function chunkNext(value) {
-    return implementsProtocol(IChunkedNext, value) ? chunkedNextProtocol(value) : seq(chunkRest(value));
+    return (protocolHooks.implementsProtocol?.(IChunkedNext, value) ?? chunkedSeqValue(value)) ? chunkedNextProtocol(value) : seq(chunkRest(value));
   }
   //@unit ownedChunkFirst requires: arrayChunk, cells, chunks, forceRangeChunk,
   //@ publicCollectionSlots, views
@@ -5533,8 +5680,8 @@
       return s === null ? null : cons(first(s), take(n - 1, rest(s)));
     });
   }
-  //@unit drop requires: collectionArity, dropProtocol, emptyList, IDrop, implementsProtocol,
-  //@ invalidArity, lazySequence, numberArgument, reducingFunction, rest, seq, transform
+  //@unit drop requires: collectionArity, dropProtocol, dropValue, emptyList, IDrop, invalidArity,
+  //@ lazySequence, numberArgument, protocolHooks, reducingFunction, rest, seq, transform
   function drop(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
@@ -5543,12 +5690,12 @@
       return reducingFunction(rf, (result, input) => { const prior = remaining; remaining--; return prior > 0 ? result : rf.call(null, result, input); });
     });
     collectionArity("drop", arguments.length);
-    if (implementsProtocol(IDrop, coll)) return (n > 0 ? dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
+    if (protocolHooks.implementsProtocol?.(IDrop, coll) ?? dropValue(coll)) return (n > 0 ? dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
-  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkFirst, chunkRest, cons,
-  //@ count, first, IChunkedSeq, implementsProtocol, invalidArity, lazySequence, listFromArray,
-  //@ mapManySteps, nth, rest, seq, transform
+  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkedSeqValue, chunkFirst,
+  //@ chunkRest, cons, count, first, IChunkedSeq, invalidArity, lazySequence, listFromArray,
+  //@ mapManySteps, nth, protocolHooks, rest, seq, transform
   function mapSeq(fn, ...colls) {
     if (arguments.length === 0) return lazySequence(() => null);
     if (arguments.length === 1) return transform(rf => callable(2, {
@@ -5563,7 +5710,7 @@
       const sources = [];
       for (const coll of colls) { const s = seq(coll); sources.push(s); if (colls.length > 3 && s === null) return null; }
       if (sources.some(value => value === null)) return null;
-      if (sources.length === 1 && implementsProtocol(IChunkedSeq, sources[0])) {
+      if (sources.length === 1 && (protocolHooks.implementsProtocol?.(IChunkedSeq, sources[0]) ?? chunkedSeqValue(sources[0]))) {
         const chunk = chunkFirst(sources[0]), size = count(chunk), items = [];
         for (let i = 0; i < size; i++) items.push(fn.call(null, nth(chunk, i)));
         return chunkCons(arrayChunk(items), mapSeq(fn, chunkRest(sources[0])));
@@ -5578,13 +5725,13 @@
       return every(x => x, sources) ? cons(mapSeq(first, sources), mapManySteps(mapSeq(rest, sources))) : null;
     });
   }
-  //@unit indexedSequence requires: arrayChunk, chunkCons, chunkFirst, chunkRest, cons, count,
-  //@ first, IChunkedSeq, implementsProtocol, lazySequence, nth, rest, seq
+  //@unit indexedSequence requires: arrayChunk, chunkCons, chunkedSeqValue, chunkFirst, chunkRest,
+  //@ cons, count, first, IChunkedSeq, lazySequence, nth, protocolHooks, rest, seq
   function indexedSequence(fn, coll, index, keepOnly, indexed = true) {
     return lazySequence(() => {
       const s = seq(coll), at = index;
       if (s !== null) {
-        if (implementsProtocol(IChunkedSeq, s)) {
+        if (protocolHooks.implementsProtocol?.(IChunkedSeq, s) ?? chunkedSeqValue(s)) {
           const chunk = chunkFirst(s), size = count(chunk), values = [];
           for (let i = 0; i < size; i++) { const value = indexed ? fn.call(null, at + i, nth(chunk, i)) : fn.call(null, nth(chunk, i)); if (!keepOnly || value != null) values.push(value); }
           return chunkCons(arrayChunk(values), indexedSequence(fn, chunkRest(s), at + size, keepOnly, indexed));
@@ -5602,16 +5749,16 @@
   function keepIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, true); collectionArity("keep-indexed", arguments.length); return indexedSequence(fn, coll, 0, true); }
   //@unit keep requires: collectionArity, indexedSequence, indexedTransform
   function keep(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, false); collectionArity("keep", arguments.length); return indexedSequence(fn, coll, 0, true, false); }
-  //@unit filter requires: arrayChunk, chunkCons, chunkFirst, chunkRest, collectionArity, cons,
-  //@ count, first, IChunkedSeq, implementsProtocol, lazySequence, nth, reducingFunction, rest, seq,
-  //@ transform, truth
+  //@unit filter requires: arrayChunk, chunkCons, chunkedSeqValue, chunkFirst, chunkRest,
+  //@ collectionArity, cons, count, first, IChunkedSeq, lazySequence, nth, protocolHooks,
+  //@ reducingFunction, rest, seq, transform, truth
   function filter(pred, coll) {
     if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : result));
     collectionArity("filter", arguments.length);
     return lazySequence(() => {
       const s = seq(coll);
       if (s !== null) {
-        if (implementsProtocol(IChunkedSeq, s)) {
+        if (protocolHooks.implementsProtocol?.(IChunkedSeq, s) ?? chunkedSeqValue(s)) {
           const chunk = chunkFirst(s), size = count(chunk), values = [];
           for (let i = 0; i < size; i++) { const value = nth(chunk, i); if (truth(pred.call(null, value))) values.push(value); }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
@@ -6004,20 +6151,20 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit into requires: conj, conjBang, conjBangProtocol, conjProtocol, IEditableCollection,
-  //@ implementsProtocol, invalidArity, meta, persistentBang, reduce, transduce, transient, vector,
-  //@ withMetaProtocol
+  //@unit into requires: conj, conjBang, conjBangProtocol, conjProtocol, editableValue,
+  //@ IEditableCollection, invalidArity, meta, persistentBang, protocolHooks, reduce, transduce,
+  //@ transient, vector, withMetaProtocol
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
       case 1: return to;
       case 2: {
-        if (implementsProtocol(IEditableCollection, to))
+        if (protocolHooks.implementsProtocol?.(IEditableCollection, to) ?? editableValue(to))
           return withMetaProtocol(persistentBang(reduce(conjBangProtocol, transient(to), from)), meta(to));
         return reduce(to == null ? conj : conjProtocol, to, from);
       }
       case 3: {
-        const editable = implementsProtocol(IEditableCollection, to), metadata = editable ? meta(to) : null;
+        const editable = protocolHooks.implementsProtocol?.(IEditableCollection, to) ?? editableValue(to), metadata = editable ? meta(to) : null;
         const rf = !editable ? conj : function (...args) {
           if (args.length === 1) return withMetaProtocol(persistentBang(args[0]), metadata);
           if (args.length === 2) return conjBang(args[0], args[1]);
@@ -6101,8 +6248,8 @@
     if (coreCells.printFn == null) throw new Error("No *print-fn* fn set for evaluation environment");
     coreCells.printFn.call(null, text); return null;
   }
-  //@unit printOption requires: coreCells, get, keyword
-  function printOption(options, name, root) { return options == null ? coreCells[root] : get(options, keyword(null, name)); }
+  //@unit printOption requires: coreCells, printHooks
+  function printOption(options, name, root) { return options == null ? coreCells[root] : printHooks.option(options, name); }
   //@unit flush requires: invalidArity
   function flush() { if (arguments.length !== 0) return invalidArity(arguments.length); return null; }
   //@unit newline requires: coreCells, invalidArity, printOption, stringPrint, truth
@@ -6149,10 +6296,11 @@
     const buffer = {text: "", append(text) { this.text += text; return this; }};
     return {buffer, writer: new StringBufferWriter(buffer)};
   }
-  //@unit StringBufferWriter
+  //@unit StringBufferWriter requires: stringBufferWriters
   function StringBufferWriter(sb) {
     const writer = Object.create(StringBufferWriter.prototype);
     writer.sb = sb;
+    stringBufferWriters.add(writer);
     return writer;
   }
   //@unit prStrStar requires: flushWriter, prWriter, stringWriter
@@ -6164,15 +6312,25 @@
     flushWriter(writer);
     return buffer.text;
   }
-  //@unit printMetaQ requires: IMeta, implementsProtocol, invalidArity, meta, printOption, truth
+  //@unit printMetaQ requires: invalidArity, printsMeta
   function printMetaQ(options, value) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
-    return truth(printOption(options, "meta", "printMeta")) && implementsProtocol(IMeta, value) && meta(value) != null;
+    return printsMeta(options, value);
   }
-  //@unit prSequentialWriter requires: coreCells, first, get, invalidArity, keyword, next,
-  //@ printOption, seq, truth, write
+  //@unit printsMeta requires: IMeta, meta, metaValue, printOption, protocolHooks, truth
+  function printsMeta(options, value) {
+    return truth(printOption(options, "meta", "printMeta")) && (protocolHooks.implementsProtocol?.(IMeta, value) ?? metaValue(value)) && meta(value) != null;
+  }
+  //@unit prSequentialWriter requires: invalidArity, printSequential
   function prSequentialWriter(writer, printOne, begin, separator, end, options, coll) {
     if (arguments.length !== 7) return invalidArity(arguments.length);
+    return printSequential(writer, printOne, begin, separator, end, options, coll);
+  }
+  //@unit printSequential requires: coreCells, first, next, printHooks, printOption, seq, truth,
+  //@ write
+  // The printer's own entries pass on the options they receive (see
+  // `printOptions`).
+  function printSequential(writer, printOne, begin, separator, end, options, coll) {
     const saved = coreCells.printLevel;
     coreCells.printLevel = saved == null ? null : saved - 1;
     try {
@@ -6186,20 +6344,20 @@
       }
       if (current != null) {
         if (printed) write(writer, separator);
-        const marker = get(options, keyword(null, "more-marker")); write(writer, truth(marker) ? marker : "...");
+        const marker = options == null ? null : printHooks.option(options, "more-marker"); write(writer, truth(marker) ? marker : "...");
       }
       return write(writer, end);
     } finally { coreCells.printLevel = saved; }
   }
-  //@unit printMapEntries requires: coreCells, freshKeyword, keywords, name, printWriter,
-  //@ prSequentialWriter, symbol, symbols, truth, write
+  //@unit printMapEntries requires: coreCells, freshKeyword, keywords, name, printSequential,
+  //@ printWriter, symbol, symbols, truth, write
   function printMapEntries(entries, writer, options, prefix = "") {
     const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
     const ns = truth(coreCells.printNamespaceMaps) && names.length && names[0]?.namespace;
     const lifted = !prefix && ns && names.every(name => name?.namespace === ns);
     // JavaScript object tags precede the map printer's depth suppression.
     if (prefix) write(writer, prefix);
-    return prSequentialWriter(writer, (entry, target, opts) => {
+    return printSequential(writer, (entry, target, opts) => {
       const key = lifted ? keywords.has(entry.key) ? freshKeyword(null, name(entry.key)) : symbol(null, name(entry.key)) : entry.key;
       printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
     }, (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
@@ -6215,20 +6373,18 @@
     collection: value => Object.prototype.toString.call(value),
     text: value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value)
   };
-  //@unit printWriter requires: assoc, get, keyword, printWriterImpl, truth
+  //@unit printWriter requires: printHooks, printWriterImpl
   function printWriter(value, writer, options) {
-    const alt = get(options, keyword(null, "alt-impl"));
-    if (truth(alt)) return alt.call(null, value, writer, assoc(options, keyword(null, "fallback-impl"), printWriterImpl));
-    return printWriterImpl(value, writer, options);
+    return options == null ? printWriterImpl(value, writer, options) : printHooks.optionsWriter(value, writer, options);
   }
   //@unit printWriterImpl requires: atoms, coreCells, delays, ExceptionInfo, freshKeyword, keywords,
-  //@ maps, mapTraversal, meta, printMapEntries, printMetaQ, printNumber, printOption, printWriter,
-  //@ prSequentialWriter, publicMethod, queues, sequential, sets, setTraversal, symbols, transients,
-  //@ truth, typeNames, uuids, vars, vectors, volatiles, write
+  //@ maps, mapTraversal, meta, printMapEntries, printNumber, printOption, printSequential,
+  //@ printsMeta, printWriter, protocolHooks, queues, sequential, sets, setTraversal, symbols,
+  //@ transients, truth, typeNames, uuids, vars, vectors, volatiles, write
   function printWriterImpl(value, writer, options, skipMetadata = false) {
     if (value == null) return write(writer, "nil");
-    if (!skipMetadata && printMetaQ(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
-    const writerMethod = publicMethod(value, "IPrintWithWriter/-pr-writer", 3);
+    if (!skipMetadata && printsMeta(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
+    const writerMethod = protocolHooks.publicMethod?.(value, "IPrintWithWriter/-pr-writer", 3);
     if (writerMethod) return writerMethod.call(value, value, writer, options);
     const readable = truth(printOption(options, "readably", "printReadably"));
     if (typeof value === "string") {
@@ -6258,30 +6414,38 @@
     if (value instanceof RegExp) return write(writer, '#"' + value.source + '"');
     if (sequential(value) || queues.has(value)) {
       const [start, end] = queues.has(value) ? ["#queue [", "]"] : vectors.has(value) ? ["[", "]"] : ["(", ")"];
-      return prSequentialWriter(writer, printWriter, start, " ", end, options, value);
+      return printSequential(writer, printWriter, start, " ", end, options, value);
     }
     const entries = maps.get(value);
     if (entries) return printMapEntries(mapTraversal(value), writer, options);
     const members = sets.get(value);
-    if (members) return prSequentialWriter(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value));
-    if (Array.isArray(value)) return prSequentialWriter(writer, printWriter, "#js [", " ", "]", options, value);
+    if (members) return printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value));
+    if (Array.isArray(value)) return printSequential(writer, printWriter, "#js [", " ", "]", options, value);
     if (typeof value === "object" && Object.getPrototypeOf(value) === null) return write(writer, "#object[Object]");
     if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(k => ({key: /^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? freshKeyword(null, k) : k, value: value[k]})), writer, options, "#js ");
     if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
-  //@unit prSeqWriter requires: first, invalidArity, next, printWriter, write
+  //@unit prSeqWriter requires: invalidArity, printSeq
   function prSeqWriter(values, writer, options) {
     if (arguments.length !== 3) return invalidArity(arguments.length);
+    return printSeq(values, writer, options);
+  }
+  //@unit printSeq requires: first, next, printWriter, write
+  function printSeq(values, writer, options) {
     printWriter(first(values), writer, options);
     for (let s = next(values); s != null; s = next(s)) { write(writer, " "); printWriter(first(s), writer, options); }
     return null;
   }
-  //@unit prStrWithOpts requires: flushWriter, invalidArity, prSeqWriter, seq, stringWriter
+  //@unit prStrWithOpts requires: invalidArity, printText
   function prStrWithOpts(values, options) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
+    return printText(values, options);
+  }
+  //@unit printText requires: flushWriter, printSeq, seq, stringWriter
+  function printText(values, options) {
     if (seq(values) == null) return "";
-    const {buffer, writer} = stringWriter(); prSeqWriter(values, writer, options); flushWriter(writer); return buffer.text;
+    const {buffer, writer} = stringWriter(); printSeq(values, writer, options); flushWriter(writer); return buffer.text;
   }
   //@unit prnStrWithOpts requires: invalidArity, prStrWithOpts
   function prnStrWithOpts(values, options) { if (arguments.length !== 2) return invalidArity(arguments.length); return prStrWithOpts(values, options) + "\n"; }
@@ -6292,21 +6456,32 @@
     finally { coreCells.printReadably = saved; }
   }
   //@unit printWriterImpl.install effect: printWriterImpl requires: ExceptionInfo, print,
-  //@ printHooks, printWriter, prSequentialWriter, truth
+  //@ printHooks, printSequential, printWriter, truth
   // Only a program that can print has collection and ExceptionInfo `toString`.
   Object.assign(printHooks, {
     collection: value => print(value, true),
     text: value => print(value, false),
     writer: printWriter,
-    sequentialWriter: prSequentialWriter
+    sequentialWriter: printSequential
   });
   ExceptionInfo.prototype.toString = function () {
     return "#error {:message " + print(this.message, true)
       + (truth(this.data) ? ", :data " + print(this.data, true) : "")
       + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
   };
-  //@unit prStr requires: prStrWithOpts
-  function prStr(...values) { return prStrWithOpts(values, null); }
+  //@unit prStr requires: printText
+  function prStr(...values) { return printText(values, null); }
+  //@unit printOptions effect: printMetaQ, prSequentialWriter, prSeqWriter, prStrWithOpts, prWriter
+  //@ requires: get, keyword, printHooks
+  // Options other than nil reach the printer only from these entries.
+  printHooks.option = (options, name) => get(options, keyword(null, name));
+  //@unit printOptions.writer effect: printMetaQ, prSequentialWriter, prSeqWriter, prStrWithOpts,
+  //@ prWriter when: printWriter requires: assoc, get, keyword, printHooks, printWriterImpl, truth
+  printHooks.optionsWriter = (value, writer, options) => {
+    const alt = get(options, keyword(null, "alt-impl"));
+    if (truth(alt)) return alt.call(null, value, writer, assoc(options, keyword(null, "fallback-impl"), printWriterImpl));
+    return printWriterImpl(value, writer, options);
+  };
   //@unit printForHost requires: prStr
   // The Rust display API returns UTF-8. Keep canonical JS printing lossless,
   // but represent isolated surrogate units as escapes at this text boundary.
@@ -6314,8 +6489,13 @@
     return prStr(value).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
       units => units.length === 2 ? units : "\\u" + units.charCodeAt(0).toString(16).padStart(4, "0"));
   }
-  //@unit str requires: maps, print, recordTypes, sequential, sets
-  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? print(value, true) : String(value)).join(""); }
+  //@unit str requires: kindHooks, maps, recordTypes, sequential, sets
+  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
+  //@unit str.collections effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
+  //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
+  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, makeMap,
+  //@ treeMapConstructor, makeType, makeSet, treeSetConstructor when: str requires: kindHooks, print
+  kindHooks.strCollection = value => print(value, true);
   //@unit displayStr
   // `str` of one value for error messages, through `toString` for collections.
   const displayStr = value => value == null ? "" : String(value);
@@ -6492,20 +6672,20 @@
   function jsKeys(object) { const keys = []; for (const key in object) keys.push(key); return keys; }
   //@unit jsInvoke
   function jsInvoke(object, key, ...args) { return object[key].apply(object, args); }
-  //@unit keyToJs requires: cljToJs, encodeJsProtocol, IEncodeJS, keywords, prStr, satisfies,
+  //@unit keyToJs requires: cljToJs, encodeJsProtocol, IEncodeJS, keywords, protocolHooks, prStr,
   //@ symbols
   function keyToJs(key, primitive = cljToJs) {
-    if (satisfies(IEncodeJS, key)) return encodeJsProtocol(key);
+    if (protocolHooks.satisfies?.(IEncodeJS, key)) return encodeJsProtocol(key);
     return typeof key === "string" || typeof key === "number" || keywords.has(key) || symbols.has(key) ? primitive.call(null, key) : prStr(key);
   }
   //@unit cljToJs requires: encodeJsProtocol, first, get, IEncodeJS, isColl, isMap, keyToJs,
-  //@ keyword, keywords, listFromArray, mapSeq, name, next, nth, satisfies, seq, seqToMap, str,
+  //@ keyword, keywords, listFromArray, mapSeq, name, next, nth, protocolHooks, seq, seqToMap, str,
   //@ symbols, toArray
   function cljToJs(value, ...options) {
     const opts = seqToMap(listFromArray(options)), keywordFn = get(opts, keyword(null, "keyword-fn"), name);
     const convert = value => {
       if (value == null) return null;
-      if (satisfies(IEncodeJS, value)) return encodeJsProtocol(value);
+      if (protocolHooks.satisfies?.(IEncodeJS, value)) return encodeJsProtocol(value);
       if (keywords.has(value)) return keywordFn.call(null, value);
       if (symbols.has(value)) return str(value);
       if (isMap(value)) {
@@ -6520,12 +6700,12 @@
   }
   //@unit jsToClj requires: arrayMap, assoc, doall, empty, encodeClojureProtocol, get,
   //@ IEncodeClojure, into, isColl, isMapEntry, isSeq, keyword, keywordCore, listFromArray,
-  //@ mapEntry, mapFromArray, mapSeq, nth, satisfies, seqToMap, truth, vectorFromArray
+  //@ mapEntry, mapFromArray, mapSeq, nth, protocolHooks, seqToMap, truth, vectorFromArray
   function jsToClj(value, ...options) {
     if (arguments.length === 1) options = [keyword(null, "keywordize-keys"), false];
     const opts = seqToMap(listFromArray(options)), keywordize = truth(get(opts, keyword(null, "keywordize-keys")));
     const convert = value => {
-      if (satisfies(IEncodeClojure, value)) return encodeClojureProtocol(value, arrayMap(...options));
+      if (protocolHooks.satisfies?.(IEncodeClojure, value)) return encodeClojureProtocol(value, arrayMap(...options));
       if (isSeq(value)) return doall(mapSeq(convert, value));
       if (isMapEntry(value)) return mapEntry(convert(nth(value, 0)), convert(nth(value, 1)));
       if (isColl(value)) return into(empty(value), mapSeq(convert, value));
@@ -6571,35 +6751,32 @@
     return jsSet(array, index, value);
   }
 
-  //@unit coreMethod mutator requires: builtin, builtinCoreImplementation, coreDispatchers,
-  //@ coreProtocolsByName, ICounted, IEquiv, IHash, invalidArity
-  function coreMethod(key, arities, fallback) {
+  //@unit coreMethod mutator requires: coreDispatchers, invalidArity, protocolHooks
+  // A protocol implementation (`protocolHooks`), else `fallback` where the
+  // protocol's own test (`countedValue`) answers it.
+  function coreMethod(key, arities, fallback, native) {
     const dispatch = function (value, ...args) {
       const arity = arities.length === 1 ? arities[0] : arguments.length;
       if (!arities.includes(arity)) return invalidArity(arguments.length);
       if (arities.length === 1) args = args.slice(0, arity - 1);
-      const method = builtin(value, key, arity);
+      const method = protocolHooks.builtin?.(value, key, arity);
       if (method != null) return method.call(value, value, ...args);
-      const protocol = coreProtocolsByName.get(key.split("/")[0]);
-      if (builtinCoreImplementation(protocol, value) || protocol === IHash || protocol === IEquiv || (protocol === ICounted && value == null)) return fallback(value, ...args);
+      if (native(value)) return fallback(value, ...args);
       throw new Error("No protocol method " + key + " defined for this value");
     };
     coreDispatchers.set(key, dispatch);
     return dispatch;
   }
-  //@unit write effect requires: coreMethod
-  const write = coreMethod("IWriter/-write", [2], () => null);
-  //@unit flushWriter effect requires: coreMethod
-  const flushWriter = coreMethod("IWriter/-flush", [1], () => null);
-  //@unit StringBufferWriter.members effect: StringBufferWriter requires: installMethods,
-  //@ StringBufferWriter
-  installMethods(StringBufferWriter.prototype, [
-    ["IWriter", 0, null],
-    ["IWriter/-write", 2, (writer, text) => writer.sb.append(text)],
-    ["IWriter/-flush", 1, () => null]
-  ]);
-  //@unit prWriter effect requires: coreMethod, printWriterImpl
-  const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true));
+  //@unit everyValue
+  const everyValue = () => true;
+  //@unit noValue
+  const noValue = () => false;
+  //@unit write effect requires: coreMethod, writerValue
+  const write = coreMethod("IWriter/-write", [2], (writer, text) => writer.sb.append(text), writerValue);
+  //@unit flushWriter effect requires: coreMethod, writerValue
+  const flushWriter = coreMethod("IWriter/-flush", [1], () => null, writerValue);
+  //@unit prWriter effect requires: coreMethod, printableValue, printWriterImpl
+  const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true), printableValue);
   //@unit clone effect requires: canonicalVectorRoots, cells, cloneablePayload, constructorHashes,
   //@ coreMethod, IntegerRangeValue, mapEntries, mapKinds, meta, metadataValues, protocolStores,
   //@ rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources, treeRoots, treeSetMaps
@@ -6614,13 +6791,14 @@
     for (const store of [...protocolStores, treeRoots, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
     if (mapEntries.has(value)) mapEntries.add(result);
     return result;
-  });
+  }, cloneablePayload);
   //@unit indexedNth requires: missing, nth, transientNth, transients
   // The `-nth` of the runtime's indexed values.
   function indexedNth(value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }
-  //@unit seqProtocol effect requires: contains, coreMethod, count, first, get, indexedNth, next,
-  //@ rest, seq
-  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq), firstProtocol = coreMethod("ISeq/-first", [1], first), restProtocol = coreMethod("ISeq/-rest", [1], rest), nextProtocol = coreMethod("INext/-next", [1], next), countProtocol = coreMethod("ICounted/-count", [1], count), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], indexedNth), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains);
+  //@unit seqProtocol effect requires: associativeValue, contains, coreMethod, count, countedValue,
+  //@ first, get, indexedNth, indexedValue, lookupValue, next, nextValue, rest, seq, seqableValue,
+  //@ seqValue
+  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq, seqableValue), firstProtocol = coreMethod("ISeq/-first", [1], first, seqValue), restProtocol = coreMethod("ISeq/-rest", [1], rest, seqValue), nextProtocol = coreMethod("INext/-next", [1], next, nextValue), countProtocol = coreMethod("ICounted/-count", [1], count, value => value == null || countedValue(value)), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], indexedNth, indexedValue), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get, lookupValue), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains, associativeValue);
   //@unit publicFields mutator requires: constructorHashes, ownedProtocolValue
   // The upstream deftype fields; `read` answers all but `meta` (from `meta`)
   // and the hash, and `write` sets a mutable field other than the hash.
@@ -6656,12 +6834,12 @@
     state[field === "chunk" ? "chunk" : "tail"] = newValue;
     rangeChunks.set(c, state);
   }
-  //@unit slotField requires: count, missing, publicCollectionSlots
+  //@unit slotField requires: missing, publicCollectionSlots
   // A field a positional constructor supplied, else the count, else `missing`.
-  function slotField(value, field) {
+  function slotField(value, field, counted) {
     const slots = publicCollectionSlots.get(value);
     if (slots && field in slots) return slots[field];
-    return field === "cnt" || field === "count" ? count(value) : missing;
+    return field === "cnt" || field === "count" ? counted(value) : missing;
   }
   //@unit rangeField requires: cells, rangeChunks
   function rangeField(value, field) {
@@ -6776,9 +6954,10 @@
     return field === "f" ? c.fn : field === "prev-seed" ? c.previous : c.state[field === "seed" ? "value" : "following"];
   }, meta, cellStateField);
   //@unit PersistentVectorValue.members effect: PersistentVectorValue requires: canonicalVectorRoots,
-  //@ meta, missing, PersistentVectorValue, publicFields, slotField, vectorRoots, vectors
+  //@ hostHooks, meta, missing, PersistentVectorValue, protocolHooks, publicFields, slotField,
+  //@ vectorCount, vectorRoots, vectors
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
     const items = vectors.get(value), tailOffset = items.length < 32 ? 0 : ((items.length - 1) >>> 5) << 5;
     if (field === "tail") return items.slice(tailOffset);
@@ -6791,43 +6970,44 @@
   //@unit SubvecValue.members effect: SubvecValue requires: count, meta, missing, publicFields,
   //@ slotField, subvecSources, SubvecValue
   publicFields(SubvecValue, ["meta", "start", "end", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "start" ? 0 : count(value);
   }, meta);
   Object.defineProperty(SubvecValue.prototype, "v", {get() { return subvecSources.get(this); }});
-  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, meta, missing,
-  //@ publicFields, seqIndexes, seqMethods, slotField, vectorFromArray, views
+  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, count, meta,
+  //@ missing, publicFields, seqIndexes, seqMethods, slotField, vectorFromArray, views
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, count);
     if (slot !== missing) return slot;
     const v = views.get(value);
     return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : vectorFromArray(v.storage);
   }, meta);
   seqIndexes(ChunkedSeqValue);
   ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: meta, missing,
+  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: count, meta, missing,
   //@ PersistentQueueValue, publicFields, queues, seq, seqMethods, slotField, vector
   publicFields(PersistentQueueValue, ["meta", "count", "front", "rear", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "front" ? seq(queues.get(value)) : vector();
   }, meta);
   PersistentQueueValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentArrayMapValue.members effect: PersistentArrayMapValue requires: maps, meta,
-  //@ missing, PersistentArrayMapValue, publicFields, slotField
+  //@unit PersistentArrayMapValue.members effect: PersistentArrayMapValue requires: hostHooks,
+  //@ mapCount, maps, meta, missing, PersistentArrayMapValue, protocolHooks, publicFields, slotField
   publicFields(PersistentArrayMapValue, ["meta", "cnt", "arr", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
     return slot !== missing ? slot : maps.get(value).flatMap(e => [e.key, e.value]);
   }, meta);
   //@unit PersistentHashMapValue.members effect: PersistentHashMapValue requires: contains, get,
-  //@ meta, missing, PersistentHashMapValue, publicFields, slotField
+  //@ hostHooks, mapCount, meta, missing, PersistentHashMapValue, protocolHooks, publicFields,
+  //@ slotField
   publicFields(PersistentHashMapValue, ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
     return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
   }, meta);
-  //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: mapFromArray,
-  //@ meta, missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
+  //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: count,
+  //@ mapFromArray, meta, missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
   publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, count);
     return slot !== missing ? slot : mapFromArray(sets.get(value).flatMap(e => [e.key, null]), setKinds.get(value));
   }, meta);
   //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, meta,
@@ -6849,9 +7029,9 @@
   publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField, meta);
   seqIndexes(IntegerRangeValue);
   IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit treeMapConstructor.members effect: treeMapConstructor requires: meta, publicFields,
+  //@unit treeMapConstructor.members effect: treeMapConstructor requires: count, meta, publicFields,
   //@ publicTree, slotField, sortedComparators, treeMapConstructor
-  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field), meta);
+  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field, count), meta);
   Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return sortedComparators.get(this); }});
   //@unit treeSetConstructor.members effect: treeSetConstructor requires: makeMap, meta,
   //@ publicCollectionSlots, publicFields, sets, sortedComparators, treeMapConstructor,
@@ -6862,10 +7042,10 @@
     if (!treeSetMaps.has(value)) treeSetMaps.set(value, makeMap(treeMapConstructor, sets.get(value).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", sortedComparators.get(value)));
     return treeSetMaps.get(value);
   }, meta);
-  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: meta, missing,
-  //@ publicFields, seqMethods, slotField, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: count, meta,
+  //@ missing, publicFields, seqMethods, slotField, treeMapSeqConstructor
   publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"], (value, field) => {
-    const slot = slotField(value, field);
+    const slot = slotField(value, field, count);
     return slot !== missing ? slot : undefined;
   }, meta);
   treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
@@ -6945,8 +7125,8 @@
   for (const [field, key] of Object.entries({arr: "array", off: "offset", end: "end"})) Object.defineProperty(arrayChunk.prototype, field, {
     configurable: true, get() { return chunks.get(this)[key]; }, set(value) { chunks.get(this)[key] = value; }
   });
-  //@unit realized effect requires: cells, coreMethod, delays, lazyValues, truth
-  const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk));
+  //@unit realized effect requires: cells, coreMethod, delays, lazyValues, pendingValue, truth
+  const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk), pendingValue);
   //@unit ListValue.statics effect: ListValue requires: emptyList, ListValue
   ListValue.EMPTY = emptyList;
   //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue requires: makeSet,
@@ -6998,47 +7178,48 @@
     readerCurrentInputValue: null, currentNs: null, assertions: true,
     hostClock: defaultHostClock, hostRandom: defaultHostRandom, execTapFn: defaultTapSchedule,
     rand: hostRand, flush};
-  //@unit removeAllMethods effect requires: coreMethod, resetMulti
+  //@unit removeAllMethods effect requires: coreMethod, multiFnValue, resetMulti
   // Core operations without a function of their own, one unit each.
-  const removeAllMethods = coreMethod("IMultiFn/-reset", [1], resetMulti);
-  //@unit addMethodProtocol effect requires: addMethod, coreMethod
-  const addMethodProtocol = coreMethod("IMultiFn/-add-method", [3], addMethod);
-  //@unit removeMethodProtocol effect requires: coreMethod, removeMethod
-  const removeMethodProtocol = coreMethod("IMultiFn/-remove-method", [2], removeMethod);
-  //@unit preferMethodProtocol effect requires: coreMethod, preferMethod
-  const preferMethodProtocol = coreMethod("IMultiFn/-prefer-method", [3], preferMethod);
-  //@unit getMethodProtocol effect requires: coreMethod, getMethod
-  const getMethodProtocol = coreMethod("IMultiFn/-get-method", [2], getMethod);
-  //@unit methods effect requires: coreMethod, demandMulti, deref
-  const methods = coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); });
-  //@unit prefers effect requires: coreMethod, demandMulti, deref
-  const prefers = coreMethod("IMultiFn/-prefers", [1], mf => { demandMulti(mf); return deref(mf.prefer_table); });
-  //@unit defaultDispatchVal effect requires: coreMethod
-  const defaultDispatchVal = coreMethod("IMultiFn/-default-dispatch-val", [1], mf => mf.default_dispatch_val);
-  //@unit dispatchFn effect requires: coreMethod
-  const dispatchFn = coreMethod("IMultiFn/-dispatch-fn", [1], mf => mf.dispatch_fn);
-  //@unit asTransientProtocol effect requires: asTransient, coreMethod
-  const asTransientProtocol = coreMethod("IEditableCollection/-as-transient", [1], asTransient);
-  //@unit persistentBangProtocol effect requires: coreMethod, persistTransient
-  const persistentBangProtocol = coreMethod("ITransientCollection/-persistent!", [1], persistTransient);
-  //@unit conjBangProtocol effect requires: conjTransient, coreMethod
-  const conjBangProtocol = coreMethod("ITransientCollection/-conj!", [2], conjTransient);
-  //@unit assocBangProtocol effect requires: assocTransient, coreMethod
-  const assocBangProtocol = coreMethod("ITransientAssociative/-assoc!", [3], assocTransient);
-  //@unit assocNBangProtocol effect requires: assocTransient, coreMethod
-  const assocNBangProtocol = coreMethod("ITransientVector/-assoc-n!", [3], (value, index, item) => assocTransient(value, index, item, true));
-  //@unit dissocBangProtocol effect requires: coreMethod, removeTransient
-  const dissocBangProtocol = coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!"));
-  //@unit disjoinBangProtocol effect requires: coreMethod, removeTransient
-  const disjoinBangProtocol = coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!"));
-  //@unit popBangProtocol effect requires: coreMethod, popTransient
-  const popBangProtocol = coreMethod("ITransientVector/-pop!", [1], popTransient);
-  //@unit chunkedNextProtocol effect requires: cells, coreMethod, ownedChunkRest, seq
-  const chunkedNextProtocol = coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value)));
-  //@unit dropProtocol effect requires: coreMethod, dropOwned
-  const dropProtocol = coreMethod("IDrop/-drop", [2], dropOwned);
-  //@unit dropFirstProtocol effect requires: arrayChunk, chunks, coreMethod, count
-  const dropFirstProtocol = coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; });
+  const removeAllMethods = coreMethod("IMultiFn/-reset", [1], resetMulti, multiFnValue);
+  //@unit addMethodProtocol effect requires: addMethod, coreMethod, multiFnValue
+  const addMethodProtocol = coreMethod("IMultiFn/-add-method", [3], addMethod, multiFnValue);
+  //@unit removeMethodProtocol effect requires: coreMethod, multiFnValue, removeMethod
+  const removeMethodProtocol = coreMethod("IMultiFn/-remove-method", [2], removeMethod, multiFnValue);
+  //@unit preferMethodProtocol effect requires: coreMethod, multiFnValue, preferMethod
+  const preferMethodProtocol = coreMethod("IMultiFn/-prefer-method", [3], preferMethod, multiFnValue);
+  //@unit getMethodProtocol effect requires: coreMethod, getMethod, multiFnValue
+  const getMethodProtocol = coreMethod("IMultiFn/-get-method", [2], getMethod, multiFnValue);
+  //@unit methods effect requires: coreMethod, demandMulti, deref, multiFnValue
+  const methods = coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); }, multiFnValue);
+  //@unit prefers effect requires: coreMethod, demandMulti, deref, multiFnValue
+  const prefers = coreMethod("IMultiFn/-prefers", [1], mf => { demandMulti(mf); return deref(mf.prefer_table); }, multiFnValue);
+  //@unit defaultDispatchVal effect requires: coreMethod, multiFnValue
+  const defaultDispatchVal = coreMethod("IMultiFn/-default-dispatch-val", [1], mf => mf.default_dispatch_val, multiFnValue);
+  //@unit dispatchFn effect requires: coreMethod, multiFnValue
+  const dispatchFn = coreMethod("IMultiFn/-dispatch-fn", [1], mf => mf.dispatch_fn, multiFnValue);
+  //@unit asTransientProtocol effect requires: asTransient, coreMethod, editableValue
+  const asTransientProtocol = coreMethod("IEditableCollection/-as-transient", [1], asTransient, editableValue);
+  //@unit persistentBangProtocol effect requires: coreMethod, persistTransient, transientValue
+  const persistentBangProtocol = coreMethod("ITransientCollection/-persistent!", [1], persistTransient, transientValue);
+  //@unit conjBangProtocol effect requires: conjTransient, coreMethod, transientValue
+  const conjBangProtocol = coreMethod("ITransientCollection/-conj!", [2], conjTransient, transientValue);
+  //@unit assocBangProtocol effect requires: assocTransient, coreMethod, transientAssociativeValue
+  const assocBangProtocol = coreMethod("ITransientAssociative/-assoc!", [3], assocTransient, transientAssociativeValue);
+  //@unit assocNBangProtocol effect requires: assocTransient, coreMethod, transientVectorValue
+  const assocNBangProtocol = coreMethod("ITransientVector/-assoc-n!", [3], (value, index, item) => assocTransient(value, index, item, true), transientVectorValue);
+  //@unit dissocBangProtocol effect requires: coreMethod, removeTransient, transientMapValue
+  const dissocBangProtocol = coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!"), transientMapValue);
+  //@unit disjoinBangProtocol effect requires: coreMethod, removeTransient, transientSetValue
+  const disjoinBangProtocol = coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!"), transientSetValue);
+  //@unit popBangProtocol effect requires: coreMethod, popTransient, transientVectorValue
+  const popBangProtocol = coreMethod("ITransientVector/-pop!", [1], popTransient, transientVectorValue);
+  //@unit chunkedNextProtocol effect requires: cells, chunkedSeqValue, coreMethod, ownedChunkRest,
+  //@ seq
+  const chunkedNextProtocol = coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value)), chunkedSeqValue);
+  //@unit dropProtocol effect requires: coreMethod, dropOwned, dropValue
+  const dropProtocol = coreMethod("IDrop/-drop", [2], dropOwned, dropValue);
+  //@unit dropFirstProtocol effect requires: arrayChunk, chunks, chunkValue, coreMethod, count
+  const dropFirstProtocol = coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; }, chunkValue);
   //@unit second requires: first, next
   const second = x => first(next(x));
   //@unit ffirst requires: first
@@ -7063,14 +7244,14 @@
   const run = (proc, coll) => { reduce((_x, value) => proc.call(null, value), null, coll); return null; };
   //@unit isUri
   const isUri = value => typeof globalThis.goog?.Uri === "function" && value instanceof globalThis.goog.Uri;
-  //@unit isIterable requires: IIterable, satisfies
-  const isIterable = value => satisfies(IIterable, value);
+  //@unit isIterable requires: IIterable, iterableValue, protocolHooks
+  const isIterable = value => protocolHooks.satisfies?.(IIterable, value) ?? iterableValue(value);
   //@unit writeAll requires: write
   const writeAll = (writer, ...texts) => { for (const text of texts) write(writer, text); return null; };
-  //@unit keyProtocol effect requires: coreMethod, entryKey
-  const keyProtocol = coreMethod("IMapEntry/-key", [1], entryKey);
-  //@unit valProtocol effect requires: coreMethod, entryVal
-  const valProtocol = coreMethod("IMapEntry/-val", [1], entryVal);
+  //@unit keyProtocol effect requires: coreMethod, entryKey, mapEntryValue
+  const keyProtocol = coreMethod("IMapEntry/-key", [1], entryKey, mapEntryValue);
+  //@unit valProtocol effect requires: coreMethod, entryVal, mapEntryValue
+  const valProtocol = coreMethod("IMapEntry/-val", [1], entryVal, mapEntryValue);
   //@unit entryKey requires: mapEntries, nth
   // `-key` and `-val` of the runtime's map entries, which are all that
   // implement IMapEntry where no protocol implementation exists.
@@ -7083,14 +7264,20 @@
     if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
-  //@unit protocolHooks.install effect: installMethods when: accumulatingCount, addWatchProtocol,
-  //@ assoc, boundedCount, collectionWithMeta, compareKeys, conj, cons, contains, count,
-  //@ derefProtocol, disj, dissoc, empty, equalPair, find, first, get, hash, iterator, mapConj,
-  //@ mapProjection, meta, metaSupported, name, namespace, next, notifyWatches, nth, objectEquiv,
-  //@ peek, pop, reduce, reduceKv, removeWatchProtocol, rest, rseq, seq, stateProtocol,
-  //@ structuralEqualPair, vresetProtocol, withMetaSupported requires: builtin, countProtocol,
-  //@ firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol, protocolHooks,
-  //@ publicMethod, satisfies, valProtocol
+  //@unit protocolHooks.install effect: installMethods when: PersistentArrayMapValue,
+  //@ PersistentHashMapValue, PersistentVectorValue, accumulatingCount, addWatchProtocol, assoc,
+  //@ boundedCount, chunkNext, cljToJs, collectionWithMeta, compareKeys, concatMany, concatTwo,
+  //@ conj, cons, contains, coreMethod, count, derefProtocol, disj, dissoc, drop, empty, equalPair,
+  //@ filter, find, first, get, hash, indexedSequence, into, isAssociative, isChunkedSeq,
+  //@ isCloneable, isColl, isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable,
+  //@ isList, isMap, isMapEntry, isRecord, isReduceable, isReversible, isSeq, isSeqable,
+  //@ isSequential, isSet, isSorted, isUuid, isVector, iterator, jsToClj, keyToJs, mapConj,
+  //@ mapProjection, mapSeq, meta, metaSupported, name, namespace, next, notifyWatches, nth,
+  //@ objectEquiv, ownMap, peek, pop, printWriterImpl, printsMeta, reduce, reduceKv,
+  //@ removeWatchProtocol, rest, rseq, seq, sequenceIterator, stateProtocol, structuralEqualPair,
+  //@ vectorIndexOf, vectorPrototype, vresetProtocol, withMetaSupported requires: builtin,
+  //@ countProtocol, firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol,
+  //@ protocolHooks, publicMethod, satisfies, valProtocol
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.builtin = builtin;
   protocolHooks.publicMethod = publicMethod;
@@ -7102,86 +7289,91 @@
   protocolHooks.nextProtocol = nextProtocol;
   protocolHooks.keyProtocol = keyProtocol;
   protocolHooks.valProtocol = valProtocol;
-  //@unit findProtocol effect requires: coreMethod, find
-  const findProtocol = coreMethod("IFind/-find", [2], find);
-  //@unit sortedSeqProtocol effect requires: coreMethod, identity, mapSeq, rseq, seq, sets, truth
-  const sortedSeqProtocol = coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => { const s = truth(ascending) ? seq(value) : rseq(value); return sets.has(value) ? mapSeq(identity, s) : s; });
-  //@unit sortedSeqFromProtocol effect requires: coreMethod, sortedSeqFrom
-  const sortedSeqFromProtocol = coreMethod("ISorted/-sorted-seq-from", [3], sortedSeqFrom);
-  //@unit entryKeyProtocol effect requires: coreMethod, keyProtocol, sets
-  const entryKeyProtocol = coreMethod("ISorted/-entry-key", [2], (value, entry) => sets.has(value) ? entry : keyProtocol(entry));
-  //@unit comparatorProtocol effect requires: coreMethod, sortedComparators
-  const comparatorProtocol = coreMethod("ISorted/-comparator", [1], value => sortedComparators.get(value));
-  //@unit chunkedFirstProtocol effect requires: coreMethod, ownedChunkFirst
-  const chunkedFirstProtocol = coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst);
-  //@unit chunkedRestProtocol effect requires: coreMethod, ownedChunkRest
-  const chunkedRestProtocol = coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest);
-  //@unit invokeProtocol effect requires: coreMethod
-  const invokeProtocol = coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args));
+  //@unit protocolHooks.withMeta effect: installMethods when: withMetaProtocol requires: fnWithMeta,
+  //@ protocolHooks
+  // A function with a protocol implementation reaches `-with-meta`.
+  protocolHooks.fnWithMeta = fnWithMeta;
+  //@unit findProtocol effect requires: coreMethod, find, findValue
+  const findProtocol = coreMethod("IFind/-find", [2], find, findValue);
+  //@unit sortedSeqProtocol effect requires: coreMethod, identity, mapSeq, rseq, seq, sets,
+  //@ sortedValue, truth
+  const sortedSeqProtocol = coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => { const s = truth(ascending) ? seq(value) : rseq(value); return sets.has(value) ? mapSeq(identity, s) : s; }, sortedValue);
+  //@unit sortedSeqFromProtocol effect requires: coreMethod, sortedSeqFrom, sortedValue
+  const sortedSeqFromProtocol = coreMethod("ISorted/-sorted-seq-from", [3], sortedSeqFrom, sortedValue);
+  //@unit entryKeyProtocol effect requires: coreMethod, keyProtocol, sets, sortedValue
+  const entryKeyProtocol = coreMethod("ISorted/-entry-key", [2], (value, entry) => sets.has(value) ? entry : keyProtocol(entry), sortedValue);
+  //@unit comparatorProtocol effect requires: coreMethod, sortedComparators, sortedValue
+  const comparatorProtocol = coreMethod("ISorted/-comparator", [1], value => sortedComparators.get(value), sortedValue);
+  //@unit chunkedFirstProtocol effect requires: chunkedSeqValue, coreMethod, ownedChunkFirst
+  const chunkedFirstProtocol = coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst, chunkedSeqValue);
+  //@unit chunkedRestProtocol effect requires: chunkedSeqValue, coreMethod, ownedChunkRest
+  const chunkedRestProtocol = coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest, chunkedSeqValue);
+  //@unit invokeProtocol effect requires: coreMethod, ifnValue
+  const invokeProtocol = coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args), ifnValue);
   //@unit evalCore compile-time
   const evalCore = Object.defineProperty(() => { throw new Error("compiler eval service is not installed"); }, "name", {value: "eval"});
-  //@unit isCloneable requires: ICloneable, satisfies
-  const isCloneable = value => satisfies(ICloneable, value);
+  //@unit isCloneable requires: cloneablePayload, ICloneable, protocolHooks
+  const isCloneable = value => protocolHooks.satisfies?.(ICloneable, value) ?? cloneablePayload(value);
   //@unit isDelay requires: delays
   const isDelay = value => delays.has(value);
-  //@unit derefWithTimeoutProtocol effect requires: coreMethod
-  const derefWithTimeoutProtocol = coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null);
-  //@unit reduceProtocol effect requires: coreMethod, reduce
-  const reduceProtocol = coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); });
-  //@unit kvReduceProtocol effect requires: coreMethod, reduceKv
-  const kvReduceProtocol = coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value));
-  //@unit assocProtocol effect requires: assoc, coreMethod
-  const assocProtocol = coreMethod("IAssociative/-assoc", [3], assoc);
-  //@unit assocNProtocol effect requires: assoc, coreMethod
-  const assocNProtocol = coreMethod("IVector/-assoc-n", [3], assoc);
-  //@unit dissocProtocol effect requires: coreMethod, dissoc
-  const dissocProtocol = coreMethod("IMap/-dissoc", [2], dissoc);
-  //@unit conjProtocol effect requires: conj, coreMethod
-  const conjProtocol = coreMethod("ICollection/-conj", [2], conj);
-  //@unit emptyProtocol effect requires: coreMethod, empty
-  const emptyProtocol = coreMethod("IEmptyableCollection/-empty", [1], empty);
-  //@unit disjoinProtocol effect requires: coreMethod, disj
-  const disjoinProtocol = coreMethod("ISet/-disjoin", [2], disj);
-  //@unit peekProtocol effect requires: coreMethod, peek
-  const peekProtocol = coreMethod("IStack/-peek", [1], peek);
-  //@unit popProtocol effect requires: coreMethod, pop
-  const popProtocol = coreMethod("IStack/-pop", [1], pop);
-  //@unit rseqProtocol effect requires: coreMethod, rseq
-  const rseqProtocol = coreMethod("IReversible/-rseq", [1], rseq);
-  //@unit compareProtocol effect requires: compareKeys, coreMethod
-  const compareProtocol = coreMethod("IComparable/-compare", [2], compareKeys);
-  //@unit iteratorProtocol effect requires: coreMethod, iterator
-  const iteratorProtocol = coreMethod("IIterable/-iterator", [1], iterator);
+  //@unit derefWithTimeoutProtocol effect requires: coreMethod, noValue
+  const derefWithTimeoutProtocol = coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null, noValue);
+  //@unit reduceProtocol effect requires: coreMethod, reduce, reduceValue
+  const reduceProtocol = coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); }, reduceValue);
+  //@unit kvReduceProtocol effect requires: coreMethod, kvReduceValue, reduceKv
+  const kvReduceProtocol = coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value), kvReduceValue);
+  //@unit assocProtocol effect requires: assoc, associativeValue, coreMethod
+  const assocProtocol = coreMethod("IAssociative/-assoc", [3], assoc, associativeValue);
+  //@unit assocNProtocol effect requires: assoc, coreMethod, vectorValue
+  const assocNProtocol = coreMethod("IVector/-assoc-n", [3], assoc, vectorValue);
+  //@unit dissocProtocol effect requires: coreMethod, dissoc, mapValue
+  const dissocProtocol = coreMethod("IMap/-dissoc", [2], dissoc, mapValue);
+  //@unit conjProtocol effect requires: collectionValue, conj, coreMethod
+  const conjProtocol = coreMethod("ICollection/-conj", [2], conj, collectionValue);
+  //@unit emptyProtocol effect requires: coreMethod, empty, emptyableValue
+  const emptyProtocol = coreMethod("IEmptyableCollection/-empty", [1], empty, emptyableValue);
+  //@unit disjoinProtocol effect requires: coreMethod, disj, setValue
+  const disjoinProtocol = coreMethod("ISet/-disjoin", [2], disj, setValue);
+  //@unit peekProtocol effect requires: coreMethod, peek, stackValue
+  const peekProtocol = coreMethod("IStack/-peek", [1], peek, stackValue);
+  //@unit popProtocol effect requires: coreMethod, pop, stackValue
+  const popProtocol = coreMethod("IStack/-pop", [1], pop, stackValue);
+  //@unit rseqProtocol effect requires: coreMethod, reversibleValue, rseq
+  const rseqProtocol = coreMethod("IReversible/-rseq", [1], rseq, reversibleValue);
+  //@unit compareProtocol effect requires: comparableValue, compareKeys, coreMethod
+  const compareProtocol = coreMethod("IComparable/-compare", [2], compareKeys, comparableValue);
+  //@unit iteratorProtocol effect requires: coreMethod, iterableValue, iterator
+  const iteratorProtocol = coreMethod("IIterable/-iterator", [1], iterator, iterableValue);
   //@unit imul
   const imul = Math.imul;
-  //@unit nameProtocol effect requires: builtinCoreImplementation, coreMethod, INamed, name
-  const nameProtocol = coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); });
-  //@unit namespaceProtocol effect requires: coreMethod, namespace
-  const namespaceProtocol = coreMethod("INamed/-namespace", [1], namespace);
-  //@unit hashProtocol effect requires: coreMethod, hash
-  const hashProtocol = coreMethod("IHash/-hash", [1], hash);
-  //@unit equivProtocol effect requires: coreMethod, equalPair
-  const equivProtocol = coreMethod("IEquiv/-equiv", [2], equalPair);
+  //@unit nameProtocol effect requires: coreMethod, name, namedValue
+  const nameProtocol = coreMethod("INamed/-name", [1], value => { if (!namedValue(value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); }, namedValue);
+  //@unit namespaceProtocol effect requires: coreMethod, namedValue, namespace
+  const namespaceProtocol = coreMethod("INamed/-namespace", [1], namespace, namedValue);
+  //@unit hashProtocol effect requires: coreMethod, everyValue, hash
+  const hashProtocol = coreMethod("IHash/-hash", [1], hash, everyValue);
+  //@unit equivProtocol effect requires: coreMethod, equalPair, everyValue
+  const equivProtocol = coreMethod("IEquiv/-equiv", [2], equalPair, everyValue);
   //@unit type
   const type = value => value == null ? null : value.constructor;
   //@unit identical
   const identical = (a, b) => a === b;
-  //@unit isUuid requires: implementsProtocol, IUUID
-  const isUuid = value => implementsProtocol(IUUID, value);
-  //@unit isInst requires: Inst, satisfies
-  const isInst = value => satisfies(Inst, value);
+  //@unit isUuid requires: IUUID, protocolHooks, uuidImplementation
+  const isUuid = value => protocolHooks.implementsProtocol?.(IUUID, value) ?? uuidImplementation(value);
+  //@unit isInst requires: Inst, instValue, protocolHooks
+  const isInst = value => protocolHooks.satisfies?.(Inst, value) ?? instValue(value);
   //@unit isTaggedLiteral requires: TaggedLiteral
   const isTaggedLiteral = value => value instanceof TaggedLiteral;
-  //@unit encodeJsProtocol effect requires: coreMethod
-  const encodeJsProtocol = coreMethod("IEncodeJS/-clj->js", [1], value => value);
-  //@unit encodeKeyProtocol effect requires: coreMethod
-  const encodeKeyProtocol = coreMethod("IEncodeJS/-key->js", [1], value => value);
-  //@unit encodeClojureProtocol effect requires: coreMethod
-  const encodeClojureProtocol = coreMethod("IEncodeClojure/-js->clj", [2], value => value);
+  //@unit encodeJsProtocol effect requires: coreMethod, noValue
+  const encodeJsProtocol = coreMethod("IEncodeJS/-clj->js", [1], value => value, noValue);
+  //@unit encodeKeyProtocol effect requires: coreMethod, noValue
+  const encodeKeyProtocol = coreMethod("IEncodeJS/-key->js", [1], value => value, noValue);
+  //@unit encodeClojureProtocol effect requires: coreMethod, noValue
+  const encodeClojureProtocol = coreMethod("IEncodeClojure/-js->clj", [2], value => value, noValue);
   //@unit instMs requires: instMsProtocol
   const instMs = value => instMsProtocol(value);
-  //@unit instMsProtocol effect requires: coreMethod
-  const instMsProtocol = coreMethod("Inst/inst-ms*", [1], value => value.getTime());
+  //@unit instMsProtocol effect requires: coreMethod, instValue
+  const instMsProtocol = coreMethod("Inst/inst-ms*", [1], value => value.getTime(), instValue);
   //@unit isVar requires: vars
   const isVar = value => vars.has(value);
   //@unit isInstance
@@ -8029,5 +8221,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()
