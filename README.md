@@ -248,7 +248,8 @@ the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
 every failure.
 
 `size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
-small programs at each `--optimize` level and runs them at every level in Node;
+small programs (`tests/support/ratchet_fixtures.rs`) at each `--optimize` level
+and runs them at every level in Node;
 `cargo nextest run --test compiler size_ratchet:: --no-capture` prints the size
 table. `generated_optimization` compiles seeded multi-namespace programs with
 tagged dead code at every level, runs them in Node and checks which dead code
@@ -272,7 +273,10 @@ See [tests/reference/README.md](tests/reference/README.md) for the reference
 tooling and how to set up the checkout.
 
 Benchmarks: `cargo bench --bench tokenizer|parser|subset|compiler|evaluator`; see
-[benchmarks/README.md](benchmarks/README.md).
+[benchmarks/README.md](benchmarks/README.md). Startup and steady-state time of the
+ratchet programs at every `--optimize` level, in Node and QuickJS:
+`cargo bench --locked --bench compiler -- --levels --output DIR` (see
+[benchmarks/compiler.md](benchmarks/compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026)).
 
 ## Documentation
 

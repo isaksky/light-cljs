@@ -1,4 +1,6 @@
 //! Resident phases; raw output is consumed by benchmarks/run_compiler.py.
+//! `--levels` instead measures startup and steady state of the size-ratchet
+//! fixtures at every optimization level in Node and QuickJS (support/levels.rs).
 use light_cljs::{
     ApplicationOptions, MacroHost, NamespaceInput, OptimizationLevel, Program, SyntaxTree, analyze,
     analyze_namespaces, analyze_with_macros, compile, compile_namespace,
@@ -21,6 +23,12 @@ mod allocations;
 #[cfg(feature = "count-allocations")]
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
+#[path = "support/levels.rs"]
+mod levels;
+// The ceilings belong to the size ratchet; this benchmark measures the same programs.
+#[path = "../tests/support/ratchet_fixtures.rs"]
+#[allow(dead_code)]
+mod ratchet_fixtures;
 
 const COLLECTION: &str = include_str!("../benchmarks/fixtures/compiler/collections/value.cljs");
 const MACRO_CALL: &str = "(defmacro data [] '[1 2 3]) (data)";
@@ -181,9 +189,9 @@ fn application_phases(
     let unoptimized =
         prepare_application(&program, ApplicationOptions::new(OptimizationLevel::None));
     let expected = application_node(&unoptimized.emit_js());
-    for optimize in [false, true] {
-        let scenario = format!("{name}-{}", if optimize { "on" } else { "off" });
-        let options = ApplicationOptions::new(optimize);
+    for level in OptimizationLevel::ALL {
+        let scenario = format!("{name}-{level}");
+        let options = ApplicationOptions::new(level);
         let prepared = prepare_application(&program, options.clone());
         let js = prepared.emit_js();
         assert_eq!(application_node(&js), expected, "{scenario}");
@@ -243,11 +251,53 @@ fn application_benchmarks(
     application_phases("macro-helpers", &source, samples, iterations, dump)
 }
 
+/// `--levels`: see support/levels.rs and benchmarks/compiler.md.
+fn level_benchmarks(
+    mut args: impl Iterator<Item = String>,
+    command: String,
+) -> Result<(), Box<dyn Error>> {
+    let mut config = levels::Config::new(PathBuf::new());
+    while let Some(arg) = args.next() {
+        let mut value = |name| args.next().ok_or(format!("missing {name}"));
+        match arg.as_str() {
+            "--output" => config.output = value("output directory")?.into(),
+            "--samples" => config.samples = value("samples")?.parse()?,
+            "--warmups" => config.warmups = value("warm-up rounds")?.parse()?,
+            "--upstream" => config.upstream = Some(value("checkout")?.into()),
+            _ => return Err(format!("unknown --levels argument: {arg}").into()),
+        }
+    }
+    if cfg!(debug_assertions) || cfg!(feature = "count-allocations") || config.samples < 9 {
+        return Err(
+            "--levels requires a release build without count-allocations and >=9 samples".into(),
+        );
+    }
+    if config.output.as_os_str().is_empty() {
+        return Err("--levels requires --output DIR".into());
+    }
+    config.command = command;
+    let fixtures: Vec<_> = ratchet_fixtures::FIXTURES
+        .iter()
+        .map(|fixture| levels::Startup {
+            name: fixture.name,
+            source: fixture.source,
+            printed: fixture.printed,
+        })
+        .collect();
+    levels::run(&config, &fixtures)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let (mut samples, mut iterations) = (9, 32);
     let (mut counted, mut primitives, mut application_only) = (false, false, false);
     let mut dump = None;
-    let mut args = env::args().skip(1);
+    // Cargo adds --bench.
+    let args: Vec<_> = env::args().skip(1).filter(|arg| arg != "--bench").collect();
+    if args.iter().any(|arg| arg == "--levels") {
+        let command = args.join(" ");
+        return level_benchmarks(args.into_iter().filter(|arg| arg != "--levels"), command);
+    }
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--samples" => samples = args.next().ok_or("missing samples")?.parse()?,
@@ -256,10 +306,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--primitive-only" => primitives = true,
             "--application-only" => application_only = true,
             "--dump" => dump = Some(PathBuf::from(args.next().ok_or("missing dump directory")?)),
-            "--bench" => {}
             "--help" | "-h" => {
                 println!(
-                    "compiler [--samples N>=9] [--iterations N] [--allocations] [--primitive-only] [--application-only] [--dump DIR]"
+                    "compiler [--samples N>=9] [--iterations N] [--allocations] [--primitive-only] [--application-only] [--dump DIR]\n\
+                     compiler --levels --output DIR [--samples N>=9] [--warmups N] [--upstream CLOJURESCRIPT_CHECKOUT]"
                 );
                 return Ok(());
             }

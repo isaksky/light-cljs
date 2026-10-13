@@ -6,6 +6,60 @@ mod subset;
 use subset::{Token, Tokenizer};
 use variants::{CompactTokenizer, MatchTokenizer, SourceTooLarge};
 
+#[path = "../benches/support/levels.rs"]
+mod levels;
+#[path = "support/ratchet_fixtures.rs"]
+#[allow(dead_code)]
+mod ratchet_fixtures;
+
+/// `cargo bench --bench compiler -- --levels` at its smallest: two fixtures, one
+/// timed round, tiny steady-state inputs. Every sample is checked as in a real run.
+#[test]
+fn level_benchmark_harness_checks_and_records_every_level() {
+    let output =
+        std::env::temp_dir().join(format!("light-cljs-levels-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&output);
+    let fixtures: Vec<_> = ratchet_fixtures::FIXTURES
+        .iter()
+        .filter(|fixture| ["seq-pipeline", "rest-fn"].contains(&fixture.name))
+        .map(|fixture| levels::Startup {
+            name: fixture.name,
+            source: fixture.source,
+            printed: fixture.printed,
+        })
+        .collect();
+    let mut config = levels::Config::new(output.clone());
+    config.samples = 1;
+    config.warmups = 0;
+    config.input = Some(10);
+    config.warmup_calls = 1;
+    config.calls = 2;
+    levels::run(&config, &fixtures).unwrap();
+    let samples = std::fs::read_to_string(output.join("samples.csv")).unwrap();
+    // Startup: 2 fixtures x 3 levels x (4 Node + 1 QuickJS measures). Steady state:
+    // 2 workloads x 3 levels x 2 engines.
+    assert_eq!(samples.lines().count(), 1 + 30 + 12, "{samples}");
+    for row in [
+        "node,parse+execute,seq-pipeline,advanced,0,",
+        "quickjs,parse+execute,rest-fn,none,0,",
+        "node,call,record-protocol,prepare,0,",
+        "quickjs,call,seq-pipeline,advanced,0,",
+    ] {
+        assert!(samples.contains(row), "missing {row}:\n{samples}");
+    }
+    let summary = std::fs::read_to_string(output.join("summary.md")).unwrap();
+    assert!(summary.contains("| rest-fn | prepare |"), "{summary}");
+    assert!(
+        summary.contains("| record-protocol | 10 | none |"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("Not measured; pass `--upstream"),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(output).unwrap();
+}
+
 fn check(source: &str) {
     let expected: Vec<_> = Tokenizer::new(source).collect();
     let mut baseline = MatchTokenizer::new(source);

@@ -1,9 +1,9 @@
 # Advanced optimization design
 
 Status: design, October 2026. Phase 0's optimization levels, size ratchet,
-differential test and runtime retention report are implemented (see "Phase 0
-extension points"), and so are Phase 1's unit manifest and advanced-mode
-runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
+differential test, runtime retention report and startup benchmark are
+implemented (see "Phase 0 extension points"), and so are Phase 1's unit
+manifest and advanced-mode runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
 extension points") and Phase 2's core operation table (see "Phase 2 core
 operation table extension points"); the rest is not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
@@ -22,20 +22,29 @@ Targets are emitted bytes before gzip. Upstream bounds are the ratchet
 ceilings in ClojureScript's own `build_api_tests.clj` (lines 710-821 of the
 pinned clone), which are the only published size facts in that repo.
 
-| Program | Upstream ceiling | light-cljs today | Target |
-|---|---:|---:|---:|
-| `(js/console.log (+ 1 2))` | 10,240 | 350,927 | < 1,000 |
-| `(println "hi")` | 10,240 | 350,814 | < 5,000 |
-| `[1 2 3]` printed | 92,160 (lite mode: 16,384) | 350,839 | < 15,000 |
-| `{}` printed | 92,160 (lite mode: 32,768) | 350,829 | < 20,000 |
-| map/filter/partition pipeline | 34,000 (lite mode) | 351,158 | < 25,000 |
+| Program | Upstream ceiling | Upstream measured, `:advanced` / lite | light-cljs today | Target |
+|---|---:|---:|---:|---:|
+| `(js/console.log (+ 1 2))` | 10,240 | 2,584 / 2,135 | 350,927 | < 1,000 |
+| `(println "hi")` | 10,240 | 88,554 / 37,284 | 350,814 | < 5,000 |
+| `[1 2 3]` printed | 92,160 (lite mode: 16,384) | 88,582 / 37,300 | 350,839 | < 15,000 |
+| `{}` printed | 92,160 (lite mode: 32,768) | 88,552 / 56,119 | 350,829 | < 20,000 |
+| map/filter/partition pipeline | 34,000 (lite mode) | 105,760 / 32,508 | 351,158 | < 25,000 |
 
 Every program that uses one collection, keyword or core function today
 embeds the full 350,414-byte runtime (84 KB gzipped), so the current numbers
 are all the same number. The rows are the first five fixtures of
-`tests/compiler/size_ratchet.rs`, measured at `prepare`: the printing rows call
+`tests/support/ratchet_fixtures.rs`, measured at `prepare`: the printing rows call
 `(enable-console-print!)` and then `println`, and the pipeline row logs
 upstream's `trivial/core6.cljs` expression with `js/console.log`.
+
+The measured column compiles these same programs with the pinned clone at
+`:optimizations :advanced`, and with `:lite-mode` and `:elide-to-string`
+added (`cargo bench --bench compiler -- --levels --upstream
+research/clojurescript`; see "Startup and steady state by optimization level"
+in `benchmarks/compiler.md`). The ceilings are for slightly different
+programs: the 10,240-byte one is upstream's `(. js/console (log "Hello!"))`,
+so `(println "hi")`, which brings in the printer, measures far above it; and
+the vector and map ceilings log an empty collection with `console.log`.
 
 ## What upstream does
 
@@ -220,12 +229,14 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   attributes bytes after the fact. Implemented for runtime units (see "Phase
   1 slicing extension points"); retained globals are not listed yet.
 - Startup benchmark: parse-plus-execute time in Node and QuickJS for the
-  fixture set, recorded under `benchmarks/`.
+  fixture set, recorded under `benchmarks/`, with steady state for a
+  sequence pipeline and a record/protocol workload and upstream's
+  `:advanced` byte size beside ours.
 
 #### Phase 0 extension points
 
-The first three items are implemented, and the retention report covers
-runtime units. Later phases plug in here:
+The first three items and the startup benchmark are implemented, and the
+retention report covers runtime units. Later phases plug in here:
 
 - **Level.** `OptimizationLevel` in `src/application.rs` is ordered
   `None < Prepare < Advanced`. `level.prepares()` gates today's conservative
@@ -243,20 +254,34 @@ runtime units. Later phases plug in here:
   holds the `PreparedApplication`; level-dependent reports go next to it, as
   `--size-report` (the retention report, on stderr) does. `--eval` and
   `--repl` have no level.
-- **Ratchet.** `tests/compiler/size_ratchet.rs` holds `FIXTURES`: the five
+- **Ratchet.** `tests/support/ratchet_fixtures.rs` holds `FIXTURES`: the five
   Targets rows, `(+ 1 2)`, `(fn [& xs] xs)`, a keyword `case` and a
   `defrecord` with a protocol call, each with `ceilings: [none, prepare,
-  advanced]` in bytes of `emit_js()` output. When output shrinks, lower the
-  ceiling to the new size rounded up to the next 100 bytes (next 1,000 from
-  10,000 up) and record the sizes in `benchmarks/compiler.md`. Add rows for
-  new fixtures there. `--no-capture` prints the size table.
-- **Differential.** The same file runs every fixture in Node at every level
-  and compares against `None` and a pinned expected output. Observations must
-  not depend on compiler-owned ABI names (functions print as `#function`).
-  `both` and the per-level loops in `tests/compiler/optimization.rs` run the
-  preparation regressions at every level, and
-  `npm_packages::bundler_modules_run_at_every_optimization_level` runs a
-  bundler module built with `--esm --optimize LEVEL` for each level.
+  advanced]` in bytes of `emit_js()` output; `tests/compiler/size_ratchet.rs`
+  checks them. When output shrinks, lower the ceiling to the new size
+  rounded up to the next 100 bytes (next 1,000 from 10,000 up) and record
+  the sizes in `benchmarks/compiler.md`. Add rows for new fixtures there.
+  `--no-capture` prints the size table.
+- **Differential.** `size_ratchet.rs` also runs every fixture in Node at
+  every level and compares against `None` and a pinned expected output.
+  Observations must not depend on compiler-owned ABI names (functions print
+  as `#function`). `both` and the per-level loops in
+  `tests/compiler/optimization.rs` run the preparation regressions at every
+  level, and `npm_packages::bundler_modules_run_at_every_optimization_level`
+  runs a bundler module built with `--esm --optimize LEVEL` for each level.
+- **Benchmark.** `cargo bench --locked --bench compiler -- --levels --output
+  DIR` (`benches/support/levels.rs`) times every ratchet fixture at every
+  level: parse plus first execution in fresh Node processes and fresh
+  QuickJS `Evaluator`s, and steady-state calls of the `STEADY` workloads
+  (the seq-pipeline and record-protocol fixtures as functions of `n`).
+  `--upstream research/clojurescript` adds upstream's `:advanced` and
+  lite-mode byte sizes, which needs Java and the Clojure CLI. Rounds
+  interleave the levels, so compare levels within one run; to quote a
+  pellet's before/after, run it on both commits and compare medians and
+  minimums with the recorded load in mind. A fixture added to the ratchet is
+  measured automatically; the method and baseline are in
+  `benchmarks/compiler.md` ("Startup and steady state by optimization
+  level").
 - **Generated programs.** `tests/compiler/generated_optimization.rs` checks
   the levels on seeded programs from `namespace_program` in
   `tests/support/generated.rs`: 2-6 namespaces in a `:require` DAG with
@@ -606,7 +631,8 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Retention report checked in under `benchmarks/results/` so size
   regressions name their cause (the first is
   `benchmarks/results/retention-2026-10-12/`).
-- Startup and steady-state benchmarks in Node and QuickJS.
+- Startup and steady-state benchmarks in Node and QuickJS (`--levels` of
+  `benches/compiler.rs`; the baseline is `benchmarks/results/levels-2026-10-13/`).
 - The manifest validator in the test suite, so the runtime cannot regain
   hidden edges.
 

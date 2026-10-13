@@ -654,3 +654,137 @@ markers and leaf operations such as `subs`, `char`, `mod`, `parse-long`,
 ```sh
 cargo test --test compiler core_operations::print_core_operation_units -- --ignored --nocapture
 ```
+
+## Startup and steady state by optimization level — October 13, 2026
+
+light-cljs-216 adds a `--levels` mode to [benches/compiler.rs](../benches/compiler.rs)
+([support/levels.rs](../benches/support/levels.rs)). It times every size-ratchet
+fixture ([tests/support/ratchet_fixtures.rs](../tests/support/ratchet_fixtures.rs))
+at every `--optimize` level, from a fresh engine, in Node and in QuickJS. It also
+times steady-state calls of a sequence pipeline and a record/protocol workload,
+and can record upstream ClojureScript's `:advanced` sizes for the same programs.
+To measure before and after a change, run it on both commits, ideally on a quiet
+machine:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --output benchmarks/results/levels-$(date +%F)
+```
+
+`--upstream research/clojurescript` adds the upstream column. It needs Java and
+the Clojure CLI, and adds about a minute. `--samples N` (default 15, at least 9)
+and `--warmups N` (default 2) set the rounds. With the defaults the run takes
+about three minutes. It writes `samples.csv` (every sample, with the one-minute
+load average of its round) and `summary.md` (every table below, with environment
+and load), and it refuses a directory that already holds a run. The application
+phases of the default mode (`--application-only`) now also run at all three
+levels: their scenarios are `NAME-none`, `NAME-prepare` and `NAME-advanced`
+instead of `NAME-off` and `NAME-on`.
+
+Method:
+
+- **Programs.** `prepare_application(.., level).emit_js()` of each fixture is
+  emitted and written to a temporary directory before timing.
+- **Node.** Each sample is a fresh `node` process running
+  [support/compiler_levels.js](support/compiler_levels.js) with no
+  `NODE_OPTIONS` and no compile cache. *Parse* is `new vm.Script(source)` and
+  *execute* is its first `runInThisContext()`. Node's lazy stdout and console
+  setup (about 5 ms) is done before timing, so it does not land on whichever
+  program prints first. *Process* is spawn to exit, measured by Rust.
+- **QuickJS.** Each sample is a fresh `light_cljs::evaluator::Evaluator`, the
+  engine that `EvalSession` embeds, with a `console.log` shim. The timing covers
+  one evaluation of the program; QuickJS parses and runs in one step, so there
+  is no split. The session loads its own copy of the shared runtime before
+  timing starts, and that load is not counted.
+- **Steady state.** Each workload evaluates to `(fn [n] ...)`. *seq-pipeline*
+  sums the ratchet's pipeline over `(range n)` with n = 200. *record-protocol*
+  builds the ratchet's `Rect` and calls `area` on it n = 2,000 times in a
+  `loop`. Each sample is a fresh process or session that calls the function 10
+  times untimed and then 20 times in one timed batch. QuickJS calls go through
+  `Evaluator::call`, which costs a few µs, under 0.1% of a call.
+- **Noise.** The machine is shared, so every round runs each fixture at each
+  level before the next round starts, rotating the level order. A burst of
+  outside load therefore lands on all levels alike. Two untimed warm-up rounds
+  come first. The tables give medians, and `summary.md` also gives minimums.
+- **Validation.** Every sample is checked, including warm-ups. Its stdout must be
+  the fixture's expected `printed` text, and a steady-state result must equal
+  the value Rust computes for it.
+- **Upstream.** Each fixture becomes namespace `bench.NAME`, with its last form
+  wrapped to log its value the way the Node driver does. It is compiled with
+  `cljs.build.api/build` from the pinned checkout (used as a `:local/root`
+  dependency) at `:optimizations :advanced`
+  ([support/upstream_sizes.clj](support/upstream_sizes.clj)), and again with
+  `:lite-mode true :elide-to-string true` as upstream's lite-mode ratchets do.
+  Each output must print the fixture's expected text in Node. Without Java,
+  the Clojure CLI or the checkout, the column is skipped with the reason.
+
+Baseline: master `95a5e92` (light-cljs-203's runtime slicing at `advanced`).
+Node v24.18.0, macOS 15.7.3 ARM64 VM, 24 CPUs; 2 warm-up and 15 timed rounds.
+The machine was shared but fairly quiet: the one-minute load average was 2.6–3.2
+during the run. [summary.md](results/levels-2026-10-13/summary.md) has every
+measure with its minimum, and
+[samples.csv](results/levels-2026-10-13/samples.csv) has all 2,205 samples.
+
+Parse plus first execution, median ms:
+
+| Fixture | Bytes, none / advanced | Node, none / prepare / advanced | QuickJS, none / prepare / advanced |
+| --- | ---: | ---: | ---: |
+| console-log-sum | 350,927 / 335,242 | 7.17 / 7.18 / 7.01 | 16.95 / 17.34 / 16.28 |
+| println-hi | 350,814 / 335,129 | 7.71 / 7.61 / 7.44 | 17.24 / 17.41 / 16.45 |
+| vector-printed | 350,839 / 335,171 | 7.96 / 7.82 / 7.58 | 17.63 / 17.20 / 16.68 |
+| map-printed | 350,829 / 335,158 | 7.81 / 7.73 / 7.61 | 17.25 / 17.54 / 16.55 |
+| seq-pipeline | 351,158 / 335,473 | 9.03 / 9.16 / 8.90 | 18.31 / 18.33 / 17.56 |
+| add | 350,767 / 335,082 | 6.75 / 6.83 / 6.47 | 17.11 / 17.30 / 16.61 |
+| rest-fn | 351,111 / 335,445 | 6.78 / 6.75 / 6.49 | 17.36 / 17.42 / 16.50 |
+| keyword-case | 351,399 / 335,723 | 6.84 / 6.83 / 6.68 | 17.21 / 17.16 / 16.62 |
+| record-protocol | 351,720 / 344,607 | 7.22 / 7.25 / 7.09 | 17.44 / 17.46 / 17.12 |
+
+Steady state, median ms per call:
+
+| Workload | n | Node, none / prepare / advanced | QuickJS, none / prepare / advanced |
+| --- | ---: | ---: | ---: |
+| seq-pipeline | 200 | 5.25 / 5.17 / 5.13 | 29.64 / 29.54 / 29.71 |
+| record-protocol | 2,000 | 9.08 / 9.14 / 9.20 | 20.07 / 20.11 / 20.22 |
+
+Upstream ClojureScript (checkout `a5e94c98`), bytes of `main.js`:
+
+| Fixture | Upstream `:advanced` | Upstream lite mode | light-cljs `advanced` | light-cljs / upstream `:advanced` |
+| --- | ---: | ---: | ---: | ---: |
+| console-log-sum | 2,584 | 2,135 | 335,242 | 130× |
+| println-hi | 88,554 | 37,284 | 335,129 | 3.8× |
+| vector-printed | 88,582 | 37,300 | 335,171 | 3.8× |
+| map-printed | 88,552 | 56,119 | 335,158 | 3.8× |
+| seq-pipeline | 105,760 | 32,508 | 335,473 | 3.2× |
+| add | 2,529 | 2,080 | 335,082 | 132× |
+| rest-fn | 88,289 | 10,726 | 335,445 | 3.8× |
+| keyword-case | 5,783 | 4,756 | 335,723 | 58× |
+| record-protocol | 2,623 | 2,174 | 344,607 | 131× |
+
+What the baseline shows:
+
+- **Noise floor.** `none` and `prepare` emit identical bytes for every fixture,
+  and their medians differ by at most 1.8% in Node and 2.5% in QuickJS. A single
+  run cannot resolve a startup change smaller than that.
+- **Startup cost.** The embedded runtime dominates startup. Node parses each
+  ~350 KB program in about 4.1 ms. Running it, which is mostly runtime
+  initialization, takes 2.6 ms for `(+ 1 2)` and up to 5.0 ms for the
+  pipeline. QuickJS does both in about 17 ms. A whole Node process takes about
+  57 ms, so level differences are invisible at that scale.
+- **Advanced slicing.** At `advanced`, 203's slice removes 4.5% of the bytes. On
+  all eight fixtures it shrinks that much, it already cuts Node parse time by
+  2.5–5.5% (0.1–0.2 ms) and QuickJS parse plus execution by 3–5.5% (0.5–1.0
+  ms). The smaller cuts are close to the noise floor. `record-protocol` keeps
+  more of the runtime (2% fewer bytes), so it saves about half as much. Parse
+  cost so far tracks bytes.
+- **Steady state.** No level changes program code yet, so steady state is the
+  same at every level. The pipeline costs about 26 µs per element in Node and
+  150 µs in QuickJS. A record construction plus protocol call costs 4.5 µs in
+  Node and 10 µs in QuickJS. V8 gains only 2.2× over the QuickJS interpreter on
+  the record loop (5.6× on the pipeline), which suggests that construction and
+  dispatch do not optimize well in V8. That is a target for type inference,
+  devirtualization and call specialization (light-cljs-210 to 212).
+- **Upstream sizes.** Closure reduces the programs that only compute a number
+  (the sum, the keyword `case` and the protocol call) to 2.5–5.8 KB. Anything
+  that prints, builds a sequence or defines a variadic function is 88–106 KB at
+  `:advanced` and 11–56 KB in lite mode. Upstream's 10,240-byte ceiling belongs to `(. js/console (log
+  "Hello!"))`; `(println "hi")` measures 88,554 bytes. The Targets table in the
+  [design](../docs/advanced-optimization.md) now carries these measured values.

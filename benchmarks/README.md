@@ -6,6 +6,9 @@ operations. The standard-library `run_compiler.py` driver retains nine-sample
 distributions, allocation counts and an unchanged primitive baseline.
 The later [language integration measurement](compiler.md#language-integration-october-10-2026)
 records expanded runtime size and validated parse/initialize/execute timings.
+[Startup and steady state by optimization level](compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026)
+times the size-ratchet programs at every `--optimize` level in Node and QuickJS,
+with upstream ClojureScript's `:advanced` sizes beside them.
 
 Archived native runtime measurements are documented in [interpreter.md](interpreter.md).
 The interpreter, its benchmark harnesses and four Python runner scripts have been

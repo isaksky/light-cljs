@@ -3,94 +3,23 @@
 //!
 //! Every fixture has one byte ceiling per optimization level for the emitted
 //! JavaScript expression (`prepare_application(..).emit_js()`, bytes before gzip).
-//! The ratchet fails when any output grows past its ceiling. Ceilings only move
-//! down: a change that shrinks output lowers them to the new size rounded up to
-//! the next 100 bytes (next 1,000 from 10,000 bytes up) and records the sizes in
-//! benchmarks/compiler.md. Raising a ceiling needs a reason in the commit message.
-//! Print the current table with
+//! The ratchet fails when any output grows past its ceiling. The fixtures and
+//! their ceilings live in tests/support/ratchet_fixtures.rs, which says how to
+//! move a ceiling; benches/compiler.rs `--levels` measures startup for the same
+//! set. Print the current table with
 //! `cargo nextest run --test compiler size_ratchet:: --no-capture`.
 //!
 //! The same fixtures run in Node at every level and must print the same output
-//! as `OptimizationLevel::None`, the oracle. Add fixtures here when a later
-//! optimization needs a size or behavior pinned; keep the five upstream rows.
+//! as `OptimizationLevel::None`, the oracle.
+#[path = "../support/ratchet_fixtures.rs"]
+mod ratchet_fixtures;
+
 use super::optimization::execute;
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
+use ratchet_fixtures::{FIXTURES, Fixture};
 use std::fmt::Write;
-
-struct Fixture {
-    name: &'static str,
-    source: &'static str,
-    /// Byte ceilings in `OptimizationLevel::ALL` order: none, prepare, advanced.
-    ceilings: [usize; 3],
-    /// Program output followed by the final value, as the `printed` helper
-    /// shows them.
-    printed: &'static str,
-}
-
-/// The first five rows are the Targets table of the design document, mirroring
-/// upstream's `build_api_tests.clj` size ratchets (`trivial/core*.cljs`).
-const FIXTURES: &[Fixture] = &[
-    Fixture {
-        name: "console-log-sum",
-        source: "(js/console.log (+ 1 2))",
-        ceilings: [351_000, 351_000, 336_000],
-        printed: "3\nundefined\n",
-    },
-    Fixture {
-        name: "println-hi",
-        source: r#"(enable-console-print!) (println "hi")"#,
-        ceilings: [351_000, 351_000, 336_000],
-        printed: "hi\nnull\n",
-    },
-    Fixture {
-        name: "vector-printed",
-        source: "(enable-console-print!) (println [1 2 3])",
-        ceilings: [351_000, 351_000, 336_000],
-        printed: "[1 2 3]\nnull\n",
-    },
-    Fixture {
-        name: "map-printed",
-        source: "(enable-console-print!) (println {})",
-        ceilings: [351_000, 351_000, 336_000],
-        printed: "{}\nnull\n",
-    },
-    Fixture {
-        name: "seq-pipeline",
-        source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
-                 (drop 1) (mapcat identity) into-array))",
-        ceilings: [352_000, 352_000, 336_000],
-        printed: "[ 6, 8 ]\nundefined\n",
-    },
-    Fixture {
-        name: "add",
-        source: "(+ 1 2)",
-        ceilings: [351_000, 351_000, 336_000],
-        printed: "3\n",
-    },
-    Fixture {
-        name: "rest-fn",
-        source: "(fn [& xs] xs)",
-        ceilings: [352_000, 352_000, 336_000],
-        printed: "#function\n",
-    },
-    Fixture {
-        name: "keyword-case",
-        source: "(defn kind [k] (case k :a 1 :b 2 3))
-                 (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [352_000, 352_000, 336_000],
-        printed: "321\n",
-    },
-    Fixture {
-        name: "record-protocol",
-        source: "(defprotocol Area (area [shape]))
-                 (defrecord Rect [w h] Area (area [_] (* w h)))
-                 (area (->Rect 3 4))",
-        ceilings: [352_000, 352_000, 345_000],
-        printed: "12\n",
-    },
-];
 
 fn program(fixture: &Fixture) -> Program {
     let source = fixture.source;
