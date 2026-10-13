@@ -131,8 +131,9 @@ keeps of the runtime's collection, keyword and seq types only those the
 program can build, with the parts of each operation that handle them,
 calls the program's own functions directly, without an arity
 dispatcher when nothing else sees them, creating once the methods of local
-functions that capture nothing, and folds constants and dead branches and
-inlines single-use and small pure functions (see
+functions that capture nothing, and folds constants, dead branches and
+lookups in constant collections and inlines single-use and small pure
+functions (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
@@ -221,9 +222,10 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   and typed core calls as plain JavaScript, drops the protocol methods and
   types no instance can use, calls known functions directly through the
   method a call selects, keeps only the runtime types a program can
-  build, and folds constants, dead branches and `goog-define` values and
-  inlines small functions. `(js/console.log (+ 1 2))` drops from about
-  360 KB to about 200 bytes, a small record and protocol program to about
+  build, and folds constants, dead branches, `goog-define` values and
+  lookups in constant collections and inlines small functions.
+  `(js/console.log (+ 1 2))` drops from about 360 KB to about 200 bytes, a
+  small record and protocol program to about
   12 KB, a program that only builds a keyword to 10 KB, a vector to 14 KB
   and a map literal to 26 KB; a program that prints keeps the printer
   (about 44 KB), and one that uses the generic sequence operations most of

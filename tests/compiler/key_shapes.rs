@@ -437,7 +437,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     // evaluation interns its keywords and puts each key, comparing it with
     // the keys before it; at `Advanced` the keys and the trie are built once,
     // with their shapes, and each evaluation only makes the entries and copies
-    // the trie, and puts only the set's other member.
+    // the trie, and puts only the set's other member. The literals pass
+    // through `identity`: read directly, the map literals' lookups and counts
+    // fold, and the hash map is not built at all (light-cljs-221).
     let source = r#"
       (defn event [i] {:type :click :x i :y (inc i) :target "button"})
       (defn wide [i] {:a i :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j i})
@@ -445,7 +447,8 @@ fn event_map_allocations_per_evaluation_are_pinned() {
       (defn total [n]
         (loop [i 0 acc 0]
           (if (< i n)
-            (recur (inc i) (+ acc (:x (event i)) (count (wide i)) (count (tagged i))))
+            (recur (inc i) (+ acc (:x (identity (event i))) (count (identity (wide i)))
+                              (count (identity (tagged i)))))
             acc)))
       (total 1000)"#;
     let names = [
@@ -491,9 +494,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
              [1381269198, 1738089905, -1763192079, -1397974765, 1109658740, 1482224470, \
              1972142424, -1597136552, -1386841315, -2123407586]);",
             "const k17 = rt$setShape([null]);",
-            "const next1 = (l5 + (k0).call(null, rt$mapFromShape(k4, [k5, l4, (l4 + 1), \"button\"])) \
-             + rt$count(rt$hashMapFromShape(k16, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4])) \
-             + rt$count(rt$setFromShape(k17, [l4])));",
+            "const next1 = (l5 + (k0).call(null, rt$identity(rt$mapFromShape(k4, [k5, l4, (l4 + 1), \"button\"]))) \
+             + rt$count(rt$identity(rt$hashMapFromShape(k16, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4]))) \
+             + rt$count(rt$identity(rt$setFromShape(k17, [l4]))));",
         ]
     );
 }

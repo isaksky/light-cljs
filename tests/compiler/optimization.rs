@@ -190,6 +190,7 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
             exports: vec![exported],
             defines: Vec::new(),
             no_inlining: false,
+            no_folding: false,
         },
     );
     assert!(!without.emit_js().contains("OPTIMIZER_EXPORT_SENTINEL"));

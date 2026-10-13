@@ -210,10 +210,12 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
         ]
     );
     // The sites read the entries; no site builds a literal. The functions,
-    // each a read of an entry, are inlined at their calls (light-cljs-214).
+    // each a read of an entry, are inlined at their calls (light-cljs-214),
+    // and `first`, `second` and `:k` of the inlined constants read the entries
+    // of their items (light-cljs-221).
     assert_eq!(advanced.matches("rt$vectorFromArray(").count(), 3);
     assert!(
-        advanced.contains("rt$vectorFromArray([k0, k3, k4, (k0 === rt$first(k3))"),
+        advanced.contains("rt$vectorFromArray([k0, k3, k4, (k0 === k0), (k0 === k0)"),
         "{advanced}"
     );
     // The table precedes the program in bundler output too.
@@ -415,9 +417,12 @@ fn large_constants_are_lazy_cells_built_on_first_read() {
         ("3".into(), r#"{"vectorFromArray":1}"#.into())
     );
     // Reading builds a lazy cell once, with the lazy entries it reads; the
-    // unread `small` is removed at `Advanced`.
+    // unread `small` is removed at `Advanced`. The constants pass through
+    // `identity`, since counts and items of a constant fold at `Advanced`
+    // (light-cljs-221) and would read no cell.
     let read = program(&format!(
-        "{definitions} (+ (count (big)) (count (big)) (count (nested)) (first (first (big))))"
+        "{definitions} (+ (count (identity (big))) (count (identity (big))) \
+         (count (identity (nested))) (first (first (identity (big)))))"
     ));
     let expected = (1101 + 1101 + 3 + 7).to_string();
     for (level, count) in OptimizationLevel::ALL.into_iter().zip([7, 7, 2]) {
@@ -440,13 +445,15 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     // interned but still looked up per site); at `Advanced` the constant
     // parts are built once, and only the map with a dynamic value is built
     // per iteration, on its key shape (light-cljs-220), and the constant map
-    // by `arrayMapFromArray` (light-cljs-230).
+    // by `arrayMapFromArray` (light-cljs-230). The row passes through
+    // `identity`: read directly, the lookups of its constant values and their
+    // counts fold, and no row is built at all (light-cljs-221).
     let source = r#"
       (defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty [] :meta {:kind :row :dims [1 2]}})
       (defn total [n]
         (loop [i 0 acc 0]
           (if (< i n)
-            (let [r (row i)] (recur (inc i) (+ acc (count (:pos r)) (count (:tags r)) (count (:empty r)))))
+            (let [r (identity (row i))] (recur (inc i) (+ acc (count (:pos r)) (count (:tags r)) (count (:empty r)))))
             acc)))
       (total 1000)"#;
     let names = [

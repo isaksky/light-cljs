@@ -9,7 +9,10 @@ rapid type analysis of program types, call shapes, and folding, inlining
 and build-time defines (see "Phase 2 core operation table extension
 points", "Phase 2 type inference extension points", "Phase 2 rapid type
 analysis extension points", "Phase 2 call shape extension points" and
-"Phase 2 folding and inlining extension points"); the rest is not. The work items are
+"Phase 2 folding and inlining extension points"), and every tier of constant
+collection literals, folding against them included (see "Constant pool
+extension points" and "Constant folding extension points"); the rest is
+not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
 
@@ -1935,20 +1938,13 @@ and call shapes, which therefore see the simplified program. `None` and
   a `goog-define`-gated logging path that leaves nothing at `Advanced`: the
   suite checks that the output is byte for byte that of the program written
   without it.
-- **For 221 (folding against pooled constants).** `folding::Constant` is the
-  folder's value domain and `folding::evaluate` its table of operations. A
-  composite variant of `Constant`, recognized in `Constant::of` from the
-  emitter's `constant_nodes` classification (or an equivalent IR-level one,
-  since the folder runs before emission), lets `evaluate` grow rows for `get`,
-  keyword lookup, `count`, `nth`, `contains?` and `seq` that return scalars;
-  a call that would throw (an out-of-range `nth`) must stay. `case`
-  membership folds in `Folder::rewrite`, which leaves `case` tests alone
-  today. The inliner's `pooled` is the same classification for arguments.
-  The inliner takes no body with a `case` (`inlining::measure` rejects it),
-  so `(kind :a)` of `keyword-case` stays a call until the whitelist admits
-  `case` with its `Copier` arm; folding `case` on a constant then removes
-  it. New folds must keep the two rules of "Literals" above: map keys and
-  set members do not become constants, and built literals stay marked.
+- **Folding against pooled constants** is implemented (light-cljs-221): see
+  "Constant folding extension points" below. The inliner still takes no
+  body with a `case` (`inlining::measure` rejects it), so `(kind :a)` of
+  `keyword-case` stays a call until the whitelist admits `case` with its
+  `Copier` arm; folding `case` on a constant would then remove it. New folds
+  must keep the two rules of "Literals" above: map keys and set members do
+  not become constants, and built literals stay marked.
 - **Left for later.**
   - Functions with nested `fn`s, `case`, `throw` or `try` in their bodies,
     local functions and calls through locals are not inlined; copying
@@ -1967,7 +1963,8 @@ from 2,040 to 781 bytes and `raw-js` from 271 to 36, `console-log-sum` from
 
 Tracked as Pellets 218-221 after keyword interning (208), whose constant
 table they extend (see "Phase 1 constant table extension points"). Tiers 1
-and 2 are implemented (218, below), tier 3 (219) and tier 4 (220). Before
+and 2 are implemented (218, below), tier 3 (219), tier 4 (220) and tier 5
+(221, "Constant folding extension points"). Before
 them every literal was rebuilt per evaluation: `[1 2 3]` copies, freezes and
 wraps a fresh array; `{:a 1}` allocates the map each time (its keyword is
 interned since 208); `[]` allocated although the runtime has `EMPTY`
@@ -2036,7 +2033,8 @@ fixtures pin per-evaluation allocation counts and pool bytes.
 #### Constant pool extension points
 
 Tiers 1 and 2 are implemented (light-cljs-218), tier 3 (light-cljs-219) and
-tier 4 (light-cljs-220).
+tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
+"Constant folding extension points".
 
 - **Empty singletons (tier 1).** At every level, and in the REPL, macro host
   and deferred units, which share the emitter, `[]`, `{}`, `#{}` and `()`
@@ -2154,11 +2152,9 @@ tier 4 (light-cljs-220).
   `literalSetFromArray`: adding the dynamic members to a set of all the
   constant ones would reorder an array set and could name the other member of
   a duplicate pair.
-- **For 221 (folding).** `constant_nodes` and `constant_part` give the value
-  of any constant expression as parts, which a folder can evaluate `get`,
-  `count`, `nth` and `contains?` against, keeping the throws of out-of-range
-  arguments. A lookup of a constant key in a shaped map literal can fold to
-  that key's value expression when the rest have no effects.
+- **Folding (light-cljs-221).** The folder classifies the collections it
+  folds against with `constant_nodes`; see "Constant folding extension
+  points".
 - **Function entries** (light-cljs-228). Methods of local functions that
   capture nothing are entries under `ConstantKey::Method { function, method }`
   (see "Local functions" in "Phase 2 call shape extension points"), never
@@ -2206,6 +2202,145 @@ tier 4 (light-cljs-220).
   and a set. The generator draws shaped literals from a stream of its own
   (`shape_read`), and the size ratchet and `--levels` have an `event-maps`
   fixture.
+
+#### Constant folding extension points
+
+Tier 5 is implemented (light-cljs-221) in `src/folding.rs`, with the
+membership switch and entry reads in `src/emitter.rs`, at `Advanced` only.
+It extends the folder of "Phase 2 folding and inlining extension points" and
+runs in its rounds.
+
+- **Value domain.** `folding::Constant` has two more variants: `Symbol`, a
+  quoted symbol without metadata, and `Collection(ExprId)`, the literal of a
+  constant collection. A literal is one when the emitter's `constant_nodes`
+  (now `pub(crate)`) classifies it, so the folder folds against exactly what
+  the pool holds: never a set literal whose construction may throw
+  (`CheckedSet`), nor one whose construction reads a core operation the
+  program replaces. `Folder::collection` follows a local a `let` binds,
+  through chains of such locals, and a `^:const` global read in a later
+  top-level form (as 214 substitutes scalars) to the literal; a local that
+  may change after its binding (a type field, a `js*` hole, a `set!`
+  target) is never followed. `Constant::of` still gives only scalars and
+  symbols, which a `let` substitutes; a collection is never substituted,
+  so a literal that is built at each evaluation is never duplicated.
+- **Operations.** `folding::evaluate` has rows for `count`, `empty?`,
+  `contains?`, `symbol?`, the collection predicates (`coll?`, `list?`,
+  `seq?`, `seqable?`, `sequential?`, `vector?`, `map?`, `set?`,
+  `associative?`, `counted?`) and `=` on symbols. `folding::select` folds
+  what returns an item: `get`, `get-in`, `nth`, `first`, `second`, `last`,
+  `peek`, `rest`, `next`, `seq` and `not-empty`, giving a `Folded`: a scalar,
+  an item of the constant, a list of its items (the tail of a list), or one
+  of the call's arguments (a default, or the collection itself: `seq` of a
+  list). `Folder::invoke` treats keyword and symbol calls as `get` and calls
+  of maps and sets as their lookups. The runtime's definitions are
+  reproduced with their edges: `get` on a vector truncates a number index in
+  range and finds nothing else; `nth` on a list counts down to an exact
+  integer; `contains?` on a vector needs an integer index; `get` in a string
+  is left alone except for keyword and `nil` keys; a vector called with an
+  index out of range or a key that is not a number throws, and ignores its
+  arguments after the first. What throws stays: `nth` out of range without
+  a default, an index that is not a number, `nth` on a map or set, a call
+  of a list or with a wrong arity.
+- **Keys.** `folding::same_key` decides `=` between a lookup key and a key
+  or member as the runtime's lookups compare them (`entryIndex` and
+  `equalPair`; a hash map hashes first, and keys that are `=` here hash
+  alike): scalars by value, keywords and symbols by spelling, and a scalar
+  never `=` to a collection while core protocols are intact. It is
+  undecided, and nothing folds, for `NaN`, zeros of both signs (equal, but
+  hashed apart), keywords or symbols spelled alike with another namespace
+  split, and a collection lookup key. A merging map or set (`mapFromArray`,
+  `setFromArray`) finds the one key `=` to the lookup key and needs every
+  other key provably unequal; a positional one (`LiteralMap`, `LiteralSet`)
+  finds the first. `count` of a merging one needs its keys `distinct`: at
+  most one collection key and scalars whose canonical forms (zeros of both
+  signs as one, keywords and symbols as spellings) differ, decided in linear
+  time.
+- **Identity and metadata.** A folded item is copied to the call's place
+  only when the pool holds it as an entry (`Folder::copyable`: a scalar or
+  symbol, or a constant of at most `COPY_LIMIT`, 256, nodes, none of them a
+  literal marked built), so the pool declares the copy as the same entry by
+  hash-consing: it is `identical?` to the item and has its metadata. An
+  item of a literal that is built at each evaluation is not copied. `rest`
+  and `next` of a list are a list literal of its tail (see the contract),
+  and `seq` of a list and `not-empty` their argument.
+- **Gates and effects.** Every fold against a collection needs core
+  protocols intact (`ProgramFacts::core_protocols_intact`) and, for a core
+  operation, its table row for these arguments other than `effect` (`nth`
+  is `throws`, which `select` rules out for the values it folds) and the
+  operation trusted (`ProgramFacts::trusted`: not replaced); keyword and
+  collection calls need `get` not replaced. Only constants and local reads
+  are dropped. A not-found default that is not a constant is evaluated where
+  it was: it is the result, or runs before another one, `(do default
+  value)`.
+- **Destructuring.** The expansions (`src/compiler_binding_macros.rs`, and
+  the extended one in `src/compiler_destructuring.rs`) bind the value to a
+  local and read it with `nth` and `get`, and a map through `(if (seq? m)
+  (seq-to-map-for-destructuring m) m)`. With a constant value `seq?` folds,
+  the `if` is its branch, the alias it binds (and an `:as` local) is
+  substituted, since a `let` substitutes a local bound to another local
+  that `Folder::collection` or `Folder::keyed` resolves, and every `nth`
+  and `get` folds. `Folder::sweep` then drops the bindings nothing reads,
+  counting reads from the root (expressions earlier rounds replaced stay in
+  the arena but no longer count), up to `SWEEPS` (4) passes per round.
+- **Maps with constant keys.** `Folder::keyed` finds the map literal that a
+  local is bound to, or that the receiver is, whose keys are constants
+  `distinct` proves unequal, whatever its values. Its `count`, `empty?`,
+  `contains?`, predicates and the lookups of keys it lacks fold; a key's
+  value is the lookup's result when it is a pooled constant, or a read of a
+  local that cannot change where no local from the receiver to the map is
+  captured (`Folder::uncaptured`), so the read stays in the function that
+  built the map; a literal receiver whose other values have no effect is
+  its value expression (as Closure folds a property read of an object
+  literal). The other lookups read their entry at emission
+  (`folding::entry_lookups`, `PreparedApplication::entry_lookups`):
+  `rt$maps.get(m)[i].value`, since the map's builder, `mapFromArray`,
+  `mapFromArrays` or a key shape (light-cljs-220), makes one entry per
+  distinct key, in order. This is the keyword lookup on a shaped map of
+  tier 4 as an index into its entries.
+- **Membership.** An `if` in statement or return position whose test is
+  `(s x)`, `(contains? s x)` or `(get s x)` on a set literal of at most 8
+  keywords is a `switch` on `rt$keywordFqn(x)`, one `case` per member before
+  the branch (`Emitter::membership`). An array set compares the value with
+  each member by `equalPair` without hashing it, and with core protocols
+  intact and no program `IEquiv` (whose instance may be `=` to a keyword) a
+  value is `=` to a keyword exactly when it is one of the same spelling; a
+  sequential or map value checks the keyword's kind before walking itself,
+  so nothing realizes. `Folder::member_set` replaces a local or `^:const`
+  global naming such a set with a copy of the literal. A test in value
+  position keeps its lookup.
+- **Inliner.** A literal argument that is built at each evaluation is no
+  longer read in place of its parameter at each read (`inlining::builds`):
+  every read of the parameter is the one value the call passed.
+- **Options.** `ApplicationOptions::no_folding` turns folding off at
+  `Advanced` (inlining and definition removal still run), as Closure's
+  `foldConstants` option off does.
+- **Tests.** `tests/compiler/constant_lookups.rs` runs every program at
+  every level in Node and QuickJS and checks the `Advanced` text: folds
+  with missing keys, defaults with effects, `nil`, string, symbol, number,
+  boolean and namespaced keys, positional and merging collections,
+  truncated, negative, fractional and infinite indexes, metadata and empty
+  collections; the calls that throw or stay undecided; destructuring;
+  identity, metadata and `^:const` reads before their definition; gates
+  (a core protocol extended to a runtime type, a replaced operation);
+  membership switches, including the cases that keep their lookup; and
+  entry reads. `folding`'s unit tests pin `same_key`, `lookup`, `count` and
+  `nth`'s throws. The generator reads constant literals through these
+  operations from a stream of its own (`Builder::lookup_read`), with
+  constant, local and `identity` keys and indexes, missing and out-of-range
+  ones and defaults, and property 5 compares that with the same reads of
+  built literals at every level; it compares the pools with folding off,
+  since folding reads constants away. The size ratchet and `--levels` have
+  a `constant-lookups` fixture.
+- **Left for later.**
+  - A seq over a constant vector, map or set (`seq`, `rest` of a vector of
+    two or more items, `[a & more]` destructuring) is not a literal; folding
+    through it needs a seq value in the domain.
+  - `=`, `hash` and `identical?` of constant collections, and lookups of
+    collection keys, do not fold.
+  - A membership test in value position keeps its lookup; it could be a
+    conditional expression over the spellings.
+  - A `case` on a constant does not fold: the inliner takes no `case`
+    body.
 
 ### Phase 3: terse emission
 
@@ -2262,7 +2397,12 @@ upstream states that advanced mode is unsafe for certain patterns.
   so their identity does not differ. Equality, hashing, metadata and
   transients are unaffected. Mutating a pooled value through host interop
   (`set!` of a property, `reset-meta!`) is visible at every site that reads
-  it.
+  it. A value folded from a constant (light-cljs-221) is the pool entry of
+  an equal literal: an item of a constant collection is the entry the
+  constant holds it as, as without folding, and the `rest` or `next` of a
+  constant list is the entry of a list literal of its tail, which may be
+  `identical?` to an equal literal elsewhere where the runtime's tail is
+  not.
 - The `__hash` field of a pooled collection holds its hash before its first
   `hash`, because the compiler computed it (light-cljs-219), as upstream's
   `_hash` of a keyword does, and assigning the `_hash` or `__hash` field of a

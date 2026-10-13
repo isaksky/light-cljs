@@ -120,7 +120,9 @@ pub const FIXTURES: &[Fixture] = &[
     // Constant collection literals (light-cljs-218): the empty vector reads
     // the runtime's singleton at every level, and at `Advanced` the constant
     // parts of `row` and the `get-in` path are built once, from the pool.
-    // `row`, called once, is inlined into its caller (light-cljs-214).
+    // `row`, called once, is inlined into its caller (light-cljs-214), where
+    // the lookups of its constant values and their counts fold, so no row is
+    // built (light-cljs-221).
     Fixture {
         name: "constant-literals",
         source: "(defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty []
@@ -128,9 +130,25 @@ pub const FIXTURES: &[Fixture] = &[
                  (reduce + (map (fn [i] (let [r (row i)]
                                           (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
                                 (range 10)))",
-        ceilings: [388_000, 388_000, 94_000],
+        ceilings: [388_000, 388_000, 62_000],
         removed: [0, 0, 1],
         printed: "50\n",
+    },
+    // Lookups, counts and destructuring of constants (light-cljs-221): at
+    // `Advanced` a `^:const` map's destructured keys, a constant vector's
+    // items and the counts are their values, and the membership test is a
+    // `switch` on the keyword's spelling, so no collection is left.
+    Fixture {
+        name: "constant-lookups",
+        source: "(def ^:const CONFIG {:width 640 :height 480 :title \"demo\" :modes #{:fast :safe}})
+                 (defn allowed? [mode] (if (#{:fast :safe} mode) 1 0))
+                 (let [{:keys [width height title]} CONFIG
+                       [x y] [3 4]]
+                   (+ (* width height) (count title) x y (count (:modes CONFIG))
+                      (allowed? (keyword (.toLowerCase \"FAST\")))))",
+        ceilings: [388_000, 388_000, 11_000],
+        removed: [0, 0, 1],
+        printed: "307214\n",
     },
     // Three records implement one protocol and only one is constructed: at
     // `Advanced` rapid type analysis (light-cljs-211) keeps that type and the

@@ -280,7 +280,9 @@ pub fn inline(
                 let reads = method.params.get(index).map_or(0, |parameter| {
                     body.reads.iter().filter(|l| *l == parameter).count()
                 });
-                if reads > 0 && trivial(program, kind) {
+                // A literal built at each evaluation is one value per call,
+                // which copies at several reads would not be.
+                if reads > 0 && trivial(program, kind) && !builds(program, built, arg) {
                     Use::Value
                 } else if reads == 0 && crate::folding::effect_free(program, kind) {
                     Use::Dropped
@@ -419,10 +421,36 @@ fn child_roles(program: &Program, id: ExprId, block: bool, out: &mut Vec<(ExprId
     }
 }
 
+/// Whether `id` or a literal in it is marked built at each evaluation
+/// ([`crate::folding::built_literals`]): folding made its items constants,
+/// but each copy would still be a value of its own.
+fn builds(program: &Program, built: &[bool], id: ExprId) -> bool {
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        if built.get(id.0).copied().unwrap_or(false) {
+            return true;
+        }
+        if matches!(
+            program.exprs[id.0].kind,
+            ExprKind::Vector(_)
+                | ExprKind::List(_)
+                | ExprKind::Map(_)
+                | ExprKind::Set(_)
+                | ExprKind::LiteralMap(_)
+                | ExprKind::LiteralSet(_)
+                | ExprKind::WithMeta { .. }
+        ) {
+            pending.extend(children(program, id));
+        }
+    }
+    false
+}
+
 /// Whether an argument of this kind may be read in place of its parameter:
 /// it has no effect and its value cannot change while the body runs. A
 /// constant collection literal qualifies because `Advanced` declares it once
-/// in the constant pool, so every read is the one value the call would pass.
+/// in the constant pool, so every read is the one value the call would pass;
+/// not one that [`builds`] at each evaluation.
 fn trivial(program: &Program, kind: &ExprKind) -> bool {
     match kind {
         ExprKind::Nil

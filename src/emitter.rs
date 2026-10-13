@@ -64,6 +64,10 @@ pub(crate) struct Application<'a> {
     /// At `Advanced`: protocol method calls that read the implementation from
     /// the receiver's slot (`crate::rta`), with the slot each reads.
     pub methods: Option<&'a std::collections::HashMap<ExprId, String>>,
+    /// At `Advanced`: lookups of constant keys in map literals with constant
+    /// keys (or locals bound to them), with the index of the entry each reads
+    /// (`crate::folding::entry_lookups`).
+    pub entries: Option<&'a std::collections::HashMap<ExprId, usize>>,
     /// Whether types get their static `getBasis` method, which at `Advanced`
     /// only a program that names it can call (`crate::rta`).
     pub basis: bool,
@@ -149,6 +153,9 @@ fn emit_js_mode(
                 .map(|application| application.globals),
             direct_methods: application
                 .and_then(|application| application.methods)
+                .filter(|_| direct.is_some()),
+            entry_lookups: application
+                .and_then(|application| application.entries)
                 .filter(|_| direct.is_some()),
             type_basis: direct.is_none() || application.is_none_or(|application| application.basis),
             replaced_core: direct,
@@ -791,7 +798,7 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ConstantClass {
+pub(crate) enum ConstantClass {
     Unknown,
     /// Not a constant the pool may hoist.
     Variable,
@@ -874,7 +881,9 @@ fn composite<'p>(program: &Program, kind: &'p ExprKind) -> Option<(Composite, Co
 /// `replaced` (sorted runtime names), which a `set!` may change before an
 /// evaluation: `with-meta`, `uuid`, or the type of an empty collection.
 /// Memoized in `classes`, so classifying every literal of a program is linear.
-fn constant_nodes(
+/// The folder (light-cljs-221) classifies the collections it folds against
+/// with the same function, so it folds exactly against what the pool holds.
+pub(crate) fn constant_nodes(
     program: &Program,
     replaced: &[&str],
     classes: &mut [ConstantClass],
@@ -971,6 +980,8 @@ struct Emitter<'a> {
     retained: Option<&'a [bool]>,
     /// At `Advanced`: devirtualized protocol method calls and their slots.
     direct_methods: Option<&'a std::collections::HashMap<ExprId, String>>,
+    /// At `Advanced`: lookups that read a map entry by index.
+    entry_lookups: Option<&'a std::collections::HashMap<ExprId, usize>>,
     /// Whether types get their static `getBasis` method: below `Advanced`
     /// always, at `Advanced` when the program names it.
     type_basis: bool,
@@ -2061,6 +2072,109 @@ impl<'a> Emitter<'a> {
         false
     }
 
+    /// At `Advanced`, an `if` test that asks whether a value is a member of a
+    /// set literal of keywords, `(s x)`, `(contains? s x)` or `(get s x)`:
+    /// the tested value and the members' spellings (light-cljs-221;
+    /// docs/advanced-optimization.md, "Constant pool extension points"). The
+    /// set has at most 8 members, so it is an array set (`setFromArray`,
+    /// `constantSetFromArray`) whose lookup compares the value with each
+    /// member by `equalPair` without hashing it; with core protocols intact
+    /// and no program `IEquiv`, a value is `=` to a keyword exactly when it
+    /// is a keyword of the same spelling, and comparing it runs no code (a
+    /// sequential or map value checks the keyword's kind first). The test is
+    /// then the `switch` on `keywordFqn` that keyword `case` emits, and a
+    /// member is truthy, so `get` agrees with `contains?`.
+    fn membership(&self, test: ExprId) -> Option<(ExprId, Vec<Vec<u16>>)> {
+        let facts = self.inference?.facts();
+        if !facts.core_protocols_intact() || facts.implements_equiv() {
+            return None;
+        }
+        let ExprKind::Call { callee, args } = &self.program.exprs[test.0].kind else {
+            return None;
+        };
+        let (set, value) = match (&self.program.exprs[callee.0].kind, &args[..]) {
+            (
+                ExprKind::CoreFn(core @ (crate::CoreFnId::Contains | crate::CoreFnId::Get)),
+                [set, value],
+            ) if !self.replaced(core.runtime_name()) => (*set, *value),
+            (ExprKind::Set(_) | ExprKind::LiteralSet(_), [value]) => (*callee, *value),
+            _ => return None,
+        };
+        let (ExprKind::Set(members) | ExprKind::LiteralSet(members)) =
+            &self.program.exprs[set.0].kind
+        else {
+            return None;
+        };
+        if members.len() > 8 {
+            return None;
+        }
+        let spellings = members
+            .iter()
+            .map(|member| match self.program.exprs[member.0].kind {
+                ExprKind::Keyword(literal) => {
+                    let name = &self.program.named_literals[literal.0];
+                    let mut spelling = Vec::new();
+                    if let Some(namespace) = name.namespace {
+                        spelling.extend_from_slice(&self.program.strings[namespace.0]);
+                        spelling.push('/' as u16);
+                    }
+                    spelling.extend_from_slice(&self.program.strings[name.name.0]);
+                    Some(spelling)
+                }
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some((value, spellings))
+    }
+
+    /// An `if` on a [`Emitter::membership`] test as a `switch` on the tested
+    /// value's spelling, one `case` per member before the branch it selects.
+    fn membership_switch(
+        &mut self,
+        value: ExprId,
+        members: &[Vec<u16>],
+        yes: ExprId,
+        no: ExprId,
+        context: ExprContext,
+    ) {
+        self.indentation();
+        self.output.push_str("switch (");
+        self.rt(RuntimeName::export("keywordFqn"));
+        self.output.push('(');
+        self.value(value);
+        self.output.push_str(")) {\n");
+        self.indent += 1;
+        for (index, spelling) in members.iter().enumerate() {
+            self.indentation();
+            self.output.push_str("case ");
+            self.string_units(spelling);
+            self.output.push_str(if index + 1 == members.len() {
+                ": {\n"
+            } else {
+                ":\n"
+            });
+        }
+        if !members.is_empty() {
+            self.indent += 1;
+            self.emit(yes, context);
+            self.indentation();
+            self.output.push_str("break;\n");
+            self.indent -= 1;
+            self.indentation();
+            self.output.push_str("}\n");
+        }
+        self.indentation();
+        self.output.push_str("default: {\n");
+        self.indent += 1;
+        self.emit(no, context);
+        self.indent -= 1;
+        self.indentation();
+        self.output.push_str("}\n");
+        self.indent -= 1;
+        self.indentation();
+        self.output.push_str("}\n");
+    }
+
     /// `(nth v i)` and `(nth v i not-found)` on a flat vector with a number
     /// index: the runtime's direct index path, `vectorNth` on the payload.
     fn nth(
@@ -2542,6 +2656,10 @@ impl<'a> Emitter<'a> {
                 self.indent -= 1;
                 self.indentation();
                 self.output.push_str("}\n");
+            }
+            ExprKind::If { test, yes, no } if self.membership(*test).is_some() => {
+                let (value, members) = self.membership(*test).unwrap();
+                self.membership_switch(value, &members, *yes, *no, context);
             }
             ExprKind::If { test, yes, no } => {
                 self.indentation();
@@ -4106,6 +4224,19 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
+                if let Some(&index) = self.entry_lookups.and_then(|lookups| lookups.get(&id)) {
+                    // `rt$maps.get(m)[i].value`: the entry of a map whose
+                    // literal makes one entry per key, in order.
+                    let map = match self.program.exprs[callee.0].kind {
+                        ExprKind::Local(_) => *callee,
+                        _ => args[0],
+                    };
+                    self.rt(RuntimeName::export("maps"));
+                    self.output.push_str(".get(");
+                    self.value(map);
+                    write!(self.output, ")[{index}].value").unwrap();
+                    return;
+                }
                 if self.lowered_call(*callee, args) {
                     return;
                 }

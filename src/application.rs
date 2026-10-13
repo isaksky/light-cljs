@@ -112,6 +112,12 @@ pub struct ApplicationOptions {
     /// stack frame, and for tests of what the passes after it do with
     /// functions.
     pub no_inlining: bool,
+    /// At `Advanced`, leave every expression as analysis and inlining make it
+    /// ([`crate::folding`] off; inlining and definition removal still run),
+    /// as Closure's `foldConstants` option off does: for debugging, and for
+    /// tests that compare what the constant pool holds before folding reads
+    /// constants away.
+    pub no_folding: bool,
 }
 impl ApplicationOptions {
     /// Options at `optimize` without explicit exports or defines. Accepts a
@@ -122,6 +128,7 @@ impl ApplicationOptions {
             exports: Vec::new(),
             defines: Vec::new(),
             no_inlining: false,
+            no_folding: false,
         }
     }
 }
@@ -177,6 +184,10 @@ pub struct PreparedApplication {
     direct_methods: HashMap<ExprId, String>,
     /// `Advanced`: whether the program names `getBasis` (`crate::rta`).
     type_basis: bool,
+    /// `Advanced`: lookups of constant keys in map literals with constant keys
+    /// (or locals bound to them), with the index of the entry each reads
+    /// (`crate::folding::entry_lookups`).
+    entry_lookups: HashMap<ExprId, usize>,
     /// `Advanced`: direct calls and dispatcher-free definitions
     /// (`crate::call_shapes`).
     shapes: Option<CallShapes>,
@@ -195,6 +206,7 @@ impl PreparedApplication {
                 direct: advanced.then_some(self.replaced_core.as_slice()),
                 inference: self.inference.as_ref().filter(|_| advanced),
                 methods: advanced.then_some(&self.direct_methods),
+                entries: advanced.then_some(&self.entry_lookups),
                 basis: !advanced || self.type_basis,
                 shapes: self.shapes.as_ref().filter(|_| advanced),
             },
@@ -277,6 +289,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         replaced_core: Vec::new(),
         inference: None,
         direct_methods: HashMap::new(),
+        entry_lookups: HashMap::new(),
         type_basis: true,
         shapes: None,
         rejected_defines: Vec::new(),
@@ -296,7 +309,11 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         // constant their items become.
         let mut built = crate::folding::built_literals(&prepared.program);
         for round in 0..SIMPLIFY_ROUNDS {
-            let folded = crate::folding::fold(&mut prepared.program, &mut built);
+            let folded = if options.no_folding {
+                0
+            } else {
+                crate::folding::fold(&mut prepared.program, &mut built)
+            };
             prepared.stats.folded_expressions += folded;
             if round > 0 || folded > 0 {
                 retained = retain(&mut prepared, &options.exports);
@@ -386,6 +403,10 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
             + shapes.local_functions().len();
         prepared.stats.hoisted_methods = shapes.hoisted_methods();
         prepared.shapes = Some(shapes);
+        // Lookups of constant keys in maps with constant keys read their entry
+        // (light-cljs-221).
+        prepared.entry_lookups =
+            crate::folding::entry_lookups(&prepared.program, inference.facts());
         prepared.inference = Some(inference);
     }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();

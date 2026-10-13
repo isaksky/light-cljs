@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below) and the runtime types it cannot build, and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below), and folds constants and dead branches, substitutes `^:const` and `goog-define` values and inlines single-use and small pure functions (folding and inlining, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below) and the runtime types it cannot build, and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below), and folds constants, dead branches and lookups in constant collections, substitutes `^:const` and `goog-define` values and inlines single-use and small pure functions (folding and inlining, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -403,6 +403,17 @@ leaves unread, in up to four rounds (`src/folding.rs`, `src/inlining.rs`):
   substituted (so `and`, `or` and `when-let` over constants fold), and forms
   without effects disappear where their value is discarded. The definitions
   only a removed branch read are removed in turn.
+- Lookups, counts and items of constant collections are their results
+  (light-cljs-221): `get`, keyword and collection calls, `get-in`, `nth`,
+  `count`, `empty?`, `contains?`, `seq`, `first`, `second`, `last`, `peek`,
+  `rest`, `next` and the collection predicates, on a literal, a local bound
+  to one or a `^:const` global, so destructuring a constant binds its locals
+  statically. A call that would throw, such as `nth` out of range without a
+  default, stays and throws. A map literal with constant keys answers
+  `count`, `contains?` and lookups of absent keys whatever its values, and
+  a lookup of a present key reads that key's entry by index. An `if` on
+  membership in a set of at most eight keywords is a `switch` on the
+  value's spelling.
 - A call of a known function is replaced with the body of the method it runs
   when the function is called only there (and does not escape), or when its
   body is a small pure computation (at most ten expressions of reads,
@@ -417,10 +428,11 @@ leaves unread, in up to four rounds (`src/folding.rs`, `src/inlining.rs`):
 
 `ApplicationStats::folded_expressions` and `inlined_calls` count the
 rewrites. `ApplicationOptions::no_inlining` keeps every call (folding still
-runs), as Closure's `inlineFunctions` option does. A debug path behind `(when DEBUG ...)` with `(goog-define DEBUG
+runs), as Closure's `inlineFunctions` option does, and
+`ApplicationOptions::no_folding` turns folding off (inlining still runs). A debug path behind `(when DEBUG ...)` with `(goog-define DEBUG
 false)` leaves nothing in the output. See "Phase 2 folding and inlining
-extension points" and the "Advanced-mode contract" in
-[advanced-optimization.md](advanced-optimization.md).
+extension points", "Constant folding extension points" and the
+"Advanced-mode contract" in [advanced-optimization.md](advanced-optimization.md).
 
 `Program::compilation_uses` records deferred ordinary-unit names, generations,
 analysis counts and compile-time emission counts. Analysis for application

@@ -415,6 +415,7 @@ fn exports_keep_their_dispatcher() {
             exports: vec![GlobalId(id)],
             defines: Vec::new(),
             no_inlining: false,
+            no_folding: false,
         },
     );
     let text = prepared.emit_js();

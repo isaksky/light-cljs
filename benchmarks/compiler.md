@@ -2136,3 +2136,93 @@ dispatcher's `switch` and `.apply(this, arguments)`. Parse plus first
 execution of the fixture at `advanced` drops from 0.225 to 0.163 ms in Node
 and from 0.172 to 0.084 ms in QuickJS; `multi-arity` and `none` do not
 change beyond noise.
+
+## Folding against constant collections — October 13, 2026
+
+light-cljs-221 implements tier 5 of the constant collection literals in the
+[design](../docs/advanced-optimization.md) ("Constant folding extension
+points"). At `--optimize advanced`, `get`, keyword and collection calls,
+`get-in`, `nth`, `count`, `empty?`, `contains?`, `seq`, `first`, `rest` and
+the collection predicates of constant collections fold to their values, so
+destructuring a constant binds its locals statically; a map literal with
+constant keys answers its count and the lookups of absent keys whatever its
+values, a lookup of a present key reads the key's entry by index
+(`rt$maps.get(m)[i].value`), and an `if` on membership in a set of at most
+eight keywords is a `switch` on the value's spelling.
+
+The new ratchet fixture `constant-lookups` destructures a `^:const` map and
+a vector and tests a keyword against a set:
+
+```clojure
+(def ^:const CONFIG {:width 640 :height 480 :title "demo" :modes #{:fast :safe}})
+(defn allowed? [mode] (if (#{:fast :safe} mode) 1 0))
+(let [{:keys [width height title]} CONFIG
+      [x y] [3 4]]
+  (+ (* width height) (count title) x y (count (:modes CONFIG))
+     (allowed? (keyword (.toLowerCase "FAST")))))
+```
+
+At `advanced` it is `(307213 + g1(rt$keywordCore(("FAST")["toLowerCase"]())))`,
+with `allowed?` a `switch (rt$keywordFqn(l8))` over `"fast"` and `"safe"`:
+no collection, lookup or count is left, and the runtime is the keyword
+type.
+
+**Sizes**, raw and `gzip -9` bytes of the `advanced` output. "Before" is
+master `27dc281` (after light-cljs-228). `none` and `prepare` do not change,
+and neither do the fixtures not listed: they read no constant collection.
+
+| Fixture | Before | After | Ceilings after |
+| --- | ---: | ---: | --- |
+| constant-literals | 93,957 / 22,446 | 61,383 / 14,794 | 388,000 / 388,000 / 62,000 |
+| event-maps | 73,800 / 17,782 | 73,775 / 17,776 | 388,000 / 388,000 / 74,000 |
+| constant-lookups | 100,011 / 23,444 | 10,910 / 3,424 | 388,000 / 388,000 / 11,000 |
+
+In `constant-literals` the inlined `row`'s `:pos` and `[:meta :dims]` are
+constant values of the map, whose counts fold: each iteration adds `5`, and
+the map, `count`, `get-in` and the lookup machinery are gone, leaving
+`reduce`, `map` and `range`. In `event-maps` `(:x e)` is the local `i`,
+`(count e)` is `5`, and `(:y e)`, a computed value, reads its entry.
+`constant-lookups` at `none` is 387,067 / 92,048 bytes.
+
+Two pinned allocation fixtures, `hot_loop_allocations_and_pool_size_are_pinned`
+(tests/compiler/constant_pool.rs) and
+`event_map_allocations_per_evaluation_are_pinned`
+(tests/compiler/key_shapes.rs), now read their maps through `identity`:
+read directly, their lookups and counts fold and no map is built.
+
+**Startup and steady state.** `--levels --only
+constant-literals,event-maps,constant-lookups --samples 9 --warmups 1` on
+an exported tree of its base, master `27dc281` with this change's fixture
+set, and then on this change, one directly after the other, with other
+builds running: the median one-minute load average was 3.06 (range
+2.60–3.64) and 2.67 (2.43–2.98). The tables are in
+[before](results/constant-folding-2026-10-13/before/summary.md) and
+[after](results/constant-folding-2026-10-13/after/summary.md), next to their
+`samples.csv`. Parse plus first execution at `advanced`, median ms, Node /
+QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| constant-literals | 2.619 / 4.177 | 1.790 / 2.554 |
+| event-maps | 2.203 / 3.101 | 2.011 / 3.118 |
+| constant-lookups | 1.812 / 4.083 | 0.326 / 0.389 |
+
+Steady state at `advanced`, median µs per call:
+
+| Workload | n | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| constant-literals | 2,000 | 4,898 | 3.3 | 25,612 | 71.4 |
+| event-maps | 5,000 | 4,237 | 3,344 | 23,048 | 8,773 |
+
+The `constant-literals` loop body folds to a constant, so a call is the
+loop alone. In `event-maps` each iteration still builds the event, but its
+lookups no longer search the map: 21% faster in Node and 2.6 times in
+QuickJS, whose keyword calls and `entryIndex` scans were costlier.
+
+**Compile time.** Median of 15 interleaved release-build CLI runs at
+`advanced`: `benchmarks/fixtures/compiler/collections/value.cljs` takes 17.7
+ms before and 18.1 after, and the program of
+`lookups_of_constants_fold_to_the_runtime_results`
+(tests/compiler/constant_lookups.rs) 19.3 and 18.9 ms: within the noise.
+The folder classifies each constant once (memoized) and its key checks are
+linear.

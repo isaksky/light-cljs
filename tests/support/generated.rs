@@ -345,6 +345,8 @@ const LITERAL_STREAM: u64 = 0x6c69_7465_7261_6c73;
 /// Key shape reads (light-cljs-220) come from a stream of their own as well,
 /// so adding them left every choice of the other three streams as it was.
 const SHAPE_STREAM: u64 = 0x7368_6170_6573_2121;
+/// Lookups of constant literals (light-cljs-221) too, with their literals.
+const LOOKUP_STREAM: u64 = 0x6c6f_6f6b_7570_7321;
 /// Constant keys of shaped maps and first members of shaped sets: keywords,
 /// and scalars that hash alike in full (`1` and `2147483648`, `0` and
 /// `2147483647`, `"Aa"` and `"BB"`, `true` and `1231`) or in their low bits
@@ -602,6 +604,59 @@ impl Literal {
     }
 }
 
+/// A constant collection literal for [`Builder::lookup_read`], drawn from
+/// `rng` alone: a vector (of scalars and, at `depth`, nested literals), a
+/// quoted list or a set of distinct scalars, a map from `:a`-`:c`, or reader
+/// metadata on a vector, map or set; often empty or short, so that lookups
+/// miss.
+fn lookup_literal(rng: &mut Generator, depth: usize) -> Literal {
+    let scalar = |rng: &mut Generator| match rng.choose(4) {
+        0 => Literal::Keyword(KEYWORDS[rng.choose(KEYWORDS.len())]),
+        1 => Literal::String(["s0", "s1"][rng.choose(2)]),
+        _ => Literal::Number(rng.choose(6) as i64 - 1),
+    };
+    let item = |rng: &mut Generator| {
+        if depth > 0 && rng.choose(3) == 0 {
+            lookup_literal(rng, depth - 1)
+        } else {
+            scalar(rng)
+        }
+    };
+    let count = rng.choose(4);
+    match rng.choose(6) {
+        0 => Literal::List((0..count).map(|_| scalar(rng)).collect()),
+        1 => {
+            let mut members: Vec<Literal> = Vec::new();
+            for _ in 0..count {
+                let member = scalar(rng);
+                if members
+                    .iter()
+                    .all(|other| other.render(false) != member.render(false))
+                {
+                    members.push(member);
+                }
+            }
+            Literal::Set(members)
+        }
+        2 => Literal::Map(
+            KEYWORDS[..count.min(KEYWORDS.len())]
+                .iter()
+                .map(|key| (*key, item(rng)))
+                .collect(),
+        ),
+        3 => {
+            let value = lookup_literal(rng, 0);
+            match value.collection() {
+                Literal::Vector(_) | Literal::Map(_) | Literal::Set(_) => {
+                    Literal::Meta(Box::new(value), rng.choose(3) as i64)
+                }
+                _ => value,
+            }
+        }
+        _ => Literal::Vector((0..count).map(|_| item(rng)).collect()),
+    }
+}
+
 /// One known-dead item of a namespace program.
 #[derive(Clone, Debug)]
 pub(crate) struct Garbage {
@@ -793,6 +848,9 @@ struct Builder {
     literal_rng: Generator,
     /// Draws key shape reads ([`Builder::shape_read`]).
     shape_rng: Generator,
+    /// Draws lookups of constant literals and their literals
+    /// ([`Builder::lookup_read`]).
+    lookup_rng: Generator,
     /// Literals generated so far, which later sites repeat or nest.
     literals: Vec<Literal>,
     namespaces: Vec<Namespace>,
@@ -826,6 +884,10 @@ pub(crate) fn namespace_program(seed: u64) -> NamespaceProgram {
         },
         shape_rng: Generator {
             state: seed ^ SHAPE_STREAM,
+            next_id: 0,
+        },
+        lookup_rng: Generator {
+            state: seed ^ LOOKUP_STREAM,
             next_id: 0,
         },
         literals: Vec::new(),
@@ -1029,15 +1091,15 @@ impl Builder {
                     self.number(scope, locals, d)
                 )),
                 // The leaf this arm used to fall through to, plus a read of a
-                // collection literal from the literal stream, and sometimes
-                // one of a shaped literal from the shape stream.
+                // collection literal from the literal stream, sometimes one of
+                // a shaped literal from the shape stream, and sometimes a
+                // lookup of a constant literal from the lookup stream.
                 14 => {
-                    let leaf = self.leaf_number(scope, locals);
-                    let read = self.literal_read(locals);
-                    Some(match self.shape_read(locals) {
-                        Some(shaped) => format!("(+ {leaf} {read} {shaped})"),
-                        None => format!("(+ {leaf} {read})"),
-                    })
+                    let mut terms =
+                        vec![self.leaf_number(scope, locals), self.literal_read(locals)];
+                    terms.extend(self.shape_read(locals));
+                    terms.extend(self.lookup_read(locals));
+                    Some(format!("(+ {})", terms.join(" ")))
                 }
                 13 => {
                     let name = format!("x{}", self.rng.fresh());
@@ -1266,6 +1328,91 @@ impl Builder {
              (= (persistent! (dissoc! (transient m) {first})) (persistent! (dissoc! (transient b) {first})))) \
              (+ (count m) (mod (hash (vec (keys m))) 97) (mod (hash (vec (vals m))) 97)) \
              (throw (js/Error. \"shaped map differs\"))))"
+        ))
+    }
+
+    /// Sometimes a number read from a constant collection literal through an
+    /// operation that `Advanced` folds against it (light-cljs-221): `get`,
+    /// keyword and collection calls, `get-in`, `nth`, `count`, `empty?`,
+    /// `contains?`, `seq`, `first`, `second`, `last`, `peek`, `rest`,
+    /// `next`, `not-empty` and vector and map destructuring, with constant
+    /// keys and indexes or dynamic ones (a local, or behind `identity`),
+    /// including missing keys, out-of-range, negative and fractional
+    /// indexes, `nil` and defaults. The literal is marked, so the built
+    /// rendering of property 5 reads one that no level folds against. A
+    /// call that throws gives its message; the read is the result's hash.
+    fn lookup_read(&mut self, locals: &[String]) -> Option<String> {
+        let rng = &mut self.lookup_rng;
+        if rng.choose(2) == 0 {
+            return None;
+        }
+        let literal = lookup_literal(rng, 1);
+        let text = literal.marked();
+        // A set's member order differs between its constant and built
+        // renderings, so no read depends on it.
+        let set = matches!(literal.collection(), Literal::Set(_));
+        // A key or index, often present, sometimes dynamic.
+        let key = |rng: &mut Generator| -> String {
+            let key = match rng.choose(10) {
+                0..=2 => KEYWORDS[rng.choose(KEYWORDS.len())].to_owned(),
+                3 => ":z".to_owned(),
+                4 => "nil".to_owned(),
+                5 => "\"s0\"".to_owned(),
+                6 => ["-1", "1.5", "5", "-0.0"][rng.choose(4)].to_owned(),
+                _ => rng.choose(3).to_string(),
+            };
+            match rng.choose(4) {
+                0 if !locals.is_empty() => locals[rng.choose(locals.len())].clone(),
+                1 => format!("(identity {key})"),
+                _ => key,
+            }
+        };
+        let default = |rng: &mut Generator| match rng.choose(3) {
+            0 => String::new(),
+            1 => " :nf".to_owned(),
+            _ => " (identity :nf)".to_owned(),
+        };
+        let read = match rng.choose(16) {
+            0 => format!("(get {text} {}{})", key(rng), default(rng)),
+            1 => {
+                let keyword = KEYWORDS[rng.choose(KEYWORDS.len())];
+                format!("({keyword} {text}{})", default(rng))
+            }
+            // Lists are not callable; vectors throw on a key or an index out
+            // of range, with messages of their own.
+            2 if !matches!(literal.collection(), Literal::List(_)) => {
+                format!("({text} {}{})", key(rng), default(rng))
+            }
+            3 => format!(
+                "(get-in {text} [{} {}]{})",
+                key(rng),
+                key(rng),
+                default(rng)
+            ),
+            4 => format!("(nth {text} {}{})", key(rng), default(rng)),
+            5 => format!("(contains? {text} {})", key(rng)),
+            6 if !set => {
+                let operation = ["count", "empty?", "seq", "not-empty"][rng.choose(4)];
+                format!("({operation} {text})")
+            }
+            7 if !set => {
+                let operation = ["first", "second", "last", "peek", "rest", "next"][rng.choose(6)];
+                format!("({operation} {text})")
+            }
+            8 => {
+                let operation =
+                    ["seq?", "vector?", "map?", "set?", "list?", "sequential?"][rng.choose(6)];
+                format!("({operation} {text})")
+            }
+            9 if !set => format!("(let [[a b c] {text}] [a b c])"),
+            10 if !set => format!("(let [[a & more] {text}] [a more])"),
+            11 if !matches!(literal.collection(), Literal::List(_)) => {
+                format!("(let [{{:keys [a z] :or {{z :none}} :as all}} {text}] [a z (count all)])")
+            }
+            _ => format!("(get {text} {})", key(rng)),
+        };
+        Some(format!(
+            "(mod (hash (try {read} (catch :default e (.-message e)))) 97)"
         ))
     }
 
@@ -1896,7 +2043,9 @@ impl Builder {
                     0 => format!("(str \"{sentinel}\" (+ 1 2))"),
                     1 => format!("(vector \"{sentinel}\" (inc 1))"),
                     2 => format!("(hash-map :a \"{sentinel}\" :b (* 2 3))"),
-                    _ => format!("(count [\"{sentinel}\" (- 5 1)])"),
+                    // A lookup that folds to the sentinel at `Advanced`
+                    // (light-cljs-221), which an escape then still shows.
+                    _ => format!("(get [\"{sentinel}\" (- 5 1)] 0)"),
                 };
                 (format!("(def {name} {value})"), false)
             }

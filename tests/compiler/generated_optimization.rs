@@ -29,7 +29,13 @@
 //!    pools. P so rendered records exactly what P records, at every level.
 //!    Since light-cljs-219 a read also compares a literal with one built at
 //!    its site and throws if they are `=` but hash apart, so the hashes
-//!    `Advanced` embeds in pooled constants meet the runtime's.
+//!    `Advanced` embeds in pooled constants meet the runtime's. Since
+//!    light-cljs-221 the literals are also read through the lookups, counts
+//!    and destructurings `Advanced` folds against constants, with constant
+//!    and dynamic keys and indexes, missing and out of range ones, and the
+//!    built rendering reads the same through literals nothing folds against;
+//!    with folding off, the built rendering pools no more than the constant
+//!    one.
 //!
 //! Failures print the seed, every namespace's source and the three output
 //! sizes. Replay a seed with `LIGHT_CLJS_GENERATED_SEED=<u64>` (it runs in
@@ -499,8 +505,16 @@ fn check_seed(seed: u64) {
             context(&program, &built)
         );
     }
+    // Folding reads constants away with the entries only they read
+    // (light-cljs-221), which the built rendering keeps, so the pools are
+    // compared with folding off.
+    let unfolded = |compiled: &Compiled| {
+        let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+        options.no_folding = true;
+        prepare_application(&analyze(&program, &compiled.sources), options).emit_js()
+    };
     assert!(
-        pool_composites(&p.js[2]) >= pool_composites(&built.js[2]),
+        pool_composites(&unfolded(p)) >= pool_composites(&unfolded(&built)),
         "property 5: the built rendering pools more than the constant one\n{}",
         context(&program, &built)
     );
@@ -659,6 +673,41 @@ fn checks_reject_changed_records_surviving_garbage_and_residue() {
     assert_ne!(
         normalized_len("  const k1 = rt$hashed(rt$vectorFromArray([1]), 5);\n"),
         normalized_len("  const k1 = rt$hashed(rt$vectorFromArray([10]), 5);\n")
+    );
+}
+
+/// Most programs read constant literals through the operations `Advanced`
+/// folds against them (light-cljs-221), which property 5 compares with the
+/// same reads of built literals; and folding them shrinks the output.
+#[test]
+fn programs_read_constants_through_folded_lookups() {
+    let mut reading = 0;
+    for seed in SEEDS {
+        let program = namespace_program(seed);
+        let sources = program.sources(&|_| false, false);
+        if !sources
+            .iter()
+            .any(|(_, source)| source.contains("(mod (hash (try "))
+        {
+            continue;
+        }
+        reading += 1;
+        let analyzed = analyze(&program, &sources);
+        let mut unfolded = ApplicationOptions::new(OptimizationLevel::Advanced);
+        unfolded.no_folding = true;
+        let folded = prepare_application(
+            &analyzed,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+        );
+        assert!(
+            folded.emit_js().len() < prepare_application(&analyzed, unfolded).emit_js().len(),
+            "seed {seed}: folding left the output as large"
+        );
+    }
+    assert!(
+        reading * 2 >= SEEDS.len(),
+        "{reading} of {} programs",
+        SEEDS.len()
     );
 }
 
