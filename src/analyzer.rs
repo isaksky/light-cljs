@@ -2791,7 +2791,9 @@ struct Analyzer<'a> {
     raw_type: bool,
     macro_host: &'a mut MacroHost,
     engine: Option<&'a dyn crate::evaluator::MacroEvaluator>,
-    deferred: Vec<(ExprId, usize)>,
+    /// Placeholders for deferred units, with what each unit's snapshot shares
+    /// with this program.
+    deferred: Vec<(ExprId, usize, crate::program_fragment::SharedPrefix)>,
     macro_depth: usize,
     analysis_depth: usize,
     macro_source: Option<Source>,
@@ -3128,7 +3130,9 @@ fn analyze_input(
         roots = vec![analyzer.import_form(form)?];
     }
     analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
-    if let Some(unit) = snapshot.and_then(|s| s.definition_test_unit) {
+    if let Some(snapshot) = snapshot
+        && let Some(unit) = snapshot.definition_test_unit
+    {
         let session = analyzer
             .macro_host
             .session_handle()
@@ -3140,7 +3144,12 @@ fn analyze_input(
                     span: analyzer.program.exprs[analyzer.program.root.0].span.clone(),
                     kind: AnalysisErrorKind::MacroExpansion(message),
                 })?;
-        let value = crate::program_fragment::append(&mut analyzer.program, &program);
+        // The test unit was analyzed from this definition's own snapshot.
+        let value = crate::program_fragment::append(
+            &mut analyzer.program,
+            &program,
+            &crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program),
+        );
         analyzer.warnings.extend(warnings);
         let test = analyzer.push(
             ExprKind::DefinitionTest { value, unit },
@@ -4453,7 +4462,7 @@ impl Analyzer<'_> {
             .register_javascript_macro(
                 self.namespace,
                 &form,
-                self.definition_snapshot(),
+                self.definition_snapshot().0,
                 self.engine,
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
@@ -5677,13 +5686,22 @@ impl Analyzer<'_> {
         self.datum(node, ExprContext::Value)
     }
 
-    fn definition_snapshot(&self) -> crate::compilation_session::DefinitionSnapshot {
-        crate::compilation_session::DefinitionSnapshot {
+    /// A deferred unit's definition-time environment, and what its resolution
+    /// program shares with this one for appending the unit's analysis.
+    fn definition_snapshot(
+        &self,
+    ) -> (
+        crate::compilation_session::DefinitionSnapshot,
+        crate::program_fragment::SharedPrefix,
+    ) {
+        let (resolution_program, shared) =
+            crate::program_fragment::resolution_snapshot(&self.program);
+        let snapshot = crate::compilation_session::DefinitionSnapshot {
             namespace: self.namespace.into(),
             aliases: self.aliases.to_vec(),
             requires: self.requires.to_vec(),
             resolution: self.resolution.clone(),
-            resolution_program: crate::program_fragment::resolution_snapshot(&self.program),
+            resolution_program,
             options: self.options,
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
@@ -5694,14 +5712,15 @@ impl Analyzer<'_> {
                 .macro_host
                 .session_handle()
                 .map_or(0, |s| s.extension_frontier()),
-        }
+        };
+        (snapshot, shared)
     }
 
     fn drain_deferred(&mut self) -> Result<(), AnalysisError> {
         let Some(session) = self.macro_host.session_handle() else {
             return Ok(());
         };
-        for (placeholder, unit) in std::mem::take(&mut self.deferred) {
+        for (placeholder, unit, shared) in std::mem::take(&mut self.deferred) {
             let (program, warnings) = session.analyze(unit, self.engine).map_err(|message| {
                 session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
                     span: self.program.exprs[placeholder.0].span.clone(),
@@ -5709,11 +5728,13 @@ impl Analyzer<'_> {
                 })
             })?;
             let globals = self.program.globals.clone();
-            let root = crate::program_fragment::append(&mut self.program, &program);
+            // The unit was analyzed from a snapshot of this program, so only
+            // what it added is appended.
+            let root = crate::program_fragment::append(&mut self.program, &program, &shared);
             // Snapshot metadata resolves references within the fragment, but must
             // not roll back a later source declaration's live metadata/flags.
             self.program.globals[..globals.len()].clone_from_slice(&globals);
-            for (index, global) in self.program.globals.iter().enumerate() {
+            for (index, global) in self.program.globals.iter().enumerate().skip(globals.len()) {
                 self.globals.insert(
                     (global.namespace.clone(), global.name.clone()),
                     GlobalId(index),
@@ -5899,15 +5920,13 @@ impl Analyzer<'_> {
                 .macro_host
                 .session_handle()
                 .expect("compilation session");
+            let (mut snapshot, shared) = self.definition_snapshot();
+            snapshot.definition_test = test_form.clone();
             let unit = session
                 .register(
                     format!("{}/{}", self.namespace, self.program.globals[global.0].name),
                     form,
-                    {
-                        let mut snapshot = self.definition_snapshot();
-                        snapshot.definition_test = test_form.clone();
-                        snapshot
-                    },
+                    snapshot,
                     self.macro_host.macro_analysis_frame(),
                     once,
                     {
@@ -5925,7 +5944,7 @@ impl Analyzer<'_> {
                     self.syntax.nodes[initializer.unwrap().0].span.clone(),
                     ExprContext::Value,
                 );
-                self.deferred.push((placeholder, unit));
+                self.deferred.push((placeholder, unit, shared));
                 placeholder
             }))
         } else {
@@ -6750,12 +6769,12 @@ impl Analyzer<'_> {
                     extensions: &[],
                     once: false,
                     form,
-                    snapshot: self.definition_snapshot(),
+                    snapshot: self.definition_snapshot().0,
                     host: self.macro_host.macro_analysis_frame(),
                     location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
                     analyzed: Some(crate::program_fragment::expression_snapshot(
                         &self.program,
-                        Some(expr),
+                        expr,
                     )),
                 },
             )
@@ -6884,6 +6903,7 @@ impl Analyzer<'_> {
             .compiler_read_form(id)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+        let (snapshot, shared) = self.definition_snapshot();
         let unit = session
             .register_bundle(
                 &self.program,
@@ -6892,7 +6912,7 @@ impl Analyzer<'_> {
                     extensions: &extensions,
                     once,
                     form,
-                    snapshot: self.definition_snapshot(),
+                    snapshot,
                     host: self.macro_host.macro_analysis_frame(),
                     location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
                     analyzed: None,
@@ -6900,7 +6920,7 @@ impl Analyzer<'_> {
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         self.program.exprs[expr.0].kind = ExprKind::Nil;
-        self.deferred.push((expr, unit));
+        self.deferred.push((expr, unit, shared));
         Ok(expr)
     }
 

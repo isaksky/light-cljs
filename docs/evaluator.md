@@ -261,7 +261,11 @@ runtime, collect garbage or call `Context::with`.
 
 Successful semantic IR is reused by compile-time emission and final application
 assembly. `program_fragment` remaps arena IDs while preserving binding identity
-and original locations. Compile-time emission uses the ordinary emitter with
+and original locations. A unit's snapshot keeps the program's declarations and
+metadata, with only the literals (and, for executable metadata, the locals) that
+metadata uses, and records where those entries live in the program it was taken
+from. Assembly appends only what the unit itself added, so the assembled
+program grows linearly with its definitions. Compile-time emission uses the ordinary emitter with
 root access hooks and never invokes an application optimizer. Ready root reads
 stay in JS. Unrequested initializers drain in source order; standalone runtime
 expressions are not replayed during macro setup. The warning API drains each

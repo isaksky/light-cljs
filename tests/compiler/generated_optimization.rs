@@ -133,17 +133,10 @@ fn analyze(program: &NamespaceProgram, sources: &[(String, String)]) -> Program 
     for (path, source) in sources {
         root.write(path, source);
     }
-    // After the first compiler macro, each definition is a deferred unit whose
-    // fragment re-appends the whole program snapshot, so analysis time grows
-    // quadratically and some larger programs of long runs exceed the 10s
-    // default session deadline in debug builds (light-cljs-225). The deadline
-    // is not under test here.
-    let mut host = MacroHost::new();
-    host.evaluator_options.timeout = std::time::Duration::from_secs(600);
     analyze_namespace_entry(
         &program.entry,
         std::slice::from_ref(&root.0),
-        &mut host,
+        &mut MacroHost::new(),
         AnalysisOptions::default(),
         &mut Vec::new(),
     )
