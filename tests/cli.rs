@@ -328,3 +328,95 @@ fn optimize_rejects_unknown_levels_and_non_compile_modes() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
 }
+
+#[test]
+fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
+    let source = "(js/console.log (+ 1 2))";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let root = "examples/namespaces";
+    let namespace = analyze_namespace_entry(
+        "demo.main",
+        &[Path::new(env!("CARGO_MANIFEST_DIR")).join(root)],
+        &mut MacroHost::new(),
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    for level in OptimizationLevel::ALL {
+        let name = level.name();
+        let text = prepare_application(&program, ApplicationOptions::new(level));
+        let entry = prepare_application(&namespace, ApplicationOptions::new(level));
+        // The flag may come before or after the input, with or without --entry.
+        for (args, prepared) in [
+            (
+                &[
+                    "--compile",
+                    "--optimize",
+                    name,
+                    "--size-report",
+                    "--text",
+                    source,
+                ][..],
+                &text,
+            ),
+            (
+                &[
+                    "--compile",
+                    "--text",
+                    source,
+                    "--size-report",
+                    "--optimize",
+                    name,
+                ][..],
+                &text,
+            ),
+            (
+                &[
+                    "--compile",
+                    "--size-report",
+                    "--entry",
+                    "demo.main",
+                    "--source-root",
+                    root,
+                    "--optimize",
+                    name,
+                ][..],
+                &entry,
+            ),
+        ] {
+            let output = light_cljs(args);
+            assert!(output.status.success(), "{args:?}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                prepared.emit_js(),
+                "{args:?}"
+            );
+            let report = String::from_utf8(output.stderr).unwrap();
+            assert_eq!(report, prepared.retention().to_string(), "{args:?}");
+            let embedding = if level == OptimizationLevel::Advanced {
+                "runtime slice"
+            } else {
+                "whole runtime"
+            };
+            assert!(
+                report.starts_with(&format!("{name}: {embedding}, ")),
+                "{args:?}: {report}"
+            );
+            assert!(report.contains("\nroot "), "{args:?}");
+            assert!(report.contains("\nunit "), "{args:?}");
+        }
+    }
+    // `+` is bytes 17..18 of the source and the first runtime read.
+    let report = light_cljs(&["--compile", "--size-report", "--text", source]).stderr;
+    let report = String::from_utf8(report).unwrap();
+    let root = report.lines().nth(3).unwrap();
+    assert!(root.starts_with("rt.core.add "), "{report}");
+    assert!(root.ends_with(" source 0, bytes 17..18"), "{report}");
+    let output = light_cljs(&["--parse", "--size-report", "--text", "1"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--size-report requires --compile")
+    );
+}

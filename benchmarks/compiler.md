@@ -545,3 +545,53 @@ unit's bytes, requires count, effect targets and reach. Reproduce it with:
 ```sh
 cargo test --test compiler runtime_manifest::print_runtime_unit_sizes -- --ignored --nocapture
 ```
+
+## Advanced runtime slicing — October 12, 2026
+
+light-cljs-203 makes `--optimize advanced` embed only the runtime units
+reachable from the runtime names the emitted code reads (Phase 1 step 2 of the
+[design](../docs/advanced-optimization.md)). `none` and `prepare` output is
+unchanged. Raw bytes are `--compile --optimize LEVEL --text` output; gzip is
+`gzip -9` with the gzip that ships with macOS 15, which compresses these
+programs a few bytes differently from the run recorded in the ratchet section
+above.
+
+| Fixture | Prepare raw / gzip | Advanced raw / gzip | Saved raw | Units kept | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 350,927 / 83,889 | 335,242 / 80,088 | 15,685 | 665 | 336,000 |
+| println-hi | 350,814 / 83,831 | 335,129 / 80,030 | 15,685 | 665 | 336,000 |
+| vector-printed | 350,839 / 83,839 | 335,171 / 80,038 | 15,668 | 665 | 336,000 |
+| map-printed | 350,829 / 83,832 | 335,158 / 80,033 | 15,671 | 665 | 336,000 |
+| seq-pipeline | 351,158 / 83,949 | 335,473 / 80,151 | 15,685 | 665 | 336,000 |
+| add | 350,767 / 83,810 | 335,082 / 80,008 | 15,685 | 665 | 336,000 |
+| rest-fn | 351,111 / 83,942 | 335,445 / 80,157 | 15,666 | 665 | 336,000 |
+| keyword-case | 351,399 / 83,966 | 335,723 / 80,165 | 15,676 | 665 | 336,000 |
+| record-protocol | 351,720 / 84,130 | 344,607 / 82,473 | 7,113 | 672 | 345,000 |
+
+This is the before number for dismantling the `core` hub (light-cljs-204).
+Every program that reads the runtime reads some `rt.core.*` name, if only in
+the namespace registration emitted with the runtime, and `core` keeps 665 of
+the 691 units (334,504 of 349,584 unit bytes). The 26 units it does not reach,
+15,080 bytes, are what a slice can drop today: the declaration demand and
+patch machinery (`setDeclarationDemand`, `declarationReceiver`,
+`setDeclaration`, `declarationTransaction` and the three patch helpers),
+`setMacroexpandServices`, `compilerExceptionMessage`, the protocol, type,
+record and reify constructors (`protocol`, `protocolMethod`,
+`protocolPredicate`, `extendType`, `extendInstance`, `makeReify`, `reify`,
+`reifySites`, `makeType`, `recordMethods`, `recordCopy`, `recordFromMap`),
+`definitionVar`, and the literal constructors `mapFromArrays`,
+`constantMapFromArray`, `constantSetFromArray` and `literalSetFromArray`. The
+`defrecord` fixture reads `makeType`, `protocol`, `protocolMethod` and
+`recordFromMap`, which bring 7 of them back. The rest of the saving is the
+export section, which lists only the exports the program reads.
+
+`--size-report` prints which units an output keeps and why; the report for
+`console-log-sum` at `advanced` is checked in as
+[results/retention-2026-10-12/console-log-sum.txt](results/retention-2026-10-12/console-log-sum.txt).
+Every unit there is attributed to `rt.core.add`, the first runtime read.
+Reproduce it with:
+
+```sh
+cargo run --quiet -- --compile --optimize advanced --size-report \
+  --text '(js/console.log (+ 1 2))' 2>&1 >/dev/null
+```

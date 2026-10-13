@@ -35,51 +35,51 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "console-log-sum",
         source: "(js/console.log (+ 1 2))",
-        ceilings: [351_000, 351_000, 351_000],
+        ceilings: [351_000, 351_000, 336_000],
         printed: "3\nundefined\n",
     },
     Fixture {
         name: "println-hi",
         source: r#"(enable-console-print!) (println "hi")"#,
-        ceilings: [351_000, 351_000, 351_000],
+        ceilings: [351_000, 351_000, 336_000],
         printed: "hi\nnull\n",
     },
     Fixture {
         name: "vector-printed",
         source: "(enable-console-print!) (println [1 2 3])",
-        ceilings: [351_000, 351_000, 351_000],
+        ceilings: [351_000, 351_000, 336_000],
         printed: "[1 2 3]\nnull\n",
     },
     Fixture {
         name: "map-printed",
         source: "(enable-console-print!) (println {})",
-        ceilings: [351_000, 351_000, 351_000],
+        ceilings: [351_000, 351_000, 336_000],
         printed: "{}\nnull\n",
     },
     Fixture {
         name: "seq-pipeline",
         source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
                  (drop 1) (mapcat identity) into-array))",
-        ceilings: [352_000, 352_000, 352_000],
+        ceilings: [352_000, 352_000, 336_000],
         printed: "[ 6, 8 ]\nundefined\n",
     },
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [351_000, 351_000, 351_000],
+        ceilings: [351_000, 351_000, 336_000],
         printed: "3\n",
     },
     Fixture {
         name: "rest-fn",
         source: "(fn [& xs] xs)",
-        ceilings: [352_000, 352_000, 352_000],
+        ceilings: [352_000, 352_000, 336_000],
         printed: "#function\n",
     },
     Fixture {
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [352_000, 352_000, 352_000],
+        ceilings: [352_000, 352_000, 336_000],
         printed: "321\n",
     },
     Fixture {
@@ -87,7 +87,7 @@ const FIXTURES: &[Fixture] = &[
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
                  (area (->Rect 3 4))",
-        ceilings: [352_000, 352_000, 352_000],
+        ceilings: [352_000, 352_000, 345_000],
         printed: "12\n",
     },
 ];

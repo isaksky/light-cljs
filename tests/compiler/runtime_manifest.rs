@@ -125,6 +125,61 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
     }
     assert_eq!(manifest.exports.header_range.start, offset);
     assert_eq!(manifest.exports.body_range.end, ANNOTATED_RUNTIME.len());
+    // A slice that keeps every unit and exports the export list is the
+    // runtime itself, so slices differ from it only in what they leave out.
+    assert_eq!(
+        manifest.sliced_text(&vec![true; manifest.units.len()], &manifest.exports.names),
+        RUNTIME
+    );
+}
+
+#[test]
+fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
+    let manifest = manifest();
+    let unit = |name| manifest.unit_named(name).unwrap();
+    let roots = [
+        unit("jsObject"),
+        unit("protocol"),
+        unit("core"),
+        unit("field"),
+    ];
+    let first = manifest.reached_by(&roots);
+    assert_eq!(
+        first.iter().map(Option::is_some).collect::<Vec<_>>(),
+        manifest.reachable(roots)
+    );
+    assert_eq!(first[unit("jsObject").0], Some(0));
+    for (index, reached) in manifest.reachable([unit("protocol")]).iter().enumerate() {
+        if *reached {
+            assert_eq!(
+                first[index],
+                Some(1),
+                "unit `{}`",
+                manifest.units[index].name
+            );
+        }
+    }
+    // A root whose closure earlier roots already cover adds nothing.
+    let core = manifest.reachable([unit("core")]);
+    assert!(core[unit("field").0]);
+    assert!(!first.contains(&Some(3)));
+    for (index, reached) in first.iter().enumerate() {
+        assert_eq!(
+            *reached == Some(2),
+            core[index] && *reached != Some(1) && *reached != Some(0)
+        );
+    }
+
+    let kept = manifest.reachable([unit("protocol")]);
+    let sliced = manifest.sliced_text(&kept, &["protocol"]);
+    let mut expected = RUNTIME[..manifest.prologue.len()].to_owned();
+    for (index, unit) in manifest.units.iter().enumerate() {
+        if kept[index] {
+            expected.push_str(&ANNOTATED_RUNTIME[unit.body_range.clone()]);
+        }
+    }
+    expected.push_str("  return Object.freeze({protocol});\n})()\n");
+    assert_eq!(sliced, expected);
 }
 
 /// Compile-time units the export list does not reach; any other unreached

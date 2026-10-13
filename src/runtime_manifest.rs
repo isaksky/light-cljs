@@ -455,6 +455,53 @@ impl<'a> RuntimeManifest<'a> {
         kept
     }
 
+    /// [`RuntimeManifest::reachable`] with attribution, indexed by [`UnitId`]:
+    /// the position in `roots` of the first root whose closure contains the
+    /// unit, or `None` for a unit no root keeps. The kept units are the same.
+    pub fn reached_by(&self, roots: &[UnitId]) -> Vec<Option<usize>> {
+        let mut first = vec![None; self.units.len()];
+        let mut stack = Vec::new();
+        for (index, &root) in roots.iter().enumerate() {
+            // A unit an earlier root reached has its whole closure attributed.
+            stack.push(root);
+            while let Some(unit) = stack.pop() {
+                if first[unit.0].is_some() {
+                    continue;
+                }
+                first[unit.0] = Some(index);
+                stack.extend_from_slice(&self.dependencies[unit.0]);
+                stack.extend_from_slice(&self.attached[unit.0]);
+            }
+        }
+        first
+    }
+
+    /// A runtime factory with only the `kept` units (indexed by [`UnitId`]):
+    /// the prologue, the kept bodies in `UnitId` order, so initialization order
+    /// is the full runtime's, and an export section that freezes `exports` in
+    /// the given order. `kept` must be closed under
+    /// [`RuntimeManifest::reachable`] and every export must be a kept binding.
+    /// Keeping every unit and exporting [`Exports::names`] gives
+    /// [`RuntimeManifest::runtime_text`].
+    pub fn sliced_text(&self, kept: &[bool], exports: &[&str]) -> String {
+        debug_assert_eq!(kept.len(), self.units.len());
+        debug_assert!(
+            exports
+                .iter()
+                .all(|name| self.unit_of(name).is_some_and(|unit| kept[unit.0])),
+            "every export of a runtime slice must be a kept binding: {exports:?}"
+        );
+        let mut text = String::new();
+        text.push_str(&self.source[self.prologue.clone()]);
+        for (unit, _) in self.units.iter().zip(kept).filter(|(_, kept)| **kept) {
+            text.push_str(&self.source[unit.body_range.clone()]);
+        }
+        text.push_str("  return Object.freeze({");
+        text.push_str(&exports.join(", "));
+        text.push_str("});\n})()\n");
+        text
+    }
+
     /// Checks every unit's declared requires and effect against its body.
     pub fn validate(&self) -> Result<(), Vec<ManifestError>> {
         let mut errors = Vec::new();

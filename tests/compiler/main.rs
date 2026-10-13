@@ -118,6 +118,7 @@ mod runtime_map_order;
 mod runtime_map_traversal;
 mod runtime_set_order;
 mod runtime_set_traversal;
+mod runtime_slicing;
 mod sci_cljc_accepted_probe;
 mod sci_cljc_source_probe;
 mod sci_execution;

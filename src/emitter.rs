@@ -6,6 +6,8 @@ use crate::analyzer::{
     ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, PACKAGE_REGISTRY,
     Program, RecurTargetId, StringId,
 };
+use crate::application::OptimizationLevel;
+use crate::runtime_slice::{EmittedRuntime, RuntimeEmbedding, RuntimeName, RuntimeRoots};
 
 /// Emit one JavaScript expression whose value is the last source form (or nil).
 /// The result is self-contained. The default Rust application preparation pass
@@ -14,13 +16,23 @@ pub fn emit_js(program: &Program) -> String {
     crate::application::prepare_application(program, Default::default()).emit_js()
 }
 
+/// Emit a prepared application. At `Advanced` the output embeds only the
+/// runtime units its runtime reads reach (see [`crate::runtime_slice`]).
 pub(crate) fn emit_application(
     program: &Program,
     globals: &[bool],
     calls: &std::collections::HashMap<ExprId, usize>,
+    level: OptimizationLevel,
     module: bool,
-) -> String {
-    emit_js_mode(program, None, false, false, Some((globals, calls)), module)
+) -> (String, EmittedRuntime) {
+    emit_js_mode(
+        program,
+        None,
+        false,
+        false,
+        Some((globals, calls, level.advanced())),
+        module,
+    )
 }
 
 /// Emit one ES module for a bundler instead of a bare expression. Each package
@@ -60,18 +72,21 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
     };
     format!(
         "({parameter}) => {}",
-        emit_js_mode(program, Some(&parameter), demand_roots, false, None, false)
+        emit_js_mode(program, Some(&parameter), demand_roots, false, None, false).0
     )
 }
 
+/// `application` carries the retained globals, the specialized calls and
+/// whether to slice the runtime (`Advanced`). The returned runtime report lists
+/// every runtime name the output reads.
 fn emit_js_mode(
     program: &Program,
     shared: Option<&str>,
     demand_roots: bool,
     application_roots: bool,
-    application: Option<(&[bool], &std::collections::HashMap<ExprId, usize>)>,
+    application: Option<(&[bool], &std::collections::HashMap<ExprId, usize>, bool)>,
     module: bool,
-) -> String {
+) -> (String, EmittedRuntime) {
     let mut emitter = Emitter {
         program,
         demand_roots,
@@ -79,7 +94,7 @@ fn emit_js_mode(
         needs_host: false,
         needs_package: false,
         imports: module.then(Vec::new),
-        specialized_calls: application.map(|(_, calls)| calls),
+        specialized_calls: application.map(|(_, calls, _)| calls),
         output: String::new(),
         indent: 1,
         captures: Vec::new(),
@@ -90,6 +105,8 @@ fn emit_js_mode(
         used: HashSet::new(),
         returned_definition: None,
         raw_segments: Vec::new(),
+        runtime: RuntimeRoots::default(),
+        site: None,
     };
     emitter
         .output
@@ -99,12 +116,14 @@ fn emit_js_mode(
         if application_roots {
             break;
         }
-        if application.is_some_and(|(globals, _)| !globals[global]) {
+        if application.is_some_and(|(globals, _, _)| !globals[global]) {
             continue;
         }
         writeln!(emitter.output, "  let g{global};").unwrap();
     }
     emitter.emit(program.root, ExprContext::Return);
+    #[cfg(debug_assertions)]
+    check_runtime_reads(&emitter.output, &emitter.raw_segments, &emitter.runtime);
     emitter.output.push_str("})()\n");
     if emitter.needs_host || emitter.needs_package {
         let mut host = String::new();
@@ -123,8 +142,162 @@ fn emit_js_mode(
         }
         emitter.output.insert_str(prelude_end, host);
     }
-    if demand_roots || application_roots || !program.namespace_entries.is_empty() || program.exprs.iter().enumerate().any(|(id, expr)| {
-        emitter.used.contains(&ExprId(id)) && (
+    // Advanced application output embeds the units its runtime reads reach;
+    // everything else keeps the whole runtime under the expression-kind test.
+    let slice = shared.is_none() && application.is_some_and(|(_, _, slice)| slice);
+    let embed = if slice {
+        !emitter.runtime.is_empty()
+    } else {
+        demand_roots || application_roots || reads_runtime(program, &emitter.used)
+    };
+    debug_assert!(
+        embed || emitter.runtime.is_empty(),
+        "emitted code reads the runtime without embedding it"
+    );
+    let mut embedding = RuntimeEmbedding::None;
+    let mut runtime_bytes = 0;
+    if embed {
+        let mut registration = String::new();
+        for namespace in &program.namespaces {
+            let previous = std::mem::take(&mut emitter.output);
+            emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
+            let literal = std::mem::replace(&mut emitter.output, previous);
+            let register = RuntimeName::core("registerReaderNamespace");
+            emitter.runtime.demand(register, None);
+            writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
+            if let Some(context) = program.reader_contexts.get(namespace) {
+                for (alias, target) in &context.aliases {
+                    writeln!(
+                        registration,
+                        "    [{}, {}],",
+                        js_string(alias),
+                        js_string(target)
+                    )
+                    .unwrap();
+                }
+                registration.push_str("  ], refers: [\n");
+                for (local, ns, original) in &context.refers {
+                    writeln!(
+                        registration,
+                        "    [{}, {}, {}],",
+                        js_string(local),
+                        js_string(ns),
+                        js_string(original)
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    registration,
+                    "  ], excludes: [{}],",
+                    context
+                        .excludes
+                        .iter()
+                        .map(|s| js_string(s))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+            } else {
+                registration.push_str("  ],\n");
+            }
+            writeln!(
+                registration,
+                "  bindings: [{}]}});",
+                program
+                    .globals
+                    .iter()
+                    .filter(|g| g.namespace == *namespace)
+                    .map(|g| js_string(&g.name))
+                    .chain(
+                        program
+                            .reader_contexts
+                            .get(namespace)
+                            .into_iter()
+                            .flat_map(|c| &c.macros)
+                            .map(|name| js_string(name))
+                    )
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .unwrap();
+        }
+        if shared.is_none()
+            && let Some(namespace) = program.namespaces.last()
+        {
+            let names = [
+                RuntimeName::core("currentNs"),
+                RuntimeName::core("theNs"),
+                RuntimeName::export("symbol"),
+            ];
+            for name in names {
+                emitter.runtime.demand(name, None);
+            }
+            let [current, the_ns, symbol] = names;
+            writeln!(
+                registration,
+                "  {current} = {the_ns}({symbol}(null, {}));",
+                js_string(namespace)
+            )
+            .unwrap();
+        }
+        let mut runtime = if let Some(parameter) = shared {
+            format!("  const rt = {parameter};\n")
+        } else {
+            let factory = if slice {
+                embedding = RuntimeEmbedding::Slice;
+                std::borrow::Cow::Owned(crate::runtime_slice::sliced_runtime(&emitter.runtime))
+            } else {
+                embedding = RuntimeEmbedding::Whole;
+                std::borrow::Cow::Borrowed(crate::runtime_manifest::RUNTIME)
+            };
+            runtime_bytes = factory.trim().len();
+            format!("  const rt = {};\n", factory.trim())
+        };
+        let source_length = runtime.len();
+        runtime.push_str(&registration);
+        for range in &mut emitter.raw_segments {
+            if range.start >= prelude_end {
+                range.start += runtime.len();
+                range.end += runtime.len();
+            }
+        }
+        if shared.is_none() {
+            let start = prelude_end + runtime.find("(() =>").unwrap();
+            emitter
+                .raw_segments
+                .push(start..prelude_end + source_length - 2);
+        }
+        emitter.output.insert_str(prelude_end, &runtime);
+    }
+
+    // Raw JavaScript is an escape hatch, but its user-authored identifiers must
+    // not accidentally capture compiler locals or be captured by our helpers.
+    let output = if emitter
+        .used
+        .iter()
+        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
+    {
+        hygienic_js(emitter.output, emitter.raw_segments)
+    } else {
+        emitter.output
+    };
+    let output = match emitter.imports {
+        Some(imports) => module_source(&imports, &output),
+        None => output,
+    };
+    let runtime = EmittedRuntime {
+        roots: emitter.runtime,
+        embedding,
+        bytes: runtime_bytes,
+    };
+    (output, runtime)
+}
+
+/// Whether some emitted expression is of a kind whose emission reads the
+/// runtime. Below `Advanced` this decides whether the whole runtime is embedded.
+fn reads_runtime(program: &Program, used: &HashSet<ExprId>) -> bool {
+    !program.namespace_entries.is_empty() || program.exprs.iter().enumerate().any(|(id, expr)| {
+        used.contains(&ExprId(id)) && (
         matches!(
             expr.kind,
             ExprKind::Keyword(_)
@@ -152,55 +325,73 @@ fn emit_js_mode(
 
         ) || matches!(&expr.kind, ExprKind::Fn { methods, .. } if methods.iter().any(|m| m.rest.is_some()))
         )
-    }) {
-        let runtime = if let Some(parameter) = shared { format!("  const rt = {parameter};\n") } else {
-            format!("  const rt = {};\n", crate::runtime_manifest::RUNTIME.trim())
-        };
-        let source_length = runtime.len();
-        let mut runtime = runtime;
-        for namespace in &program.namespaces {
-            let previous = std::mem::take(&mut emitter.output);
-            emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
-            let literal = std::mem::replace(&mut emitter.output, previous);
-            writeln!(runtime, "  rt.core.registerReaderNamespace({literal}, {{aliases: [").unwrap();
-            if let Some(context) = program.reader_contexts.get(namespace) {
-                for (alias, target) in &context.aliases {
-                    writeln!(runtime, "    [{}, {}],", js_string(alias), js_string(target)).unwrap();
-                }
-                runtime.push_str("  ], refers: [\n");
-                for (local, ns, original) in &context.refers {
-                    writeln!(runtime, "    [{}, {}, {}],", js_string(local), js_string(ns), js_string(original)).unwrap();
-                }
-                writeln!(runtime, "  ], excludes: [{}],", context.excludes.iter().map(|s| js_string(s)).collect::<Vec<_>>().join(",")).unwrap();
-            } else { runtime.push_str("  ],\n"); }
-            writeln!(runtime, "  bindings: [{}]}});", program.globals.iter().filter(|g| g.namespace == *namespace).map(|g| js_string(&g.name)).chain(program.reader_contexts.get(namespace).into_iter().flat_map(|c| &c.macros).map(|name| js_string(name))).collect::<Vec<_>>().join(",")).unwrap();
-        }
-        if shared.is_none() && let Some(namespace) = program.namespaces.last() {
-            writeln!(runtime, "  rt.core.currentNs = rt.core.theNs(rt.symbol(null, {}));", js_string(namespace)).unwrap();
-        }
-        for range in &mut emitter.raw_segments { if range.start >= prelude_end { range.start += runtime.len(); range.end += runtime.len(); } }
-        if shared.is_none() {
-            let start = prelude_end + runtime.find("(() =>").unwrap();
-            emitter.raw_segments.push(start..prelude_end + source_length - 2);
-        }
-        emitter.output.insert_str(prelude_end, &runtime);
-    }
+    })
+}
 
-    // Raw JavaScript is an escape hatch, but its user-authored identifiers must
-    // not accidentally capture compiler locals or be captured by our helpers.
-    let output = if emitter
-        .used
-        .iter()
-        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
-    {
-        hygienic_js(emitter.output, emitter.raw_segments)
-    } else {
-        emitter.output
-    };
-    match emitter.imports {
-        Some(imports) => module_source(&imports, &output),
-        None => output,
+/// Debug check that every `rt.<export>[.<member>]` read in emitted code outside
+/// raw JavaScript was recorded through [`Emitter::rt`]: a read the roots miss
+/// would be absent from an `Advanced` runtime slice.
+#[cfg(debug_assertions)]
+fn check_runtime_reads(output: &str, raw: &[std::ops::Range<usize>], roots: &RuntimeRoots) {
+    let bytes = output.as_bytes();
+    let identifier = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$');
+    let mut raw = raw.to_vec();
+    raw.sort_by_key(|range| range.start);
+    let mut raw = raw.into_iter().peekable();
+    let mut missing = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if let Some(range) = raw.next_if(|range| range.start <= at) {
+            at = at.max(range.end);
+            continue;
+        }
+        let start = at;
+        if bytes[at] == b'"' {
+            at += 1;
+            while at < bytes.len() {
+                let byte = bytes[at];
+                at += if byte == b'\\' { 2 } else { 1 };
+                if byte == b'"' {
+                    break;
+                }
+            }
+        } else if identifier(bytes[at]) {
+            let end = raw.peek().map_or(bytes.len(), |range| range.start);
+            while at < end && identifier(bytes[at]) {
+                at += 1;
+            }
+            if &output[start..at] != "rt" || (start > 0 && bytes[start - 1] == b'.') {
+                continue;
+            }
+            let mut parts = Vec::new();
+            while parts.len() < 2 && bytes.get(at) == Some(&b'.') {
+                let part = at + 1;
+                let mut part_end = part;
+                while part_end < end && identifier(bytes[part_end]) {
+                    part_end += 1;
+                }
+                if part_end == part {
+                    break;
+                }
+                parts.push(&output[part..part_end]);
+                at = part_end;
+            }
+            let recorded = match parts[..] {
+                [export] => roots.contains(export, None),
+                [export, member] => roots.contains(export, Some(member)),
+                _ => false,
+            };
+            if !recorded {
+                missing.push(format!("rt.{}", parts.join(".")));
+            }
+        } else {
+            at += 1;
+        }
     }
+    assert!(
+        missing.is_empty(),
+        "emitted runtime reads not recorded as runtime roots: {missing:?}"
+    );
 }
 
 /// A package imported by bundler output, in first-reference order.
@@ -290,9 +481,29 @@ struct Emitter<'a> {
     // Upstream return-context def exits before its following test-property write.
     returned_definition: Option<ExprId>,
     raw_segments: Vec<std::ops::Range<usize>>,
+    /// Every runtime name written so far, the roots of an `Advanced` slice.
+    runtime: RuntimeRoots,
+    /// The innermost expression being emitted, to which runtime reads are attributed.
+    site: Option<ExprId>,
 }
 
 impl Emitter<'_> {
+    /// Write a runtime read (`rt.keyword`, `rt.core.add`) and record it as a
+    /// root of the runtime slice. All emitted runtime reads go through here.
+    fn rt(&mut self, name: RuntimeName) {
+        self.runtime.demand(name, self.site);
+        write!(self.output, "{name}").unwrap();
+    }
+
+    /// `rt.core.isKeyword(caseValue) ? rt.core.str(caseValue).slice(1)`: the
+    /// name a keyword `case` switches on; the caller writes the `:` branch.
+    fn keyword_case_name(&mut self) {
+        self.rt(RuntimeName::core("isKeyword"));
+        self.output.push_str("(caseValue) ? ");
+        self.rt(RuntimeName::core("str"));
+        self.output.push_str("(caseValue).slice(1)");
+    }
+
     fn indentation(&mut self) {
         for _ in 0..self.indent {
             self.output.push_str("  ");
@@ -306,13 +517,14 @@ impl Emitter<'_> {
     fn local_value(&mut self, id: LocalId) {
         if let Some((_, target)) = self.captures.iter().rev().find(|(local, _)| *local == id) {
             write!(self.output, "captures{}.l{}", target.0, id.0).unwrap();
-        } else if let Some((_, target)) = self
+        } else if let Some(&(_, target)) = self
             .reify_captures
             .iter()
             .rev()
             .find(|(local, _)| *local == id)
         {
-            write!(self.output, "rt.field(self{}, ", target.0).unwrap();
+            self.rt(RuntimeName::export("field"));
+            write!(self.output, "(self{}, ", target.0).unwrap();
             self.string_units(
                 &self.program.locals[id.0]
                     .name
@@ -514,6 +726,12 @@ impl Emitter<'_> {
     }
 
     fn emit(&mut self, id: ExprId, context: ExprContext) {
+        let site = self.site.replace(id);
+        self.emit_expr(id, context);
+        self.site = site;
+    }
+
+    fn emit_expr(&mut self, id: ExprId, context: ExprContext) {
         self.used.insert(id);
         if context == ExprContext::Value {
             self.value(id);
@@ -521,12 +739,12 @@ impl Emitter<'_> {
         }
         if let Some(namespace) = self.program.namespace_entries.get(&id) {
             self.indentation();
-            writeln!(
-                self.output,
-                "rt.core.currentNs = rt.core.theNs(rt.symbol(null, {}));",
-                js_string(namespace)
-            )
-            .unwrap();
+            self.rt(RuntimeName::core("currentNs"));
+            self.output.push_str(" = ");
+            self.rt(RuntimeName::core("theNs"));
+            self.output.push('(');
+            self.rt(RuntimeName::export("symbol"));
+            writeln!(self.output, "(null, {}));", js_string(namespace)).unwrap();
         }
         match &self.program.exprs[id.0].kind {
             ExprKind::JsTemplate { segments, args } => {
@@ -539,17 +757,34 @@ impl Emitter<'_> {
             }
             ExprKind::WithOutStr(body) => {
                 self.indentation();
-                self.output.push_str("{ let text = \"\"; const savedPrint = rt.core.printFn, savedNewline = rt.core.printNewline;\n");
+                let (print_fn, print_newline) = (
+                    RuntimeName::core("printFn"),
+                    RuntimeName::core("printNewline"),
+                );
+                self.output
+                    .push_str("{ let text = \"\"; const savedPrint = ");
+                self.rt(print_fn);
+                self.output.push_str(", savedNewline = ");
+                self.rt(print_newline);
+                self.output.push_str(";\n");
                 self.indent += 1;
                 self.indentation();
-                self.output.push_str("rt.core.printFn = value => { text += value == null ? \"\" : value; }; rt.core.printNewline = true;\n");
+                self.rt(print_fn);
+                self.output
+                    .push_str(" = value => { text += value == null ? \"\" : value; }; ");
+                self.rt(print_newline);
+                self.output.push_str(" = true;\n");
                 self.indentation();
                 self.output.push_str("try {\n");
                 self.indent += 1;
                 self.emit(*body, ExprContext::Discard);
                 self.indent -= 1;
                 self.indentation();
-                self.output.push_str("} finally { rt.core.printFn = savedPrint; rt.core.printNewline = savedNewline; }\n");
+                self.output.push_str("} finally { ");
+                self.rt(print_fn);
+                self.output.push_str(" = savedPrint; ");
+                self.rt(print_newline);
+                self.output.push_str(" = savedNewline; }\n");
                 if context == ExprContext::Return {
                     self.indentation();
                     self.output.push_str("return text;\n");
@@ -769,9 +1004,13 @@ impl Emitter<'_> {
                 let switch = *strict || *keyword_tests;
                 if switch {
                     self.indentation();
-                    self.output.push_str(if *keyword_tests {
-                        "switch (rt.core.isKeyword(caseValue) ? rt.core.str(caseValue).slice(1) : null) {\n"
-                    } else { "switch (caseValue) {\n" });
+                    if *keyword_tests {
+                        self.output.push_str("switch (");
+                        self.keyword_case_name();
+                        self.output.push_str(" : null) {\n");
+                    } else {
+                        self.output.push_str("switch (caseValue) {\n");
+                    }
                     self.indent += 1;
                 }
                 for (index, &(constant, branch)) in branches.iter().enumerate() {
@@ -798,7 +1037,8 @@ impl Emitter<'_> {
                     } else {
                         self.output
                             .push_str(if index == 0 { "if (" } else { "else if (" });
-                        self.output.push_str("rt.core.equal(caseValue, ");
+                        self.rt(RuntimeName::core("equal"));
+                        self.output.push_str("(caseValue, ");
                         self.value(constant);
                         self.output.push_str(")) {\n");
                     }
@@ -825,11 +1065,16 @@ impl Emitter<'_> {
                     self.emit(*default, context);
                 } else {
                     self.indentation();
-                    self.output.push_str(if *keyword_tests {
-                        "throw new Error(\"No matching clause: \" + (rt.core.isKeyword(caseValue) ? rt.core.str(caseValue).slice(1) : \"\"));\n"
+                    self.output
+                        .push_str("throw new Error(\"No matching clause: \" + ");
+                    if *keyword_tests {
+                        self.output.push('(');
+                        self.keyword_case_name();
+                        self.output.push_str(" : \"\"));\n");
                     } else {
-                        "throw new Error(\"No matching clause: \" + rt.core.str(caseValue));\n"
-                    });
+                        self.rt(RuntimeName::core("str"));
+                        self.output.push_str("(caseValue));\n");
+                    }
                 }
                 self.indent -= 1;
                 self.indentation();
@@ -1142,12 +1387,8 @@ impl Emitter<'_> {
             for i in 0..method.params.len() {
                 write!(self.output, "arguments[{i}], ").unwrap();
             }
-            writeln!(
-                self.output,
-                "rt.fnRest(arguments, {}));",
-                method.params.len()
-            )
-            .unwrap();
+            self.rt(RuntimeName::export("fnRest"));
+            writeln!(self.output, "(arguments, {}));", method.params.len()).unwrap();
         } else {
             self.output.push_str(if macro_function {
                 "default: throw new Error(\"Invalid arity: \" + (arguments.length - 2));\n"
@@ -1177,12 +1418,9 @@ impl Emitter<'_> {
                 )
                 .unwrap();
                 self.indentation();
-                writeln!(
-                    self.output,
-                    "{function}.cljs$lang$applyTo = (args) => rt.fnApplyTo(m{index}, {}, args);",
-                    method.params.len()
-                )
-                .unwrap();
+                write!(self.output, "{function}.cljs$lang$applyTo = (args) => ").unwrap();
+                self.rt(RuntimeName::export("fnApplyTo"));
+                writeln!(self.output, "(m{index}, {}, args);", method.params.len()).unwrap();
             } else {
                 writeln!(
                     self.output,
@@ -1271,6 +1509,12 @@ impl Emitter<'_> {
     }
 
     fn value(&mut self, id: ExprId) {
+        let site = self.site.replace(id);
+        self.value_expr(id);
+        self.site = site;
+    }
+
+    fn value_expr(&mut self, id: ExprId) {
         self.used.insert(id);
         match &self.program.exprs[id.0].kind {
             ExprKind::Nil => self.output.push_str("null"),
@@ -1305,7 +1549,8 @@ impl Emitter<'_> {
                 self.output
                     .push_str(")) throw new Error(\"Assert failed: \" + ");
                 if let Some(message) = message {
-                    self.output.push_str("rt.core.str(");
+                    self.rt(RuntimeName::core("str"));
+                    self.output.push('(');
                     self.value(*message);
                     self.output.push_str(") + \"\\n\" + ");
                 }
@@ -1317,7 +1562,8 @@ impl Emitter<'_> {
                 captures,
                 methods,
             } => {
-                write!(self.output, "rt.reify({}, [", id.0).unwrap();
+                self.rt(RuntimeName::export("reify"));
+                write!(self.output, "({}, [", id.0).unwrap();
                 for (index, local) in captures.iter().enumerate() {
                     if index > 0 {
                         self.output.push_str(", ");
@@ -1378,7 +1624,9 @@ impl Emitter<'_> {
             } => {
                 self.output.push_str("(() => { ");
                 self.product(*global);
-                self.output.push_str(" = rt.makeType(");
+                self.output.push_str(" = ");
+                self.rt(RuntimeName::export("makeType"));
+                self.output.push('(');
                 self.output.push('[');
                 for (index, field) in fields.iter().enumerate() {
                     if index > 0 {
@@ -1428,12 +1676,15 @@ impl Emitter<'_> {
                         self.output.push_str("(...args); ");
                     }
                     self.product(*global);
-                    self.output.push_str(".getBasis = () => rt.core.vector(");
+                    self.output.push_str(".getBasis = () => ");
+                    self.rt(RuntimeName::core("vector"));
+                    self.output.push('(');
                     for (index, field) in fields.iter().enumerate() {
                         if index > 0 {
                             self.output.push_str(", ");
                         }
-                        self.output.push_str("rt.symbol(null, ");
+                        self.rt(RuntimeName::export("symbol"));
+                        self.output.push_str("(null, ");
                         self.string_units(&field.encode_utf16().collect::<Vec<_>>());
                         self.output.push(')');
                     }
@@ -1454,7 +1705,9 @@ impl Emitter<'_> {
                 }
                 if let Some(map_constructor) = map_constructor {
                     self.product(*map_constructor);
-                    self.output.push_str(" = value => rt.recordFromMap(");
+                    self.output.push_str(" = value => ");
+                    self.rt(RuntimeName::export("recordFromMap"));
+                    self.output.push('(');
                     self.global(*global);
                     self.output.push_str(", value); ");
                 }
@@ -1517,7 +1770,9 @@ impl Emitter<'_> {
             } => {
                 self.output.push_str("(() => { ");
                 self.product(*global);
-                self.output.push_str(" = rt.protocol(");
+                self.output.push_str(" = ");
+                self.rt(RuntimeName::export("protocol"));
+                self.output.push('(');
                 let binding = &self.program.globals[global.0];
                 self.string_units(
                     &format!("{}/{}", binding.namespace, binding.name)
@@ -1527,7 +1782,9 @@ impl Emitter<'_> {
                 self.output.push_str("); ");
                 for method in methods {
                     self.product(method.global);
-                    self.output.push_str(" = rt.protocolMethod(");
+                    self.output.push_str(" = ");
+                    self.rt(RuntimeName::export("protocolMethod"));
+                    self.output.push('(');
                     self.string_units(&method.key.encode_utf16().collect::<Vec<_>>());
                     self.output.push_str(", ");
                     let b = &self.program.globals[method.global.0];
@@ -1557,7 +1814,8 @@ impl Emitter<'_> {
                 key,
                 direct,
             } => {
-                self.output.push_str("rt.protocolPredicate(");
+                self.rt(RuntimeName::export("protocolPredicate"));
+                self.output.push('(');
                 if *direct {
                     self.output.push_str("null");
                 } else {
@@ -1575,11 +1833,12 @@ impl Emitter<'_> {
                 target,
                 methods,
             } => {
-                self.output.push_str(if *instance {
-                    "rt.extendInstance("
+                self.rt(RuntimeName::export(if *instance {
+                    "extendInstance"
                 } else {
-                    "rt.extendType("
-                });
+                    "extendType"
+                }));
+                self.output.push('(');
                 self.value(*target);
                 self.output.push_str(", ");
                 self.object_methods(methods);
@@ -1607,19 +1866,23 @@ impl Emitter<'_> {
                 quoted,
             } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
-                self.output.push_str(match (kind, quoted) {
-                    (K::JsArray, true) => "rt.compilerForms.jsArray([",
-                    (K::JsObject, true) => "rt.compilerForms.jsObject([",
+                let (constructor, open) = match (kind, quoted) {
+                    (K::JsArray, true) => (Some(RuntimeName::compiler_forms("jsArray")), "(["),
+                    (K::JsObject, true) => (Some(RuntimeName::compiler_forms("jsObject")), "(["),
                     _ => match kind {
                         K::BigInteger => unreachable!("integers lower to Number"),
-                        K::Regex => "rt.core.rePattern(",
-                        K::Instant => "new Date(",
-                        K::Uuid => "rt.core.uuid(",
-                        K::JsArray => "[",
-                        K::JsObject => "rt.jsObject([",
-                        K::Queue => "rt.queueFromArray([",
+                        K::Regex => (Some(RuntimeName::core("rePattern")), "("),
+                        K::Instant => (None, "new Date("),
+                        K::Uuid => (Some(RuntimeName::core("uuid")), "("),
+                        K::JsArray => (None, "["),
+                        K::JsObject => (Some(RuntimeName::export("jsObject")), "(["),
+                        K::Queue => (Some(RuntimeName::export("queueFromArray")), "(["),
                     },
-                });
+                };
+                if let Some(constructor) = constructor {
+                    self.rt(constructor);
+                }
+                self.output.push_str(open);
                 self.arguments(items);
                 self.output.push_str(match (kind, quoted) {
                     (K::JsArray, true) => "])",
@@ -1639,7 +1902,7 @@ impl Emitter<'_> {
             }
             ExprKind::WithMeta { value, metadata } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
-                self.output.push_str(
+                self.rt(
                     if matches!(
                         self.program.exprs[value.0].kind,
                         ExprKind::ReaderLiteral {
@@ -1648,11 +1911,12 @@ impl Emitter<'_> {
                             ..
                         }
                     ) {
-                        "rt.compilerForms.withMeta("
+                        RuntimeName::compiler_forms("withMeta")
                     } else {
-                        "rt.core.withMeta("
+                        RuntimeName::core("withMeta")
                     },
                 );
+                self.output.push('(');
                 self.value(*value);
                 self.output.push_str(", ");
                 self.value(*metadata);
@@ -1664,13 +1928,16 @@ impl Emitter<'_> {
                 symbol,
                 metadata,
             } => {
-                self.output.push_str(if *definition {
-                    "rt.definitionVar(() => "
+                self.rt(RuntimeName::export(if *definition {
+                    "definitionVar"
                 } else {
-                    "rt.makeVar(() => "
-                });
+                    "makeVar"
+                }));
+                self.output.push_str("(() => ");
                 self.value(*value);
-                self.output.push_str(", rt.symbol(");
+                self.output.push_str(", ");
+                self.rt(RuntimeName::export("symbol"));
+                self.output.push('(');
                 let literal = &self.program.named_literals[symbol.0];
                 if let Some(namespace) = literal.namespace {
                     self.string(namespace);
@@ -1706,13 +1973,14 @@ impl Emitter<'_> {
             }
             ExprKind::Keyword(literal) | ExprKind::Symbol(literal) => {
                 let name = &self.program.named_literals[literal.0];
-                self.output.push_str(
+                self.rt(RuntimeName::export(
                     if matches!(self.program.exprs[id.0].kind, ExprKind::Symbol(_)) {
-                        "rt.symbol("
+                        "symbol"
                     } else {
-                        "rt.keyword("
+                        "keyword"
                     },
-                );
+                ));
+                self.output.push('(');
                 if let Some(namespace) = name.namespace {
                     self.string(namespace);
                 } else {
@@ -1723,31 +1991,35 @@ impl Emitter<'_> {
                 self.output.push(')');
             }
             ExprKind::Vector(items) => {
-                self.output.push_str("rt.vectorFromArray([");
+                self.rt(RuntimeName::export("vectorFromArray"));
+                self.output.push_str("([");
                 self.arguments(items);
                 self.output.push_str("])");
             }
             ExprKind::Map(items) => {
                 if items.len() > 16 {
-                    self.output.push_str("rt.mapFromArrays([");
+                    self.rt(RuntimeName::export("mapFromArrays"));
+                    self.output.push_str("([");
                     self.arguments(&items.iter().step_by(2).copied().collect::<Vec<_>>());
                     self.output.push_str("], [");
                     self.arguments(&items.iter().skip(1).step_by(2).copied().collect::<Vec<_>>());
                     self.output.push_str("])");
                 } else {
-                    self.output.push_str("rt.mapFromArray([");
+                    self.rt(RuntimeName::export("mapFromArray"));
+                    self.output.push_str("([");
                     self.arguments(items);
                     self.output.push_str("])");
                 }
             }
             ExprKind::LiteralMap(items) | ExprKind::LiteralSet(items) => {
-                self.output.push_str(
+                self.rt(RuntimeName::export(
                     if matches!(self.program.exprs[id.0].kind, ExprKind::LiteralMap(_)) {
-                        "rt.constantMapFromArray(["
+                        "constantMapFromArray"
                     } else {
-                        "rt.constantSetFromArray(["
+                        "constantSetFromArray"
                     },
-                );
+                ));
+                self.output.push_str("([");
                 self.arguments(items);
                 self.output.push_str("])");
             }
@@ -1766,21 +2038,23 @@ impl Emitter<'_> {
                             | ExprKind::Symbol(_)
                     )
                 });
-                self.output.push_str(if constant {
-                    "rt.setFromArray(["
+                self.rt(RuntimeName::export(if constant {
+                    "setFromArray"
                 } else {
-                    "rt.literalSetFromArray(["
-                });
+                    "literalSetFromArray"
+                }));
+                self.output.push_str("([");
                 self.arguments(items);
                 self.output.push_str("])");
             }
             ExprKind::List(items) => {
-                self.output.push_str("rt.listFromArray([");
+                self.rt(RuntimeName::export("listFromArray"));
+                self.output.push_str("([");
                 self.arguments(items);
                 self.output.push_str("])");
             }
             ExprKind::CoreFn(core) => {
-                write!(self.output, "rt.core.{}", core.runtime_name()).unwrap();
+                self.rt(RuntimeName::core(core.runtime_name()));
             }
             ExprKind::Local(local) => self.local_value(*local),
             ExprKind::Global(global) => self.global(*global),
@@ -1935,7 +2209,8 @@ impl Emitter<'_> {
             }
             ExprKind::Property { receiver, property } => {
                 if self.demand_roots {
-                    self.output.push_str("rt.declarationReceiver(");
+                    self.rt(RuntimeName::export("declarationReceiver"));
+                    self.output.push('(');
                 } else {
                     self.output.push('(');
                 }
@@ -1949,7 +2224,8 @@ impl Emitter<'_> {
                 args,
             } => {
                 if self.demand_roots {
-                    self.output.push_str("rt.declarationReceiver(");
+                    self.rt(RuntimeName::export("declarationReceiver"));
+                    self.output.push('(');
                 } else {
                     self.output.push('(');
                 }
@@ -2017,7 +2293,8 @@ impl Emitter<'_> {
             ExprKind::Fn { name, methods } => {
                 let macro_function = self.program.macro_functions.contains(&id);
                 if macro_function {
-                    self.output.push_str("rt.core.macroReaderFunction(");
+                    self.rt(RuntimeName::core("macroReaderFunction"));
+                    self.output.push('(');
                 }
                 self.function(*name, methods, macro_function);
                 if macro_function {
@@ -2134,7 +2411,7 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
 
 /// Interactive application roots live in the application heap, never the macro heap.
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    let body = emit_js_mode(
+    let (body, _) = emit_js_mode(
         program,
         Some("__lightInteractiveRuntime"),
         false,

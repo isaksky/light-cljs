@@ -1,10 +1,12 @@
 # Advanced optimization design
 
-Status: design, October 2026. Phase 0's optimization levels, size ratchet and
-differential test are implemented (see "Phase 0 extension points"), and so is
-Phase 1's unit manifest (see "Phase 1 manifest extension points"); the rest is
-not. The work items are tracked as Pellets in the `advanced-optimization`
-group; this document is the shared context those pellets cite.
+Status: design, October 2026. Phase 0's optimization levels, size ratchet,
+differential test and runtime retention report are implemented (see "Phase 0
+extension points"), and so are Phase 1's unit manifest and advanced-mode
+runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
+extension points"); the rest is not. The work items are tracked as Pellets in
+the `advanced-optimization` group; this document is the shared context those
+pellets cite.
 
 ## Goal
 
@@ -152,6 +154,8 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   literal, `with-meta`, var, protocol or type form, a `case` with keyword or
   non-strict tests, a message-bearing `assert`, a rest-arity fn, or when any
   namespace entry exists. Every `--entry` compile therefore embeds it.
+  (Since step 2 of Phase 1 this is `reads_runtime`, and holds below
+  `Advanced` only.)
 - Calls emit `(callee).call(null, ...)` including core operations; every
   `def` initializer is wrapped in an IIFE; every `if` test is wrapped in
   `truth()` unless it is a `BooleanHint`; keywords allocate per evaluation;
@@ -212,13 +216,15 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
 - Retention report (after Phase 1's manifest exists): for each retained
   runtime unit and global, the expression and source span that first
   demanded it. This is the tool upstream lacks; shadow's build report only
-  attributes bytes after the fact.
+  attributes bytes after the fact. Implemented for runtime units (see "Phase
+  1 slicing extension points"); retained globals are not listed yet.
 - Startup benchmark: parse-plus-execute time in Node and QuickJS for the
   fixture set, recorded under `benchmarks/`.
 
 #### Phase 0 extension points
 
-The first three items are implemented. Later phases plug in here:
+The first three items are implemented, and the retention report covers
+runtime units. Later phases plug in here:
 
 - **Level.** `OptimizationLevel` in `src/application.rs` is ordered
   `None < Prepare < Advanced`. `level.prepares()` gates today's conservative
@@ -226,15 +232,16 @@ The first three items are implemented. Later phases plug in here:
   `None` emits: it is the oracle.
 - **Passes.** `prepare_application` marks where `Advanced` passes run, after
   conservative preparation. Emission that depends on the level (runtime
-  slicing, the constant table, terse emission) reads
-  `PreparedApplication::level()`; thread it into `emit_application` in
-  `src/emitter.rs` when the first such pass lands. Until then `Advanced`
-  output is byte-identical to `Prepare` output.
+  slicing, the constant table, terse emission) reads the level that
+  `PreparedApplication` passes to `emit_application` in `src/emitter.rs`;
+  today only runtime slicing does, so `Advanced` output is `Prepare` output
+  with a smaller runtime factory.
 - **CLI.** `--optimize` is parsed in `src/main.rs` for single-file `--compile`
   and `--compile --entry`, with or without `--esm`. Namespace builds go through
   `compiler::analyze_namespace_entry` and `prepare_application`, so the CLI
-  holds the `PreparedApplication`; add level-dependent reports such as a
-  retention report next to it. `--eval` and `--repl` have no level.
+  holds the `PreparedApplication`; level-dependent reports go next to it, as
+  `--size-report` (the retention report, on stderr) does. `--eval` and
+  `--repl` have no level.
 - **Ratchet.** `tests/compiler/size_ratchet.rs` holds `FIXTURES`: the five
   Targets rows, `(+ 1 2)`, `(fn [& xs] xs)`, a keyword `case` and a
   `defrecord` with a protocol call, each with `ceilings: [none, prepare,
@@ -266,6 +273,7 @@ to under 1 KB and beat every upstream ceiling on its own.
    emitted expressions (every `CoreFnId::runtime_name`, the emitter's
    hardcoded `rt.*` references, protocol/type/reify constructors). Emit only
    the reachable units.
+   Implemented; see "Phase 1 slicing extension points" below.
 3. **Dismantle the `core` hub.** Emit direct references to unit bindings
    instead of `rt.core.X`. `set!` on a core operation is visible
    program-wide; only mutated operations fall back to an indirection cell.
@@ -325,6 +333,51 @@ Step 1 is implemented (light-cljs-202). Later steps build on it:
   compile-time machinery, list its units in `UNREACHABLE_FROM_EXPORTS`
   there. Per-unit sizes and reach are in `benchmarks/compiler.md` (the
   `print_runtime_unit_sizes` ignored test prints them).
+
+#### Phase 1 slicing extension points
+
+Step 2 is implemented (light-cljs-203) in `src/runtime_slice.rs`:
+
+- **Roots.** The emitter writes every runtime read through `Emitter::rt`,
+  which records a `RuntimeName` (`rt.<export>` or `rt.<export>.<member>`,
+  such as `rt.keyword` or `rt.core.add`) with the innermost expression being
+  emitted. Core operations, the hardcoded constructors and helpers, and the
+  namespace registration (`registerReaderNamespace`, `currentNs = theNs(...)`)
+  all go through it, so emission reports its roots as a set. Debug builds
+  check that no `rt.` read in the output (outside raw `js*` text) escaped the
+  record, so every test that emits code checks the roots. New emission that
+  reads the runtime must use the helper; 204's direct unit references should
+  record their units the same way.
+- **Slice.** A root keeps the unit declaring its `<export>`; `rt.core.X`
+  therefore keeps the `core` hub until step 3. At `Advanced`, application
+  output (`emit_js` and `emit_esm`) embeds
+  `RuntimeManifest::sliced_text(reachable(roots), exports)`: the prologue,
+  the kept unit bodies in runtime order and an export section freezing only
+  the exports the program reads. The anchor text, the `const rt =` seam and
+  the exclusion of the runtime from `hygienic_js` are unchanged. Below
+  `Advanced`, and for the shared runtime of the REPL, macro host and
+  deferred units, the whole runtime is embedded as before, so `None` and
+  `Prepare` output is byte-identical. `Advanced` embeds a runtime only when
+  some root exists.
+- **Retention report.** `PreparedApplication::retention()` returns a
+  `RetentionReport`: the roots in first-demand order (the program body in
+  emission order, then the namespace registration), each embedded unit with
+  its body bytes, and the index of the first root whose closure reaches it
+  (`RuntimeManifest::reached_by`), so a later root lists only the units it
+  adds. Its `Display` is the table `--compile --size-report` prints to
+  stderr: a summary line, a root table (units and bytes each root adds,
+  demanding expression as source index and byte span) and a unit table.
+  Below `Advanced` it lists the whole runtime and attributes what the roots
+  reach.
+- **Measured.** A program that reads the runtime keeps at least the 665 of
+  691 units (334,504 of 349,584 unit bytes) that `core` reaches, because it
+  reads `rt.core.*`, if only through the namespace registration. The 26 units
+  `core` does not reach are the declaration demand and patch machinery,
+  `setMacroexpandServices`, `compilerExceptionMessage`, the protocol, type,
+  record and reify constructors, and four literal constructors; a program
+  that uses none of them is about 15.7 KB (4.5%) smaller, and the
+  `defrecord` fixture keeps 672 units. These are step 3's before numbers;
+  see `benchmarks/compiler.md`.
 
 ### Phase 2: whole-program analysis over the IR
 
@@ -463,7 +516,8 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Differential execution of the full corpus at every level.
 - Ratchet tests with ceilings per fixture and level.
 - Retention report checked in under `benchmarks/results/` so size
-  regressions name their cause.
+  regressions name their cause (the first is
+  `benchmarks/results/retention-2026-10-12/`).
 - Startup and steady-state benchmarks in Node and QuickJS.
 - The manifest validator in the test suite, so the runtime cannot regain
   hidden edges.

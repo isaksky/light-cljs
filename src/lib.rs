@@ -34,6 +34,7 @@ pub mod macro_host;
 pub mod parser;
 mod reader_literals;
 pub mod runtime_manifest;
+pub mod runtime_slice;
 pub mod source_provider;
 
 pub use analyzer::{
@@ -52,6 +53,7 @@ pub use compiler::{
 };
 pub use emitter::{emit_esm, emit_js};
 pub use macro_host::{MacroHost, MacroImport, MacroLimits};
+pub use runtime_slice::RetentionReport;
 
 pub use parser::{
     CollectionKind, ErrorKind, LineIndex, Node, NodeId, NodeKind, NumberKind, ParseError, Parser,

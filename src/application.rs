@@ -20,9 +20,11 @@ pub enum OptimizationLevel {
     #[default]
     Prepare,
     /// Release mode. It accepts the deliberate semantic differences listed
-    /// under "Advanced-mode contract" in docs/advanced-optimization.md. Until
-    /// the passes of that design land it emits exactly what `Prepare` emits;
-    /// they hook in through [`OptimizationLevel::advanced`].
+    /// under "Advanced-mode contract" in docs/advanced-optimization.md. So far
+    /// it prepares like `Prepare` and differs only in emission, which embeds
+    /// just the runtime units the program reaches (`crate::runtime_slice`).
+    /// Later passes of that design hook in through
+    /// [`OptimizationLevel::advanced`].
     Advanced,
 }
 impl OptimizationLevel {
@@ -114,12 +116,32 @@ pub struct PreparedApplication {
     stats: ApplicationStats,
 }
 impl PreparedApplication {
-    pub fn emit_js(&self) -> String {
-        crate::emitter::emit_application(&self.program, &self.globals, &self.calls, false)
+    fn emit(&self, module: bool) -> (String, crate::runtime_slice::EmittedRuntime) {
+        crate::emitter::emit_application(
+            &self.program,
+            &self.globals,
+            &self.calls,
+            self.level,
+            module,
+        )
     }
-    /// One ES module for a bundler; see [`crate::emitter::emit_esm`].
+    /// One JavaScript expression. At `Advanced` it embeds only the runtime
+    /// units the program reaches; see [`PreparedApplication::retention`].
+    pub fn emit_js(&self) -> String {
+        self.emit(false).0
+    }
+    /// One ES module for a bundler; see [`crate::emitter::emit_esm`]. Its
+    /// runtime is the one [`PreparedApplication::emit_js`] embeds.
     pub fn emit_esm(&self) -> String {
-        crate::emitter::emit_application(&self.program, &self.globals, &self.calls, true)
+        self.emit(true).0
+    }
+    /// Which runtime units the emitted output embeds, each with its size and
+    /// the runtime name and source expression that first demanded it. Below
+    /// `Advanced` the output embeds the whole runtime and the report
+    /// attributes what it can. `--size-report` prints this table.
+    pub fn retention(&self) -> crate::RetentionReport {
+        let (_, runtime) = self.emit(false);
+        crate::RetentionReport::new(&self.program, self.level, &runtime)
     }
     pub fn stats(&self) -> &ApplicationStats {
         &self.stats
@@ -205,8 +227,8 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         prepared.globals.fill(true);
     }
     // Release-only passes (docs/advanced-optimization.md, Phases 1-3) run here,
-    // after conservative preparation, under `level.advanced()`. None exist yet,
-    // so `Advanced` output is byte-identical to `Prepare` output.
+    // after conservative preparation, under `level.advanced()`. None exist yet;
+    // `Advanced` differs from `Prepare` only in emission (runtime slicing).
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();
     prepared
