@@ -169,6 +169,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   `core.async` and `test.check` are not provided.
 - **No build tooling:** no npm/package resolution, module output, source maps or
   advanced optimization; output is one JavaScript expression.
+  A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md)
+  but not implemented.
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
