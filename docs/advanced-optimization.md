@@ -290,6 +290,64 @@ keyed by names.
    constant arithmetic and string concatenation; eliminate dead branches on
    known booleans; support build-time defines so debug code vanishes.
 
+### Constant collection literals
+
+Tracked as Pellets 218-221 after keyword interning (208). Every literal is
+rebuilt per evaluation today: `[1 2 3]` copies, freezes and wraps a fresh
+array; `{:a 1}` allocates the keyword and the map each time; `[]` allocates
+although the runtime has `EMPTY` singletons. No hash cache exists for
+vectors, maps or sets. Sharing is safe because payload arrays are frozen,
+`withMeta` returns a new or unchanged object, and transients copy.
+
+Precedents: upstream hoists only keywords and symbols and maps empty
+literals to `EMPTY`. shadow-cljs has an opt-in `:shadow-optimize-constants`
+pass hoisting fully constant vector/map/set literals into per-namespace
+defs, optionally in a delay (`compiler.clj:262-347` in the clone); its
+author doubts its value under Closure, which cannot fold against the
+result. Here constants are what later passes fold against, and per-site
+allocation is paid on every evaluation.
+
+**Constant classification.** nil, booleans, numbers, strings, keywords,
+quoted symbols, UUIDs, nested constant collections including the
+reader-distinct `LiteralMap`/`LiteralSet`, and `with-meta` of a constant on
+a constant. Record literals qualify when fields do but depend on the type.
+Not constant: anything with locals, globals, calls or `js*`; `#js` and
+`js-obj` (mutable); regex (`lastIndex`); `#inst` (`Date` is mutable).
+
+**Tiers.**
+
+1. Empty singletons at every level.
+2. A program-wide hash-consed pool, deduplicated on emitted structure and
+   metadata rather than runtime equality; subterm sharing falls out. Eager
+   initialization for runtime-only constants, lazy cells for type-dependent
+   or large ones, threshold by measurement. Pool entries are inert for
+   reachability.
+3. Hash caching on persistent collections, then precomputed hashes for
+   pool entries via a Rust port of the runtime hashing, proven equal on the
+   corpus and on generated programs.
+4. Key shapes for maps with constant keys and dynamic values: pooled key
+   array, precomputed key hashes and trie layout; sites emit only values.
+   Constant-core sets plus `conj`. Vector prefixes are out of scope while
+   vectors are flat arrays.
+5. Folding of `get`, keyword lookup, `nth`, `count`, `contains?`, `seq`,
+   destructuring and `case` membership against pool constants, preserving
+   throws.
+
+**Contract change.** Equal literals may be `identical?`. Equality, hashing,
+metadata and transients are unaffected.
+
+**Limit.** Sharing between constants and runtime-derived values depends on
+the runtime's structural sharing. Vectors are flat frozen arrays with
+linear-time update, so `conj` on a constant copies regardless. Trie vectors
+are a separate runtime-performance item.
+
+**Testing.** The generated-program harness (217) gains metamorphic
+properties for each tier: behavior with the optimization equals behavior
+without it at every level, with the generator producing repeated and nested
+literals, metadata on literals, transients from literals, shaped maps with
+colliding keys, and lookups with missing and out-of-range arguments. Fixed
+fixtures pin per-evaluation allocation counts and pool bytes.
+
 ### Phase 3: terse emission
 
 - One frequency-ordered renamer for globals, locals and runtime unit
@@ -317,6 +375,8 @@ upstream states that advanced mode is unsafe for certain patterns.
   retained definitions unless the program statically reaches reflection or
   names the definitions in `exports`.
 - Collection `toString` exists only when printing is reachable.
+- Equal constant literals may be `identical?` because they share one pooled
+  value.
 - `set!` on a core operation forces indirection for that operation only.
 - `js*` is opaque; raw text referencing compiler identifiers is already
   unsupported by the hygiene pass.
