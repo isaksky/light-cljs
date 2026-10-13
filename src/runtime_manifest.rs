@@ -2797,7 +2797,10 @@ mod tests {
     #[test]
     fn compile_time_units_parse_and_round_trip_with_their_other_flags() {
         let source = INSTALLS
-            .replace("//@unit install mutator", "//@unit install compile-time mutator")
+            .replace(
+                "//@unit install mutator",
+                "//@unit install compile-time mutator",
+            )
             .replace("//@unit g requires", "//@unit g compile-time requires");
         let manifest = RuntimeManifest::parse(&source).unwrap();
         manifest.validate().unwrap();
