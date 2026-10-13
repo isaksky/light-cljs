@@ -8,12 +8,21 @@
 //! and without their own `ILookup`, and programs that extend core protocols,
 //! which turn the typed lowerings off. The `Advanced` output is checked for
 //! the lowered form, so a lowering that silently stops applying fails too.
+//!
+//! Since light-cljs-229 the parameters of closed functions have the types of
+//! their calls' arguments: the lowerings apply inside such functions, while
+//! callers that inference cannot see (`apply`, a function passed as a value, a
+//! name or local that escapes) keep them `any`. A seeded generator of closed
+//! functions called with adversarial arguments checks every level against
+//! `None`.
+use super::generated::{SEEDS, namespace_program};
+use super::generated_optimization::analyze as analyze_generated;
 use super::optimization::execute;
 use light_cljs::core_operations::Type;
 use light_cljs::inference::{Inferred, Known};
 use light_cljs::{
-    ApplicationOptions, OptimizationLevel, PreparedApplication, Program, analyze, parse,
-    prepare_application,
+    ApplicationOptions, ApplicationStats, LocalId, OptimizationLevel, PreparedApplication, Program,
+    analyze, parse, prepare_application,
 };
 
 fn program(source: &str) -> Program {
@@ -59,6 +68,19 @@ fn last(source: &str) -> Inferred {
     let prepared = prepared(source, OptimizationLevel::Advanced);
     let inference = prepared.inference().expect("Advanced infers types");
     inference.value(prepared.program().root)
+}
+
+/// The inferred value of the first local named `name` at `Advanced`.
+fn local(source: &str, name: &str) -> Inferred {
+    let prepared = prepared(source, OptimizationLevel::Advanced);
+    let local = prepared
+        .program()
+        .locals
+        .iter()
+        .position(|local| local.name == name)
+        .unwrap_or_else(|| panic!("no local {name}"));
+    let inference = prepared.inference().expect("Advanced infers types");
+    inference.local(LocalId(local))
 }
 
 #[test]
@@ -495,4 +517,504 @@ fn boolean_tags_are_trusted_like_upstream() {
         execute(&format!("console.log({js});"))
     });
     assert_eq!(printed, [":truthy\n", ":truthy\n", ":falsy\n"]);
+}
+
+#[test]
+fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
+    let [number, string, nil] = [Type::NUMBER, Type::STRING, Type::NIL].map(Inferred::of);
+    // A call of a closed function has its body's type, here a parameter's.
+    assert_eq!(last("(defn f [x] x) (f 1)"), number);
+    assert_eq!(
+        last("(defn f [x] x) (f 1) (f \"a\")"),
+        Inferred::of(Type::NUMBER.union(Type::STRING))
+    );
+    // A missing argument is nil (`undefined`); the rest parameter is the seq
+    // `fnRest` builds, or nil without rest arguments.
+    assert_eq!(last("(defn f [a b] b) (f 1)"), nil);
+    assert_eq!(
+        last("(defn f [a & xs] xs) (f 1 2 3)"),
+        Inferred::of(Type::SEQ)
+    );
+    assert_eq!(last("(defn f [a & xs] xs) (f 1)"), nil);
+    // Each method's parameters join the calls that select it.
+    assert_eq!(last("(defn f ([x] (f x \"d\")) ([x y] y)) (f 1)"), string);
+    // Arguments that depend on parameters: recursion, `recur` and mutual
+    // recursion across a `declare`.
+    assert_eq!(
+        last("(defn sum [n acc] (if (pos? n) (sum (dec n) (+ acc n)) acc)) (sum 3 0)"),
+        number
+    );
+    assert_eq!(
+        last("(defn sum [n acc] (if (pos? n) (recur (dec n) (+ acc n)) acc)) (sum 3 0)"),
+        number
+    );
+    let mutual = "(declare b) (defn a [x n] (if (pos? n) (b x (dec n)) x))
+                  (defn b [y n] (a y n)) (a \"s\" 3)";
+    assert_eq!(local(mutual, "x"), string);
+    assert_eq!(local(mutual, "y"), string);
+    // Local functions, `fn` literals called in place, and named and `letfn`
+    // functions calling themselves.
+    assert_eq!(last("(let [g (fn [x] x)] (g 1))"), number);
+    assert_eq!(last("((fn [x] x) 1)"), number);
+    assert_eq!(
+        last("((fn self [x] (if (pos? x) (self (dec x)) x)) 3)"),
+        number
+    );
+    assert_eq!(
+        last("(letfn [(g [x] (if (pos? x) (h (dec x)) x)) (h [y] (g y))] (g 3))"),
+        number
+    );
+    // Representations pass through parameters.
+    assert_eq!(
+        last("(defn f [v] v) (f [1 2])"),
+        Inferred::known(Type::VECTOR, Known::Vector)
+    );
+    let record = last("(defrecord R [a]) (defn f [r] r) (f (->R 1))");
+    assert_eq!(record.ty, Type::RECORD);
+    assert!(matches!(record.known, Known::Instance(_)));
+    // Anything that may call the function some other way keeps `x` `any`:
+    // `apply`, the function as a value (of its global, its `def`, its name or
+    // a local), a `loop` local, assignable parameters, a call that underfills a
+    // variadic method or selects no method, and `with-redefs`.
+    assert_eq!(local("(defn f [x] x) (f 1)", "x"), number);
+    for source in [
+        "(defn f [x] x) (apply f [1]) (f 1)",
+        "(defn f [x] x) (mapv f [\"a\"]) (f 1)",
+        "(defn f [x] x) (def g f) (f 1)",
+        "(declare f) (def h (defn f [x] x)) (f 1)",
+        "(def f (fn self [x] (js/Array.of self) x)) (f 1)",
+        "(let [g (fn [x] x)] (mapv g [\"a\"]) (g 1))",
+        "(let [g (fn [x] x) h g] (h \"a\") (g 1))",
+        "(loop [g (fn [x] x)] (g 1))",
+        "(defn f [x] (js* \"~{} = 'a'\" x) x) (f 1)",
+        "(defn f [x] (aset (js-arguments) 0 \"a\") x) (f 1)",
+        "(defn f ([] 0) ([a x & r] x)) (f 1)",
+        "(defn f ([] 0) ([x] x)) (f 1) (f 1 2)",
+        "(defn f [x] x) (with-redefs [f identity] (f 1))",
+    ] {
+        assert_eq!(local(source, "x"), Inferred::ANY, "{source}");
+    }
+}
+
+/// `(defn f0 [x] x) (defn f1 [x] (f0 x)) ... (fN "abc")`, or the same chain in
+/// one `letfn` followed by `(+ 1 2)`.
+fn chain(links: usize, letfn: bool) -> String {
+    let functions = (1..links)
+        .map(|i| format!("f{i} [x] (f{} x)", i - 1))
+        .collect::<Vec<_>>();
+    let last = links - 1;
+    if letfn {
+        let functions = functions.iter().map(|function| format!("({function})"));
+        format!(
+            "(letfn [(f0 [x] x) {}] (f{last} \"abc\")) (+ 1 2)",
+            functions.collect::<Vec<_>>().join(" ")
+        )
+    } else {
+        let functions = functions
+            .iter()
+            .map(|function| format!("(defn {function})"));
+        format!(
+            "(defn f0 [x] x) {} (f{last} \"abc\")",
+            functions.collect::<Vec<_>>().join(" ")
+        )
+    }
+}
+
+#[test]
+fn parameter_types_converge_along_long_call_chains() {
+    // Parameter types flow backward from a call to the definitions it reaches,
+    // and rounds alternate their direction, so a long chain of top-level
+    // definitions converges in a few rounds.
+    let source = chain(100, false);
+    let advanced = prepared(&source, OptimizationLevel::Advanced);
+    let inference = advanced.inference().unwrap();
+    assert_eq!(
+        inference.value(advanced.program().root),
+        Inferred::of(Type::STRING)
+    );
+    assert!(inference.rounds() <= 4, "{}", inference.rounds());
+    assert_eq!(advanced.stats().typed_parameters, 100);
+    // In one form each link takes a round. Past the round limit, inference
+    // drops the parameter types, not every type.
+    let source = chain(100, true);
+    let advanced = prepared(&source, OptimizationLevel::Advanced);
+    let inference = advanced.inference().unwrap();
+    assert_eq!(
+        inference.value(advanced.program().root),
+        Inferred::of(Type::NUMBER)
+    );
+    assert_eq!(advanced.stats().typed_parameters, 0);
+    every_level(
+        &format!("(pr-str [{}])", chain(100, true).replace(" (+ 1 2)", "")),
+        "[\"abc\"]",
+    );
+}
+
+#[test]
+fn typed_lowerings_apply_to_the_parameters_of_closed_functions() {
+    let js = every_level(
+        r#"(defrecord P [x y])
+           (defn size [s] (count s))
+           (defn at [v i] (nth v i))
+           (defn at-or [v i nf] (nth v i nf))
+           (defn same? [a b] (= a b))
+           (defn differ? [a b] (not= a b))
+           (defn circle? [k] (= k :circle))
+           (defn px [p] (:x p))
+           (defn py [p] (get p :y))
+           (defn pick [flag] (if flag :yes :no))
+           (defn negate [b] (not b))
+           (defn both [a b] (and a b))
+           (defn safe [f] (try (f) (catch :default e (.-message e))))
+           (pr-str [(size "") (size "aé") (size (str 1 2)) (size (str (js/String.fromCodePoint 128512)))
+                    (at [10 20 30] 0) (at [10 20 30] 1.7) (at [10 20 30] -0.0) (at (vector 1 2) 1)
+                    (safe #(at [10 20 30] 3)) (safe #(at [10 20 30] -1)) (safe #(at [10 20 30] (/ 0 0)))
+                    (at-or [1 2] 5 :nf) (at-or [1 2] (/ 0 0) :nf) (at-or [1 2] -0.5 :nf) (at-or [1 2] 1 :nf)
+                    (same? 0 -0.0) (same? (/ 0 0) (/ 0 0)) (same? 1 1.0) (same? "a" "a") (same? 1 "1")
+                    (same? "" 0) (same? true 1) (differ? 1 2) (differ? "a" "a")
+                    (circle? :circle) (circle? (keyword "circle")) (circle? :ns/circle)
+                    (circle? (keyword "x" "circle")) (circle? (keyword nil "circle"))
+                    (px (->P 1 2)) (px (map->P {:x 3 :y 4})) (px (P. 5 6)) (py (->P 7 8))
+                    (pick true) (pick false) (pick nil) (pick (< 1 2))
+                    (negate true) (negate nil) (both true false) (both nil true) (both true :k)])"#,
+        "[0 2 2 2 10 20 10 2 \"Index out of bounds\" \"Index out of bounds\" \"Index out of bounds\" \
+         :nf :nf :nf 2 true false true true false false false true false true true false false true \
+         1 3 5 8 :yes :no :no :yes false true false nil :k]",
+    );
+    for lowered in [
+        "(l",
+        ").length",
+        "rt$vectorNth(rt$vectors.get(l",
+        ", rt$missing)",
+        " === ",
+        " !== ",
+        " || rt$keywordFqn(l",
+        ")[\"x\"]",
+        ")[\"y\"]",
+        "if (l",
+        "(!l",
+        " && ",
+    ] {
+        assert!(js.contains(lowered), "{lowered}: {js}");
+    }
+    for call in [
+        "rt$count(",
+        "rt$nth(",
+        "rt$equal(",
+        "rt$notEqual(",
+        "truth(",
+    ] {
+        assert!(!js.contains(call), "{call}: {js}");
+    }
+}
+
+#[test]
+fn parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations() {
+    // Each function has a direct call the lowering would accept, and a caller
+    // that inference cannot see (`apply`, `partial`, the function or a local
+    // bound to it as a value) or a direct call with another type.
+    let js = every_level(
+        r#"(defrecord P [x])
+           (defn size-mixed [s] (count s))
+           (defn size-applied [s] (count s))
+           (defn size-mapped [s] (count s))
+           (defn same-applied? [a b] (= a b))
+           (defn x-partial [p] (:x p))
+           (defn at-mixed [v i] (nth v i))
+           (defn pick-mixed [flag] (if flag :yes :no))
+           (let [local-size (fn [s] (count s))]
+             (pr-str [(size-mixed "abc") (size-mixed [1 2]) (size-mixed nil)
+                      (size-applied "ab") (apply size-applied [[1 2 3]])
+                      (size-mapped "ab") (mapv size-mapped [[1] #{1 2} {:a 1}])
+                      (same-applied? 1 1) (apply same-applied? [[1] [1]])
+                      (x-partial (->P 1)) ((partial x-partial) {:x 9})
+                      (at-mixed [1 2] 1) (at-mixed (subvec [1 2 3] 1) 0)
+                      (try (at-mixed [1 2] "1") (catch :default e (.-message e)))
+                      (pick-mixed true) (pick-mixed 0) (pick-mixed "")
+                      (local-size "ab") (mapv local-size [[1 2 3]])]))"#,
+        "[3 2 0 2 3 2 [1 2 1] true true 1 9 2 2 \"Index argument to nth must be a number\" \
+         :yes :yes :yes 2 [3]]",
+    );
+    for kept in ["rt$count(", "rt$equal(", "rt$nth(", "truth("] {
+        assert!(js.contains(kept), "{kept}: {js}");
+    }
+    for lowered in [").length", "rt$vectorNth(", ")[\"x\"]", " === "] {
+        assert!(!js.contains(lowered), "{lowered}: {js}");
+    }
+}
+
+#[test]
+fn protocol_calls_on_parameters_of_one_program_type_are_devirtualized() {
+    let source = r#"(defprotocol Area (area [s]))
+       (defrecord Rect [w h] Area (area [_] (* w h)))
+       (defn twice [s] (* 2 (area s)))
+       (defn any-twice [s] (* 2 (area s)))
+       (pr-str [(twice (->Rect 2 3)) (any-twice (->Rect 1 1))
+                (any-twice (reify Area (area [_] 5)))])"#;
+    let js = every_level(source, "[12 2 10]");
+    assert!(js.contains(")[\"cljs$user$Area$area$arity$1\"](l"), "{js}");
+    let stats = prepared(source, OptimizationLevel::Advanced)
+        .stats()
+        .clone();
+    assert_eq!(stats.devirtualized_calls, 1);
+}
+
+/// A linear congruential generator, so that every seed gives one program.
+struct Rng(u64);
+
+impl Rng {
+    fn choose(&mut self, count: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((self.0 >> 33) % count as u64) as usize
+    }
+
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[self.choose(items.len())]
+    }
+}
+
+/// Adversarial arguments by class. A function's calls often draw a parameter
+/// from one class, so that the lowerings apply, and otherwise from any.
+const ARGUMENTS: [&[&str]; 9] = [
+    &["0", "-0.0", "1.5", "-2", "(/ 0 0)", "(/ 1 0)", "3"],
+    &[
+        "\"\"",
+        "\"ab\"",
+        "\"1\"",
+        "(str :k)",
+        "(str (js/String.fromCodePoint 128512))",
+    ],
+    &["nil", "js/undefined"],
+    &["true", "false", "(< 1 2)"],
+    &[
+        ":k",
+        "(keyword \"k\")",
+        ":ns/k",
+        "(keyword \"ns\" \"k\")",
+        "(keyword \"ns/k\")",
+        ":x",
+    ],
+    &["[1 2 3]", "[]", "(vector :a)", "[nil 2]", "[\"ab\" :k]"],
+    &[
+        "(subvec [1 2 3] 1)",
+        "(first {:a 1})",
+        "{:x 1 :a 2}",
+        "#{1}",
+        "'(1 2)",
+        "(range 3)",
+        "(seq [1])",
+    ],
+    &["(->R 1 2)", "(map->R {:x 5 :a 6})", "(->S 3)", "(T. 4)"],
+    &[
+        "#js [1 2]",
+        "#js {:x 1}",
+        "(js/BigInt 1)",
+        "(js/Date. 0)",
+        "'k",
+    ],
+];
+
+/// Bodies over the parameters `x` and `y`: every typed lowering, with tests
+/// that narrow, and calls of protocol methods. (`identical?` compares a
+/// parameter with itself: equal constant literals may be one pooled value at
+/// `Advanced`, see "Advanced-mode contract".)
+const BODIES: [&str; 26] = [
+    "(count x)",
+    "(nth x 0)",
+    "(nth x y)",
+    "(nth x 1 :nf)",
+    "(= x y)",
+    "(= x :k)",
+    "(= :k x)",
+    "(not= x \"ab\")",
+    "(:x x)",
+    "(get x :a)",
+    "(if x :t :f)",
+    "(not x)",
+    "(and x y)",
+    "(or x y)",
+    "(+ x 1)",
+    "(< x y)",
+    "(inc x)",
+    "(== x y)",
+    "(seq x)",
+    "(when (string? x) (count x))",
+    "(if (vector? x) (nth x 0 :e) :nv)",
+    "(if (instance? R x) (:x x) :nr)",
+    "(cond (nil? x) :nil (keyword? x) (= x :k) :else (count (str x)))",
+    "[(identical? x x) (zero? x) (not= x y)]",
+    "(pm x)",
+    "(if (satisfies? Pm x) (pm x) :np)",
+];
+
+/// A program of closed functions, some with callers inference cannot see,
+/// whose calls pass adversarial arguments; it prints every result.
+fn closed_functions_program(seed: u64) -> String {
+    let mut rng = Rng(seed);
+    // A program type implementing `IEquiv` keeps `=` with a literal second
+    // unlowered, on some seeds.
+    let equiv = if rng.choose(3) == 0 {
+        "IEquiv (-equiv [_ o] (= o :k))"
+    } else {
+        ""
+    };
+    let mut source = format!(
+        "(defprotocol Pm (pm [o]))
+         (defrecord R [x a] Pm (pm [_] [:r x]))
+         (defrecord S [x] ILookup (-lookup [_ k] [:own k]) (-lookup [_ k nf] [:own k nf]))
+         (deftype T [x] {equiv})
+         (extend-type T Pm (pm [_] :t))\n"
+    );
+    let mut callable: Vec<String> = Vec::new();
+    let mut results = Vec::new();
+    for index in 0..10 {
+        let name = format!("f{index}");
+        let mut body = rng.pick(&BODIES).to_owned();
+        if !callable.is_empty() && rng.choose(4) == 0 {
+            let callee = callable[rng.choose(callable.len())].clone();
+            body = format!("[{body} ({callee} y x)]");
+        }
+        let body = format!("(try {body} (catch :default e [:threw (.-message e)]))");
+        let shape = rng.choose(4);
+        let classes = [rng.choose(ARGUMENTS.len()), rng.choose(ARGUMENTS.len())];
+        let mode = rng.choose(3);
+        let argument = |rng: &mut Rng, position: usize| {
+            let class = match (mode, position) {
+                (0, _) | (2, 0) => classes[position],
+                _ => rng.choose(ARGUMENTS.len()),
+            };
+            rng.pick(ARGUMENTS[class]).to_owned()
+        };
+        let mut calls = Vec::new();
+        for _ in 0..1 + rng.choose(4) {
+            let count = match shape {
+                0 if rng.choose(6) == 0 => 1,
+                1 | 2 => 1 + rng.choose(if shape == 2 { 3 } else { 2 }),
+                _ => 2,
+            };
+            let arguments = (0..count)
+                .map(|position| argument(&mut rng, position.min(1)))
+                .collect::<Vec<_>>();
+            let callee = if shape == 3 { "g" } else { &name };
+            calls.push(format!("({callee} {})", arguments.join(" ")));
+        }
+        // Callers inference cannot see make the function escape.
+        let (a, b) = (argument(&mut rng, 0), argument(&mut rng, 1));
+        let callee = if shape == 3 { "g" } else { &name };
+        match rng.choose(10) {
+            0 => calls.push(format!("(apply {callee} [{a} {b}])")),
+            1 => calls.push(format!("(mapv {callee} [{a}] [{b}])")),
+            2 => calls.push(format!("(mapv #({callee} % {b}) [{a}])")),
+            _ => (),
+        }
+        let calls = calls.join(" ");
+        match shape {
+            0 => source.push_str(&format!("(defn {name} [x y] {body})\n")),
+            1 => {
+                let default = argument(&mut rng, 1);
+                source.push_str(&format!(
+                    "(defn {name} ([x] ({name} x {default})) ([x y] {body}))\n"
+                ));
+            }
+            2 => source.push_str(&format!(
+                "(defn {name} [x & more] (let [y (first more)] {body}))\n"
+            )),
+            _ => {
+                source.push_str(&format!(
+                    "(def {name} (let [g (fn [x y] {body})] [{calls}]))\n"
+                ));
+                results.push(name);
+                continue;
+            }
+        }
+        callable.push(name);
+        results.push(format!("[{calls}]"));
+    }
+    source.push_str(&format!("(pr-str [{}])", results.join("\n ")));
+    source
+}
+
+/// The program prints at every level what it prints at `None`; returns the
+/// program part of the `Advanced` output and its statistics.
+fn same_at_every_level(source: &str) -> (String, ApplicationStats) {
+    let program = program(source);
+    let printed = OptimizationLevel::ALL.map(|level| {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        execute(&format!("console.log({js});"))
+    });
+    for (level, output) in OptimizationLevel::ALL.into_iter().zip(&printed) {
+        assert_eq!(output, &printed[0], "at {level}:\n{source}");
+    }
+    let advanced = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    (
+        program_text(&advanced.emit_js()).to_owned(),
+        advanced.stats().clone(),
+    )
+}
+
+#[test]
+fn generated_closed_functions_print_the_same_at_every_level() {
+    // `LIGHT_CLJS_INFERENCE_SEEDS=<n>` runs more seeds.
+    let seeds = std::env::var("LIGHT_CLJS_INFERENCE_SEEDS")
+        .map_or(16, |count| count.parse().expect("a seed count"));
+    let mut texts = String::new();
+    let mut typed = 0;
+    for seed in 0..seeds {
+        let (text, stats) = same_at_every_level(&closed_functions_program(seed));
+        texts.push_str(&text);
+        typed += stats.typed_parameters;
+    }
+    // The lowerings apply inside the generated functions.
+    assert!(typed > 0);
+    for lowered in [
+        "(l",
+        ").length",
+        "rt$vectorNth(",
+        " === ",
+        "rt$keywordFqn(l",
+        ")[\"x\"]",
+        ")[\"cljs$user$Pm$pm$arity$1\"](l",
+    ] {
+        assert!(texts.contains(lowered), "{lowered}");
+    }
+}
+
+#[test]
+fn generated_namespace_programs_type_parameters() {
+    // The generated programs of `generated_optimization`, which checks them at
+    // every level, have closed functions whose parameters are typed.
+    let typed: usize = SEEDS
+        .into_iter()
+        .map(|seed| {
+            let program = namespace_program(seed);
+            let analyzed = analyze_generated(&program, &program.sources(&|_| false, false));
+            prepare_application(
+                &analyzed,
+                ApplicationOptions::new(OptimizationLevel::Advanced),
+            )
+            .stats()
+            .typed_parameters
+        })
+        .sum();
+    assert!(typed > 0);
+}
+
+#[test]
+fn function_parameters_are_called_directly_unless_they_may_be_nil() {
+    // A parameter that only ever holds one `fn` is called as that `fn`'s
+    // method; one that may also be nil keeps `.call(null, ...)`, whose
+    // `TypeError` is the one lower levels throw.
+    let (js, _) = same_at_every_level(
+        r#"(defn twice [f x] (f (f x)))
+           (defn run [g] (try (g 1) (catch :default e [:threw (.-message e)])))
+           (pr-str [(twice (fn [y] (* 2 y)) 3) (run (fn [y] (inc y))) (run nil)])"#,
+    );
+    assert!(!js.contains(".call(null, (l"), "{js}");
+    assert!(js.contains(".call(null, 1)"), "{js}");
 }

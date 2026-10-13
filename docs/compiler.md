@@ -290,7 +290,13 @@ shared lowering. Single fixed-arity functions already have no dispatcher. At
 (`src/inference.rs`, `PreparedApplication::inference()`): from literals, the
 core operation table, known functions, program types, definitions made once,
 and the tests of enclosing `if`s (`string?`, `nil?`, `instance?`, `satisfies?`,
-truthiness, through `and`, `or` and `not`). Emission uses the types:
+truthiness, through `and`, `or` and `not`). A parameter has the types of the
+arguments its function's calls pass when the program makes every call of the
+function itself: the function is only ever called, through its global, a
+`let` or `letfn` local or its own name, or called in place, and never passed
+as a value (`apply`, `map`, `partial`), exported or reassigned. Other
+parameters, and those that `js*` text or `(js-arguments)` may assign, are
+unknown. Emission uses the types:
 
 - An `if` tests a value directly instead of through `truth()` when it cannot
   be a number, string or host value (`(< a b)`, `(seq xs)`, a keyword), and
@@ -341,7 +347,7 @@ metadata (a `declare` assigns nothing). Calls of a known function name the
 method their argument count selects, at every call site:
 
 - A function with one fixed method is called plainly, `g3(a, b)`, and so is a
-  local bound to one, or a `fn` literal.
+  local or parameter bound to one, or a `fn` literal, unless it may be nil.
 - Any other known function binds each method to a top-level entry at its
   `def`, `g3_0`, `g3_1`, ..., and calls name the entry, `g3_1(a)`. A variadic
   method receives the rest sequence its dispatcher would build,

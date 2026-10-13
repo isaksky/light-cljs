@@ -20,9 +20,15 @@
 //!   union of its method bodies' types; a call of a global tagged `^boolean`
 //!   and every `BooleanHint` are `boolean`, as upstream trusts these tags.
 //! - A local bound by `let`, `loop` or `letfn` has the union of its
-//!   initializer and, for a loop, of every `recur` argument for it. Parameters,
-//!   `catch` and `this-as` bindings, type fields and locals the program
-//!   assigns are `any`.
+//!   initializer and, for a loop, of every `recur` argument for it.
+//! - A parameter of a closed `fn` ([`crate::call_shapes::closed_functions`]:
+//!   one whose every call the program makes itself) has the union of the
+//!   arguments those calls pass it and of the method's `recur` arguments for
+//!   it (light-cljs-229). A call with fewer arguments than parameters passes
+//!   `nil` (`undefined`) for the others; the rest parameter is a `seq` when the
+//!   call has arguments beyond the fixed parameters and `nil` otherwise, as
+//!   `fnRest` builds it. The parameters of other functions, `catch` and
+//!   `this-as` bindings, type fields and locals the program assigns are `any`.
 //! - A global defined exactly once (and never assigned, rebound or passed to
 //!   `js*`) by `def`, `deftype`/`defrecord` or `defprotocol` has its
 //!   initializer's type. A read can see `nil` before the definition runs,
@@ -40,8 +46,13 @@
 //!
 //! Types are computed to a fixed point: locals start at `never` and grow
 //! with every binding, so loops and mutually recursive functions converge to
-//! the least solution. Everything is monotone over a finite lattice; after
-//! [`ROUND_LIMIT`] rounds the result degrades to `any` everywhere.
+//! the least solution. Arguments may depend on other parameters, through
+//! recursion too, and they join inside the same fixed point. Rounds walk the
+//! top-level forms forward and backward in turn, since values flow forward
+//! from definitions and parameter types backward from calls. Everything is
+//! monotone over a finite lattice. After [`ROUND_LIMIT`] rounds inference
+//! starts over without parameter types, and if that does not converge either,
+//! the result degrades to `any` everywhere.
 //!
 //! # Soundness
 //!
@@ -49,13 +60,21 @@
 //! time, under the program-wide conditions of `crate::core_operations` that
 //! [`ProgramFacts`] checks, and with two trusted inputs: `^boolean` tags (as
 //! upstream) and the table's assumption that protocol implementations return
-//! what their protocol requires. Code that never runs may be typed `never`.
+//! what their protocol requires. Code that never runs may be typed `never`;
+//! so is the body of a closed function that nothing calls.
+//!
+//! A parameter receives values only from calls, `recur` and assignments, and
+//! assignable parameters (a `js*` hole, `set!`, a method that reads
+//! `(js-arguments)`) stay `any`. A closed function's calls are all calls of it
+//! (`crate::call_shapes`, "For parameter types"), every one of which the walk
+//! visits, since it visits every expression reachable from the root.
 
 use std::collections::HashMap;
 
 use crate::analyzer::{
     CoreFnId, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, Program,
 };
+use crate::call_shapes::ClosedFunctions;
 use crate::compiler_data::CompilerLiteralKind;
 use crate::core_operations::{Calls, Type};
 
@@ -606,29 +625,29 @@ pub struct Inference {
     uses: Vec<u32>,
     facts: ProgramFacts,
     rounds: usize,
+    typed_parameters: usize,
 }
 
 impl Inference {
     /// Infer every expression reachable from `program.root`, under `facts`
-    /// (scanned from the same program).
-    pub fn new(program: &Program, facts: ProgramFacts) -> Self {
-        let mut walker = Walker::new(program, &facts);
-        let mut rounds = 0;
-        loop {
-            walker.changed = false;
-            walker.position = 0;
-            walker.top(program.root);
-            walker.first_round = false;
-            rounds += 1;
-            if !walker.changed {
-                break;
-            }
-            if rounds == ROUND_LIMIT {
-                walker.values.fill(Inferred::ANY);
-                walker.locals.fill(Inferred::ANY);
-                break;
-            }
+    /// (scanned from the same program), joining the parameters of the `fn`s
+    /// that `closed` finds closed over their calls.
+    pub fn new(program: &Program, facts: ProgramFacts, closed: &ClosedFunctions) -> Self {
+        let mut walker = Walker::new(program, &facts, closed);
+        let mut solved = walker.solve();
+        // Parameter types that do not converge (a call chain longer than the
+        // round limit runs one round per link) must not cost the program the
+        // types it has without them.
+        let without = ClosedFunctions::default();
+        if solved.is_none() && !closed.is_empty() {
+            walker = Walker::new(program, &facts, &without);
+            solved = walker.solve();
         }
+        let rounds = solved.unwrap_or_else(|| {
+            walker.values.fill(Inferred::ANY);
+            walker.locals.fill(Inferred::ANY);
+            ROUND_LIMIT
+        });
         // Expressions the walk never reached are not emitted; claim nothing.
         for (value, visited) in walker.values.iter_mut().zip(&walker.visited) {
             if !visited {
@@ -640,6 +659,7 @@ impl Inference {
             mut locals,
             pinned,
             uses,
+            parameters,
             ..
         } = walker;
         for (local, pinned) in locals.iter_mut().zip(pinned) {
@@ -647,12 +667,17 @@ impl Inference {
                 *local = Inferred::ANY;
             }
         }
+        let typed_parameters = parameters
+            .iter()
+            .filter(|parameter| locals[parameter.0] != Inferred::ANY)
+            .count();
         Self {
             values,
             locals,
             uses,
             facts,
             rounds,
+            typed_parameters,
         }
     }
 
@@ -713,6 +738,11 @@ impl Inference {
     pub fn rounds(&self) -> usize {
         self.rounds
     }
+
+    /// How many parameters of closed functions have a type other than `any`.
+    pub fn typed_parameters(&self) -> usize {
+        self.typed_parameters
+    }
 }
 
 /// A narrowing of one local in one branch.
@@ -754,6 +784,9 @@ impl Narrowing {
 struct Walker<'p> {
     program: &'p Program,
     facts: &'p ProgramFacts,
+    closed: &'p ClosedFunctions,
+    /// The parameters of closed functions that are not pinned.
+    parameters: Vec<LocalId>,
     values: Vec<Inferred>,
     visited: Vec<bool>,
     locals: Vec<Inferred>,
@@ -764,6 +797,10 @@ struct Walker<'p> {
     initializers: Vec<Option<ExprId>>,
     uses: Vec<u32>,
     narrowed: Vec<(LocalId, Inferred)>,
+    /// The top-level forms, numbered as `crate::application`'s flattening
+    /// numbers them, and the `do`s that hold them, inner ones first.
+    forms: Vec<ExprId>,
+    dos: Vec<ExprId>,
     /// Position of the top-level form being walked.
     position: usize,
     changed: bool,
@@ -772,7 +809,7 @@ struct Walker<'p> {
 }
 
 impl<'p> Walker<'p> {
-    fn new(program: &'p Program, facts: &'p ProgramFacts) -> Self {
+    fn new(program: &'p Program, facts: &'p ProgramFacts, closed: &'p ClosedFunctions) -> Self {
         let mut bound = vec![false; program.locals.len()];
         let mut pinned = vec![false; program.locals.len()];
         let mut initializers = vec![None; program.locals.len()];
@@ -843,9 +880,25 @@ impl<'p> Walker<'p> {
         for local in program.field_bindings.keys() {
             pinned[local.0] = true;
         }
-        // Parameters and `catch` and `this-as` bindings are `any`, but their
-        // tests narrow them; locals bound by `let`, `loop` and `letfn` grow
-        // from `never`.
+        // The parameters of closed functions grow from their calls.
+        let mut parameters = Vec::new();
+        for (index, expr) in program.exprs.iter().enumerate() {
+            if let ExprKind::Fn { methods, .. } = &expr.kind
+                && closed.closed(ExprId(index))
+            {
+                for method in methods {
+                    for &param in method.params.iter().chain(&method.rest) {
+                        if !pinned[param.0] {
+                            bound[param.0] = true;
+                            parameters.push(param);
+                        }
+                    }
+                }
+            }
+        }
+        // Other parameters and `catch` and `this-as` bindings are `any`, but
+        // their tests narrow them; locals bound by `let`, `loop` and `letfn`
+        // grow from `never`.
         let locals = bound
             .iter()
             .zip(&pinned)
@@ -857,9 +910,23 @@ impl<'p> Walker<'p> {
                 }
             })
             .collect();
+        let (mut forms, mut dos) = (Vec::new(), Vec::new());
+        let mut pending = vec![(program.root, false)];
+        while let Some((id, expanded)) = pending.pop() {
+            match &program.exprs[id.0].kind {
+                ExprKind::Do(_) if expanded => dos.push(id),
+                ExprKind::Do(items) => {
+                    pending.push((id, true));
+                    pending.extend(items.iter().rev().map(|item| (*item, false)));
+                }
+                _ => forms.push(id),
+            }
+        }
         Self {
             program,
             facts,
+            closed,
+            parameters,
             values: vec![Inferred::NEVER; program.exprs.len()],
             visited: vec![false; program.exprs.len()],
             locals,
@@ -867,28 +934,57 @@ impl<'p> Walker<'p> {
             initializers,
             uses: vec![0; program.locals.len()],
             narrowed: Vec::new(),
+            forms,
+            dos,
             position: 0,
             changed: false,
             first_round: true,
         }
     }
 
-    /// Walk the top level, numbering its forms as `crate::application`'s
-    /// flattening does.
-    fn top(&mut self, id: ExprId) -> Inferred {
-        let value = if let ExprKind::Do(items) = &self.program.exprs[id.0].kind {
-            let mut last = Inferred::of(Type::NIL);
-            for &item in items {
-                last = self.top(item);
+    /// Run rounds until one changes nothing: how many it took, or `None` when
+    /// [`ROUND_LIMIT`] rounds do not converge.
+    fn solve(&mut self) -> Option<usize> {
+        for round in 1..=ROUND_LIMIT {
+            self.changed = false;
+            self.round(round % 2 == 0);
+            self.first_round = false;
+            if !self.changed {
+                return Some(round);
             }
-            self.visited[id.0] = true;
-            last
-        } else {
-            let value = self.walk(id);
-            self.position += 1;
-            value
+        }
+        None
+    }
+
+    /// Walk every top-level form once, the last first when `reverse`, then the
+    /// `do`s that hold them. Values flow forward from definitions to later
+    /// reads, and parameter types backward from calls to the earlier
+    /// definitions they call, so rounds alternate: either order reaches the
+    /// same least fixed point, since every value only grows.
+    fn round(&mut self, reverse: bool) {
+        let forms = std::mem::take(&mut self.forms);
+        let mut walk = |position: usize| {
+            self.position = position;
+            self.walk(forms[position]);
         };
-        self.record(id, value)
+        if reverse {
+            (0..forms.len()).rev().for_each(&mut walk);
+        } else {
+            (0..forms.len()).for_each(&mut walk);
+        }
+        self.forms = forms;
+        // Each `do` evaluates to its last form; inner `do`s come first.
+        let dos = std::mem::take(&mut self.dos);
+        for &id in &dos {
+            let ExprKind::Do(items) = &self.program.exprs[id.0].kind else {
+                continue;
+            };
+            let value = items
+                .last()
+                .map_or(Inferred::of(Type::NIL), |last| self.values[last.0]);
+            self.record(id, value);
+        }
+        self.dos = dos;
     }
 
     fn record(&mut self, id: ExprId, value: Inferred) -> Inferred {
@@ -1251,6 +1347,9 @@ impl<'p> Walker<'p> {
             K::Call { callee, args } => {
                 let callee_value = self.walk(*callee);
                 let arguments = self.walk_all(args);
+                if let Some((function, method)) = self.closed.call(id) {
+                    self.pass(function, method, &arguments);
+                }
                 self.call(*callee, callee_value, &arguments)
             }
             K::InstanceOf { class, value } => {
@@ -1260,6 +1359,34 @@ impl<'p> Walker<'p> {
             }
         };
         self.record(id, value)
+    }
+
+    /// Bind the parameters of method `method` of the closed `fn` `function`
+    /// to the `arguments` of a call, as the dispatcher or a direct call passes
+    /// them: `nil` (`undefined`) for missing arguments, and a rest sequence
+    /// (`fnRest`) or `nil` for the rest parameter.
+    fn pass(&mut self, function: ExprId, method: usize, arguments: &[Inferred]) {
+        let ExprKind::Fn { methods, .. } = &self.program.exprs[function.0].kind else {
+            return;
+        };
+        let Some(method) = methods.get(method) else {
+            return;
+        };
+        for (index, &param) in method.params.iter().enumerate() {
+            let argument = arguments
+                .get(index)
+                .copied()
+                .unwrap_or(Inferred::of(Type::NIL));
+            self.bind(param, argument);
+        }
+        if let Some(rest) = method.rest {
+            let rest_type = if arguments.len() > method.params.len() {
+                Type::SEQ
+            } else {
+                Type::NIL
+            };
+            self.bind(rest, Inferred::of(rest_type));
+        }
     }
 
     /// A read of `global`.

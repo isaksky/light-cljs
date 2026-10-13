@@ -130,6 +130,9 @@ pub struct ApplicationStats {
     /// `Advanced`: functions with several methods or rest arguments whose
     /// value never escapes, defined without an `arguments.length` dispatcher.
     pub dispatchers_removed: usize,
+    /// `Advanced`: parameters of closed functions whose type, joined over the
+    /// arguments of every call (`crate::inference`), is narrower than `any`.
+    pub typed_parameters: usize,
 }
 /// An owned semantic program plus emission decisions computed entirely in Rust.
 /// Repeated emission does not rerun preparation or execute compiler callbacks.
@@ -324,7 +327,14 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         let top: Vec<ExprId> = top.into_iter().map(|(id, _)| id).collect();
         let facts = ProgramFacts::new(&prepared.program, &top);
         prepared.replaced_core = facts.replaced_names();
-        let inference = Inference::new(&prepared.program, facts);
+        // Parameters of closed functions join the arguments of their calls
+        // (light-cljs-229). Which functions are closed needs no types, so it is
+        // decided here, before inference and over the program that rapid type
+        // analysis then rewrites: its removals only drop calls, so the calls
+        // found here include every call emission keeps.
+        let closed = crate::call_shapes::closed_functions(&prepared.program, &options.exports);
+        let inference = Inference::new(&prepared.program, facts, &closed);
+        prepared.stats.typed_parameters = inference.typed_parameters();
         // Rapid type analysis (Phase 2 step 4) drops the methods no instance
         // can run, the types nothing instantiates and the definitions only those
         // read, and devirtualizes calls on receivers of one program type.

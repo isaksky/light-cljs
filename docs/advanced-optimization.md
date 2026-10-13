@@ -884,7 +884,9 @@ keyed by names.
    `truth()` when boolean or seq; `+`/`-`/`<`/`=` on known numbers or
    strings become operators; `(count s)` on strings and arrays becomes
    `.length`; `(not x)` becomes `!x`; `(:k rec)` on a known record becomes
-   a field read; `(nth v i)` on a known vector becomes an index.
+   a field read; `(nth v i)` on a known vector becomes an index. The
+   parameters of functions only the program calls join their calls'
+   arguments (light-cljs-229).
 4. **Rapid type analysis.** Instantiated types are `DefType`, `Reify` and
    reachable runtime constructors; reachable protocol methods come from
    calls and from `satisfies?`. Implementations of uninstantiated types and
@@ -972,7 +974,9 @@ and `Prepare` output does not change.
 
 - **API.** `PreparedApplication::inference()` is the `Inference` of the
   program `PreparedApplication::program()` emits, built by
-  `Inference::new(program, ProgramFacts::new(program, top))`.
+  `Inference::new(program, ProgramFacts::new(program, top), &closed)`, where
+  `closed` is `call_shapes::closed_functions(program, exports)` (since
+  light-cljs-229; see "Phase 2 parameter type extension points").
   `value(expr)` is an `Inferred`: a `core_operations::Type` and a `Known`
   representation that refines one of its classes. The representations are
   `Function(fn expr)` for the functions a `fn` makes, `Instance(type global)`
@@ -984,7 +988,10 @@ and `Prepare` output does not change.
   - `returns(program, fn)`: what a `fn` returns;
   - `callee(program, call)`: the `fn` a call invokes;
   - `uses(l)`: how many expressions read a local;
-  - `facts()`: the program-wide conditions.
+  - `facts()`: the program-wide conditions;
+  - `rounds()` and `typed_parameters()`: how many rounds the fixed point took
+    and how many parameters of closed functions are narrower than `any`
+    (`ApplicationStats::typed_parameters`).
 
   Rapid type analysis (211) reads `Known::Instance` and
   `ProgramFacts::implementors` for receivers. Call shapes (212) read
@@ -1004,8 +1011,9 @@ and `Prepare` output does not change.
     type. A later top-level form reads the initializer's type; every other
     read may see `nil` first.
   - Locals bound by `let`, `loop` and `letfn` join their initializer and
-    their `recur` arguments. Parameters, `catch` and `this-as` bindings are
-    `any`.
+    their `recur` arguments. The parameters of closed functions join the
+    arguments of their calls and their method's `recur` arguments (229).
+    Other parameters, `catch` and `this-as` bindings are `any`.
 - **Narrowing.** In an `if`'s branches, a local the test examines is
   narrowed. This is modeled on upstream's `infer-if` and `and_or` pass. The
   tests are:
@@ -1027,8 +1035,12 @@ and `Prepare` output does not change.
   the parameters of functions that read `(js-arguments)`, which aliases them.
 - **Fixed point.** Locals and expressions start at `never` and grow until
   nothing changes. Every transfer is monotone over a finite lattice, and
-  calling `nil` gives `never`, so recursive functions converge. After
-  `ROUND_LIMIT` rounds, everything is `any`.
+  calling `nil` gives `never`, so recursive functions converge. Rounds walk
+  the top-level forms forward and backward in turn: values flow forward from
+  a definition to later reads, and parameter types backward from a call to
+  the earlier definition it calls. After `ROUND_LIMIT` rounds, inference
+  starts over without parameter types, and if that does not converge either,
+  everything is `any`.
 - **Program-wide conditions.** `ProgramFacts` is the scan `Inert` used,
   moved here. It records:
   - replaced core operations, whose calls are `any`;
@@ -1144,9 +1156,9 @@ extension points").
     dispatcher the original call reads exists wherever an instance does.
   - A later `extend-type` or `specify!` replaces the slot the call reads.
   - `rta::protocol_slot` is the Rust port of the runtime's `protocolSlot`.
-  - Parameters are still `any`, so devirtualization mostly applies to `let`
-    locals, constructor calls and receivers narrowed by `instance?` or
-    `satisfies?`. Call shapes (212) widen it.
+  - It applies to `let` locals, constructor calls, receivers narrowed by
+    `instance?` or `satisfies?`, and since light-cljs-229 the parameters of
+    closed functions that every call passes an instance of the type.
 - **Definitions in emitted code.** `ProgramFacts` now counts definitions only
   where the root reaches them. `defprotocol` leaves a `def` without a value
   for each of its Vars in the arena, so before this no protocol method was
@@ -1382,7 +1394,9 @@ there and at `Advanced`, whose emission prefers the shapes below.
   `.call(null, ...)` on its entry, because a plain call passes `undefined` as
   `this`, which strict raw text can tell from `null`; `this-as` maps both to
   the global object. A local bound to a `fn` with one fixed method, or such a
-  `fn` literal, is called plainly too when `Inference::callee` knows it; a
+  `fn` literal, is called plainly too when `Inference::callee` knows it and
+  its type has no `nil` (since light-cljs-229: calling nil keeps
+  `.call(null, ...)` and so the `TypeError` message of lower levels); a
   captured local that the emitter writes as a member read is called as
   `(0, captures3.l5)(a)`. The call reads its target when it runs, as before,
   so a call before the definition still throws a `TypeError` (see
@@ -1407,8 +1421,11 @@ there and at `Advanced`, whose emission prefers the shapes below.
   property is not an option either.
 - **For parameter types.** `CallShapes::closed(global)` says when a known
   function does not escape, so its direct calls are all its calls, and
-  `CallShapes::calls_of(function)` lists them with the method each runs. A
-  later inference pass can join a parameter's type over those arguments.
+  `CallShapes::calls_of(function)` lists them with the method each runs.
+  Since light-cljs-229 `closed` also requires that the `fn`'s name is read
+  only as a callee and that only the `def` evaluates the `fn` expression.
+  Inference joins parameter types over the same calls, found before it runs
+  by `closed_functions` (see "Phase 2 parameter type extension points").
 - **Statistics.** `ApplicationStats::direct_calls` counts the direct calls and
   `dispatchers_removed` the retained functions defined as entries without a
   dispatcher.
@@ -1439,7 +1456,106 @@ there and at `Advanced`, whose emission prefers the shapes below.
   - A `def` initializer that is a `let`, `try`, `case` or `loop` is still a
     function call; top-level definitions could emit it as statements.
   - Parameter types from the direct calls of closed functions
-    (light-cljs-229).
+    (light-cljs-229). Done; see "Phase 2 parameter type extension points".
+
+#### Phase 2 parameter type extension points
+
+Parameter types are implemented (light-cljs-229) in `src/call_shapes.rs` and
+`src/inference.rs`, at `Advanced` only. Before, every parameter was `any`, so
+the lowerings of step 3 and the devirtualization of step 4 mostly applied to
+`let` locals.
+
+- **Closed functions.** `call_shapes::closed_functions(program, exports)`
+  returns `ClosedFunctions`: the `fn` expressions whose every call the program
+  makes itself, with those calls. A `fn` is closed when each place its value
+  goes calls it:
+  - it is the function of a known global that does not escape
+    (`CallShapes::closed`, 212's escape analysis);
+  - it is bound by `let` or `letfn` to a local that is read only as the
+    callee of calls (not `loop`, whose `recur` rebinds it);
+  - it is the callee of a call, `((fn [x] ...) 1)`.
+
+  A named `fn` must also have its name read only as a callee, and the `fn`
+  expression and the one-form `do`s around it must have one parent each,
+  since an expression reached twice is evaluated twice. A call runs the
+  method its argument count selects as the dispatcher does: the fixed method
+  of that count, else the variadic one, even for fewer arguments than its
+  fixed parameters (they are `undefined`). A count that selects no method
+  throws before a method runs and binds nothing. A function with one fixed
+  method runs it for every count.
+- **Ordering.** `closed_functions` is the part of call shapes that needs no
+  inference: known globals, escapes and the calls of globals and locals. So
+  `prepare_application` runs it first, then inference with its result, then
+  rapid type analysis, which reads the parameter types to devirtualize, and
+  last the full `call_shapes::analyze` over the rewritten program, which
+  reads inference for the calls of locals. Rapid type analysis only removes
+  code, so the calls found before it include every call emission keeps: the
+  joins stay sound, and a function that only those removals close keeps
+  `any` parameters. No second inference round is needed, and the program
+  rewrites of 211 keep their order. `Prepare` output does not change.
+- **Joins.** In inference's fixed point, each call of a closed function binds
+  the parameters of the method it runs to its arguments' values, after
+  narrowing, as a `let` binds its locals: `nil` for missing arguments, and for
+  the rest parameter `seq` when the call has arguments beyond the fixed
+  parameters and `nil` otherwise, as `fnRest` builds it. A method's `recur`
+  binds its parameters through the recur target, the rest parameter included,
+  as for `loop`. The parameters start at `never`, so a closed function that
+  nothing calls has a body typed `never`, which no emitted code runs.
+  Arguments may read other parameters, also through recursion: every value
+  only grows, so the joins converge with the rest. `Known` representations
+  pass through (`Function`, `Instance`, `Vector`, `Array`): a parameter that
+  every call passes the same `fn` literal is called as that `fn`'s method.
+- **Assignable parameters** stay `any`, as locals do: a `js*` hole, a `set!`
+  target, and the parameters of a method that reads `(js-arguments)`.
+- **Convergence.** A parameter type flows backward, from a call to the
+  definition it calls, which usually comes earlier. Rounds therefore
+  alternate: odd rounds walk the top-level forms in order, even ones in
+  reverse, and a chain of 100 top-level definitions converges in at most
+  four rounds. Inside one form each link of a chain still takes a round. If
+  the fixed point does not converge in `ROUND_LIMIT` rounds, inference
+  starts over without parameter types (`ClosedFunctions::default()`), so a
+  long `letfn` chain costs its parameter types, not the program's.
+- **Calling nil.** A direct call of a local or parameter whose type includes
+  `nil` keeps `.call(null, ...)`. Calling nil then throws the `TypeError`
+  lower levels throw, `Cannot read properties of null (reading 'call')`,
+  instead of `l4 is not a function`. This also holds for `let` locals, which
+  212 called plainly.
+- **Statistics.** `ApplicationStats::typed_parameters` counts the parameters
+  of closed functions whose type is narrower than `any`.
+- **Tests.** The `type_inference` suite in `tests/compiler/` checks:
+  - the joined types: missing and rest arguments, multi-arity methods,
+    recursion, `recur`, mutual recursion across `declare`, local, named,
+    `letfn` and in-place functions, and representations;
+  - that every other caller keeps `any`: `apply`, the function as a value
+    (its global, its `def`, its name, a local alias), `loop` locals, `js*`
+    holes, `(js-arguments)`, underfilled variadic and unselected arities, and
+    `with-redefs`;
+  - every lowering on parameters, at every level, with adversarial values
+    (`-0`, `NaN`, emoji strings, built keywords, subvectors, map entries,
+    records), and callers that turn them off;
+  - devirtualization through a parameter, and a parameter that may be nil;
+  - convergence along a chain of 100 definitions, and the fallback for a
+    `letfn` chain past the round limit;
+  - a seeded generator of closed functions (single, multi-arity, variadic and
+    local) called with adversarial arguments from nine classes, some through
+    `apply`, `mapv` and `fn` literals, whose output must equal `None`'s at
+    every level (`LIGHT_CLJS_INFERENCE_SEEDS=<n>` runs more than 16 seeds);
+  - that the generated namespace programs of `generated_optimization` type
+    parameters.
+- **Measured.** The ratchet fixture and `--levels` workload
+  `closed-params` reads record fields, a vector, a string and a keyword
+  through parameters. At `Advanced` it shrinks from 79,842 to 79,800 bytes,
+  and its steady-state loop takes 30% less time in Node and 56% less in
+  QuickJS. The other fixtures and workloads compile to the same bytes with
+  and without parameter types. See "Parameter types" in
+  `benchmarks/compiler.md`.
+- **Left for later.**
+  - Parameters of functions that escape, of protocol methods and of
+    `deftype` methods stay `any`. Methods of program types called only
+    through devirtualized calls could join their arguments too.
+  - Return types do not depend on the call: a function called with a string
+    and with a vector returns the join for every call (no context
+    sensitivity).
 
 #### Phase 2 pure initializer and `js*` extension points
 
@@ -1849,8 +1965,7 @@ upstream states that advanced mode is unsafe for certain patterns.
   costs for large closures.
 - How deep type inference should go before diminishing returns. Step 3
   infers booleans, numbers, strings, collections and program types within a
-  function. Parameters stay `any`, so arithmetic lowers without types and
-  typed `=`, `count` and `nth` mostly apply to locals. Call shapes (212) now
-  say which functions only the program calls and list their calls
-  (`CallShapes::closed`, `CallShapes::calls_of`), from which parameter types
-  could be joined.
+  function, and since light-cljs-229 the parameters of functions only the
+  program calls, joined over their calls. It has no context sensitivity: a
+  function's result is the same for every call, and parameters of functions
+  that escape stay `any`.

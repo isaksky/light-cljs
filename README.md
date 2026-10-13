@@ -211,7 +211,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   and the runtime units a program does not reach, declares each keyword,
   symbol and constant collection literal once, leaves out the compiler's
   namespace registry unless the program uses reflection and the printer unless
-  it prints, infers types to write truth tests, arithmetic, comparisons
+  it prints, infers types (of parameters too, from the calls of functions
+  only the program calls) to write truth tests, arithmetic, comparisons
   and typed core calls as plain JavaScript, drops the protocol methods and
   types no instance can use, and calls known functions directly through the
   method a call selects, and keeps only the runtime types a program can

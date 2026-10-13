@@ -42,8 +42,10 @@
 //!   this shape only when its `def` is a top-level form, which runs once.
 //!   Otherwise it stays [`FunctionShape::Generic`].
 //! - Calls of a local bound to a `fn` with one fixed method, or of such a `fn`
-//!   literal, which inference
-//!   knows ([`crate::inference::Inference::callee`]), are plain calls too.
+//!   literal, which inference knows
+//!   ([`crate::inference::Inference::callee`]), are plain calls too, when the
+//!   callee cannot be nil: calling nil keeps `.call(null, ...)` and its
+//!   `TypeError`.
 //!
 //! # Soundness
 //!
@@ -61,8 +63,32 @@
 //!
 //! [`CallShapes::closed`] says when the direct calls are every call of a
 //! function: then each value its parameters receive is an argument of one of
-//! [`CallShapes::calls_of`], which a later inference pass can join.
-use crate::analyzer::{ExprId, ExprKind, FnMethod, GlobalId, Program};
+//! [`CallShapes::calls_of`].
+//!
+//! Inference joins those arguments into the parameters (light-cljs-229), so it
+//! needs the calls before it runs, while [`analyze`] reads inference for the
+//! calls of locals. [`closed_functions`] is the part that needs no inference:
+//! the same escape analysis, run before inference over the program that rapid
+//! type analysis then rewrites, extended to `fn` expressions whose value only
+//! a local holds or a call receives. A `fn` is *closed* when every place its
+//! value goes calls it:
+//!
+//! - it is the function of a known global that does not escape;
+//! - it is bound by `let` or `letfn` to a local that is read only as the
+//!   callee of calls;
+//! - it is the callee of a call (`((fn [x] ...) 1)`);
+//!
+//! and, for a named `fn`, its name is read only as the callee of calls. The
+//! `fn` expression and the one-form `do`s around it must have one parent each,
+//! since an expression reached twice is evaluated twice. Every call of a
+//! closed `fn` is then one of [`ClosedFunctions::call`], each running the
+//! method its argument count selects, as the dispatcher would (a count that
+//! selects none throws before any method runs). Rapid type analysis only
+//! removes code, so the calls of a function closed before it are a superset
+//! of its calls after it: joining over them stays sound, and a function that
+//! only those removals close keeps `any` parameters.
+use crate::analyzer::{ExprId, ExprKind, FnMethod, GlobalId, LocalId, Program};
+use crate::core_operations::Type;
 use crate::inference::Inference;
 use crate::program_fragment::children;
 
@@ -115,6 +141,8 @@ pub struct DirectCall {
 #[derive(Clone, Debug, Default)]
 pub struct CallShapes {
     functions: Vec<FunctionShape>,
+    /// By global: the function is known and its value never escapes.
+    closed: Vec<bool>,
     /// By `ExprId`: the index in `direct` of the call's shape, or `u32::MAX`.
     slots: Vec<u32>,
     direct: Vec<(ExprId, DirectCall)>,
@@ -146,16 +174,11 @@ impl CallShapes {
     }
 
     /// Whether `global`'s function is known and does not escape, so that its
-    /// direct calls ([`CallShapes::calls_of`]) are all its calls.
+    /// direct calls ([`CallShapes::calls_of`]) are all its calls: nothing reads
+    /// the global or the `fn`'s name other than as a callee, and the `fn`
+    /// expression is evaluated only by the `def`.
     pub fn closed(&self, global: GlobalId) -> bool {
-        matches!(
-            self.function(global),
-            FunctionShape::Single { closed: true, .. }
-                | FunctionShape::Entries {
-                    dispatcher: false,
-                    ..
-                }
-        )
+        self.closed.get(global.0).copied().unwrap_or(false)
     }
 
     /// The direct calls of the `fn` expression `function`, with the method
@@ -171,161 +194,17 @@ impl CallShapes {
 /// Decide the call shapes of `program`, the prepared program emission reads,
 /// whose types are `inference`. `exports` escape.
 pub fn analyze(program: &Program, inference: &Inference, exports: &[GlobalId]) -> CallShapes {
+    let Scan {
+        functions,
+        closed,
+        resolved,
+        inferred_sites,
+        ..
+    } = Scan::new(program, exports);
     let count = program.exprs.len();
-    // Every expression emission can reach, each with its parent; an expression
-    // reached from two places has no single parent and counts as read.
-    let mut parent: Vec<Option<ExprId>> = vec![None; count];
-    let mut parents = vec![0u8; count];
-    let mut order = Vec::new();
-    let mut visited = vec![false; count];
-    visited[program.root.0] = true;
-    let mut pending = vec![program.root];
-    while let Some(id) = pending.pop() {
-        order.push(id);
-        for child in children(program, id) {
-            parents[child.0] = parents[child.0].saturating_add(1);
-            parent[child.0] = Some(id);
-            if !std::mem::replace(&mut visited[child.0], true) {
-                pending.push(child);
-            }
-        }
-    }
-    let parent_of = |id: ExprId| parent[id.0].filter(|_| parents[id.0] == 1);
-    // The direct top-level forms, which run once.
-    let mut top = vec![false; count];
-    let mut forms = vec![program.root];
-    while let Some(id) = forms.pop() {
-        match &program.exprs[id.0].kind {
-            ExprKind::Do(items) => forms.extend(items),
-            _ => top[id.0] = true,
-        }
-    }
-
-    let globals = program.globals.len();
-    let mut definitions = vec![0u32; globals];
-    let mut definition = vec![None; globals];
-    let mut fixed = vec![true; globals];
-    let mut escaped = vec![false; globals];
-    let mut sites = Vec::new();
-    let mut inferred_sites = Vec::new();
-    for &id in &order {
-        let mut assign = |target: &ExprId| {
-            if let ExprKind::Global(global) = program.exprs[target.0].kind {
-                fixed[global.0] = false;
-            }
-        };
-        match &program.exprs[id.0].kind {
-            ExprKind::Def {
-                global,
-                init,
-                test,
-                once,
-            } => {
-                if init.is_some() || *once {
-                    definitions[global.0] += 1;
-                    definition[global.0] = Some(id);
-                }
-                if *once || test.is_some() {
-                    fixed[global.0] = false;
-                }
-            }
-            ExprKind::SetGlobal { target, .. } => assign(target),
-            ExprKind::Binding { bindings, .. } => {
-                bindings.iter().for_each(|(target, _)| assign(target))
-            }
-            // Raw text may assign its holes.
-            ExprKind::JsTemplate { args, .. } => args.iter().for_each(assign),
-            ExprKind::Global(global) => {
-                let callee = parent_of(id).is_some_and(|call| {
-                    matches!(program.exprs[call.0].kind, ExprKind::Call { callee, .. } if callee == id)
-                });
-                if !callee {
-                    escaped[global.0] = true;
-                }
-            }
-            ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
-                ExprKind::Global(global) => sites.push((id, global, args.len())),
-                ExprKind::Local(_) | ExprKind::Fn { .. } => inferred_sites.push(id),
-                _ => (),
-            },
-            // Types and protocols define their globals some other way.
-            kind => {
-                for global in crate::application::globals(kind) {
-                    fixed[global.0] = false;
-                }
-            }
-        }
-    }
-
-    let mut functions = vec![FunctionShape::Generic; globals];
-    let mut known = vec![None; globals];
-    for global in 0..globals {
-        let binding = &program.globals[global];
-        if definitions[global] != 1
-            || !fixed[global]
-            || binding.name.contains('.')
-            || crate::application::dynamic(program, GlobalId(global))
-        {
-            continue;
-        }
-        let Some(def) = definition[global] else {
-            continue;
-        };
-        let ExprKind::Def {
-            init: Some(init), ..
-        } = program.exprs[def.0].kind
-        else {
-            continue;
-        };
-        let function = crate::application::unwrap_do(program, init);
-        let ExprKind::Fn { name, methods } = &program.exprs[function.0].kind else {
-            continue;
-        };
-        if program.macro_functions.contains(&function) || (!single(methods) && name.is_some()) {
-            continue;
-        }
-        known[global] = Some(function);
-        if !discarded(program, def, &parent_of) {
-            escaped[global] = true;
-        }
-    }
-    for global in exports {
-        if let Some(escaped) = escaped.get_mut(global.0) {
-            *escaped = true;
-        }
-    }
-    // Calls whose count selects no method go through the dispatcher.
-    let mut resolved = Vec::new();
-    for (call, global, arguments) in sites {
-        let Some(function) = known[global.0] else {
-            continue;
-        };
-        match method_for(methods_of(program, function), arguments) {
-            Some(method) => resolved.push((call, global, method)),
-            None => escaped[global.0] = true,
-        }
-    }
-    for global in 0..globals {
-        let Some(function) = known[global] else {
-            continue;
-        };
-        functions[global] = if single(methods_of(program, function)) {
-            FunctionShape::Single {
-                function,
-                closed: !escaped[global],
-            }
-        } else if !escaped[global] || definition[global].is_some_and(|def| top[def.0]) {
-            FunctionShape::Entries {
-                function,
-                dispatcher: escaped[global],
-            }
-        } else {
-            FunctionShape::Generic
-        };
-    }
-
     let mut shapes = CallShapes {
         functions,
+        closed,
         slots: vec![u32::MAX; count],
         direct: Vec::new(),
     };
@@ -345,12 +224,359 @@ pub fn analyze(program: &Program, inference: &Inference, exports: &[GlobalId]) -
         let Some(function) = inference.callee(program, call) else {
             continue;
         };
-        if single(methods_of(program, function)) && !program.macro_functions.contains(&function) {
+        // A callee that may be nil keeps `.call(null, ...)`, so that calling
+        // nil throws the `TypeError` it throws below `Advanced`.
+        let ExprKind::Call { callee, .. } = program.exprs[call.0].kind else {
+            continue;
+        };
+        if inference.ty(callee) == Type::FN
+            && single(methods_of(program, function))
+            && !program.macro_functions.contains(&function)
+        {
             let direct = this.direct(program, function, 0, None);
             shapes.insert(call, direct);
         }
     }
     shapes
+}
+
+/// The `fn` expressions whose every call the program makes itself, and those
+/// calls; see "For parameter types" in the module documentation. The result
+/// of [`closed_functions`].
+#[derive(Clone, Debug, Default)]
+pub struct ClosedFunctions {
+    /// By `ExprId`: whether this `fn` expression is closed.
+    functions: Vec<bool>,
+    /// By `ExprId`: the index in `calls` of the call, or `u32::MAX`.
+    slots: Vec<u32>,
+    /// Each call of a closed `fn`, with the `fn` and the method it runs.
+    calls: Vec<(ExprId, ExprId, usize)>,
+}
+
+impl ClosedFunctions {
+    /// Whether every call of the `fn` expression `function` is one of
+    /// [`ClosedFunctions::call`].
+    pub fn closed(&self, function: ExprId) -> bool {
+        self.functions.get(function.0).copied().unwrap_or(false)
+    }
+
+    /// The closed `fn` that `call` calls and the index of the method it runs.
+    pub fn call(&self, call: ExprId) -> Option<(ExprId, usize)> {
+        let slot = *self.slots.get(call.0)?;
+        self.calls
+            .get(slot as usize)
+            .map(|&(_, function, method)| (function, method))
+    }
+
+    /// How many `fn` expressions are closed.
+    pub fn len(&self) -> usize {
+        self.functions.iter().filter(|closed| **closed).count()
+    }
+
+    /// Whether no `fn` expression is closed.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Find the closed `fn` expressions of `program` and their calls, without
+/// inference. `exports` escape.
+pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFunctions {
+    let scan = Scan::new(program, exports);
+    let count = program.exprs.len();
+    let mut closed = ClosedFunctions {
+        functions: vec![false; count],
+        slots: vec![u32::MAX; count],
+        calls: Vec::new(),
+    };
+    // The calls of each local, in one pass.
+    let mut local_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.locals.len()];
+    for &(call, local) in &scan.local_calls {
+        local_calls[local.0].push(call);
+    }
+    let mut global_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.globals.len()];
+    for &(call, global, _) in &scan.resolved {
+        global_calls[global.0].push(call);
+    }
+    for &function in &scan.order {
+        let ExprKind::Fn { name, methods } = &program.exprs[function.0].kind else {
+            continue;
+        };
+        if program.macro_functions.contains(&function) || !scan.name_closed(*name) {
+            continue;
+        }
+        let Some((user, value)) = scan.sole_use(program, function) else {
+            continue;
+        };
+        let mut calls = match &program.exprs[user.0].kind {
+            ExprKind::Call { callee, .. } if *callee == value => vec![user],
+            ExprKind::Let { bindings, .. } | ExprKind::LetFn { bindings, .. } => {
+                match bindings.iter().find(|(_, init)| *init == value) {
+                    Some((local, _)) if !scan.local_escapes[local.0] => {
+                        local_calls[local.0].clone()
+                    }
+                    _ => continue,
+                }
+            }
+            ExprKind::Def {
+                global,
+                init: Some(init),
+                ..
+            } if *init == value
+                && scan.closed[global.0]
+                && scan.functions[global.0].function() == Some(function) =>
+            {
+                global_calls[global.0].clone()
+            }
+            _ => continue,
+        };
+        if let Some(name) = name {
+            calls.extend(&local_calls[name.0]);
+        }
+        closed.functions[function.0] = true;
+        for call in calls {
+            let ExprKind::Call { args, .. } = &program.exprs[call.0].kind else {
+                continue;
+            };
+            if let Some(method) = dispatched_method(methods, args.len()) {
+                closed.slots[call.0] =
+                    u32::try_from(closed.calls.len()).expect("fewer than 2^32 calls");
+                closed.calls.push((call, function, method));
+            }
+        }
+    }
+    closed
+}
+
+/// What [`analyze`] and [`closed_functions`] decide without inference: the
+/// known functions and their shapes, which values escape, and the calls of
+/// known globals and of locals.
+struct Scan {
+    parent: Vec<Option<ExprId>>,
+    parents: Vec<u8>,
+    /// Every expression emission can reach, each after its parent.
+    order: Vec<ExprId>,
+    functions: Vec<FunctionShape>,
+    /// By global: the function is known and does not escape.
+    closed: Vec<bool>,
+    /// The calls of known globals whose argument count selects a method, with
+    /// the global and the method.
+    resolved: Vec<(ExprId, GlobalId, usize)>,
+    /// The calls whose callee is a local or a `fn` literal.
+    inferred_sites: Vec<ExprId>,
+    /// By `LocalId`: an expression reads the local other than as the callee
+    /// of a call.
+    local_escapes: Vec<bool>,
+    /// The calls whose callee is a local, with the local.
+    local_calls: Vec<(ExprId, LocalId)>,
+}
+
+impl Scan {
+    fn new(program: &Program, exports: &[GlobalId]) -> Self {
+        let count = program.exprs.len();
+        // Every expression emission can reach, each with its parent; an
+        // expression reached from two places has no single parent and counts as
+        // read.
+        let mut parent: Vec<Option<ExprId>> = vec![None; count];
+        let mut parents = vec![0u8; count];
+        let mut order = Vec::new();
+        let mut visited = vec![false; count];
+        visited[program.root.0] = true;
+        let mut pending = vec![program.root];
+        while let Some(id) = pending.pop() {
+            order.push(id);
+            for child in children(program, id) {
+                parents[child.0] = parents[child.0].saturating_add(1);
+                parent[child.0] = Some(id);
+                if !std::mem::replace(&mut visited[child.0], true) {
+                    pending.push(child);
+                }
+            }
+        }
+        let parent_of = |id: ExprId| parent[id.0].filter(|_| parents[id.0] == 1);
+        let callee_of = |id: ExprId| {
+            parent_of(id).filter(|call| {
+                matches!(program.exprs[call.0].kind, ExprKind::Call { callee, .. } if callee == id)
+            })
+        };
+        // The direct top-level forms, which run once.
+        let mut top = vec![false; count];
+        let mut forms = vec![program.root];
+        while let Some(id) = forms.pop() {
+            match &program.exprs[id.0].kind {
+                ExprKind::Do(items) => forms.extend(items),
+                _ => top[id.0] = true,
+            }
+        }
+
+        let globals = program.globals.len();
+        let mut definitions = vec![0u32; globals];
+        let mut definition = vec![None; globals];
+        let mut fixed = vec![true; globals];
+        let mut escaped = vec![false; globals];
+        let mut sites = Vec::new();
+        let mut inferred_sites = Vec::new();
+        let mut local_escapes = vec![false; program.locals.len()];
+        let mut local_calls = Vec::new();
+        for &id in &order {
+            let mut assign = |target: &ExprId| {
+                if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                    fixed[global.0] = false;
+                }
+            };
+            match &program.exprs[id.0].kind {
+                ExprKind::Def {
+                    global,
+                    init,
+                    test,
+                    once,
+                } => {
+                    if init.is_some() || *once {
+                        definitions[global.0] += 1;
+                        definition[global.0] = Some(id);
+                    }
+                    if *once || test.is_some() {
+                        fixed[global.0] = false;
+                    }
+                }
+                ExprKind::SetGlobal { target, .. } => assign(target),
+                ExprKind::Binding { bindings, .. } => {
+                    bindings.iter().for_each(|(target, _)| assign(target))
+                }
+                // Raw text may assign its holes.
+                ExprKind::JsTemplate { args, .. } => args.iter().for_each(assign),
+                ExprKind::Global(global) => {
+                    if callee_of(id).is_none() {
+                        escaped[global.0] = true;
+                    }
+                }
+                // A local that is assigned (`set!`, a `js*` hole) is read there.
+                ExprKind::Local(local) => match callee_of(id) {
+                    Some(call) => local_calls.push((call, *local)),
+                    None => local_escapes[local.0] = true,
+                },
+                ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
+                    ExprKind::Global(global) => sites.push((id, global, args.len())),
+                    ExprKind::Local(_) | ExprKind::Fn { .. } => inferred_sites.push(id),
+                    _ => (),
+                },
+                // Types and protocols define their globals some other way.
+                kind => {
+                    for global in crate::application::globals(kind) {
+                        fixed[global.0] = false;
+                    }
+                }
+            }
+        }
+
+        let mut scan = Self {
+            parent,
+            parents,
+            order,
+            functions: vec![FunctionShape::Generic; globals],
+            closed: vec![false; globals],
+            resolved: Vec::new(),
+            inferred_sites,
+            local_escapes,
+            local_calls,
+        };
+        let mut known = vec![None; globals];
+        for global in 0..globals {
+            let binding = &program.globals[global];
+            if definitions[global] != 1
+                || !fixed[global]
+                || binding.name.contains('.')
+                || crate::application::dynamic(program, GlobalId(global))
+            {
+                continue;
+            }
+            let Some(def) = definition[global] else {
+                continue;
+            };
+            let ExprKind::Def {
+                init: Some(init), ..
+            } = program.exprs[def.0].kind
+            else {
+                continue;
+            };
+            let function = crate::application::unwrap_do(program, init);
+            let ExprKind::Fn { name, methods } = &program.exprs[function.0].kind else {
+                continue;
+            };
+            if program.macro_functions.contains(&function) || (!single(methods) && name.is_some()) {
+                continue;
+            }
+            known[global] = Some(function);
+            if !discarded(program, def, &|id| scan.parent_of(id)) {
+                escaped[global] = true;
+            }
+        }
+        for global in exports {
+            if let Some(escaped) = escaped.get_mut(global.0) {
+                *escaped = true;
+            }
+        }
+        // Calls whose count selects no method go through the dispatcher.
+        for (call, global, arguments) in sites {
+            let Some(function) = known[global.0] else {
+                continue;
+            };
+            match method_for(methods_of(program, function), arguments) {
+                Some(method) => scan.resolved.push((call, global, method)),
+                None => escaped[global.0] = true,
+            }
+        }
+        for global in 0..globals {
+            let Some(function) = known[global] else {
+                continue;
+            };
+            // The value escapes through the `fn`'s name, or through a second
+            // evaluation of the `fn` expression, as well as through the global.
+            let ExprKind::Fn { name, .. } = program.exprs[function.0].kind else {
+                continue;
+            };
+            let closed = !escaped[global]
+                && scan.name_closed(name)
+                && scan
+                    .sole_use(program, function)
+                    .is_some_and(|(user, _)| Some(user) == definition[global]);
+            scan.closed[global] = closed;
+            scan.functions[global] = if single(methods_of(program, function)) {
+                FunctionShape::Single { function, closed }
+            } else if !escaped[global] || definition[global].is_some_and(|def| top[def.0]) {
+                FunctionShape::Entries {
+                    function,
+                    dispatcher: escaped[global],
+                }
+            } else {
+                FunctionShape::Generic
+            };
+        }
+        scan
+    }
+
+    fn parent_of(&self, id: ExprId) -> Option<ExprId> {
+        self.parent[id.0].filter(|_| self.parents[id.0] == 1)
+    }
+
+    /// Where the value of `id` goes: the expression that receives it and its
+    /// child that holds it, through one-form `do`s, when each has one parent.
+    fn sole_use(&self, program: &Program, id: ExprId) -> Option<(ExprId, ExprId)> {
+        let mut child = id;
+        loop {
+            let parent = self.parent_of(child)?;
+            match &program.exprs[parent.0].kind {
+                ExprKind::Do(items) if items.len() == 1 => child = parent,
+                _ => return Some((parent, child)),
+            }
+        }
+    }
+
+    /// Whether a `fn` with this name, if any, has its name read only as the
+    /// callee of calls.
+    fn name_closed(&self, name: Option<LocalId>) -> bool {
+        name.is_none_or(|name| !self.local_escapes[name.0])
+    }
 }
 
 /// Whether a function with these methods is its one fixed method, with no
@@ -382,6 +608,21 @@ fn method_for(methods: &[FnMethod], arguments: usize) -> Option<usize> {
                 .iter()
                 .position(|method| method.rest.is_some() && method.params.len() <= arguments)
         })
+}
+
+/// The method a call with `arguments` arguments runs, through the dispatcher
+/// or directly: the fixed method of that count, else the variadic method, which
+/// the dispatcher also runs for fewer arguments than its fixed parameters
+/// (they are `undefined`). `None` when the call throws. A call that
+/// [`method_for`] resolves runs the same method.
+fn dispatched_method(methods: &[FnMethod], arguments: usize) -> Option<usize> {
+    if single(methods) {
+        return Some(0);
+    }
+    methods
+        .iter()
+        .position(|method| method.rest.is_none() && method.params.len() == arguments)
+        .or_else(|| methods.iter().position(|method| method.rest.is_some()))
 }
 
 /// Whether the value of `id` is discarded: it is a `do` form other than the

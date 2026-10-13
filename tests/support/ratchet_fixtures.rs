@@ -214,4 +214,25 @@ pub const FIXTURES: &[Fixture] = &[
         removed: [0, 0, 0],
         printed: "84\n",
     },
+    // Closed functions whose parameters take the types of their calls'
+    // arguments (light-cljs-229): at `Advanced` record field reads, `nth` on a
+    // vector, `=` on strings and keywords and `count` of a string lower inside
+    // them.
+    Fixture {
+        name: "closed-params",
+        source: "(defrecord Pt [x y])
+                 (defn dist2 [p q] (let [dx (- (:x p) (:x q)) dy (- (:y p) (:y q))] (+ (* dx dx) (* dy dy))))
+                 (defn at [v i] (nth v i))
+                 (defn width [s] (if (= s \"\") 0 (count s)))
+                 (defn weight [k] (if (= k :heavy) 10 1))
+                 (defn score [acc v i s k]
+                   (+ acc (dist2 (->Pt i 0) (->Pt 0 2)) (at v (rem i 3)) (width s) (weight k)))
+                 (loop [i 0 acc 0]
+                   (if (< i 10)
+                     (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
+                     acc))",
+        ceilings: [381_000, 381_000, 80_000],
+        removed: [0, 0, 0],
+        printed: "419\n",
+    },
 ];

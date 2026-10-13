@@ -43,9 +43,9 @@ struct Steady {
 }
 
 /// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
-/// constant-literals, constant-keys, multi-arity and event-maps fixtures, as
-/// workloads over `n`.
-const STEADY: [Steady; 7] = [
+/// constant-literals, constant-keys, multi-arity, event-maps and closed-params
+/// fixtures, as workloads over `n`.
+const STEADY: [Steady; 8] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -123,6 +123,22 @@ const STEADY: [Steady; 7] = [
         input: 5_000,
         expected: event_maps,
     },
+    Steady {
+        name: "closed-params",
+        source: "(defrecord Pt [x y])
+                 (defn dist2 [p q] (let [dx (- (:x p) (:x q)) dy (- (:y p) (:y q))] (+ (* dx dx) (* dy dy))))
+                 (defn at [v i] (nth v i))
+                 (defn width [s] (if (= s \"\") 0 (count s)))
+                 (defn weight [k] (if (= k :heavy) 10 1))
+                 (defn score [acc v i s k]
+                   (+ acc (dist2 (->Pt i 0) (->Pt 0 2)) (at v (rem i 3)) (width s) (weight k)))
+                 (fn [n] (loop [i 0 acc 0]
+                           (if (< i n)
+                             (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
+                             acc)))",
+        input: 1_000,
+        expected: closed_params,
+    },
 ];
 
 fn event_maps(n: u64) -> u64 {
@@ -132,6 +148,12 @@ fn event_maps(n: u64) -> u64 {
 /// Whether `name` is a steady-state workload, which `--only` can select.
 pub fn is_workload(name: &str) -> bool {
     STEADY.iter().any(|workload| workload.name == name)
+}
+
+fn closed_params(n: u64) -> u64 {
+    (0..n)
+        .map(|i| i * i + 4 + i % 3 + 1 + if i % 2 == 1 { 14 } else { 1 })
+        .sum()
 }
 
 fn constant_keys(n: u64) -> u64 {

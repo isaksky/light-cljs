@@ -1814,3 +1814,65 @@ first execution, median ms:
 Startup does not change beyond noise: building a shape at load (and a
 hash-map shape's trie) costs about what the first evaluation saves, and the
 shared runtime's extra bytes are not resolved at `none`.
+
+## Parameter types — October 13, 2026
+
+light-cljs-229 extends Phase 2 step 3 of the
+[design](../docs/advanced-optimization.md) ("Phase 2 parameter type extension
+points"): at `--optimize advanced` the parameters of a function whose every
+call the program makes itself (a known global that does not escape, a `let`
+or `letfn` local only called, or a `fn` called in place) join the arguments
+of its calls. So the typed lowerings of light-cljs-210 (`=`, `not`, `count`,
+`nth`, record field reads, truth tests) and the devirtualization of
+light-cljs-211 now apply inside such functions. Below `Advanced` nothing
+changes.
+
+The new ratchet fixture and `--levels` workload `closed-params` reads record
+fields, a vector, a string and a keyword through parameters:
+
+```clojure
+(defrecord Pt [x y])
+(defn dist2 [p q] (let [dx (- (:x p) (:x q)) dy (- (:y p) (:y q))] (+ (* dx dx) (* dy dy))))
+(defn at [v i] (nth v i))
+(defn width [s] (if (= s "") 0 (count s)))
+(defn weight [k] (if (= k :heavy) 10 1))
+(defn score [acc v i s k]
+  (+ acc (dist2 (->Pt i 0) (->Pt 0 2)) (at v (rem i 3)) (width s) (weight k)))
+(fn [n] (loop [i 0 acc 0]
+          (if (< i n)
+            (recur (inc i) (score acc [1 2 3] i (if (even? i) "" "word") (if (odd? i) :heavy :light)))
+            acc)))
+```
+
+At `Advanced` its functions become `(l3)["x"] - (l4)["x"]`,
+`rt$vectorNth(rt$vectors.get(l7), l8, rt$missing)`, `l9 === ""`,
+`(l9).length` and `l10 === k0 || rt$keywordFqn(l10) === "heavy"`.
+
+**Sizes.** Only `closed-params` changes, from 79,842 to 79,800 bytes at
+`advanced` (ceiling 80,000): it keeps the generic core for its records and
+`rem`, so the lowered calls save their call text but no runtime unit. The
+other fixtures' functions escape or take parameters no lowering reads, and the
+seven earlier `--levels` workloads compile to the same bytes as before.
+
+**Steady state and startup.** `--levels --samples 9 --warmups 1 --only
+closed-params,multi-arity` on this change with parameter types turned off
+(a temporary switch that passed inference no closed functions), then with
+them, one directly after the other; the one-minute load average had a median
+of 6.30 and 3.81. `multi-arity` is the control: its parameters take no
+lowering. Both tables are in
+[before](results/parameter-types-2026-10-13/before/summary.md) and
+[after](results/parameter-types-2026-10-13/after/summary.md), next to their
+`samples.csv`. Median ms per call:
+
+| Workload | n | Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| closed-params | 1,000 | none | 13.94 | 14.22 | 45.18 | 45.46 |
+| closed-params | 1,000 | advanced | 13.51 | 9.45 | 39.51 | 17.30 |
+| multi-arity | 50,000 | advanced | 0.143 | 0.145 | 43.87 | 43.56 |
+
+At `Advanced` the workload takes 30% less time in Node and 56% less in
+QuickJS: the field reads no longer go through keyword lookup and the
+record's `ILookup`, and `nth`, `count` and `=` no longer dispatch on their
+arguments. Parse plus first execution of the fixture at `advanced`, which
+runs the loop ten times, drops from 2.79 to 2.11 ms in Node and from 4.16 to
+3.82 ms in QuickJS; `multi-arity` and `none` do not change beyond noise.
