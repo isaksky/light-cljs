@@ -43,6 +43,3 @@ every case matches. The same JVM comparison is available as the ignored test
 `audit_historical_corpus_with_compiler_evaluator` test in
 `tests/evaluator_conformance.rs` prints current observations for review; set
 `LIGHT_CLJS_SCI_AUDIT_IDS` to a comma-separated list of fixture IDs to restrict it.
-
-`historical/` and `retired-origins.tsv` are archival tables from the removed native
-interpreter; no current tooling reads them.

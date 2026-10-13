@@ -41,9 +41,6 @@ cargo test --test execution -- --ignored --nocapture
 and timeout. `analysis_boundaries.clj` is loaded by `execution.clj`'s analysis
 mode. `compiler-array-settings/original/` holds unchanged upstream array-access
 test programs used by `tests/compiler_array_settings.rs`.
-`compiler-reader-program.cljs`, `compiler-reader-public-program.cljs` and
-`slash-statement-limit.cljs` are standalone probe programs for manual reference
-runs; no test reads them.
 
 ## Reader and parser data
 
@@ -56,8 +53,6 @@ runs; no test reads them.
 | `core-var-metadata-boundaries.tsv` | Mapped core names with no pinned `cljs.core` declaration | Hand-maintained |
 
 `generate_reader_coverage.py` uses the small byte-span reader in `clj_reader.py`.
-`evaluator-migration/gate.py` belongs to the finished evaluator migration and no
-longer runs; it is pending removal.
 
 ## Provenance
 
