@@ -510,7 +510,7 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         (defn cases [k n s]
           [(case k :a (do {} 1)) (case n 1 (do {} 2)) (case s "s" (do {} 3) 4)])
         (defn bound [] (binding [*d* 2] {} *d*))
-        (defn redefined [] (with-redefs [fixed (fn [a b] 0)] {} (fixed 1 2)))
+        (defn redefined [] (with-redefs [fixed (fn [a b] 0) inc dec] {} (+ (fixed 1 2) (inc 1))))
         (defn printed [] (with-out-str {} (print "x")))
         (defn reified [y] (str (reify Object (toString [_] {} (str y)))))
         (defn letfns [] (letfn [(a [] {} 1) (b [] (a))] (b)))

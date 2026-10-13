@@ -201,6 +201,29 @@ impl fmt::Display for ManifestError {
     }
 }
 
+/// The unit declaring the mutable cells of `cljs.core`: dynamic Vars, host
+/// hooks and the operations the runtime itself reads through a cell.
+pub const CORE_CELLS: &str = "coreCells";
+/// The unit declaring `core`, the map of every core operation by runtime name
+/// that the shared runtime exports.
+pub const CORE_HUB: &str = "core";
+
+/// What `rt.core.<name>` holds, as a direct reference
+/// ([`RuntimeManifest::core_reference`]). Advanced output reads core
+/// operations this way instead of through the `core` hub.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CoreReference<'a> {
+    /// A runtime binding holding the operation: `add`, or `keywordCore` for
+    /// `keyword`.
+    Binding(&'a str),
+    /// A member of a runtime binding: `builtinTypes.PersistentVector`,
+    /// `reader.readString`.
+    Member(&'a str, &'a str),
+    /// The cell [`CORE_CELLS`]`.<name>`, which the hub shares: reads and
+    /// writes through either reach the runtime's own reads.
+    Cell(&'a str),
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeManifest<'a> {
     source: &'a str,
@@ -210,6 +233,8 @@ pub struct RuntimeManifest<'a> {
     pub exports: Exports<'a>,
     bindings: HashMap<&'a str, UnitId>,
     names: HashMap<&'a str, UnitId>,
+    /// The core table, by runtime name; empty without a [`CORE_HUB`] unit.
+    core: HashMap<&'a str, CoreReference<'a>>,
     /// Per unit: the units declaring its required bindings, sorted.
     dependencies: Vec<Vec<UnitId>>,
     /// Per unit: the effect units targeting one of its bindings.
@@ -362,6 +387,16 @@ impl<'a> RuntimeManifest<'a> {
                 });
             }
         }
+        let core = match parse_core_table(source, &units, &bindings) {
+            Ok(core) => core,
+            Err((offset, message)) => {
+                errors.push(ManifestError {
+                    line: line_of(offset),
+                    message,
+                });
+                HashMap::new()
+            }
+        };
         let Some(exports) = exports.filter(|_| errors.is_empty()) else {
             return Err(errors);
         };
@@ -393,6 +428,7 @@ impl<'a> RuntimeManifest<'a> {
             exports,
             bindings,
             names,
+            core,
             dependencies,
             attached,
         })
@@ -414,6 +450,19 @@ impl<'a> RuntimeManifest<'a> {
     /// The unit with this header name.
     pub fn unit_named(&self, name: &str) -> Option<UnitId> {
         self.names.get(name).copied()
+    }
+
+    /// What the shared runtime's `rt.core.<name>` holds, for a runtime name of
+    /// a [`CoreFnId`](crate::CoreFnId) or another key of the [`CORE_HUB`].
+    pub fn core_reference(&self, name: &str) -> Option<CoreReference<'a>> {
+        self.core.get(name).copied()
+    }
+
+    /// Every key of the [`CORE_HUB`] with its reference, unordered.
+    pub fn core_references(&self) -> impl Iterator<Item = (&'a str, CoreReference<'a>)> + '_ {
+        self.core
+            .iter()
+            .map(|(&name, &reference)| (name, reference))
     }
 
     /// Units declaring the bindings `unit` requires, sorted, without duplicates.
@@ -484,21 +533,35 @@ impl<'a> RuntimeManifest<'a> {
     /// Keeping every unit and exporting [`Exports::names`] gives
     /// [`RuntimeManifest::runtime_text`].
     pub fn sliced_text(&self, kept: &[bool], exports: &[&str]) -> String {
+        self.slice_with_return(kept, exports, "Object.freeze({", "})")
+    }
+
+    /// [`RuntimeManifest::sliced_text`] for direct reads (Advanced output):
+    /// the factory returns `bindings`, which may be any kept bindings, as an
+    /// array in the given order, `return [add, symbol];`, for the output to
+    /// destructure.
+    pub fn sliced_bindings_text(&self, kept: &[bool], bindings: &[&str]) -> String {
+        self.slice_with_return(kept, bindings, "[", "]")
+    }
+
+    fn slice_with_return(&self, kept: &[bool], names: &[&str], open: &str, close: &str) -> String {
         debug_assert_eq!(kept.len(), self.units.len());
         debug_assert!(
-            exports
+            names
                 .iter()
                 .all(|name| self.unit_of(name).is_some_and(|unit| kept[unit.0])),
-            "every export of a runtime slice must be a kept binding: {exports:?}"
+            "every binding a runtime slice returns must be kept: {names:?}"
         );
         let mut text = String::new();
         text.push_str(&self.source[self.prologue.clone()]);
         for (unit, _) in self.units.iter().zip(kept).filter(|(_, kept)| **kept) {
             text.push_str(&self.source[unit.body_range.clone()]);
         }
-        text.push_str("  return Object.freeze({");
-        text.push_str(&exports.join(", "));
-        text.push_str("});\n})()\n");
+        text.push_str("  return ");
+        text.push_str(open);
+        text.push_str(&names.join(", "));
+        text.push_str(close);
+        text.push_str(";\n})()\n");
         text
     }
 
@@ -935,6 +998,181 @@ fn parse_exports(source: &str, range: Range<usize>) -> Result<Vec<&str>, (usize,
         }
     }
     Ok(names)
+}
+
+/// The core table: every key of the [`CORE_CELLS`] literal as a cell, and the
+/// entries of the [`CORE_HUB`], `const core = Object.assign(coreCells, {...});`,
+/// whose values are a binding or `binding.member` (shorthand for a binding of
+/// the key's name). Empty when neither unit exists.
+fn parse_core_table<'a>(
+    source: &'a str,
+    units: &[Unit<'a>],
+    bindings: &HashMap<&'a str, UnitId>,
+) -> Result<HashMap<&'a str, CoreReference<'a>>, (usize, String)> {
+    let find = |name: &str| units.iter().find(|unit| unit.name == name);
+    let (cells, hub) = match (find(CORE_CELLS), find(CORE_HUB)) {
+        (None, None) => return Ok(HashMap::new()),
+        (Some(cells), Some(hub)) => (cells, hub),
+        (Some(unit), None) | (None, Some(unit)) => {
+            return Err((
+                unit.header_range.start,
+                format!("units `{CORE_CELLS}` and `{CORE_HUB}` come together"),
+            ));
+        }
+    };
+    let tokens = |unit: &Unit<'a>| {
+        lex(source, unit.body_range.clone())
+            .map_err(|error| (error.offset, error.message.to_string()))
+    };
+    let mut table = HashMap::new();
+    let mut insert = |name: &'a str, reference, offset| match table.insert(name, reference) {
+        Some(_) => Err((offset, format!("the core table lists `{name}` twice"))),
+        None => Ok(()),
+    };
+
+    let cell_tokens = tokens(cells)?;
+    let mut at = expect_core_head(
+        source,
+        &cell_tokens,
+        &["const", CORE_CELLS, "=", "{"],
+        cells.body_range.start,
+    )?;
+    loop {
+        let Some(key) = cell_tokens.get(at).filter(|token| token.kind == Kind::Name) else {
+            return Err((
+                cells.body_range.start,
+                format!("`{CORE_CELLS}` must be a flat object literal"),
+            ));
+        };
+        let name = key.text(source);
+        insert(name, CoreReference::Cell(name), key.start)?;
+        at += 1;
+        if cell_tokens
+            .get(at)
+            .is_some_and(|token| token.text(source) == ":")
+        {
+            // Skip the initial value, an expression up to a top-level `,` or `}`.
+            let mut depth = 0usize;
+            at += 1;
+            while let Some(token) = cell_tokens.get(at) {
+                match token.text(source) {
+                    "(" | "[" | "{" => depth += 1,
+                    ")" | "]" => depth = depth.saturating_sub(1),
+                    "}" if depth > 0 => depth -= 1,
+                    "," | "}" if depth == 0 => break,
+                    _ => {}
+                }
+                at += 1;
+            }
+        }
+        match cell_tokens.get(at).map(|token| token.text(source)) {
+            Some(",") => at += 1,
+            Some("}") => break,
+            _ => {
+                return Err((
+                    key.start,
+                    format!("`{CORE_CELLS}` must be a flat object literal"),
+                ));
+            }
+        }
+    }
+    if cell_tokens[at..]
+        .iter()
+        .map(|token| token.text(source))
+        .ne(["}", ";"])
+    {
+        return Err((
+            cells.body_range.start,
+            format!("`{CORE_CELLS}` must be a flat object literal"),
+        ));
+    }
+
+    let hub_tokens = tokens(hub)?;
+    let mut at = expect_core_head(
+        source,
+        &hub_tokens,
+        &[
+            "const", CORE_HUB, "=", "Object", ".", "assign", "(", CORE_CELLS, ",", "{",
+        ],
+        hub.body_range.start,
+    )?;
+    let shape = || {
+        format!(
+            "`{CORE_HUB}` must be `Object.assign({CORE_CELLS}, {{name, name: binding, name: binding.member, ...}})`"
+        )
+    };
+    let text = |at: usize| hub_tokens.get(at).map(|token| token.text(source));
+    let name_at = |at: usize| hub_tokens.get(at).filter(|token| token.kind == Kind::Name);
+    loop {
+        let Some(key) = name_at(at) else {
+            return Err((hub.body_range.start, shape()));
+        };
+        let name = key.text(source);
+        at += 1;
+        let reference = if text(at) == Some(":") {
+            let Some(binding) = name_at(at + 1) else {
+                return Err((key.start, shape()));
+            };
+            at += 2;
+            if text(at) == Some(".") {
+                let Some(member) = name_at(at + 1) else {
+                    return Err((key.start, shape()));
+                };
+                at += 2;
+                CoreReference::Member(binding.text(source), member.text(source))
+            } else {
+                CoreReference::Binding(binding.text(source))
+            }
+        } else {
+            CoreReference::Binding(name)
+        };
+        let (CoreReference::Binding(binding) | CoreReference::Member(binding, _)) = reference
+        else {
+            unreachable!("hub entries are bindings or members")
+        };
+        if !bindings.contains_key(binding) {
+            return Err((
+                key.start,
+                format!("the core table reads `{binding}` for `{name}`, which no unit declares"),
+            ));
+        }
+        insert(name, reference, key.start)?;
+        match text(at) {
+            Some(",") => at += 1,
+            Some("}") => break,
+            _ => return Err((key.start, shape())),
+        }
+    }
+    if hub_tokens[at..]
+        .iter()
+        .map(|token| token.text(source))
+        .ne(["}", ")", ";"])
+    {
+        return Err((hub.body_range.start, shape()));
+    }
+    Ok(table)
+}
+
+/// The index after `head` at the start of a core table unit's tokens.
+fn expect_core_head(
+    source: &str,
+    tokens: &[Token],
+    head: &[&str],
+    start: usize,
+) -> Result<usize, (usize, String)> {
+    if tokens.len() > head.len()
+        && tokens[..head.len()]
+            .iter()
+            .map(|token| token.text(source))
+            .eq(head.iter().copied())
+    {
+        Ok(head.len())
+    } else {
+        Err((
+            start,
+            format!("expected `{}` at the start of the unit", head.join(" ")),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------

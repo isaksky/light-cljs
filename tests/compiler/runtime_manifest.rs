@@ -230,9 +230,15 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
     );
     assert!(manifest.reachable([unit("add")])[unit("add.variadic").0]);
     assert!(!manifest.reachable([unit("keywords")])[unit("add.variadic").0]);
+    // The core hub reaches every operation; its cells reach none of the hub.
     let core = manifest.reachable([unit("core")]);
-    for effect in ["core.reader", "core.hostAndNamespaces", "core.seal"] {
-        assert!(core[unit(effect).0], "{effect}");
+    for kept in ["reader", "coreCells", "core.seal", "namespaces.cljsUser"] {
+        assert!(core[unit(kept).0], "{kept}");
+    }
+    assert!(!manifest.reachable([unit("coreCells")])[unit("core").0]);
+    let namespaces = manifest.reachable([unit("namespaces")]);
+    for effect in ["namespaces.cljsUser", "namespaces.cljsCore"] {
+        assert!(namespaces[unit(effect).0], "{effect}");
     }
     let builtin_types = manifest.reachable([unit("builtinTypes")]);
     for effect in ["builtinTypes.prototypes", "builtinTypes.statics"] {

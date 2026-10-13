@@ -4,9 +4,10 @@
 //! that defines the operation's value in the runtime `core` object, and the
 //! annotated types and purity hold on sample arguments.
 //!
-//! Moving runtime code between units (splitting the `core` hub, turning
-//! effects into install functions, separating compile-time machinery) changes
-//! which unit defines an operation, and the units check fails. Rewrite the
+//! Moving runtime code between units (pointing a `core` hub entry at another
+//! binding, turning effects into install functions, separating compile-time
+//! machinery) changes which unit defines an operation, and the units check
+//! fails. Rewrite the
 //! `units` column with
 //! `LIGHT_CLJS_UPDATE_CORE_OPERATIONS=1 cargo test --test compiler core_operations::`
 //! and review the diff.
@@ -16,7 +17,7 @@ use std::collections::{BTreeMap, HashSet};
 use light_cljs::CoreFnId;
 use light_cljs::core_operations::{COLUMNS, Calls, Purity, TABLE, Type, operations};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-use light_cljs::runtime_manifest::{ANNOTATED_RUNTIME, RuntimeManifest};
+use light_cljs::runtime_manifest::{ANNOTATED_RUNTIME, CORE_CELLS, CoreReference, RuntimeManifest};
 
 #[test]
 fn every_core_operation_has_exactly_one_row() {
@@ -53,82 +54,21 @@ fn every_runtime_unit_in_the_table_exists_in_the_manifest() {
     assert!(missing.is_empty(), "{}", missing.join("\n"));
 }
 
-/// Runs the runtime with every unit followed by a probe and returns, for each
-/// property of the `core` object, the units that define its value:
-///
-/// - an object or function value that is a runtime binding belongs to the
-///   unit declaring that binding (`add`, `keywordCore` for `keyword`);
-/// - otherwise one that is a property of a runtime binding belongs to that
-///   binding's unit (`numeric` for `inc`, `builtinTypes` for type
-///   constructors);
-/// - otherwise the value belongs to the unit whose code last assigned the
-///   property (`core` for functions written inline in the hub literal,
-///   `core.reader` for the reader).
+/// For each key of the runtime's core table (`RuntimeManifest::core_reference`),
+/// the unit that Advanced output keeps to read it directly: the unit declaring
+/// the binding that holds the value (`add`, `keywordCore` for `keyword`), or
+/// the binding it is a member of (`builtinTypes` for type constructors,
+/// `reader` for the reader), or `coreCells` for a cell (dynamic Vars, `rand`).
 fn core_value_units(manifest: &RuntimeManifest<'_>) -> BTreeMap<String, Vec<String>> {
-    let source = manifest.source();
-    let mut probe = String::new();
-    probe.push_str(&source[manifest.prologue.clone()]);
-    probe.push_str(
-        r#"
-  const __probeDefiner = new Map(), __probeSeen = new Map();
-  const __probeRecord = (unit, read) => {
-    let hub;
-    try { hub = read(); } catch (error) { if (error instanceof ReferenceError) return; throw error; }
-    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(hub))) {
-      if (!__probeSeen.has(key) || !Object.is(__probeSeen.get(key), descriptor.value)) {
-        __probeSeen.set(key, descriptor.value);
-        __probeDefiner.set(key, unit);
-      }
-    }
-  };
-"#,
-    );
-    let mut bindings = Vec::new();
-    for unit in &manifest.units {
-        probe.push_str(&source[unit.body_range.clone()]);
-        probe.push_str(&format!(
-            "\n  __probeRecord({:?}, () => core);\n",
-            unit.name
-        ));
-        for binding in &unit.declares {
-            bindings.push(format!("[{binding:?}, {:?}, () => {binding}]", unit.name));
-        }
-    }
-    probe.push_str(&format!(
-        r#"
-  const __probeBindings = [{}].map(([name, unit, read]) => [name, unit, read()])
-    .filter(([name]) => name !== "core");
-  const __probeOwners = [];
-  for (const [key, {{value}}] of Object.entries(Object.getOwnPropertyDescriptors(core))) {{
-    let owners = [];
-    if ((typeof value === "object" && value !== null) || typeof value === "function") {{
-      const direct = __probeBindings.filter(([, , bound]) => bound === value);
-      const named = direct.filter(([name]) => name === key);
-      owners = (named.length ? named : direct).map(([, unit]) => unit);
-      if (!owners.length) owners = __probeBindings
-        .filter(([, , bound]) => bound !== null && typeof bound === "object"
-          && Object.getOwnPropertyDescriptor(bound, key)?.value === value)
-        .map(([, unit]) => unit);
-    }}
-    if (!owners.length) owners = [__probeDefiner.get(key)];
-    __probeOwners.push(key + "\t" + [...new Set(owners)].join(","));
-  }}
-  return __probeOwners.join("\n");
-}})()"#,
-        bindings.join(",\n    ")
-    ));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let lines = evaluator.evaluate_js(&probe).unwrap();
-    evaluator
-        .string(lines)
-        .unwrap()
-        .lines()
-        .map(|line| {
-            let (key, units) = line.split_once('\t').unwrap();
-            (
-                key.to_owned(),
-                units.split(',').map(str::to_owned).collect(),
-            )
+    manifest
+        .core_references()
+        .map(|(key, reference)| {
+            let binding = match reference {
+                CoreReference::Binding(binding) | CoreReference::Member(binding, _) => binding,
+                CoreReference::Cell(_) => CORE_CELLS,
+            };
+            let unit = manifest.unit_of(binding).unwrap();
+            (key.to_owned(), vec![manifest.unit(unit).name.to_owned()])
         })
         .collect()
 }
@@ -200,22 +140,21 @@ fn runtime_units_are_the_units_that_define_each_core_value() {
 #[test]
 fn moving_an_operation_into_its_own_unit_moves_its_units() {
     let embedded = core_value_units(RuntimeManifest::embedded());
-    assert_eq!(embedded["second"], ["core"]);
-    assert_eq!(embedded["inc"], ["numeric"]);
+    assert_eq!(embedded["second"], ["second"]);
+    assert_eq!(embedded["inc"], ["inc"]);
     assert_eq!(embedded["add"], ["add"]);
     assert_eq!(embedded["keyword"], ["keywordCore"]);
-    assert_eq!(embedded["readString"], ["core.reader"]);
-    assert_eq!(CoreFnId::Second.operation().units, ["core"]);
-    // Hoisting `second` out of the hub literal, as dismantling the hub will,
-    // makes its own unit define it, so the table row above goes stale.
-    let hub = "  //@unit core effect requires: ";
-    let moved = ANNOTATED_RUNTIME
-        .replacen("second: x => first(next(x)), ", "second, ", 1)
-        .replacen(
-            hub,
-            &format!("  //@unit second requires: first, next\n  const second = x => first(next(x));\n{hub}second, "),
-            1,
-        );
+    assert_eq!(embedded["readString"], ["reader"]);
+    assert_eq!(embedded["PersistentVector"], ["builtinTypes"]);
+    assert_eq!(embedded["printLength"], ["coreCells"]);
+    assert_eq!(CoreFnId::Second.operation().units, ["second"]);
+    // Pointing the hub's `second` at another unit's binding makes that unit
+    // define it, so the table row above goes stale.
+    let moved = ANNOTATED_RUNTIME.replacen(" chunk, second,\n", " chunk, second: fnext,\n", 1);
+    assert_ne!(moved, ANNOTATED_RUNTIME);
+    let moved = RuntimeManifest::parse(&moved)
+        .unwrap()
+        .with_computed_requires();
     let manifest = RuntimeManifest::parse(&moved).unwrap();
     manifest.validate().unwrap();
     let units = core_value_units(&manifest);
@@ -224,7 +163,7 @@ fn moving_an_operation_into_its_own_unit_moves_its_units() {
         .filter(|(key, owners)| embedded.get(*key) != Some(owners))
         .map(|(key, owners)| format!("{key}: {}", owners.join(",")))
         .collect::<Vec<_>>();
-    assert_eq!(changed, ["second: second"]);
+    assert_eq!(changed, ["second: fnext"]);
 }
 
 /// Prints, for every runtime unit the table names, how many operations it

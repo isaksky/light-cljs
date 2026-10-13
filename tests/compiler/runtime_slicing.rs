@@ -1,11 +1,12 @@
 //! Advanced-mode runtime slicing (docs/advanced-optimization.md, Phase 1
-//! step 2): `Advanced` output embeds only the runtime units its runtime reads
-//! reach over the unit manifest, and `PreparedApplication::retention()` reports
-//! each embedded unit with the root and source span that first demanded it.
+//! steps 2 and 3): `Advanced` output reads runtime bindings directly and
+//! embeds only the runtime units those reads reach over the unit manifest, and
+//! `PreparedApplication::retention()` reports each embedded unit with the root
+//! and source span that first demanded it.
 //!
 //! The emitter records every runtime read it writes; in debug builds it also
-//! checks that no `rt.` read in the output escaped that record, so every test
-//! that emits code at any level checks the roots.
+//! checks that no `rt.`, `rt$` or `core$` read in the output escaped that
+//! record, so every test that emits code at any level checks the roots.
 
 use super::optimization::execute;
 use light_cljs::runtime_manifest::{RUNTIME, RuntimeManifest, UnitId};
@@ -27,19 +28,22 @@ fn prepared(source: &str, level: OptimizationLevel) -> PreparedApplication {
     prepare_application(&program(source), ApplicationOptions::new(level))
 }
 
-/// The runtime factory for these root units: their closure, exporting the
-/// exports the roots read in export-section order.
-fn slice(units: &[UnitId], exports: &[&str]) -> String {
+/// The `Advanced` runtime declaration for these root units and bindings: their
+/// closure, returning the bindings in the given order, which the output
+/// destructures into `rt$<binding>` constants.
+fn slice(units: &[UnitId], bindings: &[&str]) -> (String, String) {
     let manifest = manifest();
     let kept = manifest.reachable(units.iter().copied());
-    let exports = manifest
-        .exports
-        .names
+    let factory = manifest.sliced_bindings_text(&kept, bindings);
+    let pattern = bindings
         .iter()
-        .copied()
-        .filter(|name| exports.contains(name))
-        .collect::<Vec<_>>();
-    manifest.sliced_text(&kept, &exports)
+        .map(|binding| format!("rt${binding}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (
+        format!("  const [{pattern}] = {};\n", factory.trim()),
+        factory,
+    )
 }
 
 /// Programs whose emission reads every kind of runtime name the emitter
@@ -76,13 +80,22 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
             .map(|root| root.unit)
             .collect::<Vec<_>>();
         for root in &report.roots {
-            assert_eq!(manifest.unit_of(root.name.export), Some(root.unit));
+            assert!(root.name.direct, "{source}: {}", root.name);
+            assert_eq!(manifest.unit_of(root.name.binding), Some(root.unit));
             assert!(
                 js.contains(&root.name.to_string()),
                 "{source}: {}",
                 root.name
             );
         }
+        // No slice keeps the `core` hub.
+        assert!(
+            !report
+                .units
+                .iter()
+                .any(|unit| unit.name == "core" || unit.name == "core.seal"),
+            "{source}"
+        );
         let kept = manifest.reachable(units.iter().copied());
         assert_eq!(
             report
@@ -96,24 +109,25 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
                 .collect::<Vec<_>>(),
             "{source}"
         );
-        let exports = report
-            .roots
-            .iter()
-            .map(|root| root.name.export)
-            .collect::<Vec<_>>();
-        let sliced = slice(&units, &exports);
+        let mut bindings = Vec::new();
+        for root in &report.roots {
+            if !bindings.contains(&root.name.binding) {
+                bindings.push(root.name.binding);
+            }
+        }
+        let (declaration, factory) = slice(&units, &bindings);
         assert!(
-            js.contains(&format!("  const rt = {};\n", sliced.trim())),
+            js.contains(&declaration),
             "{source}: the output embeds the slice"
         );
-        assert_eq!(report.runtime_bytes, sliced.trim().len());
-        // Slicing changes nothing but the runtime factory.
-        let whole = prepared(source, OptimizationLevel::Prepare).emit_js();
-        assert_eq!(
-            whole.replacen(RUNTIME.trim(), sliced.trim(), 1),
-            js,
+        // Outside the runtime, Advanced output reads it only directly.
+        assert!(
+            !js.replacen(&declaration, "", 1).contains("rt."),
             "{source}"
         );
+        assert_eq!(report.runtime_bytes, factory.trim().len());
+        let whole = prepared(source, OptimizationLevel::Prepare).emit_js();
+        assert!(whole.contains(RUNTIME.trim()), "{source}");
         assert!(js.len() < whole.len(), "{source}");
         let none = prepared(source, OptimizationLevel::None).emit_js();
         assert_eq!(
@@ -199,18 +213,19 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
         roots,
         [
             (
-                RuntimeName::export("jsObject"),
+                RuntimeName::direct("jsObject", None),
                 Some(expression(r#"#js {"a" 1}"#))
             ),
-            (RuntimeName::core("add"), Some(expression("+"))),
-            (RuntimeName::core("registerReaderNamespace"), None),
-            (RuntimeName::core("currentNs"), None),
-            (RuntimeName::core("theNs"), None),
-            (RuntimeName::export("symbol"), None),
+            (RuntimeName::direct("add", None), Some(expression("+"))),
+            (RuntimeName::direct("registerReaderNamespace", None), None),
+            (RuntimeName::direct("coreCells", Some("currentNs")), None),
+            (RuntimeName::direct("theNs", None), None),
+            (RuntimeName::direct("symbol", None), None),
         ]
     );
-    // `jsObject` alone keeps its own unit; the core hub keeps the rest, so the
-    // namespace registration adds nothing.
+    // `jsObject` alone keeps its own unit; every later root adds the units of
+    // its closure that earlier roots do not reach. Without the core hub the
+    // namespace registration adds units of its own.
     let attributed = |root: usize| {
         report
             .units
@@ -220,20 +235,28 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
             .collect::<Vec<_>>()
     };
     assert_eq!(attributed(0), ["jsObject"]);
-    let core = manifest.reachable([manifest.unit_of("core").unwrap()]);
-    assert_eq!(
-        attributed(1),
-        manifest
-            .units
-            .iter()
-            .zip(&core)
-            .filter(|(unit, kept)| **kept && unit.name != "jsObject")
-            .map(|(unit, _)| unit.name)
-            .collect::<Vec<_>>()
-    );
-    for root in 2..report.roots.len() {
-        assert!(attributed(root).is_empty(), "{:?}", report.roots[root].name);
+    let units = report
+        .roots
+        .iter()
+        .map(|root| root.unit)
+        .collect::<Vec<_>>();
+    for root in 1..report.roots.len() {
+        let before = manifest.reachable(units[..root].iter().copied());
+        let after = manifest.reachable(units[..=root].iter().copied());
+        assert_eq!(
+            attributed(root),
+            manifest
+                .units
+                .iter()
+                .enumerate()
+                .filter(|&(index, _)| after[index] && !before[index])
+                .map(|(_, unit)| unit.name)
+                .collect::<Vec<_>>(),
+            "{}",
+            report.roots[root].name
+        );
     }
+    assert!(!attributed(2).is_empty());
     assert_eq!(
         report.unit_bytes(),
         report.units.iter().map(|unit| unit.bytes).sum::<usize>()
@@ -259,10 +282,9 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
         .len();
     for expected in [
         "root units bytes first demanded by".to_owned(),
-        format!("rt.jsObject 1 {unit_bytes} source 0, bytes 0..11"),
-        "rt.core.theNs 0 0 namespace registration".to_owned(),
+        format!("rt$jsObject 1 {unit_bytes} source 0, bytes 0..11"),
         "unit bytes root first demanded by".to_owned(),
-        format!("jsObject {unit_bytes} rt.jsObject source 0, bytes 0..11"),
+        format!("jsObject {unit_bytes} rt$jsObject source 0, bytes 0..11"),
     ] {
         assert!(
             rows.contains(&expected),
@@ -270,7 +292,12 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
         );
     }
     let (start, end) = expression("+");
-    let add_row = format!(" rt.core.add source 0, bytes {start}..{end}");
+    let add_row = format!(" rt$add source 0, bytes {start}..{end}");
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("rt$theNs ") && row.ends_with(" namespace registration")),
+        "{table}"
+    );
     assert_eq!(
         rows.iter().filter(|row| row.ends_with(&add_row)).count(),
         attributed(1).len()

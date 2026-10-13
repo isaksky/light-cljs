@@ -182,7 +182,8 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   printer and the printer reaches protocol dispatch. Compile-time-only
   machinery (form bridge, declaration demand, `inspect`, namespace
   registry, macro reader, reader input window) is about 60 KB and is
-  unreachable from value construction.
+  unreachable from value construction. (Since step 3 of Phase 1 the hub only
+  lists runtime bindings, and only the shared runtime keeps it.)
 - The IR already carries what Closure lacks: `CoreFnId` with 688 variants
   and per-variant runtime names, `Program.protocols` with arities,
   `record_constructors`, `GlobalBinding` with `constant`, `boolean_tag`
@@ -248,9 +249,10 @@ retention report covers runtime units. Later phases plug in here:
   conservative preparation. Emission that depends on the level (runtime
   slicing, the constant table, terse emission) reads the level that
   `PreparedApplication` passes to `emit_application` in `src/emitter.rs`;
-  today only runtime slicing does. `Advanced` preparation also removes more
-  definitions (pure initializers) and ignores the `js*` escape (Phase 2 steps
-  6 and 7), so its output is `Prepare` output minus those definitions, with a
+  today runtime slicing and direct runtime reads do. `Advanced` preparation
+  also removes more definitions (pure initializers) and ignores the `js*`
+  escape (Phase 2 steps 6 and 7), so its output is `Prepare` output minus
+  those definitions, reading `rt$<binding>` instead of `rt.<export>`, with a
   smaller runtime factory.
 - **CLI.** `--optimize` is parsed in `src/main.rs` for single-file `--compile`
   and `--compile --entry`, with or without `--esm`. Namespace builds go through
@@ -343,6 +345,7 @@ to under 1 KB and beat every upstream ceiling on its own.
    instead of `rt.core.X`. `set!` on a core operation is visible
    program-wide; only mutated operations fall back to an indirection cell.
    `binding` on `*print-length*` and similar dynamic vars keeps a cell.
+   Implemented; see "Phase 1 hub extension points" below.
 4. **Make top-level effects demand-driven.** Prototype patching loops,
    `installMethods`, `variadicCore` registrations, `EMPTY` constants and
    factory assignments move into install functions required by the
@@ -411,15 +414,16 @@ Step 2 is implemented (light-cljs-203) in `src/runtime_slice.rs`:
   all go through it, so emission reports its roots as a set. Debug builds
   check that no `rt.` read in the output (outside raw `js*` text) escaped the
   record, so every test that emits code checks the roots. New emission that
-  reads the runtime must use the helper; 204's direct unit references should
-  record their units the same way.
-- **Slice.** A root keeps the unit declaring its `<export>`; `rt.core.X`
-  therefore keeps the `core` hub until step 3. At `Advanced`, application
-  output (`emit_js` and `emit_esm`) embeds
-  `RuntimeManifest::sliced_text(reachable(roots), exports)`: the prologue,
-  the kept unit bodies in runtime order and an export section freezing only
-  the exports the program reads. The anchor text, the `const rt =` seam and
-  the exclusion of the runtime from `hygienic_js` are unchanged. Below
+  reads the runtime must use the helper; at `Advanced` it resolves and
+  records direct reads (see "Phase 1 hub extension points").
+- **Slice.** A root keeps the unit declaring its binding. At `Advanced`,
+  application output (`emit_js` and `emit_esm`) embeds
+  `RuntimeManifest::sliced_bindings_text(reachable(roots), bindings)`: the
+  prologue, the kept unit bodies in runtime order and `return [binding, ...];`
+  for the bindings the program reads (step 2 returned an export object;
+  `sliced_text` still builds that form). The anchor text, the shared path's
+  `const rt =` seam and the exclusion of the runtime from `hygienic_js` are
+  unchanged. Below
   `Advanced`, and for the shared runtime of the REPL, macro host and
   deferred units, the whole runtime is embedded as before, so `None` and
   `Prepare` output is byte-identical. `Advanced` embeds a runtime only when
@@ -441,8 +445,64 @@ Step 2 is implemented (light-cljs-203) in `src/runtime_slice.rs`:
   `setMacroexpandServices`, `compilerExceptionMessage`, the protocol, type,
   record and reify constructors, and four literal constructors; a program
   that uses none of them is about 15.7 KB (4.5%) smaller, and the
-  `defrecord` fixture keeps 672 units. These are step 3's before numbers;
+  `defrecord` fixture keeps 672 units. These were step 3's before numbers;
   see `benchmarks/compiler.md`.
+
+#### Phase 1 hub extension points
+
+Step 3 is implemented (light-cljs-204). The `core` map still exists for the
+shared runtime, but no application slice keeps it:
+
+- **Core table.** Every core operation is a runtime binding or a member of
+  one. The numeric and predicate objects and the inline members of the old
+  `core` literal became one unit per operation (named after the operation, or
+  `<name>Protocol` / `<name>Core` where the name was taken, keeping the
+  public function name, which printing shows). The reader is the `reader`
+  unit, types stay members of `builtinTypes`, and positional factories are
+  units. The `core` unit is `Object.assign(coreCells, {name, name: binding,
+  name: binding.member, ...})` and must keep that flat shape:
+  `RuntimeManifest::parse` reads it, with the keys of the `coreCells`
+  literal, into `RuntimeManifest::core_reference(runtime name) ->
+  CoreReference::{Binding, Member, Cell}`. A new `CoreFnId` needs a hub entry;
+  `runtime_references::every_core_operation_resolves_through_the_core_table`
+  checks every `runtime_name`.
+- **Cells.** `coreCells` holds the dynamic Vars (`*print-length*`,
+  `*print-fn*`, `*ns*`, ...), the host hooks and the operations the runtime
+  itself reads through a cell so that `set!` and `with-redefs` reach it
+  (`random-sample` reads `rand`, `newline` reads `flush`). The hub extends
+  this object, so `rt.core.printFn = f` on the shared path and the runtime's
+  `coreCells.printFn` reads share one property. Inside the runtime every other
+  former `core.X` read is a direct binding. Make a new runtime read through a
+  cell only when redefinition must reach it, and add the key to `coreCells`.
+- **Emission.** At `Advanced`, `Emitter::rt` resolves `rt.core.<name>`
+  through the table and records the direct root (`RuntimeName::direct`,
+  spelled `rt$add`, `rt$coreCells.printFn`, `rt$builtinTypes.Keyword`). The
+  slice returns `[add, ...]` and the output destructures it into `rt$<binding>`
+  constants, so the names are compiler-owned: `hygienic_js` renames `rt$` and
+  `core$` tokens, and the debug scan checks each `rt$`/`core$` read against
+  the record. A call whose callee is a core operation held by a binding of
+  its own, with a function value in `src/core_operations.tsv`, is a plain
+  call, `rt$add(1, 2)`; members, cells and replaced operations keep
+  `.call(null, ...)` for the call-shape step (Phase 2 step 5).
+- **Replacement.** The program-wide scan that pure-initializer removal
+  trusts (`Inert` in `src/application.rs`, light-cljs-213) also decides
+  indirection: a core operation the program may replace, because it is a
+  `set!`, `binding` or `with-redefs` target (directly or through a property)
+  or a `js*` hole that raw text could assign, is listed by runtime name in
+  `PreparedApplication::replaced_core()`. Each gets an output-level cell,
+  `let core$inc = rt$inc;`, that every read and write of the operation
+  uses, so a hole emits the assignable cell and the assignment reaches every
+  read. Cells of `coreCells` need none.
+- **Measured.** `(js/console.log (+ 1 2))` drops from 335,242 to 152,535 bytes
+  at `Advanced` (316 of 906 units). It does not reach the few kilobytes this
+  step was hoped to reach, for two reasons outside the hub: the variadic
+  arity effect `add.variadic` requires `foldSeq` and so `seq`, and the
+  namespace registration needs `symbol`. Every value constructor goes through
+  `builtinValue` to `builtinTypes`, whose attached effects patch every type's
+  prototype, and that reaches the collection, hashing and printing machinery
+  (`symbol` alone keeps 299 units, 147 KB). Steps 4 (demand-driven effects)
+  and 5 (conditional namespace registration) remove those edges. Per-fixture
+  sizes are in `benchmarks/compiler.md`.
 
 ### Phase 2: whole-program analysis over the IR
 
@@ -516,9 +576,10 @@ Step 2 is implemented (light-cljs-209). Later steps read it:
   column to `UnitId`s, the roots of a direct reference for slicing.
 - **Maintenance.** The `core_operations` suite in `tests/compiler/` requires
   every named unit to exist and to be the unit that defines the operation's
-  value in the runtime `core` object (found by running an instrumented
-  runtime), so splitting the hub (Phase 1 step 3), install functions (step 4)
-  or compile-time units (step 5) fail it until the table follows: run
+  value in the runtime `core` object (read from the core table,
+  `RuntimeManifest::core_reference`, since Phase 1 step 3), so moving an
+  operation to another unit, install functions (step 4) or compile-time
+  units (step 5) fail it until the table follows: run
   `LIGHT_CLJS_UPDATE_CORE_OPERATIONS=1 cargo test --test compiler core_operations::`
   and review the `units` diff. The same suite calls every row with
   signatures on sample arguments in QuickJS (functions that throw when

@@ -821,3 +821,50 @@ statement and the name in the namespace bindings, like literal definitions.
 even arities up to eight arguments as `allocates`, since only an odd count
 throws (110 `allocates` and 40 `throws` rows now); the `hash-map` macro's
 `PersistentHashMap.fromArrays` expansion is checked against that row.
+
+## Direct runtime references — October 13, 2026
+
+light-cljs-204 dismantles the runtime's `core` hub (Phase 1 step 3 of the
+[design](../docs/advanced-optimization.md)). Every core operation is now a
+runtime binding or a member of one: the `numeric` and `predicates` objects and
+the inline members of the old `core` literal became one unit each, the reader
+became the `reader` unit, and dynamic Vars, host hooks, `rand` and `flush` live
+in the `coreCells` unit, which the hub extends. `--optimize advanced` output
+reads `rt$add(1, 2)` instead of `(rt.core.add).call(null, 1, 2)`, so no slice
+keeps the hub. Raw and `gzip -9` bytes of `--compile --optimize LEVEL --text`;
+"before" is the advanced column at 604a095 (336,000-342,000 ceilings):
+
+| Fixture | Prepare raw / gzip | Advanced raw / gzip | Saved vs prepare | Units kept | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 357,438 / 85,319 | 152,535 / 35,343 | 204,903 | 316 | 153,000 |
+| println-hi | 357,325 / 85,247 | 154,002 / 35,543 | 203,323 | 323 | 155,000 |
+| vector-printed | 357,350 / 85,256 | 154,064 / 35,563 | 203,286 | 323 | 155,000 |
+| map-printed | 357,340 / 85,248 | 154,048 / 35,559 | 203,292 | 323 | 155,000 |
+| seq-pipeline | 357,669 / 85,367 | 161,885 / 37,660 | 195,784 | 341 | 162,000 |
+| add | 357,278 / 85,239 | 152,375 / 35,274 | 204,903 | 316 | 153,000 |
+| rest-fn | 357,622 / 85,376 | 152,264 / 35,274 | 205,358 | 313 | 153,000 |
+| keyword-case | 357,910 / 85,393 | 153,733 / 35,669 | 204,177 | 320 | 154,000 |
+| record-protocol | 358,231 / 85,566 | 171,476 / 39,747 | 186,755 | 346 | 172,000 |
+| pure-defs | 358,789 / 85,667 | 166,838 / 38,430 | 191,951 | 338 | 167,000 |
+| raw-js | 358,277 / 85,489 | 153,365 / 35,491 | 204,912 | 316 | 154,000 |
+
+`console-log-sum` drops from 335,242 to 152,535 bytes (80,088 to 35,343
+gzip). The shared runtime that `none`, `prepare`, the REPL and the macro host
+embed grows by 6,511 bytes (350,927 to 357,438 for `console-log-sum`), so their
+ceilings rise to 358,000-359,000: the hub now lists every operation by name
+(10,227 bytes), each former inline member is a declaration of its own, and the
+type constructors and reader operations are listed explicitly as members.
+
+The runtime has 906 units (356,095 unit bytes). Before, 468 units reached at
+least 400 units and every value constructor reached 665; now only the hub and
+its `core.seal` effect reach that far (880), and `keyword`, `symbol`,
+`vectorFromArray`, `hash`, `str` and `print` each reach 299 units (147,244
+bytes). That remaining edge is `builtinValue → builtinType → builtinTypes`,
+whose attached prototype and `EMPTY` effects require the collection, hashing
+and printing machinery (step 4). `add` reaches 302 units through its variadic
+arity effect (`add.variadic → foldSeq → seq`), and the namespace registration
+adds 14 more (`registerReaderNamespace`, `theNs`; step 5); without those, the
+`(+ 1 2)` slice would be `add` itself, 234 bytes. The
+[retention report](results/retention-2026-10-13/console-log-sum.txt) and the
+[unit table](results/runtime-units-2026-10-13/units.tsv) are checked in;
+reproduce them with the commands of the two sections above.

@@ -123,6 +123,7 @@ mod residual_source_context;
 mod runtime_manifest;
 mod runtime_map_order;
 mod runtime_map_traversal;
+mod runtime_references;
 mod runtime_set_order;
 mod runtime_set_traversal;
 mod runtime_slicing;

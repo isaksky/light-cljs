@@ -25,8 +25,10 @@ pub enum OptimizationLevel {
     /// it prepares like `Prepare` except that it also removes definitions whose
     /// initializers only call pure core operations, branch, bind locals or
     /// construct program types, and does not treat retained `js*` as an
-    /// escape. Emission embeds just the runtime units the program reaches
-    /// (`crate::runtime_slice`). Later passes of that design hook in through
+    /// escape. Emission reads runtime bindings directly and embeds just the
+    /// runtime units the program reaches (`crate::runtime_slice`); core
+    /// operations the program may replace read through a cell. Later passes of
+    /// that design hook in through
     /// [`OptimizationLevel::advanced`].
     Advanced,
 }
@@ -116,6 +118,8 @@ pub struct PreparedApplication {
     program: Program,
     globals: Vec<bool>,
     calls: HashMap<ExprId, usize>,
+    /// `Advanced`: runtime names of the core operations the program assigns.
+    replaced_core: Vec<&'static str>,
     stats: ApplicationStats,
 }
 impl PreparedApplication {
@@ -125,6 +129,7 @@ impl PreparedApplication {
             &self.globals,
             &self.calls,
             self.level,
+            &self.replaced_core,
             module,
         )
     }
@@ -149,6 +154,15 @@ impl PreparedApplication {
     pub fn stats(&self) -> &ApplicationStats {
         &self.stats
     }
+    /// At `Advanced`, the runtime names of the core operations the program may
+    /// replace, sorted: assigned with `set!`, `binding` or `with-redefs`
+    /// (directly or through a property) or passed to a `js*` hole, which raw
+    /// text could assign. Their reads go through an output-level cell; every
+    /// other core operation is read from its unit binding. Empty below
+    /// `Advanced`.
+    pub fn replaced_core(&self) -> &[&'static str] {
+        &self.replaced_core
+    }
     /// The level this application was prepared at. Level-specific emission
     /// (for example runtime slicing under `Advanced`) reads it here.
     pub fn level(&self) -> OptimizationLevel {
@@ -169,6 +183,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         program: program.clone(),
         globals: vec![false; program.globals.len()],
         calls: HashMap::new(),
+        replaced_core: Vec::new(),
         stats: ApplicationStats::default(),
     };
     let mut top = Vec::new();
@@ -242,6 +257,11 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
     // after conservative preparation, under `level.advanced()`. So far `Advanced`
     // prepares like `Prepare` except that more initializers are inert (`Inert`)
     // and retained `js*` is not an escape; emission also slices the runtime.
+    // Emission reads the runtime directly and keeps a mutable cell for each core
+    // operation the program may replace (the scan `Inert` trusts).
+    if level.advanced() {
+        prepared.replaced_core = inert.replaced_names();
+    }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();
     prepared
@@ -329,6 +349,18 @@ struct Inert<'p> {
     position: usize,
 }
 impl<'p> Inert<'p> {
+    /// The runtime names of the core operations the program may replace,
+    /// sorted and without duplicates (operations can share a runtime name).
+    fn replaced_names(&self) -> Vec<&'static str> {
+        let mut names = CoreFnId::ALL
+            .into_iter()
+            .filter(|core| self.replaced[core.table_row()])
+            .map(CoreFnId::runtime_name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
     fn new(program: &'p Program, top: &[(ExprId, bool)], advanced: bool) -> Self {
         let mut inert = Self {
             program,

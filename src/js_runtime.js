@@ -641,92 +641,257 @@
     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
     return (((v + (v >> 4)) & 0x0f0f0f0f) * 0x01010101) >> 24;
   }
-  //@unit numeric requires: add, bitCount, bitOperation, char, comparison, divide, equal, extrema,
-  //@ fix, isClosureInteger, isEven, isInteger, mod, multiply, quot, subtract
-  const numeric = {
-    subtract, multiply, divide, inc: x => x + 1, dec: x => x - 1,
-    less: comparison((x, y) => x < y), lessEqual: comparison((x, y) => x <= y),
-    greater: comparison((x, y) => x > y), greaterEqual: comparison((x, y) => x >= y),
-    numericEqual: function (...values) { return values.length !== 0 && equal(...values); },
-    max: extrema((x, y) => x > y), min: extrema((x, y) => x < y), abs: x => Math.abs(x),
-    int: x => x | 0, long: x => fix(x), uncheckedInt: x => fix(x), uncheckedLong: x => fix(x),
-    byte: x => x, short: x => x, float: x => x, double: x => x, char,
-    booleans: x => x,
-    bytes: x => x,
-    chars: x => x,
-    shorts: x => x,
-    ints: x => x,
-    floats: x => x,
-    doubles: x => x,
-    longs: x => x,
-    uncheckedByte: x => x, uncheckedShort: x => x, uncheckedFloat: x => x,
-    uncheckedDouble: x => x, uncheckedChar: x => x,
-    uncheckedAdd: (...xs) => add(...xs), uncheckedAddInt: (...xs) => add(...xs),
-    uncheckedSubtract: (...xs) => subtract(...xs), uncheckedSubtractInt: (...xs) => subtract(...xs),
-    uncheckedMultiply: (...xs) => multiply(...xs), uncheckedMultiplyInt: (...xs) => multiply(...xs),
-    uncheckedDivideInt: (...xs) => divide(...xs), uncheckedInc: x => x + 1, uncheckedIncInt: x => x + 1,
-    uncheckedDec: x => x - 1, uncheckedDecInt: x => x - 1,
-    uncheckedNegate: x => -x, uncheckedNegateInt: x => -x, uncheckedRemainderInt: (n, d) => mod(n, d),
-    jsMod: (n, d) => n % d, mod, quot, rem: (n, d) => n - d * quot(n, d),
-    bitXor: bitOperation((x, y) => x ^ y), bitAnd: bitOperation((x, y) => x & y),
-    bitOr: bitOperation((x, y) => x | y), bitAndNot: bitOperation((x, y) => x & ~y),
-    bitNot: x => ~x, bitClear: (x, n) => x & ~(1 << n), bitFlip: (x, n) => x ^ (1 << n),
-    bitSet: (x, n) => x | (1 << n), bitTest: (x, n) => (x & (1 << n)) !== 0,
-    bitShiftLeft: (x, n) => x << n, bitShiftRight: (x, n) => x >> n,
-    bitShiftRightZeroFill: (x, n) => x >>> n, unsignedBitShiftRight: (x, n) => x >>> n, bitCount,
-    isZero: x => x === 0, isPositive: x => x > 0, isNegative: x => x < 0,
-    isEven, isOdd: x => !isEven(x), isInteger,
-    isInt: x => isInteger(x) || isClosureInteger(x),
-    isPositiveInt: x => isInteger(x) ? x > 0 : isClosureInteger(x) && !x.isNegative() && !x.isZero(),
-    isNegativeInt: x => isInteger(x) ? x < 0 : isClosureInteger(x) && x.isNegative(),
-    isNaturalInt: x => isInteger(x) ? !(x < 0) : isClosureInteger(x) && !x.isNegative(),
-    isNumber: x => typeof x === "number", isFloat: x => typeof x === "number", isDouble: x => typeof x === "number",
-    isInfinite: x => x === Infinity || x === -Infinity, isNaN: x => isNaN(x)
-  };
+  //@unit inc
+  // Numeric core operations, one unit each.
+  const inc = x => x + 1;
+  //@unit dec
+  const dec = x => x - 1;
+  //@unit less requires: comparison
+  const less = comparison((x, y) => x < y);
+  //@unit lessEqual requires: comparison
+  const lessEqual = comparison((x, y) => x <= y);
+  //@unit greater requires: comparison
+  const greater = comparison((x, y) => x > y);
+  //@unit greaterEqual requires: comparison
+  const greaterEqual = comparison((x, y) => x >= y);
+  //@unit numericEqual requires: equal
+  const numericEqual = function (...values) { return values.length !== 0 && equal(...values); };
+  //@unit max requires: extrema
+  const max = extrema((x, y) => x > y);
+  //@unit min requires: extrema
+  const min = extrema((x, y) => x < y);
+  //@unit abs
+  const abs = x => Math.abs(x);
+  //@unit int
+  const int = x => x | 0;
+  //@unit long requires: fix
+  const long = x => fix(x);
+  //@unit uncheckedInt requires: fix
+  const uncheckedInt = x => fix(x);
+  //@unit uncheckedLong requires: fix
+  const uncheckedLong = x => fix(x);
+  //@unit byte
+  const byte = x => x;
+  //@unit short
+  const short = x => x;
+  //@unit float
+  const float = x => x;
+  //@unit double
+  const double = x => x;
+  //@unit booleans
+  const booleans = x => x;
+  //@unit bytes
+  const bytes = x => x;
+  //@unit chars
+  const chars = x => x;
+  //@unit shorts
+  const shorts = x => x;
+  //@unit ints
+  const ints = x => x;
+  //@unit floats
+  const floats = x => x;
+  //@unit doubles
+  const doubles = x => x;
+  //@unit longs
+  const longs = x => x;
+  //@unit uncheckedByte
+  const uncheckedByte = x => x;
+  //@unit uncheckedShort
+  const uncheckedShort = x => x;
+  //@unit uncheckedFloat
+  const uncheckedFloat = x => x;
+  //@unit uncheckedDouble
+  const uncheckedDouble = x => x;
+  //@unit uncheckedChar
+  const uncheckedChar = x => x;
+  //@unit uncheckedAdd requires: add
+  const uncheckedAdd = (...xs) => add(...xs);
+  //@unit uncheckedAddInt requires: add
+  const uncheckedAddInt = (...xs) => add(...xs);
+  //@unit uncheckedSubtract requires: subtract
+  const uncheckedSubtract = (...xs) => subtract(...xs);
+  //@unit uncheckedSubtractInt requires: subtract
+  const uncheckedSubtractInt = (...xs) => subtract(...xs);
+  //@unit uncheckedMultiply requires: multiply
+  const uncheckedMultiply = (...xs) => multiply(...xs);
+  //@unit uncheckedMultiplyInt requires: multiply
+  const uncheckedMultiplyInt = (...xs) => multiply(...xs);
+  //@unit uncheckedDivideInt requires: divide
+  const uncheckedDivideInt = (...xs) => divide(...xs);
+  //@unit uncheckedInc
+  const uncheckedInc = x => x + 1;
+  //@unit uncheckedIncInt
+  const uncheckedIncInt = x => x + 1;
+  //@unit uncheckedDec
+  const uncheckedDec = x => x - 1;
+  //@unit uncheckedDecInt
+  const uncheckedDecInt = x => x - 1;
+  //@unit uncheckedNegate
+  const uncheckedNegate = x => -x;
+  //@unit uncheckedNegateInt
+  const uncheckedNegateInt = x => -x;
+  //@unit uncheckedRemainderInt requires: mod
+  const uncheckedRemainderInt = (n, d) => mod(n, d);
+  //@unit jsMod
+  const jsMod = (n, d) => n % d;
+  //@unit rem requires: quot
+  const rem = (n, d) => n - d * quot(n, d);
+  //@unit bitXor requires: bitOperation
+  const bitXor = bitOperation((x, y) => x ^ y);
+  //@unit bitAnd requires: bitOperation
+  const bitAnd = bitOperation((x, y) => x & y);
+  //@unit bitOr requires: bitOperation
+  const bitOr = bitOperation((x, y) => x | y);
+  //@unit bitAndNot requires: bitOperation
+  const bitAndNot = bitOperation((x, y) => x & ~y);
+  //@unit bitNot
+  const bitNot = x => ~x;
+  //@unit bitClear
+  const bitClear = (x, n) => x & ~(1 << n);
+  //@unit bitFlip
+  const bitFlip = (x, n) => x ^ (1 << n);
+  //@unit bitSet
+  const bitSet = (x, n) => x | (1 << n);
+  //@unit bitTest
+  const bitTest = (x, n) => (x & (1 << n)) !== 0;
+  //@unit bitShiftLeft
+  const bitShiftLeft = (x, n) => x << n;
+  //@unit bitShiftRight
+  const bitShiftRight = (x, n) => x >> n;
+  //@unit bitShiftRightZeroFill
+  const bitShiftRightZeroFill = (x, n) => x >>> n;
+  //@unit unsignedBitShiftRight
+  const unsignedBitShiftRight = (x, n) => x >>> n;
+  //@unit isZero
+  const isZero = x => x === 0;
+  //@unit isPositive
+  const isPositive = x => x > 0;
+  //@unit isNegative
+  const isNegative = x => x < 0;
+  //@unit isOdd requires: isEven
+  const isOdd = x => !isEven(x);
+  //@unit isInt requires: isClosureInteger, isInteger
+  const isInt = x => isInteger(x) || isClosureInteger(x);
+  //@unit isPositiveInt requires: isClosureInteger, isInteger
+  const isPositiveInt = x => isInteger(x) ? x > 0 : isClosureInteger(x) && !x.isNegative() && !x.isZero();
+  //@unit isNegativeInt requires: isClosureInteger, isInteger
+  const isNegativeInt = x => isInteger(x) ? x < 0 : isClosureInteger(x) && x.isNegative();
+  //@unit isNaturalInt requires: isClosureInteger, isInteger
+  const isNaturalInt = x => isInteger(x) ? !(x < 0) : isClosureInteger(x) && !x.isNegative();
+  //@unit isNumber
+  const isNumber = x => typeof x === "number";
+  //@unit isFloat
+  const isFloat = x => typeof x === "number";
+  //@unit isDouble
+  const isDouble = x => typeof x === "number";
+  //@unit isInfinite
+  const isInfinite = x => x === Infinity || x === -Infinity;
+  //@unit isNaNCore
+  // Printing shows function names; keep the public one.
+  const isNaNCore = Object.defineProperty(x => isNaN(x), "name", {value: "isNaN"});
 
   //@unit isIdent requires: keywords, symbols
   const isIdent = x => keywords.has(x) || symbols.has(x);
-  //@unit isColl requires: cells, directMethod, lazyValues, maps, queues, sets, vectors, views
-  const isColl = x => !!directMethod(x, "ICollection", 0) || vectors.has(x) || cells.has(x) || views.has(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
-  //@unit predicates requires: core, equal, equalPair, Fn, IAssociative, IChunkedSeq, ICollection,
-  //@ ICounted, IFind, IFn, IIndexed, IList, IMap, IMapEntry, implementsProtocol, IRecord, IReduce,
-  //@ IReversible, isColl, ISeq, ISeqable, ISequential, ISet, isIdent, ISorted, IVector, keywords,
-  //@ namespace, reducedValues, satisfies, seq, symbols, uuids, vars
-  const predicates = {
-    boolean: x => x != null && x !== false, not: x => x == null || x === false,
-    isBoolean: x => x === true || x === false, isTrue: x => x === true, isFalse: x => x === false,
-    isNil: x => x == null, isSome: x => x != null, isUndefined: x => x === undefined,
-    notEqual: (...xs) => !equal(...xs), identity: x => x, isAny: _x => true,
-    isString: x => typeof x === "string", isChar: x => typeof x === "string" && x.length === 1,
-    isKeyword: x => keywords.has(x), isSymbol: x => symbols.has(x), isIdent,
-    isSimpleIdent: x => isIdent(x) && namespace(x) == null,
-    isQualifiedIdent: x => isIdent(x) && namespace(x) != null,
-    isSimpleKeyword: x => keywords.has(x) && namespace(x) == null,
-    isQualifiedKeyword: x => keywords.has(x) && namespace(x) != null,
-    isSimpleSymbol: x => symbols.has(x) && namespace(x) == null,
-    isQualifiedSymbol: x => symbols.has(x) && namespace(x) != null,
-    keywordIdentical: (x, y) => x === y || (keywords.has(x) && keywords.has(y) && equalPair(x, y)),
-    symbolIdentical: (x, y) => x === y || (symbols.has(x) && symbols.has(y) && equalPair(x, y)),
-    isFn: x => typeof x === "function" || satisfies(Fn, x),
-    isIFn: x => predicates.isFn(x) || satisfies(IFn, x),
-    isArray: x => Array.isArray(x),
-    isObject: x => x != null && !isColl(x) && !isIdent(x) && !uuids.has(x) && !vars.has(x) && !reducedValues.has(x) && x.constructor === Object,
-    isColl: x => x != null && satisfies(ICollection, x), isSeq: x => x != null && satisfies(ISeq, x), isList: x => satisfies(IList, x),
-    isSeqable: x => x == null || satisfies(ISeqable, x) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null,
-    isSequential: x => satisfies(ISequential, x), isVector: x => satisfies(IVector, x), isMap: x => x != null && satisfies(IMap, x), isSet: x => x != null && satisfies(ISet, x),
-    isAssociative: x => satisfies(IAssociative, x), isIFind: x => satisfies(IFind, x),
-    isCounted: x => satisfies(ICounted, x),
-    isIndexed: x => satisfies(IIndexed, x),
-    isReduceable: x => satisfies(IReduce, x),
-    isReversible: x => satisfies(IReversible, x),
-    isSorted: x => satisfies(ISorted, x), isRecord: x => satisfies(IRecord, x), isMapEntry: x => implementsProtocol(IMapEntry, x),
-    isChunkedSeq: x => implementsProtocol(IChunkedSeq, x),
-    isEmpty: x => x == null || (satisfies(ICounted, x) ? core.countProtocol(x) === 0 : seq(x) === null)
-  };
+  //@unit isCollectionValue requires: cells, directMethod, lazyValues, maps, queues, sets, vectors,
+  //@ views
+  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || vectors.has(x) || cells.has(x) || views.has(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
+  //@unit boolean
+  // Core predicates, one unit each.
+  const boolean = x => x != null && x !== false;
+  //@unit not
+  const not = x => x == null || x === false;
+  //@unit isBoolean
+  const isBoolean = x => x === true || x === false;
+  //@unit isTrue
+  const isTrue = x => x === true;
+  //@unit isFalse
+  const isFalse = x => x === false;
+  //@unit isNil
+  const isNil = x => x == null;
+  //@unit isSome
+  const isSome = x => x != null;
+  //@unit isUndefined
+  const isUndefined = x => x === undefined;
+  //@unit notEqual requires: equal
+  const notEqual = (...xs) => !equal(...xs);
+  //@unit identity
+  const identity = x => x;
+  //@unit isAny
+  const isAny = _x => true;
+  //@unit isString
+  const isString = x => typeof x === "string";
+  //@unit isChar
+  const isChar = x => typeof x === "string" && x.length === 1;
+  //@unit isKeyword requires: keywords
+  const isKeyword = x => keywords.has(x);
+  //@unit isSymbol requires: symbols
+  const isSymbol = x => symbols.has(x);
+  //@unit isSimpleIdent requires: isIdent, namespace
+  const isSimpleIdent = x => isIdent(x) && namespace(x) == null;
+  //@unit isQualifiedIdent requires: isIdent, namespace
+  const isQualifiedIdent = x => isIdent(x) && namespace(x) != null;
+  //@unit isSimpleKeyword requires: keywords, namespace
+  const isSimpleKeyword = x => keywords.has(x) && namespace(x) == null;
+  //@unit isQualifiedKeyword requires: keywords, namespace
+  const isQualifiedKeyword = x => keywords.has(x) && namespace(x) != null;
+  //@unit isSimpleSymbol requires: namespace, symbols
+  const isSimpleSymbol = x => symbols.has(x) && namespace(x) == null;
+  //@unit isQualifiedSymbol requires: namespace, symbols
+  const isQualifiedSymbol = x => symbols.has(x) && namespace(x) != null;
+  //@unit keywordIdentical requires: equalPair, keywords
+  const keywordIdentical = (x, y) => x === y || (keywords.has(x) && keywords.has(y) && equalPair(x, y));
+  //@unit symbolIdentical requires: equalPair, symbols
+  const symbolIdentical = (x, y) => x === y || (symbols.has(x) && symbols.has(y) && equalPair(x, y));
+  //@unit isFn requires: Fn, satisfies
+  const isFn = x => typeof x === "function" || satisfies(Fn, x);
+  //@unit isIFn requires: IFn, isFn, satisfies
+  const isIFn = x => isFn(x) || satisfies(IFn, x);
+  //@unit isArray
+  const isArray = x => Array.isArray(x);
+  //@unit isObject requires: isCollectionValue, isIdent, reducedValues, uuids, vars
+  const isObject = x => x != null && !isCollectionValue(x) && !isIdent(x) && !uuids.has(x) && !vars.has(x) && !reducedValues.has(x) && x.constructor === Object;
+  //@unit isColl requires: ICollection, satisfies
+  const isColl = x => x != null && satisfies(ICollection, x);
+  //@unit isSeq requires: ISeq, satisfies
+  const isSeq = x => x != null && satisfies(ISeq, x);
+  //@unit isList requires: IList, satisfies
+  const isList = x => satisfies(IList, x);
+  //@unit isSeqable requires: ISeqable, satisfies
+  const isSeqable = x => x == null || satisfies(ISeqable, x) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null;
+  //@unit isSequential requires: ISequential, satisfies
+  const isSequential = x => satisfies(ISequential, x);
+  //@unit isVector requires: IVector, satisfies
+  const isVector = x => satisfies(IVector, x);
+  //@unit isMap requires: IMap, satisfies
+  const isMap = x => x != null && satisfies(IMap, x);
+  //@unit isSet requires: ISet, satisfies
+  const isSet = x => x != null && satisfies(ISet, x);
+  //@unit isAssociative requires: IAssociative, satisfies
+  const isAssociative = x => satisfies(IAssociative, x);
+  //@unit isIFind requires: IFind, satisfies
+  const isIFind = x => satisfies(IFind, x);
+  //@unit isCounted requires: ICounted, satisfies
+  const isCounted = x => satisfies(ICounted, x);
+  //@unit isIndexed requires: IIndexed, satisfies
+  const isIndexed = x => satisfies(IIndexed, x);
+  //@unit isReduceable requires: IReduce, satisfies
+  const isReduceable = x => satisfies(IReduce, x);
+  //@unit isReversible requires: IReversible, satisfies
+  const isReversible = x => satisfies(IReversible, x);
+  //@unit isSorted requires: ISorted, satisfies
+  const isSorted = x => satisfies(ISorted, x);
+  //@unit isRecord requires: IRecord, satisfies
+  const isRecord = x => satisfies(IRecord, x);
+  //@unit isMapEntry requires: IMapEntry, implementsProtocol
+  const isMapEntry = x => implementsProtocol(IMapEntry, x);
+  //@unit isChunkedSeq requires: IChunkedSeq, implementsProtocol
+  const isChunkedSeq = x => implementsProtocol(IChunkedSeq, x);
+  //@unit isEmpty requires: countProtocol, ICounted, satisfies, seq
+  const isEmpty = x => x == null || (satisfies(ICounted, x) ? countProtocol(x) === 0 : seq(x) === null);
 
-  //@unit reduce requires: builtinCoreImplementation, cells, chunks, core, deref, first, IIterable,
-  //@ invalidArity, IReduce, isReduced, iterator, lazyValues, next, publicCollectionSlots,
-  //@ publicMethod, satisfies, seq, vectors, views
+  //@unit reduce requires: builtinCoreImplementation, cells, chunks, deref, first, IIterable,
+  //@ invalidArity, IReduce, isReduced, iterator, iteratorProtocol, lazyValues, next,
+  //@ publicCollectionSlots, publicMethod, satisfies, seq, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -734,7 +899,7 @@
     const method = publicMethod(source, "IReduce/-reduce", arity, true);
     if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
     if (!builtinCoreImplementation(IReduce, source) && !Array.isArray(source) && typeof source !== "string" && satisfies(IIterable, source)) {
-      const iter = core.iteratorProtocol(source);
+      const iter = iteratorProtocol(source);
       if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
       while (iter.hasNext()) {
         init = rf.call(null, init, iter.next());
@@ -870,8 +1035,8 @@
       });
     });
   }
-  //@unit bufferedTransform requires: equalPair, isReduced, keyword, predicates, reducingFunction,
-  //@ transform, unreduced, vectorFromArray
+  //@unit bufferedTransform requires: equalPair, isReduced, keyword, keywordIdentical,
+  //@ reducingFunction, transform, unreduced, vectorFromArray
   function bufferedTransform(group) {
     return transform(rf => {
       const none = keyword("cljs.core", "none");
@@ -886,7 +1051,7 @@
           return buffer.length === group.n ? flush(result) : result;
         }
         const previous = prior, key = group.fn.call(null, input); prior = key;
-        if (predicates.keywordIdentical(previous, none) || equalPair(previous, key)) { buffer.push(input); return result; }
+        if (keywordIdentical(previous, none) || equalPair(previous, key)) { buffer.push(input); return result; }
         const ret = flush(result);
         if (!isReduced(ret)) buffer.push(input);
         return ret;
@@ -897,7 +1062,7 @@
       });
     });
   }
-  //@unit haltWhen requires: contains, get, hashMap, invalidArity, keyword, predicates, reduced,
+  //@unit haltWhen requires: contains, get, hashMap, invalidArity, isMap, keyword, reduced,
   //@ reducingFunction, transform, truth
   function haltWhen(pred, retf) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
@@ -906,7 +1071,7 @@
       truth(pred.call(null, input))
         ? reduced(hashMap(halt, truth(retf) ? retf.call(null, rf.call(null, result), input) : input))
         : rf.call(null, result, input),
-      result => predicates.isMap(result) && contains(result, halt) ? get(result, halt) : rf.call(null, result)));
+      result => isMap(result) && contains(result, halt) ? get(result, halt) : rf.call(null, result)));
   }
   //@unit dedupe requires: cons, equalPair, first, invalidArity, keyword, lazySequence,
   //@ reducingFunction, rest, seq, transform
@@ -929,16 +1094,16 @@
     });
     return step(coll, keyword("cljs.core", "none"));
   }
-  //@unit randomSample requires: core, filter, invalidArity
+  //@unit randomSample requires: coreCells, filter, invalidArity
   function randomSample(prob, coll) {
-    const pred = () => core.rand.call(null) < prob;
+    const pred = () => coreCells.rand.call(null) < prob;
     if (arguments.length === 1) return filter(pred);
     if (arguments.length === 2) return filter(pred, coll);
     return invalidArity(arguments.length);
   }
 
-  //@unit reduceKv requires: core, deref, isReduced, mapEntries, mapTraversal, publicMethod, reduce,
-  //@ vectors
+  //@unit reduceKv requires: deref, isReduced, keyProtocol, mapEntries, mapTraversal, publicMethod,
+  //@ reduce, valProtocol, vectors
   function reduceKv(rf, init, collection) {
     const method = publicMethod(collection, "IKVReduce/-kv-reduce", 3);
     if (method) return method.call(collection, collection, rf, init);
@@ -946,7 +1111,7 @@
     // MapEntry has vector storage, but no IKVReduce implementation. Its
     // elements must go through the public IMapEntry sequence fallback.
     const entries = mapTraversal(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) ? undefined : vectors.get(collection)?.map((value, key) => [key, value]));
-    if (!entries) return reduce((result, entry) => rf.call(null, result, core.keyProtocol(entry), core.valProtocol(entry)), init, collection);
+    if (!entries) return reduce((result, entry) => rf.call(null, result, keyProtocol(entry), valProtocol(entry)), init, collection);
     for (const [key, value] of entries) {
       init = rf.call(null, init, key, value);
       if (isReduced(init)) return deref(init);
@@ -955,13 +1120,13 @@
   }
   //@unit subvecSources
   const subvecSources = new WeakMap();
-  //@unit subvec requires: builtinType, count, nth, predicates, subvecSources, vectorFromArray,
+  //@unit subvec requires: builtinType, count, isVector, nth, subvecSources, vectorFromArray,
   //@ vectorPrototype
   function subvec(value, start, end = count(value)) {
     if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
     start = start | 0; end = end | 0;
     if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
-    if (!predicates.isVector(value)) throw new Error("subvec requires a vector");
+    if (!isVector(value)) throw new Error("subvec requires a vector");
     const result = vectorFromArray(Array.from({length: Math.ceil(end - start)}, (_, i) => nth(value, start + i)));
     Object.setPrototypeOf(result, builtinType("Subvec", vectorPrototype).prototype);
     subvecSources.set(result, subvecSources.get(value) ?? value);
@@ -1021,9 +1186,9 @@
     const source = subvecSources.get(value) ?? value;
     return vectors.has(source) ? rangedIterator(value, 0, count(value)) : new SeqIter(iteratorInit, value);
   }
-  //@unit equivMap requires: count, equalPair, first, get, missing, next, nth, predicates, seq
+  //@unit equivMap requires: count, equalPair, first, get, isMap, missing, next, nth, seq
   function equivMap(value, other) {
-    if (!predicates.isMap(other)) return false;
+    if (!isMap(other)) return false;
     let n = 0;
     for (let current = seq(value); current != null; current = next(current), n++) {
       const entry = first(current), found = get(other, nth(entry, 0), missing);
@@ -1422,15 +1587,15 @@
     return updatedMap(value, entries, removeRecord);
   }
 
-  //@unit mapConj requires: assoc, core, first, next, predicates, seq
+  //@unit mapConj requires: assoc, first, isVector, next, nthProtocol, seq
   function mapConj(value, member) {
     if (member == null) return value;
-    if (predicates.isVector(member)) return assoc(value, core.nthProtocol(member, 0), core.nthProtocol(member, 1));
+    if (isVector(member)) return assoc(value, nthProtocol(member, 0), nthProtocol(member, 1));
     let result = value;
     for (let current = seq(member); current !== null; current = next(current)) {
       const pair = first(current);
-      if (!predicates.isVector(pair)) throw new Error("Map conj requires vector entries");
-      result = assoc(result, core.nthProtocol(pair, 0), core.nthProtocol(pair, 1));
+      if (!isVector(pair)) throw new Error("Map conj requires vector entries");
+      result = assoc(result, nthProtocol(pair, 0), nthProtocol(pair, 1));
     }
     return result;
   }
@@ -1550,16 +1715,16 @@
     if (!state?.editable) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
     return state;
   }
-  //@unit transient requires: core
-  function transient(value) { return core.asTransientProtocol(value); }
+  //@unit transient requires: asTransientProtocol
+  function transient(value) { return asTransientProtocol(value); }
   //@unit asTransient requires: copyEntries, makeTransient, mapKinds, maps, setKinds, sets, vectors
   function asTransient(value) {
     if (vectors.has(value)) return makeTransient("vector", vectors.get(value).slice());
     if (maps.has(value)) return makeTransient("map", copyEntries(maps.get(value)), mapKinds.get(value));
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
   }
-  //@unit persistentBang requires: core
-  function persistentBang(value) { return core.persistentBangProtocol(value); }
+  //@unit persistentBang requires: persistentBangProtocol
+  function persistentBang(value) { return persistentBangProtocol(value); }
   //@unit persistTransient requires: editableTransient, makeMap, makeSet, makeVector
   function persistTransient(value) {
     const state = editableTransient(value, "persistent!");
@@ -1609,8 +1774,8 @@
     }
     return value;
   }
-  //@unit conjTransient requires: core, editableTransient, first, next, predicates, putMember, seq,
-  //@ truth
+  //@unit conjTransient requires: assocBangProtocol, editableTransient, first, isMapEntry, isVector,
+  //@ keyProtocol, next, putMember, seq, truth, valProtocol
   function conjTransient(value, member) {
     const state = editableTransient(value, "conj!");
     if (state.kind === "vector") { state.entries.push(member); return value; }
@@ -1619,11 +1784,11 @@
       if (state.entries.length > 8) state.mapKind = "hash-map";
       return value;
     }
-    if (predicates.isMapEntry(member)) return core.assocBangProtocol(value, core.keyProtocol(member), core.valProtocol(member));
-    if (predicates.isVector(member)) return core.assocBangProtocol(value, member.call(null, 0), member.call(null, 1));
+    if (isMapEntry(member)) return assocBangProtocol(value, keyProtocol(member), valProtocol(member));
+    if (isVector(member)) return assocBangProtocol(value, member.call(null, 0), member.call(null, 1));
     for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) {
       const entry = first(s);
-      value = core.assocBangProtocol(value, core.keyProtocol(entry), core.valProtocol(entry));
+      value = assocBangProtocol(value, keyProtocol(entry), valProtocol(entry));
     }
     return value;
   }
@@ -1644,32 +1809,32 @@
     if (!state.entries.length) throw new Error("Can't pop empty vector");
     state.entries.pop(); return value;
   }
-  //@unit conjBang requires: core, transient, vector
+  //@unit conjBang requires: conjBangProtocol, transient, vector
   function conjBang(value, ...members) {
     if (!arguments.length) return transient(vector());
-    for (const member of members) value = core.conjBangProtocol(value, member);
+    for (const member of members) value = conjBangProtocol(value, member);
     return value;
   }
-  //@unit assocBang requires: core
+  //@unit assocBang requires: assocBangProtocol
   function assocBang(value, key, item, ...pairs) {
-    value = core.assocBangProtocol(value, key, item);
-    for (let i = 0; i < pairs.length; i += 2) value = core.assocBangProtocol(value, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+    value = assocBangProtocol(value, key, item);
+    for (let i = 0; i < pairs.length; i += 2) value = assocBangProtocol(value, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
     return value;
   }
-  //@unit dissocBang requires: core
+  //@unit dissocBang requires: dissocBangProtocol
   function dissocBang(value, key, ...keys) {
-    value = core.dissocBangProtocol(value, key);
-    for (const key of keys) value = core.dissocBangProtocol(value, key);
+    value = dissocBangProtocol(value, key);
+    for (const key of keys) value = dissocBangProtocol(value, key);
     return value;
   }
-  //@unit disjBang requires: core
+  //@unit disjBang requires: disjoinBangProtocol
   function disjBang(value, key, ...keys) {
-    value = core.disjoinBangProtocol(value, key);
-    for (const key of keys) value = core.disjoinBangProtocol(value, key);
+    value = disjoinBangProtocol(value, key);
+    for (const key of keys) value = disjoinBangProtocol(value, key);
     return value;
   }
-  //@unit popBang requires: core
-  function popBang(value) { return core.popBangProtocol(value); }
+  //@unit popBang requires: popBangProtocol
+  function popBang(value) { return popBangProtocol(value); }
 
   //@unit vectorPrototype requires: count, es6Iterator, invalidArity, mapEntries, missing,
   //@ objectEquiv, outOfBounds, print, sequentialIndex, vectorNth, vectors
@@ -1823,11 +1988,11 @@
     throw new Error("count not supported on this type");
   }
 
-  //@unit accumulatingCount requires: core, ICounted, next, satisfies, seq
+  //@unit accumulatingCount requires: countProtocol, ICounted, next, satisfies, seq
   function accumulatingCount(value) {
     let result = 0;
     for (let current = seq(value); current != null; current = next(current), result++) {
-      if (satisfies(ICounted, current)) return result + core.countProtocol(current);
+      if (satisfies(ICounted, current)) return result + countProtocol(current);
     }
     return result;
   }
@@ -1839,8 +2004,8 @@
     return notFound;
   }
 
-  //@unit nth requires: cells, chunkNth, chunks, core, first, IIndexed, implementsProtocol,
-  //@ invalidArity, ISeq, ISequential, mapEntries, missing, next, outOfBounds, publicMethod,
+  //@unit nth requires: cells, chunkNth, chunks, first, IIndexed, implementsProtocol, invalidArity,
+  //@ ISeq, ISequential, mapEntries, missing, next, nthProtocol, outOfBounds, publicMethod,
   //@ satisfies, seq, transientNth, transients, vectorNth, vectors, views
   function nth(value, index, notFound) {
     const arity = arguments.length;
@@ -1878,7 +2043,7 @@
           if (seq(current) != null) return first(current);
           break;
         }
-        if (satisfies(IIndexed, current)) return fallback === missing ? core.nthProtocol(current, remaining) : core.nthProtocol(current, remaining, fallback);
+        if (satisfies(IIndexed, current)) return fallback === missing ? nthProtocol(current, remaining) : nthProtocol(current, remaining, fallback);
         if (seq(current) == null) break;
         current = next(current);
         remaining--;
@@ -1953,7 +2118,7 @@
     for (let current = seq(value); current !== null; current = next(current)) if (!truth(predicate.call(null, first(current)))) return false;
     return true;
   }
-  //@unit find requires: collectionEntryIndex, contains, get, mapEntry, maps, predicates,
+  //@unit find requires: collectionEntryIndex, contains, get, isAssociative, mapEntry, maps,
   //@ publicMethod, publicTree, recordTypes, sortedComparators
   function find(value, key) {
     const method = publicMethod(value, "IFind/-find", 2);
@@ -1974,7 +2139,7 @@
       const index = collectionEntryIndex(value, entries, key);
       return index < 0 ? null : mapEntry(entries[index].key, entries[index].value);
     }
-    if (value == null || !predicates.isAssociative(value) || !contains(value, key)) return null;
+    if (value == null || !isAssociative(value) || !contains(value, key)) return null;
     return mapEntry(key, get(value, key));
   }
 
@@ -2015,8 +2180,8 @@
     }
     return withMeta(result, meta(value));
   }
-  //@unit mergeMaps requires: assoc, conj, contains, core, first, get, makeMap, missing, next,
-  //@ reduce, seq, truth
+  //@unit mergeMaps requires: assoc, conj, contains, first, get, keyProtocol, makeMap, missing,
+  //@ next, reduce, seq, truth, valProtocol
   function mergeMaps(values, combine) {
     // `some identity` precedes reduction, including its sequence effects.
     let present = false;
@@ -2028,7 +2193,7 @@
       const target = truth(left) ? left : makeMap([]);
       if (combine === missing) return conj(target, right);
       return reduce((result, entry) => {
-        const key = core.keyProtocol(entry), item = core.valProtocol(entry);
+        const key = keyProtocol(entry), item = valProtocol(entry);
         return assoc(result, key, truth(contains(result, key)) ? combine.call(null, get(result, key), item) : item);
       }, target, seq(right));
     }, values);
@@ -2070,12 +2235,12 @@
       return s === null ? null : reductions(fn, fn.call(null, initial, first(s)), rest(s));
     }));
   }
-  //@unit replace requires: assoc, collectionArity, count, find, mapSeq, nth, predicates
+  //@unit replace requires: assoc, collectionArity, count, find, isVector, mapSeq, nth
   function replace(substitutions, coll) {
     const replaceOne = value => { const entry = find(substitutions, value); return entry == null ? value : nth(entry, 1); };
     if (arguments.length === 1) return mapSeq(replaceOne);
     collectionArity("replace", arguments.length);
-    if (predicates.isVector(coll)) {
+    if (isVector(coll)) {
       let result = coll;
       for (let i = 0, size = count(coll); i < size; i++) {
         const entry = find(substitutions, nth(result, i));
@@ -2149,18 +2314,8 @@
   function comparator(predicate) {
     return (x, y) => truth(predicate.call(null, x, y)) ? -1 : truth(predicate.call(null, y, x)) ? 1 : 0;
   }
-  //@unit rand requires: invalidArity
-  function rand(n) {
-    if (arguments.length === 0) return Math.random();
-    if (arguments.length === 1) return Math.random() * n;
-    return invalidArity(arguments.length);
-  }
-  //@unit randInt
-  // Public core utilities follow the pinned core.cljs Number/UTF-16 contracts.
-  function randInt(n) { return Math.floor(Math.random() * n); }
-  //@unit randNth requires: count, nth, randInt
-  function randNth(coll) { return nth(coll, randInt(count(coll))); }
   //@unit isJsSymbol
+  // Public core utilities follow the pinned core.cljs Number/UTF-16 contracts.
   function isJsSymbol(value) {
     return typeof value === "symbol" || (typeof Symbol !== "undefined" && value instanceof Symbol);
   }
@@ -2235,9 +2390,9 @@
     }
     return result;
   }
-  //@unit set requires: first, makeSet, next, predicates, putMember, seq, withMeta
+  //@unit set requires: first, isSet, makeSet, next, putMember, seq, withMeta
   function set(value) {
-    if (predicates.isSet(value)) return withMeta(value, null);
+    if (isSet(value)) return withMeta(value, null);
     const entries = [];
     const edit = {};
     for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current), edit);
@@ -2268,8 +2423,8 @@
     return structuralEqualPair(left, right);
   }
   //@unit structuralEqualPair requires: cells, contains, count, equalPair, first, get, ICounted,
-  //@ keywords, mapKinds, maps, mapTraversal, missing, next, predicates, recordTypes, satisfies,
-  //@ seq, sequential, sets, symbols, uuids, vars
+  //@ isMap, isRecord, isSequential, isSet, keywords, mapKinds, maps, mapTraversal, missing, next,
+  //@ recordTypes, satisfies, seq, sequential, sets, symbols, uuids, vars
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     if (uuids.has(left)) return uuids.has(right) && uuids.get(left) === uuids.get(right);
@@ -2287,7 +2442,7 @@
     if (recordTypes.get(left) !== recordTypes.get(right)) return false;
     const leftMap = maps.get(left);
     if (leftMap) {
-      if (!predicates.isMap(right) || predicates.isRecord(right) || count(left) !== count(right)) return false;
+      if (!isMap(right) || isRecord(right) || count(left) !== count(right)) return false;
       return mapTraversal(left).every(entry => {
         const found = get(right, entry.key, missing);
         // Hash/tree maps use equiv-map's right-first value dispatch. Array
@@ -2298,12 +2453,12 @@
     }
     const leftSet = sets.get(left);
     if (leftSet) {
-      if (!predicates.isSet(right) || leftSet.length !== count(right)) return false;
+      if (!isSet(right) || leftSet.length !== count(right)) return false;
       try { return leftSet.every(entry => contains(right, entry.key)); }
       catch (error) { if (error instanceof Error) return false; throw error; }
     }
     if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) {
-      if (!predicates.isSequential(right)) return false;
+      if (!isSequential(right)) return false;
       if (satisfies(ICounted, left) && satisfies(ICounted, right) && count(left) !== count(right)) return false;
       let a = seq(left), b = seq(right);
       while (a !== null) {
@@ -2826,16 +2981,16 @@
     const items = Object.freeze(toArray(value).reverse());
     return items.length ? view(items, 0, false, maps.has(value) ? "sorted-map" : "reverse") : null;
   }
-  //@unit mapProjection requires: cells, core, emptyList, INext, next, satisfies, seq,
-  //@ sequencePrototype
+  //@unit mapProjection requires: cells, emptyList, firstProtocol, INext, keyProtocol, next,
+  //@ nextProtocol, satisfies, seq, sequencePrototype, valProtocol
   function mapProjection(value, index, alreadySeq = false) {
     const entries = alreadySeq ? value : seq(value);
     if (entries === null) return null;
     const result = Object.create(sequencePrototype);
     cells.set(result, Object.freeze({kind: index === 0 ? "keys" : "vals",
-      get head() { const entry = core.firstProtocol(entries); return index === 0 ? core.keyProtocol(entry) : core.valProtocol(entry); },
+      get head() { const entry = firstProtocol(entries); return index === 0 ? keyProtocol(entry) : valProtocol(entry); },
       get tail() {
-        const following = satisfies(INext, entries) ? core.nextProtocol(entries) : next(entries);
+        const following = satisfies(INext, entries) ? nextProtocol(entries) : next(entries);
         return following == null ? emptyList : mapProjection(following, index, true);
       }}));
     return result;
@@ -3057,12 +3212,12 @@
   function sortedSetBy(comparator, ...items) {
     return buildSortedSet(fnComparator(comparator), items);
   }
-  //@unit sortedSeqFrom requires: mapEntry, maps, mapSeq, predicates, sets, sortedComparators,
+  //@unit sortedSeqFrom requires: identity, mapEntry, maps, mapSeq, sets, sortedComparators,
   //@ sortedPosition, truth, view
   function sortedSeqFrom(value, key, ascending) {
     const entries = maps.get(value) ?? sets.get(value), comparator = sortedComparators.get(value);
     let i = sortedPosition(entries, key, comparator);
-    const absent = () => sets.has(value) ? mapSeq(predicates.identity, null) : null;
+    const absent = () => sets.has(value) ? mapSeq(identity, null) : null;
     if (!truth(ascending)) {
       if (i === entries.length || comparator.call(null, entries[i].key, key) !== 0) i--;
       if (i < 0) return absent();
@@ -3070,29 +3225,31 @@
     const selected = truth(ascending) ? entries.slice(i) : entries.slice(0, i + 1).reverse();
     return sets.has(value) ? mapSeq(entry => entry.key, selected) : view(Object.freeze(selected.map(entry => mapEntry(entry.key, entry.value))), 0, false, "sorted-map");
   }
-  //@unit mkBoundFn requires: core, invalidArity, truth
+  //@unit mkBoundFn requires: comparatorProtocol, entryKeyProtocol, invalidArity, truth
   function mkBoundFn(sc, test, key) {
     if (arguments.length !== 3) return invalidArity(arguments.length);
-    return entry => truth(test.call(null, core.comparatorProtocol(sc).call(null, core.entryKeyProtocol(sc, entry), key), 0));
+    return entry => truth(test.call(null, comparatorProtocol(sc).call(null, entryKeyProtocol(sc, entry), key), 0));
   }
-  //@unit subseq requires: core, first, invalidArity, mkBoundFn, next, numeric, takeWhile
+  //@unit subseq requires: first, greater, greaterEqual, invalidArity, mkBoundFn, next,
+  //@ sortedSeqFromProtocol, sortedSeqProtocol, takeWhile
   function subseq(sc, test, key, endTest, endKey) {
     if (arguments.length !== 3 && arguments.length !== 5) return invalidArity(arguments.length);
     const include = mkBoundFn(sc, test, key);
-    if (arguments.length === 3 && test !== numeric.greater && test !== numeric.greaterEqual)
-      return takeWhile(include, core.sortedSeqProtocol(sc, true));
-    let s = core.sortedSeqFromProtocol(sc, key, true);
+    if (arguments.length === 3 && test !== greater && test !== greaterEqual)
+      return takeWhile(include, sortedSeqProtocol(sc, true));
+    let s = sortedSeqFromProtocol(sc, key, true);
     if (s == null) return null;
     if (!include(first(s))) s = next(s);
     return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, endTest, endKey), s);
   }
-  //@unit rsubseq requires: core, first, invalidArity, mkBoundFn, next, numeric, takeWhile
+  //@unit rsubseq requires: first, invalidArity, less, lessEqual, mkBoundFn, next,
+  //@ sortedSeqFromProtocol, sortedSeqProtocol, takeWhile
   function rsubseq(sc, test, key, endTest, endKey) {
     if (arguments.length !== 3 && arguments.length !== 5) return invalidArity(arguments.length);
-    if (arguments.length === 3 && test !== numeric.less && test !== numeric.lessEqual)
-      return takeWhile(mkBoundFn(sc, test, key), core.sortedSeqProtocol(sc, false));
+    if (arguments.length === 3 && test !== less && test !== lessEqual)
+      return takeWhile(mkBoundFn(sc, test, key), sortedSeqProtocol(sc, false));
     const include = arguments.length === 3 ? mkBoundFn(sc, test, key) : mkBoundFn(sc, endTest, endKey);
-    let s = core.sortedSeqFromProtocol(sc, arguments.length === 3 ? key : endKey, false);
+    let s = sortedSeqFromProtocol(sc, arguments.length === 3 ? key : endKey, false);
     if (s == null) return null;
     if (!include(first(s))) s = next(s);
     return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, test, key), s);
@@ -3413,7 +3570,7 @@
     for (const entry of toArray(updated)) for (const ancestor of toArray(nth(entry, 1))) result = derive(result, nth(entry, 0), ancestor);
     return result;
   }
-  //@unit MultiFn requires: core, multiFns, print, truth
+  //@unit MultiFn requires: getMethodProtocol, multiFns, print, truth
   class MultiFn {
     constructor(name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy) {
       this.name = name; this.dispatch_fn = dispatchFn; this.default_dispatch_val = defaultDispatchVal;
@@ -3422,7 +3579,7 @@
       multiFns.add(this);
     }
     call(_self, ...args) {
-      const dispatch = this.dispatch_fn.call(null, ...args), target = core.getMethod(this, dispatch);
+      const dispatch = this.dispatch_fn.call(null, ...args), target = getMethodProtocol(this, dispatch);
       if (!truth(target)) throw new Error("No method in multimethod '" + print(this.name, false) + "' for dispatch value: " + print(dispatch, false));
       return target.call(null, ...args);
     }
@@ -3737,16 +3894,16 @@
   let tapLimit = 1024;
   //@unit defaultTapSchedule
   function defaultTapSchedule(task) { task.call(null); return true; }
-  //@unit configureHostHooks requires: core, defaultHostClock, defaultHostRandom,
+  //@unit configureHostHooks requires: coreCells, defaultHostClock, defaultHostRandom,
   //@ defaultTapSchedule, tapLimit
   function configureHostHooks(options = {}) {
     for (const key of ["clock", "random", "tapSchedule"]) {
       if (Object.hasOwn(options, key) && options[key] !== null && typeof options[key] !== "function") throw new TypeError(key + " hook must be a function or null");
     }
     if (Object.hasOwn(options, "maxPendingTaps") && (!Number.isSafeInteger(options.maxPendingTaps) || options.maxPendingTaps < 1)) throw new TypeError("maxPendingTaps must be a positive integer");
-    if (Object.hasOwn(options, "clock")) core.hostClock = options.clock ?? defaultHostClock;
-    if (Object.hasOwn(options, "random")) core.hostRandom = options.random ?? defaultHostRandom;
-    if (Object.hasOwn(options, "tapSchedule")) core.execTapFn = options.tapSchedule ?? defaultTapSchedule;
+    if (Object.hasOwn(options, "clock")) coreCells.hostClock = options.clock ?? defaultHostClock;
+    if (Object.hasOwn(options, "random")) coreCells.hostRandom = options.random ?? defaultHostRandom;
+    if (Object.hasOwn(options, "tapSchedule")) coreCells.execTapFn = options.tapSchedule ?? defaultTapSchedule;
     if (Object.hasOwn(options, "maxPendingTaps")) tapLimit = options.maxPendingTaps;
     return null;
   }
@@ -3756,16 +3913,16 @@
   }
   //@unit defaultHostRandom
   function defaultHostRandom() { return Math.random(); }
-  //@unit systemTime requires: core, invalidArity
+  //@unit systemTime requires: coreCells, invalidArity
   function systemTime() {
     if (arguments.length) return invalidArity(arguments.length);
-    const value = core.hostClock.call(null);
+    const value = coreCells.hostClock.call(null);
     if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("clock hook must return a finite number");
     return value;
   }
-  //@unit hostRandom requires: core
+  //@unit hostRandom requires: coreCells
   function hostRandom() {
-    const value = core.hostRandom.call(null);
+    const value = coreCells.hostRandom.call(null);
     if (typeof value !== "number" || !(value >= 0 && value < 1)) throw new TypeError("random hook must return a number in [0, 1)");
     return value;
   }
@@ -3802,12 +3959,12 @@
   function deliverTap(listeners, value) {
     for (const listener of listeners) { try { listener.call(null, value); } catch (_) { /* One listener cannot suppress the others. */ } }
   }
-  //@unit tapGreater requires: core, defaultTapSchedule, drainTaps, invalidArity, tapDelivered,
+  //@unit tapGreater requires: coreCells, defaultTapSchedule, drainTaps, invalidArity, tapDelivered,
   //@ tapDraining, tapLimit, tapPending, tapQueue, truth
   function tapGreater(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (tapPending + tapQueue.length + (tapDraining ? tapDelivered : 0) >= tapLimit) return false;
-    const schedule = core.execTapFn;
+    const schedule = coreCells.execTapFn;
     if (schedule !== defaultTapSchedule) {
       tapPending++;
       let active = true;
@@ -3925,9 +4082,9 @@
     const wrapped = function (...args) { return withMacroReaderContext(fn, args); };
     return Object.assign(wrapped, fn);
   }
-  //@unit withMacroReaderContext requires: core, createNs, get, keyword, nth, str, toArray
+  //@unit withMacroReaderContext requires: coreCells, createNs, get, keyword, nth, str, toArray
   function withMacroReaderContext(fn, args) {
-    const saved = core.currentNs, env = get(args[1], keyword(null, "ns"));
+    const saved = coreCells.currentNs, env = get(args[1], keyword(null, "ns"));
     const name = get(env, keyword(null, "name"));
     if (name == null) return Reflect.apply(fn, null, args);
     const ns = createNs(name);
@@ -3942,9 +4099,9 @@
       for (const name of toArray(get(view, keyword(null, "excludes")))) excludes.add(name);
       for (const name of toArray(get(view, keyword(null, "bindings")))) bindings.add(name);
     }
-    ns.readerContext = {aliases, refers, excludes, bindings}; core.currentNs = ns;
+    ns.readerContext = {aliases, refers, excludes, bindings}; coreCells.currentNs = ns;
     try { return Reflect.apply(fn, null, args); }
-    finally { ns.readerContext = previous; core.currentNs = saved; }
+    finally { ns.readerContext = previous; coreCells.currentNs = saved; }
   }
   //@unit findNs requires: invalidArity, Namespace, namespaces, str, symbols
   function findNs(name) {
@@ -4048,10 +4205,10 @@
     for (let current = seq(value); current !== null; current = next(current)) result.push(first(current));
     return result;
   }
-  //@unit vec requires: core, into, predicates, vector, withMeta
+  //@unit vec requires: into, isMapEntry, isVector, keyProtocol, valProtocol, vector, withMeta
   function vec(value) {
-    if (predicates.isMapEntry(value)) return vector(core.keyProtocol(value), core.valProtocol(value));
-    if (predicates.isVector(value)) return withMeta(value, null);
+    if (isMapEntry(value)) return vector(keyProtocol(value), valProtocol(value));
+    if (isVector(value)) return withMeta(value, null);
     return into(vector(), value);
   }
   //@unit concatTwo requires: chunkCons, chunkFirst, chunkRest, cons, first, IChunkedSeq,
@@ -4078,8 +4235,8 @@
       truth(branch.call(null, node)) ? mapcat(walk, children.call(null, node)) : null));
     return walk(root);
   }
-  //@unit flatten requires: filter, predicates, rest, seq, treeSeq
-  function flatten(value) { return filter(x => !predicates.isSequential(x), rest(treeSeq(predicates.isSequential, seq, value))); }
+  //@unit flatten requires: filter, isSequential, rest, seq, treeSeq
+  function flatten(value) { return filter(x => !isSequential(x), rest(treeSeq(isSequential, seq, value))); }
   //@unit concat requires: callable, concatMany, concatTwo, lazySequence
   const concat = callable(2, {0: () => lazySequence(() => null), 1: x => lazySequence(() => x), 2: concatTwo}, (x, y, more) => concatMany(concatTwo(x, y), more));
   //@unit es6Iterator requires: first, next, seq
@@ -4101,16 +4258,16 @@
       return item;
     }};
   }
-  //@unit sequenceIterator requires: core, IIterable, iteratorInit, predicates, satisfies, SeqIter,
-  //@ str
+  //@unit sequenceIterator requires: IIterable, isSeqable, iteratorInit, iteratorProtocol,
+  //@ satisfies, SeqIter, str
   function sequenceIterator(value) {
-    if (satisfies(IIterable, value)) return core.iteratorProtocol(value);
+    if (satisfies(IIterable, value)) return iteratorProtocol(value);
     if (value == null) return {hasNext() { return false; }, next() { return new Error("No such element"); }, remove() { return new Error("Unsupported operation"); }};
     if (typeof value === "string" || Array.isArray(value)) {
       let index = 0;
       return {hasNext() { return index < value.length; }, next() { return typeof value === "string" ? value.charAt(index++) : value[index++]; }, remove() { return new Error("Unsupported operation"); }};
     }
-    if (predicates.isSeqable(value)) return new SeqIter(iteratorInit, value);
+    if (isSeqable(value)) return new SeqIter(iteratorInit, value);
     throw new Error("Cannot create iterator from " + str(value));
   }
   //@unit transformedIterator requires: invalidArity, isReduced
@@ -4163,10 +4320,10 @@
       return chunkCons(arrayChunk(values), chunkIteratorSequence(iter));
     });
   }
-  //@unit sequence requires: callable, chunkIteratorSequence, emptyList, predicates, seq,
+  //@unit sequence requires: callable, chunkIteratorSequence, emptyList, isSeq, seq,
   //@ sequenceIterator, toArray, transformedIterator
   const sequence = callable(2, {
-    1: value => predicates.isSeq(value) ? value : seq(value) ?? emptyList,
+    1: value => isSeq(value) ? value : seq(value) ?? emptyList,
     2: (xform, value) => chunkIteratorSequence(transformedIterator(xform, [sequenceIterator(value)]))
   }, (xform, value, more) => chunkIteratorSequence(transformedIterator(xform, [value, ...toArray(more)].map(sequenceIterator))));
   //@unit Eduction requires: builtinValue, eductions
@@ -4485,7 +4642,7 @@
     return new Constructor(...Type.fieldNames.map(name => field(value, name)), metadata, extmap, cachedHash);
   }
   //@unit recordMethods requires: assoc, conj, contains, count, dissoc, equalPair, field, get, hash,
-  //@ into, iteratorInit, keyword, mapFromArray, nth, predicates, printWriter, prSequentialWriter,
+  //@ into, isVector, iteratorInit, keyword, mapFromArray, nth, printWriter, prSequentialWriter,
   //@ recordCopy, recordEntries, reduce, seq, SeqIter, stringHash, typeNames, vectorFromArray,
   //@ withMeta
   function recordMethods(Type) {
@@ -4511,7 +4668,7 @@
       }],
       ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }],
       ["ICollection/-conj", 2, function (_self, entry) {
-        if (predicates.isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
+        if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
         return reduce((result, pair) => conj(result, pair), this, entry);
       }],
       ["IAssociative/-contains-key?", 2, function (_self, key) { return fieldIndex(key) >= 0 || contains(this.__extmap, key); }],
@@ -4569,10 +4726,10 @@
     installMethods(Type.prototype, implementations);
     return Type;
   }
-  //@unit recordFromMap requires: dissoc, get, into, keyword, mapFromArray, predicates, seq
+  //@unit recordFromMap requires: dissoc, get, into, isRecord, keyword, mapFromArray, seq
   function recordFromMap(Type, map) {
     let extmap = dissoc(map, ...Type.fieldNames.map(name => keyword(null, name)));
-    if (predicates.isRecord(map)) extmap = into(mapFromArray([]), extmap);
+    if (isRecord(map)) extmap = into(mapFromArray([]), extmap);
     return new Type(...Type.fieldNames.map(name => get(map, keyword(null, name))), null, seq(extmap) === null ? null : extmap, null);
   }
   //@unit ifnMethods requires: ifnValues
@@ -4601,9 +4758,9 @@
     const values = Array.from(args);
     return value.call(null, ...values.slice(0, 20), ...(values.length > 20 ? [values.slice(20)] : []));
   }
-  //@unit boundedCount requires: count, next, predicates, seq
+  //@unit boundedCount requires: count, isCounted, next, seq
   function boundedCount(n, value) {
-    if (predicates.isCounted(value)) return count(value);
+    if (isCounted(value)) return count(value);
     let total = 0;
     for (let current = seq(value); n > 0 && current !== null; n--, current = next(current)) total++;
     return total;
@@ -4687,13 +4844,13 @@
     // ArrayChunk's two-argument -nth reads the backing array directly.
     return state.array?.[state.offset + i];
   }
-  //@unit chunkFirst requires: core
-  function chunkFirst(value) { return core.chunkedFirstProtocol(value); }
-  //@unit chunkRest requires: core
-  function chunkRest(value) { return core.chunkedRestProtocol(value); }
-  //@unit chunkNext requires: chunkRest, core, IChunkedNext, implementsProtocol, seq
+  //@unit chunkFirst requires: chunkedFirstProtocol
+  function chunkFirst(value) { return chunkedFirstProtocol(value); }
+  //@unit chunkRest requires: chunkedRestProtocol
+  function chunkRest(value) { return chunkedRestProtocol(value); }
+  //@unit chunkNext requires: chunkedNextProtocol, chunkRest, IChunkedNext, implementsProtocol, seq
   function chunkNext(value) {
-    return implementsProtocol(IChunkedNext, value) ? core.chunkedNextProtocol(value) : seq(chunkRest(value));
+    return implementsProtocol(IChunkedNext, value) ? chunkedNextProtocol(value) : seq(chunkRest(value));
   }
   //@unit ownedChunkFirst requires: arrayChunk, cells, chunks, forceRangeChunk,
   //@ publicCollectionSlots, views
@@ -4743,15 +4900,15 @@
     const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return end < slice.storage.length ? view(slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
   }
-  //@unit ChunkedCons requires: builtinValue, cells, core, count, emptyList, metadataValues, nth,
-  //@ sequencePrototype
+  //@unit ChunkedCons requires: builtinValue, cells, count, dropFirstProtocol, emptyList,
+  //@ metadataValues, nth, sequencePrototype
   function ChunkedCons(chunk, more, metadata, cachedHash) {
     const value = builtinValue("ChunkedCons", sequencePrototype);
     const chunkedState = {hash: cachedHash};
     cells.set(value, Object.freeze({kind: "chunked-cons", chunk, more, chunkedState,
       get hash() { return chunkedState.hash; },
       get head() { return nth(chunk, 0); },
-      get tail() { return count(chunk) > 1 ? new ChunkedCons(core.dropFirstProtocol(chunk), more, null, null) : more ?? emptyList; }}));
+      get tail() { return count(chunk) > 1 ? new ChunkedCons(dropFirstProtocol(chunk), more, null, null) : more ?? emptyList; }}));
     metadataValues.set(value, metadata);
     return value;
   }
@@ -4802,8 +4959,8 @@
       return s === null ? null : cons(first(s), take(n - 1, rest(s)));
     });
   }
-  //@unit drop requires: collectionArity, core, emptyList, IDrop, implementsProtocol, invalidArity,
-  //@ lazySequence, numberArgument, reducingFunction, rest, seq, transform
+  //@unit drop requires: collectionArity, dropProtocol, emptyList, IDrop, implementsProtocol,
+  //@ invalidArity, lazySequence, numberArgument, reducingFunction, rest, seq, transform
   function drop(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
@@ -4812,7 +4969,7 @@
       return reducingFunction(rf, (result, input) => { const prior = remaining; remaining--; return prior > 0 ? result : rf.call(null, result, input); });
     });
     collectionArity("drop", arguments.length);
-    if (implementsProtocol(IDrop, coll)) return (n > 0 ? core.dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
+    if (implementsProtocol(IDrop, coll)) return (n > 0 ? dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
   //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkFirst, chunkRest, cons,
@@ -4962,12 +5119,6 @@
   function partitionVAll(n, step, coll) {
     if (arguments.length === 2) { coll = step; step = n; } else if (arguments.length === 1) return partitionAll(n); else if (arguments.length !== 3) return invalidArity(arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(vec(take(n, coll)), partitionVAll(n, step, drop(step, s))); });
-  }
-  //@unit shuffle requires: toArray, vectorFromArray
-  function shuffle(coll) {
-    const items = toArray(coll);
-    for (let i = items.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [items[i], items[j]] = [items[j], items[i]]; }
-    return vectorFromArray(items);
   }
   //@unit jsIterable
   const jsIterable = value => value != null && value[Symbol.iterator] != null;
@@ -5211,19 +5362,19 @@
       return result;
     });
   }
-  //@unit trampolineLoop requires: predicates
+  //@unit trampolineLoop requires: isFn
   function trampolineLoop(fn) {
     for (;;) {
       const result = fn.call(null);
-      if (!predicates.isFn(result)) return result;
+      if (!isFn(result)) return result;
       fn = result;
     }
   }
   //@unit trampoline requires: apply, callable, trampolineLoop
   const trampoline = callable(1, {1: trampolineLoop}, (fn, args) => trampolineLoop(() => apply(fn, args)));
-  //@unit comp requires: callable, directOrApply, missing, predicates
+  //@unit comp requires: callable, directOrApply, identity, missing
   function comp(...fns) {
-    if (!fns.length) return predicates.identity;
+    if (!fns.length) return identity;
     if (fns.length === 1) return fns[0];
     const run = (args, tail) => {
       let result = directOrApply(fns[fns.length - 1], args, tail);
@@ -5279,21 +5430,22 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit into requires: conj, conjBang, core, IEditableCollection, implementsProtocol,
-  //@ invalidArity, meta, persistentBang, reduce, transduce, transient, vector
+  //@unit into requires: conj, conjBang, conjBangProtocol, conjProtocol, IEditableCollection,
+  //@ implementsProtocol, invalidArity, meta, persistentBang, reduce, transduce, transient, vector,
+  //@ withMetaProtocol
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
       case 1: return to;
       case 2: {
         if (implementsProtocol(IEditableCollection, to))
-          return core.withMetaProtocol(persistentBang(reduce(core.conjBangProtocol, transient(to), from)), meta(to));
-        return reduce(to == null ? conj : core.conjProtocol, to, from);
+          return withMetaProtocol(persistentBang(reduce(conjBangProtocol, transient(to), from)), meta(to));
+        return reduce(to == null ? conj : conjProtocol, to, from);
       }
       case 3: {
         const editable = implementsProtocol(IEditableCollection, to), metadata = editable ? meta(to) : null;
         const rf = !editable ? conj : function (...args) {
-          if (args.length === 1) return core.withMetaProtocol(persistentBang(args[0]), metadata);
+          if (args.length === 1) return withMetaProtocol(persistentBang(args[0]), metadata);
           if (args.length === 2) return conjBang(args[0], args[1]);
           return invalidArity(args.length);
         };
@@ -5361,44 +5513,44 @@
   }
   //@unit printCore requires: printItems
   function printCore(...values) { return printItems(values); }
-  //@unit setPrintFn requires: core, invalidArity
-  function setPrintFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return core.printFn = fn; }
-  //@unit setPrintErrFn requires: core, invalidArity
-  function setPrintErrFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return core.printErrFn = fn; }
-  //@unit enableConsolePrint requires: core, invalidArity, setPrintErrFn, setPrintFn
+  //@unit setPrintFn requires: coreCells, invalidArity
+  function setPrintFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return coreCells.printFn = fn; }
+  //@unit setPrintErrFn requires: coreCells, invalidArity
+  function setPrintErrFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return coreCells.printErrFn = fn; }
+  //@unit enableConsolePrint requires: coreCells, invalidArity, setPrintErrFn, setPrintFn
   function enableConsolePrint() {
     if (arguments.length !== 0) return invalidArity(arguments.length);
-    core.printNewline = false;
+    coreCells.printNewline = false;
     setPrintFn((...args) => globalThis.console.log(...args));
     setPrintErrFn((...args) => globalThis.console.error(...args));
     return null;
   }
-  //@unit stringPrint requires: core, invalidArity
+  //@unit stringPrint requires: coreCells, invalidArity
   function stringPrint(text) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
-    if (core.printFn == null) throw new Error("No *print-fn* fn set for evaluation environment");
-    core.printFn.call(null, text); return null;
+    if (coreCells.printFn == null) throw new Error("No *print-fn* fn set for evaluation environment");
+    coreCells.printFn.call(null, text); return null;
   }
-  //@unit printOption requires: core, get, keyword
-  function printOption(options, name, root) { return options == null ? core[root] : get(options, keyword(null, name)); }
+  //@unit printOption requires: coreCells, get, keyword
+  function printOption(options, name, root) { return options == null ? coreCells[root] : get(options, keyword(null, name)); }
   //@unit flush requires: invalidArity
   function flush() { if (arguments.length !== 0) return invalidArity(arguments.length); return null; }
-  //@unit newline requires: core, invalidArity, printOption, stringPrint, truth
+  //@unit newline requires: coreCells, invalidArity, printOption, stringPrint, truth
   function newline(options = null) {
     if (arguments.length > 1) return invalidArity(arguments.length);
     stringPrint("\n");
-    return truth(printOption(options, "flush-on-newline", "flushOnNewline")) ? core.flush.call(null) : null;
+    return truth(printOption(options, "flush-on-newline", "flushOnNewline")) ? coreCells.flush.call(null) : null;
   }
   //@unit pr requires: prStr, stringPrint
   function pr(...values) { return stringPrint(prStr(...values)); }
-  //@unit println requires: core, newline, printItems, truth
-  function println(...values) { printItems(values); return truth(core.printNewline) ? newline() : null; }
-  //@unit prn requires: core, newline, pr, truth
-  function prn(...values) { pr(...values); return truth(core.printNewline) ? newline() : null; }
+  //@unit println requires: coreCells, newline, printItems, truth
+  function println(...values) { printItems(values); return truth(coreCells.printNewline) ? newline() : null; }
+  //@unit prn requires: coreCells, newline, pr, truth
+  function prn(...values) { pr(...values); return truth(coreCells.printNewline) ? newline() : null; }
   //@unit prnStr requires: prStr
   function prnStr(...values) { return prStr(...values) + "\n"; }
-  //@unit printStr requires: core, prStr
-  function printStr(...values) { const saved = core.printReadably; core.printReadably = false; try { return prStr(...values); } finally { core.printReadably = saved; } }
+  //@unit printStr requires: coreCells, prStr
+  function printStr(...values) { const saved = coreCells.printReadably; coreCells.printReadably = false; try { return prStr(...values); } finally { coreCells.printReadably = saved; } }
   //@unit printlnStr requires: printStr
   function printlnStr(...values) { return printStr(...values) + "\n"; }
   //@unit TaggedLiteral effect requires: equalPair, hash, installMethods, keyword, printWriter,
@@ -5415,12 +5567,12 @@
   TaggedLiteral.prototype.toString = function () { return prStr(this); };
   //@unit taggedLiteral requires: symbols, TaggedLiteral
   function taggedLiteral(tag, form) { if (!symbols.has(tag)) throw new Error("Assert failed: (symbol? tag)"); return new TaggedLiteral(tag, form); }
-  //@unit printItems requires: core, prStr, stringPrint
+  //@unit printItems requires: coreCells, prStr, stringPrint
   function printItems(values) {
-    const saved = core.printReadably;
-    core.printReadably = false;
+    const saved = coreCells.printReadably;
+    coreCells.printReadably = false;
     try { return stringPrint(prStr(...values)); }
-    finally { core.printReadably = saved; }
+    finally { coreCells.printReadably = saved; }
   }
   //@unit stringWriter requires: StringBufferWriter
   function stringWriter() {
@@ -5447,14 +5599,14 @@
     if (arguments.length !== 2) return invalidArity(arguments.length);
     return truth(printOption(options, "meta", "printMeta")) && implementsProtocol(IMeta, value) && meta(value) != null;
   }
-  //@unit prSequentialWriter requires: core, first, get, invalidArity, keyword, next, printOption,
-  //@ seq, truth, write
+  //@unit prSequentialWriter requires: coreCells, first, get, invalidArity, keyword, next,
+  //@ printOption, seq, truth, write
   function prSequentialWriter(writer, printOne, begin, separator, end, options, coll) {
     if (arguments.length !== 7) return invalidArity(arguments.length);
-    const saved = core.printLevel;
-    core.printLevel = saved == null ? null : saved - 1;
+    const saved = coreCells.printLevel;
+    coreCells.printLevel = saved == null ? null : saved - 1;
     try {
-      if (core.printLevel != null && core.printLevel < 0) return write(writer, "#");
+      if (coreCells.printLevel != null && coreCells.printLevel < 0) return write(writer, "#");
       write(writer, begin);
       let current = seq(coll), remaining = printOption(options, "print-length", "printLength"), printed = false;
       while (current != null && (remaining == null || remaining !== 0)) {
@@ -5467,13 +5619,13 @@
         const marker = get(options, keyword(null, "more-marker")); write(writer, truth(marker) ? marker : "...");
       }
       return write(writer, end);
-    } finally { core.printLevel = saved; }
+    } finally { coreCells.printLevel = saved; }
   }
-  //@unit printMapEntries requires: core, keyword, keywords, name, printWriter, prSequentialWriter,
-  //@ symbol, symbols, truth, write
+  //@unit printMapEntries requires: coreCells, keyword, keywords, name, printWriter,
+  //@ prSequentialWriter, symbol, symbols, truth, write
   function printMapEntries(entries, writer, options, prefix = "") {
     const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
-    const ns = truth(core.printNamespaceMaps) && names.length && names[0]?.namespace;
+    const ns = truth(coreCells.printNamespaceMaps) && names.length && names[0]?.namespace;
     const lifted = !prefix && ns && names.every(name => name?.namespace === ns);
     // JavaScript object tags precede the map printer's depth suppression.
     if (prefix) write(writer, prefix);
@@ -5488,10 +5640,10 @@
     if (truth(alt)) return alt.call(null, value, writer, assoc(options, keyword(null, "fallback-impl"), printWriterImpl));
     return printWriterImpl(value, writer, options);
   }
-  //@unit printWriterImpl requires: atoms, core, delays, ExceptionInfo, keyword, keywords, maps,
-  //@ mapTraversal, meta, printMapEntries, printMetaQ, printOption, printWriter, prSequentialWriter,
-  //@ publicMethod, queues, sequential, sets, setTraversal, symbols, transients, truth, typeNames,
-  //@ uuids, vars, vectors, volatiles, write
+  //@unit printWriterImpl requires: atoms, coreCells, delays, ExceptionInfo, keyword, keywords,
+  //@ maps, mapTraversal, meta, printMapEntries, printMetaQ, printOption, printWriter,
+  //@ prSequentialWriter, publicMethod, queues, sequential, sets, setTraversal, symbols, transients,
+  //@ truth, typeNames, uuids, vars, vectors, volatiles, write
   function printWriterImpl(value, writer, options, skipMetadata = false) {
     if (value == null) return write(writer, "nil");
     if (!skipMetadata && printMetaQ(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
@@ -5505,7 +5657,7 @@
     }
     if (typeof value === "number") return write(writer, Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value));
     if (typeof value === "boolean") return write(writer, String(value));
-    if (typeof value === "function") return write(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(core.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
+    if (typeof value === "function") return write(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(coreCells.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
     if (value instanceof ExceptionInfo) return write(writer, value.toString());
     if (transients.has(value)) {
       const state = transients.get(value);
@@ -5552,11 +5704,11 @@
   }
   //@unit prnStrWithOpts requires: invalidArity, prStrWithOpts
   function prnStrWithOpts(values, options) { if (arguments.length !== 2) return invalidArity(arguments.length); return prStrWithOpts(values, options) + "\n"; }
-  //@unit print requires: core, flushWriter, printWriterImpl, stringWriter
+  //@unit print requires: coreCells, flushWriter, printWriterImpl, stringWriter
   function print(value, readable) {
-    const saved = core.printReadably; core.printReadably = readable;
+    const saved = coreCells.printReadably; coreCells.printReadably = readable;
     try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
-    finally { core.printReadably = saved; }
+    finally { coreCells.printReadably = saved; }
   }
   //@unit prStr requires: prStrWithOpts
   function prStr(...values) { return prStrWithOpts(values, null); }
@@ -5701,12 +5853,12 @@
     for (let s = seq(coll); s !== null; s = next(s)) result[i++] = toArray(first(s));
     return result;
   }
-  //@unit typedArray requires: first, intoArray, invalidArity, makeArray, next, predicates, seq
+  //@unit typedArray requires: first, intoArray, invalidArity, isSeq, makeArray, next, seq
   function typedArray(size, init) {
     if (arguments.length === 1) return typeof size === "number" ? typedArray(size, null) : intoArray(size);
     if (arguments.length !== 2) return invalidArity(arguments.length);
     const result = makeArray(size);
-    if (predicates.isSeq(init)) {
+    if (isSeq(init)) {
       // The upstream loop advances after each store, even after the last slot.
       let s = seq(init);
       for (let i = 0; s !== null && i < size; i++, s = next(s)) result[i] = first(s);
@@ -5741,41 +5893,43 @@
   function jsKeys(object) { const keys = []; for (const key in object) keys.push(key); return keys; }
   //@unit jsInvoke
   function jsInvoke(object, key, ...args) { return object[key].apply(object, args); }
-  //@unit keyToJs requires: cljToJs, core, IEncodeJS, keywords, prStr, satisfies, symbols
+  //@unit keyToJs requires: cljToJs, encodeJsProtocol, IEncodeJS, keywords, prStr, satisfies,
+  //@ symbols
   function keyToJs(key, primitive = cljToJs) {
-    if (satisfies(IEncodeJS, key)) return core.encodeJsProtocol(key);
+    if (satisfies(IEncodeJS, key)) return encodeJsProtocol(key);
     return typeof key === "string" || typeof key === "number" || keywords.has(key) || symbols.has(key) ? primitive.call(null, key) : prStr(key);
   }
-  //@unit cljToJs requires: core, first, get, IEncodeJS, keyToJs, keyword, keywords, listFromArray,
-  //@ mapSeq, name, next, nth, predicates, satisfies, seq, seqToMap, str, symbols, toArray
+  //@unit cljToJs requires: encodeJsProtocol, first, get, IEncodeJS, isColl, isMap, keyToJs,
+  //@ keyword, keywords, listFromArray, mapSeq, name, next, nth, satisfies, seq, seqToMap, str,
+  //@ symbols, toArray
   function cljToJs(value, ...options) {
     const opts = seqToMap(listFromArray(options)), keywordFn = get(opts, keyword(null, "keyword-fn"), name);
     const convert = value => {
       if (value == null) return null;
-      if (satisfies(IEncodeJS, value)) return core.encodeJsProtocol(value);
+      if (satisfies(IEncodeJS, value)) return encodeJsProtocol(value);
       if (keywords.has(value)) return keywordFn.call(null, value);
       if (symbols.has(value)) return str(value);
-      if (predicates.isMap(value)) {
+      if (isMap(value)) {
         const result = {};
         for (let s = seq(value); s !== null; s = next(s)) { const entry = first(s); result[keyToJs(nth(entry, 0), convert)] = convert(nth(entry, 1)); }
         return result;
       }
-      if (predicates.isColl(value)) return toArray(mapSeq(convert, value));
+      if (isColl(value)) return toArray(mapSeq(convert, value));
       return value;
     };
     return convert(value);
   }
-  //@unit jsToClj requires: arrayMap, assoc, core, doall, empty, get, IEncodeClojure, into, keyword,
-  //@ keywordCore, listFromArray, mapEntry, mapFromArray, mapSeq, nth, predicates, satisfies,
-  //@ seqToMap, truth, vectorFromArray
+  //@unit jsToClj requires: arrayMap, assoc, doall, empty, encodeClojureProtocol, get,
+  //@ IEncodeClojure, into, isColl, isMapEntry, isSeq, keyword, keywordCore, listFromArray,
+  //@ mapEntry, mapFromArray, mapSeq, nth, satisfies, seqToMap, truth, vectorFromArray
   function jsToClj(value, ...options) {
     if (arguments.length === 1) options = [keyword(null, "keywordize-keys"), false];
     const opts = seqToMap(listFromArray(options)), keywordize = truth(get(opts, keyword(null, "keywordize-keys")));
     const convert = value => {
-      if (satisfies(IEncodeClojure, value)) return core.encodeClojureProtocol(value, arrayMap(...options));
-      if (predicates.isSeq(value)) return doall(mapSeq(convert, value));
-      if (predicates.isMapEntry(value)) return mapEntry(convert(nth(value, 0)), convert(nth(value, 1)));
-      if (predicates.isColl(value)) return into(empty(value), mapSeq(convert, value));
+      if (satisfies(IEncodeClojure, value)) return encodeClojureProtocol(value, arrayMap(...options));
+      if (isSeq(value)) return doall(mapSeq(convert, value));
+      if (isMapEntry(value)) return mapEntry(convert(nth(value, 0)), convert(nth(value, 1)));
+      if (isColl(value)) return into(empty(value), mapSeq(convert, value));
       if (Array.isArray(value)) return vectorFromArray(value.map(convert));
       if (value != null && value.constructor === Object) {
         let result = mapFromArray([]);
@@ -5791,29 +5945,29 @@
     if (!(array != null && (Array.isArray(array) || (typeof array === "object" && typeof array.length === "number"))) ||
         typeof index !== "number" || index < 0 || !(index < array.length)) throw new Error("Assert failed: array index out of bounds");
   }
-  //@unit checkedAget requires: checkedIndex, core
+  //@unit checkedAget requires: checkedIndex, coreCells
   function checkedAget(array, index, ...indices) {
-    try { if (core.assertions) checkedIndex(array, index); }
-    catch (error) { if (core.printErrFn) core.printErrFn.call(null, error); }
+    try { if (coreCells.assertions) checkedIndex(array, index); }
+    catch (error) { if (coreCells.printErrFn) coreCells.printErrFn.call(null, error); }
     const value = array[index];
     return indices.length ? checkedAget(value, ...indices) : value;
   }
-  //@unit checkedAset requires: checkedAget, checkedIndex, core, jsSet
+  //@unit checkedAset requires: checkedAget, checkedIndex, coreCells, jsSet
   function checkedAset(array, index, value, ...more) {
     if (more.length) return checkedAset(checkedAget(array, index), value, ...more);
-    try { if (core.assertions) checkedIndex(array, index); }
-    catch (error) { if (core.printErrFn) core.printErrFn.call(null, error); }
+    try { if (coreCells.assertions) checkedIndex(array, index); }
+    catch (error) { if (coreCells.printErrFn) coreCells.printErrFn.call(null, error); }
     return jsSet(array, index, value);
   }
-  //@unit checkedAgetStrict requires: checkedIndex, core
+  //@unit checkedAgetStrict requires: checkedIndex, coreCells
   function checkedAgetStrict(array, index, ...indices) {
-    if (core.assertions) checkedIndex(array, index);
+    if (coreCells.assertions) checkedIndex(array, index);
     const value = array[index];
     return indices.length ? checkedAgetStrict(value, ...indices) : value;
   }
-  //@unit checkedAsetStrict requires: checkedIndex, core, jsSet
+  //@unit checkedAsetStrict requires: checkedIndex, coreCells, jsSet
   function checkedAsetStrict(array, index, value, ...more) {
-    if (core.assertions) checkedIndex(array, index);
+    if (coreCells.assertions) checkedIndex(array, index);
     if (more.length) return checkedAsetStrict(array[index], value, ...more);
     return jsSet(array, index, value);
   }
@@ -6093,169 +6247,230 @@
       return Reflect.construct(Type, args);
     };
   }
-  //@unit core effect requires: aclone, add, addMethod, addWatch, addWatchProtocol, aget, alterMeta,
-  //@ ancestors, apply, applyTo, arrayChunk, arrayMap, ASeq, aset, assoc, assocBang, assocIn,
-  //@ assocTransient, asTransient, Atom, atom, atomFactory, bases, boundedCount,
-  //@ builtinCoreImplementation, builtinTypes, butlast, cat, cells, checkedAget, checkedAgetStrict,
-  //@ checkedAset, checkedAsetStrict, chunk, chunkAppend, ChunkBuffer, chunkBuffer, chunkCons,
-  //@ ChunkedCons, chunkFirst, chunkNext, chunkRest, chunks, cljToJs, clone, comp, comparator,
-  //@ compareAndSet, compareKeys, complement, completing, concat, conj, conjBang, conjTransient,
-  //@ cons, constantly, contains, containsProtocol, coreMethod, count, countProtocol, cycle, dedupe,
-  //@ delays, demandMulti, demunge, deref, derefProtocol, derive, descendants, disj, disjBang,
-  //@ dissoc, dissocBang, distinct, doall, dorun, doubleArray, drop, dropLast, dropOwned, dropWhile,
-  //@ eduction, empty, emptyList, enableConsolePrint, ensureReduced, equal, equalPair, equivMap,
-  //@ es6Iterator, every, everyPred, exCause, ExceptionInfo, exData, exInfo, exMessage, filter,
-  //@ filterv, find, first, firstProtocol, flatten, flush, flushWriter, Fn, fnil, force,
-  //@ frequencies, gensym, get, getGlobalHierarchy, getIn, getMethod, getValidator, groupBy,
-  //@ haltWhen, hash, hashDouble, hashMap, hashOrderedColl, hashSet, hashUnorderedColl,
-  //@ IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable,
-  //@ ICounted, IDeref, IDerefWithTimeout, IDrop, IEditableCollection, IEmptyableCollection,
-  //@ IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed, IIterable, IKVReduce, IList,
-  //@ ILookup, IMap, IMapEntry, IMeta, implementsProtocol, IMultiFn, INamed, INext, Inst, intArray,
-  //@ interleave, interpose, into, intoArray, invalidArity, IPending, IPrintWithWriter, IRecord,
-  //@ IReduce, IReset, IReversible, isa, isDistinct, ISeq, ISeqable, ISequential, ISet, isJsSymbol,
-  //@ ISorted, isReduced, isSpecialSymbol, IStack, isVolatile, ISwap, iterate, iteration, iterator,
-  //@ iteratorInit, iteratorSeq, iteratorStart, ITransientAssociative, ITransientCollection,
-  //@ ITransientMap, ITransientSet, ITransientVector, IUUID, IVector, IVolatile, IWatchable,
-  //@ IWithMeta, IWriter, jsDelete, jsInvoke, jsIterable, jsKeys, jsObj, jsSet, jsToClj, juxt, keep,
-  //@ keepIndexed, keys, keyToJs, keywordCore, last, list, listStar, longArray, lookupProtocol,
-  //@ macroexpand, macroexpand1, makeArray, makeHierarchy, mapcat, mapIndexed, mapSeq, mapv, maxKey,
-  //@ memoize, merge, mergeWith, meta, metaProtocol, minKey, mkBoundFn, MultiFn, munge, mungeStr,
-  //@ name, Namespace, namespace, newline, next, nextProtocol, notifyWatches, nth, nthnext,
-  //@ nthProtocol, nthrest, numeric, objectArray, ownedChunkFirst, ownedChunkRest, parents,
-  //@ parseBoolean, parseDouble, parseLong, parseUuid, partial, partition, partitionAll,
-  //@ partitionBy, partitionV, partitionVAll, peek, persistentBang, persistTransient, pop, popBang,
-  //@ popTransient, positionalFactory, pr, predicates, preferMethod, primSeq, printCore,
-  //@ printForHost, println, printlnStr, printMetaQ, printStr, prn, prnStr, prnStrWithOpts,
-  //@ protocolSentinel, prSequentialWriter, prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter,
-  //@ rand, randInt, randNth, randomSample, range, RangedIterator, rangedIterator, realized, reduce,
-  //@ reduced, reduceKv, reductions, reMatch, remove, removeMethod, removeTransient, removeWatch,
-  //@ removeWatchProtocol, rePattern, repeat, repeatedly, replace, replicate, requiredGet, reSeq,
-  //@ reset, resetMeta, resetMulti, resetProtocol, resetVals, rest, restProtocol, rotateLeft, rseq,
-  //@ rsubseq, satisfies, selectKeys, seq, SeqIter, seqIter, seqProtocol, seqToMap, sequence,
-  //@ sequenceIterator, set, setPrintErrFn, setPrintFn, sets, setValidator, shuffle, someFn,
-  //@ someVals, sort, sortBy, sortedComparators, sortedMap, sortedMapBy, sortedSeqFrom, sortedSet,
-  //@ sortedSetBy, splitAt, splitVAt, splitWith, str, StringBufferWriter, stringHash, stringPrint,
-  //@ subs, subseq, subvec, supers, swap, swapProtocol, swapVals, symbolCore, TaggedLiteral,
-  //@ taggedLiteral, take, takeLast, takeNth, takeWhile, test, throwableToMap, toArray, toArray2d,
-  //@ trampoline, transduce, transient, treeSeq, truth, underive, unreduced, update, updateIn,
-  //@ updateKeys, updateVals, uuid, vals, Var, vars, varyMeta, vec, vector, view, Volatile,
-  //@ volatile, volatileFactory, vreset, vresetProtocol, withMeta, withMetaProtocol, write, zipmap
-  const core = {...builtinTypes, IMultiFn, MultiFn, makeHierarchy, getGlobalHierarchy, isa, parents, ancestors, descendants, derive, underive, bases, supers,
-    removeAllMethods: coreMethod("IMultiFn/-reset", [1], resetMulti),
-    addMethod: coreMethod("IMultiFn/-add-method", [3], addMethod),
-    removeMethod: coreMethod("IMultiFn/-remove-method", [2], removeMethod),
-    preferMethod: coreMethod("IMultiFn/-prefer-method", [3], preferMethod),
-    getMethod: coreMethod("IMultiFn/-get-method", [2], getMethod),
-    methods: coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); }),
-    prefers: coreMethod("IMultiFn/-prefers", [1], mf => { demandMulti(mf); return deref(mf.prefer_table); }),
-    defaultDispatchVal: coreMethod("IMultiFn/-default-dispatch-val", [1], mf => mf.default_dispatch_val),
-    dispatchFn: coreMethod("IMultiFn/-dispatch-fn", [1], mf => mf.dispatch_fn),
-    IChunk, IChunkedNext, IDrop,
-    IEditableCollection, ITransientCollection, ITransientAssociative, ITransientMap, ITransientVector, ITransientSet,
-    transient, persistentBang, conjBang, assocBang, dissocBang, disjBang, popBang,
-    asTransientProtocol: coreMethod("IEditableCollection/-as-transient", [1], asTransient),
-    persistentBangProtocol: coreMethod("ITransientCollection/-persistent!", [1], persistTransient),
-    conjBangProtocol: coreMethod("ITransientCollection/-conj!", [2], conjTransient),
-    assocBangProtocol: coreMethod("ITransientAssociative/-assoc!", [3], assocTransient),
-    assocNBangProtocol: coreMethod("ITransientVector/-assoc-n!", [3], (value, index, item) => assocTransient(value, index, item, true)),
-    dissocBangProtocol: coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!")),
-    disjoinBangProtocol: coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!")),
-    popBangProtocol: coreMethod("ITransientVector/-pop!", [1], popTransient),
-    chunkedNextProtocol: coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value))),
-    dropProtocol: coreMethod("IDrop/-drop", [2], dropOwned),
-    dropFirstProtocol: coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; }),
-    chunkFirst, chunkRest, chunkNext, chunkCons, ChunkedCons, arrayChunk,
-    chunkBuffer, ChunkBuffer, chunkAppend, chunk,
-    second: x => first(next(x)), ffirst: x => first(first(x)), nfirst: x => next(first(x)), fnext: x => first(next(x)), nnext: x => next(next(x)),
-    reverse: x => reduce((s, value) => conj(s, value), emptyList, x),
-    some: (pred, coll) => { for (let s = seq(coll); s !== null; s = next(s)) { const value = pred.call(null, first(s)); if (truth(value)) return value; } return null; },
-    notEvery: (pred, coll) => !every(pred, coll), notAny: (pred, coll) => !truth(core.some(pred, coll)), notEmpty: coll => seq(coll) === null ? null : coll,
-    run: (proc, coll) => { reduce((_x, value) => proc.call(null, value), null, coll); return null; },
-    randomUuid: () => uuid("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, digit => { const value = Math.floor(Math.random() * 16); return (digit === "x" ? value : (value & 3) | 8).toString(16); })),
-    isUri: value => typeof globalThis.goog?.Uri === "function" && value instanceof globalThis.goog.Uri, cat,
-    drop, repeatedly, replicate, mapIndexed, mapcat, filter, remove, keep, keepIndexed, takeWhile, dropWhile, takeLast, dropLast, takeNth, splitAt, splitWith, partition, partitionAll, partitionBy, interleave, interpose, dorun, doall, boundedCount, last, butlast, mapv, filterv, IMapEntry, IFind, ISorted, IChunkedSeq,
-    isIterable: value => satisfies(IIterable, value),
-    writeAll: (writer, ...texts) => { for (const text of texts) write(writer, text); return null; },
-    keyProtocol: coreMethod("IMapEntry/-key", [1], value => nth(value, 0)), valProtocol: coreMethod("IMapEntry/-val", [1], value => nth(value, 1)),
-    findProtocol: coreMethod("IFind/-find", [2], find),
-    sortedSeqProtocol: coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => { const s = truth(ascending) ? seq(value) : rseq(value); return sets.has(value) ? mapSeq(predicates.identity, s) : s; }),
-    sortedSeqFromProtocol: coreMethod("ISorted/-sorted-seq-from", [3], sortedSeqFrom),
-    entryKeyProtocol: coreMethod("ISorted/-entry-key", [2], (value, entry) => sets.has(value) ? entry : core.keyProtocol(entry)), comparatorProtocol: coreMethod("ISorted/-comparator", [1], value => sortedComparators.get(value)),
-    chunkedFirstProtocol: coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst),
-    chunkedRestProtocol: coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest),
-    invokeProtocol: coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args)),...numeric, ...predicates, keyword: keywordCore, symbol: symbolCore, vector, list,
-    gensym, macroexpand, macroexpand1, eval: () => { throw new Error("compiler eval service is not installed"); },
-    hashMap, arrayMap, sortedMap, sortedMapBy, sortedSet, sortedSetBy, subseq, rsubseq, mkBoundFn, hashSet, dissoc, disj, conj, assoc, seq, seqToMap, first, rest, next, name, namespace, subs, count, nth, get, getIn, assocIn, updateIn, selectKeys, merge, mergeWith, zipmap, contains, find, every, set, isCloneable: value => satisfies(ICloneable, value), equal,
-    reduce, completing, transduce, ensureReduced, haltWhen, dedupe, randomSample, add, reduced, isReduced, unreduced, deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap,
-    Atom, atomFactory, Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol, resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch, notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
-    IPending, realized, force, isDelay: value => delays.has(value), nthrest, nthnext,
-    IDeref, IDerefWithTimeout, Inst, IUUID, ASeq, IAtom, IReset, ISwap, IVolatile, IWatchable,
-    derefWithTimeoutProtocol: coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null),
-    IReduce, IKVReduce, IVector, IMap, ICollection, IEmptyableCollection, ISet, IStack, IReversible, IComparable, IIterable, reduceKv, subvec, equivMap, SeqIter, RangedIterator, seqIter, rangedIterator,
-    reduceProtocol: coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); }),
-    kvReduceProtocol: coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value)),
-    assocProtocol: coreMethod("IAssociative/-assoc", [3], assoc), assocNProtocol: coreMethod("IVector/-assoc-n", [3], assoc),
-    dissocProtocol: coreMethod("IMap/-dissoc", [2], dissoc), conjProtocol: coreMethod("ICollection/-conj", [2], conj),
-    emptyProtocol: coreMethod("IEmptyableCollection/-empty", [1], empty), disjoinProtocol: coreMethod("ISet/-disjoin", [2], disj),
-    peekProtocol: coreMethod("IStack/-peek", [1], peek), popProtocol: coreMethod("IStack/-pop", [1], pop),
-    rseqProtocol: coreMethod("IReversible/-rseq", [1], rseq), compareProtocol: coreMethod("IComparable/-compare", [2], compareKeys),
-    iteratorProtocol: coreMethod("IIterable/-iterator", [1], iterator),
-    hashOrderedColl, hashUnorderedColl, hashDouble, stringHash, rotateLeft, imul: Math.imul,
-    compare: compareKeys, INamed, nameProtocol: coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); }), namespaceProtocol: coreMethod("INamed/-namespace", [1], namespace), IHash, IEquiv, hashProtocol: coreMethod("IHash/-hash", [1], hash), equivProtocol: coreMethod("IEquiv/-equiv", [2], equalPair), type: value => value == null ? null : value.constructor,
-    Fn, IList, IFn, ISeqable, ISeq, INext, ICounted, IIndexed, ILookup, ISequential, IAssociative, seqProtocol, firstProtocol, restProtocol, nextProtocol, countProtocol, nthProtocol, lookupProtocol, containsProtocol,
-    protocolSentinel, IMeta, IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, StringBufferWriter, clone, prWriter, write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol, empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, prStrStar, str, uuid,
-    identical: (a, b) => a === b, isUuid: value => implementsProtocol(IUUID, value), isInst: value => satisfies(Inst, value),
-    printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct, isDistinct, sort, sortBy,
-    someFn, everyPred, memoize, rand, randInt, randNth, parseLong, parseDouble, parseUuid, parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator, updateVals, updateKeys,
+  //@unit coreCells requires: defaultHostClock, defaultHostRandom, defaultTapSchedule, flush,
+  //@ hostRand
+  // Mutable core cells: dynamic Vars, host hooks, and operations the runtime reads
+  // through a cell so `set!` reaches it. The `core` hub extends this object.
+  const coreCells = {
     replOne: null, replTwo: null, replThree: null, replError: null, sourceFile: null,
-    uncheckedArrays: false, commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true, printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
+    uncheckedArrays: false, commandLineArgs: null, printFn: null, printErrFn: null, printNewline: true,
+    printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
     printMeta: false, printDup: false, flushOnNewline: true, printFnBodies: false,
-    setPrintFn, setPrintErrFn, stringPrint, flush, enableConsolePrint, prStrWithOpts, prnStrWithOpts, prSequentialWriter, prSeqWriter, printMetaQ, printForHost,
-    println, prn, pr, newline, prnStr, printStr, printlnStr, TaggedLiteral, taggedLiteral, isTaggedLiteral: value => value instanceof TaggedLiteral,
-    splitVAt, partitionV, partitionVAll, shuffle, jsIterable, iteration, cljToJs, jsToClj, keyToJs, IEncodeJS, IEncodeClojure,
-    munge, mungeStr, demunge, treeSeq, flatten, iter: sequenceIterator, es6Iterator, es6IteratorSeq: iteratorSeq,
-    encodeJsProtocol: coreMethod("IEncodeJS/-clj->js", [1], value => value),
-    encodeKeyProtocol: coreMethod("IEncodeJS/-key->js", [1], value => value),
-    encodeClojureProtocol: coreMethod("IEncodeClojure/-js->clj", [2], value => value),
-    Var, test, hash, instMs: value => core.instMsProtocol(value),
-    instMsProtocol: coreMethod("Inst/inst-ms*", [1], value => value.getTime()), isVar: value => vars.has(value),
-    ExceptionInfo, exInfo, exData, exMessage, exCause, throwableToMap,
-    isInstance: (type, value) => value instanceof type,
-    rePattern, reSeq, reFind: (re, text) => reMatch(re, text, false), reMatches: (re, text) => reMatch(re, text, true),
-    isRegex: value => value instanceof RegExp, vec, concat, sequence, eduction, apply, applyTo, into,
-    cons: (head, tail) => cons(head, tail), listStar, iterate, take, range, toArray, mapSeq,
-    primSeq,
-    arraySeq: function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(array, start, true) : null; },
-    array: (...args) => args,
-    aget, aset, alength: array => array.length, aclone, makeArray, intoArray, toArray2d, intArray, longArray, doubleArray, objectArray,
-    jsObj, jsKeys, jsInvoke, jsDelete, jsIn: (key, object) => key in object,
-    uncheckedGet: (object, key) => object[key], uncheckedSet: jsSet,
-    checkedAget, checkedAset, checkedAgetStrict, checkedAsetStrict,
-    constantly, complement, comp, partial, juxt, fnil};
-  Object.assign(core, {iteratorInit, iteratorStart});
-  core.IndexedSeqFactory = positionalFactory(core.IndexedSeq, 3);
-  core.UUIDFactory = positionalFactory(core.UUID, 2);
-  core.RangeFactory = positionalFactory(core.Range, 7);
-  core.IntegerRangeFactory = positionalFactory(core.IntegerRange, 6);
-  core.PersistentTreeMapFactory = positionalFactory(core.PersistentTreeMap, 5);
-  core.PersistentTreeSetFactory = positionalFactory(core.PersistentTreeSet, 3);
-  core.PersistentTreeMapSeqFactory = positionalFactory(core.PersistentTreeMapSeq, 5);
-  core.EductionFactory = positionalFactory(core.Eduction, 2);
-  core.MultiFnFactory = positionalFactory(core.MultiFn, 8);
-  core.SeqIterFactory = positionalFactory(core.SeqIter, 2);
-  core.RangedIteratorFactory = positionalFactory(core.RangedIterator, 6);
-  core.NamespaceFactory = positionalFactory(Namespace, 2);
-  core.TaggedLiteralFactory = positionalFactory(core.TaggedLiteral, 2);
+    readerCurrentInputValue: null, currentNs: null, assertions: true,
+    hostClock: defaultHostClock, hostRandom: defaultHostRandom, execTapFn: defaultTapSchedule,
+    rand: hostRand, flush};
+  //@unit removeAllMethods requires: coreMethod, resetMulti
+  // Core operations without a function of their own, one unit each.
+  const removeAllMethods = coreMethod("IMultiFn/-reset", [1], resetMulti);
+  //@unit addMethodProtocol requires: addMethod, coreMethod
+  const addMethodProtocol = coreMethod("IMultiFn/-add-method", [3], addMethod);
+  //@unit removeMethodProtocol requires: coreMethod, removeMethod
+  const removeMethodProtocol = coreMethod("IMultiFn/-remove-method", [2], removeMethod);
+  //@unit preferMethodProtocol requires: coreMethod, preferMethod
+  const preferMethodProtocol = coreMethod("IMultiFn/-prefer-method", [3], preferMethod);
+  //@unit getMethodProtocol requires: coreMethod, getMethod
+  const getMethodProtocol = coreMethod("IMultiFn/-get-method", [2], getMethod);
+  //@unit methods requires: coreMethod, demandMulti, deref
+  const methods = coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); });
+  //@unit prefers requires: coreMethod, demandMulti, deref
+  const prefers = coreMethod("IMultiFn/-prefers", [1], mf => { demandMulti(mf); return deref(mf.prefer_table); });
+  //@unit defaultDispatchVal requires: coreMethod
+  const defaultDispatchVal = coreMethod("IMultiFn/-default-dispatch-val", [1], mf => mf.default_dispatch_val);
+  //@unit dispatchFn requires: coreMethod
+  const dispatchFn = coreMethod("IMultiFn/-dispatch-fn", [1], mf => mf.dispatch_fn);
+  //@unit asTransientProtocol requires: asTransient, coreMethod
+  const asTransientProtocol = coreMethod("IEditableCollection/-as-transient", [1], asTransient);
+  //@unit persistentBangProtocol requires: coreMethod, persistTransient
+  const persistentBangProtocol = coreMethod("ITransientCollection/-persistent!", [1], persistTransient);
+  //@unit conjBangProtocol requires: conjTransient, coreMethod
+  const conjBangProtocol = coreMethod("ITransientCollection/-conj!", [2], conjTransient);
+  //@unit assocBangProtocol requires: assocTransient, coreMethod
+  const assocBangProtocol = coreMethod("ITransientAssociative/-assoc!", [3], assocTransient);
+  //@unit assocNBangProtocol requires: assocTransient, coreMethod
+  const assocNBangProtocol = coreMethod("ITransientVector/-assoc-n!", [3], (value, index, item) => assocTransient(value, index, item, true));
+  //@unit dissocBangProtocol requires: coreMethod, removeTransient
+  const dissocBangProtocol = coreMethod("ITransientMap/-dissoc!", [2], (value, key) => removeTransient(value, key, "dissoc!"));
+  //@unit disjoinBangProtocol requires: coreMethod, removeTransient
+  const disjoinBangProtocol = coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!"));
+  //@unit popBangProtocol requires: coreMethod, popTransient
+  const popBangProtocol = coreMethod("ITransientVector/-pop!", [1], popTransient);
+  //@unit chunkedNextProtocol requires: cells, coreMethod, ownedChunkRest, seq
+  const chunkedNextProtocol = coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value)));
+  //@unit dropProtocol requires: coreMethod, dropOwned
+  const dropProtocol = coreMethod("IDrop/-drop", [2], dropOwned);
+  //@unit dropFirstProtocol requires: arrayChunk, chunks, coreMethod, count
+  const dropFirstProtocol = coreMethod("IChunk/-drop-first", [1], value => { const c = chunks.get(value); if (c.integer ? count(value) <= 1 : count(value) === 0) throw new Error("-drop-first of empty chunk"); const result = arrayChunk(c.array, c.offset + 1, c.end); if (c.integer) chunks.set(result, {...c, start: c.start + c.step, offset: c.offset + 1}); return result; });
+  //@unit second requires: first, next
+  const second = x => first(next(x));
+  //@unit ffirst requires: first
+  const ffirst = x => first(first(x));
+  //@unit nfirst requires: first, next
+  const nfirst = x => next(first(x));
+  //@unit fnext requires: first, next
+  const fnext = x => first(next(x));
+  //@unit nnext requires: next
+  const nnext = x => next(next(x));
+  //@unit reverse requires: conj, emptyList, reduce
+  const reverse = x => reduce((s, value) => conj(s, value), emptyList, x);
+  //@unit some requires: first, next, seq, truth
+  const some = (pred, coll) => { for (let s = seq(coll); s !== null; s = next(s)) { const value = pred.call(null, first(s)); if (truth(value)) return value; } return null; };
+  //@unit notEvery requires: every
+  const notEvery = (pred, coll) => !every(pred, coll);
+  //@unit notAny requires: some, truth
+  const notAny = (pred, coll) => !truth(some(pred, coll));
+  //@unit notEmpty requires: seq
+  const notEmpty = coll => seq(coll) === null ? null : coll;
+  //@unit run requires: reduce
+  const run = (proc, coll) => { reduce((_x, value) => proc.call(null, value), null, coll); return null; };
+  //@unit isUri
+  const isUri = value => typeof globalThis.goog?.Uri === "function" && value instanceof globalThis.goog.Uri;
+  //@unit isIterable requires: IIterable, satisfies
+  const isIterable = value => satisfies(IIterable, value);
+  //@unit writeAll requires: write
+  const writeAll = (writer, ...texts) => { for (const text of texts) write(writer, text); return null; };
+  //@unit keyProtocol requires: coreMethod, nth
+  const keyProtocol = coreMethod("IMapEntry/-key", [1], value => nth(value, 0));
+  //@unit valProtocol requires: coreMethod, nth
+  const valProtocol = coreMethod("IMapEntry/-val", [1], value => nth(value, 1));
+  //@unit findProtocol requires: coreMethod, find
+  const findProtocol = coreMethod("IFind/-find", [2], find);
+  //@unit sortedSeqProtocol requires: coreMethod, identity, mapSeq, rseq, seq, sets, truth
+  const sortedSeqProtocol = coreMethod("ISorted/-sorted-seq", [2], (value, ascending) => { const s = truth(ascending) ? seq(value) : rseq(value); return sets.has(value) ? mapSeq(identity, s) : s; });
+  //@unit sortedSeqFromProtocol requires: coreMethod, sortedSeqFrom
+  const sortedSeqFromProtocol = coreMethod("ISorted/-sorted-seq-from", [3], sortedSeqFrom);
+  //@unit entryKeyProtocol requires: coreMethod, keyProtocol, sets
+  const entryKeyProtocol = coreMethod("ISorted/-entry-key", [2], (value, entry) => sets.has(value) ? entry : keyProtocol(entry));
+  //@unit comparatorProtocol requires: coreMethod, sortedComparators
+  const comparatorProtocol = coreMethod("ISorted/-comparator", [1], value => sortedComparators.get(value));
+  //@unit chunkedFirstProtocol requires: coreMethod, ownedChunkFirst
+  const chunkedFirstProtocol = coreMethod("IChunkedSeq/-chunked-first", [1], ownedChunkFirst);
+  //@unit chunkedRestProtocol requires: coreMethod, ownedChunkRest
+  const chunkedRestProtocol = coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest);
+  //@unit invokeProtocol requires: coreMethod
+  const invokeProtocol = coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args));
+  //@unit evalCore
+  const evalCore = Object.defineProperty(() => { throw new Error("compiler eval service is not installed"); }, "name", {value: "eval"});
+  //@unit isCloneable requires: ICloneable, satisfies
+  const isCloneable = value => satisfies(ICloneable, value);
+  //@unit isDelay requires: delays
+  const isDelay = value => delays.has(value);
+  //@unit derefWithTimeoutProtocol requires: coreMethod
+  const derefWithTimeoutProtocol = coreMethod("IDerefWithTimeout/-deref-with-timeout", [3], () => null);
+  //@unit reduceProtocol requires: coreMethod, reduce
+  const reduceProtocol = coreMethod("IReduce/-reduce", [2, 3], function (value, rf, init) { return arguments.length === 2 ? reduce(rf, value) : reduce(rf, init, value); });
+  //@unit kvReduceProtocol requires: coreMethod, reduceKv
+  const kvReduceProtocol = coreMethod("IKVReduce/-kv-reduce", [3], (value, rf, init) => reduceKv(rf, init, value));
+  //@unit assocProtocol requires: assoc, coreMethod
+  const assocProtocol = coreMethod("IAssociative/-assoc", [3], assoc);
+  //@unit assocNProtocol requires: assoc, coreMethod
+  const assocNProtocol = coreMethod("IVector/-assoc-n", [3], assoc);
+  //@unit dissocProtocol requires: coreMethod, dissoc
+  const dissocProtocol = coreMethod("IMap/-dissoc", [2], dissoc);
+  //@unit conjProtocol requires: conj, coreMethod
+  const conjProtocol = coreMethod("ICollection/-conj", [2], conj);
+  //@unit emptyProtocol requires: coreMethod, empty
+  const emptyProtocol = coreMethod("IEmptyableCollection/-empty", [1], empty);
+  //@unit disjoinProtocol requires: coreMethod, disj
+  const disjoinProtocol = coreMethod("ISet/-disjoin", [2], disj);
+  //@unit peekProtocol requires: coreMethod, peek
+  const peekProtocol = coreMethod("IStack/-peek", [1], peek);
+  //@unit popProtocol requires: coreMethod, pop
+  const popProtocol = coreMethod("IStack/-pop", [1], pop);
+  //@unit rseqProtocol requires: coreMethod, rseq
+  const rseqProtocol = coreMethod("IReversible/-rseq", [1], rseq);
+  //@unit compareProtocol requires: compareKeys, coreMethod
+  const compareProtocol = coreMethod("IComparable/-compare", [2], compareKeys);
+  //@unit iteratorProtocol requires: coreMethod, iterator
+  const iteratorProtocol = coreMethod("IIterable/-iterator", [1], iterator);
+  //@unit imul
+  const imul = Math.imul;
+  //@unit nameProtocol requires: builtinCoreImplementation, coreMethod, INamed, name
+  const nameProtocol = coreMethod("INamed/-name", [1], value => { if (!builtinCoreImplementation(INamed, value)) throw new Error("No protocol method INamed.-name defined for this value"); return name(value); });
+  //@unit namespaceProtocol requires: coreMethod, namespace
+  const namespaceProtocol = coreMethod("INamed/-namespace", [1], namespace);
+  //@unit hashProtocol requires: coreMethod, hash
+  const hashProtocol = coreMethod("IHash/-hash", [1], hash);
+  //@unit equivProtocol requires: coreMethod, equalPair
+  const equivProtocol = coreMethod("IEquiv/-equiv", [2], equalPair);
+  //@unit type
+  const type = value => value == null ? null : value.constructor;
+  //@unit identical
+  const identical = (a, b) => a === b;
+  //@unit isUuid requires: implementsProtocol, IUUID
+  const isUuid = value => implementsProtocol(IUUID, value);
+  //@unit isInst requires: Inst, satisfies
+  const isInst = value => satisfies(Inst, value);
+  //@unit isTaggedLiteral requires: TaggedLiteral
+  const isTaggedLiteral = value => value instanceof TaggedLiteral;
+  //@unit encodeJsProtocol requires: coreMethod
+  const encodeJsProtocol = coreMethod("IEncodeJS/-clj->js", [1], value => value);
+  //@unit encodeKeyProtocol requires: coreMethod
+  const encodeKeyProtocol = coreMethod("IEncodeJS/-key->js", [1], value => value);
+  //@unit encodeClojureProtocol requires: coreMethod
+  const encodeClojureProtocol = coreMethod("IEncodeClojure/-js->clj", [2], value => value);
+  //@unit instMs requires: instMsProtocol
+  const instMs = value => instMsProtocol(value);
+  //@unit instMsProtocol requires: coreMethod
+  const instMsProtocol = coreMethod("Inst/inst-ms*", [1], value => value.getTime());
+  //@unit isVar requires: vars
+  const isVar = value => vars.has(value);
+  //@unit isInstance
+  const isInstance = (type, value) => value instanceof type;
+  //@unit reFind requires: reMatch
+  const reFind = (re, text) => reMatch(re, text, false);
+  //@unit reMatches requires: reMatch
+  const reMatches = (re, text) => reMatch(re, text, true);
+  //@unit isRegex
+  const isRegex = value => value instanceof RegExp;
+  //@unit consCore requires: cons
+  const consCore = Object.defineProperty((head, tail) => cons(head, tail), "name", {value: "cons"});
+  //@unit arraySeq requires: invalidArity, view
+  const arraySeq = function (array, start = 0) { if (arguments.length > 2) return invalidArity(arguments.length); return array != null && start < array.length ? view(array, start, true) : null; };
+  //@unit array
+  const array = (...args) => args;
+  //@unit alength
+  const alength = array => array.length;
+  //@unit jsIn
+  const jsIn = (key, object) => key in object;
+  //@unit uncheckedGet
+  const uncheckedGet = (object, key) => object[key];
+  //@unit IndexedSeqFactory requires: builtinTypes, positionalFactory
+  const IndexedSeqFactory = positionalFactory(builtinTypes.IndexedSeq, 3);
+  //@unit UUIDFactory requires: builtinTypes, positionalFactory
+  const UUIDFactory = positionalFactory(builtinTypes.UUID, 2);
+  //@unit RangeFactory requires: builtinTypes, positionalFactory
+  const RangeFactory = positionalFactory(builtinTypes.Range, 7);
+  //@unit IntegerRangeFactory requires: builtinTypes, positionalFactory
+  const IntegerRangeFactory = positionalFactory(builtinTypes.IntegerRange, 6);
+  //@unit PersistentTreeMapFactory requires: builtinTypes, positionalFactory
+  const PersistentTreeMapFactory = positionalFactory(builtinTypes.PersistentTreeMap, 5);
+  //@unit PersistentTreeSetFactory requires: builtinTypes, positionalFactory
+  const PersistentTreeSetFactory = positionalFactory(builtinTypes.PersistentTreeSet, 3);
+  //@unit PersistentTreeMapSeqFactory requires: builtinTypes, positionalFactory
+  const PersistentTreeMapSeqFactory = positionalFactory(builtinTypes.PersistentTreeMapSeq, 5);
+  //@unit EductionFactory requires: builtinTypes, positionalFactory
+  const EductionFactory = positionalFactory(builtinTypes.Eduction, 2);
+  //@unit MultiFnFactory requires: MultiFn, positionalFactory
+  const MultiFnFactory = positionalFactory(MultiFn, 8);
+  //@unit SeqIterFactory requires: positionalFactory, SeqIter
+  const SeqIterFactory = positionalFactory(SeqIter, 2);
+  //@unit RangedIteratorFactory requires: positionalFactory, RangedIterator
+  const RangedIteratorFactory = positionalFactory(RangedIterator, 6);
+  //@unit NamespaceFactory requires: Namespace, positionalFactory
+  const NamespaceFactory = positionalFactory(Namespace, 2);
+  //@unit TaggedLiteralFactory requires: positionalFactory, TaggedLiteral
+  const TaggedLiteralFactory = positionalFactory(TaggedLiteral, 2);
 
   //@unit compilerForms requires: compilerFormBridge
   const compilerForms = compilerFormBridge();
-  //@unit core.reader effect: core requires: cells, compilerForms, core, inspect, keyword, keywords,
-  //@ listFromArray, mapFromArray, maps, readerCoreNames, setFromArray, sets, symbol, symbols,
-  //@ uuids, vectorFromArray, vectors, views
+  //@unit reader requires: builtinTypes, cells, compilerForms, conj, contains, coreCells, first,
+  //@ gensym, hashMap, hashSet, inspect, into, isRecord, keyword, keywords, listFromArray,
+  //@ mapFromArray, maps, merge, meta, next, nsName, prStr, readerCoreNames, rePattern, seq,
+  //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors,
+  //@ views, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
-  Object.assign(core, (rt => {
-  const c = rt.core, inspect = rt.inspect;
+  const reader = (rt => {
+  const inspect = rt.inspect;
   const streams = new WeakMap(), tags = new Map(), builtinTags = new Map(), readerMaps = new WeakMap();
   const absent = Object.freeze({}), discarded = Object.freeze({});
   const MAX_INPUT = 1048576, MAX_NODES = 100000, MAX_DEPTH = 32;
@@ -6269,7 +6484,7 @@
   }
   function fail(state, message, category) { throw located(state, message, category); }
   function duplicate(state, kind, key) {
-    const message = kind + ' literal contains duplicate key: ' + c.prStr(key).slice(0,256);
+    const message = kind + ' literal contains duplicate key: ' + prStr(key).slice(0,256);
     const error = located(state,message); error.message = message; throw error;
   }
   function stringReader(text, name = '<string-reader>') {
@@ -6396,7 +6611,7 @@
   }
   function timestampFields(value) {
     const m = typeof value === 'string' && /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?)?)?)?(?:Z|([-+])(\d{2}):(\d{2}))?$/.exec(value);
-    if (!m) throw new Error('Unrecognized date/time syntax: ' + c.str(value).slice(0,1024));
+    if (!m) throw new Error('Unrecognized date/time syntax: ' + str(value).slice(0,1024));
     const [year, month, day, hour, minute, second] = [Number(m[1]),Number(m[2] ?? 1),Number(m[3] ?? 1),Number(m[4] ?? 0),Number(m[5] ?? 0),Number(m[6] ?? 0)];
     const days = [31,year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,31,30,31,30,31,31,30,31,30,31];
     const check = (low, n, high, msg) => { if (!(low <= n && n <= high)) throw new Error(msg + ' Failed:  ' + low + '<=' + n + '<=' + high); return n; };
@@ -6432,7 +6647,7 @@
       eof: string && profile !== 'code' && value === undefined ? null : absent, profile};
     if (value === undefined) return result;
     const map = inspect(value);
-    if (map?.kind !== 'map' || c.isRecord(value)) throw new TypeError('Expected reader options map');
+    if (map?.kind !== 'map' || isRecord(value)) throw new TypeError('Expected reader options map');
     for (const [key, value] of map.entries) {
       const k = inspect(key);
       if (k?.kind !== 'keyword' || k.namespace !== null) throw new TypeError('Invalid reader option');
@@ -6445,7 +6660,7 @@
         let entries = typeof value === 'object' && value !== null ? readerMaps.get(value) : undefined;
         if (entries === undefined) {
           const readers = inspect(value);
-          if (readers?.kind !== 'map' || c.isRecord(value)) throw new TypeError('Expected readers map');
+          if (readers?.kind !== 'map' || isRecord(value)) throw new TypeError('Expected readers map');
           entries = readers.entries.map(([tag, handler]) => {
             const n = inspect(tag);
             if (n?.kind !== 'symbol') throw new TypeError('Expected symbol reader key');
@@ -6472,11 +6687,11 @@
         const kind = rt.ednKind(value);
         if (allowBuiltins && ['instant', 'uuid'].includes(kind)) return;
         if (kind === 'seq') {
-          const seen = new WeakSet(); let seq = c.seq(value);
-          while (seq !== null) {
-            if (++nodes > MAX_NODES || seen.has(seq)) fail(s, 'EDN sequence limit exceeded', 'limit');
-            seen.add(seq); if (rt.ednKind(seq) !== 'seq') fail(s, 'Unsupported EDN sequence tail');
-            visit(c.first(seq), d + 1); seq = c.next(seq);
+          const seen = new WeakSet(); let cursor = seq(value);
+          while (cursor !== null) {
+            if (++nodes > MAX_NODES || seen.has(cursor)) fail(s, 'EDN sequence limit exceeded', 'limit');
+            seen.add(cursor); if (rt.ednKind(cursor) !== 'seq') fail(s, 'Unsupported EDN sequence tail');
+            visit(first(cursor), d + 1); cursor = next(cursor);
           }
         } else {
           if (!['symbol', 'keyword', 'vector', 'map', 'set'].includes(kind)) fail(s, 'Unsupported EDN reader result');
@@ -6485,7 +6700,7 @@
           if (data.items) for (const item of data.items) visit(item, d + 1);
           if (data.entries) for (const pair of data.entries) { visit(pair[0], d + 1); visit(pair[1], d + 1); }
         }
-        const metadata = c.meta(value); if (metadata != null) visit(metadata, d + 1);
+        const metadata = meta(value); if (metadata != null) visit(metadata, d + 1);
       } finally { active.delete(value); }
     }
     visit(root, depth);
@@ -6495,8 +6710,8 @@
     const splices = new WeakMap();
     // Capture this invocation's active view. Nested/tag reads can bind *ns*
     // independently without changing qualification in the enclosing read.
-    const current = opts.profile === 'code' ? c.currentNs : null;
-    const currentName = current === null ? null : c.str(c.nsName(current));
+    const current = opts.profile === 'code' ? coreCells.currentNs : null;
+    const currentName = current === null ? null : str(nsName(current));
     const context = current?.readerContext;
     function alias(name) {
       const resolved = context?.aliases.get(name);
@@ -6521,29 +6736,29 @@
       }
       if (kind === 'map') {
         if (values.length % 2) fail(s, 'Map requires an even number of forms');
-        let seen = c.hashSet();
+        let seen = hashSet();
         for (let i = 0; i < values.length; i += 2) {
           if (namespace !== undefined) {
             const name = inspect(values[i]);
             if (name && ['keyword','symbol'].includes(name.kind) && (name.namespace === null || name.namespace === '_'))
               values[i] = (name.kind === 'keyword' ? rt.keyword : rt.symbol)(name.namespace === '_' ? null : namespace, name.name);
           }
-          if (c.contains(seen, values[i])) duplicate(s, 'Map', values[i]);
-          seen = c.conj(seen, values[i]);
+          if (contains(seen, values[i])) duplicate(s, 'Map', values[i]);
+          seen = conj(seen, values[i]);
         }
       }
       if (kind === 'set') {
-        let seen = c.hashSet(); for (const value of values) { if (c.contains(seen, value)) duplicate(s, 'Set', value); seen = c.conj(seen, value); }
+        let seen = hashSet(); for (const value of values) { if (contains(seen, value)) duplicate(s, 'Set', value); seen = conj(seen, value); }
       }
       return ({vector:rt.vectorFromArray, list:rt.listFromArray, map:rt.mapFromArray, set:rt.setFromArray})[kind](values);
     }
     function metadata(depth) {
       take(s); let metadata = required(depth + 1); const kind = inspect(metadata);
-      if (kind?.kind === 'keyword') metadata = c.hashMap(metadata, true);
-      else if (typeof metadata === 'string' || kind?.kind === 'symbol') metadata = c.hashMap(rt.keyword(null, 'tag'), metadata);
+      if (kind?.kind === 'keyword') metadata = hashMap(metadata, true);
+      else if (typeof metadata === 'string' || kind?.kind === 'symbol') metadata = hashMap(rt.keyword(null, 'tag'), metadata);
       else if (kind?.kind !== 'map') fail(s, 'Invalid metadata');
       const value = required(depth + 1);
-      try { return c.withMeta(value, c.merge(c.meta(value), metadata)); }
+      try { return withMeta(value, merge(meta(value), metadata)); }
       catch (_) { fail(s, 'Invalid metadata target'); }
     }
     function dispatch(depth) {
@@ -6582,7 +6797,7 @@
         if (splice && selected !== discarded) {
           const kind = rt.ednKind(selected);
           if (!['vector','seq'].includes(kind)) fail(s, 'Reader conditional splice requires sequential data');
-          const marker = Object.freeze({}); splices.set(marker, c.toArray(selected)); return marker;
+          const marker = Object.freeze({}); splices.set(marker, toArray(selected)); return marker;
         }
         return selected;
       }
@@ -6592,11 +6807,11 @@
         let body, args;
         try { body = collection(depth, ')', 'list'); args = anonymousArgs; } finally { anonymousArgs = null; }
         const parameters = [];
-        for (let n = 1; n <= args.max; ++n) parameters.push(args.args.get(n) ?? c.gensym('p' + n + '__'));
+        for (let n = 1; n <= args.max; ++n) parameters.push(args.args.get(n) ?? gensym('p' + n + '__'));
         if (args.args.has(-1)) parameters.push(rt.symbol(null, '&'), args.args.get(-1));
         return rt.listFromArray([rt.symbol(null, 'fn*'), rt.vectorFromArray(parameters), body]);
       }
-      if (opts.profile === 'code' && ch === '"') return c.rePattern(quoted(s, true));
+      if (opts.profile === 'code' && ch === '"') return rePattern(quoted(s, true));
       if (opts.profile === 'code' && ch === "'") { take(s); return rt.listFromArray([rt.symbol(null, 'var'), required(depth + 1)]); }
       if (ch == null || whitespace(ch) || /[=!?('"+\-]/.test(ch)) fail(s, 'Unsupported dispatch syntax');
       const tag = token(s, opts.profile === 'code'); if (tag.startsWith(':')) fail(s, 'Invalid data tag');
@@ -6606,16 +6821,16 @@
       if (handler != null) {
         if (handler === builtinTags.get(tag)) {
           if (tag === 'inst') result = instant(s, value);
-          else if (tag === 'uuid') { if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s,'Invalid UUID'); result = c.uuid(value); }
+          else if (tag === 'uuid') { if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s,'Invalid UUID'); result = uuid(value); }
           else if (tag === 'js') return jsLiteral(s,value);
-          else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return c.into(c.PersistentQueue.EMPTY,value); }
+          else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return into(builtinTypes.PersistentQueue.EMPTY,value); }
         } else result = handler.call(null, value);
       }
       else if (opts.profile === 'code' && tag === 'inst') {
         result = instant(s,value);
       } else if (opts.profile === 'code' && tag === 'uuid') {
         if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s, 'Invalid UUID');
-        result = c.uuid(value);
+        result = uuid(value);
       } else if (opts.fallback != null) result = opts.fallback.call(null, symbol, value);
       else fail(s, 'No reader function for tag ' + tag);
       validate(s, result, depth + 1, opts.profile !== 'edn');
@@ -6628,7 +6843,7 @@
       if (data?.kind === 'symbol') {
         let resolved = value;
         if (data.namespace === null) {
-          if (data.name.endsWith('#')) { if (!gensyms.has(data.name)) gensyms.set(data.name, c.gensym(data.name.slice(0,-1) + '__')); resolved = gensyms.get(data.name); }
+          if (data.name.endsWith('#')) { if (!gensyms.has(data.name)) gensyms.set(data.name, gensym(data.name.slice(0,-1) + '__')); resolved = gensyms.get(data.name); }
           else if (!['if','do','let*','fn*','loop*','recur','throw','try','new','set!','quote','var','def'].includes(data.name)) {
             resolved = rt.symbol(readerCoreNames.has(data.name) ? 'cljs.core' : currentName, data.name);
           }
@@ -6659,7 +6874,7 @@
         rt.listFromArray([sym('sequence'),rt.listFromArray([sym('seq'),rt.listFromArray([sym('concat'),...pieces])])]);
       if (data.kind === 'vector') result = rt.listFromArray([sym('vec'),result]);
       if (data.kind === 'map' || data.kind === 'set') result = rt.listFromArray([sym('apply'),sym(data.kind === 'map' ? 'hash-map' : 'hash-set'),result]);
-      const metadata = c.meta(value);
+      const metadata = meta(value);
       if (metadata !== null) result = rt.listFromArray([sym('with-meta'),result,syntaxQuote(metadata,gensyms,depth + 1)]);
       return result;
     }
@@ -6681,7 +6896,7 @@
       if (opts.profile === 'code' && anonymousArgs !== null && text.startsWith('%')) {
         const n = text === '%&' ? -1 : text === '%' ? 1 : /^%(?:0|-[0-9]+|[1-9]\d*)$/.test(text) ? Number(text.slice(1)) : NaN;
         if (!Number.isSafeInteger(n) || n > MAX_NODES) fail(s, 'Invalid anonymous argument');
-        if (!anonymousArgs.args.has(n)) anonymousArgs.args.set(n, c.gensym(n === -1 ? 'rest__' : 'p' + n + '__'));
+        if (!anonymousArgs.args.has(n)) anonymousArgs.args.set(n, gensym(n === -1 ? 'rest__' : 'p' + n + '__'));
         anonymousArgs.max = Math.max(anonymousArgs.max,n); return anonymousArgs.args.get(n);
       }
       if (opts.profile === 'code' && text.startsWith('::')) {
@@ -6700,17 +6915,17 @@
   }
   function readWith(profile, args) {
     let stream, option;
-    if (args.length === 0) stream = c.readerCurrentInputValue;
+    if (args.length === 0) stream = coreCells.readerCurrentInputValue;
     else if (args.length === 1) {
       if (profile === 'code' && inspect(args[0])?.kind === 'map') {
-        option = args[0]; stream = c.readerCurrentInputValue;
+        option = args[0]; stream = coreCells.readerCurrentInputValue;
       } else stream = args[0];
     }
     else if (args.length === 2) [option, stream] = args;
     else if ((profile === 'reader' || profile === 'edn') && args.length === 4) {
       stream = args[0]; option = args[3];
     } else if (profile === 'code' && (args.length === 3 || args.length === 4)) {
-      stream = args[0]; option = c.hashMap(rt.keyword(null,'eof'), args[1] !== false && args[1] != null ? absent : args[2]);
+      stream = args[0]; option = hashMap(rt.keyword(null,'eof'), args[1] !== false && args[1] != null ? absent : args[2]);
     } else arity(args.length);
     const opts = options(option, profile), state = stateOf(stream);
     if (profile === 'reader') {
@@ -6737,7 +6952,7 @@
     try { const value = parse(state, opts); if (value !== absent) return value; if (opts.eof !== absent) return opts.eof; fail(state,'EOF while reading'); }
     finally { --activeDepth; }
   }
-  function readLine(stream = c.readerCurrentInputValue) {
+  function readLine(stream = coreCells.readerCurrentInputValue) {
     if (arguments.length > 1) arity(arguments.length);
     const s = stateOf(stream); s.busy = true;
     try {
@@ -6761,15 +6976,15 @@
   function deregisterDefault() { if (arguments.length !== 0) arity(arguments.length); const previous = defaultTag; defaultTag = null; return previous; }
   function withInput(text, thunk) {
     if (arguments.length !== 2) arity(arguments.length);
-    const previous = c.readerCurrentInputValue, scoped = stringReader(text, '<with-in-str>');
-    c.readerCurrentInputValue = scoped;
+    const previous = coreCells.readerCurrentInputValue, scoped = stringReader(text, '<with-in-str>');
+    coreCells.readerCurrentInputValue = scoped;
     try { return thunk.call(null); } finally {
       const state = streams.get(scoped); state.closed = true; state.provider = null; state.text = '';
-      c.readerCurrentInputValue = previous;
+      coreCells.readerCurrentInputValue = previous;
     }
   }
   function compilerInputWindow(more = false) {
-    const s = stateOf(c.readerCurrentInputValue);
+    const s = stateOf(coreCells.readerCurrentInputValue);
     if ((more || s.position === s.text.length) && !s.eof) {
       const chunk = s.provider();
       if (chunk == null) s.eof = true;
@@ -6782,20 +6997,20 @@
     return [s.text, s.position, s.eof, s.baseLine];
   }
   function compilerInputConsume(units) {
-    const s = stateOf(c.readerCurrentInputValue);
+    const s = stateOf(coreCells.readerCurrentInputValue);
     if (units < 0 || s.position + units > s.text.length) throw new Error('Invalid input cursor');
     for (let i = 0; i < units; ++i) take(s);
   }
   function compilerInputRecover() {
-    const s = stateOf(c.readerCurrentInputValue);
+    const s = stateOf(coreCells.readerCurrentInputValue);
     if (s.failed) { compilerInputConsume(s.text.length - s.position); s.failed = false; }
   }
   function compilerInputDiscard() {
-    const s = stateOf(c.readerCurrentInputValue);
+    const s = stateOf(coreCells.readerCurrentInputValue);
     compilerInputConsume(s.text.length - s.position); s.failed = false;
   }
   function compilerInputCompact() {
-    const s = stateOf(c.readerCurrentInputValue);
+    const s = stateOf(coreCells.readerCurrentInputValue);
     const prefix = s.text.slice(0, s.position);
     const end = Math.max(prefix.lastIndexOf('\n'), prefix.lastIndexOf('\r')) + 1;
     if (end) {
@@ -6807,8 +7022,8 @@
   function close(stream) { if (arguments.length !== 1) arity(arguments.length); const s = stateOf(stream); s.closed = true; s.provider = null; s.text = ''; return null; }
   const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};
   builtinTags.set('inst', value => instant(builtinLocation,value));
-  builtinTags.set('uuid', value => { if (typeof value !== 'string') throw new TypeError('UUID literal requires a string'); return c.uuid(value); });
-  builtinTags.set('queue', value => { if (inspect(value)?.kind !== 'vector') throw new TypeError('Queue literal requires a vector'); return c.into(c.PersistentQueue.EMPTY,value); });
+  builtinTags.set('uuid', value => { if (typeof value !== 'string') throw new TypeError('UUID literal requires a string'); return uuid(value); });
+  builtinTags.set('queue', value => { if (inspect(value)?.kind !== 'vector') throw new TypeError('Queue literal requires a vector'); return into(builtinTypes.PersistentQueue.EMPTY,value); });
   builtinTags.set('js', value => jsLiteral(builtinLocation,value));
   for (const [tag, handler] of builtinTags) tags.set(tag,handler);
   return {ednReadString: (...args) => readStringWith('edn', args), ednRead: (...args) => readWith('edn', args),
@@ -6822,28 +7037,213 @@
     readerInitialTagTable: function () { if (arguments.length) arity(arguments.length); return rt.mapFromArray([...builtinTags].flatMap(([tag,f]) => [rt.symbol(null,tag),f])); },
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
-    readerWithInput: withInput, readerCurrentInputValue: null, readerCurrentInput: () => c.readerCurrentInputValue, readerClose: close};
-  })({keyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, core, inspect, compilerForms, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null}));
+    readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
+  })({keyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, compilerForms, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
-
-
-
-
-
-  //@unit core.hostAndNamespaces effect: core requires: addTap, allNs, compilerMacroVar,
-  //@ configureHostHooks, core, createNs, defaultHostClock, defaultHostRandom, defaultTapSchedule,
-  //@ findNs, hostRand, hostRandInt, hostRandNth, hostRandomUuid, hostShuffle, invalidArity,
-  //@ macroReaderFunction, Namespace, nsName, registerReaderNamespace, removeTap, symbol,
-  //@ systemTime, tapGreater, theNs
-  Object.assign(core, {
-    configureHostHooks, hostClock: defaultHostClock, hostRandom: defaultHostRandom,
-    systemTime, addTap, removeTap, tapGreater, execTapFn: defaultTapSchedule,
-    rand: hostRand, randInt: hostRandInt, randNth: hostRandNth,
-    shuffle: hostShuffle, randomUuid: hostRandomUuid,
-    loadFile: function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); }
+  //@unit loadFile requires: invalidArity
+  const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };
+  //@unit core requires: abs, aclone, add, addMethodProtocol, addTap, addWatch, addWatchProtocol,
+  //@ aget, alength, allNs, alterMeta, ancestors, apply, applyTo, array, arrayChunk, arrayMap,
+  //@ arraySeq, ASeq, aset, assoc, assocBang, assocBangProtocol, assocIn, assocNBangProtocol,
+  //@ assocNProtocol, assocProtocol, asTransientProtocol, Atom, atom, atomFactory, bases, bitAnd,
+  //@ bitAndNot, bitClear, bitCount, bitFlip, bitNot, bitOr, bitSet, bitShiftLeft, bitShiftRight,
+  //@ bitShiftRightZeroFill, bitTest, bitXor, boolean, booleans, boundedCount, builtinTypes,
+  //@ butlast, byte, bytes, cat, char, chars, checkedAget, checkedAgetStrict, checkedAset,
+  //@ checkedAsetStrict, chunk, chunkAppend, ChunkBuffer, chunkBuffer, chunkCons, ChunkedCons,
+  //@ chunkedFirstProtocol, chunkedNextProtocol, chunkedRestProtocol, chunkFirst, chunkNext,
+  //@ chunkRest, cljToJs, clone, comp, comparator, comparatorProtocol, compareAndSet, compareKeys,
+  //@ compareProtocol, compilerMacroVar, complement, completing, concat, configureHostHooks, conj,
+  //@ conjBang, conjBangProtocol, conjProtocol, consCore, constantly, contains, containsProtocol,
+  //@ coreCells, count, countProtocol, createNs, cycle, dec, dedupe, defaultDispatchVal, demunge,
+  //@ deref, derefProtocol, derefWithTimeoutProtocol, derive, descendants, disj, disjBang,
+  //@ disjoinBangProtocol, disjoinProtocol, dispatchFn, dissoc, dissocBang, dissocBangProtocol,
+  //@ dissocProtocol, distinct, divide, doall, dorun, double, doubleArray, doubles, drop,
+  //@ dropFirstProtocol, dropLast, dropProtocol, dropWhile, eduction, EductionFactory, empty,
+  //@ emptyProtocol, enableConsolePrint, encodeClojureProtocol, encodeJsProtocol, encodeKeyProtocol,
+  //@ ensureReduced, entryKeyProtocol, equal, equivMap, equivProtocol, es6Iterator, evalCore, every,
+  //@ everyPred, exCause, ExceptionInfo, exData, exInfo, exMessage, ffirst, filter, filterv, find,
+  //@ findNs, findProtocol, first, firstProtocol, flatten, float, floats, flushWriter, Fn, fnext,
+  //@ fnil, force, frequencies, gensym, get, getGlobalHierarchy, getIn, getMethodProtocol,
+  //@ getValidator, greater, greaterEqual, groupBy, haltWhen, hash, hashDouble, hashMap,
+  //@ hashOrderedColl, hashProtocol, hashSet, hashUnorderedColl, hostRandInt, hostRandNth,
+  //@ hostRandomUuid, hostShuffle, IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq,
+  //@ ICloneable, ICollection, IComparable, ICounted, identical, identity, IDeref,
+  //@ IDerefWithTimeout, IDrop, IEditableCollection, IEmptyableCollection, IEncodeClojure,
+  //@ IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed, IIterable, IKVReduce, IList, ILookup, IMap,
+  //@ IMapEntry, IMeta, implementsProtocol, imul, IMultiFn, INamed, inc, IndexedSeqFactory, INext,
+  //@ Inst, instMs, instMsProtocol, int, intArray, IntegerRangeFactory, interleave, interpose, into,
+  //@ intoArray, ints, invokeProtocol, IPending, IPrintWithWriter, IRecord, IReduce, IReset,
+  //@ IReversible, isa, isAny, isArray, isAssociative, isBoolean, isChar, isChunkedSeq, isCloneable,
+  //@ isColl, isCounted, isDelay, isDistinct, isDouble, isEmpty, ISeq, ISeqable, ISequential, ISet,
+  //@ isEven, isFalse, isFloat, isFn, isIdent, isIFind, isIFn, isIndexed, isInfinite, isInst,
+  //@ isInstance, isInt, isInteger, isIterable, isJsSymbol, isKeyword, isList, isMap, isMapEntry,
+  //@ isNaNCore, isNaturalInt, isNegative, isNegativeInt, isNil, isNumber, isObject, isOdd, ISorted,
+  //@ isPositive, isPositiveInt, isQualifiedIdent, isQualifiedKeyword, isQualifiedSymbol, isRecord,
+  //@ isReduceable, isReduced, isRegex, isReversible, isSeq, isSeqable, isSequential, isSet,
+  //@ isSimpleIdent, isSimpleKeyword, isSimpleSymbol, isSome, isSorted, isSpecialSymbol, isString,
+  //@ isSymbol, IStack, isTaggedLiteral, isTrue, isUndefined, isUri, isUuid, isVar, isVector,
+  //@ isVolatile, ISwap, isZero, iterate, iteration, iteratorInit, iteratorProtocol, iteratorSeq,
+  //@ iteratorStart, ITransientAssociative, ITransientCollection, ITransientMap, ITransientSet,
+  //@ ITransientVector, IUUID, IVector, IVolatile, IWatchable, IWithMeta, IWriter, jsDelete, jsIn,
+  //@ jsInvoke, jsIterable, jsKeys, jsMod, jsObj, jsSet, jsToClj, juxt, keep, keepIndexed,
+  //@ keyProtocol, keys, keyToJs, keywordCore, keywordIdentical, kvReduceProtocol, last, less,
+  //@ lessEqual, list, listStar, loadFile, long, longArray, longs, lookupProtocol, macroexpand,
+  //@ macroexpand1, macroReaderFunction, makeArray, makeHierarchy, mapcat, mapIndexed, mapSeq, mapv,
+  //@ max, maxKey, memoize, merge, mergeWith, meta, metaProtocol, methods, min, minKey, mkBoundFn,
+  //@ mod, MultiFn, MultiFnFactory, multiply, munge, mungeStr, name, nameProtocol, Namespace,
+  //@ namespace, NamespaceFactory, namespaceProtocol, newline, next, nextProtocol, nfirst, nnext,
+  //@ not, notAny, notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol,
+  //@ nthrest, numericEqual, objectArray, parents, parseBoolean, parseDouble, parseLong, parseUuid,
+  //@ partial, partition, partitionAll, partitionBy, partitionV, partitionVAll, peek, peekProtocol,
+  //@ persistentBang, persistentBangProtocol, PersistentTreeMapFactory, PersistentTreeMapSeqFactory,
+  //@ PersistentTreeSetFactory, pop, popBang, popBangProtocol, popProtocol, pr,
+  //@ preferMethodProtocol, prefers, primSeq, printCore, printForHost, println, printlnStr,
+  //@ printMetaQ, printStr, prn, prnStr, prnStrWithOpts, protocolSentinel, prSequentialWriter,
+  //@ prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter, quot, randomSample, range,
+  //@ RangedIterator, rangedIterator, RangedIteratorFactory, RangeFactory, reader, realized, reduce,
+  //@ reduced, reduceKv, reduceProtocol, reductions, reFind, registerReaderNamespace, rem,
+  //@ reMatches, remove, removeAllMethods, removeMethodProtocol, removeTap, removeWatch,
+  //@ removeWatchProtocol, rePattern, repeat, repeatedly, replace, replicate, requiredGet, reSeq,
+  //@ reset, resetMeta, resetProtocol, resetVals, rest, restProtocol, reverse, rotateLeft, rseq,
+  //@ rseqProtocol, rsubseq, run, satisfies, second, selectKeys, seq, SeqIter, seqIter,
+  //@ SeqIterFactory, seqProtocol, seqToMap, sequence, sequenceIterator, set, setPrintErrFn,
+  //@ setPrintFn, setValidator, short, shorts, some, someFn, someVals, sort, sortBy, sortedMap,
+  //@ sortedMapBy, sortedSeqFromProtocol, sortedSeqProtocol, sortedSet, sortedSetBy, splitAt,
+  //@ splitVAt, splitWith, str, StringBufferWriter, stringHash, stringPrint, subs, subseq, subtract,
+  //@ subvec, supers, swap, swapProtocol, swapVals, symbolCore, symbolIdentical, systemTime,
+  //@ TaggedLiteral, taggedLiteral, TaggedLiteralFactory, take, takeLast, takeNth, takeWhile,
+  //@ tapGreater, test, theNs, throwableToMap, toArray, toArray2d, trampoline, transduce, transient,
+  //@ treeSeq, type, uncheckedAdd, uncheckedAddInt, uncheckedByte, uncheckedChar, uncheckedDec,
+  //@ uncheckedDecInt, uncheckedDivideInt, uncheckedDouble, uncheckedFloat, uncheckedGet,
+  //@ uncheckedInc, uncheckedIncInt, uncheckedInt, uncheckedLong, uncheckedMultiply,
+  //@ uncheckedMultiplyInt, uncheckedNegate, uncheckedNegateInt, uncheckedRemainderInt,
+  //@ uncheckedShort, uncheckedSubtract, uncheckedSubtractInt, underive, unreduced,
+  //@ unsignedBitShiftRight, update, updateIn, updateKeys, updateVals, uuid, UUIDFactory,
+  //@ valProtocol, vals, Var, varyMeta, vec, vector, Volatile, volatile, volatileFactory, vreset,
+  //@ vresetProtocol, withMeta, withMetaProtocol, write, writeAll, zipmap
+  // Every core operation by runtime name, for the shared runtime and reflection;
+  // Advanced output reads the values directly (src/runtime_manifest.rs).
+  const core = Object.assign(coreCells, {
+   EmptyList: builtinTypes.EmptyList, PersistentVector: builtinTypes.PersistentVector,
+    Subvec: builtinTypes.Subvec, MapEntry: builtinTypes.MapEntry,
+    PersistentArrayMap: builtinTypes.PersistentArrayMap,
+    PersistentHashMap: builtinTypes.PersistentHashMap,
+    PersistentTreeMap: builtinTypes.PersistentTreeMap,
+    PersistentHashSet: builtinTypes.PersistentHashSet,
+    PersistentTreeSet: builtinTypes.PersistentTreeSet, List: builtinTypes.List,
+    Cons: builtinTypes.Cons, IndexedSeq: builtinTypes.IndexedSeq,
+    ChunkedSeq: builtinTypes.ChunkedSeq, LazySeq: builtinTypes.LazySeq,
+    PersistentQueue: builtinTypes.PersistentQueue, Repeat: builtinTypes.Repeat,
+    Cycle: builtinTypes.Cycle, Iterate: builtinTypes.Iterate, Range: builtinTypes.Range,
+    IntegerRange: builtinTypes.IntegerRange, NodeSeq: builtinTypes.NodeSeq,
+    PersistentTreeMapSeq: builtinTypes.PersistentTreeMapSeq, Keyword: builtinTypes.Keyword,
+    Symbol: builtinTypes.Symbol, Reduced: builtinTypes.Reduced, UUID: builtinTypes.UUID,
+    Delay: builtinTypes.Delay, Eduction: builtinTypes.Eduction,
+    TransientVector: builtinTypes.TransientVector,
+    TransientArrayMap: builtinTypes.TransientArrayMap,
+    TransientHashMap: builtinTypes.TransientHashMap,
+    TransientHashSet: builtinTypes.TransientHashSet, ArrayChunk: builtinTypes.ArrayChunk, IMultiFn,
+    MultiFn, makeHierarchy, getGlobalHierarchy, isa, parents, ancestors, descendants, derive,
+    underive, bases, supers, removeAllMethods, addMethod: addMethodProtocol,
+    removeMethod: removeMethodProtocol, preferMethod: preferMethodProtocol,
+    getMethod: getMethodProtocol, methods, prefers, defaultDispatchVal, dispatchFn, IChunk,
+    IChunkedNext, IDrop, IEditableCollection, ITransientCollection, ITransientAssociative,
+    ITransientMap, ITransientVector, ITransientSet, transient, persistentBang, conjBang, assocBang,
+    dissocBang, disjBang, popBang, asTransientProtocol, persistentBangProtocol, conjBangProtocol,
+    assocBangProtocol, assocNBangProtocol, dissocBangProtocol, disjoinBangProtocol, popBangProtocol,
+    chunkedNextProtocol, dropProtocol, dropFirstProtocol, chunkFirst, chunkRest, chunkNext,
+    chunkCons, ChunkedCons, arrayChunk, chunkBuffer, ChunkBuffer, chunkAppend, chunk, second,
+    ffirst, nfirst, fnext, nnext, reverse, some, notEvery, notAny, notEmpty, run, isUri, cat, drop,
+    repeatedly, replicate, mapIndexed, mapcat, filter, remove, keep, keepIndexed, takeWhile,
+    dropWhile, takeLast, dropLast, takeNth, splitAt, splitWith, partition, partitionAll,
+    partitionBy, interleave, interpose, dorun, doall, boundedCount, last, butlast, mapv, filterv,
+    IMapEntry, IFind, ISorted, IChunkedSeq, isIterable, writeAll, keyProtocol, valProtocol,
+    findProtocol, sortedSeqProtocol, sortedSeqFromProtocol, entryKeyProtocol, comparatorProtocol,
+    chunkedFirstProtocol, chunkedRestProtocol, invokeProtocol, subtract, multiply, divide, inc, dec,
+    less, lessEqual, greater, greaterEqual, numericEqual, max, min, abs, int, long, uncheckedInt,
+    uncheckedLong, byte, short, float, double, char, booleans, bytes, chars, shorts, ints, floats,
+    doubles, longs, uncheckedByte, uncheckedShort, uncheckedFloat, uncheckedDouble, uncheckedChar,
+    uncheckedAdd, uncheckedAddInt, uncheckedSubtract, uncheckedSubtractInt, uncheckedMultiply,
+    uncheckedMultiplyInt, uncheckedDivideInt, uncheckedInc, uncheckedIncInt, uncheckedDec,
+    uncheckedDecInt, uncheckedNegate, uncheckedNegateInt, uncheckedRemainderInt, jsMod, mod, quot,
+    rem, bitXor, bitAnd, bitOr, bitAndNot, bitNot, bitClear, bitFlip, bitSet, bitTest, bitShiftLeft,
+    bitShiftRight, bitShiftRightZeroFill, unsignedBitShiftRight, bitCount, isZero, isPositive,
+    isNegative, isEven, isOdd, isInteger, isInt, isPositiveInt, isNegativeInt, isNaturalInt,
+    isNumber, isFloat, isDouble, isInfinite, isNaN: isNaNCore, boolean, not, isBoolean, isTrue,
+    isFalse, isNil, isSome, isUndefined, notEqual, identity, isAny, isString, isChar, isKeyword,
+    isSymbol, isIdent, isSimpleIdent, isQualifiedIdent, isSimpleKeyword, isQualifiedKeyword,
+    isSimpleSymbol, isQualifiedSymbol, keywordIdentical, symbolIdentical, isFn, isIFn, isArray,
+    isObject, isColl, isSeq, isList, isSeqable, isSequential, isVector, isMap, isSet, isAssociative,
+    isIFind, isCounted, isIndexed, isReduceable, isReversible, isSorted, isRecord, isMapEntry,
+    isChunkedSeq, isEmpty, keyword: keywordCore, symbol: symbolCore, vector, list, gensym,
+    macroexpand, macroexpand1, eval: evalCore, hashMap, arrayMap, sortedMap, sortedMapBy, sortedSet,
+    sortedSetBy, subseq, rsubseq, mkBoundFn, hashSet, dissoc, disj, conj, assoc, seq, seqToMap,
+    first, rest, next, name, namespace, subs, count, nth, get, getIn, assocIn, updateIn, selectKeys,
+    merge, mergeWith, zipmap, contains, find, every, set, isCloneable, equal, reduce, completing,
+    transduce, ensureReduced, haltWhen, dedupe, randomSample, add, reduced, isReduced, unreduced,
+    deref, meta, withMeta, varyMeta, resetMeta, alterMeta, atom, reset, swap, Atom, atomFactory,
+    Volatile, volatile, volatileFactory, isVolatile, vreset, vresetProtocol, derefProtocol,
+    resetVals, swapVals, compareAndSet, setValidator, getValidator, addWatch, removeWatch,
+    notifyWatches, addWatchProtocol, removeWatchProtocol, resetProtocol, swapProtocol, update,
+    IPending, realized, force, isDelay, nthrest, nthnext, IDeref, IDerefWithTimeout, Inst, IUUID,
+    ASeq, IAtom, IReset, ISwap, IVolatile, IWatchable, derefWithTimeoutProtocol, IReduce, IKVReduce,
+    IVector, IMap, ICollection, IEmptyableCollection, ISet, IStack, IReversible, IComparable,
+    IIterable, reduceKv, subvec, equivMap, SeqIter, RangedIterator, seqIter, rangedIterator,
+    reduceProtocol, kvReduceProtocol, assocProtocol, assocNProtocol, dissocProtocol, conjProtocol,
+    emptyProtocol, disjoinProtocol, peekProtocol, popProtocol, rseqProtocol, compareProtocol,
+    iteratorProtocol, hashOrderedColl, hashUnorderedColl, hashDouble, stringHash, rotateLeft, imul,
+    compare: compareKeys, INamed, nameProtocol, namespaceProtocol, IHash, IEquiv, hashProtocol,
+    equivProtocol, type, Fn, IList, IFn, ISeqable, ISeq, INext, ICounted, IIndexed, ILookup,
+    ISequential, IAssociative, seqProtocol, firstProtocol, restProtocol, nextProtocol,
+    countProtocol, nthProtocol, lookupProtocol, containsProtocol, protocolSentinel, IMeta,
+    IWithMeta, IRecord, ICloneable, IPrintWithWriter, IWriter, StringBufferWriter, clone, prWriter,
+    write, flushWriter, satisfies, implements: implementsProtocol, metaProtocol, withMetaProtocol,
+    empty, peek, pop, rseq, keys, vals, repeat, cycle, prStr, prStrStar, str, uuid, identical,
+    isUuid, isInst, printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct,
+    isDistinct, sort, sortBy, someFn, everyPred, memoize, parseLong, parseDouble, parseUuid,
+    parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator,
+    updateVals, updateKeys, setPrintFn, setPrintErrFn, stringPrint, enableConsolePrint,
+    prStrWithOpts, prnStrWithOpts, prSequentialWriter, prSeqWriter, printMetaQ, printForHost,
+    println, prn, pr, newline, prnStr, printStr, printlnStr, TaggedLiteral, taggedLiteral,
+    isTaggedLiteral, splitVAt, partitionV, partitionVAll, jsIterable, iteration, cljToJs, jsToClj,
+    keyToJs, IEncodeJS, IEncodeClojure, munge, mungeStr, demunge, treeSeq, flatten,
+    iter: sequenceIterator, es6Iterator, es6IteratorSeq: iteratorSeq, encodeJsProtocol,
+    encodeKeyProtocol, encodeClojureProtocol, Var, test, hash, instMs, instMsProtocol, isVar,
+    ExceptionInfo, exInfo, exData, exMessage, exCause, throwableToMap, isInstance, rePattern, reSeq,
+    reFind, reMatches, isRegex, vec, concat, sequence, eduction, apply, applyTo, into,
+    cons: consCore, listStar, iterate, take, range, toArray, mapSeq, primSeq, arraySeq, array, aget,
+    aset, alength, aclone, makeArray, intoArray, toArray2d, intArray, longArray, doubleArray,
+    objectArray, jsObj, jsKeys, jsInvoke, jsDelete, jsIn, uncheckedGet, uncheckedSet: jsSet,
+    checkedAget, checkedAset, checkedAgetStrict, checkedAsetStrict, constantly, complement, comp,
+    partial, juxt, fnil, iteratorInit, iteratorStart, IndexedSeqFactory, UUIDFactory, RangeFactory,
+    IntegerRangeFactory, PersistentTreeMapFactory, PersistentTreeSetFactory,
+    PersistentTreeMapSeqFactory, EductionFactory, MultiFnFactory, SeqIterFactory,
+    RangedIteratorFactory, NamespaceFactory, TaggedLiteralFactory,
+    ednReadString: reader.ednReadString, ednRead: reader.ednRead,
+    readerReadString: reader.readerReadString, readerRead: reader.readerRead,
+    readString: reader.readString, read: reader.read, readLine: reader.readLine,
+    compilerInputWindow: reader.compilerInputWindow,
+    compilerInputConsume: reader.compilerInputConsume,
+    compilerInputRecover: reader.compilerInputRecover,
+    compilerInputDiscard: reader.compilerInputDiscard,
+    compilerInputCompact: reader.compilerInputCompact,
+    readerStringReader: reader.readerStringReader, readerInputProvider: reader.readerInputProvider,
+    readerReadLine: reader.readerReadLine,
+    readerParseTimestampFields: reader.readerParseTimestampFields,
+    readerParseTimestamp: reader.readerParseTimestamp,
+    readerInitialTagTable: reader.readerInitialTagTable,
+    readerRegisterTagParser: reader.readerRegisterTagParser,
+    readerDeregisterTagParser: reader.readerDeregisterTagParser,
+    readerRegisterDefaultTagParser: reader.readerRegisterDefaultTagParser,
+    readerDeregisterDefaultTagParser: reader.readerDeregisterDefaultTagParser,
+    readerWithInput: reader.readerWithInput, readerCurrentInput: reader.readerCurrentInput,
+    readerClose: reader.readerClose, configureHostHooks, systemTime, addTap, removeTap, tapGreater,
+    randInt: hostRandInt, randNth: hostRandNth, shuffle: hostShuffle, randomUuid: hostRandomUuid,
+    loadFile, Namespace, registerReaderNamespace, macroReaderFunction, createNs, findNs, nsName,
+    theNs, allNs, compilerMacroVar
   });
-  Object.assign(core, {Namespace, registerReaderNamespace, macroReaderFunction, createNs, findNs, nsName, theNs, allNs, compilerMacroVar,
-    currentNs: createNs(symbol(null, "cljs.user")), assertions: true});
+  //@unit namespaces.cljsUser effect: namespaces requires: coreCells, createNs, symbol
+  coreCells.currentNs = createNs(symbol(null, "cljs.user"));
   //@unit namespaces.cljsCore effect: namespaces requires: createNs, symbol
   createNs(symbol(null, "cljs.core"));
   //@unit core.seal effect: core requires: core

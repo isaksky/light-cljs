@@ -19,28 +19,28 @@
 ;; variant	name	value	params	returns	otherwise	purity	calls	units
 ;;
 ;; Dynamic vars and settable values (a program may rebind or set! them)
-ExecTapFn	*exec-tap-fn*	any	-	any	any	effect	invoke	defaultTapSchedule
-CurrentNs	*ns*	any	-	any	any	effect	invoke	core.hostAndNamespaces
-Assertions	*assert*	any	-	any	any	effect	invoke	core.hostAndNamespaces
-PrintMeta	*print-meta*	any	-	any	any	effect	invoke	core
-PrintDup	*print-dup*	any	-	any	any	effect	invoke	core
-FlushOnNewline	*flush-on-newline*	any	-	any	any	effect	invoke	core
-PrintFnBodies	*print-fn-bodies*	any	-	any	any	effect	invoke	core
-CommandLineArgs	*command-line-args*	any	-	any	any	effect	invoke	core
-PrintErrFn	*print-err-fn*	any	-	any	any	effect	invoke	core
-ReplOne	*1	any	-	any	any	effect	invoke	core
-ReplTwo	*2	any	-	any	any	effect	invoke	core
-ReplThree	*3	any	-	any	any	effect	invoke	core
-ReplError	*e	any	-	any	any	effect	invoke	core
-SourceFile	*file*	any	-	any	any	effect	invoke	core
-ReaderCurrentInputValue	*in*	any	-	any	any	effect	invoke	core.reader
-PrintFn	*print-fn*	any	-	any	any	effect	invoke	core
-UncheckedArrays	*unchecked-arrays*	any	-	any	any	effect	invoke	core
-PrintNewline	*print-newline*	any	-	any	any	effect	invoke	core
-PrintReadably	*print-readably*	any	-	any	any	effect	invoke	core
-PrintLength	*print-length*	any	-	any	any	effect	invoke	core
-PrintNamespaceMaps	*print-namespace-maps*	any	-	any	any	effect	invoke	core
-PrintLevel	*print-level*	any	-	any	any	effect	invoke	core
+ExecTapFn	*exec-tap-fn*	any	-	any	any	effect	invoke	coreCells
+CurrentNs	*ns*	any	-	any	any	effect	invoke	coreCells
+Assertions	*assert*	any	-	any	any	effect	invoke	coreCells
+PrintMeta	*print-meta*	any	-	any	any	effect	invoke	coreCells
+PrintDup	*print-dup*	any	-	any	any	effect	invoke	coreCells
+FlushOnNewline	*flush-on-newline*	any	-	any	any	effect	invoke	coreCells
+PrintFnBodies	*print-fn-bodies*	any	-	any	any	effect	invoke	coreCells
+CommandLineArgs	*command-line-args*	any	-	any	any	effect	invoke	coreCells
+PrintErrFn	*print-err-fn*	any	-	any	any	effect	invoke	coreCells
+ReplOne	*1	any	-	any	any	effect	invoke	coreCells
+ReplTwo	*2	any	-	any	any	effect	invoke	coreCells
+ReplThree	*3	any	-	any	any	effect	invoke	coreCells
+ReplError	*e	any	-	any	any	effect	invoke	coreCells
+SourceFile	*file*	any	-	any	any	effect	invoke	coreCells
+ReaderCurrentInputValue	*in*	any	-	any	any	effect	invoke	coreCells
+PrintFn	*print-fn*	any	-	any	any	effect	invoke	coreCells
+UncheckedArrays	*unchecked-arrays*	any	-	any	any	effect	invoke	coreCells
+PrintNewline	*print-newline*	any	-	any	any	effect	invoke	coreCells
+PrintReadably	*print-readably*	any	-	any	any	effect	invoke	coreCells
+PrintLength	*print-length*	any	-	any	any	effect	invoke	coreCells
+PrintNamespaceMaps	*print-namespace-maps*	any	-	any	any	effect	invoke	coreCells
+PrintLevel	*print-level*	any	-	any	any	effect	invoke	coreCells
 ;;
 ;; Sentinels
 IteratorInit	INIT	host	-	any	any	effect	invoke	iteratorInit
@@ -50,43 +50,43 @@ ProtocolSentinel	PROTOCOL_SENTINEL	host	-	any	any	effect	invoke	protocolSentinel
 ;; Types, constructors and positional factories
 NamespaceClass	Namespace	fn	-	any	any	effect	invoke	Namespace
 TaggedLiteralType	TaggedLiteral	fn	-	any	any	effect	invoke	TaggedLiteral
-IndexedSeqFactory	->IndexedSeq	fn	-	any	any	effect	invoke	core
-UUIDFactory	->UUID	fn	-	any	any	effect	invoke	core
-RangeFactory	->Range	fn	-	any	any	effect	invoke	core
-IntegerRangeFactory	->IntegerRange	fn	-	any	any	effect	invoke	core
-PersistentTreeMapFactory	->PersistentTreeMap	fn	-	any	any	effect	invoke	core
-PersistentTreeSetFactory	->PersistentTreeSet	fn	-	any	any	effect	invoke	core
-PersistentTreeMapSeqFactory	->PersistentTreeMapSeq	fn	-	any	any	effect	invoke	core
-EductionFactory	->Eduction	fn	-	any	any	effect	invoke	core
-MultiFnFactory	->MultiFn	fn	-	any	any	effect	invoke	core
-SeqIterFactory	->SeqIter	fn	-	any	any	effect	invoke	core
-RangedIteratorFactory	->RangedIterator	fn	-	any	any	effect	invoke	core
-NamespaceFactory	->Namespace	fn	-	any	any	effect	invoke	core
-TaggedLiteralFactory	->TaggedLiteral	fn	-	any	any	effect	invoke	core
+IndexedSeqFactory	->IndexedSeq	fn	-	any	any	effect	invoke	IndexedSeqFactory
+UUIDFactory	->UUID	fn	-	any	any	effect	invoke	UUIDFactory
+RangeFactory	->Range	fn	-	any	any	effect	invoke	RangeFactory
+IntegerRangeFactory	->IntegerRange	fn	-	any	any	effect	invoke	IntegerRangeFactory
+PersistentTreeMapFactory	->PersistentTreeMap	fn	-	any	any	effect	invoke	PersistentTreeMapFactory
+PersistentTreeSetFactory	->PersistentTreeSet	fn	-	any	any	effect	invoke	PersistentTreeSetFactory
+PersistentTreeMapSeqFactory	->PersistentTreeMapSeq	fn	-	any	any	effect	invoke	PersistentTreeMapSeqFactory
+EductionFactory	->Eduction	fn	-	any	any	effect	invoke	EductionFactory
+MultiFnFactory	->MultiFn	fn	-	any	any	effect	invoke	MultiFnFactory
+SeqIterFactory	->SeqIter	fn	-	any	any	effect	invoke	SeqIterFactory
+RangedIteratorFactory	->RangedIterator	fn	-	any	any	effect	invoke	RangedIteratorFactory
+NamespaceFactory	->Namespace	fn	-	any	any	effect	invoke	NamespaceFactory
+TaggedLiteralFactory	->TaggedLiteral	fn	-	any	any	effect	invoke	TaggedLiteralFactory
 MultiFn	MultiFn	fn	-	any	any	effect	invoke	MultiFn
-Delay	Delay	fn	-	any	any	effect	invoke	Delay
-DelayFactory	->Delay	fn	-	any	any	effect	invoke	Delay
-LazySeqFactory	->LazySeq	fn	-	any	any	effect	invoke	LazySeq
-PersistentVector	PersistentVector	fn	-	any	any	effect	invoke	PersistentVectorValue
-SubvecType	Subvec	fn	-	any	any	effect	invoke	SubvecValue
-PersistentArrayMap	PersistentArrayMap	fn	-	any	any	effect	invoke	PersistentArrayMapValue
-PersistentHashMap	PersistentHashMap	fn	-	any	any	effect	invoke	PersistentHashMapValue
-PersistentTreeMap	PersistentTreeMap	fn	-	any	any	effect	invoke	treeMapConstructor
-PersistentTreeSet	PersistentTreeSet	fn	-	any	any	effect	invoke	treeSetConstructor
-PersistentTreeMapSeq	PersistentTreeMapSeq	fn	-	any	any	effect	invoke	treeMapSeqConstructor
-PersistentHashSet	PersistentHashSet	fn	-	any	any	effect	invoke	PersistentHashSetValue
-CycleType	Cycle	fn	-	any	any	effect	invoke	CycleValue
-RepeatType	Repeat	fn	-	any	any	effect	invoke	RepeatValue
-IterateType	Iterate	fn	-	any	any	effect	invoke	IterateValue
-ListType	List	fn	-	any	any	effect	invoke	ListValue
-EmptyList	EmptyList	fn	-	any	any	effect	invoke	EmptyListValue
-ConsType	Cons	fn	-	any	any	effect	invoke	Cons
-IndexedSeq	IndexedSeq	fn	-	any	any	effect	invoke	IndexedSeqValue
-LazySeq	LazySeq	fn	-	any	any	effect	invoke	LazySeq
-PersistentQueue	PersistentQueue	fn	-	any	any	effect	invoke	PersistentQueueValue
-KeywordType	Keyword	fn	-	any	any	effect	invoke	KeywordValue
-SymbolType	Symbol	fn	-	any	any	effect	invoke	SymbolValue
-ReducedType	Reduced	fn	-	any	any	effect	invoke	Reduced
+Delay	Delay	fn	-	any	any	effect	invoke	builtinTypes
+DelayFactory	->Delay	fn	-	any	any	effect	invoke	builtinTypes
+LazySeqFactory	->LazySeq	fn	-	any	any	effect	invoke	builtinTypes
+PersistentVector	PersistentVector	fn	-	any	any	effect	invoke	builtinTypes
+SubvecType	Subvec	fn	-	any	any	effect	invoke	builtinTypes
+PersistentArrayMap	PersistentArrayMap	fn	-	any	any	effect	invoke	builtinTypes
+PersistentHashMap	PersistentHashMap	fn	-	any	any	effect	invoke	builtinTypes
+PersistentTreeMap	PersistentTreeMap	fn	-	any	any	effect	invoke	builtinTypes
+PersistentTreeSet	PersistentTreeSet	fn	-	any	any	effect	invoke	builtinTypes
+PersistentTreeMapSeq	PersistentTreeMapSeq	fn	-	any	any	effect	invoke	builtinTypes
+PersistentHashSet	PersistentHashSet	fn	-	any	any	effect	invoke	builtinTypes
+CycleType	Cycle	fn	-	any	any	effect	invoke	builtinTypes
+RepeatType	Repeat	fn	-	any	any	effect	invoke	builtinTypes
+IterateType	Iterate	fn	-	any	any	effect	invoke	builtinTypes
+ListType	List	fn	-	any	any	effect	invoke	builtinTypes
+EmptyList	EmptyList	fn	-	any	any	effect	invoke	builtinTypes
+ConsType	Cons	fn	-	any	any	effect	invoke	builtinTypes
+IndexedSeq	IndexedSeq	fn	-	any	any	effect	invoke	builtinTypes
+LazySeq	LazySeq	fn	-	any	any	effect	invoke	builtinTypes
+PersistentQueue	PersistentQueue	fn	-	any	any	effect	invoke	builtinTypes
+KeywordType	Keyword	fn	-	any	any	effect	invoke	builtinTypes
+SymbolType	Symbol	fn	-	any	any	effect	invoke	builtinTypes
+ReducedType	Reduced	fn	-	any	any	effect	invoke	builtinTypes
 UUID	UUID	fn	-	any	any	effect	invoke	builtinTypes
 MapEntry	MapEntry	fn	-	any	any	effect	invoke	builtinTypes
 StringBufferWriter	StringBufferWriter	fn	-	any	any	effect	invoke	StringBufferWriter
@@ -96,14 +96,14 @@ AtomType	Atom	fn	-	any	any	effect	invoke	Atom
 AtomFactory	->Atom	fn	-	any	any	effect	invoke	atomFactory
 VolatileType	Volatile	fn	-	any	any	effect	invoke	Volatile
 VolatileFactory	->Volatile	fn	-	any	any	effect	invoke	volatileFactory
-EductionType	Eduction	fn	-	any	any	effect	invoke	Eduction
+EductionType	Eduction	fn	-	any	any	effect	invoke	builtinTypes
 ChunkedConsClass	ChunkedCons	fn	-	any	any	effect	invoke	ChunkedCons
 ChunkBufferClass	ChunkBuffer	fn	-	any	any	effect	invoke	ChunkBuffer
-ChunkedSeq	ChunkedSeq	fn	-	any	any	effect	invoke	ChunkedSeqValue
+ChunkedSeq	ChunkedSeq	fn	-	any	any	effect	invoke	builtinTypes
 ArrayChunk	ArrayChunk	fn	-	any	any	effect	invoke	arrayChunk
 VarClass	Var	fn	-	any	any	effect	invoke	Var
-RangeClass	Range	fn	-	any	any	effect	invoke	RangeValue
-IntegerRangeClass	IntegerRange	fn	-	any	any	effect	invoke	IntegerRangeValue
+RangeClass	Range	fn	-	any	any	effect	invoke	builtinTypes
+IntegerRangeClass	IntegerRange	fn	-	any	any	effect	invoke	builtinTypes
 NodeSeqClass	NodeSeq	fn	-	any	any	effect	invoke	builtinTypes
 ExceptionInfo	ExceptionInfo	fn	-	any	any	effect	invoke	ExceptionInfo
 ;;
@@ -168,50 +168,50 @@ IEncodeClojure	IEncodeClojure	fn	-	any	any	effect	invoke	IEncodeJS
 IEncodeJs	IEncodeJS	fn	-	any	any	effect	invoke	IEncodeJS
 ;;
 ;; Protocol method dispatchers: they run whatever implementation the value has
-ResetMultiFnProtocol	-reset	fn	-	any	any	effect	invoke	core
-AddMethod	-add-method	fn	-	any	any	effect	invoke	core
-RemoveMethodProtocol	-remove-method	fn	-	any	any	effect	invoke	core
-PreferMethodProtocol	-prefer-method	fn	-	any	any	effect	invoke	core
-MethodsProtocol	-methods	fn	-	any	any	effect	invoke	core
-GetMethodProtocol	-get-method	fn	-	any	any	effect	invoke	core
-PrefersProtocol	-prefers	fn	-	any	any	effect	invoke	core
-DefaultDispatchValProtocol	-default-dispatch-val	fn	-	any	any	effect	invoke	core
-DispatchFnProtocol	-dispatch-fn	fn	-	any	any	effect	invoke	core
-AsTransientProtocol	-as-transient	fn	-	any	any	effect	invoke	core
-PersistentBangProtocol	-persistent!	fn	-	any	any	effect	invoke	core
-ConjBangProtocol	-conj!	fn	-	any	any	effect	invoke	core
-AssocBangProtocol	-assoc!	fn	-	any	any	effect	invoke	core
-DissocBangProtocol	-dissoc!	fn	-	any	any	effect	invoke	core
-DisjoinBangProtocol	-disjoin!	fn	-	any	any	effect	invoke	core
-PopBangProtocol	-pop!	fn	-	any	any	effect	invoke	core
-AssocNBangProtocol	-assoc-n!	fn	-	any	any	effect	invoke	core
+ResetMultiFnProtocol	-reset	fn	-	any	any	effect	invoke	removeAllMethods
+AddMethod	-add-method	fn	-	any	any	effect	invoke	addMethodProtocol
+RemoveMethodProtocol	-remove-method	fn	-	any	any	effect	invoke	removeMethodProtocol
+PreferMethodProtocol	-prefer-method	fn	-	any	any	effect	invoke	preferMethodProtocol
+MethodsProtocol	-methods	fn	-	any	any	effect	invoke	methods
+GetMethodProtocol	-get-method	fn	-	any	any	effect	invoke	getMethodProtocol
+PrefersProtocol	-prefers	fn	-	any	any	effect	invoke	prefers
+DefaultDispatchValProtocol	-default-dispatch-val	fn	-	any	any	effect	invoke	defaultDispatchVal
+DispatchFnProtocol	-dispatch-fn	fn	-	any	any	effect	invoke	dispatchFn
+AsTransientProtocol	-as-transient	fn	-	any	any	effect	invoke	asTransientProtocol
+PersistentBangProtocol	-persistent!	fn	-	any	any	effect	invoke	persistentBangProtocol
+ConjBangProtocol	-conj!	fn	-	any	any	effect	invoke	conjBangProtocol
+AssocBangProtocol	-assoc!	fn	-	any	any	effect	invoke	assocBangProtocol
+DissocBangProtocol	-dissoc!	fn	-	any	any	effect	invoke	dissocBangProtocol
+DisjoinBangProtocol	-disjoin!	fn	-	any	any	effect	invoke	disjoinBangProtocol
+PopBangProtocol	-pop!	fn	-	any	any	effect	invoke	popBangProtocol
+AssocNBangProtocol	-assoc-n!	fn	-	any	any	effect	invoke	assocNBangProtocol
 RealizedProtocol	-realized?	fn	-	any	any	effect	invoke	realized
-FindProtocol	-find	fn	-	any	any	effect	invoke	core
-SortedSeqProtocol	-sorted-seq	fn	-	any	any	effect	invoke	core
-SortedSeqFromProtocol	-sorted-seq-from	fn	-	any	any	effect	invoke	core
-EntryKeyProtocol	-entry-key	fn	-	any	any	effect	invoke	core
-ComparatorProtocol	-comparator	fn	-	any	any	effect	invoke	core
-ChunkedFirstProtocol	-chunked-first	fn	-	any	any	effect	invoke	core
-ChunkedRestProtocol	-chunked-rest	fn	-	any	any	effect	invoke	core
-InvokeProtocol	-invoke	fn	-	any	any	effect	invoke	core
+FindProtocol	-find	fn	-	any	any	effect	invoke	findProtocol
+SortedSeqProtocol	-sorted-seq	fn	-	any	any	effect	invoke	sortedSeqProtocol
+SortedSeqFromProtocol	-sorted-seq-from	fn	-	any	any	effect	invoke	sortedSeqFromProtocol
+EntryKeyProtocol	-entry-key	fn	-	any	any	effect	invoke	entryKeyProtocol
+ComparatorProtocol	-comparator	fn	-	any	any	effect	invoke	comparatorProtocol
+ChunkedFirstProtocol	-chunked-first	fn	-	any	any	effect	invoke	chunkedFirstProtocol
+ChunkedRestProtocol	-chunked-rest	fn	-	any	any	effect	invoke	chunkedRestProtocol
+InvokeProtocol	-invoke	fn	-	any	any	effect	invoke	invokeProtocol
 PrWriter	-pr-writer	fn	-	any	any	effect	invoke	prWriter
 Write	-write	fn	-	any	any	effect	invoke	write
 FlushWriter	-flush	fn	-	any	any	effect	invoke	flushWriter
-ReduceProtocol	-reduce	fn	-	any	any	effect	invoke	core
-KvReduceProtocol	-kv-reduce	fn	-	any	any	effect	invoke	core
-AssocProtocol	-assoc	fn	-	any	any	effect	invoke	core
-AssocNProtocol	-assoc-n	fn	-	any	any	effect	invoke	core
-DissocProtocol	-dissoc	fn	-	any	any	effect	invoke	core
-ConjProtocol	-conj	fn	-	any	any	effect	invoke	core
-EmptyProtocol	-empty	fn	-	any	any	effect	invoke	core
-DisjoinProtocol	-disjoin	fn	-	any	any	effect	invoke	core
-PeekProtocol	-peek	fn	-	any	any	effect	invoke	core
-PopProtocol	-pop	fn	-	any	any	effect	invoke	core
-RseqProtocol	-rseq	fn	-	any	any	effect	invoke	core
-CompareProtocol	-compare	fn	-	any	any	effect	invoke	core
-IteratorProtocol	-iterator	fn	-	any	any	effect	invoke	core
-HashProtocol	-hash	fn	-	any	any	effect	invoke	core
-EquivProtocol	-equiv	fn	-	any	any	effect	invoke	core
+ReduceProtocol	-reduce	fn	-	any	any	effect	invoke	reduceProtocol
+KvReduceProtocol	-kv-reduce	fn	-	any	any	effect	invoke	kvReduceProtocol
+AssocProtocol	-assoc	fn	-	any	any	effect	invoke	assocProtocol
+AssocNProtocol	-assoc-n	fn	-	any	any	effect	invoke	assocNProtocol
+DissocProtocol	-dissoc	fn	-	any	any	effect	invoke	dissocProtocol
+ConjProtocol	-conj	fn	-	any	any	effect	invoke	conjProtocol
+EmptyProtocol	-empty	fn	-	any	any	effect	invoke	emptyProtocol
+DisjoinProtocol	-disjoin	fn	-	any	any	effect	invoke	disjoinProtocol
+PeekProtocol	-peek	fn	-	any	any	effect	invoke	peekProtocol
+PopProtocol	-pop	fn	-	any	any	effect	invoke	popProtocol
+RseqProtocol	-rseq	fn	-	any	any	effect	invoke	rseqProtocol
+CompareProtocol	-compare	fn	-	any	any	effect	invoke	compareProtocol
+IteratorProtocol	-iterator	fn	-	any	any	effect	invoke	iteratorProtocol
+HashProtocol	-hash	fn	-	any	any	effect	invoke	hashProtocol
+EquivProtocol	-equiv	fn	-	any	any	effect	invoke	equivProtocol
 SeqProtocol	-seq	fn	-	any	any	effect	invoke	seqProtocol
 FirstProtocol	-first	fn	-	any	any	effect	invoke	seqProtocol
 RestProtocol	-rest	fn	-	any	any	effect	invoke	seqProtocol
@@ -229,16 +229,16 @@ DerefProtocol	-deref	fn	-	any	any	effect	invoke	derefProtocol
 ResetProtocol	-reset!	fn	-	any	any	effect	invoke	resetProtocol
 SwapProtocol	-swap!	fn	-	any	any	effect	invoke	swapProtocol
 VResetProtocol	-vreset!	fn	-	any	any	effect	invoke	vresetProtocol
-DerefWithTimeoutProtocol	-deref-with-timeout	fn	-	any	any	effect	invoke	core
-InstMsProtocol	inst-ms*	fn	-	any	any	effect	invoke	core
-DropProtocol	-drop	fn	-	any	any	effect	invoke	core
-DropFirstProtocol	-drop-first	fn	-	any	any	effect	invoke	core
-ChunkedNextProtocol	-chunked-next	fn	-	any	any	effect	invoke	core
-NameProtocol	-name	fn	-	any	any	effect	invoke	core
-NamespaceProtocol	-namespace	fn	-	any	any	effect	invoke	core
-EncodeClojureProtocol	-js->clj	fn	-	any	any	effect	invoke	core
-EncodeKeyProtocol	-key->js	fn	-	any	any	effect	invoke	core
-EncodeJsProtocol	-clj->js	fn	-	any	any	effect	invoke	core
+DerefWithTimeoutProtocol	-deref-with-timeout	fn	-	any	any	effect	invoke	derefWithTimeoutProtocol
+InstMsProtocol	inst-ms*	fn	-	any	any	effect	invoke	instMsProtocol
+DropProtocol	-drop	fn	-	any	any	effect	invoke	dropProtocol
+DropFirstProtocol	-drop-first	fn	-	any	any	effect	invoke	dropFirstProtocol
+ChunkedNextProtocol	-chunked-next	fn	-	any	any	effect	invoke	chunkedNextProtocol
+NameProtocol	-name	fn	-	any	any	effect	invoke	nameProtocol
+NamespaceProtocol	-namespace	fn	-	any	any	effect	invoke	namespaceProtocol
+EncodeClojureProtocol	-js->clj	fn	-	any	any	effect	invoke	encodeClojureProtocol
+EncodeKeyProtocol	-key->js	fn	-	any	any	effect	invoke	encodeKeyProtocol
+EncodeJsProtocol	-clj->js	fn	-	any	any	effect	invoke	encodeJsProtocol
 ;;
 ;; Iterators and helpers
 SeqIterHelper	seq-iter	fn	[seqable]	object	any	allocates	-	seqIter
@@ -268,11 +268,11 @@ FindNs	find-ns	fn	[symbol]	nil|object	any	effect	-	findNs
 TheNs	the-ns	fn	[symbol|object]	object	any	effect	-	theNs
 NsName	ns-name	fn	[object]	nil|symbol	any	effect	-	nsName
 AllNs	all-ns	fn	[]	nil|seq|list	any	effect	-	allNs
-LoadFile	load-file	fn	[any]	never	any	effect	-	core.hostAndNamespaces
+LoadFile	load-file	fn	[any]	never	any	effect	-	loadFile
 AddTap	add-tap	fn	[fn]	nil	any	effect	-	addTap
 RemoveTap	remove-tap	fn	[fn]	nil	any	effect	-	removeTap
 TapGreater	tap>	fn	[any]	boolean	any	effect	invoke	tapGreater
-Flush	flush	fn	[]	nil	any	effect	-	flush
+Flush	flush	fn	[]	nil	any	effect	-	coreCells
 EnableConsolePrint	enable-console-print!	fn	[]	nil	any	effect	-	enableConsolePrint
 PrStrWithOpts	pr-str-with-opts	fn	[seqable map]	string	any	effect	dispatch	prStrWithOpts
 PrnStrWithOpts	prn-str-with-opts	fn	[seqable map]	string	any	effect	dispatch	prnStrWithOpts
@@ -295,38 +295,38 @@ Derive	derive	fn	-	any	any	effect	invoke	derive
 Underive	underive	fn	-	any	any	effect	invoke	underive
 Bases	bases	fn	-	any	any	effect	invoke	bases
 Supers	supers	fn	-	any	any	effect	invoke	supers
-RemoveAllMethods	remove-all-methods	fn	-	any	any	effect	invoke	core
-RemoveMethod	remove-method	fn	-	any	any	effect	invoke	core
-PreferMethod	prefer-method	fn	-	any	any	effect	invoke	core
-Methods	methods	fn	-	any	any	effect	invoke	core
-GetMethod	get-method	fn	-	any	any	effect	invoke	core
-Prefers	prefers	fn	-	any	any	effect	invoke	core
-DefaultDispatchVal	default-dispatch-val	fn	-	any	any	effect	invoke	core
-DispatchFn	dispatch-fn	fn	-	any	any	effect	invoke	core
+RemoveAllMethods	remove-all-methods	fn	-	any	any	effect	invoke	removeAllMethods
+RemoveMethod	remove-method	fn	-	any	any	effect	invoke	removeMethodProtocol
+PreferMethod	prefer-method	fn	-	any	any	effect	invoke	preferMethodProtocol
+Methods	methods	fn	-	any	any	effect	invoke	methods
+GetMethod	get-method	fn	-	any	any	effect	invoke	getMethodProtocol
+Prefers	prefers	fn	-	any	any	effect	invoke	prefers
+DefaultDispatchVal	default-dispatch-val	fn	-	any	any	effect	invoke	defaultDispatchVal
+DispatchFn	dispatch-fn	fn	-	any	any	effect	invoke	dispatchFn
 ;;
 ;; Reader, eval and compiler services
-EdnReadString	compiler-edn-read-string	fn	-	any	any	effect	invoke	core.reader
-EdnRead	compiler-edn-read	fn	-	any	any	effect	invoke	core.reader
-ReaderReadString	compiler-reader-read-string	fn	-	any	any	effect	invoke	core.reader
-ReaderRead	compiler-reader-read	fn	-	any	any	effect	invoke	core.reader
-ReaderStringReader	compiler-reader-string-reader	fn	-	any	any	effect	invoke	core.reader
-ReaderReadLine	compiler-reader-read-line	fn	-	any	any	effect	invoke	core.reader
-ReaderInputProvider	compiler-reader-input-provider	fn	-	any	any	effect	invoke	core.reader
-ReaderParseTimestampFields	compiler-reader-parse-timestamp-fields	fn	-	any	any	effect	invoke	core.reader
-ReaderParseTimestamp	compiler-reader-parse-timestamp	fn	-	any	any	effect	invoke	core.reader
-ReaderInitialTagTable	compiler-reader-initial-tag-table	fn	-	any	any	effect	invoke	core.reader
-ReaderRegisterTagParser	compiler-reader-register-tag-parser	fn	-	any	any	effect	invoke	core.reader
-ReaderDeregisterTagParser	compiler-reader-deregister-tag-parser	fn	-	any	any	effect	invoke	core.reader
-ReaderRegisterDefaultTagParser	compiler-reader-register-default-tag-parser	fn	-	any	any	effect	invoke	core.reader
-ReaderDeregisterDefaultTagParser	compiler-reader-deregister-default-tag-parser	fn	-	any	any	effect	invoke	core.reader
-ReaderCurrentInput	compiler-reader-current-input	fn	-	any	any	effect	invoke	core.reader
-ReaderWithInput	compiler-reader-with-input	fn	-	any	any	effect	invoke	core.reader
-ReaderClose	compiler-reader-close	fn	-	any	any	effect	invoke	core.reader
-Read	read	fn	-	any	any	effect	invoke	core.reader
-ReadLine	read-line	fn	-	any	any	effect	invoke	core.reader
+EdnReadString	compiler-edn-read-string	fn	-	any	any	effect	invoke	reader
+EdnRead	compiler-edn-read	fn	-	any	any	effect	invoke	reader
+ReaderReadString	compiler-reader-read-string	fn	-	any	any	effect	invoke	reader
+ReaderRead	compiler-reader-read	fn	-	any	any	effect	invoke	reader
+ReaderStringReader	compiler-reader-string-reader	fn	-	any	any	effect	invoke	reader
+ReaderReadLine	compiler-reader-read-line	fn	-	any	any	effect	invoke	reader
+ReaderInputProvider	compiler-reader-input-provider	fn	-	any	any	effect	invoke	reader
+ReaderParseTimestampFields	compiler-reader-parse-timestamp-fields	fn	-	any	any	effect	invoke	reader
+ReaderParseTimestamp	compiler-reader-parse-timestamp	fn	-	any	any	effect	invoke	reader
+ReaderInitialTagTable	compiler-reader-initial-tag-table	fn	-	any	any	effect	invoke	reader
+ReaderRegisterTagParser	compiler-reader-register-tag-parser	fn	-	any	any	effect	invoke	reader
+ReaderDeregisterTagParser	compiler-reader-deregister-tag-parser	fn	-	any	any	effect	invoke	reader
+ReaderRegisterDefaultTagParser	compiler-reader-register-default-tag-parser	fn	-	any	any	effect	invoke	reader
+ReaderDeregisterDefaultTagParser	compiler-reader-deregister-default-tag-parser	fn	-	any	any	effect	invoke	reader
+ReaderCurrentInput	compiler-reader-current-input	fn	-	any	any	effect	invoke	reader
+ReaderWithInput	compiler-reader-with-input	fn	-	any	any	effect	invoke	reader
+ReaderClose	compiler-reader-close	fn	-	any	any	effect	invoke	reader
+Read	read	fn	-	any	any	effect	invoke	reader
+ReadLine	read-line	fn	-	any	any	effect	invoke	reader
 Gensym	gensym	fn	[] [string]	symbol	any	effect	-	gensym
-ReadString	read-string	fn	[string] [any string]	any	any	effect	-	core.reader
-Eval	eval	fn	[any]	any	any	effect	invoke	core
+ReadString	read-string	fn	[string] [any string]	any	any	effect	-	reader
+Eval	eval	fn	[any]	any	any	effect	invoke	evalCore
 Macroexpand	macroexpand	fn	[any]	any	any	effect	invoke	macroexpand
 Macroexpand1	macroexpand-1	fn	[any]	any	any	effect	invoke	macroexpand1
 ;;
@@ -380,7 +380,7 @@ AssocBang	assoc!	fn	[object any any & any]	object	any	effect	dispatch	assocBang
 DissocBang	dissoc!	fn	[object & any]	object	any	effect	dispatch	dissocBang
 DisjBang	disj!	fn	[object & any]	object	any	effect	dispatch	disjBang
 PopBang	pop!	fn	[object]	object	any	effect	-	popBang
-Array	array	fn	[& any]	host	host	allocates	-	core
+Array	array	fn	[& any]	host	host	allocates	-	array
 MakeArray	make-array	fn	[number] [any number]	host	any	throws	-	makeArray
 ToArray	to-array	fn	[seqable]	host	any	allocates	dispatch	toArray
 IntoArray	into-array	fn	[seqable] [any seqable]	host	any	allocates	dispatch	intoArray
@@ -396,13 +396,13 @@ CheckedAGetStrict	checked-aget'	fn	[host any & any]	any	any	effect	-	checkedAget
 ASet	aset	fn	[host any any & any]	any	any	effect	-	aset
 CheckedASet	checked-aset	fn	[host any any & any]	any	any	effect	-	checkedAset
 CheckedASetStrict	checked-aset'	fn	[host any any & any]	any	any	effect	-	checkedAsetStrict
-UncheckedGet	unchecked-get	fn	[host any]	any	any	effect	-	core
+UncheckedGet	unchecked-get	fn	[host any]	any	any	effect	-	uncheckedGet
 UncheckedSet	unchecked-set	fn	[host any any]	any	any	effect	-	jsSet
-ALength	alength	fn	[host]	nil|number	any	effect	-	core
+ALength	alength	fn	[host]	nil|number	any	effect	-	alength
 AClone	aclone	fn	[host]	host	any	effect	-	aclone
 JsKeys	js-keys	fn	[host]	host	any	effect	-	jsKeys
-JsIn	js-in	fn	[any host]	boolean	any	effect	-	core
-ArraySeq	array-seq	fn	[host] [host number]	nil|seq	any	effect	-	core
+JsIn	js-in	fn	[any host]	boolean	any	effect	-	jsIn
+ArraySeq	array-seq	fn	[host] [host number]	nil|seq	any	effect	-	arraySeq
 PrimSeq	prim-seq	fn	[host] [host number]	nil|seq	any	effect	-	primSeq
 JsDelete	js-delete	fn	-	any	any	effect	invoke	jsDelete
 JsInvoke	js-invoke	fn	-	any	any	effect	invoke	jsInvoke
@@ -412,12 +412,12 @@ Seq	seq	fn	[seqable]	nil|seq|list	any	allocates	dispatch	seq
 First	first	fn	[seqable]	any	any	allocates	dispatch	first
 Rest	rest	fn	[seqable]	seq|list	any	allocates	dispatch	rest
 Next	next	fn	[seqable]	nil|seq|list	any	allocates	dispatch	next
-Second	second	fn	[seqable]	any	any	allocates	dispatch	core
-Fnext	fnext	fn	[seqable]	any	any	allocates	dispatch	core
+Second	second	fn	[seqable]	any	any	allocates	dispatch	second
+Fnext	fnext	fn	[seqable]	any	any	allocates	dispatch	fnext
 Last	last	fn	[seqable]	any	any	allocates	dispatch	last
-Ffirst	ffirst	fn	[seqable]	any	any	throws	dispatch	core
-Nfirst	nfirst	fn	[seqable]	nil|seq|list	any	throws	dispatch	core
-Nnext	nnext	fn	[seqable]	nil|seq|list	any	allocates	dispatch	core
+Ffirst	ffirst	fn	[seqable]	any	any	throws	dispatch	ffirst
+Nfirst	nfirst	fn	[seqable]	nil|seq|list	any	throws	dispatch	nfirst
+Nnext	nnext	fn	[seqable]	nil|seq|list	any	allocates	dispatch	nnext
 Butlast	butlast	fn	[seqable]	nil|seq|list	any	allocates	dispatch	butlast
 Nthrest	nthrest	fn	[seqable number]	seqable	any	allocates	dispatch	nthrest
 Nthnext	nthnext	fn	[seqable number]	nil|seq|list	any	allocates	dispatch	nthnext
@@ -430,11 +430,11 @@ Find	find	fn	[nil|map|vector any]	nil|vector	any	allocates	dispatch	find
 Contains	contains?	fn	[scalar|fn|coll any]	boolean	any	pure	dispatch	contains
 Keys	keys	fn	[nil|map]	nil|seq	any	allocates	-	keys
 Vals	vals	fn	[nil|map]	nil|seq	any	allocates	-	vals
-KeyProtocol	-key	fn	[vector]	any	any	throws	-	core
-ValProtocol	-val	fn	[vector]	any	any	throws	-	core
+KeyProtocol	-key	fn	[vector]	any	any	throws	-	keyProtocol
+ValProtocol	-val	fn	[vector]	any	any	throws	-	valProtocol
 Rseq	rseq	fn	[vector]	nil|seq	any	allocates	-	rseq
-Reverse	reverse	fn	[seqable]	list	any	allocates	dispatch	core
-Cons	cons	fn	[any seqable]	seq|list	any	allocates	-	core
+Reverse	reverse	fn	[seqable]	list	any	allocates	dispatch	reverse
+Cons	cons	fn	[any seqable]	seq|list	any	allocates	-	consCore
 ListStar	list*	fn	[seqable] [any seqable] [any any seqable] [any any any seqable]	nil|seq|list	any	allocates	dispatch	listStar
 Concat	concat	fn	[& seqable]	seq|list	any	allocates	-	concat
 Range	range	fn	[] [number] [number number] [number number number]	seq|list	any	allocates	-	range
@@ -447,8 +447,8 @@ TreeSeq	tree-seq	fn	[fn fn any]	seq|list	any	allocates	-	treeSeq
 Flatten	flatten	fn	[any]	seq|list	any	allocates	dispatch	flatten
 Doall	doall	fn	[seqable] [number seqable]	seqable	any	pure	dispatch	doall
 Dorun	dorun	fn	[seqable] [number seqable]	nil	any	pure	dispatch	dorun
-NotEmpty	not-empty	fn	[seqable]	seqable	any	pure	dispatch	core
-IsEmpty	empty?	fn	[seqable]	boolean	any	pure	dispatch	predicates
+NotEmpty	not-empty	fn	[seqable]	seqable	any	pure	dispatch	notEmpty
+IsEmpty	empty?	fn	[seqable]	boolean	any	pure	dispatch	isEmpty
 SeqToMap	seq-to-map-for-destructuring	fn	-	any	any	effect	invoke	seqToMap
 ;;
 ;; Lazy sequence functions and transducers: they capture their function arguments
@@ -493,10 +493,10 @@ Transduce	transduce	fn	[fn fn seqable] [fn fn any seqable]	any	any	throws	invoke
 Mapv	mapv	fn	[fn seqable & seqable]	vector	any	allocates	invoke	mapv
 Filterv	filterv	fn	[fn seqable]	vector	any	allocates	invoke	filterv
 Every	every?	fn	[fn seqable]	boolean	any	pure	invoke	every
-NotEvery	not-every?	fn	[fn seqable]	boolean	any	pure	invoke	core
-NotAny	not-any?	fn	[fn seqable]	boolean	any	pure	invoke	core
-Some	some	fn	[fn seqable]	any	any	allocates	invoke	core
-Run	run!	fn	[fn seqable]	nil	any	pure	invoke	core
+NotEvery	not-every?	fn	[fn seqable]	boolean	any	pure	invoke	notEvery
+NotAny	not-any?	fn	[fn seqable]	boolean	any	pure	invoke	notAny
+Some	some	fn	[fn seqable]	any	any	allocates	invoke	some
+Run	run!	fn	[fn seqable]	nil	any	pure	invoke	run
 Apply	apply	fn	[fn & any]	any	any	throws	invoke	apply
 Trampoline	trampoline	fn	[fn & any]	any	any	pure	invoke	trampoline
 MinKey	min-key	fn	[fn any & any]	any	any	pure	invoke	minKey
@@ -507,7 +507,7 @@ Subseq	subseq	fn	[map|set fn any] [map|set fn any fn any]	nil|seq	any	throws	inv
 Rsubseq	rsubseq	fn	[map|set fn any] [map|set fn any fn any]	nil|seq	any	throws	invoke	rsubseq
 ;;
 ;; Function combinators
-Identity	identity	fn	[any]	any	any	pure	-	predicates
+Identity	identity	fn	[any]	any	any	pure	-	identity
 Constantly	constantly	fn	[any]	fn	any	allocates	-	constantly
 Complement	complement	fn	[fn]	fn	any	allocates	-	complement
 Memoize	memoize	fn	[fn]	fn	any	allocates	-	memoize
@@ -521,11 +521,11 @@ Fnil	fnil	fn	[fn any] [fn any any] [fn any any any]	fn	any	allocates	-	fnil
 ;;
 ;; Equality, hashing, comparison
 Equal	=	fn	[any & any]	boolean	boolean	pure	dispatch	equal
-NotEqual	not=	fn	[any & any]	boolean	boolean	pure	dispatch	predicates
+NotEqual	not=	fn	[any & any]	boolean	boolean	pure	dispatch	notEqual
 IsDistinct	distinct?	fn	[any & any]	boolean	any	pure	dispatch	isDistinct
-Identical	identical?	fn	[any any]	boolean	boolean	pure	-	core
-KeywordIdentical	keyword-identical?	fn	[any any]	boolean	boolean	pure	-	predicates
-SymbolIdentical	symbol-identical?	fn	[any any]	boolean	boolean	pure	-	predicates
+Identical	identical?	fn	[any any]	boolean	boolean	pure	-	identical
+KeywordIdentical	keyword-identical?	fn	[any any]	boolean	boolean	pure	-	keywordIdentical
+SymbolIdentical	symbol-identical?	fn	[any any]	boolean	boolean	pure	-	symbolIdentical
 Compare	compare	fn	[any any]	number	any	throws	dispatch	compareKeys
 Hash	hash	fn	[any]	number	any	pure	dispatch	hash
 HashOrderedColl	hash-ordered-coll	fn	[seqable]	number	any	pure	dispatch	hashOrderedColl
@@ -533,163 +533,163 @@ HashUnorderedColl	hash-unordered-coll	fn	[seqable]	number	any	pure	dispatch	hash
 HashDouble	hash-double	fn	[number]	number	any	pure	-	hashDouble
 HashString	hash-string	fn	[string]	number	any	pure	-	stringHash
 IntRotateLeft	int-rotate-left	fn	[number number]	number	number	pure	-	rotateLeft
-Imul	imul	fn	[number number]	number	number	pure	-	core
+Imul	imul	fn	[number number]	number	number	pure	-	imul
 ;;
 ;; Arithmetic
 Add	+	fn	[& number]	number	any	pure	-	add
 Multiply	*	fn	[& number]	number	any	pure	-	multiply
-UncheckedAdd	unchecked-add	fn	[& number]	number	any	pure	-	numeric
-UncheckedAddInt	unchecked-add-int	fn	[& number]	number	any	pure	-	numeric
-UncheckedMultiply	unchecked-multiply	fn	[& number]	number	any	pure	-	numeric
-UncheckedMultiplyInt	unchecked-multiply-int	fn	[& number]	number	any	pure	-	numeric
+UncheckedAdd	unchecked-add	fn	[& number]	number	any	pure	-	uncheckedAdd
+UncheckedAddInt	unchecked-add-int	fn	[& number]	number	any	pure	-	uncheckedAddInt
+UncheckedMultiply	unchecked-multiply	fn	[& number]	number	any	pure	-	uncheckedMultiply
+UncheckedMultiplyInt	unchecked-multiply-int	fn	[& number]	number	any	pure	-	uncheckedMultiplyInt
 Subtract	-	fn	[number & number]	number	any	pure	-	subtract
 Divide	/	fn	[number & number]	number	any	pure	-	divide
-UncheckedSubtract	unchecked-subtract	fn	[number & number]	number	any	pure	-	numeric
-UncheckedSubtractInt	unchecked-subtract-int	fn	[number & number]	number	any	pure	-	numeric
-UncheckedDivideInt	unchecked-divide-int	fn	[number & number]	number	any	pure	-	numeric
-Inc	inc	fn	[number]	number	any	pure	-	numeric
-Dec	dec	fn	[number]	number	any	pure	-	numeric
-UncheckedInc	unchecked-inc	fn	[number]	number	any	pure	-	numeric
-UncheckedIncInt	unchecked-inc-int	fn	[number]	number	any	pure	-	numeric
-UncheckedDec	unchecked-dec	fn	[number]	number	any	pure	-	numeric
-UncheckedDecInt	unchecked-dec-int	fn	[number]	number	any	pure	-	numeric
-UncheckedNegate	unchecked-negate	fn	[number]	number	any	pure	-	numeric
-UncheckedNegateInt	unchecked-negate-int	fn	[number]	number	any	pure	-	numeric
-Abs	abs	fn	[number]	number	any	pure	-	numeric
-Max	max	fn	[number & number]	number	any	pure	-	numeric
-Min	min	fn	[number & number]	number	any	pure	-	numeric
-Int	int	fn	[number]	number	number	pure	-	numeric
-Long	long	fn	[number]	number	any	pure	-	numeric
-UncheckedInt	unchecked-int	fn	[number]	number	any	pure	-	numeric
-UncheckedLong	unchecked-long	fn	[number]	number	any	pure	-	numeric
-Byte	byte	fn	[number]	number	any	pure	-	numeric
-Short	short	fn	[number]	number	any	pure	-	numeric
-Float	float	fn	[number]	number	any	pure	-	numeric
-Double	double	fn	[number]	number	any	pure	-	numeric
-UncheckedByte	unchecked-byte	fn	[number]	number	any	pure	-	numeric
-UncheckedShort	unchecked-short	fn	[number]	number	any	pure	-	numeric
-UncheckedFloat	unchecked-float	fn	[number]	number	any	pure	-	numeric
-UncheckedDouble	unchecked-double	fn	[number]	number	any	pure	-	numeric
-UncheckedChar	unchecked-char	fn	[any]	any	any	pure	-	numeric
+UncheckedSubtract	unchecked-subtract	fn	[number & number]	number	any	pure	-	uncheckedSubtract
+UncheckedSubtractInt	unchecked-subtract-int	fn	[number & number]	number	any	pure	-	uncheckedSubtractInt
+UncheckedDivideInt	unchecked-divide-int	fn	[number & number]	number	any	pure	-	uncheckedDivideInt
+Inc	inc	fn	[number]	number	any	pure	-	inc
+Dec	dec	fn	[number]	number	any	pure	-	dec
+UncheckedInc	unchecked-inc	fn	[number]	number	any	pure	-	uncheckedInc
+UncheckedIncInt	unchecked-inc-int	fn	[number]	number	any	pure	-	uncheckedIncInt
+UncheckedDec	unchecked-dec	fn	[number]	number	any	pure	-	uncheckedDec
+UncheckedDecInt	unchecked-dec-int	fn	[number]	number	any	pure	-	uncheckedDecInt
+UncheckedNegate	unchecked-negate	fn	[number]	number	any	pure	-	uncheckedNegate
+UncheckedNegateInt	unchecked-negate-int	fn	[number]	number	any	pure	-	uncheckedNegateInt
+Abs	abs	fn	[number]	number	any	pure	-	abs
+Max	max	fn	[number & number]	number	any	pure	-	max
+Min	min	fn	[number & number]	number	any	pure	-	min
+Int	int	fn	[number]	number	number	pure	-	int
+Long	long	fn	[number]	number	any	pure	-	long
+UncheckedInt	unchecked-int	fn	[number]	number	any	pure	-	uncheckedInt
+UncheckedLong	unchecked-long	fn	[number]	number	any	pure	-	uncheckedLong
+Byte	byte	fn	[number]	number	any	pure	-	byte
+Short	short	fn	[number]	number	any	pure	-	short
+Float	float	fn	[number]	number	any	pure	-	float
+Double	double	fn	[number]	number	any	pure	-	double
+UncheckedByte	unchecked-byte	fn	[number]	number	any	pure	-	uncheckedByte
+UncheckedShort	unchecked-short	fn	[number]	number	any	pure	-	uncheckedShort
+UncheckedFloat	unchecked-float	fn	[number]	number	any	pure	-	uncheckedFloat
+UncheckedDouble	unchecked-double	fn	[number]	number	any	pure	-	uncheckedDouble
+UncheckedChar	unchecked-char	fn	[any]	any	any	pure	-	uncheckedChar
 Char	char	fn	[number]	string	string	pure	-	char
-Longs	longs	fn	[any]	any	any	pure	-	numeric
-Doubles	doubles	fn	[any]	any	any	pure	-	numeric
-Floats	floats	fn	[any]	any	any	pure	-	numeric
-Ints	ints	fn	[any]	any	any	pure	-	numeric
-Shorts	shorts	fn	[any]	any	any	pure	-	numeric
-Chars	chars	fn	[any]	any	any	pure	-	numeric
-Bytes	bytes	fn	[any]	any	any	pure	-	numeric
-Booleans	booleans	fn	[any]	any	any	pure	-	numeric
-JsMod	js-mod	fn	[number number]	number	any	pure	-	numeric
+Longs	longs	fn	[any]	any	any	pure	-	longs
+Doubles	doubles	fn	[any]	any	any	pure	-	doubles
+Floats	floats	fn	[any]	any	any	pure	-	floats
+Ints	ints	fn	[any]	any	any	pure	-	ints
+Shorts	shorts	fn	[any]	any	any	pure	-	shorts
+Chars	chars	fn	[any]	any	any	pure	-	chars
+Bytes	bytes	fn	[any]	any	any	pure	-	bytes
+Booleans	booleans	fn	[any]	any	any	pure	-	booleans
+JsMod	js-mod	fn	[number number]	number	any	pure	-	jsMod
 Mod	mod	fn	[number number]	number	any	pure	-	mod
 Quot	quot	fn	[number number]	number	any	pure	-	quot
-Rem	rem	fn	[number number]	number	any	pure	-	numeric
-UncheckedRemainderInt	unchecked-remainder-int	fn	[number number]	number	any	pure	-	numeric
-BitXor	bit-xor	fn	[number number & number]	number	any	pure	-	numeric
-BitAnd	bit-and	fn	[number number & number]	number	any	pure	-	numeric
-BitOr	bit-or	fn	[number number & number]	number	any	pure	-	numeric
-BitAndNot	bit-and-not	fn	[number number & number]	number	any	pure	-	numeric
-BitNot	bit-not	fn	[number]	number	any	pure	-	numeric
-BitClear	bit-clear	fn	[number number]	number	any	pure	-	numeric
-BitFlip	bit-flip	fn	[number number]	number	any	pure	-	numeric
-BitSet	bit-set	fn	[number number]	number	any	pure	-	numeric
-BitShiftLeft	bit-shift-left	fn	[number number]	number	any	pure	-	numeric
-BitShiftRight	bit-shift-right	fn	[number number]	number	any	pure	-	numeric
-BitShiftRightZeroFill	bit-shift-right-zero-fill	fn	[number number]	number	any	pure	-	numeric
-UnsignedBitShiftRight	unsigned-bit-shift-right	fn	[number number]	number	any	pure	-	numeric
-BitTest	bit-test	fn	[number number]	boolean	boolean	pure	-	numeric
+Rem	rem	fn	[number number]	number	any	pure	-	rem
+UncheckedRemainderInt	unchecked-remainder-int	fn	[number number]	number	any	pure	-	uncheckedRemainderInt
+BitXor	bit-xor	fn	[number number & number]	number	any	pure	-	bitXor
+BitAnd	bit-and	fn	[number number & number]	number	any	pure	-	bitAnd
+BitOr	bit-or	fn	[number number & number]	number	any	pure	-	bitOr
+BitAndNot	bit-and-not	fn	[number number & number]	number	any	pure	-	bitAndNot
+BitNot	bit-not	fn	[number]	number	any	pure	-	bitNot
+BitClear	bit-clear	fn	[number number]	number	any	pure	-	bitClear
+BitFlip	bit-flip	fn	[number number]	number	any	pure	-	bitFlip
+BitSet	bit-set	fn	[number number]	number	any	pure	-	bitSet
+BitShiftLeft	bit-shift-left	fn	[number number]	number	any	pure	-	bitShiftLeft
+BitShiftRight	bit-shift-right	fn	[number number]	number	any	pure	-	bitShiftRight
+BitShiftRightZeroFill	bit-shift-right-zero-fill	fn	[number number]	number	any	pure	-	bitShiftRightZeroFill
+UnsignedBitShiftRight	unsigned-bit-shift-right	fn	[number number]	number	any	pure	-	unsignedBitShiftRight
+BitTest	bit-test	fn	[number number]	boolean	boolean	pure	-	bitTest
 BitCount	bit-count	fn	[number]	number	any	pure	-	bitCount
-Less	<	fn	[number & number]	boolean	boolean	pure	-	numeric
-LessEqual	<=	fn	[number & number]	boolean	boolean	pure	-	numeric
-Greater	>	fn	[number & number]	boolean	boolean	pure	-	numeric
-GreaterEqual	>=	fn	[number & number]	boolean	boolean	pure	-	numeric
-NumericEqual	==	fn	[number & number]	boolean	boolean	pure	-	numeric
+Less	<	fn	[number & number]	boolean	boolean	pure	-	less
+LessEqual	<=	fn	[number & number]	boolean	boolean	pure	-	lessEqual
+Greater	>	fn	[number & number]	boolean	boolean	pure	-	greater
+GreaterEqual	>=	fn	[number & number]	boolean	boolean	pure	-	greaterEqual
+NumericEqual	==	fn	[number & number]	boolean	boolean	pure	-	numericEqual
 ParseLong	parse-long	fn	[string]	nil|number	any	pure	-	parseLong
 ParseDouble	parse-double	fn	[string]	nil|number	any	pure	-	parseDouble
 ParseBoolean	parse-boolean	fn	[string]	nil|boolean	any	pure	-	parseBoolean
 ParseUuid	parse-uuid	fn	[string]	nil|object	any	allocates	-	parseUuid
-Rand	rand	fn	[] [number]	number	any	effect	-	hostRand
+Rand	rand	fn	[] [number]	number	any	effect	-	coreCells
 RandInt	rand-int	fn	[number]	number	any	effect	-	hostRandInt
 RandNth	rand-nth	fn	[seqable]	any	any	effect	dispatch	hostRandNth
 Shuffle	shuffle	fn	[seqable]	vector	any	effect	dispatch	hostShuffle
 RandomUuid	random-uuid	fn	[]	object	any	effect	-	hostRandomUuid
 ;;
 ;; Predicates
-IsZero	zero?	fn	[any]	boolean	boolean	pure	-	numeric
+IsZero	zero?	fn	[any]	boolean	boolean	pure	-	isZero
 IsInteger	integer?	fn	[any]	boolean	boolean	pure	-	isInteger
-IsInt	int?	fn	[any]	boolean	boolean	pure	-	numeric
-IsNumber	number?	fn	[any]	boolean	boolean	pure	-	numeric
-IsFloat	float?	fn	[any]	boolean	boolean	pure	-	numeric
-IsDouble	double?	fn	[any]	boolean	boolean	pure	-	numeric
-IsInfinite	infinite?	fn	[any]	boolean	boolean	pure	-	numeric
-IsPositive	pos?	fn	[number]	boolean	boolean	pure	-	numeric
-IsNegative	neg?	fn	[number]	boolean	boolean	pure	-	numeric
-IsPositiveInt	pos-int?	fn	[number]	boolean	boolean	pure	-	numeric
-IsNegativeInt	neg-int?	fn	[number]	boolean	boolean	pure	-	numeric
-IsNaturalInt	nat-int?	fn	[number]	boolean	boolean	pure	-	numeric
-IsNaN	NaN?	fn	[number]	boolean	boolean	pure	-	numeric
+IsInt	int?	fn	[any]	boolean	boolean	pure	-	isInt
+IsNumber	number?	fn	[any]	boolean	boolean	pure	-	isNumber
+IsFloat	float?	fn	[any]	boolean	boolean	pure	-	isFloat
+IsDouble	double?	fn	[any]	boolean	boolean	pure	-	isDouble
+IsInfinite	infinite?	fn	[any]	boolean	boolean	pure	-	isInfinite
+IsPositive	pos?	fn	[number]	boolean	boolean	pure	-	isPositive
+IsNegative	neg?	fn	[number]	boolean	boolean	pure	-	isNegative
+IsPositiveInt	pos-int?	fn	[number]	boolean	boolean	pure	-	isPositiveInt
+IsNegativeInt	neg-int?	fn	[number]	boolean	boolean	pure	-	isNegativeInt
+IsNaturalInt	nat-int?	fn	[number]	boolean	boolean	pure	-	isNaturalInt
+IsNaN	NaN?	fn	[number]	boolean	boolean	pure	-	isNaNCore
 IsEven	even?	fn	[number]	boolean	boolean	throws	-	isEven
-IsOdd	odd?	fn	[number]	boolean	boolean	throws	-	numeric
-Boolean	boolean	fn	[any]	boolean	boolean	pure	-	predicates
-Not	not	fn	[any]	boolean	boolean	pure	-	predicates
-IsBoolean	boolean?	fn	[any]	boolean	boolean	pure	-	predicates
-IsTrue	true?	fn	[any]	boolean	boolean	pure	-	predicates
-IsFalse	false?	fn	[any]	boolean	boolean	pure	-	predicates
-IsNil	nil?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSome	some?	fn	[any]	boolean	boolean	pure	-	predicates
-IsUndefined	undefined?	fn	[any]	boolean	boolean	pure	-	predicates
-IsAny	any?	fn	[any]	boolean	boolean	pure	-	predicates
-IsString	string?	fn	[any]	boolean	boolean	pure	-	predicates
-IsChar	char?	fn	[any]	boolean	boolean	pure	-	predicates
-IsKeyword	keyword?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSymbol	symbol?	fn	[any]	boolean	boolean	pure	-	predicates
+IsOdd	odd?	fn	[number]	boolean	boolean	throws	-	isOdd
+Boolean	boolean	fn	[any]	boolean	boolean	pure	-	boolean
+Not	not	fn	[any]	boolean	boolean	pure	-	not
+IsBoolean	boolean?	fn	[any]	boolean	boolean	pure	-	isBoolean
+IsTrue	true?	fn	[any]	boolean	boolean	pure	-	isTrue
+IsFalse	false?	fn	[any]	boolean	boolean	pure	-	isFalse
+IsNil	nil?	fn	[any]	boolean	boolean	pure	-	isNil
+IsSome	some?	fn	[any]	boolean	boolean	pure	-	isSome
+IsUndefined	undefined?	fn	[any]	boolean	boolean	pure	-	isUndefined
+IsAny	any?	fn	[any]	boolean	boolean	pure	-	isAny
+IsString	string?	fn	[any]	boolean	boolean	pure	-	isString
+IsChar	char?	fn	[any]	boolean	boolean	pure	-	isChar
+IsKeyword	keyword?	fn	[any]	boolean	boolean	pure	-	isKeyword
+IsSymbol	symbol?	fn	[any]	boolean	boolean	pure	-	isSymbol
 IsIdent	ident?	fn	[any]	boolean	boolean	pure	-	isIdent
-IsSimpleIdent	simple-ident?	fn	[any]	boolean	boolean	pure	-	predicates
-IsQualifiedIdent	qualified-ident?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSimpleKeyword	simple-keyword?	fn	[any]	boolean	boolean	pure	-	predicates
-IsQualifiedKeyword	qualified-keyword?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSimpleSymbol	simple-symbol?	fn	[any]	boolean	boolean	pure	-	predicates
-IsQualifiedSymbol	qualified-symbol?	fn	[any]	boolean	boolean	pure	-	predicates
-IsFn	fn?	fn	[any]	boolean	boolean	pure	-	predicates
-IsIFn	ifn?	fn	[any]	boolean	boolean	pure	-	predicates
-IsArray	array?	fn	[any]	boolean	boolean	pure	-	predicates
-IsObject	object?	fn	[any]	boolean	boolean	pure	-	predicates
-IsColl	coll?	fn	[any]	boolean	boolean	pure	-	predicates
-IsList	list?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSeq	seq?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSeqable	seqable?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSequential	sequential?	fn	[any]	boolean	boolean	pure	-	predicates
-IsVector	vector?	fn	[any]	boolean	boolean	pure	-	predicates
-IsMap	map?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSet	set?	fn	[any]	boolean	boolean	pure	-	predicates
-IsAssociative	associative?	fn	[any]	boolean	boolean	pure	-	predicates
-IsIFind	ifind?	fn	[any]	boolean	boolean	pure	-	predicates
-IsCounted	counted?	fn	[any]	boolean	boolean	pure	-	predicates
-IsIndexed	indexed?	fn	[any]	boolean	boolean	pure	-	predicates
-IsReduceable	reduceable?	fn	[any]	boolean	boolean	pure	-	predicates
-IsReversible	reversible?	fn	[any]	boolean	boolean	pure	-	predicates
-IsSorted	sorted?	fn	[any]	boolean	boolean	pure	-	predicates
-IsRecord	record?	fn	[any]	boolean	boolean	pure	-	predicates
-IsMapEntry	map-entry?	fn	[any]	boolean	boolean	pure	-	predicates
-IsChunkedSeq	chunked-seq?	fn	[any]	boolean	boolean	pure	-	predicates
-IsCloneable	cloneable?	fn	[any]	boolean	boolean	pure	-	core
-IsIterable	iterable?	fn	[any]	boolean	boolean	pure	-	core
+IsSimpleIdent	simple-ident?	fn	[any]	boolean	boolean	pure	-	isSimpleIdent
+IsQualifiedIdent	qualified-ident?	fn	[any]	boolean	boolean	pure	-	isQualifiedIdent
+IsSimpleKeyword	simple-keyword?	fn	[any]	boolean	boolean	pure	-	isSimpleKeyword
+IsQualifiedKeyword	qualified-keyword?	fn	[any]	boolean	boolean	pure	-	isQualifiedKeyword
+IsSimpleSymbol	simple-symbol?	fn	[any]	boolean	boolean	pure	-	isSimpleSymbol
+IsQualifiedSymbol	qualified-symbol?	fn	[any]	boolean	boolean	pure	-	isQualifiedSymbol
+IsFn	fn?	fn	[any]	boolean	boolean	pure	-	isFn
+IsIFn	ifn?	fn	[any]	boolean	boolean	pure	-	isIFn
+IsArray	array?	fn	[any]	boolean	boolean	pure	-	isArray
+IsObject	object?	fn	[any]	boolean	boolean	pure	-	isObject
+IsColl	coll?	fn	[any]	boolean	boolean	pure	-	isColl
+IsList	list?	fn	[any]	boolean	boolean	pure	-	isList
+IsSeq	seq?	fn	[any]	boolean	boolean	pure	-	isSeq
+IsSeqable	seqable?	fn	[any]	boolean	boolean	pure	-	isSeqable
+IsSequential	sequential?	fn	[any]	boolean	boolean	pure	-	isSequential
+IsVector	vector?	fn	[any]	boolean	boolean	pure	-	isVector
+IsMap	map?	fn	[any]	boolean	boolean	pure	-	isMap
+IsSet	set?	fn	[any]	boolean	boolean	pure	-	isSet
+IsAssociative	associative?	fn	[any]	boolean	boolean	pure	-	isAssociative
+IsIFind	ifind?	fn	[any]	boolean	boolean	pure	-	isIFind
+IsCounted	counted?	fn	[any]	boolean	boolean	pure	-	isCounted
+IsIndexed	indexed?	fn	[any]	boolean	boolean	pure	-	isIndexed
+IsReduceable	reduceable?	fn	[any]	boolean	boolean	pure	-	isReduceable
+IsReversible	reversible?	fn	[any]	boolean	boolean	pure	-	isReversible
+IsSorted	sorted?	fn	[any]	boolean	boolean	pure	-	isSorted
+IsRecord	record?	fn	[any]	boolean	boolean	pure	-	isRecord
+IsMapEntry	map-entry?	fn	[any]	boolean	boolean	pure	-	isMapEntry
+IsChunkedSeq	chunked-seq?	fn	[any]	boolean	boolean	pure	-	isChunkedSeq
+IsCloneable	cloneable?	fn	[any]	boolean	boolean	pure	-	isCloneable
+IsIterable	iterable?	fn	[any]	boolean	boolean	pure	-	isIterable
 IsReduced	reduced?	fn	[any]	boolean	boolean	pure	-	isReduced
-IsDelay	delay?	fn	[any]	boolean	boolean	pure	-	core
+IsDelay	delay?	fn	[any]	boolean	boolean	pure	-	isDelay
 IsVolatile	volatile?	fn	[any]	boolean	boolean	pure	-	isVolatile
-IsVar	var?	fn	[any]	boolean	boolean	pure	-	core
-IsUuid	uuid?	fn	[any]	boolean	boolean	pure	-	core
-IsInst	inst?	fn	[any]	boolean	boolean	pure	-	core
-IsRegex	regexp?	fn	[any]	boolean	boolean	pure	-	core
-IsTaggedLiteral	tagged-literal?	fn	[any]	boolean	boolean	pure	-	core
+IsVar	var?	fn	[any]	boolean	boolean	pure	-	isVar
+IsUuid	uuid?	fn	[any]	boolean	boolean	pure	-	isUuid
+IsInst	inst?	fn	[any]	boolean	boolean	pure	-	isInst
+IsRegex	regexp?	fn	[any]	boolean	boolean	pure	-	isRegex
+IsTaggedLiteral	tagged-literal?	fn	[any]	boolean	boolean	pure	-	isTaggedLiteral
 JsIterable	js-iterable?	fn	[any]	boolean	boolean	pure	-	jsIterable
 IsJsSymbol	js-symbol?	fn	[any]	boolean	boolean	pure	-	isJsSymbol
 IsSpecialSymbol	special-symbol?	fn	[any]	boolean	boolean	pure	-	isSpecialSymbol
-IsUri	uri?	fn	[any]	boolean	boolean	pure	-	core
+IsUri	uri?	fn	[any]	boolean	boolean	pure	-	isUri
 Satisfies	satisfies?	fn	[fn any]	boolean	boolean	pure	-	satisfies
 Implements	implements?	fn	[fn any]	boolean	boolean	pure	-	implementsProtocol
-IsInstance	instance?	fn	[fn any]	boolean	boolean	throws	-	core
-Type	type	fn	[any]	nil|fn	any	pure	-	core
+IsInstance	instance?	fn	[fn any]	boolean	boolean	throws	-	isInstance
+Type	type	fn	[any]	nil|fn	any	pure	-	type
 ;;
 ;; Reduced, delays, references
 Reduced	reduced	fn	[any]	object	object	allocates	-	reduced
@@ -734,13 +734,13 @@ Pr	pr	fn	[& any]	nil	any	effect	dispatch	pr
 Prn	prn	fn	[& any]	nil	any	effect	dispatch	prn
 Println	println	fn	[& any]	nil	any	effect	dispatch	println
 Newline	newline	fn	[]	nil	any	effect	-	newline
-WriteAll	write-all	fn	-	any	any	effect	invoke	core
+WriteAll	write-all	fn	-	any	any	effect	invoke	writeAll
 RePattern	re-pattern	fn	[string]	host	any	throws	-	rePattern
-ReFind	re-find	fn	[host string]	nil|string|vector	any	effect	-	core
-ReMatches	re-matches	fn	[host string]	nil|string|vector	any	effect	-	core
+ReFind	re-find	fn	[host string]	nil|string|vector	any	effect	-	reFind
+ReMatches	re-matches	fn	[host string]	nil|string|vector	any	effect	-	reMatches
 ReSeq	re-seq	fn	[host string]	nil|seq|list	any	effect	-	reSeq
 Uuid	uuid	fn	[string]	object	any	allocates	-	uuid
-InstMs	inst-ms	fn	[host]	number	any	effect	-	core
+InstMs	inst-ms	fn	[host]	number	any	effect	-	instMs
 TaggedLiteral	tagged-literal	fn	[symbol any]	object	any	allocates	-	taggedLiteral
 ;;
 ;; Interop and exceptions

@@ -1,21 +1,23 @@
 //! Advanced-mode runtime slicing (docs/advanced-optimization.md, Phase 1
-//! step 2) and the retention report.
+//! steps 2 and 3) and the retention report.
 //!
 //! The emitter writes every runtime read through one helper that records a
-//! [`RuntimeName`] (`rt.keyword`, `rt.core.add`) together with the expression
-//! being emitted, so emission itself reports the roots of the slice rather
-//! than a scan of the output (debug builds only check the record against the
-//! output). At [`OptimizationLevel::Advanced`] application
-//! output embeds only the units reachable from those roots over the unit
-//! manifest ([`RuntimeManifest::reachable`]), in runtime order, with an export
-//! section that lists only the exports the program reads. Every other level,
-//! and the shared runtime of the REPL, macro host and deferred units, embeds
-//! the whole runtime.
+//! [`RuntimeName`] together with the expression being emitted, so emission
+//! itself reports the roots of the slice rather than a scan of the output
+//! (debug builds only check the record against the output). Below
+//! [`OptimizationLevel::Advanced`], and for the shared runtime of the REPL,
+//! macro host and deferred units, the output embeds the whole runtime and
+//! reads it through its exports (`rt.keyword`, `rt.core.add`).
 //!
-//! A root `rt.<export>` or `rt.<export>.<member>` keeps the unit declaring
-//! `<export>`. Until the `core` hub is dismantled, any `rt.core.<name>` read
-//! therefore keeps the hub and, through its requires, nearly every unit; so
-//! does the namespace registration that accompanies the runtime.
+//! At `Advanced`, application output reads runtime bindings directly. A core
+//! operation `rt.core.<name>` resolves through the core table
+//! ([`RuntimeManifest::core_reference`]) to the binding holding it (`add`), a
+//! member of one (`builtinTypes.PersistentVector`) or a cell
+//! (`coreCells.printFn`). The output embeds only the units reachable from the
+//! roots over the unit manifest ([`RuntimeManifest::reachable`]), in runtime
+//! order; the slice returns the bindings the program reads as an array, which
+//! the output destructures into `rt$<binding>` constants. A root keeps the unit
+//! declaring its binding, so the `core` hub stays out of application slices.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -24,46 +26,64 @@ use crate::analyzer::{ExprId, Program, Span};
 use crate::application::OptimizationLevel;
 use crate::runtime_manifest::{RuntimeManifest, UnitId};
 
-/// A runtime name emitted code reads: `rt.<export>` or `rt.<export>.<member>`.
-/// `export` is a binding of the runtime's export section; `member` is a
-/// property read from it, such as the runtime name of a
-/// [`CoreFnId`](crate::CoreFnId).
+/// A runtime name emitted code reads: a top-level runtime binding, optionally
+/// a property (`member`) read from it, such as the runtime name of a
+/// [`CoreFnId`](crate::CoreFnId). Below `Advanced` the binding is an export
+/// read through the runtime object, `rt.<binding>[.<member>]`. At `Advanced`
+/// the output declares each binding it reads as `rt$<binding>`
+/// ([`RuntimeName::direct`]) and reads `rt$<binding>[.<member>]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RuntimeName {
-    pub export: &'static str,
+    pub binding: &'static str,
     pub member: Option<&'static str>,
+    /// Whether the output reads the binding directly, as `rt$<binding>`.
+    pub direct: bool,
 }
 
 impl RuntimeName {
     /// `rt.<name>`.
     pub const fn export(name: &'static str) -> Self {
         Self {
-            export: name,
+            binding: name,
             member: None,
+            direct: false,
         }
     }
 
     /// `rt.core.<member>`.
     pub const fn core(member: &'static str) -> Self {
         Self {
-            export: "core",
+            binding: "core",
             member: Some(member),
+            direct: false,
         }
     }
 
     /// `rt.compilerForms.<member>`.
     pub const fn compiler_forms(member: &'static str) -> Self {
         Self {
-            export: "compilerForms",
+            binding: "compilerForms",
             member: Some(member),
+            direct: false,
+        }
+    }
+
+    /// `rt$<binding>[.<member>]`: the `Advanced` spelling, where `binding` is
+    /// any runtime binding the slice keeps, exported or not.
+    pub const fn direct(binding: &'static str, member: Option<&'static str>) -> Self {
+        Self {
+            binding,
+            member,
+            direct: true,
         }
     }
 }
 
-/// The emitted spelling, `rt.core.add`.
+/// The emitted spelling, `rt.core.add` or `rt$add`.
 impl fmt::Display for RuntimeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "rt.{}", self.export)?;
+        let separator = if self.direct { '$' } else { '.' };
+        write!(f, "rt{separator}{}", self.binding)?;
         if let Some(member) = self.member {
             write!(f, ".{member}")?;
         }
@@ -92,20 +112,41 @@ impl RuntimeRoots {
         self.names.is_empty()
     }
 
-    /// Whether `rt.<export>[.<member>]` was demanded.
-    pub(crate) fn contains(&self, export: &str, member: Option<&str>) -> bool {
+    /// Whether `rt.<binding>[.<member>]` was demanded.
+    #[cfg(any(debug_assertions, test))]
+    pub(crate) fn contains(&self, binding: &str, member: Option<&str>) -> bool {
         self.names
             .iter()
-            .any(|(name, _)| name.export == export && name.member == member)
+            .any(|(name, _)| !name.direct && name.binding == binding && name.member == member)
     }
 
-    /// The unit declaring each root's export, in root order.
+    /// Whether some `rt$<binding>[.<member>]` was demanded.
+    #[cfg(any(debug_assertions, test))]
+    pub(crate) fn contains_direct(&self, binding: &str) -> bool {
+        self.names
+            .iter()
+            .any(|(name, _)| name.direct && name.binding == binding)
+    }
+
+    /// The bindings of the direct roots, each once, in first-demand order:
+    /// what an `Advanced` runtime slice returns.
+    pub(crate) fn direct_bindings(&self) -> Vec<&'static str> {
+        let mut bindings: Vec<&'static str> = Vec::new();
+        for (name, _) in &self.names {
+            if name.direct && !bindings.contains(&name.binding) {
+                bindings.push(name.binding);
+            }
+        }
+        bindings
+    }
+
+    /// The unit declaring each root's binding, in root order.
     fn units(&self, manifest: &RuntimeManifest) -> Vec<UnitId> {
         self.names
             .iter()
             .map(|(name, _)| {
                 manifest
-                    .unit_of(name.export)
+                    .unit_of(name.binding)
                     .unwrap_or_else(|| panic!("{name} is not a runtime binding"))
             })
             .collect()
@@ -131,26 +172,18 @@ pub(crate) struct EmittedRuntime {
     pub(crate) bytes: usize,
 }
 
-/// The `Advanced` runtime factory for `roots`: the units they reach, and an
-/// export section with the exports they read, in export-section order.
-pub(crate) fn sliced_runtime(roots: &RuntimeRoots) -> String {
+/// The `Advanced` runtime factory for `roots`, which are all direct: the units
+/// they reach, returning the bindings they read as an array in
+/// [`RuntimeRoots::direct_bindings`] order, which the output destructures.
+pub(crate) fn sliced_runtime(roots: &RuntimeRoots) -> (String, Vec<&'static str>) {
+    debug_assert!(
+        roots.names.iter().all(|(name, _)| name.direct),
+        "Advanced output reads every runtime name directly"
+    );
     let manifest = RuntimeManifest::embedded();
     let kept = manifest.reachable(roots.units(manifest));
-    let exports = manifest
-        .exports
-        .names
-        .iter()
-        .copied()
-        .filter(|export| roots.names.iter().any(|(name, _)| name.export == *export))
-        .collect::<Vec<_>>();
-    debug_assert!(
-        roots
-            .names
-            .iter()
-            .all(|(name, _)| exports.contains(&name.export)),
-        "every runtime root reads an exported binding"
-    );
-    manifest.sliced_text(&kept, &exports)
+    let bindings = roots.direct_bindings();
+    (manifest.sliced_bindings_text(&kept, &bindings), bindings)
 }
 
 /// What first demanded a runtime name.
@@ -188,7 +221,7 @@ impl fmt::Display for Demand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeRoot {
     pub name: RuntimeName,
-    /// The unit declaring the name's export binding.
+    /// The unit declaring the name's binding.
     pub unit: UnitId,
     pub demand: Demand,
 }
@@ -405,6 +438,19 @@ mod tests {
         );
         assert!(roots.contains("core", Some("add")));
         assert!(!roots.contains("core", None));
+        assert!(roots.direct_bindings().is_empty());
+
+        let direct = RuntimeName::direct("coreCells", Some("printFn"));
+        assert_eq!(direct.to_string(), "rt$coreCells.printFn");
+        assert_eq!(RuntimeName::direct("add", None).to_string(), "rt$add");
+        let mut roots = RuntimeRoots::default();
+        roots.demand(direct, Some(ExprId(1)));
+        roots.demand(RuntimeName::direct("add", None), None);
+        roots.demand(RuntimeName::direct("coreCells", Some("printLength")), None);
+        assert!(
+            roots.contains_direct("coreCells") && !roots.contains("coreCells", Some("printFn"))
+        );
+        assert_eq!(roots.direct_bindings(), ["coreCells", "add"]);
         assert_eq!(thousands(334_504), "334,504");
         assert_eq!(thousands(999), "999");
     }

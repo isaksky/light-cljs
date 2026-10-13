@@ -7,7 +7,17 @@ use crate::analyzer::{
     Program, RecurTargetId, StringId,
 };
 use crate::application::OptimizationLevel;
+use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
 use crate::runtime_slice::{EmittedRuntime, RuntimeEmbedding, RuntimeName, RuntimeRoots};
+
+/// What `rt.core.<name>` holds in the embedded runtime's core table.
+fn core_reference(name: &str) -> CoreReference<'static> {
+    RuntimeManifest::embedded()
+        .core_reference(name)
+        .unwrap_or_else(|| {
+            panic!("core operation `{name}` is missing from the runtime's core table")
+        })
+}
 
 /// Emit one JavaScript expression whose value is the last source form (or nil).
 /// The result is self-contained. The default Rust application preparation pass
@@ -16,13 +26,16 @@ pub fn emit_js(program: &Program) -> String {
     crate::application::prepare_application(program, Default::default()).emit_js()
 }
 
-/// Emit a prepared application. At `Advanced` the output embeds only the
-/// runtime units its runtime reads reach (see [`crate::runtime_slice`]).
+/// Emit a prepared application. At `Advanced` the output reads runtime
+/// bindings directly and embeds only the units those reads reach (see
+/// [`crate::runtime_slice`]); `replaced_core` lists the runtime names of the
+/// core operations the program may replace, which it reads through cells.
 pub(crate) fn emit_application(
     program: &Program,
     globals: &[bool],
     calls: &std::collections::HashMap<ExprId, usize>,
     level: OptimizationLevel,
+    replaced_core: &[&'static str],
     module: bool,
 ) -> (String, EmittedRuntime) {
     emit_js_mode(
@@ -30,9 +43,26 @@ pub(crate) fn emit_application(
         None,
         false,
         false,
-        Some((globals, calls, level.advanced())),
+        Some(Application {
+            globals,
+            calls,
+            direct: level.advanced().then_some(replaced_core),
+        }),
         module,
     )
+}
+
+/// What application preparation decided for emission.
+#[derive(Clone, Copy)]
+struct Application<'a> {
+    /// Retained globals, by `GlobalId`.
+    globals: &'a [bool],
+    /// Calls specialized to a fixed arity entry.
+    calls: &'a std::collections::HashMap<ExprId, usize>,
+    /// At `Advanced`: read runtime bindings directly from a runtime slice. The
+    /// runtime names of the core operations the program may replace, sorted; their
+    /// reads and writes go through an output-level cell, `core$<name>`.
+    direct: Option<&'a [&'static str]>,
 }
 
 /// Emit one ES module for a bundler instead of a bare expression. Each package
@@ -76,17 +106,20 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
     )
 }
 
-/// `application` carries the retained globals, the specialized calls and
-/// whether to slice the runtime (`Advanced`). The returned runtime report lists
-/// every runtime name the output reads.
+/// `application` carries the decisions of application preparation, including
+/// whether to read a runtime slice directly (`Advanced`). The returned runtime
+/// report lists every runtime name the output reads.
 fn emit_js_mode(
     program: &Program,
     shared: Option<&str>,
     demand_roots: bool,
     application_roots: bool,
-    application: Option<(&[bool], &std::collections::HashMap<ExprId, usize>, bool)>,
+    application: Option<Application<'_>>,
     module: bool,
 ) -> (String, EmittedRuntime) {
+    let direct = application
+        .and_then(|application| application.direct)
+        .filter(|_| shared.is_none());
     let mut emitter = Emitter {
         program,
         demand_roots,
@@ -94,7 +127,9 @@ fn emit_js_mode(
         needs_host: false,
         needs_package: false,
         imports: module.then(Vec::new),
-        specialized_calls: application.map(|(_, calls, _)| calls),
+        specialized_calls: application.map(|application| application.calls),
+        replaced_core: direct,
+        core_cells: Vec::new(),
         output: String::new(),
         indent: 1,
         captures: Vec::new(),
@@ -116,14 +151,19 @@ fn emit_js_mode(
         if application_roots {
             break;
         }
-        if application.is_some_and(|(globals, _, _)| !globals[global]) {
+        if application.is_some_and(|application| !application.globals[global]) {
             continue;
         }
         writeln!(emitter.output, "  let g{global};").unwrap();
     }
     emitter.emit(program.root, ExprContext::Return);
     #[cfg(debug_assertions)]
-    check_runtime_reads(&emitter.output, &emitter.raw_segments, &emitter.runtime);
+    check_runtime_reads(
+        &emitter.output,
+        &emitter.raw_segments,
+        &emitter.runtime,
+        &emitter.core_cells,
+    );
     emitter.output.push_str("})()\n");
     if emitter.needs_host || emitter.needs_package {
         let mut host = String::new();
@@ -144,7 +184,7 @@ fn emit_js_mode(
     }
     // Advanced application output embeds the units its runtime reads reach;
     // everything else keeps the whole runtime under the expression-kind test.
-    let slice = shared.is_none() && application.is_some_and(|(_, _, slice)| slice);
+    let slice = direct.is_some();
     let embed = if slice {
         !emitter.runtime.is_empty()
     } else {
@@ -162,8 +202,7 @@ fn emit_js_mode(
             let previous = std::mem::take(&mut emitter.output);
             emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
             let literal = std::mem::replace(&mut emitter.output, previous);
-            let register = RuntimeName::core("registerReaderNamespace");
-            emitter.runtime.demand(register, None);
+            let register = emitter.runtime_read(RuntimeName::core("registerReaderNamespace"), None);
             writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
             if let Some(context) = program.reader_contexts.get(namespace) {
                 for (alias, target) in &context.aliases {
@@ -224,15 +263,12 @@ fn emit_js_mode(
         if shared.is_none()
             && let Some(namespace) = program.namespaces.last()
         {
-            let names = [
+            let [current, the_ns, symbol] = [
                 RuntimeName::core("currentNs"),
                 RuntimeName::core("theNs"),
                 RuntimeName::export("symbol"),
-            ];
-            for name in names {
-                emitter.runtime.demand(name, None);
-            }
-            let [current, the_ns, symbol] = names;
+            ]
+            .map(|name| emitter.runtime_read(name, None));
             writeln!(
                 registration,
                 "  {current} = {the_ns}({symbol}(null, {}));",
@@ -242,18 +278,31 @@ fn emit_js_mode(
         }
         let mut runtime = if let Some(parameter) = shared {
             format!("  const rt = {parameter};\n")
-        } else {
-            let factory = if slice {
-                embedding = RuntimeEmbedding::Slice;
-                std::borrow::Cow::Owned(crate::runtime_slice::sliced_runtime(&emitter.runtime))
-            } else {
-                embedding = RuntimeEmbedding::Whole;
-                std::borrow::Cow::Borrowed(crate::runtime_manifest::RUNTIME)
-            };
+        } else if slice {
+            // `const [rt$add, rt$symbol] = (() => { ...; return [add, symbol]; })();`
+            embedding = RuntimeEmbedding::Slice;
+            let (factory, bindings) = crate::runtime_slice::sliced_runtime(&emitter.runtime);
             runtime_bytes = factory.trim().len();
-            format!("  const rt = {};\n", factory.trim())
+            let pattern = bindings
+                .iter()
+                .map(|binding| format!("rt${binding}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("  const [{pattern}] = {};\n", factory.trim())
+        } else {
+            embedding = RuntimeEmbedding::Whole;
+            runtime_bytes = crate::runtime_manifest::RUNTIME.trim().len();
+            format!(
+                "  const rt = {};\n",
+                crate::runtime_manifest::RUNTIME.trim()
+            )
         };
         let source_length = runtime.len();
+        // The cells of the core operations the program may replace start as the
+        // operations: `let core$inc = rt$inc;`.
+        for (name, initial) in &emitter.core_cells {
+            writeln!(runtime, "  let core${name} = {initial};").unwrap();
+        }
         runtime.push_str(&registration);
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
@@ -328,11 +377,17 @@ fn reads_runtime(program: &Program, used: &HashSet<ExprId>) -> bool {
     })
 }
 
-/// Debug check that every `rt.<export>[.<member>]` read in emitted code outside
-/// raw JavaScript was recorded through [`Emitter::rt`]: a read the roots miss
-/// would be absent from an `Advanced` runtime slice.
+/// Debug check that every runtime read in emitted code outside raw JavaScript
+/// was recorded through [`Emitter::rt`]: each `rt.<binding>[.<member>]`, each
+/// `rt$<binding>` (`Advanced`) and each `core$<name>` cell. A read the roots
+/// miss would be absent from an `Advanced` runtime slice.
 #[cfg(debug_assertions)]
-fn check_runtime_reads(output: &str, raw: &[std::ops::Range<usize>], roots: &RuntimeRoots) {
+fn check_runtime_reads(
+    output: &str,
+    raw: &[std::ops::Range<usize>],
+    roots: &RuntimeRoots,
+    core_cells: &[(&str, RuntimeName)],
+) {
     let bytes = output.as_bytes();
     let identifier = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$');
     let mut raw = raw.to_vec();
@@ -360,7 +415,23 @@ fn check_runtime_reads(output: &str, raw: &[std::ops::Range<usize>], roots: &Run
             while at < end && identifier(bytes[at]) {
                 at += 1;
             }
-            if &output[start..at] != "rt" || (start > 0 && bytes[start - 1] == b'.') {
+            let token = &output[start..at];
+            if start > 0 && bytes[start - 1] == b'.' {
+                continue;
+            }
+            if let Some(binding) = token.strip_prefix("rt$") {
+                if !roots.contains_direct(binding) {
+                    missing.push(token.to_owned());
+                }
+                continue;
+            }
+            if let Some(name) = token.strip_prefix("core$") {
+                if !core_cells.iter().any(|(cell, _)| *cell == name) {
+                    missing.push(token.to_owned());
+                }
+                continue;
+            }
+            if token != "rt" {
                 continue;
             }
             let mut parts = Vec::new();
@@ -470,6 +541,12 @@ struct Emitter<'a> {
     /// Bundler output binds packages with static imports instead of the registry.
     imports: Option<Vec<PackageImport>>,
     specialized_calls: Option<&'a std::collections::HashMap<ExprId, usize>>,
+    /// `Some` at `Advanced`: runtime reads are direct (`rt$add`), and these
+    /// replaced core operations read through output-level cells.
+    replaced_core: Option<&'a [&'static str]>,
+    /// The output-level cells used so far: the core runtime name and the
+    /// direct read that initializes `core$<name>`.
+    core_cells: Vec<(&'static str, RuntimeName)>,
     output: String,
     indent: usize,
     captures: Vec<(LocalId, RecurTargetId)>,
@@ -488,11 +565,71 @@ struct Emitter<'a> {
 }
 
 impl Emitter<'_> {
-    /// Write a runtime read (`rt.keyword`, `rt.core.add`) and record it as a
-    /// root of the runtime slice. All emitted runtime reads go through here.
+    /// Write a runtime read (`rt.keyword`, `rt.core.add`; `rt$keyword`,
+    /// `rt$add` at `Advanced`) and record it as a root of the runtime slice.
+    /// All emitted runtime reads go through here.
     fn rt(&mut self, name: RuntimeName) {
-        self.runtime.demand(name, self.site);
-        write!(self.output, "{name}").unwrap();
+        let text = self.runtime_read(name, self.site);
+        self.output.push_str(&text);
+    }
+
+    /// The spelling of a runtime read attributed to `site`, recorded as a root.
+    /// At `Advanced` a core operation resolves through the core table: to a
+    /// cell of `coreCells`, to the output-level cell `core$<name>` when the
+    /// program may replace the operation, or else to the binding (or member of
+    /// one) holding it.
+    fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>) -> String {
+        if self.replaced_core.is_none() {
+            self.runtime.demand(name, site);
+            return name.to_string();
+        }
+        let resolved = match (name.binding, name.member) {
+            (CORE_HUB, Some(member)) => match core_reference(member) {
+                CoreReference::Cell(cell) => RuntimeName::direct(CORE_CELLS, Some(cell)),
+                reference => {
+                    let target = match reference {
+                        CoreReference::Binding(binding) => RuntimeName::direct(binding, None),
+                        CoreReference::Member(binding, member) => {
+                            RuntimeName::direct(binding, Some(member))
+                        }
+                        CoreReference::Cell(_) => unreachable!(),
+                    };
+                    if self.replaced(member) {
+                        self.runtime.demand(target, site);
+                        if !self.core_cells.iter().any(|(name, _)| *name == member) {
+                            self.core_cells.push((member, target));
+                        }
+                        return format!("core${member}");
+                    }
+                    target
+                }
+            },
+            (binding, member) => RuntimeName::direct(binding, member),
+        };
+        self.runtime.demand(resolved, site);
+        resolved.to_string()
+    }
+
+    /// Whether the program may replace the core operation with this runtime name,
+    /// so that `Advanced` output reads it through an output-level cell.
+    fn replaced(&self, name: &str) -> bool {
+        self.replaced_core
+            .is_some_and(|replaced| replaced.binary_search(&name).is_ok())
+    }
+
+    /// Whether a call of this core operation may be a plain call of its unit
+    /// binding, `rt$add(1, 2)`: at `Advanced`, for an operation held by a
+    /// binding of its own that the program never replaces and whose value is
+    /// a function (the `value` column of src/core_operations.tsv; `INIT` is
+    /// not). Members and cells keep `.call(null, ...)`.
+    fn known_unit(&self, core: crate::CoreFnId) -> bool {
+        self.replaced_core.is_some()
+            && core.operation().value == crate::core_operations::Type::FN
+            && matches!(
+                core_reference(core.runtime_name()),
+                CoreReference::Binding(_)
+            )
+            && !self.replaced(core.runtime_name())
     }
 
     /// `rt.core.isKeyword(caseValue) ? rt.core.str(caseValue).slice(1)`: the
@@ -630,6 +767,15 @@ impl Emitter<'_> {
                 self.member(part);
             }
         } else {
+            if let ExprKind::CoreFn(core) = self.program.exprs[id.0].kind {
+                debug_assert!(
+                    self.replaced_core.is_none()
+                        || self.replaced(core.runtime_name())
+                        || matches!(core_reference(core.runtime_name()), CoreReference::Cell(_)),
+                    "Advanced output assigns `{}` without a cell",
+                    core.runtime_name()
+                );
+            }
             self.value(id);
         }
     }
@@ -2303,6 +2449,16 @@ impl Emitter<'_> {
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
+                if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind
+                    && self.known_unit(core)
+                {
+                    // `rt$add(1, 2)`: a core operation in a unit binding of its own.
+                    self.value(*callee);
+                    self.output.push('(');
+                    self.arguments(args);
+                    self.output.push(')');
+                    return;
+                }
                 self.output.push('(');
                 self.value(*callee);
                 if let Some(arity) = self.specialized_calls.and_then(|calls| calls.get(&id)) {
@@ -2397,6 +2553,8 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
                     !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
                 })
             });
+            // `rt$<binding>` and `core$<name>` are the runtime reads and the
+            // core operation cells of `Advanced` output.
             if numbered
                 || matches!(
                     token,
@@ -2410,6 +2568,8 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
                         | "caught"
                         | "caseValue"
                 )
+                || token.starts_with("rt$")
+                || token.starts_with("core$")
             {
                 result.push_str(&prefix);
             }

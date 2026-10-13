@@ -49,12 +49,13 @@
 //! - `purity` and `calls` hold for calls within the domain. A call outside it
 //!   may do anything: see [`Operation::call`].
 //! - `units`: the runtime units (`src/runtime_manifest.rs`) whose code defines
-//!   the value the emitter reads as `rt.core.<name>`: the unit declaring that
-//!   value when it is a runtime binding (`add` for `+`), else the unit
-//!   declaring the object it is a property of (`numeric` for `inc`), else the
-//!   unit whose code assigns it (`core` for functions written inline in the
-//!   hub literal, `core.reader` for the reader). These are the slicing roots
-//!   of a direct reference.
+//!   the value the shared runtime holds as `rt.core.<name>`, as the core table
+//!   (`RuntimeManifest::core_reference`) resolves it: the unit declaring the
+//!   binding that holds it (`add` for `+`, `keywordCore` for `keyword`), the
+//!   unit declaring the object it is a member of (`builtinTypes` for types,
+//!   `reader` for the reader), or `coreCells` for a cell (dynamic vars,
+//!   `rand`). These are the slicing roots of the direct reference that
+//!   `Advanced` output reads.
 //!
 //! [`Purity`] is the operation's own behavior: `pure` (no effect, never
 //! throws, reads no mutable state, and returns the identical value for the

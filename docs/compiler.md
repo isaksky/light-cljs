@@ -130,7 +130,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), and embeds only the runtime units the program reaches (runtime slicing, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, and embeds only the runtime units the program reaches (runtime slicing, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -143,15 +143,23 @@ single-file `--compile` both accept `--optimize LEVEL`. The REPL, `--eval`,
 macro expansion and deferred units never enter this boundary and always share
 the full runtime.
 
-Below `Advanced`, any output that reads the runtime embeds all of it. At
-`Advanced`, `emit_js` and `emit_esm` embed only the runtime units reachable from
-the runtime names the emitted code reads (`rt.keyword`, `rt.core.add`, ...)
-over the unit manifest in `src/runtime_manifest.rs`, in runtime order, and the
-runtime's export object lists only the exports the code reads. The program code
-is the same as at `Prepare` except for the definitions only `Advanced`
-removes. While core operations are read through the
-runtime's `core` object, a program that reads any of them keeps most of the
-runtime. `PreparedApplication::retention()` reports what was embedded: each
+Below `Advanced`, any output that reads the runtime embeds all of it and reads
+it through the runtime object: `rt.keyword`, and every core operation through
+the `core` map, `(rt.core.add).call(null, 1, 2)`. At `Advanced`, `emit_js` and
+`emit_esm` read runtime bindings directly. The runtime's core table (the
+`coreCells` and `core` units of `src/js_runtime.js`, parsed by
+`src/runtime_manifest.rs`) resolves each core operation to the binding that
+holds it, a member of one, or a mutable cell. The output embeds only the units
+reachable from those bindings over the unit manifest, in runtime order, returns
+the bindings it reads from the runtime factory and destructures them into
+`rt$<binding>` constants, and calls core operations that have a binding of their
+own as `rt$add(1, 2)`. Dynamic Vars (`*print-length*`, `*print-fn*`, `*ns*`) and
+the operations the runtime itself reads through a cell (`rand`, `flush`) are
+read and assigned as `rt$coreCells.printLength`. A core operation the program
+may replace (a `set!`, `binding` or `with-redefs` target, or a `js*` hole) is
+read and written through an output-level cell, `let core$inc = rt$inc;`, for the
+whole program (`PreparedApplication::replaced_core()` lists them); every other
+operation stays a direct read. `PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
 that first demanded it, and each embedded unit with its byte size and the first
 of those names whose dependencies reach it. `--compile --size-report` prints
