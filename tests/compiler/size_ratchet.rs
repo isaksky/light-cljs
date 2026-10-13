@@ -15,7 +15,7 @@
 //! The same fixtures run in Node at every level and must print the same output
 //! as `OptimizationLevel::None`, the oracle.
 #[path = "../support/ratchet_fixtures.rs"]
-mod ratchet_fixtures;
+pub(super) mod ratchet_fixtures;
 
 use super::optimization::execute;
 use light_cljs::{

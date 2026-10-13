@@ -188,6 +188,8 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
         ApplicationOptions {
             optimize: OptimizationLevel::Prepare,
             exports: vec![exported],
+            defines: Vec::new(),
+            no_inlining: false,
         },
     );
     assert!(!without.emit_js().contains("OPTIMIZER_EXPORT_SENTINEL"));
@@ -434,10 +436,12 @@ fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operation
 /// hole, which raw text could assign, is never specialized.
 #[test]
 fn advanced_treats_raw_javascript_as_an_opaque_leaf() {
+    // `f` throws for other arguments, which keeps it from being inlined
+    // (light-cljs-214), so its call is specialized.
     let p = program(
         r#"(def unused "RAW_UNUSED_SENTINEL")
         (js* "void 0")
-        (defn f ([x] x) ([x y] (+ x y)))
+        (defn f ([x] x) ([x y] (if (number? x) (+ x y) (throw (js/Error. "number")))))
         (f 21 21)"#,
     );
     for level in OptimizationLevel::ALL {

@@ -2244,6 +2244,9 @@ pub struct GlobalBinding {
     /// Existence probes may reserve storage before an actual definition.
     pub declared: bool,
     pub constant: bool,
+    /// Defined by `goog-define`: a `constant` whose literal initializer a build
+    /// may replace (`ApplicationOptions::defines`, `--define`).
+    pub define: bool,
     pub boolean_tag: bool,
     pub metadata: Option<ExprId>,
     pub namespace: String,
@@ -3865,8 +3868,10 @@ impl Analyzer<'_> {
                     "do" | "def"
                         | "defonce"
                         | "declare"
+                        | "goog-define"
                         | "cljs.core/def"
                         | "cljs.core/defonce"
+                        | "cljs.core/goog-define"
                         | "cljs.core/declare"
                         | "defmacro"
                         | "cljs.core/defmacro"
@@ -4338,6 +4343,7 @@ impl Analyzer<'_> {
                     .map(Some)
             }
             "defonce" => self.definition(id, args, context, true).map(Some),
+            "goog-define" => self.goog_define(id, args, context).map(Some),
             "declare" => self.declare_form(id, args, context).map(Some),
             "binding" | "with-redefs" => self.binding_form(id, args, context).map(Some),
             "resolve" => self.resolve_form(id, args, context).map(Some),
@@ -4942,6 +4948,7 @@ impl Analyzer<'_> {
                         declared: false,
                         constant: false,
                         boolean_tag: false,
+                        define: false,
                         metadata: None,
                         namespace,
                         name: symbol,
@@ -5745,6 +5752,51 @@ impl Analyzer<'_> {
         }
         Ok(())
     }
+    /// `(goog-define name default)`: as upstream, a definition whose default
+    /// is a string, number or boolean literal, which a build may replace
+    /// (`ApplicationOptions::defines`, `--define ns/name=value`). The Var is a
+    /// `^:const` one, so nothing redefines or assigns it, and `Advanced`
+    /// substitutes its value at every read (`crate::folding`).
+    fn goog_define(
+        &mut self,
+        id: NodeId,
+        args: &[NodeId],
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
+        let [name, default] = args else {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::InvalidForm("goog-define requires a name and a default value"),
+            ));
+        };
+        if !matches!(
+            self.syntax.nodes[default.0].kind,
+            NodeKind::Boolean(_)
+                | NodeKind::Number(_)
+                | NodeKind::SymbolicValue(_)
+                | NodeKind::String(_)
+        ) {
+            return Err(self.error(
+                *default,
+                AnalysisErrorKind::InvalidForm(
+                    "goog-define requires a string, number or boolean as default value",
+                ),
+            ));
+        }
+        let expr = self.definition(id, args, context, false)?;
+        let raw = self.spelling(*name);
+        let local = raw
+            .rsplit_once('/')
+            .map_or(raw, |(_, name)| name)
+            .to_owned();
+        if let Some(&global) = self.globals.get(&(self.namespace.to_owned(), local)) {
+            let binding = &mut self.program.globals[global.0];
+            binding.constant = true;
+            binding.define = true;
+        }
+        Ok(expr)
+    }
+
     fn definition(
         &mut self,
         id: NodeId,
@@ -5806,6 +5858,7 @@ impl Analyzer<'_> {
                 declared: true,
                 constant: false,
                 boolean_tag: false,
+                define: false,
                 metadata: None,
                 namespace: self.namespace.into(),
                 name,
@@ -6359,6 +6412,7 @@ impl Analyzer<'_> {
                         declared: false,
                         constant: false,
                         boolean_tag: false,
+                        define: false,
                         metadata: None,
                         namespace: namespace.into(),
                         name: name.into(),
@@ -6596,6 +6650,7 @@ impl Analyzer<'_> {
             declared: true,
             constant: false,
             boolean_tag: false,
+            define: false,
             metadata: None,
             namespace: self.namespace.into(),
             name,
@@ -7811,6 +7866,7 @@ impl Analyzer<'_> {
                 declared: true,
                 constant: false,
                 boolean_tag: false,
+                define: false,
                 metadata: None,
                 namespace: self.namespace.into(),
                 name,

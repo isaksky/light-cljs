@@ -29,8 +29,17 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
+/// Options at `level` without inlining (light-cljs-214), which would replace
+/// the functions whose parameters and bodies this suite checks with their
+/// bodies. Constant folding still runs.
+fn options(level: OptimizationLevel) -> ApplicationOptions {
+    let mut options = ApplicationOptions::new(level);
+    options.no_inlining = true;
+    options
+}
+
 fn prepared(source: &str, level: OptimizationLevel) -> PreparedApplication {
-    prepare_application(&program(source), ApplicationOptions::new(level))
+    prepare_application(&program(source), options(level))
 }
 
 /// The program prints `expected` (its value, through `console.log`) at every
@@ -39,7 +48,7 @@ fn every_level(source: &str, expected: &str) -> String {
     let program = program(source);
     let mut advanced = String::new();
     for level in OptimizationLevel::ALL {
-        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        let js = prepare_application(&program, options(level)).emit_js();
         assert_eq!(
             execute(&format!("console.log({js});")),
             format!("{expected}\n"),
@@ -101,7 +110,9 @@ fn inference_types_literals_calls_locals_and_definitions() {
     );
     // Sole definitions: a later top-level form reads the initializer's type,
     // also in a function it defines; a definition that is not a top-level form
-    // may not have run, and the read sees nil then.
+    // may not have run, and the read sees nil then. (A `let` whose bindings
+    // fold away is a `do`, whose forms are top-level forms, so this one binds
+    // a value with an effect; light-cljs-214.)
     assert_eq!(last("(def n 5) (+ n 1)"), number);
     assert_eq!(last("(def s \"a\") s"), Inferred::of(Type::STRING));
     assert_eq!(
@@ -109,7 +120,7 @@ fn inference_types_literals_calls_locals_and_definitions() {
         Inferred::of(Type::STRING)
     );
     assert_eq!(
-        last("(let [] (def s \"a\") s)"),
+        last("(let [t (js/Date.now)] (def s \"a\") s)"),
         Inferred::of(Type::STRING.union(Type::NIL))
     );
     assert_eq!(last("(def s \"a\") (def s 1) s"), Inferred::ANY);
@@ -338,7 +349,15 @@ fn arithmetic_edge_cases_keep_the_runtime_results_and_evaluation_order() {
                     (< (f 3) (f 2) (f 1)) (+ (f 1) (f 2) (f 3)) @log])"#,
         r#"[true ##-Inf ##Inf ##-Inf ##NaN ##Inf 0.30000000000000004 -5 0.25 0 1 true true false true "1a" 1 false true "a1" -1 false 6 [3 2 1 1 2 3]]"#,
     );
-    assert!(js.contains("(- -0)"), "{js}");
+    // Constant operands fold to the runtime's results (light-cljs-214), and
+    // operands outside an operation's domain keep the operator.
+    assert!(
+        js.contains(
+            "[true, -Infinity, Infinity, -Infinity, NaN, Infinity, 0.30000000000000004, -5, \
+             0.25, 0, 1, true, true, false, true, (1 + \"a\"), (null + 1), "
+        ),
+        "{js}"
+    );
     // A chain with operands that run code keeps the runtime's single pass.
     assert!(js.contains("rt$less("), "{js}");
 }

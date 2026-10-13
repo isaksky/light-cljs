@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below) and the runtime types it cannot build, and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below) and the runtime types it cannot build, and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below), and folds constants and dead branches, substitutes `^:const` and `goog-define` values and inlines single-use and small pure functions (folding and inlining, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -368,6 +368,42 @@ method their argument count selects, at every call site:
 A call that runs before the definition still throws a `TypeError`, whose
 message now names the output binding. See "Phase 2 call shape extension
 points" and the "Advanced-mode contract" in
+[advanced-optimization.md](advanced-optimization.md).
+
+Before those analyses, `Advanced` folds, inlines and removes what that
+leaves unread, in up to four rounds (`src/folding.rs`, `src/inlining.rs`):
+
+- A read of a `^:const` or `goog-define` Var defined once by a top-level
+  `def` of a literal is that literal in later top-level forms, which run
+  after the definition (see "Definitions and globals").
+- Core calls on literals that the core operation table marks `pure` for those
+  arguments are their results, computed as the runtime does: arithmetic,
+  comparisons, `=`, predicates, `not` and `str` (`(str "n=" 1.5)` is
+  `"n=1.5"`). Leading number literals of `+ - * /` combine, `(+ 1 2 x)` being
+  `(+ 3 x)`. A call outside the operation's argument types, of an operation
+  the program replaces, or of `=` when the program extends a core protocol to
+  a host or runtime type, stays.
+- An `if` on a literal is its branch, a `let` binding of a literal is
+  substituted (so `and`, `or` and `when-let` over constants fold), and forms
+  without effects disappear where their value is discarded. The definitions
+  only a removed branch read are removed in turn.
+- A call of a known function is replaced with the body of the method it runs
+  when the function is called only there (and does not escape), or when its
+  body is a small pure computation (at most ten expressions of reads,
+  branches, bindings, literals and pure core calls) and copying it shrinks
+  the program. The function's definition must be a top-level form that runs
+  before the call. Bodies with nested functions, loops, `recur`, `try`,
+  `throw`, `case`, assignments, `js*`, `js-arguments` or `this-as` stay
+  functions, and so do `^boolean`-tagged ones. Arguments are evaluated once
+  and in order: literals and locals are read in place, an argument with an
+  effect is bound to a local first or, when the body reads it before doing
+  anything else, moved there.
+
+`ApplicationStats::folded_expressions` and `inlined_calls` count the
+rewrites. `ApplicationOptions::no_inlining` keeps every call (folding still
+runs), as Closure's `inlineFunctions` option does. A debug path behind `(when DEBUG ...)` with `(goog-define DEBUG
+false)` leaves nothing in the output. See "Phase 2 folding and inlining
+extension points" and the "Advanced-mode contract" in
 [advanced-optimization.md](advanced-optimization.md).
 
 `Program::compilation_uses` records deferred ordinary-unit names, generations,
@@ -1050,6 +1086,23 @@ definition metadata. A dotted definition such as `(def host.value 1)` assigns th
 actual host path; the host root must already exist. `defonce` initializes only
 undefined roots; existing nil/false roots suppress its initializer. `declare`
 supports forward calls and preserves existing definition metadata.
+
+`(def ^:const name value)` defines a constant: a later `def` of the name is
+rejected ("Can't redefine a constant") and so is `set!` ("Can't set! a
+constant"), and `case` accepts it as a test. At `--optimize advanced` a read
+of a constant whose top-level `def` has a literal value (`nil`, a boolean,
+number, string or keyword), in a top-level form after the definition, is that
+value, so `(if FLAG ...)` folds away; reads in forms before it, including
+functions they define, read the global, which may not be set yet, as at every
+other level. `(goog-define name default)` defines such a constant whose
+default is a string, number or boolean literal and whose value a build may
+replace, at every level: `ApplicationOptions::defines` takes `Define { name:
+"ns/name", value }` with a `DefineValue` of the default's kind, and
+`--define ns/name=value` after `--compile` reads `true`/`false`, a number or
+the text as written, by the default's kind. A define that names no
+`goog-define` of the program or has another kind is an error at the CLI and
+is listed by `PreparedApplication::rejected_defines()` in the API, which
+ignores it.
 
 Resolution is source ordered: a definition is visible to its own initializer
 and later analyzed forms. The default API rejects undeclared/forward references,

@@ -22,10 +22,13 @@ mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
 pub mod core_operations;
+pub mod defines;
 pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;
+pub mod folding;
 pub mod inference;
+pub mod inlining;
 mod program_fragment;
 mod rta;
 pub use eval_session::{
@@ -56,6 +59,7 @@ pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_esm,
     compile_namespace_with_macros, compile_with_macros,
 };
+pub use defines::{Define, DefineError, DefineValue};
 pub use emitter::{emit_esm, emit_js};
 pub use macro_host::{MacroHost, MacroImport, MacroLimits};
 pub use runtime_slice::{ConstantPool, RetentionReport};

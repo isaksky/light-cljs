@@ -61,9 +61,11 @@ fn slice(units: &[(UnitId, RootUse)], bindings: &[&str]) -> (String, String) {
 /// Programs whose emission reads every kind of runtime name the emitter
 /// writes: core operations, value constructors, reader literals, quoted
 /// compiler forms, Vars, metadata, protocols, types, records, reify,
-/// variadic functions, `case`, `assert` and `with-out-str`.
+/// variadic functions, `case`, `assert` and `with-out-str`. Operands that
+/// would be constants read a string's length, so that constant folding
+/// (light-cljs-214) leaves the call.
 const PROGRAMS: &[&str] = &[
-    "(max 1 2)",
+    r#"(max 1 (.-length "ab"))"#,
     "(defn kind [k] (case k :a 1 :b 2 3)) (pr-str [(kind :a) (kind :c) (case 2 1 :x 2 :y)])",
     r#"(pr-str {:a 1} #{:b} '(c) [1 2] (with-meta [1] {:m 1}) (var inc))"#,
     r#"(with-out-str (print #queue [1 2] #uuid "00000000-0000-0000-0000-000000000000"
@@ -205,8 +207,9 @@ fn levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
 #[test]
 fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
     let manifest = manifest();
-    // `*ns*` reaches reflection, so the output registers its namespaces.
-    let source = r#"#js {"a" 1} (mod 7 2) *ns*"#;
+    // `*ns*` reaches reflection, so the output registers its namespaces. The
+    // length is no constant, so `mod` is called (light-cljs-214).
+    let source = r#"#js {"a" 1} (mod 7 (.-length "ab")) *ns*"#;
     let report = prepared(source, OptimizationLevel::Advanced).retention();
     let expression = |text: &str| {
         let start = source.find(text).unwrap();

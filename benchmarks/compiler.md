@@ -1876,3 +1876,99 @@ record's `ILookup`, and `nth`, `count` and `=` no longer dispatch on their
 arguments. Parse plus first execution of the fixture at `advanced`, which
 runs the loop ten times, drops from 2.79 to 2.11 ms in Node and from 4.16 to
 3.82 ms in QuickJS; `multi-arity` and `none` do not change beyond noise.
+
+## Folding, inlining and defines — October 13, 2026
+
+light-cljs-214 implements Phase 2 step 8 of the
+[design](../docs/advanced-optimization.md). At `--optimize advanced`,
+`src/folding.rs` folds core calls on literals, `if`s on literals, `let`
+bindings of literals and `^:const` and `goog-define` reads, and
+`src/inlining.rs` replaces calls of single-use and small pure functions with
+their bodies, in rounds with the removal of what that leaves unread.
+`(goog-define DEBUG false)` and `--define cljs.user/DEBUG=true` give a build
+its values at every level.
+
+The new ratchet fixture `debug-logging` gates a logging function behind a
+define:
+
+```clojure
+(goog-define DEBUG false)
+(defn debug-log [& parts] (when DEBUG (js/console.log "[debug]" (pr-str (vec parts)))))
+(defn area [w h] (debug-log "area" w h {:w w :h h}) (* w h))
+(when DEBUG (debug-log "startup" {:debug true}))
+(area (.-length "abc") 4)
+```
+
+At `advanced` it is `(() => { return (("abc")["length"] * 4); })()`, byte for
+byte the output of `(defn area [w h] (* w h)) (area (.-length "abc") 4)`:
+`DEBUG` folds `debug-log` to `nil`, its calls are inlined and dropped with
+their arguments, which have no effect, and `area`, called once, is inlined.
+Before this change the same program with `(def ^:const DEBUG false)` kept
+the logging path, `pr-str` and the printer: 133,451 bytes (31,100 gzip).
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize advanced --text`.
+"Before" is master `ec81a9e` (after light-cljs-229). `none` and `prepare` do
+not change. Fixtures not listed do not change either: they have no constant
+operands and no function a call could take the body of, or only ones whose
+body is a `case`, a `recur` target or a function that escapes.
+
+| Fixture | Before | After | Ceilings after |
+| --- | ---: | ---: | --- |
+| console-log-sum | 192 / 161 | 186 / 157 | 378,000 / 378,000 / 200 |
+| add | 32 / 52 | 26 / 46 | 378,000 / 378,000 / 100 |
+| raw-js | 271 / 133 | 36 / 54 | 379,000 / 379,000 / 100 |
+| multi-arity | 2,040 / 839 | 781 / 308 | 381,000 / 381,000 / 800 |
+| constant-literals | 105,940 / 24,913 | 105,878 / 24,890 | 379,000 / 379,000 / 106,000 |
+| event-maps | 86,592 / 20,482 | 86,530 / 20,458 | 379,000 / 379,000 / 87,000 |
+| closed-params | 79,800 / 19,553 | 79,528 / 19,497 | 381,000 / 381,000 / 80,000 |
+| debug-logging | — | 48 / 68 | 379,000 / 379,000 / 100 |
+
+`(+ 1 2)` is `3`. In `raw-js` the call `(add 1 2)` is inlined and folded, so
+`add` goes. In `multi-arity` `clamp` and `area` are inlined at their calls,
+`(area w w)` inside `area` too, and their results folded: the program is
+`(29 + g2_0(10))` with `fib`, a `recur` target, left. `constant-literals`
+and `event-maps` inline `row` and `event`, each called once, into the
+loop's function, and `closed-params` inlines `at`, `width` and `weight` into
+`score`, whose parameter types (light-cljs-229) then apply to them. `debug-logging` at `none` is 378,779 / 90,241 bytes.
+
+A literal that a call built anew at each evaluation, such as `[x 1]` in a
+function, stays built at its site after inlining substitutes a constant for
+`x`: the pool would otherwise make every evaluation the one shared value.
+
+**Startup and steady state.** `--levels --samples 9 --warmups 1` on this
+change, before it was rebased onto light-cljs-227, 220 and 229, and then on an
+exported tree of its base, master `75d9dd0`, one directly after the other,
+with other builds running: the median one-minute load average was
+6.12 (range 3.22–10.14) and 5.48 (2.66–9.26). Every table is in
+[before](results/folding-inlining-2026-10-13/before/summary.md) and
+[after](results/folding-inlining-2026-10-13/after/summary.md), next to their
+`samples.csv`. Parse plus first execution at `advanced`, median ms,
+Node / QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| multi-arity | 0.227 / 0.123 | 0.145 / 0.056 |
+| raw-js | 0.124 / 0.020 | 0.113 / 0.008 |
+| debug-logging | — | 0.114 / 0.011 |
+
+The `multi-arity` workload calls `clamp` with one argument and `area` with
+one and with two in a loop (n = 50,000), median µs per call:
+
+| Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: |
+| none | 6,602 | 6,695 | 144,175 | 146,820 |
+| advanced | 149 | 117 | 44,568 | 42,040 |
+
+Inlining `clamp`'s one-argument method and the two-argument `area` into the
+loop makes it 21% faster in Node and 6% in QuickJS; `(area (rem i 7))`
+stays a call, since `area`'s one-argument method reads its parameter twice
+and the argument is a call. The other fixtures and workloads do not change
+beyond the noise.
+
+**Compile time.** Folding and inlining run up to four rounds of linear
+passes at `advanced`. Compiling a generated program of 63 definitions (30
+pairs of small functions, a constant and a disabled logger; the macro
+expansion limits of a single file bound its size) takes 251.5 ms before and
+254.5 ms after at `advanced`, and 249.0 and 247.6 ms at `prepare`, median of
+15 release-build CLI runs each, interleaved: within the noise of the
+process, which macro expansion and the runtime dominate.

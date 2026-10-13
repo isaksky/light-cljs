@@ -33,8 +33,10 @@ pub enum OptimizationLevel {
     /// over the prepared program ([`crate::inference`]) let emission drop
     /// `truth()` and write core operators, typed `=`, `count`, `nth` and record
     /// lookups directly. Calls of the program's own functions name the method
-    /// they run ([`crate::call_shapes`]). Later passes of that design hook in
-    /// through [`OptimizationLevel::advanced`].
+    /// they run ([`crate::call_shapes`]). Constants and dead branches fold
+    /// ([`crate::folding`]) and single-use and small pure functions are
+    /// inlined ([`crate::inlining`]) before those analyses. Later passes of
+    /// that design hook in through [`OptimizationLevel::advanced`].
     Advanced,
 }
 impl OptimizationLevel {
@@ -99,14 +101,27 @@ pub struct ApplicationOptions {
     pub optimize: OptimizationLevel,
     /// Keep these runtime binding identities and all their source generations.
     pub exports: Vec<GlobalId>,
+    /// Build-time values for the program's `goog-define` Vars, at every level
+    /// ([`crate::defines`]). A define that names none of them, or whose value
+    /// has another kind than the default, is ignored and listed by
+    /// [`PreparedApplication::rejected_defines`].
+    pub defines: Vec<crate::defines::Define>,
+    /// At `Advanced`, leave every call of a program function a call
+    /// ([`crate::inlining`] off; folding still runs), as Closure's
+    /// `inlineFunctions` option does: for debugging and profiling with every
+    /// stack frame, and for tests of what the passes after it do with
+    /// functions.
+    pub no_inlining: bool,
 }
 impl ApplicationOptions {
-    /// Options at `optimize` without explicit exports. Accepts a level or the
-    /// former boolean (`false` is `None`, `true` is `Prepare`).
+    /// Options at `optimize` without explicit exports or defines. Accepts a
+    /// level or the former boolean (`false` is `None`, `true` is `Prepare`).
     pub fn new(optimize: impl Into<OptimizationLevel>) -> Self {
         Self {
             optimize: optimize.into(),
             exports: Vec::new(),
+            defines: Vec::new(),
+            no_inlining: false,
         }
     }
 }
@@ -133,6 +148,13 @@ pub struct ApplicationStats {
     /// `Advanced`: parameters of closed functions whose type, joined over the
     /// arguments of every call (`crate::inference`), is narrower than `any`.
     pub typed_parameters: usize,
+    /// `Advanced`: calls replaced with the body of the method they run
+    /// (`crate::inlining`).
+    pub inlined_calls: usize,
+    /// `Advanced`: expressions rewritten by constant folding, including
+    /// substituted constants, removed bindings and dead branches
+    /// (`crate::folding`).
+    pub folded_expressions: usize,
 }
 /// An owned semantic program plus emission decisions computed entirely in Rust.
 /// Repeated emission does not rerun preparation or execute compiler callbacks.
@@ -153,6 +175,8 @@ pub struct PreparedApplication {
     /// `Advanced`: direct calls and dispatcher-free definitions
     /// (`crate::call_shapes`).
     shapes: Option<CallShapes>,
+    /// Defines of the options that did not apply.
+    rejected_defines: Vec<crate::defines::DefineError>,
     stats: ApplicationStats,
 }
 impl PreparedApplication {
@@ -215,7 +239,8 @@ impl PreparedApplication {
         self.shapes.as_ref()
     }
     /// The program this application emits: the analyzed program after
-    /// definition removal and call specialization.
+    /// build-time defines, definition removal and call specialization, and at
+    /// `Advanced` folding, inlining and rapid type analysis.
     pub fn program(&self) -> &Program {
         &self.program
     }
@@ -223,6 +248,11 @@ impl PreparedApplication {
     /// (for example runtime slicing under `Advanced`) reads it here.
     pub fn level(&self) -> OptimizationLevel {
         self.level
+    }
+    /// The defines of [`ApplicationOptions::defines`] that did not apply: they
+    /// name no `goog-define` of the program or give a value of another kind.
+    pub fn rejected_defines(&self) -> &[crate::defines::DefineError] {
+        &self.rejected_defines
     }
 }
 
@@ -244,69 +274,52 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         direct_methods: HashMap::new(),
         type_basis: true,
         shapes: None,
+        rejected_defines: Vec::new(),
         stats: ApplicationStats::default(),
     };
-    let mut top = Vec::new();
-    flatten(program, program.root, true, &mut top);
-    let mut candidates = vec![false; program.exprs.len()];
-    let mut definitions = vec![Vec::new(); program.globals.len()];
-    let mut pending = Vec::new();
-    let mut inert = Inert::new(program, &top, level.advanced());
-    for (position, &(id, result)) in top.iter().enumerate() {
-        if let ExprKind::Def {
-            global, init, test, ..
-        } = program.exprs[id.0].kind
-        {
-            definitions[global.0].push(id);
-            if level.prepares()
-                && !result
-                && test.is_none()
-                && init.is_none_or(|i| inert.initializer(i, position))
-            {
-                candidates[id.0] = true;
-                continue;
+    // Build-time defines replace `goog-define` defaults at every level, as
+    // upstream's `:closure-defines` do.
+    prepared.rejected_defines = crate::defines::apply(&mut prepared.program, &options.defines);
+    let mut retained = retain(&mut prepared, &options.exports);
+    // Folding and inlining (Phase 2 step 8) alternate with definition removal:
+    // folding removes dead branches and the reads in them, inlining the calls
+    // of single-use and small pure functions, and removal then drops the
+    // definitions nothing reads any more.
+    if level.advanced() {
+        let mut growth = crate::inlining::growth_budget(prepared.program.exprs.len());
+        // Literals the program builds at each evaluation stay built, however
+        // constant their items become.
+        let mut built = crate::folding::built_literals(&prepared.program);
+        for round in 0..SIMPLIFY_ROUNDS {
+            let folded = crate::folding::fold(&mut prepared.program, &mut built);
+            prepared.stats.folded_expressions += folded;
+            if round > 0 || folded > 0 {
+                retained = retain(&mut prepared, &options.exports);
+            }
+            if round + 1 == SIMPLIFY_ROUNDS {
+                break;
+            }
+            let inlined = if options.no_inlining {
+                0
+            } else {
+                let shapes = crate::call_shapes::analyze(&prepared.program, None, &options.exports);
+                crate::inlining::inline(&mut prepared.program, &shapes, &mut growth, &mut built)
+            };
+            prepared.stats.inlined_calls += inlined;
+            if inlined == 0 && folded == 0 {
+                break;
             }
         }
-        pending.push(id);
+        crate::folding::keep_built(&mut prepared.program, &built);
+        retained
+            .candidates
+            .resize(prepared.program.exprs.len(), false);
     }
-    for g in &options.exports {
-        if let Some(defs) = definitions.get(g.0) {
-            pending.extend(defs);
-        }
-    }
-    let mut visited = vec![false; program.exprs.len()];
-    let mut raw = false;
-    while let Some(id) = pending.pop() {
-        if std::mem::replace(&mut visited[id.0], true) {
-            continue;
-        }
-        // Below `Advanced`, retained raw JS is an application escape: every
-        // top-level form becomes a root and nothing is specialized. A discarded
-        // function containing JS is inert and must not turn its compile-time
-        // uses into roots. `Advanced` treats `js*` as an opaque leaf whose holes
-        // are ordinary children: hygiene renames every compiler-bound name away
-        // from raw text, which can therefore name only its holes and host
-        // globals (Phase 2 step 7 of docs/advanced-optimization.md).
-        if !raw
-            && !level.advanced()
-            && matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. })
-        {
-            raw = true;
-            pending.extend(top.iter().map(|(id, _)| *id));
-        }
-        for global in globals(&program.exprs[id.0].kind) {
-            if !std::mem::replace(&mut prepared.globals[global.0], true) {
-                pending.extend(&definitions[global.0]);
-            }
-        }
-        pending.extend(children(program, id));
-    }
-    for (index, candidate) in candidates.iter().enumerate() {
-        if *candidate && !visited[index] {
-            prepared.program.exprs[index].kind = ExprKind::Nil;
-            prepared.stats.removed_definitions += 1;
-        }
-    }
+    let Retained {
+        top,
+        candidates,
+        raw,
+    } = retained;
     if level.prepares() && !raw {
         specialize(&mut prepared, &top);
     }
@@ -350,7 +363,8 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         // Call shapes (Phase 2 step 5) over the rewritten program: calls of
         // known functions name their method, and functions whose value never
         // escapes are defined without a dispatcher.
-        let shapes = crate::call_shapes::analyze(&prepared.program, &inference, &options.exports);
+        let shapes =
+            crate::call_shapes::analyze(&prepared.program, Some(&inference), &options.exports);
         prepared.stats.direct_calls = shapes.direct_calls();
         prepared.stats.dispatchers_removed = (0..prepared.program.globals.len())
             .filter(|global| {
@@ -370,6 +384,99 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();
     prepared
+}
+
+/// The most rounds of folding, inlining and removal at `Advanced`. A round
+/// that inlines nothing ends them; each inlining round is followed by folding
+/// and removal.
+pub const SIMPLIFY_ROUNDS: usize = 4;
+
+/// What [`retain`] leaves for the passes after it.
+struct Retained {
+    /// The flattened top-level forms, each with whether it is the result.
+    top: Vec<(ExprId, bool)>,
+    /// By expression: the discarded top-level definitions with inert
+    /// initializers, which may be removed when nothing reads their globals.
+    candidates: Vec<bool>,
+    /// Below `Advanced`: a retained `js*` made every top-level form a root.
+    raw: bool,
+}
+
+/// Mark the globals the program reads from its roots (every top-level form
+/// but discarded definitions with inert initializers, and the definitions of
+/// `exports`), and remove the candidate definitions of unread globals.
+/// `Advanced` runs it again after folding and inlining.
+fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained {
+    let level = prepared.level;
+    let program = &prepared.program;
+    let mut top = Vec::new();
+    flatten(program, program.root, true, &mut top);
+    let mut candidates = vec![false; program.exprs.len()];
+    let mut definitions = vec![Vec::new(); program.globals.len()];
+    let mut pending = Vec::new();
+    let mut inert = Inert::new(program, &top, level.advanced());
+    for (position, &(id, result)) in top.iter().enumerate() {
+        if let ExprKind::Def {
+            global, init, test, ..
+        } = program.exprs[id.0].kind
+        {
+            definitions[global.0].push(id);
+            if level.prepares()
+                && !result
+                && test.is_none()
+                && init.is_none_or(|i| inert.initializer(i, position))
+            {
+                candidates[id.0] = true;
+                continue;
+            }
+        }
+        pending.push(id);
+    }
+    for g in exports {
+        if let Some(defs) = definitions.get(g.0) {
+            pending.extend(defs);
+        }
+    }
+    let mut visited = vec![false; program.exprs.len()];
+    let mut retained = vec![false; program.globals.len()];
+    let mut raw = false;
+    while let Some(id) = pending.pop() {
+        if std::mem::replace(&mut visited[id.0], true) {
+            continue;
+        }
+        // Below `Advanced`, retained raw JS is an application escape: every
+        // top-level form becomes a root and nothing is specialized. A discarded
+        // function containing JS is inert and must not turn its compile-time
+        // uses into roots. `Advanced` treats `js*` as an opaque leaf whose holes
+        // are ordinary children: hygiene renames every compiler-bound name away
+        // from raw text, which can therefore name only its holes and host
+        // globals (Phase 2 step 7 of docs/advanced-optimization.md).
+        if !raw
+            && !level.advanced()
+            && matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. })
+        {
+            raw = true;
+            pending.extend(top.iter().map(|(id, _)| *id));
+        }
+        for global in globals(&program.exprs[id.0].kind) {
+            if !std::mem::replace(&mut retained[global.0], true) {
+                pending.extend(&definitions[global.0]);
+            }
+        }
+        pending.extend(children(program, id));
+    }
+    prepared.globals = retained;
+    for (index, candidate) in candidates.iter().enumerate() {
+        if *candidate && !visited[index] {
+            prepared.program.exprs[index].kind = ExprKind::Nil;
+            prepared.stats.removed_definitions += 1;
+        }
+    }
+    Retained {
+        top,
+        candidates,
+        raw,
+    }
 }
 
 fn flatten(program: &Program, id: ExprId, result: bool, out: &mut Vec<(ExprId, bool)>) {

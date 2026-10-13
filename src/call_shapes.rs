@@ -192,8 +192,14 @@ impl CallShapes {
 }
 
 /// Decide the call shapes of `program`, the prepared program emission reads,
-/// whose types are `inference`. `exports` escape.
-pub fn analyze(program: &Program, inference: &Inference, exports: &[GlobalId]) -> CallShapes {
+/// whose types are `inference`. `exports` escape. Without `inference` (as
+/// [`crate::inlining`] asks, before types are inferred) calls of locals and
+/// `fn` literals are not direct.
+pub fn analyze(
+    program: &Program,
+    inference: Option<&Inference>,
+    exports: &[GlobalId],
+) -> CallShapes {
     let Scan {
         functions,
         closed,
@@ -220,6 +226,9 @@ pub fn analyze(program: &Program, inference: &Inference, exports: &[GlobalId]) -
         let direct = this.direct(program, function, method, entry);
         shapes.insert(call, direct);
     }
+    let Some(inference) = inference else {
+        return shapes;
+    };
     for call in inferred_sites {
         let Some(function) = inference.callee(program, call) else {
             continue;

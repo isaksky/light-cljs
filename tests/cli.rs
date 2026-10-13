@@ -291,6 +291,109 @@ fn optimize_selects_the_application_level_for_text_and_namespace_compiles() {
     );
 }
 
+/// `--define NS/NAME=VALUE` replaces a `goog-define` default at every level,
+/// for text and namespace compiles, and reads the value as the default's
+/// kind; a malformed, unknown or mistyped define is an error.
+#[test]
+fn define_replaces_goog_define_defaults_at_every_level() {
+    let source =
+        r#"(goog-define DEBUG false) (goog-define NAME "app") (if DEBUG (str NAME "!") NAME)"#;
+    let root = std::env::temp_dir().join(format!("light-cljs-cli-define-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/main.cljs"),
+        format!("(ns app.main) {source}"),
+    )
+    .unwrap();
+    let root_arg = root.to_str().unwrap();
+    let node = |js: &str| {
+        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .args(["--print", js])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for level in OptimizationLevel::ALL {
+        let name = level.name();
+        for (defines, expected) in [
+            (&[][..], "app\n"),
+            (
+                &[
+                    "--define",
+                    "cljs.user/DEBUG=true",
+                    "--define",
+                    "cljs.user/NAME=x y",
+                ][..],
+                "x y!\n",
+            ),
+        ] {
+            let mut args = vec!["--compile", "--optimize", name];
+            args.extend_from_slice(defines);
+            args.extend(["--text", source]);
+            assert_eq!(node(&compiled(&args)), expected, "{args:?}");
+        }
+        let js = compiled(&[
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            root_arg,
+            "--define",
+            "app.main/DEBUG=true",
+            "--optimize",
+            name,
+        ]);
+        assert_eq!(node(&js), "app!\n", "{level}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    for (args, message) in [
+        (
+            &["--compile", "--define", "DEBUG=true", "--text", source][..],
+            "--define requires NAMESPACE/NAME=VALUE",
+        ),
+        (
+            &[
+                "--compile",
+                "--define",
+                "cljs.user/MISSING=1",
+                "--text",
+                source,
+            ][..],
+            "no goog-define named cljs.user/MISSING in the program",
+        ),
+        (
+            &[
+                "--compile",
+                "--define",
+                "cljs.user/DEBUG=yes",
+                "--text",
+                source,
+            ][..],
+            "define cljs.user/DEBUG requires a boolean value, got \"yes\"",
+        ),
+        (
+            &["--compile", "--text", source, "--define"][..],
+            "--define requires NS/NAME=VALUE",
+        ),
+        (
+            &[
+                "--parse",
+                "--define",
+                "cljs.user/DEBUG=true",
+                "--text",
+                source,
+            ][..],
+            "--define requires --compile",
+        ),
+    ] {
+        let output = light_cljs(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+}
+
 #[test]
 fn optimize_rejects_unknown_levels_and_non_compile_modes() {
     for (args, message) in [
@@ -331,8 +434,9 @@ fn optimize_rejects_unknown_levels_and_non_compile_modes() {
 
 #[test]
 fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
-    // `+` is an operator at `Advanced`; `max` still reads the runtime.
-    let source = "(js/console.log (+ 1 (max 2 3)))";
+    // `+` is an operator at `Advanced`; `max` still reads the runtime, since
+    // a string's length is no constant that folding computes (light-cljs-214).
+    let source = "(js/console.log (+ 1 (max 2 (.-length \"abc\"))))";
     let program = analyze(source, &parse(source).unwrap()).unwrap();
     let root = "examples/namespaces";
     let namespace = analyze_namespace_entry(

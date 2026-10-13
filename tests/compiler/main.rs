@@ -69,6 +69,7 @@ mod equality;
 mod equality_contracts;
 mod extensions;
 mod find_effects;
+mod folding_inlining;
 mod generated_optimization;
 mod hash_branch_effects;
 mod hash_map_from_arrays;

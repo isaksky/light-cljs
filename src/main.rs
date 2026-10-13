@@ -9,13 +9,13 @@ use std::{
 
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_warnings};
 use light_cljs::{
-    ApplicationOptions, LineIndex, MacroHost, OptimizationLevel, TokenKind, Tokenizer, parse,
-    prepare_application,
+    ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, TokenKind, Tokenizer,
+    parse, prepare_application,
 };
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--define NS/NAME=VALUE ...] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -39,6 +39,47 @@ fn optimization_level(
     Ok(level.to_string_lossy().parse()?)
 }
 
+/// The application options `--compile` collects: `--optimize`,
+/// `--size-report` and `--define`.
+#[derive(Default)]
+struct CompileFlags {
+    level: OptimizationLevel,
+    size_report: bool,
+    /// `NS/NAME=VALUE` texts, read against the program once it is analyzed.
+    defines: Vec<String>,
+}
+
+impl CompileFlags {
+    /// Consume `flag` and its value when it is one of these flags.
+    fn accept(
+        &mut self,
+        flag: &str,
+        args: &mut impl Iterator<Item = std::ffi::OsString>,
+    ) -> Result<bool, Box<dyn Error>> {
+        match flag {
+            "--optimize" => self.level = optimization_level(args)?,
+            "--size-report" => self.size_report = true,
+            "--define" => self.defines.push(
+                args.next()
+                    .ok_or("--define requires NS/NAME=VALUE")?
+                    .into_string()
+                    .map_err(|_| "--define must be valid UTF-8")?,
+            ),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// The application options for `program`.
+    fn options(&self, program: &light_cljs::Program) -> Result<ApplicationOptions, Box<dyn Error>> {
+        let mut options = ApplicationOptions::new(self.level);
+        for text in &self.defines {
+            options.defines.push(Define::parse(program, text)?);
+        }
+        Ok(options)
+    }
+}
+
 /// Print the retention report of `prepared` to stderr (`--size-report`).
 fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<()> {
     write!(io::stderr().lock(), "{}", prepared.retention())
@@ -47,8 +88,7 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
 fn run_namespace(
     mut args: impl Iterator<Item = std::ffi::OsString>,
     options: AnalysisOptions,
-    mut level: OptimizationLevel,
-    mut size_report: bool,
+    mut flags: CompileFlags,
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = None;
     let mut roots = Vec::new();
@@ -56,8 +96,7 @@ fn run_namespace(
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--esm") => esm = true,
-            Some("--optimize") => level = optimization_level(&mut args)?,
-            Some("--size-report") => size_report = true,
+            Some(flag) if flags.accept(flag, &mut args)? => {}
             Some("--entry") => {
                 if entry.is_some() {
                     return Err("--entry may only be specified once".into());
@@ -87,14 +126,15 @@ fn run_namespace(
     if options.warning_mode {
         print_warnings(&warnings);
     }
-    let prepared = prepare_application(&program?, ApplicationOptions::new(level));
+    let program = program?;
+    let prepared = prepare_application(&program, flags.options(&program)?);
     let output = if esm {
         prepared.emit_esm()
     } else {
         prepared.emit_js()
     };
     io::stdout().lock().write_all(output.as_bytes())?;
-    if size_report {
+    if flags.size_report {
         print_size_report(&prepared)?;
     }
     Ok(())
@@ -133,19 +173,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     if mode != "tokens" {
         first = args.next();
     }
-    let mut level = OptimizationLevel::default();
-    let mut size_report = false;
-    while let Some(flag @ ("--optimize" | "--size-report")) =
+    let mut flags = CompileFlags::default();
+    while let Some(flag @ ("--optimize" | "--size-report" | "--define")) =
         first.as_deref().and_then(|arg| arg.to_str())
     {
         if mode != "compile" {
             return Err(format!("{flag} requires --compile").into());
         }
-        if flag == "--optimize" {
-            level = optimization_level(&mut args)?;
-        } else {
-            size_report = true;
-        }
+        flags.accept(flag, &mut args)?;
         first = args.next();
     }
     if matches!(
@@ -155,7 +190,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         if mode != "compile" {
             return Err("namespace options require --compile".into());
         }
-        return run_namespace(first.into_iter().chain(args), options, level, size_report);
+        return run_namespace(first.into_iter().chain(args), options, flags);
     }
     let source_name = match first.as_deref() {
         Some(arg) if arg == "--text" => "<text>.cljc".to_owned(),
@@ -184,8 +219,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     while let Some(arg) = args.next() {
         match arg.to_str() {
-            Some("--optimize") if mode == "compile" => level = optimization_level(&mut args)?,
-            Some("--size-report") if mode == "compile" => size_report = true,
+            Some(flag) if mode == "compile" && flags.accept(flag, &mut args)? => {}
             _ => return Err(USAGE.into()),
         }
     }
@@ -224,9 +258,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )
             })?;
             if mode == "compile" {
-                let prepared = prepare_application(&program, ApplicationOptions::new(level));
+                let prepared = prepare_application(&program, flags.options(&program)?);
                 write!(out, "{}", prepared.emit_js())?;
-                if size_report {
+                if flags.size_report {
                     out.flush()?;
                     print_size_report(&prepared)?;
                 }

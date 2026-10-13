@@ -128,13 +128,17 @@ builds each distinct constant literal once, with its hash computed by the
 compiler, builds map literals with constant keys from a precomputed key
 shape, drops the methods and types of the program that no instance can use,
 keeps of the runtime's collection, keyword and seq types only those the
-program can build, with the parts of each operation that handle them, and
+program can build, with the parts of each operation that handle them,
 calls the program's own functions directly, without an arity
-dispatcher when nothing else sees them (see
+dispatcher when nothing else sees them, and folds constants and dead
+branches and inlines single-use and small pure functions (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
-the constant table.
+the constant table. `--define ns/NAME=VALUE` (repeatable) gives a
+`(goog-define NAME default)` Var its value for the build, at every level; at
+`advanced` the code that only another value runs, such as a `(when DEBUG ...)`
+logging path, is removed.
 
 Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
 Vars and arity conflicts become warnings instead of errors), or with
@@ -214,13 +218,14 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   it prints, infers types (of parameters too, from the calls of functions
   only the program calls) to write truth tests, arithmetic, comparisons
   and typed core calls as plain JavaScript, drops the protocol methods and
-  types no instance can use, and calls known functions directly through the
-  method a call selects, and keeps only the runtime types a program can
-  build. `(js/console.log (+ 1 2))` drops from about 360 KB to about 200
-  bytes, a small record and protocol program to about 12 KB, a program that
-  only builds a keyword to 10 KB and one that builds a vector to 29 KB; a
-  program that prints still keeps the printer and much of the collection
-  machinery (about 105 KB).
+  types no instance can use, calls known functions directly through the
+  method a call selects, keeps only the runtime types a program can
+  build, and folds constants, dead branches and `goog-define` values and
+  inlines small functions. `(js/console.log (+ 1 2))` drops from about
+  360 KB to about 200 bytes, a small record and protocol program to about
+  12 KB, a program that only builds a keyword to 10 KB and one that builds
+  a vector to 29 KB; a program that prints still keeps the printer and much
+  of the collection machinery (about 105 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

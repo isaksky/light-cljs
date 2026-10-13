@@ -132,6 +132,7 @@ pub(crate) fn append(target: &mut Program, fragment: &Program, shared: &SharedPr
                 existing.declared = true;
                 existing.type_descriptor = global.type_descriptor;
                 existing.constant = global.constant;
+                existing.define = global.define;
                 existing.boolean_tag = global.boolean_tag;
             }
             if let Some(metadata) = global.metadata {
@@ -433,12 +434,18 @@ fn is_data(kind: &ExprKind) -> bool {
 
 /// Visit semantic child IDs using the same exhaustive mapping as fragment linking.
 pub(crate) fn children(program: &Program, id: ExprId) -> Vec<ExprId> {
+    kind_children(program, &program.exprs[id.0].kind)
+}
+
+/// The child expressions of an expression of this kind, in [`children`]
+/// order, for passes that hold a kind outside the arena while they rewrite it.
+pub(crate) fn kind_children(program: &Program, kind: &ExprKind) -> Vec<ExprId> {
     let children = std::cell::RefCell::new(Vec::new());
     identity_remap(program, |child| {
         children.borrow_mut().push(child);
         child
     })
-    .kind(&mut program.exprs[id.0].kind.clone());
+    .kind(&mut kind.clone());
     children.into_inner()
 }
 

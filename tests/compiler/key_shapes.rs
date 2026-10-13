@@ -148,6 +148,9 @@ fn edge_cases() -> String {
 (defn e6 [x] {{:outer {{:inner x :k 1}} :v [x] :w {{:a x :b x :c x :d x :e x :f x :g x :h x :i x :j x}}}})
 (defn e7 [x y] {wide40})
 (defn e8 [x] {{:a x :b 2 :c [3] :d {{:e 4}}}})
+;; The builders escape, so their calls are not inlined (light-cljs-214) and
+;; each builds its map in its own body.
+(js/Array.of e1 b1 e2 b2 e3 b3 e4 b4 e5 b5 e6 e7 e8)
 (let [ks1 [:type :x :y] ks2 [nil :a :b 1 2147483648 :c] ks3 [:a "a" 'a :ns/a [1 2] {{}} #{{}} [3]]
       ks4 [:a :b :c :d :e :f :g :h :i]
       ks5 [1 2147483648 33 2147483680 0 2147483647 "Aa" "BB" true 1231 nil :k 'sym [1 2] {{}} #{{}} [] 65 -1 1.5]
@@ -192,6 +195,8 @@ fn keys_the_pool_cannot_tell_apart_are_built_at_their_site() {
     let source = r#"
       (defn a [x y] {1 x 1.0 y}) (defn b [x y] {0 x -0.0 y :k x})
       (defn c [x y] {{:a 1} x {:a 1.0} y}) (defn d [x y] {{:a 1} x {:b 1} y})
+      ;; Escaping, they are not inlined (light-cljs-214).
+      (js/Array.of a b c d)
       (pr-str [(a 1 2) (b 1 2) (c 1 2) (d 1 2) (count (a 1 2)) (hash (b 1 2))])"#;
     let program = self::program(source);
     assert_eq!(
@@ -469,7 +474,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
         );
     }
     // The shapes, with the keys' hashes, and the sites, which pass the values
-    // and the set's other member in their operand order.
+    // and the set's other member in their operand order. Each builder is
+    // called once, so its site is inlined into the loop (light-cljs-214), where
+    // `:x` is read first.
     let advanced = emit(&program, OptimizationLevel::Advanced);
     let shaped: Vec<_> = advanced
         .lines()
@@ -479,14 +486,14 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     assert_eq!(
         shaped,
         [
-            "const k4 = rt$mapShape([k0, k1, k2, k3], [1174270348, 2099068185, -1757859776, 253001721]);",
+            "const k4 = rt$mapShape([k1, k0, k2, k3], [1174270348, 2099068185, -1757859776, 253001721]);",
             "const k16 = rt$hashMapShape([k6, k7, k8, k9, k10, k11, k12, k13, k14, k15], \
              [1381269198, 1738089905, -1763192079, -1397974765, 1109658740, 1482224470, \
              1972142424, -1597136552, -1386841315, -2123407586]);",
             "const k17 = rt$setShape([null]);",
-            "return rt$mapFromShape(k4, [k5, l0, (l0 + 1), \"button\"]);",
-            "return rt$hashMapFromShape(k16, [5, 7, 3, l1, 8, 2, 4, 6, 9, l1]);",
-            "return rt$setFromShape(k17, [l2]);",
+            "const next1 = (l5 + (k0).call(null, rt$mapFromShape(k4, [k5, l4, (l4 + 1), \"button\"])) \
+             + rt$count(rt$hashMapFromShape(k16, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4])) \
+             + rt$count(rt$setFromShape(k17, [l4])));",
         ]
     );
 }

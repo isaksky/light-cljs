@@ -5,10 +5,11 @@ differential test, runtime retention report and startup benchmark are
 implemented (see "Phase 0 extension points"), and so are Phase 1's unit
 manifest and advanced-mode runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
 extension points") and Phase 2's core operation table, type inference,
-rapid type analysis of program types and call shapes (see "Phase 2 core
-operation table extension points", "Phase 2 type inference extension
-points", "Phase 2 rapid type analysis extension points" and "Phase 2 call
-shape extension points"); the rest is not. The work items are
+rapid type analysis of program types, call shapes, and folding, inlining
+and build-time defines (see "Phase 2 core operation table extension
+points", "Phase 2 type inference extension points", "Phase 2 rapid type
+analysis extension points", "Phase 2 call shape extension points" and
+"Phase 2 folding and inlining extension points"); the rest is not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
 
@@ -163,8 +164,10 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   collections) and specialization of eager top-level calls to fixed arity
   entries or core aliases. Any retained `js*` disables both. (Since Phase 2
   steps 6 and 7, `Advanced` also removes pure-call initializers and treats
-  `js*` as an opaque leaf, and since step 4 `src/rta.rs` drops the methods
-  and types of a program that no instance can use.)
+  `js*` as an opaque leaf, since step 4 `src/rta.rs` drops the methods
+  and types of a program that no instance can use, and since step 8 it folds
+  constants and dead branches and inlines single-use and small pure
+  functions.)
 - `src/emitter.rs:105-134` includes the whole runtime when any used
   expression is a keyword, symbol, collection, core reference, reader
   literal, `with-meta`, var, protocol or type form, a `case` with keyword or
@@ -913,6 +916,7 @@ keyed by names.
    functions under an explicit cost budget with early rejection; fold
    constant arithmetic and string concatenation; eliminate dead branches on
    known booleans; support build-time defines so debug code vanishes.
+   Implemented; see "Phase 2 folding and inlining extension points" below.
 
 #### Phase 2 core operation table extension points
 
@@ -1608,6 +1612,191 @@ under `js*` below.
   programs' `unused-pure-def` garbage moves from `survives` to `residue`; see
   `benchmarks/compiler.md`.
 
+#### Phase 2 folding and inlining extension points
+
+Step 8 is implemented (light-cljs-214) in `src/folding.rs`,
+`src/inlining.rs` and `src/defines.rs`, at `Advanced` only, except that
+build-time defines apply at every level. `prepare_application` runs it after
+the first definition removal and before rapid type analysis, type inference
+and call shapes, which therefore see the simplified program. `None` and
+`Prepare` output does not change.
+
+- **Rounds.** Each round folds, removes the top-level definitions nothing
+  reads any more (the `Inert` removal, which now runs as `retain` once per
+  round), computes call shapes without types (`call_shapes::analyze` takes
+  an optional `Inference`) and inlines. A round in which nothing folds or
+  inlines ends them, and so does `SIMPLIFY_ROUNDS` (4); the last inlining
+  round is always followed by folding and removal. Folding removes dead
+  branches and the reads in them, inlining the calls of single-use and small
+  pure functions, and removal then drops the definitions that only those
+  read.
+- **Folding** (`folding::fold`) rewrites expressions in place, children
+  first:
+  - a read of a `^:const` or `goog-define` global is its value when one
+    top-level `def` defines it with a literal (a `declare` does not count),
+    nothing assigns or redefines it, and the read is in a later top-level
+    form, which runs after the definition. Earlier forms, including the
+    functions they define, keep the read, which may see the global unset.
+    Upstream likewise substitutes a `^:const` Var's value at the references
+    it analyzes after the definition;
+  - a `let` binding of a literal is substituted and dropped, and so is an
+    unread binding whose initializer has no effect (literals, local and
+    global reads, `fn`, and vector, list, map and set literals of those whose
+    keys and members are scalars). This folds `and`, `or`, `when-let` and
+    `if-let` over constants, whose expansions bind their operands;
+  - a call of a core operation on literals is its result when the table
+    (`src/core_operations.tsv`) makes the call `pure` for those argument
+    types and `ProgramFacts::trusted` holds (the program does not replace the
+    operation, and a `dispatch` row needs core protocols intact). `evaluate`
+    reproduces `+ - * /`, `inc`, `dec`, `abs`, `max`, `min`, `mod`, `quot`,
+    `rem`, the comparisons, `==`, `=`, `not=`, `identical?` on scalars,
+    `not`, `boolean`, the type and number predicates and `str` with the
+    runtime's double arithmetic in the runtime's order; `str` prints numbers
+    as ECMAScript's `Number::toString` does (`folding::js_number`).
+    Leading number literals of `+ - * /` fold into one, since the runtime
+    folds its operands from the left: `(+ 1 2 x)` is `(+ 3 x)`. A call outside
+    the operation's domain (`(+ 1 "a")`), a keyword `str` and an `identical?`
+    of keywords keep their call;
+  - an `if` on a literal is the branch it selects, a `^boolean` hint on a
+    literal is the literal, and a `do` drops the forms that have no effect
+    before its last, and its last too where its value is discarded (a
+    discarded `do`, `let` body or `if` branch). A `do` or `let` left with
+    one form is that form, unless its contents read `arguments`, hold `js*`
+    or a `:test` definition: in value position emission writes the form as
+    a function call, which those see (the emitter's `sequence_keeps_scope`
+    asks the same).
+
+  Locals that a closure, `reify`, type method or `js*` hole names are never
+  substituted, since the emitter names captured locals and raw text may
+  assign its holes. The root, namespace entries and macro functions keep
+  their expression identities; `case` tests, the targets of `set!` and
+  `binding`, and the globals of `var`, `exists?` and `resolve` are not reads
+  and stay.
+- **Literals.** Map keys and set members never become constants
+  (`folding::fenced_positions`): the emitter builds a map whose keys are all
+  constants from a key shape and a set of scalars without the duplicate check
+  that members computed at run time get, both of which rely on the distinct
+  keys analysis checks in source literals, so `(let [a 1 b 1] #{a b})` must
+  still throw. Every other item may fold, and so a literal the program builds
+  at each evaluation, such as `[x 1]` once `x` is a constant, could become
+  one the pool declares once and every evaluation shares, which no level
+  below shows. `folding::built_literals` marks the literals that are built
+  (collection literals and `with-meta` with an item that is not a constant),
+  folding and inlining carry the mark where an expression takes a literal's
+  place or copies it, and after the last round `folding::keep_built` wraps
+  one item of each marked literal whose items are all constants in a one-form
+  `do` (a map's first value, so that its keys keep their shape). Emission
+  writes the `do` as the item and does not pool the literal.
+- **Inlining** (`inlining::inline`) replaces a call that `CallShapes::call`
+  resolves to a method of a known global function with that method's body
+  when the global's sole definition is a direct top-level `def` and the call
+  is in a later top-level form or inside the function itself (both run after
+  the definition), the argument count matches the fixed parameters (a
+  variadic method may receive more when it never reads its rest parameter),
+  the method captures nothing and is no `recur` target, the call has one
+  parent, and the global has no `^boolean` tag, whose calls the advanced-mode
+  contract trusts. The body may hold literals, reads, `if`, `do`, `let`,
+  `^boolean` hints, calls, collection literals, property reads, method calls,
+  `new`, `instance?` and metadata; a nested `fn`, `loop`, `letfn`, `try`,
+  `throw`, `case`, assertion, assignment, definition, `js*`, `js-arguments`
+  or `this-as` keeps the function. Upstream's cost model is
+  `FunctionInjector.java:910-1080` in the research clone, which this
+  follows:
+  - a *single-use* function, closed (`CallShapes::closed`) with this one call,
+    is inlined whatever its size up to `SINGLE_USE_LIMIT` (4,096
+    expressions): its definition goes, so the body moves rather than grows;
+  - otherwise the body must be *pure* (only reads, branches, bindings,
+    literal collections, keyword lookups and calls of core operations whose
+    row is `pure` or `allocates` and calls no function argument, so it can
+    run only the code its arguments supply), at most `INLINE_BUDGET` (10)
+    expressions, a pooled constant collection counting one, and must lower
+    the cost (`lowers_cost`): a call costs two expressions plus its arguments
+    and a definition its body plus three plus its parameters. An escaping
+    function keeps its definition, so its body may cost no more than a call;
+    a closed one with `n` calls may cost `n` times more in total than the
+    calls by up to its definition. The walk that measures a body stops as
+    soon as it exceeds its limit (rule 4 of docs/dos-and-donts.md), and the
+    copies of pure bodies spend `growth_budget` (half the program's
+    expressions plus 64) over all rounds.
+
+  Calls are visited children first in source order, so a function's own
+  calls are inlined before the function is copied elsewhere.
+  `ApplicationOptions::no_inlining` turns inlining off (folding still runs),
+  as Closure's `inlineFunctions` option does, for debugging and profiling
+  with every stack frame; the `type_inference` suite sets it to keep the
+  functions whose parameter types (light-cljs-229) it checks. Since inlining
+  runs before inference, a function inlined into a closed one gets the
+  parameter types of the arguments it was called with there.
+- **Arguments.** A parameter read in place of a literal, core value,
+  immutable local or pooled constant collection argument copies the
+  argument at each read; an unread parameter drops an argument that has no
+  effect; a stable argument (no effect, no global or mutable field read) moves
+  to its parameter's only read; and one argument with an effect moves to its
+  parameter's only read when the body reaches that read before anything with
+  an effect or a throw, unconditionally (`first_read`; Closure's direct
+  inlining). Any other argument is bound to a fresh local by a `let` around
+  the body, in order. A `let` in value position would be a function call, so
+  a call that needs one, or whose body has a `let` where it produces its
+  value, is inlined only in statement or return position. The body's own
+  locals get fresh identities.
+- **Defines** (`src/defines.rs`). `(goog-define name default)` analyzes as a
+  `def` of a `^:const` Var (no redefinition, `set!` or `binding`) marked
+  `GlobalBinding::define`, whose default must be a string, number or boolean
+  literal, as upstream checks. `ApplicationOptions::defines` (`Define { name,
+  value }`, the qualified name and a `DefineValue`) replaces the default
+  literal before anything else, at every level, as upstream's
+  `:closure-defines` do at `:none` too; a define that names no `goog-define`
+  or has another kind is ignored and listed by
+  `PreparedApplication::rejected_defines`. `--define NS/NAME=VALUE` (repeatable,
+  after `--compile`, for text and `--entry` builds) reads the value as the
+  default's kind with `Define::parse` and rejects what does not fit. At
+  `Advanced` folding then substitutes the value, so `(when DEBUG ...)` folds
+  away with everything only it reads.
+- **Statistics.** `ApplicationStats::inlined_calls` and `folded_expressions`
+  count the rewrites; `removed_definitions` includes what they leave unread.
+- **Tests.** The `folding_inlining` suite in `tests/compiler/` runs every
+  program at every level, sloppy and strict, and checks the `Advanced` text:
+  folded edge cases (`NaN`, `-0`, infinities, ECMAScript number printing,
+  `mod`/`quot`/`rem` signs, `=` on keywords and `nil`), calls that must stay
+  (outside the domain, replaced operations, `=` with core protocols extended
+  to numbers), dead branches and the definitions only they read, scopes that
+  `arguments` and raw text see, `^:const` reads before and after the
+  definition, defines at every level including rejected ones and
+  `goog-define` errors, single-use and small pure functions, argument order
+  and effects, bodies and calls that must stay functions, mutable fields,
+  rest parameters and recursion. The CLI suite checks `--define` for text and
+  namespace builds and its errors. The ratchet fixture `debug-logging` pins
+  a `goog-define`-gated logging path that leaves nothing at `Advanced`: the
+  suite checks that the output is byte for byte that of the program written
+  without it.
+- **For 221 (folding against pooled constants).** `folding::Constant` is the
+  folder's value domain and `folding::evaluate` its table of operations. A
+  composite variant of `Constant`, recognized in `Constant::of` from the
+  emitter's `constant_nodes` classification (or an equivalent IR-level one,
+  since the folder runs before emission), lets `evaluate` grow rows for `get`,
+  keyword lookup, `count`, `nth`, `contains?` and `seq` that return scalars;
+  a call that would throw (an out-of-range `nth`) must stay. `case`
+  membership folds in `Folder::rewrite`, which leaves `case` tests alone
+  today. The inliner's `pooled` is the same classification for arguments.
+  The inliner takes no body with a `case` (`inlining::measure` rejects it),
+  so `(kind :a)` of `keyword-case` stays a call until the whitelist admits
+  `case` with its `Copier` arm; folding `case` on a constant then removes
+  it. New folds must keep the two rules of "Literals" above: map keys and
+  set members do not become constants, and built literals stay marked.
+- **Left for later.**
+  - Functions with nested `fn`s, `case`, `throw` or `try` in their bodies,
+    local functions and calls through locals are not inlined; copying
+    closures needs their captures remapped.
+  - Tests that inference types but that are not literals, such as `(if
+    (string? s) ...)` on a known string, do not fold yet.
+  - `str` of constants among other arguments is not merged, and only one
+    argument with an effect may move into a body.
+
+**Measured.** At `Advanced`, `debug-logging` is 48 bytes (`none` is
+378,779), the same as the program without its logging. `multi-arity` drops
+from 2,040 to 781 bytes and `raw-js` from 271 to 36, `console-log-sum` from
+192 to 186; see "Folding, inlining and defines" in `benchmarks/compiler.md`.
+
 ### Constant collection literals
 
 Tracked as Pellets 218-221 after keyword interning (208), whose constant
@@ -1939,6 +2128,14 @@ upstream states that advanced mode is unsafe for certain patterns.
   engine-generated message names that binding (`g3_1 is not a function`)
   where lower levels name the property they read (`Cannot read properties of
   undefined (reading 'call')`).
+- An inlined call (light-cljs-214) leaves no stack frame: the `stack` of an
+  error thrown in an inlined body names its caller, and recursion that
+  overflows the stack may do so at another depth. The function's `name` and
+  its definition are gone when nothing else reads it. Inlining never moves
+  a call before the definition it reads, so such a call still throws.
+- A `goog-define`'s value comes from the build at every level, as upstream's
+  `:closure-defines`; at `Advanced`, a `^:const` or `goog-define` Var read
+  after its top-level definition is its value (light-cljs-214).
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification

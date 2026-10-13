@@ -209,9 +209,13 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
             "4 = rt$hashed(rt$listFromArray([1, 2]), 1185709346);",
         ]
     );
-    // The sites read the entries; no site builds a literal.
+    // The sites read the entries; no site builds a literal. The functions,
+    // each a read of an entry, are inlined at their calls (light-cljs-214).
     assert_eq!(advanced.matches("rt$vectorFromArray(").count(), 3);
-    assert!(advanced.contains("return k0;") && advanced.contains("return k3;"));
+    assert!(
+        advanced.contains("rt$vectorFromArray([k0, k3, k4, (k0 === rt$first(k3))"),
+        "{advanced}"
+    );
     // The table precedes the program in bundler output too.
     let esm = prepare_application(
         &program,

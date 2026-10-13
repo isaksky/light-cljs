@@ -120,6 +120,7 @@ pub const FIXTURES: &[Fixture] = &[
     // Constant collection literals (light-cljs-218): the empty vector reads
     // the runtime's singleton at every level, and at `Advanced` the constant
     // parts of `row` and the `get-in` path are built once, from the pool.
+    // `row`, called once, is inlined into its caller (light-cljs-214).
     Fixture {
         name: "constant-literals",
         source: "(defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty []
@@ -128,7 +129,7 @@ pub const FIXTURES: &[Fixture] = &[
                                           (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
                                 (range 10)))",
         ceilings: [379_000, 379_000, 106_000],
-        removed: [0, 0, 0],
+        removed: [0, 0, 1],
         printed: "50\n",
     },
     // Three records implement one protocol and only one is constructed: at
@@ -163,13 +164,14 @@ pub const FIXTURES: &[Fixture] = &[
     },
     // Event maps, a map literal with constant keys and dynamic values
     // (light-cljs-220): at `Advanced` its keys and their hashes are a pooled
-    // shape, and each evaluation passes only the values.
+    // shape, and each evaluation passes only the values. `event`, called
+    // once, is inlined into its caller (light-cljs-214).
     Fixture {
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
         ceilings: [379_000, 379_000, 87_000],
-        removed: [0, 0, 0],
+        removed: [0, 0, 1],
         printed: "1050\n",
     },
     // A program that only builds a vector or a keyword keeps that type, the
@@ -190,34 +192,37 @@ pub const FIXTURES: &[Fixture] = &[
         removed: [0, 0, 0],
         printed: ":a\nundefined\n",
     },
-    // Retained raw JavaScript is an escape below `Advanced` only.
+    // Retained raw JavaScript is an escape below `Advanced` only. There,
+    // `add` is also inlined and folded (light-cljs-214).
     Fixture {
         name: "raw-js",
         source: r#"(def unused "unused")
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [379_000, 379_000, 300],
-        removed: [0, 0, 1],
+        ceilings: [379_000, 379_000, 100],
+        removed: [0, 0, 2],
         printed: "3\n",
     },
     // Functions with several methods that are only called: at `Advanced` each
     // call names the method it runs and no dispatcher is defined
-    // (light-cljs-212).
+    // (light-cljs-212). Since light-cljs-214 `clamp` and `area` are inlined
+    // at their calls and folded, and only `fib`, a `recur` target, is left.
     Fixture {
         name: "multi-arity",
         source: "(defn clamp ([x] (clamp x 0 10)) ([x lo hi] (max lo (min hi x))))
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [381_000, 381_000, 2_100],
-        removed: [0, 0, 0],
+        ceilings: [381_000, 381_000, 800],
+        removed: [0, 0, 2],
         printed: "84\n",
     },
     // Closed functions whose parameters take the types of their calls'
     // arguments (light-cljs-229): at `Advanced` record field reads, `nth` on a
     // vector, `=` on strings and keywords and `count` of a string lower inside
-    // them.
+    // them. Since light-cljs-214 `at`, `width` and `weight` are inlined into
+    // `score`, where the arguments' own types apply.
     Fixture {
         name: "closed-params",
         source: "(defrecord Pt [x y])
@@ -232,7 +237,23 @@ pub const FIXTURES: &[Fixture] = &[
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
         ceilings: [381_000, 381_000, 80_000],
-        removed: [0, 0, 0],
+        removed: [0, 0, 3],
         printed: "419\n",
+    },
+    // A debug-only logging path behind a `goog-define` (light-cljs-214): at
+    // `Advanced` the define's value folds every `when DEBUG` away, the logging
+    // function becomes empty and is inlined at its calls, and nothing of the
+    // path (its strings, `pr-str` and the printer) is left, so the output is
+    // the multiplication alone.
+    Fixture {
+        name: "debug-logging",
+        source: r#"(goog-define DEBUG false)
+                 (defn debug-log [& parts] (when DEBUG (js/console.log "[debug]" (pr-str (vec parts)))))
+                 (defn area [w h] (debug-log "area" w h {:w w :h h}) (* w h))
+                 (when DEBUG (debug-log "startup" {:debug true}))
+                 (area (.-length "abc") 4)"#,
+        ceilings: [379_000, 379_000, 100],
+        removed: [0, 0, 3],
+        printed: "12\n",
     },
 ];

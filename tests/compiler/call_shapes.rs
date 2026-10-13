@@ -83,9 +83,11 @@ fn global(program: &Program, name: &str) -> String {
 /// functions and from nested closures.
 #[test]
 fn known_functions_are_called_through_the_selected_method() {
+    // The host calls keep `add2` and the first method of `multi` from being
+    // inlined (light-cljs-214), which would replace the calls checked here.
     let source = r#"
-        (defn add2 [a b] (+ a b))
-        (defn multi ([] 0) ([x] (multi x 1)) ([x y] (add2 x y)) ([x y & more] (reduce + (+ x y) more)))
+        (defn add2 [a b] (js/Math.abs (+ a b)))
+        (defn multi ([] (js/Math.abs 0)) ([x] (multi x 1)) ([x y] (add2 x y)) ([x y & more] (reduce + (+ x y) more)))
         (defn rest-only [& xs] (count xs))
         (declare odd-step)
         (defn even-step [n] (if (zero? n) true (odd-step (dec n))))
@@ -183,12 +185,14 @@ fn methods_that_may_read_this_keep_call_null() {
 /// variadic method's fixed parameters).
 #[test]
 fn escaping_functions_keep_their_dispatcher_over_the_same_entries() {
+    // The host calls keep the methods whose calls are checked here from being
+    // inlined (light-cljs-214).
     let source = r#"
-        (defn multi ([] 0) ([x] x) ([x y & more] [x y more]))
-        (defn mapped ([x] (inc x)) ([x y] (+ x y)))
-        (defn held ([] :held) ([x] x))
+        (defn multi ([] 0) ([x] (js/Math.abs x)) ([x y & more] [x y more]))
+        (defn mapped ([x] (inc x)) ([x y] (js/Math.abs (+ x y))))
+        (defn held ([] :held) ([x] (js/Math.abs x)))
         (defn holes ([] 0) ([a b] 1))
-        (defn under ([a] [a]) ([a b c & r] [a b c r]))
+        (defn under ([a] [(js/Math.abs a)]) ([a b c & r] [a b c r]))
         (def v (var held))
         (declare result)
         (def returned (defn result ([] :result) ([x] x)))
@@ -351,9 +355,10 @@ fn local_functions_with_one_method_are_called_plainly() {
 #[test]
 fn calls_across_namespaces_are_direct() {
     let root = Sources::new();
+    // The host call keeps `scale` from being inlined (light-cljs-214).
     root.write(
         "tools.cljs",
-        "(ns tools) (defn scale ([x] (scale x 2)) ([x k] (* x k))) (defn plus [a b] (+ a b))",
+        "(ns tools) (defn scale ([x] (scale x 2)) ([x k] (js/Math.abs (* x k)))) (defn plus [a b] (+ a b))",
     );
     root.write(
         "app.cljs",
@@ -376,7 +381,8 @@ fn calls_across_namespaces_are_direct() {
 /// An explicit export escapes: its dispatcher stays.
 #[test]
 fn exports_keep_their_dispatcher() {
-    let source = "(defn exported ([] 1) ([x] x)) (exported 2)";
+    // The host call keeps the method from being inlined (light-cljs-214).
+    let source = "(defn exported ([] 1) ([x] (js/Math.abs x))) (exported 2)";
     let program = program(source);
     let id = program
         .globals
@@ -388,6 +394,8 @@ fn exports_keep_their_dispatcher() {
         ApplicationOptions {
             optimize: OptimizationLevel::Advanced,
             exports: vec![GlobalId(id)],
+            defines: Vec::new(),
+            no_inlining: false,
         },
     );
     let text = prepared.emit_js();

@@ -67,6 +67,7 @@ pub fn is_definition_macro(namespace: &str, name: &str) -> bool {
                 | "lazy-seq"
                 | "defonce"
                 | "declare"
+                | "goog-define"
                 | "binding"
                 | "with-redefs"
                 | "resolve"
