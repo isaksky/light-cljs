@@ -250,10 +250,11 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 }
 
 /// Compile-time units the export list does not reach; any other unreached
-/// unit is dead code. None today: the compile-time entry points
-/// (`compilerForms`, `compilerFormBridge`, `setDeclarationDemand`, ...) are
-/// exported, and `core` reaches the reader and the namespace registry. A
-/// pellet that stops exporting compile-time machinery lists its units here.
+/// unit is dead code. None today: the compiler, macro host and REPL reach the
+/// `compile-time` units through the shared runtime's exports (`compilerForms`,
+/// `compilerFormBridge`, `setDeclarationDemand`, ...), and `core` reaches the
+/// reader and the namespace registry. A pellet that stops exporting
+/// compile-time machinery lists its units here.
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[];
 
 #[test]

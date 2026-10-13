@@ -75,27 +75,27 @@ const SLACK: isize = 0;
 const EXPECTED: [(GarbageTag, Class, &str); 7] = [
     (
         GarbageTag::UnreferencedNamespace,
-        Class::Residue,
-        "registerReaderNamespace, currentNs switches and `null;` per definition remain (206)",
+        Class::Removed,
+        "without reflection advanced output registers no namespace and drops `null;` (206)",
     ),
     (
         GarbageTag::UnusedLiteralDef,
-        Class::Residue,
-        "prepare removes the def; `null;` and its name in the namespace bindings remain (206)",
+        Class::Removed,
+        "prepare removes the def; advanced drops its `null;` and lists no binding (206)",
     ),
     (
         GarbageTag::UnusedPureDef,
-        Class::Residue,
-        "advanced removes the def (213); `null;` and its name in the namespace bindings remain (206)",
+        Class::Removed,
+        "advanced removes the def (213), drops its `null;` and lists no binding (206)",
     ),
     (
         GarbageTag::UnusedDefn,
-        Class::Residue,
-        "prepare removes the defn; `null;` and its binding name remain (206)",
+        Class::Removed,
+        "prepare removes the defn; advanced drops its `null;` and lists no binding (206)",
     ),
     (
         GarbageTag::UnusedKeyword,
-        Class::Residue,
+        Class::Removed,
         "removed with its definition; keyword interning must not resurrect it (208, 218)",
     ),
     (

@@ -25,7 +25,7 @@
 //! # Header syntax
 //!
 //! ```text
-//! //@unit <name>[ mutator][ effect[: <binding>, ...] | install: <binding>, ...][ requires: <binding>, ...]
+//! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...] | install: <binding>, ...][ requires: <binding>, ...]
 //! //@ <binding>, ...                    continues the requires list
 //! //@exports
 //! ```
@@ -41,6 +41,16 @@
 //!   writes them sorted case-insensitively). ECMAScript globals
 //!   ([`ECMASCRIPT_GLOBALS`]) are never listed; host globals are not allowed
 //!   at all, and the runtime reaches the host through `globalThis`.
+//! - `compile-time` marks machinery of the compiler, the macro host and the
+//!   REPL, which reach it through the shared runtime's exports: the compiler
+//!   form bridge, declaration demand and transactions, the namespace registry,
+//!   the macro reader context, `inspect` and the `eval` stub. Application
+//!   code reaches a compile-time unit only through reflection (`*ns*`,
+//!   `find-ns`, the reader, `eval`, macros defined in the program), and an
+//!   `Advanced` program that does so registers its namespaces
+//!   ([`crate::runtime_slice`]). Compile-time hooks that application paths
+//!   call (`demandProtocol`, `patchDeclaration`) are application units that
+//!   start as plain versions, which the compile-time units replace.
 //! - `mutator` marks a unit declaring a function whose calls mutate their
 //!   arguments or a registry (`builtinType`, `installMethods`, `variadicCore`,
 //!   `coreMethod`). Calling one while loading is an effect.
@@ -198,6 +208,9 @@ pub struct Unit<'a> {
     pub body_range: Range<usize>,
     /// The bindings listed after `requires:`, in header order.
     pub requires: Vec<&'a str>,
+    /// Marked `compile-time`: machinery of the compiler, macro host and REPL
+    /// that application code reaches only through reflection.
+    pub compile_time: bool,
     /// Marked `mutator`: calling the function the unit declares mutates its
     /// arguments or a registry, so a unit that calls it at load time has an
     /// effect.
@@ -381,6 +394,7 @@ impl<'a> RuntimeManifest<'a> {
                 },
                 Header::Unit {
                     name,
+                    compile_time,
                     mutator,
                     effect,
                     requires,
@@ -395,6 +409,7 @@ impl<'a> RuntimeManifest<'a> {
                             header_range: section.header_range,
                             body_range: section.body,
                             requires,
+                            compile_time,
                             mutator,
                             effect,
                             declares: facts.declares,
@@ -837,6 +852,9 @@ impl<'a> RuntimeManifest<'a> {
             let header = &self.source[unit.header_range.clone()];
             let indent = &header[..header.len() - header.trim_start().len()];
             let mut words = vec![format!("//@unit {}", unit.name)];
+            if unit.compile_time {
+                words.push("compile-time".into());
+            }
             if unit.mutator {
                 words.push("mutator".into());
             }
@@ -892,6 +910,7 @@ fn line_at(source: &str, offset: usize) -> usize {
 enum Header<'a> {
     Unit {
         name: &'a str,
+        compile_time: bool,
         mutator: bool,
         effect: Option<Effect<'a>>,
         requires: Vec<&'a str>,
@@ -1037,6 +1056,12 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
         return Err(format!("invalid unit name `{name}`"));
     }
     rest = rest[name_end..].trim_start();
+    let compile_time = rest
+        .strip_prefix("compile-time")
+        .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
+    if compile_time {
+        rest = rest["compile-time".len()..].trim_start();
+    }
     let mutator = rest
         .strip_prefix("mutator")
         .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
@@ -1109,11 +1134,12 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     }
     if !rest.is_empty() {
         return Err(format!(
-            "unit `{name}`: unexpected `{rest}`; expected `mutator`, `effect`, `install:` or `requires:`"
+            "unit `{name}`: unexpected `{rest}`; expected `compile-time`, `mutator`, `effect`, `install:` or `requires:`"
         ));
     }
     Ok(Header::Unit {
         name,
+        compile_time,
         mutator,
         effect,
         requires,
@@ -2767,6 +2793,29 @@ mod tests {
     }
 
     const INSTALLS: &str = "// Original bounded runtime\n(() => {\n  \"use strict\";\n\n  //@unit f\n  function f() { return 1; }\n  //@unit install mutator\n  function install(fn) { fn.extra = true; return fn; }\n  //@unit f.extra install: f requires: f, install\n  install(f);\n  //@unit g requires: f\n  const g = () => f();\n  //@unit h effect requires: install\n  const h = install(() => 2);\n  //@exports\n  return Object.freeze({f, g, h});\n})()\n";
+
+    #[test]
+    fn compile_time_units_parse_and_round_trip_with_their_other_flags() {
+        let source = INSTALLS
+            .replace("//@unit install mutator", "//@unit install compile-time mutator")
+            .replace("//@unit g requires", "//@unit g compile-time requires");
+        let manifest = RuntimeManifest::parse(&source).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.with_computed_requires(), source);
+        let unit = |name| &manifest.units[manifest.unit_named(name).unwrap().0];
+        assert!(unit("install").compile_time && unit("install").mutator);
+        assert!(unit("g").compile_time && !unit("f").compile_time);
+        let error = RuntimeManifest::parse(
+            &INSTALLS.replace("//@unit g requires", "//@unit g compile requires"),
+        )
+        .unwrap_err();
+        assert!(
+            error[0]
+                .message
+                .contains("expected `compile-time`, `mutator`"),
+            "{error:?}"
+        );
+    }
 
     #[test]
     fn installs_follow_escaping_values_and_mutator_calls_are_effects() {

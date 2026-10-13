@@ -99,9 +99,11 @@ identity without demanding its value.
 
 `Namespace`, `create-ns`, `find-ns`, `ns-name`, `the-ns` and `all-ns` use explicit
 session identities. Emitted units register their source namespaces, including
-namespaces without definitions. Creating an existing named namespace reuses its
-identity. `create-ns` accepts an optional host object for `.findInternedVar`;
-no browser global namespace traversal is assumed. On source symbols retained in
+namespaces without definitions; an `--optimize advanced` application does so
+only when it reaches this reflection (see "Application preparation").
+Creating an existing named namespace reuses its identity. `create-ns` accepts
+an optional host object for `.findInternedVar`; no browser global namespace
+traversal is assumed. On source symbols retained in
 Var metadata, `ns-name` returns the symbol's string name field, as upstream does.
 These snapshots describe the supported source surface and do not emulate upstream
 analyzer AST or cache structures.
@@ -130,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), and declares each distinct keyword and quoted symbol literal once (the constant table, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword and quoted symbol literal once (the constant table, below), and registers its namespaces only when the program reaches reflection (below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -170,6 +172,29 @@ the output reads is declared once after the runtime, `const k0 = rt$keyword(null
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it
 (see "Phase 1 constant table extension points" in
 [advanced-optimization.md](advanced-optimization.md)).
+
+Compiler machinery in the runtime (the compiler form bridge, declaration
+demand and transactions, the namespace registry, the macro reader context,
+`inspect` and the `eval` stub) is marked `compile-time` in the unit manifest,
+and an `Advanced` application keeps it only when the program reaches
+reflection: when it reads, sets or binds `*ns*`, calls `find-ns`, `the-ns`,
+`all-ns`, `create-ns`, the reader (`read-string`, `read`, and the
+`cljs.reader` and `clojure.edn` readers, which share it) or `eval`, uses a
+macro defined in the program, or quotes a `#js` literal. Only such a program
+registers its namespaces with the runtime and switches `*ns*` as each
+namespace loads, and its registered namespaces list only the definitions the
+output keeps, so a removed definition no longer shadows a `cljs.core` name in
+the reader's syntax quote. Any other program has no namespace registration:
+`(js/console.log (+ 1 2))` is the `add` function and the call, under 1 KB.
+`resolve`, `ns-publics`, `ns-interns`, `ns-imports` and `ns-refers` expand to
+Vars at compile time and are not reflection in this sense. The protocol,
+multimethod and type paths of the runtime call the declaration hooks of the
+compiler (demand for deferred declarations, journaling of declaration
+writes) through plain versions that the compiler replaces in the shared
+runtime, so application output carries neither. See "Phase 1 compile-time
+extension points" and "Advanced-mode contract" in
+[advanced-optimization.md](advanced-optimization.md).
+
 `PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
 that first demanded it, and each embedded unit with its byte size and the first

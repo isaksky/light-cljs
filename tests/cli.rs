@@ -393,6 +393,13 @@ fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
             );
             let report = String::from_utf8(output.stderr).unwrap();
             assert_eq!(report, prepared.retention().to_string(), "{args:?}");
+            // The namespace demo reads no runtime binding and reaches no
+            // reflection, so its advanced output registers no namespace and
+            // embeds no runtime.
+            if level == OptimizationLevel::Advanced && args.contains(&"--entry") {
+                assert_eq!(report, "advanced: no runtime embedded\n", "{args:?}");
+                continue;
+            }
             let embedding = if level == OptimizationLevel::Advanced {
                 "runtime slice"
             } else {

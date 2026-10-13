@@ -22,14 +22,23 @@
 //! the callee of plain calls (`rt$add(1, 2)`) does not escape, so the slice
 //! leaves out its `install:` units (the variadic arity ABI), and an
 //! `extend-type` of a core protocol method keeps the method's dispatcher,
-//! which the runtime looks up by key.
+//! which the runtime looks up by key. The output registers its namespaces
+//! with the runtime only when the program reaches reflection
+//! ([`RuntimeRoots::reach_reflection`]), so a slice keeps the `compile-time`
+//! units of the manifest only for programs that use them.
 
 use std::collections::HashMap;
 use std::fmt;
 
 use crate::analyzer::{ExprId, Program, Span};
 use crate::application::OptimizationLevel;
-use crate::runtime_manifest::{RootUse, RuntimeManifest, UnitId};
+use crate::runtime_manifest::{CORE_CELLS, RootUse, RuntimeManifest, UnitId};
+
+/// The cells of [`CORE_CELLS`] that hold a namespace of the registry, which
+/// only the namespace registration fills: `*ns*`, set when the runtime loads
+/// and at each namespace entry. An `Advanced` program that reads, sets or
+/// binds one reaches reflection.
+pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
@@ -187,6 +196,26 @@ impl RuntimeRoots {
         bindings
     }
 
+    /// Whether an `Advanced` program whose output reads these roots reaches
+    /// reflection, so that the output registers its namespaces: its slice keeps
+    /// a compile-time unit (the namespace registry, the reader, the macro reader
+    /// context, the compiler form bridge, `eval`), or it reads, sets or binds a
+    /// [`REGISTRY_CELLS`] cell (`*ns*`). Otherwise nothing in the output can
+    /// observe the registration.
+    pub(crate) fn reach_reflection(&self) -> bool {
+        let manifest = RuntimeManifest::embedded();
+        self.names.iter().any(|(name, ..)| {
+            name.binding == CORE_CELLS
+                && name
+                    .member
+                    .is_some_and(|member| REGISTRY_CELLS.contains(&member))
+        }) || manifest
+            .reached_by_uses(&self.units(manifest))
+            .iter()
+            .zip(&manifest.units)
+            .any(|(first, unit)| first.is_some() && unit.compile_time)
+    }
+
     /// The unit declaring each root's binding with its use, in root order. A
     /// member read uses the binding as a value.
     fn units(&self, manifest: &RuntimeManifest) -> Vec<(UnitId, RootUse)> {
@@ -251,7 +280,8 @@ pub enum Demand {
         span: Span,
     },
     /// The namespace registration (`registerReaderNamespace`, `currentNs`)
-    /// that accompanies an embedded runtime.
+    /// that accompanies an embedded runtime: always below `Advanced`, and at
+    /// `Advanced` when the program reaches reflection.
     NamespaceRegistration,
 }
 

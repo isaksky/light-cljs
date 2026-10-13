@@ -74,13 +74,14 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
         ]
     );
     // The table follows the runtime slice and precedes the program, and no
-    // site constructs a literal: the one other `rt$symbol` read is the
-    // namespace registration.
+    // site constructs a literal. Nothing reaches reflection, so there is no
+    // namespace registration (which would follow the table).
     let table = advanced.find("  const k0 = ").unwrap();
     assert!(advanced.find("  const [rt$").unwrap() < table);
-    assert!(table < advanced.find("rt$registerReaderNamespace(").unwrap());
+    assert!(table < advanced.find("  let g").unwrap());
+    assert!(!advanced.contains("registerReaderNamespace"));
     assert_eq!(advanced.matches("rt$keyword(").count(), 8);
-    assert_eq!(advanced.matches("rt$symbol(").count(), 3);
+    assert_eq!(advanced.matches("rt$symbol(").count(), 2);
     // A quoted symbol with metadata keeps its per-site `with-meta` on the
     // shared symbol.
     assert!(advanced.contains("rt$withMeta(k8, "));

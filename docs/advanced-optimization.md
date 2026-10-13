@@ -187,7 +187,8 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   unreachable from value construction. (Since step 3 of Phase 1 the hub only
   lists runtime bindings, and only the shared runtime keeps it. Since step 4
   every load-time effect is a unit attached to the constructor or operation
-  that needs it.)
+  that needs it. Since step 5 the compile-time machinery is marked in the
+  manifest, and an application keeps it only when it reaches reflection.)
 - The IR already carries what Closure lacks: `CoreFnId` with 688 variants
   and per-variant runtime names, `Program.protocols` with arities,
   `record_constructors`, `GlobalBinding` with `constant`, `boolean_tag`
@@ -315,10 +316,13 @@ retention report covers runtime units. Later phases plug in here:
   and keeps working when advanced output slices the runtime.
 
   `EXPECTED` in that file is the expected-survivor list: one class per tag
-  with the pellet that should improve it. Today literal defs, defns, keywords
-  and unreferenced namespaces leave `residue` (`null;` statements, binding
-  names and namespace registration, until 206), and so do pure-call defs since
-  213; uninstantiated types and uncalled methods survive until 211. Every
+  with the pellet that should improve it. Since 206, literal, pure-call and
+  keyword defs, defns and unreferenced namespaces are `removed`: a program
+  without reflection registers no namespace and a removed definition leaves no
+  `null;` statement. Uninstantiated types and uncalled methods survive until
+  211. The generator writes garbage and escape text on the line before it,
+  without line breaks of its own, so adding garbage moves no program form and
+  leaves source metadata (`:line`, `:column`) unchanged. Every
   seed checks every tag exactly, so a pellet that removes more garbage fails
   the test until it moves that row toward `removed` in the same commit. If a
   tag's items stop sharing one class, split the tag in the generator rather
@@ -361,6 +365,7 @@ to under 1 KB and beat every upstream ceiling on its own.
    user code that calls reflection (`ns-publics`, `resolve`, `*ns*`,
    `read-string` with auto-resolve). `registerReaderNamespace` and
    `currentNs` emission become conditional on that reachability.
+   Implemented; see "Phase 1 compile-time extension points" below.
 6. **Break the toString edge.** The print unit installs collection
    `toString` on load. A program that never reaches `str`, `pr-str`,
    `print*` or `with-out-str` gets collections without `toString`. This is
@@ -380,7 +385,7 @@ to under 1 KB and beat every upstream ceiling on its own.
 
 Step 1 is implemented (light-cljs-202). Later steps build on it:
 
-- **Format.** `//@unit <name>[ effect[: <bindings>]][ requires: <bindings>]`
+- **Format.** `//@unit <name>[ compile-time][ mutator][ effect[: <bindings>]][ requires: <bindings>]`
   headers in `src/js_runtime.js`, with `//@ ` continuation lines and a final
   `//@exports` section; the module docs of `src/runtime_manifest.rs` give the
   rules. A unit that declares bindings is named after its first one (today
@@ -410,10 +415,12 @@ Step 1 is implemented (light-cljs-202). Later steps build on it:
 - **Maintenance.** The `runtime_manifest` suite in `tests/compiler/` fails
   on drift; after editing the runtime run
   `LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::`
-  and review the rewritten `requires:` lists. When step 5 stops exporting
-  compile-time machinery, list its units in `UNREACHABLE_FROM_EXPORTS`
-  there. Per-unit sizes and reach are in `benchmarks/compiler.md` (the
-  `print_runtime_unit_sizes` ignored test prints them).
+  and review the rewritten `requires:` lists. Step 5 keeps the compile-time
+  machinery exported, because the shared path needs it, and marks it
+  `compile-time` instead; a pellet that stops exporting some of it lists its
+  units in `UNREACHABLE_FROM_EXPORTS` there. Per-unit sizes and reach are in
+  `benchmarks/compiler.md` (the `print_runtime_unit_sizes` ignored test
+  prints them).
 
 #### Phase 1 slicing extension points
 
@@ -571,7 +578,8 @@ loading that the manifest does not attach to the units needing it:
   parentheses.
 - **Left for later.** `namespaces.cljsUser` and `namespaces.cljsCore` stay
   effects of the namespace registry, which only the namespace registration
-  and reflection reach (step 5), and so does `compilerForms`. Generic
+  and reflection reach (step 5), and so does `compilerForms`. (Since step 5
+  an application slice keeps neither without reflection.) Generic
   operations (`seq`, `withMeta`, `conj`, `=`, `hash`, the printer behind
   `toString`) reference every collection constructor, so any program that
   builds a value keeps them and their members, about 326 units (132 KB); step
@@ -583,6 +591,74 @@ loading that the manifest does not attach to the units needing it:
   6-15 KB; `[1 2 3]` and `{}` alone drop from 151,912 and 151,896 to 136,565
   and 136,549 bytes. The shared runtime grows by 1,800 bytes. Per-fixture
   sizes are in `benchmarks/compiler.md`.
+
+#### Phase 1 compile-time extension points
+
+Step 5 is implemented (light-cljs-206). `Advanced` application output keeps
+no compiler machinery unless the program reaches reflection:
+
+- **Compile-time units.** The header flag `compile-time`
+  (`Unit::compile_time`) marks the machinery of the compiler, the macro host
+  and the REPL: the compiler form bridge (`compilerFormBridge`,
+  `compilerForms`), declaration demand and transactions
+  (`setDeclarationDemand`, `declarationReceiver`, `declarationTransaction` and
+  the patch helpers), the namespace registry (`namespaces` with its
+  `cljs.user` and `cljs.core` effects, `createNs`, `registerReaderNamespace`,
+  `findNs`, `theNs`, `allNs`, `readerCoreNames`), the macro reader context
+  (`macroReaderFunction`, `withMacroReaderContext`, `compilerMacroVar`),
+  `inspect`, `setMacroexpandServices`, `compilerExceptionMessage` and the
+  `eval` stub (`evalCore`). The shared runtime still exports them, and the
+  shared path is unchanged.
+- **Reflection.** The `compile_time_units` suite in `tests/compiler/` pins
+  the core operations whose units reach a compile-time unit: `*ns*` (the
+  `currentNs` cell, `runtime_slice::REGISTRY_CELLS`), `find-ns`, `the-ns`,
+  `all-ns`, `create-ns`, `eval`, `compiler-macro-var*`, and every operation
+  of the reader (`read-string`, `read`, `read-line`, and the `cljs.reader`
+  and `clojure.edn` operations), because the reader is one unit and requires
+  `readerCoreNames` and `inspect`. The emitter's other roots reach none,
+  except the namespace registration, macro functions defined in the program
+  (`macroReaderFunction`), quoted `#js` literals (`compilerForms`) and the
+  `declarationReceiver` of compile-time emission. `resolve`, `ns-publics`,
+  `ns-interns`, `ns-imports` and `ns-refers` expand to Vars at compile time
+  and are not reflection. A core operation or emitter root that starts
+  reaching a compile-time unit fails that suite until it is listed there.
+- **Registration.** `RuntimeRoots::reach_reflection` decides from the roots
+  of the program body whether the slice keeps a compile-time unit or the
+  program reads, sets or binds a registry cell. Only then does `Advanced`
+  output register its namespaces (`registerReaderNamespace`, `currentNs =
+  theNs(...)`) and switch `*ns*` at each namespace entry. `emit_js_mode`
+  emits the body without the registration first, and emits it again with
+  the registration when those roots reach reflection, so only a reflective
+  program pays a second emission. The registration's `bindings` then list
+  only retained definitions (see "Advanced-mode contract"). Below `Advanced`,
+  and on the shared path, every output registers as before. At `Advanced` a
+  discarded `nil`, such as a definition that preparation removed, emits no
+  `null;` statement.
+- **Hooks.** Application paths call `demandProtocol`, `demandMethod` (from
+  `directMethod`, which no longer slices the protocol key on every call) and
+  `demandMulti`, which are empty functions until `setDeclarationDemand`
+  replaces them. They also call `patchDeclaration` and `setDeclaration`,
+  which define a property or set a store entry until an open
+  `declarationTransaction` replaces them with journaling versions; it restores
+  them when it closes. `installMethods`, `multiState` and `addMethod` read
+  `declarationJournal`, the open transaction's undo journal, which stays null
+  in an application. The reader builds `#js` literals through
+  `readerJsLiterals`, which the `compilerForms` unit (a bare `effect`) points
+  at the bridge's builders that mark literals for the macro host, so a reader
+  program keeps no bridge. A new hook follows the same pattern: an
+  application unit with the plain behavior, replaced by a compile-time unit.
+- **Left for later.** The reader is one unit, so EDN reading counts as
+  reflection and keeps `readerCoreNames` (9.4 KB), `inspect` and the
+  `compilerInput*` window; splitting the EDN reader from the code reader would
+  separate them. The registration needs `symbol` and `Namespace`, so a
+  reflective program keeps the generic core (about 330 units) until step 6
+  and rapid type analysis shrink it.
+- **Measured.** `(js/console.log (+ 1 2))` drops from 137,360 to 713 bytes at
+  `Advanced`: the 234-byte `add` unit, the runtime prologue and the program.
+  `(+ 1 2)` is 553 bytes and the `raw-js` fixture 1,404. Every fixture that
+  builds a value drops by 4.8-5.3 KB, the registry and the registration
+  itself. The shared runtime grows by 583 bytes. Per-fixture sizes are in
+  `benchmarks/compiler.md`.
 
 #### Phase 1 constant table extension points
 
@@ -683,8 +759,9 @@ literals (Pellets 218-221) extend the same table.
   builds a new symbol. A symbol with metadata keeps its per-site `with-meta`
   around the shared symbol.
 - **Measured.** The shared runtime grows by 590 bytes, and every `Advanced`
-  slice that reaches `keyword` grows by 442; today that is every slice,
-  through the namespace registration. In small programs the table is about
+  slice that reaches `keyword` grows by 442; at the time that was every
+  slice, through the namespace registration (since step 5, only slices that
+  reach `keyword` otherwise). In small programs the table is about
   size-neutral. The steady-state workload `keyword-lookups` (keyword lookups
   in literal maps plus a keyword `case`) takes half as long in Node at every
   level. QuickJS gains 10% below `Advanced` and 14% at it. Startup does not
@@ -912,9 +989,17 @@ seam as designed separately. None are prerequisites for the above.
 These are the deliberate semantic differences, stated up front the way
 upstream states that advanced mode is unsafe for certain patterns.
 
-- Dynamic `resolve`, `ns-publics`, `all-ns` and `find-var` see only
-  retained definitions unless the program statically reaches reflection or
-  names the definitions in `exports`.
+- A program registers its namespaces with the runtime only when it reaches
+  reflection: when it reads, sets or binds `*ns*`, or calls `find-ns`,
+  `the-ns`, `all-ns`, `create-ns`, the reader (`read-string`, `read`, the
+  EDN readers) or `eval`, or uses a macro defined in the program or a quoted
+  `#js` literal. Otherwise nothing can observe the registry. `resolve`,
+  `ns-publics` and `ns-interns` expand to Vars at compile time and are not
+  affected.
+- A registered namespace lists only retained definitions. The reader's syntax
+  quote resolves an unqualified symbol to the current namespace when it names
+  one of its definitions; when that definition was removed and the name is
+  also a `cljs.core` name, it resolves to `cljs.core` instead.
 - Collection `toString` exists only when printing is reachable.
 - Equal constant literals may be `identical?` because they share one pooled
   value. Since light-cljs-208 this holds for quoted symbols; keyword

@@ -1019,3 +1019,57 @@ every freed keyword also left a `FinalizationRegistry` job that the sessions
 never run. A strong table would grow with the data. The `keyword` function,
 the reader and keywordized keys therefore still allocate fresh keywords, as
 upstream does.
+
+## Compile-time units and conditional namespace registration — October 13, 2026
+
+light-cljs-206 implements Phase 1 step 5 of the
+[design](../docs/advanced-optimization.md). The manifest marks 24 units
+(29,220 bytes) `compile-time`: the compiler form bridge (11,645), the reader's
+core name table (9,366), `inspect`, declaration demand and transactions, the
+namespace registry, the macro reader context and the `eval` stub. An
+`--optimize advanced` program keeps them, registers its namespaces and switches
+`*ns*` at namespace entries only when it reaches reflection (`*ns*`, `find-ns`,
+`the-ns`, `all-ns`, `create-ns`, the reader, `eval`, macros defined in the
+program, quoted `#js` literals). Before, every slice kept the registration,
+whose `symbol` reaches the generic core. The declaration hooks on protocol,
+type and multimethod paths are plain functions in application slices, and the
+reader builds `#js` literals without the bridge. Raw and `gzip -9` bytes of
+`--compile --optimize LEVEL --text` output; "before" is master `d7ae574`:
+
+| Fixture | Prepare before | Prepare after | Advanced before | Advanced after | Saved | Units kept |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 359,828 / 85,438 | 360,411 / 85,664 | 137,360 / 31,601 | 713 / 417 | 136,647 | 1 |
+| println-hi | 359,715 / 85,368 | 360,298 / 85,594 | 139,097 / 31,880 | 134,321 / 30,759 | 4,776 | 337 |
+| vector-printed | 359,740 / 85,377 | 360,323 / 85,603 | 139,159 / 31,900 | 134,383 / 30,777 | 4,776 | 337 |
+| map-printed | 359,730 / 85,370 | 360,313 / 85,595 | 139,143 / 31,896 | 134,367 / 30,772 | 4,776 | 337 |
+| seq-pipeline | 360,059 / 85,487 | 360,642 / 85,712 | 155,545 / 35,807 | 150,769 / 34,666 | 4,776 | 371 |
+| add | 359,668 / 85,360 | 360,251 / 85,586 | 137,200 / 31,529 | 553 / 331 | 136,647 | 1 |
+| rest-fn | 360,012 / 85,494 | 360,595 / 85,722 | 137,359 / 31,592 | 132,583 / 30,448 | 4,776 | 327 |
+| keyword-case | 360,300 / 85,512 | 360,883 / 85,740 | 138,550 / 31,948 | 133,748 / 30,811 | 4,802 | 331 |
+| record-protocol | 360,621 / 85,684 | 361,204 / 85,912 | 164,928 / 37,726 | 159,603 / 36,495 | 5,325 | 374 |
+| pure-defs | 361,179 / 85,786 | 361,762 / 86,013 | 160,582 / 36,539 | 155,421 / 35,357 | 5,161 | 368 |
+| keyword-lookups | 360,792 / 85,615 | 361,375 / 85,843 | 148,556 / 34,199 | 143,721 / 33,069 | 4,835 | 347 |
+| raw-js | 360,667 / 85,612 | 361,250 / 85,837 | 138,190 / 31,752 | 1,404 / 567 | 136,786 | 1 |
+| `(str *ns*)` | 359,681 / 85,358 | 360,264 / 85,585 | 136,984 / 31,482 | 136,516 / 31,462 | 468 | 341 |
+| `(read-string "{:a 1}")` | 359,679 / 85,364 | 360,262 / 85,590 | 213,915 / 51,301 | 201,922 / 48,180 | 11,993 | 402 |
+
+`console-log-sum` is now the `add` unit and the call
+([retention report](results/compile-time-2026-10-13/console-log-sum.txt)),
+well under the 10 KB design target; `(+ 1 2)` and `raw-js` likewise. Every
+program that builds a value still keeps the generic core of about 330 units
+(132 KB) that the collection constructors reach (step 6 and rapid type
+analysis), and saves the 4.8-5.3 KB of the registry and the registration. A
+reflective program such as `(str *ns*)` keeps the registration and saves only
+what the plain hooks save
+([retention report](results/compile-time-2026-10-13/current-namespace.txt)).
+A reader program no longer keeps the compiler form bridge, which saves 12 KB;
+it still keeps `readerCoreNames` and `inspect`, because the EDN and code
+readers are one unit. The generated dead-code programs' unreferenced
+namespaces, unused literal and pure-call defs, unused defns and keywords
+change from `residue` to `removed`.
+
+The shared runtime that `none`, `prepare`, the REPL and the macro host embed
+grows by 583 bytes, so the ceilings of eight fixtures rise by 1,000: the
+plain hooks and their one-line comments, the journaling versions that
+`declarationTransaction` installs, and `readerJsLiterals`. The `advanced`
+ceilings fall to the sizes above, rounded up.

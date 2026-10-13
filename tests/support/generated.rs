@@ -476,17 +476,31 @@ impl Item {
         }
     }
 
+    /// Gated text joins the line before it and breaks no lines of its own, so
+    /// adding garbage or escapes moves no program form to another line or
+    /// column, and source metadata such as a var's `:line` stays the same.
     fn render(&self, admits: &dyn Fn(Gate) -> bool, out: &mut String) {
+        fn push(out: &mut String, gate: Gate, text: &str) {
+            if gate == Gate::Program {
+                out.push_str(text);
+            } else {
+                out.extend(text.chars().map(|c| if c == '\n' { ' ' } else { c }));
+            }
+        }
         if !admits(self.gate) {
             return;
         }
-        out.push_str(&self.open);
+        if self.gate != Gate::Program && out.ends_with('\n') {
+            out.pop();
+            out.push(' ');
+        }
+        push(out, self.gate, &self.open);
         for (gate, text) in &self.extra {
             if admits(*gate) {
-                out.push_str(text);
+                push(out, *gate, text);
             }
         }
-        out.push_str(&self.close);
+        push(out, self.gate, &self.close);
         out.push('\n');
         for item in &self.after {
             item.render(admits, out);

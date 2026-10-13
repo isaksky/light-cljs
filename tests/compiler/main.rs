@@ -41,6 +41,7 @@ mod case_char_string_accepted;
 mod case_char_string_gap;
 mod case_numeric;
 mod cljc_prefixes;
+mod compile_time_units;
 mod configured_custom_source_context;
 mod configured_source_context;
 mod constant_table;

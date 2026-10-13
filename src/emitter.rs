@@ -123,48 +123,62 @@ fn emit_js_mode(
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
-    let mut emitter = Emitter {
-        program,
-        demand_roots,
-        application_roots,
-        needs_host: false,
-        needs_package: false,
-        imports: module.then(Vec::new),
-        specialized_calls: application.map(|application| application.calls),
-        replaced_core: direct,
-        core_cells: Vec::new(),
-        constants: direct.map(|_| ConstantTable {
-            declarations: String::new(),
-            numbers: HashMap::new(),
-            named: vec![[None; 2]; program.named_literals.len()],
-        }),
-        output: String::new(),
-        indent: 1,
-        captures: Vec::new(),
-        reify_captures: Vec::new(),
-        reify_receivers: Vec::new(),
-        capture_resets: Vec::new(),
-        field_resets: Vec::new(),
-        used: HashSet::new(),
-        returned_definition: None,
-        raw_segments: Vec::new(),
-        runtime: RuntimeRoots::default(),
-        site: None,
+    // The prelude, the `let g<n>;` declarations and the program body.
+    let body = |register_namespaces: bool| {
+        let mut emitter = Emitter {
+            program,
+            demand_roots,
+            application_roots,
+            register_namespaces,
+            needs_host: false,
+            needs_package: false,
+            imports: module.then(Vec::new),
+            specialized_calls: application.map(|application| application.calls),
+            replaced_core: direct,
+            core_cells: Vec::new(),
+            constants: direct.map(|_| ConstantTable {
+                declarations: String::new(),
+                numbers: HashMap::new(),
+                named: vec![[None; 2]; program.named_literals.len()],
+            }),
+            output: String::new(),
+            indent: 1,
+            captures: Vec::new(),
+            reify_captures: Vec::new(),
+            reify_receivers: Vec::new(),
+            capture_resets: Vec::new(),
+            field_resets: Vec::new(),
+            used: HashSet::new(),
+            returned_definition: None,
+            raw_segments: Vec::new(),
+            runtime: RuntimeRoots::default(),
+            site: None,
+        };
+        emitter
+            .output
+            .push_str("(() => {\n  const truth = (value) => value != null && value !== false;\n");
+        let prelude_end = emitter.output.len();
+        for global in 0..program.globals.len() {
+            if application_roots {
+                break;
+            }
+            if application.is_some_and(|application| !application.globals[global]) {
+                continue;
+            }
+            writeln!(emitter.output, "  let g{global};").unwrap();
+        }
+        emitter.emit(program.root, ExprContext::Return);
+        (emitter, prelude_end)
     };
-    emitter
-        .output
-        .push_str("(() => {\n  const truth = (value) => value != null && value !== false;\n");
-    let prelude_end = emitter.output.len();
-    for global in 0..program.globals.len() {
-        if application_roots {
-            break;
-        }
-        if application.is_some_and(|application| !application.globals[global]) {
-            continue;
-        }
-        writeln!(emitter.output, "  let g{global};").unwrap();
+    // Advanced output registers its namespaces only when the program reaches
+    // reflection, which the roots of its body decide
+    // (`RuntimeRoots::reach_reflection`): the body is emitted without the
+    // registration, and again with it when those roots reach reflection.
+    let slice = direct.is_some();
+    let (mut emitter, mut prelude_end) = body(!slice);
+    if slice && emitter.runtime.reach_reflection() {
+        (emitter, prelude_end) = body(true);
     }
-    emitter.emit(program.root, ExprContext::Return);
     #[cfg(debug_assertions)]
     check_runtime_reads(
         &emitter.output,
@@ -192,7 +206,6 @@ fn emit_js_mode(
     }
     // Advanced application output embeds the units its runtime reads reach;
     // everything else keeps the whole runtime under the expression-kind test.
-    let slice = direct.is_some();
     let embed = if slice {
         !emitter.runtime.is_empty()
     } else {
@@ -206,7 +219,12 @@ fn emit_js_mode(
     let mut runtime_bytes = 0;
     if embed {
         let mut registration = String::new();
-        for namespace in &program.namespaces {
+        let register_namespaces = emitter.register_namespaces;
+        // At `Advanced` a namespace lists only the definitions the output keeps.
+        let retained = |global: usize| {
+            !slice || application.is_none_or(|application| application.globals[global])
+        };
+        for namespace in program.namespaces.iter().filter(|_| register_namespaces) {
             let previous = std::mem::take(&mut emitter.output);
             emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
             let literal = std::mem::replace(&mut emitter.output, previous);
@@ -257,8 +275,9 @@ fn emit_js_mode(
                 program
                     .globals
                     .iter()
-                    .filter(|g| g.namespace == *namespace)
-                    .map(|g| js_string(&g.name))
+                    .enumerate()
+                    .filter(|(id, g)| g.namespace == *namespace && retained(*id))
+                    .map(|(_, g)| js_string(&g.name))
                     .chain(
                         program
                             .reader_contexts
@@ -273,6 +292,7 @@ fn emit_js_mode(
             .unwrap();
         }
         if shared.is_none()
+            && register_namespaces
             && let Some(namespace) = program.namespaces.last()
         {
             let [current, the_ns, symbol] = [
@@ -595,6 +615,10 @@ struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
     application_roots: bool,
+    /// Whether the output registers its namespaces with the runtime and
+    /// switches `*ns*` at each namespace entry. Always below `Advanced`; at
+    /// `Advanced` only for a program that reaches reflection.
+    register_namespaces: bool,
     needs_host: bool,
     needs_package: bool,
     /// Bundler output binds packages with static imports instead of the registry.
@@ -1024,7 +1048,9 @@ impl<'a> Emitter<'a> {
             self.value(id);
             return;
         }
-        if let Some(namespace) = self.program.namespace_entries.get(&id) {
+        if self.register_namespaces
+            && let Some(namespace) = self.program.namespace_entries.get(&id)
+        {
             self.indentation();
             self.rt(RuntimeName::core("currentNs"));
             self.output.push_str(" = ");
@@ -1032,6 +1058,14 @@ impl<'a> Emitter<'a> {
             self.output.push('(');
             self.rt(RuntimeName::export("symbol"));
             writeln!(self.output, "(null, {}));", js_string(namespace)).unwrap();
+        }
+        // A discarded `nil`, such as a definition application preparation
+        // removed, is no statement at `Advanced`.
+        if context == ExprContext::Discard
+            && self.replaced_core.is_some()
+            && matches!(self.program.exprs[id.0].kind, ExprKind::Nil)
+        {
+            return;
         }
         match &self.program.exprs[id.0].kind {
             ExprKind::JsTemplate { segments, args } => {

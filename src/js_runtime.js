@@ -363,7 +363,7 @@
   // Evaluators install their expansion services without replacing core or
   // coupling this runtime to a particular compiler or JavaScript engine.
   let macroexpandServices = {};
-  //@unit setMacroexpandServices requires: macroexpandServices
+  //@unit setMacroexpandServices compile-time requires: macroexpandServices
   function setMacroexpandServices(services) {
     const next = services == null ? {} : services;
     if (typeof next !== "object") throw new TypeError("Expected macroexpand services object");
@@ -2713,11 +2713,11 @@
     return identityHashes.get(value);
   }
 
-  //@unit compilerFormBridge requires: atoms, cells, deferredValue, emptyList, EmptyListValue,
-  //@ generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues, listFromArray,
-  //@ mapFromArray, maps, mapTraversal, metadataValues, name, queueFromArray, queues, recordTypes,
-  //@ reifyValues, rePattern, setFromArray, sets, setTraversal, symbol, symbols, toArray,
-  //@ typeFields, uuid, uuids, vars, vectorFromArray, vectors, view, views, volatiles
+  //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
+  //@ EmptyListValue, generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues,
+  //@ listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name, queueFromArray, queues,
+  //@ recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal, symbol, symbols,
+  //@ toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectors, view, views, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -2915,9 +2915,9 @@
       }});
   }
 
-  //@unit inspect requires: atoms, cells, first, isReduced, keywords, mapTraversal, next, nth,
-  //@ recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars, vectors, views,
-  //@ volatiles
+  //@unit inspect compile-time requires: atoms, cells, first, isReduced, keywords, mapTraversal,
+  //@ next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars, vectors,
+  //@ views, volatiles
   // Private test adapter. Production emission keeps this factory local; only
   // the observation harness registers inspect. Exposed storage remains frozen.
   function inspect(value) {
@@ -3359,53 +3359,55 @@
   function withMetaSupported(value) {
     return !!builtin(value, "IWithMeta/-with-meta", 2) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
   }
-  //@unit declarationDemand
-  let declarationDemand = null;
-  //@unit declarationTransactions
-  const declarationTransactions = [];
-  //@unit setDeclarationDemand requires: declarationDemand
-  function setDeclarationDemand(demand) { declarationDemand = demand; }
-  //@unit demandProtocol requires: declarationDemand, typeNames
-  function demandProtocol(key, value) {
-    if (!declarationDemand) return;
-    const name = typeNames.get(value?.constructor);
-    declarationDemand(key, value, name);
+  //@unit declarationJournal
+  // The open declarationTransaction's undo journal; applications open none.
+  let declarationJournal = null;
+  //@unit demandProtocol
+  // No-ops until setDeclarationDemand installs a compiler session's demand.
+  let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
+  //@unit setDeclarationDemand compile-time requires: demandMethod, demandMulti, demandProtocol,
+  //@ print, typeNames
+  function setDeclarationDemand(demand) {
+    demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
+    demandMethod = (key, arity, value) => demandProtocol(arity === 0 ? key : key.slice(0, key.lastIndexOf("/")), value);
+    demandMulti = mf => { if (demand) demand("multifn:" + print(mf.name, false), mf); };
   }
-  //@unit declarationReceiver requires: demandProtocol
+  //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
-  //@unit patchDeclaration mutator requires: declarationTransactions
-  function patchDeclaration(value, key, descriptor) {
-    const transaction = declarationTransactions.at(-1);
-    if (transaction) {
-      const old = Object.getOwnPropertyDescriptor(value, key);
-      transaction.push({undo: () => old ? Object.defineProperty(value, key, old) : Reflect.deleteProperty(value, key), redo: () => Object.defineProperty(value, key, descriptor), snapshot: () => { const saved = Object.getOwnPropertyDescriptor(value, key); return () => saved ? Object.defineProperty(value, key, saved) : Reflect.deleteProperty(value, key); }});
-    }
-    Object.defineProperty(value, key, descriptor);
-  }
-  //@unit setDeclaration mutator requires: declarationTransactions
-  function setDeclaration(store, key, value) {
-    const transaction = declarationTransactions.at(-1), present = store.has(key), previous = store.get(key);
-    if (transaction) transaction.push({undo: () => present ? store.set(key, previous) : store.delete(key), redo: () => store.set(key, value), snapshot: () => { const saved = store.get(key), has = store.has(key); return () => has ? store.set(key, saved) : store.delete(key); }});
-    store.set(key, value);
-  }
-  //@unit declarationTransaction requires: declarationTransactions
+  //@unit patchDeclaration mutator
+  // An open declarationTransaction replaces both with journaling versions.
+  let patchDeclaration = (value, key, descriptor) => { Object.defineProperty(value, key, descriptor); };
+  //@unit setDeclaration mutator
+  let setDeclaration = (store, key, value) => { store.set(key, value); };
+  //@unit declarationTransaction compile-time requires: declarationJournal, patchDeclaration,
+  //@ setDeclaration
   function declarationTransaction(run, capture = false) {
-    const undo = [];
-    declarationTransactions.push(undo);
+    const undo = [], saved = [declarationJournal, patchDeclaration, setDeclaration];
+    declarationJournal = undo;
+    patchDeclaration = (value, key, descriptor) => {
+      const old = Object.getOwnPropertyDescriptor(value, key);
+      undo.push({undo: () => old ? Object.defineProperty(value, key, old) : Reflect.deleteProperty(value, key), redo: () => Object.defineProperty(value, key, descriptor), snapshot: () => { const saved = Object.getOwnPropertyDescriptor(value, key); return () => saved ? Object.defineProperty(value, key, saved) : Reflect.deleteProperty(value, key); }});
+      Object.defineProperty(value, key, descriptor);
+    };
+    setDeclaration = (store, key, value) => {
+      const present = store.has(key), previous = store.get(key);
+      undo.push({undo: () => present ? store.set(key, previous) : store.delete(key), redo: () => store.set(key, value), snapshot: () => { const saved = store.get(key), has = store.has(key); return () => has ? store.set(key, saved) : store.delete(key); }});
+      store.set(key, value);
+    };
     try { const value = run(); return capture ? {value, patches: undo} : value; }
     catch (error) {
       for (let i = undo.length - 1; i >= 0; i--) undo[i].undo();
       throw error;
-    } finally { declarationTransactions.pop(); }
+    } finally { [declarationJournal, patchDeclaration, setDeclaration] = saved; }
   }
-  //@unit applyDeclarationPatches
+  //@unit applyDeclarationPatches compile-time
   function applyDeclarationPatches(patches, forward) {
     if (forward) for (const patch of patches) patch.redo();
     else for (let i = patches.length - 1; i >= 0; i--) patches[i].undo();
   }
-  //@unit snapshotDeclarationPatches
+  //@unit snapshotDeclarationPatches compile-time
   function snapshotDeclarationPatches(patches) { return patches.map(patch => patch.snapshot()); }
-  //@unit restoreDeclarationPatches
+  //@unit restoreDeclarationPatches compile-time
   function restoreDeclarationPatches(saved) { for (let i = saved.length - 1; i >= 0; i--) saved[i](); }
   //@unit protocolPredicate requires: demandProtocol, directMethod, nativeType
   function protocolPredicate(protocol, key, value, direct) {
@@ -3680,13 +3682,11 @@
     }
     apply(_self, args) { return this.call(null, ...Array.from(args)); }
   }
-  //@unit demandMulti requires: declarationDemand, print
-  function demandMulti(mf) { if (declarationDemand) declarationDemand("multifn:" + print(mf.name, false), mf); }
-  //@unit multiState requires: atoms, declarationTransactions, reset
+  //@unit multiState requires: atoms, declarationJournal, reset
   function multiState(ref, value) {
     // Journal compiler declaration table/cache writes for failed bundles and
     // source-frontier rewinds; ordinary runtime mutations retain source order.
-    const transaction = declarationTransactions.at(-1);
+    const transaction = declarationJournal;
     if (transaction && atoms.has(ref)) {
       const previous = ref.state;
       transaction.push({undo: () => { ref.state = previous; }, redo: () => { ref.state = value; }, snapshot: () => { const saved = ref.state; return () => { ref.state = saved; }; }});
@@ -3704,11 +3704,11 @@
     multiState(mf.method_table, mapFromArray([])); multiState(mf.method_cache, mapFromArray([]));
     multiState(mf.prefer_table, mapFromArray([])); multiState(mf.cached_hierarchy, null); return mf;
   }
-  //@unit addMethod requires: assoc, declarationTransactions, demandMulti, deref, multiState,
+  //@unit addMethod requires: assoc, declarationJournal, demandMulti, deref, multiState,
   //@ resetMultiCache
   function addMethod(mf, dispatch, method) {
     // Bundle installation must not demand itself or later method declarations.
-    if (!declarationTransactions.length) demandMulti(mf);
+    if (!declarationJournal) demandMulti(mf);
     multiState(mf.method_table, assoc(deref(mf.method_table), dispatch, method)); resetMultiCache(mf); return mf;
   }
   //@unit removeMethod requires: demandMulti, deref, dissoc, multiState, resetMultiCache
@@ -4134,7 +4134,7 @@
   });
   //@unit Var.prototype effect: Var requires: Var, varPrototype
   Var.prototype = varPrototype;
-  //@unit namespaces
+  //@unit namespaces compile-time
   // Namespace identities are session-owned, with source registration from emitted units.
   const namespaces = new Map();
   //@unit Namespace effect requires: equalPair, hash, installMethods, keyword, makeVar,
@@ -4153,7 +4153,7 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
-  //@unit createNs mutator requires: invalidArity, Namespace, namespaces, str, symbols
+  //@unit createNs compile-time mutator requires: invalidArity, Namespace, namespaces, str, symbols
   function createNs(name, obj = null) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     if (!symbols.has(name)) throw new TypeError("create-ns requires a symbol");
@@ -4162,11 +4162,11 @@
     else if (obj != null) namespaces.get(key).obj = obj;
     return namespaces.get(key);
   }
-  //@unit readerCoreNames
+  //@unit readerCoreNames compile-time
   // Pinned source names from core_public_bindings.tsv and core_var_metadata.tsv.
   // Qualification describes source identity and does not demand a core value.
   const readerCoreNames = new Set("* *1 *2 *3 *assert* *clojurescript-version* *command-line-args* *e *eval* *exec-tap-fn* *flush-on-newline* *loaded-libs* *main-cli-fn* *ns* *out* *print-dup* *print-err-fn* *print-fn* *print-fn-bodies* *print-length* *print-level* *print-meta* *print-namespace-maps* *print-newline* *print-readably* *unchecked-arrays* *unchecked-if* *warn-on-infer* + - --destructure-map -> ->> ->ArrayChunk ->ArrayIter ->Atom ->ChunkBuffer ->ChunkedCons ->ChunkedSeq ->Cons ->Cycle ->Delay ->ES6EntriesIterator ->ES6Iterator ->ES6IteratorSeq ->ES6SetEntriesIterator ->Eduction ->Empty ->EmptyList ->IndexedSeq ->IndexedSeqIterator ->IntegerRange ->IntegerRangeChunk ->Iterate ->KeySeq ->Keyword ->LazySeq ->List ->Many ->MapEntry ->MetaFn ->MultiFn ->MultiIterator ->Namespace ->PersistentArrayMap ->PersistentArrayMapIterator ->PersistentArrayMapSeq ->PersistentHashMap ->PersistentHashSet ->PersistentQueue ->PersistentQueueIter ->PersistentQueueSeq ->PersistentTreeMap ->PersistentTreeMapSeq ->PersistentTreeSet ->PersistentVector ->RSeq ->Range ->RangeIterator ->RangedIterator ->RecordIter ->Reduced ->Repeat ->SeqIter ->Single ->StringBufferWriter ->StringIter ->Subvec ->Symbol ->TaggedLiteral ->TransformerIterator ->UUID ->ValSeq ->Var ->Volatile -add-method -add-watch -as-transient -assoc -assoc! -assoc-n -assoc-n! -chunked-first -chunked-next -chunked-rest -clj->js -clone -comparator -compare -conj -conj! -contains-key? -count -default-dispatch-val -deref -deref-with-timeout -disjoin -disjoin! -dispatch-fn -dissoc -dissoc! -drop -drop-first -empty -entry-key -equiv -find -first -flush -get-method -hash -invoke -iterator -js->clj -key -key->js -kv-reduce -lookup -meta -methods -name -namespace -next -notify-watches -nth -peek -persistent! -pop -pop! -pr-writer -prefer-method -prefers -realized? -reduce -remove-method -remove-watch -reset -reset! -rest -rseq -seq -sorted-seq -sorted-seq-from -swap! -val -vreset! -with-meta -write .. / < <= = == > >= APersistentVector ASeq ArrayChunk ArrayIter Atom CHAR_MAP ChunkBuffer ChunkedCons ChunkedSeq Cons Cycle DEMUNGE_MAP DEMUNGE_PATTERN Delay ES6EntriesIterator ES6Iterator ES6IteratorSeq ES6SetEntriesIterator Eduction Empty EmptyList ExceptionInfo Fn IAssociative IAtom IChunk IChunkedNext IChunkedSeq ICloneable ICollection IComparable ICounted IDeref IDerefWithTimeout IDrop IEditableCollection IEmptyableCollection IEncodeClojure IEncodeJS IEquiv IFind IFn IHash IIndexed IIterable IKVReduce IList ILookup IMap IMapEntry IMeta IMultiFn INIT INamed INext IPending IPrintWithWriter IRecord IReduce IReset IReversible ISeq ISeqable ISequential ISet ISorted IStack ISwap ITransientAssociative ITransientCollection ITransientMap ITransientSet ITransientVector IUUID IVector IVolatile IWatchable IWithMeta IWriter IndexedSeq IndexedSeqIterator Inst IntegerRange IntegerRangeChunk Iterate KeySeq Keyword LazySeq List LongImpl MODULE_INFOS MODULE_URIS Many MapEntry MetaFn MultiFn MultiIterator NS_CACHE NaN? Namespace NodeSeq PROTOCOL_SENTINEL PersistentArrayMap PersistentArrayMapIterator PersistentArrayMapSeq PersistentHashMap PersistentHashSet PersistentQueue PersistentQueueIter PersistentQueueSeq PersistentTreeMap PersistentTreeMapSeq PersistentTreeSet PersistentVector RSeq Range RangeIterator RangedIterator RecordIter Reduced Repeat START SeqIter Single StringBufferWriter StringIter Subvec Symbol TaggedLiteral Throwable->map TransformerIterator UUID ValSeq Var Volatile abs aclone add-tap add-to-string-hash-cache add-watch aget alength alter-meta! amap ancestors and any? apply apply-to areduce array array-chunk array-index-of array-iter array-list array-map array-seq array? as-> aset assert assoc assoc! assoc-in associative? atom await bases binding bit-and bit-and-not bit-clear bit-count bit-flip bit-not bit-or bit-set bit-shift-left bit-shift-right bit-shift-right-zero-fill bit-test bit-xor boolean boolean? booleans bounded-count butlast byte bytes case cat char char? chars checked-aget checked-aget' checked-aset checked-aset' chunk chunk-append chunk-buffer chunk-cons chunk-first chunk-next chunk-rest chunked-seq chunked-seq? clj->js clone cloneable? coercive-= coercive-boolean coercive-not coercive-not= coll? comment comp comparator compare compare-and-set! complement completing concat cond cond-> cond->> condp conj conj! cons constantly contains? copy-arguments count counted? create-ns cycle dec declare dedupe default-dispatch-val defmacro defmethod defmulti defn defn- defonce defprotocol defrecord deftype delay delay? demunge deref derive descendants destructure disj disj! dispatch-fn dissoc dissoc! distinct distinct? divide doall dorun doseq dotimes doto double double-array double? doubles drop drop-last drop-while dt->et eduction empty empty? enable-console-print! ensure-reduced equiv-map es6-entries-iterator es6-iterable es6-iterator es6-iterator-seq es6-set-entries-iterator eval even? every-pred every? ex-cause ex-data ex-info ex-message exists? extend-protocol extend-type false? ffirst filter filterv find find-macros-ns find-ns find-ns-obj first flatten float float? floats flush fn fn? fnext fnil for force frequencies gen-apply-to gen-apply-to-simple gensym gensym_counter get get-global-hierarchy get-in get-method get-validator goog-define group-by halt-when hash hash-combine hash-double hash-keyword hash-long hash-map hash-ordered-coll hash-set hash-string hash-string* hash-unordered-coll ident? identical? identity if-let if-not if-some ifind? ifn? implements? import imul inc indexed? infinite? inst-ms inst-ms* inst? instance? int int-array int-rotate-left int? integer? interleave interpose into into-array ints is_proto_ isa? iter iterable? iterate iteration js->clj js-arguments js-comment js-debugger js-delete js-fn? js-in js-inline-comment js-invoke js-iterable? js-keys js-mod js-obj js-reserved js-str js-symbol? juxt keep keep-indexed key key->js key-test keys keyword keyword-identical? keyword? last lazy-cat lazy-seq let letfn list list* list? load-file load-file* locking long long-array longs loop m3-C1 m3-C2 m3-fmix m3-hash-int m3-hash-unencoded-chars m3-mix-H1 m3-mix-K1 m3-seed macroexpand macroexpand-1 make-array make-hierarchy map map-entry? map-indexed map? mapcat mapv max max-key memfn memoize merge merge-with meta methods min min-key missing-protocol mix-collection-hash mk-bound-fn mod munge munge-str name namespace nat-int? native-satisfies? neg-int? neg? newline next nfirst nil-iter nil? nnext not not-any? not-empty not-every? not-native not= ns-imports ns-interns ns-interns* ns-name ns-publics ns-unmap nth nthnext nthrest number? object-array object? odd? or parents parse-boolean parse-double parse-long parse-uuid partial partition partition-all partition-by partitionv partitionv-all peek persistent! persistent-array-map-seq pop pop! pos-int? pos? pr pr-seq-writer pr-sequential-writer pr-str pr-str* pr-str-with-opts prefer-method prefers prim-seq print print-map print-meta? print-prefix-map print-str println println-str prn prn-str prn-str-with-opts qualified-ident? qualified-keyword? qualified-symbol? quot rand rand-int rand-nth random-sample random-uuid range ranged-iterator re-find re-matches re-pattern re-seq realized? record? reduce reduce-kv reduceable? reduced reduced? reductions refer-clojure refer-global regexp? reify rem remove remove-all-methods remove-method remove-tap remove-watch repeat repeatedly replace replicate req! require require-global require-macros reset! reset-meta! reset-vals! resolve rest reverse reversible? rseq rsubseq run! satisfies? second select-keys selector seq seq-iter seq-to-map-for-destructuring seq? seqable? sequence sequential? set set-from-indexed-seq set-lite-check set-print-err-fn! set-print-fn! set-validator! set? short shorts shuffle simple-benchmark simple-ident? simple-keyword? simple-symbol? some some-> some->> some-fn some-vals some? sort sort-by sorted-map sorted-map-by sorted-set sorted-set-by sorted? special-symbol? specify specify! split-at split-with splitv-at spread str str_ string-hash-cache string-hash-cache-count string-iter string-print string? subs subseq subvec supers swap! swap-vals! symbol symbol-identical? symbol? system-time tagged-literal tagged-literal? take take-last take-nth take-while tap> test this-as time to-array to-array-2d trampoline transduce transformer-iterator transient tree-seq true? truth_ type type->str unchecked-add unchecked-add-int unchecked-byte unchecked-char unchecked-dec unchecked-dec-int unchecked-divide-int unchecked-double unchecked-float unchecked-get unchecked-inc unchecked-inc-int unchecked-int unchecked-long unchecked-max unchecked-min unchecked-multiply unchecked-multiply-int unchecked-negate unchecked-negate-int unchecked-remainder-int unchecked-set unchecked-short unchecked-subtract unchecked-subtract-int undefined? underive unreduced unsafe-bit-and unsafe-cast unsigned-bit-shift-right update update-in update-keys update-vals uri? use use-macros uuid uuid? val vals var? vary-meta vec vec-lite vector vector-lite vector? volatile! volatile? vreset! vswap! when when-first when-let when-not when-some while with-meta with-out-str with-redefs write-all zero? zipmap".split(" "));
-  //@unit registerReaderNamespace requires: createNs, symbol
+  //@unit registerReaderNamespace compile-time requires: createNs, symbol
   function registerReaderNamespace(name, context) {
     const ns = createNs(symbol(null, name));
     ns.readerContext = {aliases: new Map(context.aliases ?? []),
@@ -4174,12 +4174,13 @@
       excludes: new Set(context.excludes ?? []), bindings: new Set(context.bindings ?? [])};
     return ns;
   }
-  //@unit macroReaderFunction requires: withMacroReaderContext
+  //@unit macroReaderFunction compile-time requires: withMacroReaderContext
   function macroReaderFunction(fn) {
     const wrapped = function (...args) { return withMacroReaderContext(fn, args); };
     return Object.assign(wrapped, fn);
   }
-  //@unit withMacroReaderContext requires: coreCells, createNs, get, keyword, nth, str, toArray
+  //@unit withMacroReaderContext compile-time requires: coreCells, createNs, get, keyword, nth, str,
+  //@ toArray
   function withMacroReaderContext(fn, args) {
     const saved = coreCells.currentNs, env = get(args[1], keyword(null, "ns"));
     const name = get(env, keyword(null, "name"));
@@ -4200,7 +4201,7 @@
     try { return Reflect.apply(fn, null, args); }
     finally { ns.readerContext = previous; coreCells.currentNs = saved; }
   }
-  //@unit findNs requires: invalidArity, Namespace, namespaces, str, symbols
+  //@unit findNs compile-time requires: invalidArity, Namespace, namespaces, str, symbols
   function findNs(name) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (name == null) return null;
@@ -4216,17 +4217,17 @@
     if (symbols.has(value)) return symbols.get(value).name;
     return value.name;
   }
-  //@unit theNs requires: findNs, invalidArity, str
+  //@unit theNs compile-time requires: findNs, invalidArity, str
   function theNs(name) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     const value = findNs(name);
     if (!value) throw new Error("No namespace: " + str(name));
     return value;
   }
-  //@unit allNs requires: invalidArity, listFromArray, namespaces
+  //@unit allNs compile-time requires: invalidArity, listFromArray, namespaces
   function allNs() { if (arguments.length) return invalidArity(arguments.length); return listFromArray([...namespaces.values()]); }
-  //@unit compilerMacroVar requires: into, invalidArity, keyword, makeVar, mapFromArray, name,
-  //@ namespace, str, symbolCore
+  //@unit compilerMacroVar compile-time requires: into, invalidArity, keyword, makeVar,
+  //@ mapFromArray, name, namespace, str, symbolCore
   function compilerMacroVar(sym, metadata) {
     if (arguments.length !== 2) return invalidArity(arguments.length);
     const base = mapFromArray([keyword(null, "ns"), symbolCore(namespace(sym)), keyword(null, "name"), symbolCore(name(sym)), keyword(null, "macro"), true]);
@@ -4507,9 +4508,9 @@
     const slot = arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity;
     slots.set(arity, slot); return slot;
   }
-  //@unit directMethod requires: demandProtocol, protocolSentinel, protocolSlot
+  //@unit directMethod requires: demandMethod, protocolSentinel, protocolSlot
   function directMethod(value, key, arity) {
-    demandProtocol(arity === 0 ? key : key.slice(0, key.lastIndexOf("/")), value);
+    demandMethod(key, arity, value);
     if (value == null) return undefined;
     const method = value[protocolSlot(key, arity)];
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
@@ -4623,13 +4624,13 @@
     installMethods(target, methods);
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
   }
-  //@unit installMethods mutator requires: declarationTransactions, ifnInvokeEntry, ifnPrototype,
+  //@unit installMethods mutator requires: declarationJournal, ifnInvokeEntry, ifnPrototype,
   //@ ifnValues, ifnVariadics, invalidArity, mungeMember, patchDeclaration, protocolImplementations,
   //@ protocolKeys, protocolSentinel, protocolSlot
   function installMethods(value, methods) {
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
     const oldImplementations = protocolImplementations.get(value), oldCalls = ifnValues.get(value);
-    const transaction = declarationTransactions.at(-1);
+    const transaction = declarationJournal;
     const implementations = new Map(Array.from(oldImplementations ?? [], ([key, entries]) => [key, new Map(entries)])), calls = {}, invokes = {}, objectVariadics = new Map();
     if (transaction) transaction.push({
       undo: () => { if (oldImplementations) protocolImplementations.set(value, oldImplementations); else protocolImplementations.delete(value); if (oldCalls) ifnValues.set(value, oldCalls); else ifnValues.delete(value); },
@@ -5554,7 +5555,7 @@
   // Match the CLJS constructor: preserve the supplied message/data/cause values
   // and Error identity, including when callers construct ExceptionInfo directly.
   const exceptionMessages = new WeakMap();
-  //@unit compilerExceptionMessage requires: exceptionMessages
+  //@unit compilerExceptionMessage compile-time requires: exceptionMessages
   const compilerExceptionMessage = value => exceptionMessages.get(value);
   //@unit ExceptionInfo effect requires: exceptionMessages, print, truth
   function ExceptionInfo(message, data, cause) {
@@ -6565,7 +6566,7 @@
   const chunkedRestProtocol = coreMethod("IChunkedSeq/-chunked-rest", [1], ownedChunkRest);
   //@unit invokeProtocol effect requires: coreMethod
   const invokeProtocol = coreMethod("IFn/-invoke", Array.from({length: 22}, (_, i) => i + 1), (value, ...args) => value.call(null, ...args));
-  //@unit evalCore
+  //@unit evalCore compile-time
   const evalCore = Object.defineProperty(() => { throw new Error("compiler eval service is not installed"); }, "name", {value: "eval"});
   //@unit isCloneable requires: ICloneable, satisfies
   const isCloneable = value => satisfies(ICloneable, value);
@@ -6678,11 +6679,15 @@
   //@unit TaggedLiteralFactory requires: positionalFactory, TaggedLiteral
   const TaggedLiteralFactory = positionalFactory(TaggedLiteral, 2);
 
-  //@unit compilerForms requires: compilerFormBridge
+  //@unit readerJsLiterals requires: jsObject
+  // compilerForms replaces these with builders that mark literals for macros.
+  const readerJsLiterals = {array: items => Array.from(items), object: jsObject};
+  //@unit compilerForms compile-time effect requires: compilerFormBridge, readerJsLiterals
   const compilerForms = compilerFormBridge();
-  //@unit reader requires: cells, compilerForms, conj, contains, coreCells, first, freshKeyword,
-  //@ gensym, hashMap, hashSet, inspect, into, isRecord, keywords, listFromArray, mapFromArray,
-  //@ maps, merge, meta, next, nsName, PersistentQueueValue, prStr, readerCoreNames, rePattern, seq,
+  readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
+  //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
+  //@ hashSet, inspect, into, isRecord, keywords, listFromArray, mapFromArray, maps, merge, meta,
+  //@ next, nsName, PersistentQueueValue, prStr, readerCoreNames, readerJsLiterals, rePattern, seq,
   //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors,
   //@ views, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
@@ -6847,7 +6852,7 @@
   }
   function jsLiteral(s, value) {
         const data = inspect(value);
-        if (data?.kind === 'vector') return rt.compilerForms.jsArray(data.items);
+        if (data?.kind === 'vector') return rt.jsLiterals.array(data.items);
         if (data?.kind === 'map') {
           const pairs = [];
           for (const [key, value] of data.entries) {
@@ -6855,7 +6860,7 @@
             if (typeof key !== 'string' && !(name?.kind === 'keyword' && name.namespace === null)) fail(s, 'Invalid JS object literal key');
             pairs.push(typeof key === 'string' ? key : name.name, value);
           }
-          return rt.compilerForms.jsObject(pairs);
+          return rt.jsLiterals.object(pairs);
         }
         fail(s, 'Invalid JS literal');
   }
@@ -7255,7 +7260,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, compilerForms, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit loadFile requires: invalidArity
   const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };
@@ -7465,9 +7470,9 @@
     loadFile, Namespace, registerReaderNamespace, macroReaderFunction, createNs, findNs, nsName,
     theNs, allNs, compilerMacroVar
   });
-  //@unit namespaces.cljsUser effect: namespaces requires: coreCells, createNs, symbol
+  //@unit namespaces.cljsUser compile-time effect: namespaces requires: coreCells, createNs, symbol
   coreCells.currentNs = createNs(symbol(null, "cljs.user"));
-  //@unit namespaces.cljsCore effect: namespaces requires: createNs, symbol
+  //@unit namespaces.cljsCore compile-time effect: namespaces requires: createNs, symbol
   createNs(symbol(null, "cljs.core"));
   //@unit core.seal effect: core requires: core
   Object.seal(core);

@@ -1,0 +1,7 @@
+advanced: runtime slice, 1 of 988 units, 234 unit bytes, 434 runtime bytes
+
+root         units      bytes  first demanded by
+rt$add(...)      1        234  source 0, bytes 17..18
+
+unit    bytes  root         first demanded by
+add       234  rt$add(...)  source 0, bytes 17..18

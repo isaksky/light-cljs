@@ -205,7 +205,8 @@ fn levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
 #[test]
 fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
     let manifest = manifest();
-    let source = r#"#js {"a" 1} (+ 1 2)"#;
+    // `*ns*` reaches reflection, so the output registers its namespaces.
+    let source = r#"#js {"a" 1} (+ 1 2) *ns*"#;
     let report = prepared(source, OptimizationLevel::Advanced).retention();
     let expression = |text: &str| {
         let start = source.find(text).unwrap();
@@ -235,15 +236,18 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
                 Some(expression(r#"#js {"a" 1}"#))
             ),
             (RuntimeName::direct("add", None), Some(expression("+"))),
+            (
+                RuntimeName::direct("coreCells", Some("currentNs")),
+                Some(expression("*ns*"))
+            ),
             (RuntimeName::direct("registerReaderNamespace", None), None),
-            (RuntimeName::direct("coreCells", Some("currentNs")), None),
             (RuntimeName::direct("theNs", None), None),
             (RuntimeName::direct("symbol", None), None),
         ]
     );
     // `jsObject` alone keeps its own unit; every later root adds the units of
-    // its closure that earlier roots do not reach. Without the core hub the
-    // namespace registration adds units of its own.
+    // its closure that earlier roots do not reach: `*ns*` its cell object, the
+    // namespace registration the registry and the symbol machinery.
     let attributed = |root: usize| {
         report
             .units
@@ -276,7 +280,7 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
             report.roots[root].name
         );
     }
-    assert!(!attributed(2).is_empty());
+    assert!(!attributed(2).is_empty() && !attributed(3).is_empty());
     assert_eq!(
         report.unit_bytes(),
         report.units.iter().map(|unit| unit.bytes).sum::<usize>()
@@ -409,17 +413,9 @@ fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
         assert!(report.to_string().contains(&format!("{}(...)", root.name)));
         assert!(!embedded(&call).contains(&install), "{called}");
         // The call keeps its own unit and helpers (`bitOperation`,
-        // `numericFold`); only the namespace registration reaches the
-        // generic core.
-        assert!(
-            report
-                .units
-                .iter()
-                .filter(|unit| unit.root == Some(0))
-                .count()
-                <= 3,
-            "{called}:\n{report}"
-        );
+        // `numericFold`) and nothing else: without reflection there is no
+        // namespace registration.
+        assert!(report.units.len() <= 3, "{called}:\n{report}");
         let apply = prepared(applied, OptimizationLevel::Advanced);
         assert!(embedded(&apply).contains(&install), "{applied}");
         assert_eq!(
