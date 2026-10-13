@@ -43,6 +43,7 @@ mod case_numeric;
 mod cljc_prefixes;
 mod configured_custom_source_context;
 mod configured_source_context;
+mod constant_table;
 mod control;
 mod core_extension_demand;
 mod core_factories;

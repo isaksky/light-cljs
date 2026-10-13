@@ -927,3 +927,95 @@ effects on their own bindings (58 of them the dispatcher registrations, now
 declared) and 32 installs. The
 [unit table](results/effects-2026-10-13/units.tsv) lists each unit's reach as
 a value root; reproduce both files with the commands of the sections above.
+
+## Keyword and symbol constant table — October 13, 2026
+
+light-cljs-208 implements Phase 1 step 7 of the
+[design](../docs/advanced-optimization.md): `--optimize advanced` declares
+each distinct keyword and quoted symbol literal once,
+`const k0 = rt$keyword(null, "a");`, after the runtime slice. Below
+`Advanced`, every literal site still calls `rt.keyword` on each evaluation, but
+the runtime's `keyword` now interns one keyword per namespace and name, so
+literal keywords are no longer allocated and hashed again on each
+evaluation. Keyword `case` at `Advanced` switches on `rt$keywordFqn(caseValue)`
+instead of printing the keyword. The new ratchet fixture `keyword-lookups`
+looks up keyword keys in literal maps, both with `get` and by calling the
+keyword, and runs a keyword `case`:
+
+```clojure
+(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
+(defn kind [k] (case k :x 1 :y 2 0))
+(reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))
+```
+
+`--levels` gains the same program as a third steady-state workload, which
+calls `score` on two fresh maps and runs `kind` n = 2,000 times per call.
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL --text`
+after rebasing onto light-cljs-205; "before" is master `0984a09`:
+
+| Fixture | Prepare before | Prepare after | Advanced before | Advanced after | Advanced ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 359,238 / 85,252 | 359,828 / 85,438 | 136,918 / 31,479 | 137,360 / 31,601 | 138,000 |
+| keyword-case | 359,710 / 85,326 | 360,300 / 85,512 | 138,033 / 31,805 | 138,550 / 31,948 | 139,000 |
+| record-protocol | 360,031 / 85,497 | 360,621 / 85,684 | 164,486 / 37,605 | 164,928 / 37,726 | 165,000 |
+| pure-defs | 360,589 / 85,600 | 361,179 / 85,786 | 160,123 / 36,408 | 160,582 / 36,539 | 161,000 |
+| keyword-lookups | 360,202 / 85,429 | 360,792 / 85,615 | 148,119 / 34,044 | 148,556 / 34,199 | 149,000 |
+
+The shared runtime grows by 590 bytes: the intern table, the interning
+`keyword`, `freshKeyword` for keywords built from data, and `keywordFqn` and
+its export. Every `Advanced` slice that reaches `keyword` grows by 442 bytes,
+and every slice does today, because the namespace registration's `symbol`
+reaches the printer. The table itself is about size-neutral in these small
+programs: a declaration costs about as much as the per-site construction it
+replaces when a literal occurs once or twice. `keyword-case` also keeps the
+`keywordFqn` unit. Every other fixture grows by the same 590 bytes below
+`Advanced` and by 442 bytes at it, and no ceiling rises by more than 1,000.
+
+**Startup and steady state.** These numbers come from `--levels` runs on the
+pre-205 base `6f10f51`, before and after this change, one directly after the
+other. Both runs used the new fixture and workload, and the "before" build
+came from an exported tree. The machine was busy: the one-minute load average
+had a median of 5.7 and 7.4. Every table is in
+[before](results/keyword-constants-2026-10-13/before/summary.md) and
+[after](results/keyword-constants-2026-10-13/after/summary.md), next to their
+`samples.csv`.
+
+Steady state, median ms per call:
+
+| Workload | n | Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| keyword-lookups | 2,000 | none | 39.96 | 20.80 | 135.35 | 121.27 |
+| keyword-lookups | 2,000 | prepare | 39.50 | 20.22 | 135.24 | 120.57 |
+| keyword-lookups | 2,000 | advanced | 37.10 | 19.70 | 133.51 | 114.55 |
+| seq-pipeline | 200 | advanced | 5.25 | 5.20 | 29.73 | 30.21 |
+| record-protocol | 2,000 | advanced | 9.50 | 9.59 | 20.18 | 20.29 |
+
+In Node the keyword workload takes half as long at every level, because a
+literal keyword is now one object whose hash is cached. Below `Advanced` that
+object comes from the intern table; at `Advanced` it comes from the constant
+table. QuickJS gains 10% below `Advanced` and 14% at `Advanced`, where no
+lookup is left. The workloads without keyword literals in their loops do not
+change.
+
+Parse plus first execution, median ms, Node / QuickJS:
+
+| Fixture | none before | none after | advanced before | advanced after |
+| --- | ---: | ---: | ---: | ---: |
+| keyword-case | 6.32 / 21.10 | 6.19 / 21.47 | 3.14 / 7.83 | 3.09 / 7.67 |
+| keyword-lookups | 7.28 / 21.88 | 7.32 / 21.80 | 4.39 / 8.09 | 4.31 / 8.35 |
+| pure-defs | 7.47 / 21.48 | 7.48 / 21.45 | 3.65 / 8.65 | 3.62 / 8.56 |
+| record-protocol | 6.75 / 21.47 | 6.60 / 21.67 | 3.63 / 9.06 | 3.69 / 8.88 |
+
+Startup does not move beyond the noise. Each of these programs constructs
+only a few keywords once, and the runtime is the same size apart from 590
+bytes.
+
+Interning keywords built from data was measured and rejected. In QuickJS, a
+weakly held intern table gives no reuse: a keyword built from a string and
+dropped is freed at once, so the next build starts again. In a
+micro-benchmark that took about twice as long as allocating the keyword, and
+every freed keyword also left a `FinalizationRegistry` job that the sessions
+never run. A strong table would grow with the data. The `keyword` function,
+the reader and keywordized keys therefore still allocate fresh keywords, as
+upstream does.

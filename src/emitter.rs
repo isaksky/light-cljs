@@ -1,10 +1,13 @@
 //! Recursive JavaScript emission from resolved expressions; no name lookup.
 
-use std::{collections::HashSet, fmt::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
 
 use crate::analyzer::{
-    ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, PACKAGE_REGISTRY,
-    Program, RecurTargetId, StringId,
+    ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, NamedLiteralId,
+    PACKAGE_REGISTRY, Program, RecurTargetId, StringId,
 };
 use crate::application::OptimizationLevel;
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
@@ -130,6 +133,11 @@ fn emit_js_mode(
         specialized_calls: application.map(|application| application.calls),
         replaced_core: direct,
         core_cells: Vec::new(),
+        constants: direct.map(|_| ConstantTable {
+            declarations: String::new(),
+            numbers: HashMap::new(),
+            named: vec![[None; 2]; program.named_literals.len()],
+        }),
         output: String::new(),
         indent: 1,
         captures: Vec::new(),
@@ -306,6 +314,17 @@ fn emit_js_mode(
         // operations: `let core$inc = rt$inc;`.
         for (name, initial) in &emitter.core_cells {
             writeln!(runtime, "  let core${name} = {initial};").unwrap();
+        }
+        // The constant table follows the runtime it reads.
+        if let Some(constants) = &emitter.constants {
+            #[cfg(debug_assertions)]
+            check_runtime_reads(
+                &constants.declarations,
+                &[],
+                &emitter.runtime,
+                &emitter.core_cells,
+            );
+            runtime.push_str(&constants.declarations);
         }
         runtime.push_str(&registration);
         for range in &mut emitter.raw_segments {
@@ -536,6 +555,42 @@ fn module_source(imports: &[PackageImport], expression: &str) -> String {
     source
 }
 
+/// A constant of the `Advanced` constant table, compared by emitted
+/// structure: sites with equal keys share one table entry. Collection
+/// constants (light-cljs-218) add variants keyed by their kind, metadata and
+/// the table numbers of their parts.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ConstantKey<'a> {
+    /// `rt$keyword(namespace, name)`; equal parts give the interned keyword.
+    Keyword {
+        namespace: Option<&'a [u16]>,
+        name: &'a [u16],
+    },
+    /// `rt$symbol(namespace, name)`, a quoted symbol without metadata.
+    Symbol {
+        namespace: Option<&'a [u16]>,
+        name: &'a [u16],
+    },
+}
+
+/// The constant table of `Advanced` application output
+/// (docs/advanced-optimization.md, "Phase 1 constant table extension
+/// points"). Every distinct constant the emitted code reads is declared
+/// once, `const k<n> = <initializer>;`, at the top of the output closure after
+/// the runtime slice, and each site reads `k<n>`. Entries are numbered and
+/// declared in first-use order, and an entry's initializer is written before
+/// the entry is numbered, so the constants it reads come first. Only emitted
+/// sites add entries, so constants are inert for reachability.
+struct ConstantTable<'a> {
+    /// The declarations, one line each.
+    declarations: String,
+    /// Entry numbers by key.
+    numbers: HashMap<ConstantKey<'a>, usize>,
+    /// Entry numbers by `NamedLiteralId` and kind (keyword, symbol), so a
+    /// repeated site reads its number without hashing its spelling.
+    named: Vec<[Option<usize>; 2]>,
+}
+
 struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
@@ -551,6 +606,8 @@ struct Emitter<'a> {
     /// The output-level cells used so far: the core runtime name and the
     /// direct read that initializes `core$<name>`.
     core_cells: Vec<(&'static str, RuntimeName)>,
+    /// `Some` at `Advanced`: literal keywords and symbols read table constants.
+    constants: Option<ConstantTable<'a>>,
     output: String,
     indent: usize,
     captures: Vec<(LocalId, RecurTargetId)>,
@@ -568,7 +625,7 @@ struct Emitter<'a> {
     site: Option<ExprId>,
 }
 
-impl Emitter<'_> {
+impl<'a> Emitter<'a> {
     /// Write a runtime read (`rt.keyword`, `rt.core.add`; `rt$keyword`,
     /// `rt$add` at `Advanced`) and record it as a root of the runtime slice.
     /// All emitted runtime reads go through here.
@@ -636,13 +693,93 @@ impl Emitter<'_> {
             && !self.replaced(core.runtime_name())
     }
 
-    /// `rt.core.isKeyword(caseValue) ? rt.core.str(caseValue).slice(1)`: the
-    /// name a keyword `case` switches on; the caller writes the `:` branch.
-    fn keyword_case_name(&mut self) {
-        self.rt(RuntimeName::core("isKeyword"));
-        self.output.push_str("(caseValue) ? ");
-        self.rt(RuntimeName::core("str"));
-        self.output.push_str("(caseValue).slice(1)");
+    /// The spelling a keyword `case` switches on, or `otherwise` for a value
+    /// that is not a keyword: `rt.core.isKeyword(caseValue) ?
+    /// rt.core.str(caseValue).slice(1) : otherwise`, and at `Advanced`
+    /// `rt$keywordFqn(caseValue)`, which is null for anything else.
+    fn keyword_case_name(&mut self, otherwise: &str) {
+        if self.constants.is_none() {
+            self.rt(RuntimeName::core("isKeyword"));
+            self.output.push_str("(caseValue) ? ");
+            self.rt(RuntimeName::core("str"));
+            write!(self.output, "(caseValue).slice(1) : {otherwise}").unwrap();
+        } else if otherwise == "null" {
+            self.rt(RuntimeName::export("keywordFqn"));
+            self.output.push_str("(caseValue)");
+        } else {
+            self.output.push('(');
+            self.rt(RuntimeName::export("keywordFqn"));
+            write!(self.output, "(caseValue) ?? {otherwise})").unwrap();
+        }
+    }
+
+    /// Write a reference to the table constant for `key`, `k<n>`, declaring
+    /// it on first use: `initializer` writes the value expression, reading
+    /// the runtime through [`Emitter::rt`] as usual (the first site is the
+    /// one the retention report names). `Advanced` only.
+    fn constant(&mut self, key: ConstantKey<'a>, initializer: impl FnOnce(&mut Self)) -> usize {
+        let constants = self
+            .constants
+            .as_ref()
+            .expect("constants are hoisted at Advanced");
+        let number = match constants.numbers.get(&key) {
+            Some(&number) => number,
+            None => {
+                let site = std::mem::take(&mut self.output);
+                let raw = self.raw_segments.len();
+                initializer(self);
+                debug_assert_eq!(
+                    self.raw_segments.len(),
+                    raw,
+                    "a constant holds raw JavaScript"
+                );
+                let value = std::mem::replace(&mut self.output, site);
+                let constants = self.constants.as_mut().unwrap();
+                let number = constants.numbers.len();
+                writeln!(constants.declarations, "  const k{number} = {value};").unwrap();
+                constants.numbers.insert(key, number);
+                number
+            }
+        };
+        write!(self.output, "k{number}").unwrap();
+        number
+    }
+
+    /// A keyword or quoted symbol literal: a table constant at `Advanced`,
+    /// else `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
+    fn named_literal(&mut self, literal: NamedLiteralId, symbol: bool) {
+        let program = self.program;
+        let construct = |emitter: &mut Self| {
+            let name = &program.named_literals[literal.0];
+            let constructor = if symbol { "symbol" } else { "keyword" };
+            emitter.rt(RuntimeName::export(constructor));
+            emitter.output.push('(');
+            if let Some(namespace) = name.namespace {
+                emitter.string(namespace);
+            } else {
+                emitter.output.push_str("null");
+            }
+            emitter.output.push_str(", ");
+            emitter.string(name.name);
+            emitter.output.push(')');
+        };
+        let Some(constants) = &self.constants else {
+            return construct(self);
+        };
+        if let Some(number) = constants.named[literal.0][usize::from(symbol)] {
+            write!(self.output, "k{number}").unwrap();
+            return;
+        }
+        let name = &program.named_literals[literal.0];
+        let namespace = name.namespace.map(|id| &program.strings[id.0][..]);
+        let name = &program.strings[name.name.0][..];
+        let key = if symbol {
+            ConstantKey::Symbol { namespace, name }
+        } else {
+            ConstantKey::Keyword { namespace, name }
+        };
+        let number = self.constant(key, construct);
+        self.constants.as_mut().unwrap().named[literal.0][usize::from(symbol)] = Some(number);
     }
 
     fn indentation(&mut self) {
@@ -1156,8 +1293,8 @@ impl Emitter<'_> {
                     self.indentation();
                     if *keyword_tests {
                         self.output.push_str("switch (");
-                        self.keyword_case_name();
-                        self.output.push_str(" : null) {\n");
+                        self.keyword_case_name("null");
+                        self.output.push_str(") {\n");
                     } else {
                         self.output.push_str("switch (caseValue) {\n");
                     }
@@ -1219,8 +1356,8 @@ impl Emitter<'_> {
                         .push_str("throw new Error(\"No matching clause: \" + ");
                     if *keyword_tests {
                         self.output.push('(');
-                        self.keyword_case_name();
-                        self.output.push_str(" : \"\"));\n");
+                        self.keyword_case_name("\"\"");
+                        self.output.push_str("));\n");
                     } else {
                         self.rt(RuntimeName::core("str"));
                         self.output.push_str("(caseValue));\n");
@@ -2137,25 +2274,8 @@ impl Emitter<'_> {
                 }
                 self.output.push(')');
             }
-            ExprKind::Keyword(literal) | ExprKind::Symbol(literal) => {
-                let name = &self.program.named_literals[literal.0];
-                self.rt(RuntimeName::export(
-                    if matches!(self.program.exprs[id.0].kind, ExprKind::Symbol(_)) {
-                        "symbol"
-                    } else {
-                        "keyword"
-                    },
-                ));
-                self.output.push('(');
-                if let Some(namespace) = name.namespace {
-                    self.string(namespace);
-                } else {
-                    self.output.push_str("null");
-                }
-                self.output.push_str(", ");
-                self.string(name.name);
-                self.output.push(')');
-            }
+            ExprKind::Keyword(literal) => self.named_literal(*literal, false),
+            ExprKind::Symbol(literal) => self.named_literal(*literal, true),
             ExprKind::Vector(items) => {
                 self.rt(RuntimeName::export("vectorFromArray"));
                 self.output.push_str("([");
@@ -2566,6 +2686,7 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
             let numbered = [
                 "l",
                 "g",
+                "k",
                 "m",
                 "a",
                 "r",

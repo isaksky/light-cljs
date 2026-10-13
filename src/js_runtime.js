@@ -7,6 +7,8 @@
   // Brands and payloads stay private: copying fields or inheriting a value's
   // prototype cannot turn a host object into a language value.
   const keywords = new WeakMap();
+  //@unit internedKeywords
+  const internedKeywords = new Map();
   //@unit vectors
   const vectors = new WeakMap();
   //@unit symbols
@@ -1945,12 +1947,26 @@
     return value;
   }
 
-  //@unit keyword requires: makeKeyword
-  // Literal construction receives separately owned namespace/name strings.
-  function keyword(namespace, name) {
+  //@unit freshKeyword requires: makeKeyword
+  // Keywords built from data are fresh, as upstream.
+  function freshKeyword(namespace, name) {
     return makeKeyword(namespace, name,
       namespace == null ? name : namespace + "/" + name);
   }
+
+  //@unit keyword requires: freshKeyword, internedKeywords
+  // Literal construction receives separately owned namespace/name strings
+  // and is interned: one keyword per namespace and name.
+  function keyword(namespace, name) {
+    const key = namespace == null ? "/" + name : namespace.length + "/" + namespace + name;
+    let value = internedKeywords.get(key);
+    if (!value) internedKeywords.set(key, value = freshKeyword(namespace, name));
+    return value;
+  }
+
+  //@unit keywordFqn requires: keywords
+  // What keyword case compares, or null.
+  const keywordFqn = value => keywords.get(value)?.spelling ?? null;
 
   //@unit makeVector requires: PersistentVectorValue, vectors
   function makeVector(items) {
@@ -1971,7 +1987,7 @@
     return makeVector(Array.from(items));
   }
 
-  //@unit keywordCore requires: invalidArity, keyword, keywords, makeKeyword, symbols
+  //@unit keywordCore requires: freshKeyword, invalidArity, keywords, makeKeyword, symbols
   function keywordCore(namespace, name) {
     switch (arguments.length) {
       case 1: {
@@ -1979,7 +1995,7 @@
         const sym = symbols.get(namespace);
         if (sym) return makeKeyword(sym.namespace, sym.name, sym.spelling);
         if (typeof namespace !== "string") return null;
-        if (namespace === "/") return keyword(null, namespace);
+        if (namespace === "/") return freshKeyword(null, namespace);
         const parts = namespace.split("/");
         return makeKeyword(parts.length === 2 ? parts[0] : null,
           parts.length === 2 ? parts[1] : parts[0], namespace);
@@ -1993,7 +2009,7 @@
             typeof name !== "string") {
           throw new Error("keyword expects strings or keywords and an optional nil namespace");
         }
-        return keyword(namespace, name);
+        return freshKeyword(namespace, name);
       }
       default: return invalidArity(arguments.length);
     }
@@ -5701,7 +5717,7 @@
       return write(writer, end);
     } finally { coreCells.printLevel = saved; }
   }
-  //@unit printMapEntries requires: coreCells, keyword, keywords, name, printWriter,
+  //@unit printMapEntries requires: coreCells, freshKeyword, keywords, name, printWriter,
   //@ prSequentialWriter, symbol, symbols, truth, write
   function printMapEntries(entries, writer, options, prefix = "") {
     const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
@@ -5710,7 +5726,7 @@
     // JavaScript object tags precede the map printer's depth suppression.
     if (prefix) write(writer, prefix);
     return prSequentialWriter(writer, (entry, target, opts) => {
-      const key = lifted ? keywords.has(entry.key) ? keyword(null, name(entry.key)) : symbol(null, name(entry.key)) : entry.key;
+      const key = lifted ? keywords.has(entry.key) ? freshKeyword(null, name(entry.key)) : symbol(null, name(entry.key)) : entry.key;
       printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
     }, (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
@@ -5720,7 +5736,7 @@
     if (truth(alt)) return alt.call(null, value, writer, assoc(options, keyword(null, "fallback-impl"), printWriterImpl));
     return printWriterImpl(value, writer, options);
   }
-  //@unit printWriterImpl requires: atoms, coreCells, delays, ExceptionInfo, keyword, keywords,
+  //@unit printWriterImpl requires: atoms, coreCells, delays, ExceptionInfo, freshKeyword, keywords,
   //@ maps, mapTraversal, meta, printMapEntries, printMetaQ, printOption, printWriter,
   //@ prSequentialWriter, publicMethod, queues, sequential, sets, setTraversal, symbols, transients,
   //@ truth, typeNames, uuids, vars, vectors, volatiles, write
@@ -5765,7 +5781,7 @@
     if (members) return prSequentialWriter(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value));
     if (Array.isArray(value)) return prSequentialWriter(writer, printWriter, "#js [", " ", "]", options, value);
     if (typeof value === "object" && Object.getPrototypeOf(value) === null) return write(writer, "#object[Object]");
-    if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(k => ({key: /^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? keyword(null, k) : k, value: value[k]})), writer, options, "#js ");
+    if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(k => ({key: /^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? freshKeyword(null, k) : k, value: value[k]})), writer, options, "#js ");
     if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
@@ -6664,9 +6680,9 @@
 
   //@unit compilerForms requires: compilerFormBridge
   const compilerForms = compilerFormBridge();
-  //@unit reader requires: cells, compilerForms, conj, contains, coreCells, first, gensym, hashMap,
-  //@ hashSet, inspect, into, isRecord, keyword, keywords, listFromArray, mapFromArray, maps, merge,
-  //@ meta, next, nsName, PersistentQueueValue, prStr, readerCoreNames, rePattern, seq,
+  //@unit reader requires: cells, compilerForms, conj, contains, coreCells, first, freshKeyword,
+  //@ gensym, hashMap, hashSet, inspect, into, isRecord, keywords, listFromArray, mapFromArray,
+  //@ maps, merge, meta, next, nsName, PersistentQueueValue, prStr, readerCoreNames, rePattern, seq,
   //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors,
   //@ views, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
@@ -7239,7 +7255,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  })({keyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, compilerForms, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, compilerForms, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit loadFile requires: invalidArity
   const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };
@@ -7456,5 +7472,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, mapFromArrays, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, extendType, extendInstance, makeReify, reify, makeType, recordFromMap, field, fnRest, fnApplyTo, setMacroexpandServices, compilerFormBridge, core, inspect, hash});
 })()

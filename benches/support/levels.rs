@@ -42,8 +42,9 @@ struct Steady {
     expected: fn(u64) -> u64,
 }
 
-/// The ratchet's seq-pipeline and record-protocol fixtures, as workloads over `n`.
-const STEADY: [Steady; 2] = [
+/// The ratchet's seq-pipeline, record-protocol and keyword-lookups fixtures, as
+/// workloads over `n`.
+const STEADY: [Steady; 3] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -60,7 +61,23 @@ const STEADY: [Steady; 2] = [
         input: 2_000,
         expected: areas,
     },
+    Steady {
+        name: "keyword-lookups",
+        source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
+                 (defn kind [k] (case k :x 1 :y 2 0))
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (recur (inc i) (+ total (score {:a i :b 1}) (score {:c 2 :ns/d i})
+                                               (kind (if (even? i) :x :y))))
+                             total)))",
+        input: 2_000,
+        expected: keyword_lookups,
+    },
 ];
+
+fn keyword_lookups(n: u64) -> u64 {
+    (0..n).map(|i| (i + 1) + (2 + i) + 1 + i % 2).sum()
+}
 
 fn pipeline(n: u64) -> u64 {
     let evens: Vec<u64> = (1..=n).filter(|x| x % 2 == 0).collect();

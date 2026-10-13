@@ -171,7 +171,9 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
 - Calls emit `(callee).call(null, ...)` including core operations; every
   `def` initializer is wrapped in an IIFE; every `if` test is wrapped in
   `truth()` unless it is a `BooleanHint`; keywords allocate per evaluation;
-  properties are emitted as bracketed string literals.
+  properties are emitted as bracketed string literals. (Since step 7 of
+  Phase 1 the runtime interns literal keywords at every level, and `Advanced`
+  declares keyword and symbol literals once in a constant table.)
 - `src/js_runtime.js` is one closure: 659 top-level declarations, about 97
   top-level effect statements, a 693-key `core` hub object that is
   `Object.seal`ed and mutable through `set!`, eager prototype patching and
@@ -368,6 +370,11 @@ to under 1 KB and beat every upstream ceiling on its own.
    table at the top of the output. `case` on keywords switches on identity.
    Collection literals with only constant parts may be hoisted the same way
    when their construction is proven inert.
+   Implemented for keywords and symbols, the first slice of the constant
+   pool; see "Phase 1 constant table extension points" below. Keyword `case`
+   switches on the keyword's spelling rather than its identity, because
+   keywords built at run time match by spelling. Collections are "Constant
+   collection literals".
 
 #### Phase 1 manifest extension points
 
@@ -577,6 +584,112 @@ loading that the manifest does not attach to the units needing it:
   and 136,549 bytes. The shared runtime grows by 1,800 bytes. Per-fixture
   sizes are in `benchmarks/compiler.md`.
 
+#### Phase 1 constant table extension points
+
+Step 7 is implemented for keyword and quoted symbol literals
+(light-cljs-208). It is the first slice of the constant pool: collection
+literals (Pellets 218-221) extend the same table.
+
+- **Table.** At `Advanced`, `ConstantTable` in `src/emitter.rs` declares each
+  distinct constant the emitted code reads once, `const k<n> =
+  <initializer>;`, and each site reads `k<n>`. The declarations follow the
+  runtime slice and the core operation cells and precede the namespace
+  registration, the `let g<n>;` declarations and the program, in `emit_js`
+  and `emit_esm` alike. Entries are numbered and declared in first-use order.
+  Only emitted sites add entries, so the table needs no reachability of its
+  own: a constant that no retained code reads never appears. `None` and
+  `Prepare` output has no table.
+- **API.** `Emitter::constant(key, initializer)` writes `k<n>` for a
+  `ConstantKey` and declares the entry on first use. `initializer` writes
+  the value expression into the emitter's output, which `constant` moves into
+  the table line, so runtime reads go through `Emitter::rt` as usual. The
+  first site is the demand site that the retention report names. Keys
+  compare emitted structure: `ConstantKey::Keyword` and `ConstantKey::Symbol`
+  hold the UTF-16 namespace and name. `Emitter::named_literal` also caches each
+  entry number by `NamedLiteralId` in a dense array, so repeated sites skip the
+  hash. An entry is numbered after its initializer has run, so an initializer
+  that reads other constants (a vector of keywords) declares them first.
+  Hash-consing and subterm sharing (218 tier 2) therefore need only a key
+  variant per collection kind, keyed by its parts' entry numbers and its
+  metadata. Initializers run once, in table order, before any definition. An
+  entry may read only the runtime and earlier entries, never a program global.
+  A function that only references globals in its body is fine, because the
+  body runs later; this covers the arity methods that 212 may hoist. Lazy
+  entries (218's `c<n> ??= ...` cells for type-dependent or large
+  constants) need a second declaration form, which does not exist yet.
+- **Names.** `k<n>` names are compiler-owned. `hygienic_js` renames
+  `k<digits>` tokens along with its other numbered prefixes.
+  `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
+  checks this, because its probe program reads keywords. A pellet that
+  introduces another prefix (such as `c<n>`) adds it there. Reusing `k<n>`
+  for every entry needs no change.
+- **Keyword interning.** The runtime's `keyword(namespace, name)` interns.
+  Every literal site calls it, per evaluation below `Advanced` and once from
+  the table at `Advanced`. It keeps one keyword per namespace and name in a
+  `Map` (`internedKeywords`) for the life of the runtime. That holds at every
+  level, and across REPL inputs and deferred units, which share the session
+  runtime. The runtime's own constant keywords (`:no-test`, record field
+  keys, option names) go through it too, so they are identical to the
+  program's literals. Keywords built from data are fresh objects, as
+  upstream:
+  - the `keyword` function (`freshKeyword`, or `makeKeyword` for its
+    one-argument forms) and symbol conversion;
+  - the reader (`read-string`, EDN) and keywordized `js->clj` keys;
+  - keys made for namespaced-map and `#js` printing;
+  - the positional constructor (`Keyword.`, `->Keyword`), which returns a
+    fresh object, like `new`.
+
+  The table therefore grows only with literals, never with data. Interning
+  data keywords as well was measured and rejected. Weak references give no
+  reuse in QuickJS, which frees a keyword when its last reference drops. Each
+  dead keyword then also leaves a `FinalizationRegistry` job that the
+  sessions never run. In a QuickJS micro-benchmark, building transient
+  keywords that way took about twice as long as allocating them. A strong
+  table would grow with the data.
+- **Equality and hashing.** Keyword and symbol equality already checks
+  identity first (`equalPair`, `keywordIdentical`, `symbolIdentical`), and
+  hashes are cached per object (`constructorHashes`). An interned literal
+  therefore compares and hashes by identity after its first use. Keyword `=`
+  compares spellings (upstream's `fqn`), which is the structural fallback
+  for every keyword built at run time.
+- **What later passes may rely on (210).** At every level, two literal
+  keywords whose namespace and name contain no `/` are `=` exactly when they
+  are `identical?`. A keyword built at run time is never identical to a
+  literal. Some built keywords spell like a literal without having its parts:
+  a `/` inside a part (`(keyword nil "a/b")` is `=` to `:a/b`), or the
+  positional constructor, which takes any spelling. Such a keyword can equal
+  a literal while hashing differently. Upstream fixtures pin these cases. So
+  `===` decides `=` only between two literals, a comparison a pass can fold
+  at compile time.
+
+  The sound lowering of `(= x :k)` is `x === k<n> || rt$keywordFqn(x) ===
+  "<spelling>"`. It applies when `x` is known to be a keyword, or when the
+  literal comes first and no program extends `IEquiv` to `Keyword` (the
+  condition from 209). The identity check succeeds for literals. The
+  fallback is a `WeakMap` read and a string comparison, never the protocol
+  dispatch of `equal`.
+
+  The `constant_table` suite in `tests/compiler/` pins every identity above
+  at every level, across REPL inputs and against `read-string`.
+- **`case`.** At `Advanced`, keyword `case` switches on
+  `rt$keywordFqn(caseValue)`, which is the keyword's spelling, or null for a
+  value that is not a keyword. The no-match message reads the same value.
+  This replaces `isKeyword` and `str`, which reach the printer. `case` does
+  not switch on the constants' identity, because keywords built at run time
+  match by spelling.
+- **Symbols.** Quoted symbols are hoisted but not interned. At `Advanced`
+  equal symbol literals are one value, which is the contract's "equal
+  constant literals may be `identical?`". Below `Advanced` each evaluation
+  builds a new symbol. A symbol with metadata keeps its per-site `with-meta`
+  around the shared symbol.
+- **Measured.** The shared runtime grows by 590 bytes, and every `Advanced`
+  slice that reaches `keyword` grows by 442; today that is every slice,
+  through the namespace registration. In small programs the table is about
+  size-neutral. The steady-state workload `keyword-lookups` (keyword lookups
+  in literal maps plus a keyword `case`) takes half as long in Node at every
+  level. QuickJS gains 10% below `Advanced` and 14% at it. Startup does not
+  change beyond noise. Sizes and timings are in `benchmarks/compiler.md`.
+
 ### Phase 2: whole-program analysis over the IR
 
 All passes are arrays indexed by `ExprId`/`GlobalId`; none allocate maps
@@ -718,9 +831,11 @@ under `js*` below.
 
 ### Constant collection literals
 
-Tracked as Pellets 218-221 after keyword interning (208). Every literal is
-rebuilt per evaluation today: `[1 2 3]` copies, freezes and wraps a fresh
-array; `{:a 1}` allocates the keyword and the map each time; `[]` allocates
+Tracked as Pellets 218-221 after keyword interning (208), whose constant
+table they extend (see "Phase 1 constant table extension points"). Every
+literal is rebuilt per evaluation today: `[1 2 3]` copies, freezes and wraps a
+fresh array; `{:a 1}` allocates the map each time (its keyword is interned
+since 208); `[]` allocates
 although the runtime has `EMPTY` singletons. No hash cache exists for
 vectors, maps or sets. Sharing is safe because payload arrays are frozen,
 `withMeta` returns a new or unchanged object, and transients copy.
@@ -802,7 +917,8 @@ upstream states that advanced mode is unsafe for certain patterns.
   names the definitions in `exports`.
 - Collection `toString` exists only when printing is reachable.
 - Equal constant literals may be `identical?` because they share one pooled
-  value.
+  value. Since light-cljs-208 this holds for quoted symbols; keyword
+  literals are interned at every level, so their identity does not differ.
 - `set!` on a core operation forces indirection for that operation only.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the hygiene pass renames every name the compiler binds away from it.

@@ -197,9 +197,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   optimization; output is one JavaScript expression, or one ES module with `--esm`.
   A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md);
   `--optimize advanced` so far drops unused definitions with pure initializers
-  and the runtime units a program does not reach, which takes small programs
-  from about 357 KB to 152-172 KB while value construction still pulls in the
-  collection and printing machinery.
+  and the runtime units a program does not reach, and declares each keyword and
+  symbol literal once, which takes small programs from about 360 KB to 137-165 KB
+  while value construction still pulls in the collection and printing machinery.
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

@@ -130,7 +130,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, and embeds only the runtime units the program reaches (runtime slicing, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), and declares each distinct keyword and quoted symbol literal once (the constant table, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -164,7 +164,13 @@ prototype members and `EMPTY` constants are embedded with its constructor, a
 core function the program only calls (`rt$add(1, 2)`) is embedded without the
 variadic arity properties that `apply` reads, which a value use such as
 `(apply + xs)` keeps, and an `extend-type` of a core protocol keeps the
-protocol method's dispatcher. `PreparedApplication::retention()` reports what was embedded: each
+protocol method's dispatcher. Each distinct keyword and quoted symbol literal
+the output reads is declared once after the runtime, `const k0 = rt$keyword(null,
+"a");`, and its sites read `k0`; keyword `case` switches on
+`rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it
+(see "Phase 1 constant table extension points" in
+[advanced-optimization.md](advanced-optimization.md)).
+`PreparedApplication::retention()` reports what was embedded: each
 runtime name the output reads with the expression (source index and byte span)
 that first demanded it, and each embedded unit with its byte size and the first
 of those names whose dependencies reach it. `--compile --size-report` prints
@@ -572,8 +578,14 @@ full spelling), and throws `Error` for other inputs. It splits a string at the
 first slash only when that slash follows a nonempty namespace: `"a/b/c"` has
 namespace `"a"` and name `"b/c"`, while `"/x"` remains unqualified. Two-argument
 symbol construction is bounded to string name and string/nullish namespace;
-arbitrary host values accepted by upstream in these slots are excluded. Neither
-symbols nor keywords are interned globally. Symbols are callable through ordinary
+arbitrary host values accepted by upstream in these slots are excluded. Symbols
+are not interned. Keyword literals are: at every optimization level each literal
+site, and each constant keyword of the runtime itself, yields the one keyword
+for its namespace and name, so `(identical? :a :a)` is true. Keywords built at
+run time (the `keyword` function, symbol conversion, the reader, keywordized
+`js->clj` keys, the positional `Keyword.` constructor) are fresh, as upstream:
+they equal a literal with the same full name, and hash like it when their
+namespace and name match, but are not identical to it. Symbols are callable through ordinary
 `.call` lookup; lists and seqs evaluate argument effects before failing with
 `TypeError`.
 

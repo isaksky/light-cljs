@@ -26,28 +26,28 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "console-log-sum",
         source: "(js/console.log (+ 1 2))",
-        ceilings: [360_000, 360_000, 137_000],
+        ceilings: [360_000, 360_000, 138_000],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
     Fixture {
         name: "println-hi",
         source: r#"(enable-console-print!) (println "hi")"#,
-        ceilings: [360_000, 360_000, 139_000],
+        ceilings: [360_000, 360_000, 140_000],
         removed: [0, 0, 0],
         printed: "hi\nnull\n",
     },
     Fixture {
         name: "vector-printed",
         source: "(enable-console-print!) (println [1 2 3])",
-        ceilings: [360_000, 360_000, 139_000],
+        ceilings: [360_000, 360_000, 140_000],
         removed: [0, 0, 0],
         printed: "[1 2 3]\nnull\n",
     },
     Fixture {
         name: "map-printed",
         source: "(enable-console-print!) (println {})",
-        ceilings: [360_000, 360_000, 139_000],
+        ceilings: [360_000, 360_000, 140_000],
         removed: [0, 0, 0],
         printed: "{}\nnull\n",
     },
@@ -55,21 +55,21 @@ pub const FIXTURES: &[Fixture] = &[
         name: "seq-pipeline",
         source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
                  (drop 1) (mapcat identity) into-array))",
-        ceilings: [360_000, 360_000, 156_000],
+        ceilings: [361_000, 361_000, 156_000],
         removed: [0, 0, 0],
         printed: "[ 6, 8 ]\nundefined\n",
     },
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [360_000, 360_000, 137_000],
+        ceilings: [360_000, 360_000, 138_000],
         removed: [0, 0, 0],
         printed: "3\n",
     },
     Fixture {
         name: "rest-fn",
         source: "(fn [& xs] xs)",
-        ceilings: [360_000, 360_000, 137_000],
+        ceilings: [361_000, 361_000, 138_000],
         removed: [0, 0, 0],
         printed: "#function\n",
     },
@@ -77,7 +77,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [360_000, 360_000, 139_000],
+        ceilings: [361_000, 361_000, 139_000],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -102,9 +102,20 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [361_000, 361_000, 161_000],
+        ceilings: [362_000, 362_000, 161_000],
         removed: [0, 1, 6],
         printed: "1\n",
+    },
+    // Keyword literals at every site: interned at every level, and one table
+    // constant each at `Advanced` (light-cljs-208).
+    Fixture {
+        name: "keyword-lookups",
+        source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
+                 (defn kind [k] (case k :x 1 :y 2 0))
+                 (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
+        ceilings: [361_000, 361_000, 149_000],
+        removed: [0, 0, 0],
+        printed: "17\n",
     },
     // Retained raw JavaScript is an escape below `Advanced` only.
     Fixture {
@@ -113,7 +124,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [361_000, 361_000, 138_000],
+        ceilings: [361_000, 361_000, 139_000],
         removed: [0, 0, 1],
         printed: "3\n",
     },
