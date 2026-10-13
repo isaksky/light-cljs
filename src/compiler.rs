@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::analyzer::{
-    AnalysisOptions, AnalysisWarning, NamespaceInput, analyze_namespaces_prepared_with_warnings,
-    analyze_with_macros,
+    AnalysisOptions, AnalysisWarning, JsRefer, NamespaceInput,
+    analyze_namespaces_prepared_with_warnings, analyze_with_macros,
 };
 use crate::macro_host::{MacroHost, MacroImport};
 use crate::{
@@ -102,11 +102,15 @@ impl std::error::Error for NamespaceCompileError {}
 
 #[derive(Clone)]
 struct RequireSpec {
+    /// For a JavaScript package, `namespace` holds the package name.
     import: MacroImport,
     renames: Vec<(String, String)>,
     alias_only: bool,
     alias_node: Option<NodeId>,
     span: Range<usize>,
+    package: bool,
+    /// The local bound to a package's default export by `:default`.
+    default: Option<String>,
 }
 
 struct NamespaceSource {
@@ -122,6 +126,8 @@ struct NamespaceSource {
     resolution: crate::analyzer::NamespaceResolution,
     namespace_imports: Vec<(String, String)>,
     warning_mode: bool,
+    /// Package libspecs without :as, :refer or :default; they bind nothing.
+    inert_packages: Vec<(String, Range<usize>)>,
 }
 
 impl NamespaceSource {
@@ -167,17 +173,64 @@ impl NamespaceSource {
             .map(|p| Ok((self.simple_symbol(p[0])?, self.simple_symbol(p[1])?)))
             .collect()
     }
+    /// A string library names a JavaScript package that the host supplies.
+    fn package(&self, node: NodeId) -> Option<Result<String, NamespaceCompileError>> {
+        let NodeKind::String(value) = &self.syntax.nodes[node.0].kind else {
+            return None;
+        };
+        Some(
+            String::from_utf16(&value.to_utf16(&self.source))
+                .ok()
+                .filter(|name| {
+                    !name.is_empty() && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+                })
+                .ok_or_else(|| {
+                    self.error(
+                        node,
+                        "JavaScript package name must be a nonempty string without whitespace",
+                    )
+                }),
+        )
+    }
     fn read_spec(&self, spec: NodeId, only: bool) -> Result<RequireSpec, NamespaceCompileError> {
-        let items = if self.symbol(spec).is_some() {
+        let items = if self.symbol(spec).is_some()
+            || matches!(self.syntax.nodes[spec.0].kind, NodeKind::String(_))
+        {
             vec![spec]
         } else {
-            self.collection(spec, CollectionKind::Vector).or_else(|| self.collection(spec, CollectionKind::List))
-                .ok_or_else(|| self.error(spec, "require expects a namespace or [namespace options]; JavaScript package imports are unsupported"))?.to_vec()
+            self.collection(spec, CollectionKind::Vector)
+                .or_else(|| self.collection(spec, CollectionKind::List))
+                .ok_or_else(|| {
+                    self.error(
+                        spec,
+                        "require expects a namespace symbol, a package string or [library options]",
+                    )
+                })?
+                .to_vec()
         };
         let dependency = *items
             .first()
             .ok_or_else(|| self.error(spec, "require specification cannot be empty"))?;
-        let namespace = self.symbol(dependency).filter(|n| valid_namespace(n)).ok_or_else(|| self.error(dependency, "require library must be a supported namespace symbol; JavaScript package imports are unsupported"))?.to_owned();
+        let package = self.package(dependency).transpose()?;
+        if only && package.is_some() {
+            return Err(self.error(
+                dependency,
+                ":use requires a namespace symbol; require JavaScript packages with :require",
+            ));
+        }
+        let namespace = match &package {
+            Some(name) => name.clone(),
+            None => self
+                .symbol(dependency)
+                .filter(|n| valid_namespace(n))
+                .ok_or_else(|| {
+                    self.error(
+                        dependency,
+                        "require library must be a supported namespace symbol or a JavaScript package string",
+                    )
+                })?
+                .to_owned(),
+        };
         let mut result = RequireSpec {
             import: MacroImport {
                 namespace,
@@ -187,6 +240,8 @@ impl NamespaceSource {
             alias_only: false,
             alias_node: None,
             span: self.syntax.nodes[dependency.0].span.clone(),
+            package: package.is_some(),
+            default: None,
         };
         if items.len().is_multiple_of(2) {
             return Err(self.error(spec, "require options need values"));
@@ -212,6 +267,14 @@ impl NamespaceSource {
                 }
                 ":refer" => result.import.refers = self.names(pair[1])?,
                 ":rename" => result.renames = self.renames(pair[1])?,
+                ":default" if result.package => {
+                    result.default = Some(self.simple_symbol(pair[1])?);
+                }
+                ":default" => {
+                    return Err(
+                        self.error(pair[0], ":default requires a JavaScript package string")
+                    );
+                }
                 ":refer-macros" | ":include-macros" => {
                     return Err(self.error(pair[0], format!("{option} is retired; import macros and functions with ordinary :require and :refer from .cljs/.cljc sources")));
                 }
@@ -348,18 +411,65 @@ impl NamespaceSource {
         local: String,
         path: String,
     ) -> Result<(), NamespaceCompileError> {
+        self.add_js_target(node, local, JsRefer::Global(path))
+    }
+    fn add_js_target(
+        &mut self,
+        node: NodeId,
+        local: String,
+        target: JsRefer,
+    ) -> Result<(), NamespaceCompileError> {
         if let Some((_, previous)) = self
             .resolution
             .js_refers
             .iter()
             .find(|(name, _)| name == &local)
         {
-            if previous == &path {
+            if previous == &target {
                 return Ok(());
             }
             return Err(self.error(node, format!("conflicting global refer: {local}")));
         }
-        self.resolution.js_refers.push((local, path));
+        self.resolution.js_refers.push((local, target));
+        Ok(())
+    }
+    /// Bind a package's alias, referred exports and default export. The host
+    /// loads the package; nothing is added to the namespace dependency graph.
+    fn add_package(
+        &mut self,
+        node: NodeId,
+        spec: RequireSpec,
+    ) -> Result<(), NamespaceCompileError> {
+        let package = spec.import.namespace;
+        if spec.import.alias.is_none() && spec.import.refers.is_empty() && spec.default.is_none() {
+            self.inert_packages.push((package, spec.span));
+            return Ok(());
+        }
+        if let Some(alias) = spec.import.alias {
+            if self.aliases.iter().any(|(existing, _)| existing == &alias) {
+                return Err(self.error(
+                    spec.alias_node.unwrap_or(node),
+                    format!("duplicate or conflicting namespace alias: {alias}"),
+                ));
+            }
+            self.add_js_target(node, alias, JsRefer::Package(package.clone(), None))?;
+        }
+        if let Some(local) = spec.default {
+            self.add_js_target(
+                node,
+                local,
+                JsRefer::Package(package.clone(), Some("default".into())),
+            )?;
+        }
+        for original in spec.import.refers {
+            let local = spec
+                .renames
+                .iter()
+                .find(|(from, _)| from == &original)
+                .map_or_else(|| original.clone(), |(_, to)| to.clone());
+            let member = crate::analyzer::munge_js_member(&original);
+            self.add_js_target(node, local, JsRefer::Package(package.clone(), Some(member)))?;
+        }
         Ok(())
     }
     fn read_header(&mut self) -> Result<(), NamespaceCompileError> {
@@ -450,6 +560,12 @@ impl NamespaceSource {
                 ":require-global" => {
                     for spec in &parts[1..] {
                         let parsed = self.read_spec(*spec, false)?;
+                        if parsed.package {
+                            return Err(self.error(
+                                *spec,
+                                "require-global expects a global name symbol; require JavaScript packages with :require",
+                            ));
+                        }
                         if parsed.alias_only {
                             return Err(self
                                 .error(*spec, "require-global supports :as, :refer, and :rename"));
@@ -556,7 +672,9 @@ impl NamespaceSource {
                         {
                             return Err(self.error(clause, "duplicate global refer"));
                         }
-                        self.resolution.js_refers.push((local, original));
+                        self.resolution
+                            .js_refers
+                            .push((local, JsRefer::Global(original)));
                     }
                 }
                 ":refer-clojure" => {
@@ -596,7 +714,19 @@ impl NamespaceSource {
                 ":require" | ":use" => {
                     for spec in parts.into_iter().skip(1) {
                         let parsed = self.read_spec(spec, kind == ":use")?;
+                        if parsed.package && !parsed.alias_only {
+                            self.add_package(spec, parsed)?;
+                            continue;
+                        }
                         if let Some(alias) = &parsed.import.alias {
+                            if self.resolution.js_refers.iter().any(|(local, target)| {
+                                local == alias && matches!(target, JsRefer::Package(..))
+                            }) {
+                                return Err(self.error(
+                                    parsed.alias_node.unwrap_or(spec),
+                                    format!("duplicate or conflicting namespace alias: {alias}"),
+                                ));
+                            }
                             if let Some((_, previous)) =
                                 self.aliases.iter().find(|(existing, _)| existing == alias)
                             {
@@ -703,6 +833,7 @@ pub(crate) fn session_nsstar(
         namespace_imports: vec![],
         resolution: resolution.clone(),
         warning_mode: false,
+        inert_packages: vec![],
     };
     let mut clauses = vec![];
     file.top_level_clauses(root, &mut clauses)?;
@@ -896,6 +1027,7 @@ impl Loader {
             runtime_specs: Vec::new(),
             namespace_imports: Vec::new(),
             warning_mode: self.warning_mode,
+            inert_packages: Vec::new(),
             resolution: crate::analyzer::NamespaceResolution {
                 source_name: Some(path.to_string_lossy().into_owned()),
                 cljc,
@@ -1031,6 +1163,49 @@ pub fn compile_namespace_with_macro_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<String, NamespaceCompileError> {
+    namespace_program(entry, source_roots, macros, options, warnings).map(|p| emit_js(&p))
+}
+
+/// Compile an entry namespace into one ES module for a bundler. JavaScript
+/// package references become static `import` declarations instead of
+/// [`crate::analyzer::PACKAGE_REGISTRY`] lookups, and the entry value is the
+/// default export. See [`crate::emitter::emit_esm`].
+pub fn compile_namespace_esm(
+    entry: &str,
+    source_roots: &[PathBuf],
+) -> Result<String, NamespaceCompileError> {
+    compile_namespace_esm_with_warnings(
+        entry,
+        source_roots,
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+}
+
+/// [`compile_namespace_esm`] with explicit warning-compatible analysis options.
+pub fn compile_namespace_esm_with_warnings(
+    entry: &str,
+    source_roots: &[PathBuf],
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<String, NamespaceCompileError> {
+    namespace_program(
+        entry,
+        source_roots,
+        &mut MacroHost::new(),
+        options,
+        warnings,
+    )
+    .map(|p| crate::emitter::emit_esm(&p))
+}
+
+fn namespace_program(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<crate::Program, NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -1066,6 +1241,18 @@ pub fn compile_namespace_with_macro_warnings(
         }
     }
     loader.visit(entry)?;
+    for (source_index, file) in loader.ordered.iter().enumerate() {
+        for (package, span) in &file.inert_packages {
+            warnings.push(AnalysisWarning {
+                kind: "package-require-no-effect",
+                message: format!(
+                    "requiring JavaScript package \"{package}\" without :as, :refer or :default has no effect; the host loads packages"
+                ),
+                span: span.clone(),
+                source_index,
+            });
+        }
+    }
     if options.warning_mode {
         for (source_index, file) in loader.ordered.iter().enumerate() {
             if !file.name.contains('.') {
@@ -1272,5 +1459,5 @@ pub fn compile_namespace_with_macro_warnings(
         let file = &loader.ordered[index];
         NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
     })?;
-    Ok(emit_js(&program))
+    Ok(program)
 }

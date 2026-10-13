@@ -38,17 +38,17 @@ pub mod source_provider;
 pub use analyzer::{
     AnalysisError, AnalysisErrorKind, CoreFnId, Expr, ExprContext, ExprId, ExprKind, GlobalBinding,
     GlobalId, JsGlobal, JsGlobalId, LocalBinding, LocalId, NamedLiteral, NamedLiteralId,
-    NamespaceInput, Program, Span, StringId, analyze, analyze_namespaces,
+    NamespaceInput, PACKAGE_REGISTRY, Program, Span, StringId, analyze, analyze_namespaces,
     analyze_namespaces_with_macros, analyze_with_macros,
 };
 pub use application::{
     ApplicationOptions, ApplicationStats, PreparedApplication, prepare_application,
 };
 pub use compiler::{
-    CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_with_macros,
-    compile_with_macros,
+    CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_esm,
+    compile_namespace_with_macros, compile_with_macros,
 };
-pub use emitter::emit_js;
+pub use emitter::{emit_esm, emit_js};
 pub use macro_host::{MacroHost, MacroImport, MacroLimits};
 
 pub use parser::{

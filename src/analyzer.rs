@@ -2252,10 +2252,27 @@ pub struct GlobalBinding {
     pub source_index: usize,
 }
 
+/// The host global holding JavaScript packages required by string libspecs.
+/// `["react" :as r]` lowers `r/createElement` to the path
+/// `[PACKAGE_REGISTRY, "react", "createElement"]`; the host supplies the object.
+pub const PACKAGE_REGISTRY: &str = "lightCljsPackages";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JsGlobal {
-    /// Validated ASCII JavaScript identifiers, never raw source interpolation.
+    /// Validated JavaScript identifiers, never raw source interpolation. Below
+    /// [`PACKAGE_REGISTRY`], the second component is an arbitrary package name;
+    /// emitters always quote it.
     pub path: Vec<String>,
+}
+
+impl JsGlobal {
+    /// The package name and member path of a registry lookup.
+    pub fn package(&self) -> Option<(&str, &[String])> {
+        match self.path.as_slice() {
+            [root, package, members @ ..] if root == PACKAGE_REGISTRY => Some((package, members)),
+            _ => None,
+        }
+    }
 }
 
 /// A namespace whose dependencies have already been placed earlier in the slice.
@@ -2743,11 +2760,20 @@ struct Environment {
     scopes: Vec<Vec<LocalId>>,
 }
 
+/// The host value bound to a local name by a namespace directive.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum JsRefer {
+    /// A dotted host path, resolved exactly like `js/path`.
+    Global(String),
+    /// A JavaScript package in [`PACKAGE_REGISTRY`], or one of its exports.
+    Package(String, Option<String>),
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct NamespaceResolution {
     pub refers: Vec<(String, String, String)>,
     pub excludes: Vec<String>,
-    pub js_refers: Vec<(String, String)>,
+    pub js_refers: Vec<(String, JsRefer)>,
     pub cljc: bool,
     pub source_name: Option<String>,
 }
@@ -4651,7 +4677,7 @@ impl Analyzer<'_> {
         {
             return Ok(ExprKind::CoreFn(function));
         }
-        if let Some((_, original)) = self
+        if let Some((_, target)) = self
             .resolution
             .js_refers
             .iter()
@@ -4662,7 +4688,22 @@ impl Analyzer<'_> {
                 .get(&(self.namespace.into(), name.into()))
                 .is_some_and(|g| self.program.globals[g.0].declared)
         {
-            return self.resolve(id, &format!("js/{original}"));
+            return match target {
+                JsRefer::Global(original) => self.resolve(id, &format!("js/{original}")),
+                JsRefer::Package(_, Some(member)) if !js_identifier(&member) => Err(self.error(
+                    id,
+                    AnalysisErrorKind::Unsupported(
+                        "JavaScript paths require identifier components".into(),
+                    ),
+                )),
+                // Package names are registry keys, never munged host paths.
+                JsRefer::Package(package, member) => Ok(self.js_global(
+                    [PACKAGE_REGISTRY.to_owned(), package]
+                        .into_iter()
+                        .chain(member)
+                        .collect(),
+                )),
+            };
         }
         if name == "cljs.core.ExceptionInfo" {
             return Ok(ExprKind::CoreFn(CoreFnId::ExceptionInfo));
@@ -4686,18 +4727,7 @@ impl Analyzer<'_> {
                     ),
                 ));
             }
-            let global = self
-                .program
-                .js_globals
-                .iter()
-                .position(|global| global.path == path)
-                .map(JsGlobalId)
-                .unwrap_or_else(|| {
-                    let id = JsGlobalId(self.program.js_globals.len());
-                    self.program.js_globals.push(JsGlobal { path });
-                    id
-                });
-            return Ok(ExprKind::JsGlobal(global));
+            return Ok(self.js_global(path));
         }
         if let Some((class, member)) = name.split_once('/')
             && class != "js"
@@ -7986,12 +8016,53 @@ impl Analyzer<'_> {
         ))
     }
 
+    fn js_global(&mut self, path: Vec<String>) -> ExprKind {
+        let global = self
+            .program
+            .js_globals
+            .iter()
+            .position(|global| global.path == path)
+            .map(JsGlobalId)
+            .unwrap_or_else(|| {
+                let id = JsGlobalId(self.program.js_globals.len());
+                self.program.js_globals.push(JsGlobal { path });
+                id
+            });
+        ExprKind::JsGlobal(global)
+    }
+
     fn dotted_fields(
         &mut self,
         id: NodeId,
         root: ExprKind,
         fields: &str,
     ) -> Result<ExprKind, AnalysisError> {
+        // Package members stay one registry path so bundler output can name
+        // each export statically; `r/a.b` is the path react/a/b.
+        if let ExprKind::JsGlobal(global) = root
+            && self.program.js_globals[global.0].package().is_some()
+        {
+            let mut path = self.program.js_globals[global.0].path.clone();
+            for field in fields.split('.') {
+                let member = munge_js_member(field);
+                if field.is_empty() {
+                    return Err(self.error(
+                        id,
+                        AnalysisErrorKind::InvalidForm("empty JavaScript property"),
+                    ));
+                }
+                if !js_identifier(&member) {
+                    return Err(self.error(
+                        id,
+                        AnalysisErrorKind::Unsupported(
+                            "JavaScript paths require identifier components".into(),
+                        ),
+                    ));
+                }
+                path.push(member);
+            }
+            return Ok(self.js_global(path));
+        }
         let mut kind = root;
         for field in fields.split('.') {
             if field.is_empty() {

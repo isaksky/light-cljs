@@ -60,6 +60,11 @@ Sources load only through the explicit provider. `ns` and `require` use ordinary
 `.cljs`/`.cljc` compilation, aliases/refers and dependency-once loading; standard
 `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.edn` and `cljs.reader`
 sources are bundled. No ambient filesystem, npm, Node, DOM or JVM is introduced.
+String libspecs such as `(require '["react" :as r])` bind JavaScript packages
+from the host registry `globalThis.lightCljsPackages`, read at each use and never
+loaded by the session: supply it first, for example with a prelude
+`(set! js/lightCljsPackages (js-obj "react" ...))`. See
+[JavaScript packages](compiler.md#javascript-packages).
 Compiled `data_readers` are one-argument source functions installed in the reader
 compilation service and canonical runtime reader. `default_data_reader` receives
 the tag and value for unknown tags; named and built-in readers take precedence.
@@ -88,7 +93,11 @@ environment.
 Vars, quoted `resolve`, macros and explicitly exposed host bindings. Deny wins;
 allow restricts exposed capabilities/core names while permitting ordinary user
 bindings. This is a binding-resolution policy, **not a sandbox for arbitrary
-JavaScript interop**. ECMAScript intrinsic objects remain available.
+JavaScript interop**. ECMAScript intrinsic objects remain available. Host paths
+are checked by their full `js/` name, but every JavaScript package lookup is
+checked as the single name `js/lightCljsPackages`, whatever the package or
+export: deny it to refuse all package access, or allow it in an allow list. The
+host controls which packages exist by what it puts in the registry.
 
 ## Limits and failure
 

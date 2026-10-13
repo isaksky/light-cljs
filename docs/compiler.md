@@ -902,7 +902,7 @@ docstrings are available separately at `&env :ns :doc`. `:as-alias` is a
 reader-only alias and does not load a source. A missing `clojure.*` runtime source
 can resolve an existing `cljs.*` source while preserving both qualifiers.
 `:import` binds actual host constructors and `:require-global` binds supplied host
-globals. Top-level quoted require/use/import and macro equivalents,
+globals; string libspecs bind host-supplied [JavaScript packages](#javascript-packages). Top-level quoted require/use/import and macro equivalents,
 `refer-clojure`, and `refer-global` retain their namespace effects. Explicit
 `goog.*` dependencies can use host namespaces when no caller source exists; no
 Closure implementation is synthesized. Validation occurs before dependency
@@ -923,12 +923,92 @@ file. Loading an already-Loading namespace reports the cycle path. Missing
 sources, mismatched declarations, analysis errors, and parse errors include the
 originating file/location when available. No output is emitted on failure.
 The result is one combined JavaScript expression whose value is the entry
-namespace's final form. There is no caching, package manager, incremental
+namespace's final form (with `--esm`, an ES module whose default export it is). There is no caching, package manager, incremental
 invalidation, or parallel scheduler.
 
 Standalone file/stdin/text modes accept `def` and interop, but a standalone
 `(ns ...)` form is rejected (`unsupported construct: ns`): select an entry with
 `--entry` and explicit roots to request namespace loading.
+
+### JavaScript packages
+
+String libspecs name JavaScript (npm) packages. The compiler never reads
+`node_modules` or `package.json`; package resolution, CommonJS conversion and
+tree-shaking belong to the bundler or to the embedding host.
+
+```clojure
+(ns app.main
+  (:require ["react" :as r :refer [useState] :rename {useState use-state}]
+            ["@mui/material/Button" :default Button]
+            ["lodash.debounce" :as debounce]))
+```
+
+`:as` binds the package object, `:refer` (optionally with `:rename`) binds named
+exports and `:default` binds the `default` export. A package name is any
+nonempty string without whitespace, including scoped names (`@scope/pkg`), dots
+(`lodash.debounce`) and subpaths (`some-package/sub`). Every reference lowers to
+a lookup in one host-supplied registry object, `globalThis.lightCljsPackages`
+(`light_cljs::PACKAGE_REGISTRY`): `r/createElement` reads
+`lightCljsPackages["react"]["createElement"]`, `use-state` reads
+`["react"]["useState"]` and `Button` reads `["@mui/material/Button"]["default"]`.
+Export and member names use host-member munging (`r/use-ref` reads `use_ref`), so
+spell exports as JavaScript does; dotted members such as `r/a.b` extend the path.
+Lookups happen at each use site rather than through a copied binding, so a host
+that replaces the registry or one of its packages is seen by code compiled
+earlier, including REPL definitions. A missing registry or package throws a
+`ReferenceError` at first use naming both the package and
+`globalThis.lightCljsPackages`; a missing export reads as `undefined`.
+
+The host fills the registry before the program runs, for example from an ES
+module (`import * as react from "react"; globalThis.lightCljsPackages = {react};`)
+or, in an `EvalSession`, QuickJS runner or REPL, from a prelude such as
+`(set! js/lightCljsPackages (js-obj "react" react-object))`. The REPL accepts the
+same libspecs in `require` and `ns`; there a later binding of the same name
+replaces an earlier package or namespace alias.
+
+A string libspec without `:as`, `:refer` or `:default` binds nothing. It compiles,
+and the warning APIs (`--warnings`, `compile_namespace_with_warnings`) report
+`package-require-no-effect`, because the host rather than the compiler loads
+packages. `:as-alias` on a string is reader-only, as for symbols. Package aliases
+cannot reuse a namespace alias and package refers cannot conflict. `:default` on
+a namespace symbol, and package strings in `:use` or `:require-global`, are
+rejected.
+
+#### Bundler ES modules
+
+Add `--esm` to `--compile --entry NS` (library: `compiler::compile_namespace_esm`
+or `emitter::emit_esm`) to emit one ES module for Vite, esbuild, Rollup or
+webpack instead of the bare expression. Without the flag the output is
+unchanged.
+
+```js
+import { createElement as $react$createElement, useState as $react$useState } from "react";
+import { default as $_40mui_2fmaterial_2fButton$default } from "@mui/material/Button";
+import * as $lodash_2edebounce from "lodash.debounce";
+export default (() => { /* program */ })();
+```
+
+The registry does not exist in this mode. Each package export that surviving
+code references is a named import bound to a module-local identifier, so the
+bundler can drop unused exports and minifiers can rename the bindings; the
+result matches hand-written JavaScript with named imports. When an alias object
+itself is used as a value (passed around, `(.-x r)`, `aget`, `exists?` or
+`set!`), that package also gets a namespace import (`import * as $react from
+"react"`) that the reference uses directly. Imports are collected after
+application preparation, so packages and exports referenced only by removed
+definitions are not imported, and a string libspec without bindings imports
+nothing. Binding names are `$`, the package name, `$` and the export, where
+ASCII letters and digits are kept and every other byte is written as `_xx` hex:
+distinct package names always get distinct bindings, and emitter locals never
+begin with `$`. Declarations follow first-reference order; ES module evaluation
+order loads every package before the program runs. The entry namespace's value
+is the default export.
+
+CommonJS packages are the bundler's concern. When Vite or esbuild cannot detect
+a CommonJS package's named exports statically, `import * as p from "cjs-pkg"`
+may expose everything only under `default`, and named imports read `undefined`.
+That is bundler behavior, not compiler behavior; bind such a package with
+`:default` and read its members from that binding.
 
 ### Complete collection program
 
@@ -1319,7 +1399,8 @@ Generated type fields use munged host properties; writes remain visible to metho
 field reads and record lookup, with independent fields on metadata copies.
 
 All helpers use browser JavaScript APIs. Npm/package resolution and bundling
-remain outside the compiler. Literal `nil` dot receivers are rejected during
+remain outside the compiler; [JavaScript packages](#javascript-packages) are
+registry lookups or, with `--esm`, static imports for a bundler. Literal `nil` dot receivers are rejected during
 analysis as upstream does; receiver expressions returning nil fail at runtime.
 
 ## Reify objects
@@ -1575,7 +1656,9 @@ available when a later error stops compilation. Warning collection includes
 undeclared Vars, private Var access (Var literals bypass that warning),
 JavaScript local shadowing, declared/defined argument lists, function and record
 arities, non-dynamic earmuffed names, arithmetic operand types, checked array
-access, single-segment namespaces, and the reserved `js` namespace alias. Type
+access, single-segment namespaces, the reserved `js` namespace alias, and
+JavaScript package libspecs that bind nothing (`package-require-no-effect`, also
+collected without `warning_mode`). Type
 diagnostics use bounded inference over analyzed expressions.
 
 The public `*unchecked-arrays*` Var has a false runtime root. In compiled files,

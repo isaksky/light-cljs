@@ -35,7 +35,10 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
 Terminal prompts go to stderr. Terminal engine limits/cancellation exit nonzero.
 Legacy --fuel/--allocation-limit/--call-depth/--evaluation-depth are rejected.
 .clj inputs are retired: rename/adapt to .cljs or .cljc with :cljs conditionals.
-Numbers use JavaScript semantics; ECMAScript intrinsics work. No Node/JVM process.";
+Numbers use JavaScript semantics; ECMAScript intrinsics work. No Node/JVM process.
+Package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"]
+at each use; no package is loaded, so supply the registry first, for example with
+(set! js/lightCljsPackages (js-obj \"react\" ...)).";
 #[derive(Default)]
 enum Input {
     #[default]

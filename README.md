@@ -13,9 +13,9 @@ macros, namespaces, persistent and sorted collections, lazy sequences,
 transducers, protocols, types, records, multimethods, atoms, exceptions and
 JavaScript interop work, and behavior is regularly compared against standard
 ClojureScript. It is not a drop-in replacement: there is no Google Closure
-Library, no `cljs.pprint`/`core.async`/`test.check`, no package or npm
-resolution, and numbers are always JavaScript Numbers. See
-[known boundaries](#known-boundaries).
+Library, no `cljs.pprint`/`core.async`/`test.check`, no package resolution (npm
+packages come from the host or a bundler), and numbers are always JavaScript
+Numbers. See [known boundaries](#known-boundaries).
 
 ## Architecture
 
@@ -105,6 +105,11 @@ cargo run --quiet -- --compile --entry demo.main --source-root examples/macros |
 # 12
 ```
 
+String libspecs such as `["react" :as r]` read host-supplied packages from
+`globalThis.lightCljsPackages`. Add `--esm` to `--compile --entry` to emit one ES
+module for a bundler instead, with static package imports and the entry value as
+its default export (see [JavaScript packages](docs/compiler.md#javascript-packages)).
+
 Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
 Vars and arity conflicts become warnings instead of errors), or with
 `--checked-arrays-warn`/`--checked-arrays-error` for array-operand checks.
@@ -167,8 +172,14 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   namespaces must be supplied as source via `--source-root` or a source provider.
   The Google Closure Library (`goog.*`), `cljs.pprint`, `cljs.test`,
   `core.async` and `test.check` are not provided.
-- **No build tooling:** no npm/package resolution, module output, source maps or
-  advanced optimization; output is one JavaScript expression.
+- **JavaScript packages are host-supplied.** A string libspec such as
+  `["react" :as r]` lowers each use to `globalThis.lightCljsPackages["react"]`;
+  the host fills that registry. With `--esm` the output is one ES module whose
+  static imports a bundler (Vite, esbuild, Rollup) resolves and tree-shakes. The
+  compiler never reads `node_modules` or `package.json` and does no package
+  resolution or CommonJS conversion.
+- **No build tooling:** no per-namespace module output, source maps or advanced
+  optimization; output is one JavaScript expression, or one ES module with `--esm`.
   A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md)
   but not implemented.
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)

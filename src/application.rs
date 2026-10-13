@@ -37,7 +37,11 @@ pub struct PreparedApplication {
 }
 impl PreparedApplication {
     pub fn emit_js(&self) -> String {
-        crate::emitter::emit_application(&self.program, &self.globals, &self.calls)
+        crate::emitter::emit_application(&self.program, &self.globals, &self.calls, false)
+    }
+    /// One ES module for a bundler; see [`crate::emitter::emit_esm`].
+    pub fn emit_esm(&self) -> String {
+        crate::emitter::emit_application(&self.program, &self.globals, &self.calls, true)
     }
     pub fn stats(&self) -> &ApplicationStats {
         &self.stats

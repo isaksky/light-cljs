@@ -70,6 +70,9 @@ impl InteractiveCompiler {
     }
     pub(crate) fn set_alias(&mut self, alias: &str, namespace: &str) {
         self.aliases.retain(|(a, _)| a != alias);
+        self.resolution.js_refers.retain(|(local, target)| {
+            local != alias || !matches!(target, crate::analyzer::JsRefer::Package(..))
+        });
         self.aliases.push((alias.into(), namespace.into()));
     }
     pub(crate) fn set_imports(&mut self, imports: Vec<crate::MacroImport>) -> Result<(), String> {
@@ -477,7 +480,14 @@ impl InteractiveCompiler {
                         .then(|| format!("{}/{}", binding.namespace, binding.name))
                 }
                 crate::ExprKind::JsGlobal(id) => {
-                    let name = program.js_globals[id.0].path.join(".");
+                    let global = &program.js_globals[id.0];
+                    // Every package lookup reads one host capability, the
+                    // registry; the host decides which packages it contains.
+                    let name = if global.package().is_some() {
+                        crate::analyzer::PACKAGE_REGISTRY.to_owned()
+                    } else {
+                        global.path.join(".")
+                    };
                     (!self.policy.permits(&Name::new(Some("js"), &name), true))
                         .then(|| format!("js/{name}"))
                 }
@@ -672,12 +682,17 @@ impl InteractiveCompiler {
                 continue;
             }
             let parts = spec.children();
+            let library = parts.first().unwrap_or(&spec);
+            if let DatumKind::String(name) = library.data().kind() {
+                self.require_package(&spec, name, &parts)?;
+                continue;
+            }
             let ns = if parts.is_empty() {
                 text(&spec)
             } else {
                 parts.first().and_then(text)
             }
-            .ok_or("require expects a namespace symbol or libspec vector")?;
+            .ok_or("require expects a namespace symbol, a package string or libspec vector")?;
             let mut import = crate::MacroImport {
                 namespace: ns.clone(),
                 ..Default::default()
@@ -715,6 +730,97 @@ impl InteractiveCompiler {
         }
         self.set_imports(imports)?;
         Ok(Some((requests, None)))
+    }
+    /// Bind `["package" :as a :refer [x] :rename {x y} :default d]` to registry
+    /// lookups. The host supplies packages, so nothing is loaded. As with
+    /// interactive namespace aliases, a later binding of the same name wins.
+    fn require_package(&mut self, spec: &Form, name: &[u16], parts: &[Form]) -> Result<(), String> {
+        use crate::analyzer::JsRefer;
+        let package = String::from_utf16(name)
+            .ok()
+            .filter(|name| {
+                !name.is_empty() && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+            })
+            .ok_or("JavaScript package name must be a nonempty string without whitespace")?;
+        let simple = |form: &Form| match form.data().kind() {
+            DatumKind::Symbol(name) if name.namespace().is_none() => {
+                let name = String::from_utf16_lossy(name.name());
+                (!name.contains('.')).then_some(name)
+            }
+            _ => None,
+        };
+        let keyword = |form: &Form| match form.data().kind() {
+            DatumKind::Keyword(name) if name.namespace().is_none() => {
+                Some(String::from_utf16_lossy(name.name()))
+            }
+            _ => None,
+        };
+        let mut bindings = Vec::new();
+        let mut refers = Vec::new();
+        let mut renames = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for pair in parts.get(1..).unwrap_or_default().chunks(2) {
+            let key = keyword(&pair[0]).ok_or("libspec option must be a keyword")?;
+            let value = pair.get(1).ok_or("libspec option requires a value")?;
+            if !seen.insert(key.clone()) {
+                return Err(format!("duplicate libspec option :{key}"));
+            }
+            match key.as_str() {
+                "as" => bindings.push((
+                    simple(value).ok_or(":as requires a simple symbol")?,
+                    JsRefer::Package(package.clone(), None),
+                )),
+                "default" => bindings.push((
+                    simple(value).ok_or(":default requires a simple symbol")?,
+                    JsRefer::Package(package.clone(), Some("default".into())),
+                )),
+                "refer" => {
+                    refers = value
+                        .children()
+                        .iter()
+                        .map(|f| simple(f).ok_or(":refer requires simple symbols"))
+                        .collect::<Result<_, _>>()?;
+                }
+                "rename" => {
+                    renames = value
+                        .children()
+                        .chunks(2)
+                        .map(|p| match (simple(&p[0]), p.get(1).and_then(simple)) {
+                            (Some(from), Some(to)) => Ok((from, to)),
+                            _ => Err(":rename requires a map of simple symbols"),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                }
+                _ => return Err(format!("unsupported libspec option :{key}")),
+            }
+        }
+        if let Some((original, _)) = renames.iter().find(|(from, _)| !refers.contains(from)) {
+            return Err(format!(":rename symbol {original} is not referred"));
+        }
+        for original in refers {
+            let local = renames
+                .iter()
+                .find(|(from, _)| *from == original)
+                .map_or_else(|| original.clone(), |(_, to)| to.clone());
+            let member = crate::analyzer::munge_js_member(&original);
+            bindings.push((local, JsRefer::Package(package.clone(), Some(member))));
+        }
+        if bindings.is_empty() {
+            self.warnings.push(AnalysisWarning {
+                kind: "package-require-no-effect",
+                message: format!(
+                    "requiring JavaScript package \"{package}\" without :as, :refer or :default has no effect; the host loads packages"
+                ),
+                span: spec.span().bytes(),
+                source_index: 0,
+            });
+        }
+        for (local, target) in bindings {
+            self.aliases.retain(|(alias, _)| *alias != local);
+            self.resolution.js_refers.retain(|(name, _)| *name != local);
+            self.resolution.js_refers.push((local, target));
+        }
+        Ok(())
     }
 }
 

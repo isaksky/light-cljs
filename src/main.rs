@@ -12,7 +12,7 @@ use light_cljs::{LineIndex, TokenKind, Tokenizer, compile_namespace, emit_js, pa
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -33,8 +33,10 @@ fn run_namespace(
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = None;
     let mut roots = Vec::new();
+    let mut esm = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--esm") => esm = true,
             Some("--entry") => {
                 if entry.is_some() {
                     return Err("--entry may only be specified once".into());
@@ -53,7 +55,19 @@ fn run_namespace(
         }
     }
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
-    let output = if options.warning_mode {
+    let output = if esm {
+        let mut warnings = Vec::new();
+        let result = light_cljs::compiler::compile_namespace_esm_with_warnings(
+            &entry,
+            &roots,
+            options,
+            &mut warnings,
+        );
+        if options.warning_mode {
+            print_warnings(&warnings);
+        }
+        result?
+    } else if options.warning_mode {
         let mut warnings = Vec::new();
         let result = light_cljs::compiler::compile_namespace_with_warnings(
             &entry,
@@ -105,7 +119,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if matches!(
         first.as_deref().and_then(|arg| arg.to_str()),
-        Some("--entry" | "--source-root")
+        Some("--entry" | "--source-root" | "--esm")
     ) {
         if mode != "compile" {
             return Err("namespace options require --compile".into());

@@ -238,13 +238,19 @@ fn malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics(
         ),
         ("(ns demo (:require [lib :refer :all]))", ":refer"),
         ("(ns demo (:require [lib :rename {f g}]))", ":rename"),
+        // Package strings are accepted (tests/compiler_npm_packages.rs); only
+        // malformed package specifications are rejected here.
         (
-            "(ns demo (:require [\"package\" :as p]))",
-            "JavaScript package imports are unsupported",
+            "(ns demo (:require [\"\" :as p]))",
+            "JavaScript package name must be a nonempty string without whitespace",
         ),
         (
-            "(ns demo (:require \"package\"))",
-            "JavaScript package imports are unsupported",
+            "(ns demo (:use [\"package\" :only [x]]))",
+            ":use requires a namespace symbol",
+        ),
+        (
+            "(ns demo (:require [lib :default d]))",
+            ":default requires a JavaScript package string",
         ),
         ("(ns demo (:import :Thing))", "import expects"),
         ("(ns demo (:require []))", "cannot be empty"),

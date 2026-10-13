@@ -3,8 +3,8 @@
 use std::{collections::HashSet, fmt::Write};
 
 use crate::analyzer::{
-    ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, Program,
-    RecurTargetId, StringId,
+    ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, PACKAGE_REGISTRY,
+    Program, RecurTargetId, StringId,
 };
 
 /// Emit one JavaScript expression whose value is the last source form (or nil).
@@ -18,8 +18,19 @@ pub(crate) fn emit_application(
     program: &Program,
     globals: &[bool],
     calls: &std::collections::HashMap<ExprId, usize>,
+    module: bool,
 ) -> String {
-    emit_js_mode(program, None, false, false, Some((globals, calls)))
+    emit_js_mode(program, None, false, false, Some((globals, calls)), module)
+}
+
+/// Emit one ES module for a bundler instead of a bare expression. Each package
+/// registry reference (see [`crate::analyzer::PACKAGE_REGISTRY`]) becomes a
+/// module-local binding of a static import: `r/createElement` is
+/// `import { createElement as $react$createElement } from "react"`, and an alias
+/// used as a value imports the namespace object. Only references that survive
+/// application preparation are imported. The program value is the default export.
+pub fn emit_esm(program: &Program) -> String {
+    crate::application::prepare_application(program, Default::default()).emit_esm()
 }
 
 /// Emit a function accepting the session canonical runtime as its sole argument.
@@ -49,7 +60,7 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
     };
     format!(
         "({parameter}) => {}",
-        emit_js_mode(program, Some(&parameter), demand_roots, false, None)
+        emit_js_mode(program, Some(&parameter), demand_roots, false, None, false)
     )
 }
 
@@ -59,12 +70,15 @@ fn emit_js_mode(
     demand_roots: bool,
     application_roots: bool,
     application: Option<(&[bool], &std::collections::HashMap<ExprId, usize>)>,
+    module: bool,
 ) -> String {
     let mut emitter = Emitter {
         program,
         demand_roots,
         application_roots,
         needs_host: false,
+        needs_package: false,
+        imports: module.then(Vec::new),
         specialized_calls: application.map(|(_, calls)| calls),
         output: String::new(),
         indent: 1,
@@ -92,8 +106,15 @@ fn emit_js_mode(
     }
     emitter.emit(program.root, ExprContext::Return);
     emitter.output.push_str("})()\n");
-    if emitter.needs_host {
-        let host = "  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n";
+    if emitter.needs_host || emitter.needs_package {
+        let mut host = String::new();
+        if emitter.needs_host {
+            host.push_str("  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n");
+        }
+        if emitter.needs_package {
+            writeln!(host, "  const pkg = (name) => {{ const registry = globalThis.{PACKAGE_REGISTRY}; if (registry == null || !(name in Object(registry))) throw new ReferenceError(\"JavaScript package \\\"\" + name + \"\\\" is not provided by globalThis.{PACKAGE_REGISTRY}\"); return registry[name]; }};").unwrap();
+        }
+        let host = host.as_str();
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
                 range.start += host.len();
@@ -167,7 +188,7 @@ fn emit_js_mode(
 
     // Raw JavaScript is an escape hatch, but its user-authored identifiers must
     // not accidentally capture compiler locals or be captured by our helpers.
-    if emitter
+    let output = if emitter
         .used
         .iter()
         .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }))
@@ -175,7 +196,78 @@ fn emit_js_mode(
         hygienic_js(emitter.output, emitter.raw_segments)
     } else {
         emitter.output
+    };
+    match emitter.imports {
+        Some(imports) => module_source(&imports, &output),
+        None => output,
     }
+}
+
+/// A package imported by bundler output, in first-reference order.
+struct PackageImport {
+    package: String,
+    namespace: bool,
+    exports: Vec<String>,
+}
+
+/// ASCII letters and digits are kept; every other UTF-8 byte becomes `_xx`.
+/// The mapping is injective and never produces `$`, which separates the parts
+/// of an import binding. No emitter local begins with `$`.
+fn import_identifier_part(text: &str) -> String {
+    let mut result = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            result.push(byte.into());
+        } else {
+            write!(result, "_{byte:02x}").unwrap();
+        }
+    }
+    result
+}
+
+fn namespace_import_binding(package: &str) -> String {
+    format!("${}", import_identifier_part(package))
+}
+
+fn named_import_binding(package: &str, export: &str) -> String {
+    format!(
+        "${}${}",
+        import_identifier_part(package),
+        import_identifier_part(export)
+    )
+}
+
+fn module_source(imports: &[PackageImport], expression: &str) -> String {
+    let mut source = String::new();
+    for import in imports {
+        let specifier = quoted(&import.package);
+        if import.namespace {
+            writeln!(
+                source,
+                "import * as {} from {specifier};",
+                namespace_import_binding(&import.package)
+            )
+            .unwrap();
+        }
+        if !import.exports.is_empty() {
+            let names = import
+                .exports
+                .iter()
+                .map(|export| {
+                    format!(
+                        "{export} as {}",
+                        named_import_binding(&import.package, export)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(source, "import {{ {names} }} from {specifier};").unwrap();
+        }
+    }
+    source.push_str("export default ");
+    source.push_str(expression.trim_end());
+    source.push_str(";\n");
+    source
 }
 
 struct Emitter<'a> {
@@ -183,6 +275,9 @@ struct Emitter<'a> {
     demand_roots: bool,
     application_roots: bool,
     needs_host: bool,
+    needs_package: bool,
+    /// Bundler output binds packages with static imports instead of the registry.
+    imports: Option<Vec<PackageImport>>,
     specialized_calls: Option<&'a std::collections::HashMap<ExprId, usize>>,
     output: String,
     indent: usize,
@@ -308,12 +403,71 @@ impl Emitter<'_> {
 
     fn assignable(&mut self, id: ExprId) {
         if let ExprKind::JsGlobal(global) = self.program.exprs[id.0].kind {
+            let program = self.program;
+            if let Some((package, members)) = program.js_globals[global.0].package()
+                && self.imports.is_some()
+            {
+                self.namespace_import(package);
+                for member in members {
+                    self.member(member);
+                }
+                return;
+            }
             self.output.push_str("globalThis");
             for part in &self.program.js_globals[global.0].path {
                 self.member(part);
             }
         } else {
             self.value(id);
+        }
+    }
+
+    /// Bundler output: reference the namespace object of `package`.
+    fn namespace_import(&mut self, package: &str) {
+        let imports = self.imports.as_mut().expect("bundler output");
+        let index = Self::package_import(imports, package);
+        imports[index].namespace = true;
+        self.output.push_str(&namespace_import_binding(package));
+    }
+
+    fn package_import(imports: &mut Vec<PackageImport>, package: &str) -> usize {
+        imports
+            .iter()
+            .position(|import| import.package == package)
+            .unwrap_or_else(|| {
+                imports.push(PackageImport {
+                    package: package.to_owned(),
+                    namespace: false,
+                    exports: Vec::new(),
+                });
+                imports.len() - 1
+            })
+    }
+
+    /// A package registry lookup. Unbundled output checks the registry at each
+    /// use; bundler output names the export's import binding directly.
+    fn package_reference(&mut self, package: &str, members: &[String]) {
+        let Some(imports) = self.imports.as_mut() else {
+            self.needs_package = true;
+            self.output.push_str("pkg(");
+            self.string_units(&package.encode_utf16().collect::<Vec<_>>());
+            self.output.push(')');
+            for member in members {
+                self.member(member);
+            }
+            return;
+        };
+        let Some((export, rest)) = members.split_first() else {
+            self.namespace_import(package);
+            return;
+        };
+        let index = Self::package_import(imports, package);
+        if !imports[index].exports.contains(export) {
+            imports[index].exports.push(export.clone());
+        }
+        self.output.push_str(&named_import_binding(package, export));
+        for member in rest {
+            self.member(member);
         }
     }
 
@@ -1631,6 +1785,11 @@ impl Emitter<'_> {
             ExprKind::Local(local) => self.local_value(*local),
             ExprKind::Global(global) => self.global(*global),
             ExprKind::JsGlobal(global) => {
+                let program = self.program;
+                if let Some((package, members)) = program.js_globals[global.0].package() {
+                    self.package_reference(package, members);
+                    return;
+                }
                 self.needs_host = true;
                 let path = &self.program.js_globals[global.0].path;
                 write!(self.output, "host(\"{}\")", path[0]).unwrap();
@@ -1658,7 +1817,25 @@ impl Emitter<'_> {
                     return;
                 }
                 self.output.push('(');
-                if let ExprKind::JsGlobal(global) = self.program.exprs[value.0].kind {
+                let program = self.program;
+                if let ExprKind::JsGlobal(global) = program.exprs[value.0].kind
+                    && let Some((package, members)) = program.js_globals[global.0].package()
+                    && self.imports.is_some()
+                {
+                    // A named import of a missing export fails at link time;
+                    // the namespace object can be probed.
+                    self.output.push_str("typeof ");
+                    self.namespace_import(package);
+                    self.output.push_str(" !== \"undefined\"");
+                    for i in 0..members.len() {
+                        self.output.push_str(" && typeof ");
+                        self.namespace_import(package);
+                        for member in &members[..=i] {
+                            self.member(member);
+                        }
+                        self.output.push_str(" !== \"undefined\"");
+                    }
+                } else if let ExprKind::JsGlobal(global) = self.program.exprs[value.0].kind {
                     let path = &self.program.js_globals[global.0].path;
                     for i in 0..path.len() {
                         if i > 0 {
@@ -1941,7 +2118,7 @@ fn hygienic_js(source: String, mut raw: Vec<std::ops::Range<usize>>) -> String {
             if numbered
                 || matches!(
                     token,
-                    "rt" | "truth" | "host" | "f" | "text" | "savedPrint" | "savedNewline"
+                    "rt" | "truth" | "host" | "pkg" | "f" | "text" | "savedPrint" | "savedNewline"
                 )
             {
                 result.push_str(&prefix);
@@ -1963,10 +2140,26 @@ pub(crate) fn emit_interactive_unit(program: &Program) -> String {
         false,
         true,
         None,
+        false,
     );
     format!(
         "(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return {body}; }}"
     )
+}
+
+/// A readable JavaScript string literal; non-ASCII and controls are escaped.
+fn quoted(text: &str) -> String {
+    let mut out = String::from("\"");
+    for unit in text.encode_utf16() {
+        match unit {
+            0x22 => out.push_str("\\\""),
+            0x5c => out.push_str("\\\\"),
+            0x20..=0x7e => out.push(char::from_u32(unit.into()).unwrap()),
+            _ => write!(out, "\\u{unit:04x}").unwrap(),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn js_string(text: &str) -> String {

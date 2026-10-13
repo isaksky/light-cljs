@@ -118,7 +118,7 @@ ns-unknown-clause	ns	(ns boundary 	(:unless [])	)	namespace	unsupported namespac
 ns-import	ns	(ns boundary 	(:import goog.Uri)	)	accepted	namespace host constructor imports supported	warning	warning
 ns-macros	ns	(ns boundary 	(:require-macros [cljs.core :as m])	)	namespace	:require-macros is retired	warning	warning
 ns-refer-clojure	ns	(ns boundary 	(:refer-clojure :exclude [+])	)	accepted	namespace import resolution supported	warning	warning
-ns-package	ns	(ns boundary (:require [	"package"	 :as p]))	namespace	JavaScript package imports	warning	warning
+ns-package	ns	(ns boundary (:require [	"package"	 :as p]))	accepted	JavaScript packages lower to host package registry lookups	warning	warning
 macro-shadow-exit	expr	(do (let* [when (fn* [x] x)] (when 1)) (	when	 true 1))	accepted	now supported native macro expansion	accepted	accepted
 special-nested-ns	expr	(fn* [] (	ns	 nested.core))	invalid-form	Namespace declarations must appear at the top-level.	analysis-error	analysis-error
 fn-variadic-missing-rest	expr	(fn* [	&	] 1)	invalid-form	requires one rest binding	emit-error	emit-error
