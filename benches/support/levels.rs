@@ -43,8 +43,9 @@ struct Steady {
 }
 
 /// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
-/// constant-literals and constant-keys fixtures, as workloads over `n`.
-const STEADY: [Steady; 5] = [
+/// constant-literals, constant-keys and multi-arity fixtures, as workloads over
+/// `n`.
+const STEADY: [Steady; 6] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -100,10 +101,25 @@ const STEADY: [Steady; 5] = [
         input: 200,
         expected: constant_keys,
     },
+    Steady {
+        name: "multi-arity",
+        source: "(defn clamp ([x] (clamp x 0 10)) ([x lo hi] (max lo (min hi x))))
+                 (defn area ([w] (area w w)) ([w h] (* w h)))
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (recur (inc i) (+ total (clamp i) (area (rem i 7)) (area 2 i)))
+                             total)))",
+        input: 50_000,
+        expected: multi_arity,
+    },
 ];
 
 fn constant_keys(n: u64) -> u64 {
     62 * n
+}
+
+fn multi_arity(n: u64) -> u64 {
+    (0..n).map(|i| i.min(10) + (i % 7) * (i % 7) + 2 * i).sum()
 }
 
 fn constant_literals(n: u64) -> u64 {

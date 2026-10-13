@@ -1,6 +1,7 @@
 //! Conservative, optional application preparation over Rust semantic IR.
 //! Compile-time unit emission never enters this boundary.
 use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, Program};
+use crate::call_shapes::{CallShapes, FunctionShape};
 use crate::core_operations::{Calls, Purity, Type};
 use crate::inference::{Definition, Inference, ProgramFacts, TypeRole};
 use crate::program_fragment::children;
@@ -31,8 +32,9 @@ pub enum OptimizationLevel {
     /// operations the program may replace read through a cell. Types inferred
     /// over the prepared program ([`crate::inference`]) let emission drop
     /// `truth()` and write core operators, typed `=`, `count`, `nth` and record
-    /// lookups directly. Later passes of that design hook in through
-    /// [`OptimizationLevel::advanced`].
+    /// lookups directly. Calls of the program's own functions name the method
+    /// they run ([`crate::call_shapes`]). Later passes of that design hook in
+    /// through [`OptimizationLevel::advanced`].
     Advanced,
 }
 impl OptimizationLevel {
@@ -122,6 +124,12 @@ pub struct ApplicationStats {
     /// `Advanced`: protocol method calls that read their implementation from
     /// the receiver instead of calling the dispatcher.
     pub devirtualized_calls: usize,
+    /// `Advanced`: calls of program functions that name the method they run
+    /// and call it directly (`crate::call_shapes`).
+    pub direct_calls: usize,
+    /// `Advanced`: functions with several methods or rest arguments whose
+    /// value never escapes, defined without an `arguments.length` dispatcher.
+    pub dispatchers_removed: usize,
 }
 /// An owned semantic program plus emission decisions computed entirely in Rust.
 /// Repeated emission does not rerun preparation or execute compiler callbacks.
@@ -139,6 +147,9 @@ pub struct PreparedApplication {
     direct_methods: HashMap<ExprId, String>,
     /// `Advanced`: whether the program names `getBasis` (`crate::rta`).
     type_basis: bool,
+    /// `Advanced`: direct calls and dispatcher-free definitions
+    /// (`crate::call_shapes`).
+    shapes: Option<CallShapes>,
     stats: ApplicationStats,
 }
 impl PreparedApplication {
@@ -153,6 +164,7 @@ impl PreparedApplication {
                 inference: self.inference.as_ref().filter(|_| advanced),
                 methods: advanced.then_some(&self.direct_methods),
                 basis: !advanced || self.type_basis,
+                shapes: self.shapes.as_ref().filter(|_| advanced),
             },
             module,
         )
@@ -193,6 +205,12 @@ impl PreparedApplication {
     pub fn inference(&self) -> Option<&Inference> {
         self.inference.as_ref()
     }
+    /// At `Advanced`, which calls name their method and which definitions
+    /// leave out their dispatcher ([`crate::call_shapes`]). `None` below
+    /// `Advanced`.
+    pub fn call_shapes(&self) -> Option<&CallShapes> {
+        self.shapes.as_ref()
+    }
     /// The program this application emits: the analyzed program after
     /// definition removal and call specialization.
     pub fn program(&self) -> &Program {
@@ -222,6 +240,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         inference: None,
         direct_methods: HashMap::new(),
         type_basis: true,
+        shapes: None,
         stats: ApplicationStats::default(),
     };
     let mut top = Vec::new();
@@ -318,6 +337,24 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         prepared.stats.uninstantiated_types = rewrite.uninstantiated_types;
         prepared.stats.dropped_methods = rewrite.dropped_methods;
         prepared.stats.devirtualized_calls = rewrite.devirtualized_calls;
+        // Call shapes (Phase 2 step 5) over the rewritten program: calls of
+        // known functions name their method, and functions whose value never
+        // escapes are defined without a dispatcher.
+        let shapes = crate::call_shapes::analyze(&prepared.program, &inference, &options.exports);
+        prepared.stats.direct_calls = shapes.direct_calls();
+        prepared.stats.dispatchers_removed = (0..prepared.program.globals.len())
+            .filter(|global| {
+                prepared.globals[*global]
+                    && matches!(
+                        shapes.function(GlobalId(*global)),
+                        FunctionShape::Entries {
+                            dispatcher: false,
+                            ..
+                        }
+                    )
+            })
+            .count();
+        prepared.shapes = Some(shapes);
         prepared.inference = Some(inference);
     }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
@@ -799,7 +836,7 @@ fn reachable(program: &Program, root: ExprId) -> Vec<ExprId> {
     }
     result
 }
-fn unwrap_do(program: &Program, mut id: ExprId) -> ExprId {
+pub(crate) fn unwrap_do(program: &Program, mut id: ExprId) -> ExprId {
     while let ExprKind::Do(items) = &program.exprs[id.0].kind {
         if items.len() != 1 {
             break;
@@ -808,7 +845,7 @@ fn unwrap_do(program: &Program, mut id: ExprId) -> ExprId {
     }
     id
 }
-fn dynamic(program: &Program, g: GlobalId) -> bool {
+pub(crate) fn dynamic(program: &Program, g: GlobalId) -> bool {
     let Some(id) = program.globals[g.0].metadata else {
         return false;
     };

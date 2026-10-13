@@ -132,7 +132,7 @@ repeatedly without rerunning the pass. `ApplicationOptions::optimize` is an
 | --- | --- | --- |
 | `None` | `--optimize none` | Emit every definition and call as analyzed. This output is the oracle that the other levels are tested against. |
 | `Prepare` | `--optimize prepare` (default) | Remove discarded definitions with inert initializers and specialize eager top-level calls, as described below. |
-| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, and drops the methods and types of the program that no instance can use (rapid type analysis, below). |
+| `Advanced` | `--optimize advanced` | Release mode from [advanced-optimization.md](advanced-optimization.md), with the semantic differences listed in its "Advanced-mode contract". It currently prepares like `Prepare`, except that it also removes definitions with pure initializers and does not treat retained `js*` as an escape (below), reads runtime bindings directly instead of through the runtime's `core` object, embeds only the runtime units the program reaches (runtime slicing, below), declares each distinct keyword, quoted symbol and constant collection literal once (the constant table, below), registers its namespaces only when the program reaches reflection, gives collections a printing `toString` only when the program can print, infers types to write truth tests and core calls as JavaScript, drops the methods and types of the program that no instance can use (rapid type analysis, below), and calls known functions through the method each call selects, without a dispatcher for functions whose value nothing else sees (call shapes, below). |
 
 `ApplicationOptions::new(level)` builds options without exports; it also takes
 the former boolean (`false` is `None`, `true` is `Prepare`).
@@ -270,7 +270,8 @@ initialization, with no value/Var escape or mutation: fixed entries of multi-ari
 functions and aliases to already-resolved core operations. Fixed entries retain
 `.call(null)` and source-order argument evaluation. Missing arities, mutable
 roots, deferred function-body calls and unknown protocol targets keep ordinary
-shared lowering. Single fixed-arity functions already have no dispatcher.
+shared lowering. Single fixed-arity functions already have no dispatcher. At
+`Advanced` the call shapes below choose the method at every call site.
 
 `Advanced` infers a type for every expression of the prepared program
 (`src/inference.rs`, `PreparedApplication::inference()`): from literals, the
@@ -316,6 +317,37 @@ The runtime's record methods are units of their own, kept only where an
 operation that dispatches them is, so a record that is only constructed and
 read keeps about 11 KB of runtime instead of 145 KB. Collections still keep
 the shared core (light-cljs-227). See "Phase 2 rapid type analysis extension
+points" and the "Advanced-mode contract" in
+[advanced-optimization.md](advanced-optimization.md).
+
+`Advanced` last decides the shape of calls (`src/call_shapes.rs`,
+`PreparedApplication::call_shapes()`). A function is *known* when a single
+`def` binds it and nothing else assigns its global: not a second `def`,
+`defonce`, `set!`, `binding`, `with-redefs`, a `js*` hole or `:dynamic`
+metadata (a `declare` assigns nothing). Calls of a known function name the
+method their argument count selects, at every call site:
+
+- A function with one fixed method is called plainly, `g3(a, b)`, and so is a
+  local bound to one, or a `fn` literal.
+- Any other known function binds each method to a top-level entry at its
+  `def`, `g3_0`, `g3_1`, ..., and calls name the entry, `g3_1(a)`. A variadic
+  method receives the rest sequence its dispatcher would build,
+  `g3_2(a, rt$fnRest([b, c], 0))`.
+- The `arguments.length` dispatcher and the `cljs$core$IFn$_invoke$arity$N`
+  properties exist only when the function's value escapes: when the program
+  reads the global other than to call it (`apply`, `var`, a higher-order
+  argument), uses the value of its `def`, exports it, or calls it with an
+  argument count that selects no method. They then call the same entries,
+  which needs a `def` that runs once, at top level; otherwise the function
+  keeps its usual shape.
+- A method whose body holds `js*` keeps `.call(null, ...)`, since a plain call
+  passes `undefined` as `this`. Unknown callees keep `.call(null, ...)`.
+- A `do` in value position is a comma expression instead of a function, so a
+  `def` initializer is no longer wrapped, unless one of its forms reads
+  `arguments` or holds `js*`.
+
+A call that runs before the definition still throws a `TypeError`, whose
+message now names the output binding. See "Phase 2 call shape extension
 points" and the "Advanced-mode contract" in
 [advanced-optimization.md](advanced-optimization.md).
 

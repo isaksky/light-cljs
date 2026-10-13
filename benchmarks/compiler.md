@@ -1494,3 +1494,109 @@ lower load of the second run explains. Parse plus first execution, median ms:
 Startup improves by 2-9% at every level, `none` included, so the difference
 is mostly the load; seeding the constants' hashes adds no cost that this run
 can resolve.
+
+## Direct call shapes — October 13, 2026
+
+light-cljs-212 implements Phase 2 step 5 of the
+[design](../docs/advanced-optimization.md), except the hoisting of local
+functions. At `--optimize advanced`, `src/call_shapes.rs` finds the functions
+that one `def` binds and nothing else assigns. Their calls name the method
+the argument count selects:
+
+- `g3(a, b)` for a function with one method;
+- `g3_1(a)` for a method entry;
+- `g3_2(a, rt$fnRest([b, c], 0))` for a variadic method.
+
+A function whose value nothing else sees is defined as its entries alone,
+without the `arguments.length` dispatcher and arity properties. A `do` in
+value position, such as every `defn` initializer, is a comma expression
+instead of a function call.
+
+The new ratchet fixture `multi-arity` has three functions with two methods
+each, which only call each other:
+
+```clojure
+(defn clamp ([x] (clamp x 0 10)) ([x lo hi] (max lo (min hi x))))
+(defn area ([w] (area w w)) ([w h] (* w h)))
+(defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
+(+ (clamp 15) (area 3) (area 2 5) (fib 10))
+```
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL --text`.
+"Before" is master `fcfd2ae` (after light-cljs-211). `none` and `prepare` do
+not change, and neither do fixtures without a `defn`.
+
+| Fixture | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | --- |
+| multi-arity | 3,579 / 1,025 | 2,040 / 839 | 366,000 / 366,000 / 2,100 |
+| raw-js | 856 / 319 | 271 / 133 | 364,000 / 364,000 / 300 |
+| keyword-case | 120,229 / 27,493 | 120,124 / 27,480 | 364,000 / 364,000 / 120,000 |
+| keyword-lookups | 131,092 / 30,092 | 130,975 / 30,080 | 364,000 / 364,000 / 131,000 |
+| constant-literals | 132,742 / 30,518 | 132,691 / 30,508 | 364,000 / 364,000 / 133,000 |
+
+`multi-arity` at `none` is 365,423 / 86,722 bytes. In `raw-js` the function
+`add`, with two methods, loses its dispatcher and both function wrappers.
+`keyword-case`, `keyword-lookups` and `constant-literals` lose their `defn`
+wrappers, 50 to 120 bytes. On top of light-cljs-219, which landed meanwhile
+and shrinks the runtime, `keyword-case` is 119,902 bytes and
+`keyword-lookups` 130,909, so their ceilings drop to 120,000 and 131,000.
+
+**Call costs.** `cargo bench --bench compiler -- --callees` times one million
+calls per sample of each call shape on each kind of function value
+([support/callees.js](../benches/support/callees.js)): a function with one
+method (`single`), a dispatcher over fixed methods (`multi`) and one with a
+variadic method (`variadic`), each called with one argument. 15 timed rounds
+after 3 untimed ones, median ns per call, one after the other with the levels
+runs below ([callees.md](results/call-shapes-2026-10-13/callees.md)):
+
+| Shape | single, Node | multi, Node | variadic, Node | single, QuickJS | multi, QuickJS | variadic, QuickJS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `f.call(null, a)` | 4.3 | 7.8 | 7.8 | 40.1 | 151.5 | 145.0 |
+| upstream's arity check | 4.3 | 5.0 | 4.5 | 47.9 | 37.3 | 37.1 |
+| the method, `m(a)` | 0.5 | 4.3 | 4.2 | 28.8 | 28.5 | 28.7 |
+
+The last row is what a known target now gets: a call of a function with
+several methods is five times faster in QuickJS and almost twice as fast in
+Node, and one with a single method 28% faster in QuickJS. Node inlines the
+plain single-method call entirely here.
+
+The middle row is upstream's `:fn-invoke-direct` shape for unknown callees,
+`f.cljs$core$IFn$_invoke$arity$1 ? f.cljs$core$IFn$_invoke$arity$1(a) :
+f.call(null, a)`. It skips the dispatcher of a function with several methods,
+four times faster in QuickJS. But it costs a failed property read on every
+other callee, 19% slower in QuickJS for a single method, which is the shape
+of every `fn` literal. It also adds about 60 bytes per call site until Phase
+3 mangles the property name, needs a callee it can read twice, and passes the
+function as `this`, which `this-as` inside a method would see. Unknown
+callees therefore keep `.call(null, ...)`; see "Phase 2 call shape extension
+points" in the design.
+
+**Startup and steady state.** `--levels --samples 9 --warmups 1` on master
+`fcfd2ae` (exported tree, with this change's `multi-arity` fixture and
+workload added) and on this change, one directly after the other. Other
+builds ran at the same time: the median one-minute load average was 4.65 in
+both runs, with peaks of 9.4 and 8.9. Every table is in
+[before](results/call-shapes-2026-10-13/before/summary.md) and
+[after](results/call-shapes-2026-10-13/after/summary.md), next to their
+`samples.csv`. Parse plus first execution at `advanced`, median ms,
+Node / QuickJS:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| multi-arity | 0.260 / 0.212 | 0.200 / 0.120 |
+| raw-js | 0.134 / 0.052 | 0.113 / 0.020 |
+
+The `multi-arity` workload calls `clamp` with one argument and `area` with one
+and with two in a loop (n = 50,000), median µs per call:
+
+| Level | Node before | Node after | QuickJS before | QuickJS after |
+| --- | ---: | ---: | ---: | ---: |
+| none | 6,675 | 6,616 | 147,673 | 145,010 |
+| advanced | 3,125 | 146 | 82,619 | 45,512 |
+
+At `advanced` before this change, type inference already wrote the
+arithmetic as operators. Calling the methods directly makes the loop 1.8 times
+faster in QuickJS, and in Node 21 times faster: V8 now inlines the whole
+loop body, where every call used to go through `.call`, the dispatcher's
+`switch` and `.apply(this, arguments)`. The other fixtures and workloads do
+not change beyond the noise.

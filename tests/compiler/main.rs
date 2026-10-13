@@ -37,6 +37,7 @@ mod array_settings;
 mod atom_object_equiv;
 mod bootstrap;
 mod boundary_completion;
+mod call_shapes;
 mod case_char_string_accepted;
 mod case_char_string_gap;
 mod case_numeric;

@@ -125,8 +125,9 @@ registers namespaces with the runtime only for programs that use reflection
 such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
 a printing `toString` on collections) only for programs that print,
 builds each distinct constant literal once, with its hash computed by the
-compiler, and drops the methods and types of the program that no instance
-can use (see
+compiler, drops the methods and types of the program that no instance can
+use, and calls the program's own functions directly, without an arity
+dispatcher when nothing else sees them (see
 [Application preparation](docs/compiler.md#application-preparation)). Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
@@ -208,8 +209,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   symbol and constant collection literal once, leaves out the compiler's
   namespace registry unless the program uses reflection and the printer unless
   it prints, infers types to write truth tests, arithmetic, comparisons
-  and typed core calls as plain JavaScript, and drops the protocol methods and
-  types no instance can use. `(js/console.log (+ 1 2))` drops from about
+  and typed core calls as plain JavaScript, drops the protocol methods and
+  types no instance can use, and calls known functions directly through the
+  method a call selects. `(js/console.log (+ 1 2))` drops from about
   360 KB to about 200 bytes and a small record and protocol program to about
   12 KB, but a program that builds a collection still pulls in the collection
   machinery (120-135 KB).

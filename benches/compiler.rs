@@ -1,6 +1,7 @@
 //! Resident phases; raw output is consumed by benchmarks/run_compiler.py.
 //! `--levels` instead measures startup and steady state of the size-ratchet
-//! fixtures at every optimization level in Node and QuickJS (support/levels.rs).
+//! fixtures at every optimization level in Node and QuickJS (support/levels.rs),
+//! and `--callees` the cost per call of each call shape (support/callees.rs).
 use light_cljs::{
     ApplicationOptions, MacroHost, NamespaceInput, OptimizationLevel, Program, SyntaxTree, analyze,
     analyze_namespaces, analyze_with_macros, compile, compile_namespace,
@@ -23,6 +24,8 @@ mod allocations;
 #[cfg(feature = "count-allocations")]
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
+#[path = "support/callees.rs"]
+mod callees;
 #[path = "support/levels.rs"]
 mod levels;
 // The ceilings belong to the size ratchet; this benchmark measures the same programs.
@@ -287,6 +290,28 @@ fn level_benchmarks(
     levels::run(&config, &fixtures)
 }
 
+/// `--callees`: see support/callees.rs and benchmarks/compiler.md.
+fn callee_benchmarks(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
+    let mut config = callees::Config {
+        rounds: 15,
+        warmups: 3,
+        calls: 1_000_000,
+    };
+    while let Some(arg) = args.next() {
+        let mut value = |name| args.next().ok_or(format!("missing {name}"));
+        match arg.as_str() {
+            "--samples" => config.rounds = value("samples")?.parse()?,
+            "--warmups" => config.warmups = value("warm-up rounds")?.parse()?,
+            "--calls" => config.calls = value("calls")?.parse()?,
+            _ => return Err(format!("unknown --callees argument: {arg}").into()),
+        }
+    }
+    if cfg!(debug_assertions) || config.rounds < 9 || config.calls == 0 {
+        return Err("--callees requires a release build, >=9 samples and positive calls".into());
+    }
+    callees::run(&config)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let (mut samples, mut iterations) = (9, 32);
     let (mut counted, mut primitives, mut application_only) = (false, false, false);
@@ -296,6 +321,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.iter().any(|arg| arg == "--levels") {
         let command = args.join(" ");
         return level_benchmarks(args.into_iter().filter(|arg| arg != "--levels"), command);
+    }
+    if args.iter().any(|arg| arg == "--callees") {
+        return callee_benchmarks(args.into_iter().filter(|arg| arg != "--callees"));
     }
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -309,7 +337,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--help" | "-h" => {
                 println!(
                     "compiler [--samples N>=9] [--iterations N] [--allocations] [--primitive-only] [--application-only] [--dump DIR]\n\
-                     compiler --levels --output DIR [--samples N>=9] [--warmups N] [--upstream CLOJURESCRIPT_CHECKOUT]"
+                     compiler --levels --output DIR [--samples N>=9] [--warmups N] [--upstream CLOJURESCRIPT_CHECKOUT]\n\
+                     compiler --callees [--samples N>=9] [--warmups N] [--calls N]"
                 );
                 return Ok(());
             }

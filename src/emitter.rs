@@ -10,6 +10,7 @@ use crate::analyzer::{
     ExprContext, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, NamedLiteralId,
     PACKAGE_REGISTRY, Program, RecurTargetId, StringId,
 };
+use crate::call_shapes::{CallShapes, DirectCall, FunctionShape};
 use crate::core_operations::Type;
 use crate::inference::{Inference, Known};
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
@@ -66,6 +67,9 @@ pub(crate) struct Application<'a> {
     /// Whether types get their static `getBasis` method, which at `Advanced`
     /// only a program that names it can call (`crate::rta`).
     pub basis: bool,
+    /// At `Advanced`: calls that name the method they run, and definitions
+    /// that bind each method to an entry of its own (`crate::call_shapes`).
+    pub shapes: Option<&'a CallShapes>,
 }
 
 /// Emit one ES module for a bundler instead of a bare expression. Each package
@@ -126,6 +130,9 @@ fn emit_js_mode(
     let inference = application
         .and_then(|application| application.inference)
         .filter(|_| direct.is_some());
+    let shapes = application
+        .and_then(|application| application.shapes)
+        .filter(|_| direct.is_some());
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool| {
         let mut emitter = Emitter {
@@ -170,6 +177,7 @@ fn emit_js_mode(
             runtime: RuntimeRoots::default(),
             site: None,
             inference,
+            shapes,
             truth_used: false,
         };
         emitter.output.push_str(PRELUDE_OPEN);
@@ -180,6 +188,24 @@ fn emit_js_mode(
                 break;
             }
             if application.is_some_and(|application| !application.globals[global]) {
+                continue;
+            }
+            // A function defined with method entries binds those, and the
+            // global only for its dispatcher.
+            if let Some(FunctionShape::Entries {
+                function,
+                dispatcher,
+            }) = shapes.map(|shapes| shapes.function(GlobalId(global)))
+            {
+                if dispatcher {
+                    writeln!(emitter.output, "  let g{global};").unwrap();
+                }
+                let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
+                    unreachable!("method entries of a fn")
+                };
+                for index in 0..methods.len() {
+                    writeln!(emitter.output, "  let g{global}_{index};").unwrap();
+                }
                 continue;
             }
             writeln!(emitter.output, "  let g{global};").unwrap();
@@ -937,6 +963,8 @@ struct Emitter<'a> {
     site: Option<ExprId>,
     /// At `Advanced`: the program's inferred types (`crate::inference`).
     inference: Option<&'a Inference>,
+    /// At `Advanced`: direct calls and method entries (`crate::call_shapes`).
+    shapes: Option<&'a CallShapes>,
     /// Whether the output calls the prelude's `truth`.
     truth_used: bool,
 }
@@ -1942,10 +1970,20 @@ impl<'a> Emitter<'a> {
             writeln!(self.output, "(null, {}));", js_string(namespace)).unwrap();
         }
         // A discarded `nil`, such as a definition application preparation
-        // removed, is no statement at `Advanced`.
+        // removed, is no statement at `Advanced`, and neither is a discarded
+        // definition without a value (`declare`), which assigns nothing.
         if context == ExprContext::Discard
             && self.replaced_core.is_some()
-            && matches!(self.program.exprs[id.0].kind, ExprKind::Nil)
+            && matches!(
+                self.program.exprs[id.0].kind,
+                ExprKind::Nil
+                    | ExprKind::Def {
+                        init: None,
+                        test: None,
+                        once: false,
+                        ..
+                    }
+            )
         {
             return;
         }
@@ -2562,15 +2600,32 @@ impl<'a> Emitter<'a> {
         }
         self.output.push_str("(() => {\n");
         self.indent += 1;
-        for (index, method) in methods.iter().enumerate() {
+        let entries: Vec<String> = (0..methods.len())
+            .map(|index| format!("m{index}"))
+            .collect();
+        for (entry, method) in entries.iter().zip(methods) {
             self.indentation();
-            write!(self.output, "const m{index} = ").unwrap();
+            write!(self.output, "const {entry} = ").unwrap();
             self.method_with_ifn_captures(None, method, ifn_call);
             self.output.push_str(";\n");
         }
         let function = name.map_or_else(|| "f".into(), |name| format!("l{}", name.0));
         self.indentation();
-        write!(self.output, "const {function} = function(").unwrap();
+        write!(self.output, "const {function} = ").unwrap();
+        self.dispatcher(&entries, methods, macro_function);
+        self.output.push_str(";\n");
+        self.arity_properties(&function, &entries, methods, macro_function, true);
+        self.indentation();
+        writeln!(self.output, "return {function};").unwrap();
+        self.indent -= 1;
+        self.indentation();
+        self.output.push_str("})()");
+    }
+
+    /// The `arguments.length` dispatcher over methods bound to `entries`:
+    /// `function(a0, a1) { switch (arguments.length) { ... } }`.
+    fn dispatcher(&mut self, entries: &[String], methods: &[FnMethod], macro_function: bool) {
+        self.output.push_str("function(");
         let count = if macro_function {
             1
         } else {
@@ -2591,19 +2646,23 @@ impl<'a> Emitter<'a> {
         self.indentation();
         self.output.push_str("switch (arguments.length) {\n");
         self.indent += 1;
-        for (index, method) in methods.iter().enumerate().filter(|(_, m)| m.rest.is_none()) {
+        for (entry, method) in entries
+            .iter()
+            .zip(methods)
+            .filter(|(_, m)| m.rest.is_none())
+        {
             self.indentation();
             writeln!(
                 self.output,
-                "case {}: return m{index}.apply(this, arguments);",
+                "case {}: return {entry}.apply(this, arguments);",
                 method.params.len()
             )
             .unwrap();
         }
         self.indentation();
-        if let Some((index, method)) = methods.iter().enumerate().find(|(_, m)| m.rest.is_some()) {
+        if let Some((entry, method)) = entries.iter().zip(methods).find(|(_, m)| m.rest.is_some()) {
             // Like CLJS, the variadic default also receives underfilled calls.
-            write!(self.output, "default: return m{index}.call(this, ").unwrap();
+            write!(self.output, "default: return {entry}.call(this, ").unwrap();
             for i in 0..method.params.len() {
                 write!(self.output, "arguments[{i}], ").unwrap();
             }
@@ -2621,40 +2680,61 @@ impl<'a> Emitter<'a> {
         self.output.push_str("}\n");
         self.indent -= 1;
         self.indentation();
-        self.output.push_str("};\n");
-        for (index, method) in methods.iter().enumerate() {
-            self.indentation();
+        self.output.push('}');
+    }
+
+    /// The arity properties of the dispatcher `function` over methods bound to
+    /// `entries`: one statement each, or with `statements` false, each after
+    /// `, ` as the items of a comma expression.
+    fn arity_properties(
+        &mut self,
+        function: &str,
+        entries: &[String],
+        methods: &[FnMethod],
+        macro_function: bool,
+        statements: bool,
+    ) {
+        let end = if statements { ";\n" } else { "" };
+        let start = |emitter: &mut Self| {
+            if statements {
+                emitter.indentation();
+            } else {
+                emitter.output.push_str(", ");
+            }
+        };
+        for (entry, method) in entries.iter().zip(methods) {
+            start(self);
             if method.rest.is_some() {
-                writeln!(
+                write!(
                     self.output,
-                    "{function}.cljs$core$IFn$_invoke$arity$variadic = m{index};"
+                    "{function}.cljs$core$IFn$_invoke$arity$variadic = {entry}{end}"
                 )
                 .unwrap();
-                self.indentation();
-                writeln!(
+                start(self);
+                write!(
                     self.output,
-                    "{function}.cljs$lang$maxFixedArity = {};",
+                    "{function}.cljs$lang$maxFixedArity = {}{end}",
                     method.params.len()
                 )
                 .unwrap();
-                self.indentation();
+                start(self);
                 write!(self.output, "{function}.cljs$lang$applyTo = (args) => ").unwrap();
                 self.rt(RuntimeName::export("fnApplyTo"));
-                writeln!(self.output, "(m{index}, {}, args);", method.params.len()).unwrap();
+                write!(self.output, "({entry}, {}, args){end}", method.params.len()).unwrap();
             } else {
-                writeln!(
+                write!(
                     self.output,
-                    "{function}.cljs$core$IFn$_invoke$arity${} = m{index};",
+                    "{function}.cljs$core$IFn$_invoke$arity${} = {entry}{end}",
                     method.params.len()
                 )
                 .unwrap();
             }
         }
         if macro_function && methods.iter().all(|method| method.rest.is_none()) {
-            self.indentation();
-            writeln!(
+            start(self);
+            write!(
                 self.output,
-                "{function}.cljs$lang$maxFixedArity = {};",
+                "{function}.cljs$lang$maxFixedArity = {}{end}",
                 methods
                     .iter()
                     .map(|method| method.params.len())
@@ -2663,11 +2743,173 @@ impl<'a> Emitter<'a> {
             )
             .unwrap();
         }
-        self.indentation();
-        writeln!(self.output, "return {function};").unwrap();
-        self.indent -= 1;
-        self.indentation();
-        self.output.push_str("})()");
+    }
+
+    /// The definition of `global`, whose initializer `init` is the `fn`
+    /// expression `function` in one-form `do`s, with each method bound to an
+    /// entry of its own (`FunctionShape::Entries`, `crate::call_shapes`):
+    /// `(g3_0 = function() {...}, g3_1 = function(l2) {...})`. With its
+    /// `dispatcher` the global is the dispatcher over the same entries, with
+    /// its arity properties, and the value of the definition.
+    fn method_entries(
+        &mut self,
+        global: GlobalId,
+        init: ExprId,
+        function: ExprId,
+        dispatcher: bool,
+    ) {
+        let program = self.program;
+        let mut wrapper = init;
+        while wrapper != function {
+            self.used.insert(wrapper);
+            let ExprKind::Do(items) = &program.exprs[wrapper.0].kind else {
+                unreachable!("a fn in one-form do forms")
+            };
+            wrapper = items[0];
+        }
+        self.used.insert(function);
+        let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
+            unreachable!("method entries of a fn")
+        };
+        let site = self.site.replace(function);
+        let entries: Vec<String> = (0..methods.len())
+            .map(|index| format!("g{}_{index}", global.0))
+            .collect();
+        self.output.push('(');
+        for (index, (entry, method)) in entries.iter().zip(methods).enumerate() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            write!(self.output, "{entry} = ").unwrap();
+            self.method_with_ifn_captures(None, method, false);
+        }
+        if dispatcher {
+            let name = format!("g{}", global.0);
+            write!(self.output, ", {name} = ").unwrap();
+            self.dispatcher(&entries, methods, false);
+            self.arity_properties(&name, &entries, methods, false, false);
+            write!(self.output, ", {name}").unwrap();
+        }
+        self.output.push(')');
+        self.site = site;
+    }
+
+    /// A call whose method is chosen at compile time (`crate::call_shapes`):
+    /// its entry, `g3_1(a)`, or the callee itself when it is the method,
+    /// `g3(a, b)`. A variadic method receives the rest sequence its dispatcher
+    /// would build, `g3_2(a, rt$fnRest([b, c], 0))`, or `null`. A method that
+    /// may read `this` keeps `.call(null, ...)`.
+    fn direct_call(&mut self, callee: ExprId, args: &[ExprId], direct: DirectCall) {
+        match direct.entry {
+            Some((global, method)) => {
+                self.used.insert(callee);
+                write!(self.output, "g{}_{method}", global.0).unwrap();
+            }
+            // A member read, `captures3.l5`, would pass its object as `this`.
+            None => match self.program.exprs[callee.0].kind {
+                ExprKind::Local(local) if !self.plain_local(local) => {
+                    self.output.push_str("(0, ");
+                    self.value(callee);
+                    self.output.push(')');
+                }
+                _ => self.value(callee),
+            },
+        }
+        let mut first = !direct.receiver;
+        self.output
+            .push_str(if direct.receiver { ".call(null" } else { "(" });
+        let fixed = direct.rest.unwrap_or(args.len());
+        for &arg in &args[..fixed] {
+            if !std::mem::take(&mut first) {
+                self.output.push_str(", ");
+            }
+            self.value(arg);
+        }
+        if direct.rest.is_some() {
+            if !first {
+                self.output.push_str(", ");
+            }
+            if args.len() > fixed {
+                self.rt(RuntimeName::export("fnRest"));
+                self.output.push_str("([");
+                self.arguments(&args[fixed..]);
+                self.output.push_str("], 0)");
+            } else {
+                self.output.push_str("null");
+            }
+        }
+        self.output.push(')');
+    }
+
+    /// Whether [`Emitter::local_value`] writes `id` as an identifier or a
+    /// call, rather than a member read.
+    fn plain_local(&self, id: LocalId) -> bool {
+        !self.captures.iter().any(|(local, _)| *local == id)
+            && (self.reify_captures.iter().any(|(local, _)| *local == id)
+                || !self.program.field_bindings.contains_key(&id))
+    }
+
+    /// Whether the `do` form `id` may be a comma expression in value
+    /// position: none of its forms reads the function scope (`arguments`, or
+    /// `this` from raw JavaScript), which a function around them would
+    /// replace, or holds a definition with `:test` metadata, which skips its
+    /// test when it is the value a function returns, or enters a namespace.
+    fn sequence_keeps_scope(&self, id: ExprId) -> bool {
+        let program = self.program;
+        let ExprKind::Do(items) = &program.exprs[id.0].kind else {
+            return false;
+        };
+        if items
+            .iter()
+            .any(|item| program.namespace_entries.contains_key(item))
+        {
+            return false;
+        }
+        let mut pending = vec![id];
+        while let Some(id) = pending.pop() {
+            match program.exprs[id.0].kind {
+                ExprKind::JsArguments
+                | ExprKind::CopyArguments(_)
+                | ExprKind::JsTemplate { .. }
+                | ExprKind::Def { test: Some(_), .. } => return false,
+                ExprKind::Fn { .. } => (),
+                _ => pending.extend(crate::program_fragment::children(program, id)),
+            }
+        }
+        true
+    }
+
+    /// A `do` in value position as a comma expression, `(a(), b)`, without
+    /// the forms before the last whose evaluation has no effect, or as its
+    /// last form alone.
+    fn sequence(&mut self, items: &[ExprId]) {
+        let Some((&last, before)) = items.split_last() else {
+            self.output.push_str("null");
+            return;
+        };
+        let mut effects = Vec::new();
+        for &item in before {
+            self.used.insert(item);
+            let kind = &self.program.exprs[item.0].kind;
+            if !(matches!(
+                kind,
+                ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Number(_) | ExprKind::String(_)
+            ) || self.constant_nodes(item).is_some())
+            {
+                effects.push(item);
+            }
+        }
+        if effects.is_empty() {
+            self.value(last);
+            return;
+        }
+        self.output.push('(');
+        for item in effects {
+            self.value(item);
+            self.output.push_str(", ");
+        }
+        self.value(last);
+        self.output.push(')');
     }
 
     fn object_methods(&mut self, methods: &[(MethodDispatch, FnMethod)]) {
@@ -3366,6 +3608,15 @@ impl<'a> Emitter<'a> {
                     write!(self.output, ", {once})").unwrap();
                     return;
                 }
+                if let Some(init) = init
+                    && let Some(FunctionShape::Entries {
+                        function,
+                        dispatcher,
+                    }) = self.shapes.map(|shapes| shapes.function(*global))
+                {
+                    self.method_entries(*global, *init, function, dispatcher);
+                    return;
+                }
                 self.output.push('(');
                 if *once {
                     self.output.push_str("typeof ");
@@ -3470,6 +3721,11 @@ impl<'a> Emitter<'a> {
                     self.value(*body);
                 }
             }
+            // At `Advanced` a `do` in value position is a comma expression,
+            // where that keeps the function scope its forms see.
+            ExprKind::Do(items) if self.shapes.is_some() && self.sequence_keeps_scope(id) => {
+                self.sequence(items);
+            }
             ExprKind::WithOutStr(_)
             | ExprKind::Binding { .. }
             | ExprKind::Do(_)
@@ -3524,6 +3780,10 @@ impl<'a> Emitter<'a> {
                     self.output.push('(');
                     self.arguments(args);
                     self.output.push(')');
+                    return;
+                }
+                if let Some(direct) = self.shapes.and_then(|shapes| shapes.call(id)) {
+                    self.direct_call(*callee, args, direct);
                     return;
                 }
                 self.output.push('(');

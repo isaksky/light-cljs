@@ -77,7 +77,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [364_000, 364_000, 121_000],
+        ceilings: [364_000, 364_000, 120_000],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -113,7 +113,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [364_000, 364_000, 132_000],
+        ceilings: [364_000, 364_000, 131_000],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -168,8 +168,21 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [364_000, 364_000, 900],
+        ceilings: [364_000, 364_000, 300],
         removed: [0, 0, 1],
         printed: "3\n",
+    },
+    // Functions with several methods that are only called: at `Advanced` each
+    // call names the method it runs and no dispatcher is defined
+    // (light-cljs-212).
+    Fixture {
+        name: "multi-arity",
+        source: "(defn clamp ([x] (clamp x 0 10)) ([x lo hi] (max lo (min hi x))))
+                 (defn area ([w] (area w w)) ([w h] (* w h)))
+                 (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
+                 (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
+        ceilings: [366_000, 366_000, 2_100],
+        removed: [0, 0, 0],
+        printed: "84\n",
     },
 ];

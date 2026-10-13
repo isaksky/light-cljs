@@ -11,6 +11,7 @@ use std::{iter::FusedIterator, ops::Range};
 
 pub mod analyzer;
 pub mod application;
+pub mod call_shapes;
 mod char_classes;
 mod compilation_session;
 pub mod compiler;

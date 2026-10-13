@@ -4,10 +4,11 @@ Status: design, October 2026. Phase 0's optimization levels, size ratchet,
 differential test, runtime retention report and startup benchmark are
 implemented (see "Phase 0 extension points"), and so are Phase 1's unit
 manifest and advanced-mode runtime slicing (see "Phase 1 manifest extension points" and "Phase 1 slicing
-extension points") and Phase 2's core operation table, type inference and
-rapid type analysis of program types (see "Phase 2 core operation table
-extension points", "Phase 2 type inference extension points" and "Phase 2
-rapid type analysis extension points"); the rest is not. The work items are
+extension points") and Phase 2's core operation table, type inference,
+rapid type analysis of program types and call shapes (see "Phase 2 core
+operation table extension points", "Phase 2 type inference extension
+points", "Phase 2 rapid type analysis extension points" and "Phase 2 call
+shape extension points"); the rest is not. The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
 
@@ -179,7 +180,11 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   declares keyword and symbol literals once in a constant table. Since step 3
   of Phase 2, `Advanced` uses `truth()` only for tests that may be numbers,
   strings or host values, and writes arithmetic, comparisons and typed `=`,
-  `count`, `nth` and record lookups without calling the runtime.)
+  `count`, `nth` and record lookups without calling the runtime. Since step 5
+  of Phase 2, `Advanced` calls known functions through the method each call
+  selects, defines a dispatcher only for functions whose value escapes, and
+  writes a `do` in value position, such as a `def` initializer, as a comma
+  expression.)
 - `src/js_runtime.js` is one closure: 659 top-level declarations, about 97
   top-level effect statements, a 693-key `core` hub object that is
   `Object.seal`ed and mutable through `set!`, eager prototype patching and
@@ -884,6 +889,8 @@ keyed by names.
    `arguments.length` dispatcher when the fn value never escapes; variadic
    calls to known callees build the rest seq directly; no IIFE around `def`
    initializers; local multi-arity fns hoisted when captures permit.
+   Implemented except the hoisting; see "Phase 2 call shape extension
+   points" below.
 6. **Pure initializer removal.** Extend `inert` to initializers that only
    call pure core operations on inert arguments, so `(def table (into {}
    ...))` disappears when unused.
@@ -1199,6 +1206,112 @@ reads. The runtime's builtin types are left for light-cljs-227.
     whose operations the slice does not keep. This needs the slice before
     emission, a second emission like the reflection one.
   - The positional factory of a type that is only built with `new`.
+
+#### Phase 2 call shape extension points
+
+Step 5 is implemented (light-cljs-212) in `src/call_shapes.rs`, at `Advanced`
+only, except the hoisting of local functions. `prepare_application` runs it
+last, over the program that rapid type analysis rewrote, and emission reads
+it. `None` and `Prepare` output does not change; `specialize` still runs
+there and at `Advanced`, whose emission prefers the shapes below.
+
+- **Known functions.** `call_shapes::analyze` walks the program from its root
+  with each expression's parent. A global's function is known when one `def`
+  binds it to a `fn` (in one-form `do`s) and nothing else assigns the global:
+  no second `def`, `defonce`, `set!`, `binding`, `with-redefs`, `js*` hole,
+  `:dynamic` or `:test` metadata, or host path name. A `def` without a value
+  (`declare`) assigns nothing and does not count. Macro functions and named
+  functions with several methods, whose bodies may read the dispatcher through
+  the name, stay generic.
+- **Escape.** A known function escapes when the program reads its global other
+  than as a call's callee, uses the value of its `def` (the `def` is not a
+  discarded form), exports it, or calls it with an argument count that selects
+  no method at compile time: no method of that count and fewer arguments than
+  the variadic method's fixed parameters, which the dispatcher fills with
+  `undefined` or rejects. An expression with two parents counts as read.
+- **Shapes** (`FunctionShape`):
+  - `Single`: one fixed method, which is the function. Calls are plain,
+    `g3(a, b)`, whether or not the value escapes.
+  - `Entries`: each method is bound at the `def` to a top-level entry
+    `g<global>_<method index>`, `(g3_0 = function () {...}, g3_1 = ...)`, and
+    calls name the entry their count selects. The global is bound only when
+    the function escapes: to the `arguments.length` dispatcher over the same
+    entries, with its arity properties, as the last items of the same comma
+    expression. A dispatcher reads the entries from their bindings, so a
+    function that escapes keeps `Entries` only when its `def` is a direct
+    top-level form, which runs once; one that does not escape may be defined
+    anywhere, since its entries are rebound together and every call reads
+    them.
+  - `Generic`: as below `Advanced`.
+
+  The entry names need no new hygiene rule: `hygienic_js` renames `g` followed
+  by digits and underscores, and the top-level probe of
+  `optimization::raw_js_names_resolve_only_to_holes_and_host_globals` sees
+  them.
+- **Calls** (`DirectCall`). A variadic method receives what its dispatcher
+  would pass: the fixed arguments, then `rt$fnRest([rest...], 0)` or `null`.
+  A method whose body holds `js*` outside nested functions keeps
+  `.call(null, ...)` on its entry, because a plain call passes `undefined` as
+  `this`, which strict raw text can tell from `null`; `this-as` maps both to
+  the global object. A local bound to a `fn` with one fixed method, or such a
+  `fn` literal, is called plainly too when `Inference::callee` knows it; a
+  captured local that the emitter writes as a member read is called as
+  `(0, captures3.l5)(a)`. The call reads its target when it runs, as before,
+  so a call before the definition still throws a `TypeError` (see
+  "Advanced-mode contract").
+- **`do` in value position** is a comma expression of its forms that have an
+  effect, `(g3 = (log("init"), 5))`, or its last form alone, so a `def`
+  initializer is no longer a function call. It stays a function when one of
+  its forms, outside nested functions, reads `arguments`, holds `js*` (which
+  may read `this`), or is a `def` with `:test` metadata, whose test write the
+  return position skips. A discarded `def` without a value is no statement.
+- **Unknown callees** keep `.call(null, ...)`. `cargo bench --bench compiler --
+  --callees` times the candidates per call in Node and QuickJS (see
+  `benches/support/callees.js` and "Direct call shapes" in
+  `benchmarks/compiler.md`). Upstream's `:fn-invoke-direct` shape,
+  `f.cljs$core$IFn$_invoke$arity$1 ? f.cljs$core$IFn$_invoke$arity$1(a) :
+  f.call(null, a)`, is four times faster in QuickJS for a callee with a
+  dispatcher but 19% slower for one with a single method, the common case of
+  `fn` literals. It adds about 60 bytes per call site until Phase 3 mangles
+  the property, needs a callee it can read twice, and passes the function as
+  the method's `this`, which `this-as` sees: the methods of
+  `ifnInvokeEntry` objects need that receiver, so `.call(null, ...)` on the
+  property is not an option either.
+- **For parameter types.** `CallShapes::closed(global)` says when a known
+  function does not escape, so its direct calls are all its calls, and
+  `CallShapes::calls_of(function)` lists them with the method each runs. A
+  later inference pass can join a parameter's type over those arguments.
+- **Statistics.** `ApplicationStats::direct_calls` counts the direct calls and
+  `dispatchers_removed` the retained functions defined as entries without a
+  dispatcher.
+- **Tests.** The `call_shapes` suite in `tests/compiler/` runs every program at
+  every level, in sloppy and strict code, and checks the `Advanced` text. It
+  covers:
+  - every method kind, with self and mutual recursion across `declare`;
+  - `recur`, `arguments` and the parameters `recur` writes through it;
+  - `this` in raw text and `this-as`;
+  - `apply`, higher-order arguments, `var`, used `def` values, exports,
+    invalid and underfilled arities;
+  - redefinition, `set!`, `binding`, `with-redefs`, `defonce`, `js*` holes,
+    and definitions inside functions;
+  - calls before the definition, rest sequences and argument order;
+  - `do` in value position, local functions and calls across namespaces.
+
+  The ratchet fixture `multi-arity` pins the size, and `--levels` runs it as a
+  steady-state workload.
+- **Measured.** At `Advanced`, `multi-arity` drops from 3,579 to 2,040 bytes
+  and `raw-js` from 856 to 271. Its steady-state loop runs 1.8 times faster in
+  QuickJS and 21 times faster in Node, which now inlines it. A direct call of
+  a method costs 29 ns in QuickJS where `.call(null, ...)` through a
+  dispatcher cost 152. See "Direct call shapes" in `benchmarks/compiler.md`.
+- **Left for later.**
+  - Local functions with several methods, and named ones, keep their
+    dispatcher; hoisting them to entries when their captures permit is the
+    rest of step 5 (light-cljs-228).
+  - A `def` initializer that is a `let`, `try`, `case` or `loop` is still a
+    function call; top-level definitions could emit it as statements.
+  - Parameter types from the direct calls of closed functions
+    (light-cljs-229).
 
 #### Phase 2 pure initializer and `js*` extension points
 
@@ -1524,6 +1637,12 @@ upstream states that advanced mode is unsafe for certain patterns.
   Closure's removal of properties nothing reads, this keeps `getBasis`'s
   vector of symbols from pulling the collection runtime into every program
   that defines a type. Since light-cljs-211.
+- A call of a program function whose target is known at compile time reads
+  the method's own binding, `g3_1(a)` (light-cljs-212). A call that runs before
+  the function's definition throws a `TypeError` at every level, but its
+  engine-generated message names that binding (`g3_1 is not a function`)
+  where lower levels name the property they read (`Cannot read properties of
+  undefined (reading 'call')`).
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification
@@ -1551,5 +1670,7 @@ upstream states that advanced mode is unsafe for certain patterns.
 - How deep type inference should go before diminishing returns. Step 3
   infers booleans, numbers, strings, collections and program types within a
   function. Parameters stay `any`, so arithmetic lowers without types and
-  typed `=`, `count` and `nth` mostly apply to locals. Parameter types from
-  call sites need the escape analysis of call shapes (212).
+  typed `=`, `count` and `nth` mostly apply to locals. Call shapes (212) now
+  say which functions only the program calls and list their calls
+  (`CallShapes::closed`, `CallShapes::calls_of`), from which parameter types
+  could be joined.
