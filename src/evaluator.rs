@@ -4,8 +4,12 @@
 //! sessions; interactive consumers may deliberately retain a session instead.
 use crate::compiler_data::{Datum, Form};
 use crate::form_bridge::{BridgeState, ConversionLimits, FORM_BRIDGE_VERSION};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use host_clock::Instant;
 use rquickjs::allocator::{Allocator, RustAllocator};
 use rquickjs::{Array, CatchResultExt, Context, Ctx, Function, Runtime};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
 use std::{cell::RefCell, rc::Rc};
 use std::{
     fmt,
@@ -13,8 +17,36 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+/// The session clock on wasm32-unknown-unknown, where `std::time::Instant`
+/// is unavailable: the host-supplied clock that the engine's wasm shim already
+/// imports (`vendor/rquickjs-sys/wasm-shim/shim.c`), microseconds since the
+/// Unix epoch. The embedder defines `__rquickjs_host_now_us` once for both.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod host_clock {
+    use std::time::Duration;
+
+    unsafe extern "C" {
+        fn __rquickjs_host_now_us() -> f64;
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct Instant(f64);
+
+    impl Instant {
+        pub fn now() -> Self {
+            // SAFETY: a pure host import with no arguments; the embedder links
+            // it or the module fails to instantiate.
+            Self(unsafe { __rquickjs_host_now_us() })
+        }
+
+        pub fn elapsed(&self) -> Duration {
+            Duration::from_micros((Self::now().0 - self.0).max(0.0) as u64)
+        }
+    }
+}
 
 /// The shared runtime factory: `src/js_runtime.js` without its unit manifest
 /// headers (see [`crate::runtime_manifest`]).

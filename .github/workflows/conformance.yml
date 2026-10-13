@@ -117,3 +117,26 @@ jobs:
           name: historical-sci-diagnostics
           path: /tmp/light-cljs-sci-reference-*
           if-no-files-found: error
+
+  playground:
+    name: Browser playground builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          # Must match the pin in playground/crate/Cargo.toml.
+          tool: wasm-bindgen@0.2.129
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          bb: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - run: clang --version && bb --version
+      - run: bb playground/build.bb build
+      - run: bb playground/build.bb check

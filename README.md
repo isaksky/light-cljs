@@ -158,6 +158,15 @@ cargo run --quiet -- --parse --text '(+ 1 2)'     # syntax arena
 cargo run --quiet -- --analyze --text '(let* [x 10] x)'  # resolved Program
 ```
 
+## Browser playground
+
+[playground/](playground/) is a static page that runs the compiler in the
+browser: light-cljs built for `wasm32-unknown-unknown` (QuickJS included, for
+macro expansion) compiles several in-memory namespaces at any `--optimize`
+level, and the emitted JavaScript runs in the browser's own engine inside a
+worker. `bb playground/build.bb` builds and serves it; see
+[playground/README.md](playground/README.md) for the toolchain it needs.
+
 ## Library usage
 
 Compile source to JavaScript:

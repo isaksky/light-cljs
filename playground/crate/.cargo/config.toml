@@ -1,0 +1,8 @@
+# This crate only builds for the browser.
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+# The analyzer and the engine recurse deeply; the default 1 MiB shadow stack
+# is not enough for the macro bootstrap.
+rustflags = ["-C", "link-arg=-zstack-size=16777216"]

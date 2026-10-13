@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>light-cljs playground</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>light-cljs <span class="muted">playground</span></h1>
+    <div class="toolbar">
+      <label>entry <input id="entry" type="text" spellcheck="false" size="14"></label>
+      <label>optimize
+        <select id="optimize">
+          <option value="none">none</option>
+          <option value="prepare" selected>prepare</option>
+          <option value="advanced">advanced</option>
+        </select>
+      </label>
+      <label><input id="warnings" type="checkbox"> warnings</label>
+      <label><input id="pseudo" type="checkbox"> pseudo names</label>
+      <label><input id="sizes" type="checkbox"> size report</label>
+      <button id="run" class="primary" title="Cmd/Ctrl+Enter">Compile &amp; run</button>
+      <button id="compile" title="Shift+Cmd/Ctrl+Enter">Compile</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="reset" title="Replace all files with the example">Example</button>
+    </div>
+    <div id="status" class="muted">loading wasm…</div>
+  </header>
+
+  <main>
+    <section class="pane" id="sources">
+      <div class="tabs" id="file-tabs"></div>
+      <div class="editor" id="editor"></div>
+    </section>
+    <section class="pane" id="results">
+      <div class="tabs">
+        <button class="tab active" data-view="console">Output</button>
+        <button class="tab" data-view="js">JavaScript</button>
+        <button class="tab" data-view="diagnostics">Diagnostics</button>
+      </div>
+      <div class="view active" id="console"><pre id="console-text"></pre></div>
+      <div class="view" id="js"><div class="editor" id="js-editor"></div></div>
+      <div class="view" id="diagnostics"><pre id="diagnostics-text"></pre></div>
+    </section>
+  </main>
+
+  <footer class="muted">
+    Compiled in WebAssembly by light-cljs (macros expand in an embedded QuickJS);
+    the output runs in this browser inside a worker that is terminated after 10 s.
+    Call <code>(enable-console-print!)</code> before <code>println</code>, as in ClojureScript.
+    Files are kept in this browser's local storage.
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/clojure/clojure.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/javascript/javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/matchbrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/closebrackets.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

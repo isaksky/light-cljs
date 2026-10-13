@@ -88,3 +88,10 @@ Remove the `[patch.crates-io]` entry and this directory once a released
 `vendor/rquickjs-sys/quickjs/quickjs.c` identical to the crate's copy again.
 `src/evaluator.rs::bridge_interrupt_tests` is the regression test for the fix;
 it is expected to crash on an unpatched engine.
+
+## WebAssembly support files
+
+`wasm-shim/shim.c` and `vendor/wasi-libc/` are the crate's own files,
+unmodified: `build.rs` needs them for the `wasm32-unknown-unknown` target,
+which the browser playground (`playground/`) builds. This copy first left them
+out as native-only; they were restored from the crate as published.

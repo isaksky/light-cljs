@@ -584,3 +584,57 @@ fn recurrence_targets_and_protocol_methods_keep_namespace_identity() {
     sources.write("steps/main.cljs", "(ns steps.main (:require [steps.api :as api :refer [step]])) (let [x 17 runner (reify api/Step (step [self n] (if (pos? n) (recur self (dec n)) x)))] (js/console.log (step runner 100000) (api/descend 100000) (loop [n 2] (if (pos? n) (recur (dec n)) n))))");
     assert_eq!(execute(&sources.compile("steps.main").unwrap()), "17 0 0\n");
 }
+
+#[test]
+fn namespaces_load_from_any_source_provider() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compiler::analyze_namespace_entry_with_provider;
+    use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
+    use light_cljs::{ApplicationOptions, MacroHost, OptimizationLevel, prepare_application};
+
+    // In-memory files, as the browser playground supplies them: no roots, no
+    // filesystem, and a `.cljc` dependency with a macro.
+    let files = [
+        (
+            "demo/main.cljs",
+            "(ns demo.main (:require [demo.math :as m :refer [twice]])) (js/console.log (twice (m/square 3)))",
+        ),
+        (
+            "demo/math.cljc",
+            "(ns demo.math) (defmacro twice [x] `(* 2 ~x)) (defn square [x] (* x x))",
+        ),
+    ];
+    let provider = |request: &LoadRequest| -> Result<Option<SourceInput>, LoadError> {
+        let relative = String::from_utf16_lossy(request.namespace.name()).replace('.', "/");
+        Ok(files
+            .iter()
+            .find(|(path, _)| {
+                path.strip_suffix(".cljs")
+                    .or_else(|| path.strip_suffix(".cljc"))
+                    .is_some_and(|stem| stem == relative)
+            })
+            .map(|(path, source)| SourceInput::new(*path, *source)))
+    };
+    let compile = |entry: &str| {
+        analyze_namespace_entry_with_provider(
+            entry,
+            &provider,
+            &mut MacroHost::new(),
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+    };
+    let program = compile("demo.main").unwrap();
+    let js = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Prepare),
+    )
+    .emit_js();
+    assert_eq!(execute(&js), "18\n");
+
+    let error = compile("demo.missing").unwrap_err();
+    assert!(
+        error.message.contains("namespace demo.missing not found"),
+        "{error}"
+    );
+}

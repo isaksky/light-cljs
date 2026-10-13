@@ -12,6 +12,7 @@ use crate::analyzer::{
     analyze_namespaces_prepared_with_warnings, analyze_with_macros,
 };
 use crate::macro_host::{MacroHost, MacroImport};
+use crate::source_provider::{FileSourceProvider, LoadError, LoadRequest, Reload, SourceProvider};
 use crate::{
     AnalysisError, CollectionKind, LineIndex, NodeId, NodeKind, ParseError, PrefixKind, SyntaxTree,
     analyze, emit_js, parse,
@@ -945,15 +946,39 @@ enum LoadState {
     Loaded,
 }
 
-struct Loader {
-    roots: Vec<PathBuf>,
+struct Loader<'a> {
+    /// Where namespace sources come from: explicit roots on disk for the CLI
+    /// (`FileSourceProvider`), or anything else the caller supplies.
+    sources: &'a dyn SourceProvider,
+    entry: String,
     states: HashMap<String, LoadState>,
     stack: Vec<String>,
     ordered: Vec<NamespaceSource>,
     warning_mode: bool,
 }
 
-impl Loader {
+impl Loader<'_> {
+    /// Ask the provider for `name`: its file name and text, or `None` when the
+    /// provider has no such namespace.
+    fn find(&self, name: &str) -> Result<Option<(PathBuf, String)>, NamespaceCompileError> {
+        let requesting = self
+            .stack
+            .last()
+            .map_or(self.entry.as_str(), String::as_str);
+        let request = LoadRequest {
+            namespace: crate::compiler_data::Name::new(None, name),
+            requesting_namespace: crate::compiler_data::Name::new(None, requesting),
+            requesting_file: None,
+            reload: Reload::None,
+        };
+        match self.sources.load(&request) {
+            Ok(Some(input)) => Ok(Some((PathBuf::from(input.file), input.source))),
+            Ok(None) => Ok(None),
+            Err(LoadError::Provider(message)) => Err(NamespaceCompileError::new(message)),
+            Err(error) => Err(NamespaceCompileError::new(error.to_string())),
+        }
+    }
+
     fn visit(&mut self, name: &str) -> Result<(), NamespaceCompileError> {
         // The bounded first-party core is emitted inside the unit. A require
         // cannot replace it with a file found on a source root.
@@ -977,13 +1002,8 @@ impl Loader {
             }
             LoadState::Unseen => {}
         }
-        let (path, source) = if let Some(path) =
-            locate_source(&self.roots, name, &["cljs", "cljc"])?
-        {
-            let source = fs::read_to_string(&path).map_err(|error| {
-                NamespaceCompileError::new(format!("cannot read {}: {error}", path.display()))
-            })?;
-            (path, source)
+        let (path, source) = if let Some(found) = self.find(name)? {
+            found
         } else if let Some(source) = crate::compiler_libraries::source(name) {
             (
                 PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
@@ -1040,9 +1060,7 @@ impl Loader {
         let mut host_namespaces = Vec::new();
         for spec in file.runtime_specs.clone() {
             let namespace = &spec.import.namespace;
-            if namespace.starts_with("goog.")
-                && locate_source(&self.roots, namespace, &["cljs", "cljc"])?.is_none()
-            {
+            if namespace.starts_with("goog.") && self.find(namespace)?.is_none() {
                 let node = spec.alias_node.unwrap_or(file.syntax.roots[0]);
                 file.add_js_refer(node, "goog".into(), "goog".into())?;
                 file.add_js_refer(node, namespace.clone(), namespace.clone())?;
@@ -1075,10 +1093,10 @@ impl Loader {
         for dependency in &mut file.requires {
             if let Some(suffix) = dependency.strip_prefix("clojure.")
                 && dependency != "clojure.core"
-                && locate_source(&self.roots, dependency, &["cljs", "cljc"])?.is_none()
+                && self.find(dependency)?.is_none()
             {
                 let rewritten = format!("cljs.{suffix}");
-                if locate_source(&self.roots, &rewritten, &["cljs", "cljc"])?.is_some() {
+                if self.find(&rewritten)?.is_some() {
                     for (_, target) in &mut file.aliases {
                         if target == dependency {
                             *target = rewritten.clone();
@@ -1221,13 +1239,7 @@ pub fn analyze_namespace_entry(
             "namespace compilation requires at least one explicit source root",
         ));
     }
-    let mut loader = Loader {
-        roots: Vec::new(),
-        states: HashMap::new(),
-        stack: Vec::new(),
-        ordered: Vec::new(),
-        warning_mode: options.warning_mode,
-    };
+    let mut roots: Vec<PathBuf> = Vec::new();
     for root in source_roots {
         let canonical = fs::canonicalize(root).map_err(|error| {
             NamespaceCompileError::new(format!(
@@ -1241,10 +1253,45 @@ pub fn analyze_namespace_entry(
                 root.display()
             )));
         }
-        if !loader.roots.contains(&canonical) {
-            loader.roots.push(canonical);
+        if !roots.contains(&canonical) {
+            roots.push(canonical);
         }
     }
+    analyze_namespace_entry_with_provider(
+        entry,
+        &FileSourceProvider::new(roots),
+        macros,
+        options,
+        warnings,
+    )
+}
+
+/// [`analyze_namespace_entry`] with sources from any [`SourceProvider`]
+/// instead of directories on disk, for hosts without a filesystem such as the
+/// browser playground. The provider answers each namespace with its file name
+/// (whose extension decides `.cljc` reading) and text; a `clojure.*`
+/// namespace it does not have falls back to the bundled first-party library
+/// or to the `cljs.*` spelling, as with roots.
+pub fn analyze_namespace_entry_with_provider(
+    entry: &str,
+    sources: &dyn SourceProvider,
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<crate::Program, NamespaceCompileError> {
+    if !valid_namespace(entry) {
+        return Err(NamespaceCompileError::new(
+            "invalid entry namespace: use dot-separated ASCII names; js is reserved",
+        ));
+    }
+    let mut loader = Loader {
+        sources,
+        entry: entry.to_owned(),
+        states: HashMap::new(),
+        stack: Vec::new(),
+        ordered: Vec::new(),
+        warning_mode: options.warning_mode,
+    };
     loader.visit(entry)?;
     for (source_index, file) in loader.ordered.iter().enumerate() {
         for (package, span) in &file.inert_packages {
