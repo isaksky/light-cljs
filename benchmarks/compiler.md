@@ -2908,3 +2908,36 @@ The new fixture's ceilings are 402,000 / 402,000 / 48,000. Its methods'
 `item` parameters are records of one type, so `(:qty item)`, `(:price item)`
 and `(:label item)` become field reads and those keywords are no longer
 built (146 bytes), and `tag` tests its boolean `flag` without `truth()`.
+
+## Atom states — October 14, 2026
+
+light-cljs-252 types the state that `swap!` and `swap-vals!` pass their
+function from what the atom holds, when the program makes every use of the
+atom itself: its initial value and every value `reset!`, `reset-vals!`,
+`compare-and-set!` and the `swap!` functions store ("Phase 2 atom state
+extension points" in the [design](../docs/advanced-optimization.md)).
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize advanced`, on the
+24-CPU Mac (sizes do not depend on load; load average 5.2). "Before" is this
+change with atom tracking switched off, on master `f76712a`. The size ratchet
+table is identical before and after at every level: the `swap!` callback of
+the `callbacks` fixture now has a `number` state, but it only adds to it, and
+`+` is an operator for every operand already.
+
+| Program | Advanced before → after |
+| --- | --- |
+| every ratchet fixture | identical bytes |
+| `toggle!` and `text` below | 21,147 / 7,078 → 21,107 / 7,062 |
+
+```clojure
+(def flag (atom nil))
+(defn toggle! [] (swap! flag (fn [f] (if f false true))))
+(toggle!)
+(let [text (atom "")]
+  (swap! text (fn [s k] (str s (count s) k)) "a")
+  (pr-str [@flag @text]))
+```
+
+The `toggle!` callback tests its `nil`/`boolean` state without `truth()`, and
+the `text` callback counts its string state with `.length`, which drops
+`rt$count` from the program's roots.

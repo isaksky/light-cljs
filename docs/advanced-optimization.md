@@ -2089,8 +2089,9 @@ escaped, so its parameters were `any`.
   carry the argument lists of every call the operation makes of it, one
   parenthesized list per call: `map` is `[fn]:fn [fn(e1+) seqable & seqable]:seq|list`,
   `reduce` `[fn()(e1|r0,e1) seqable] [fn(a1|r0,e2) any seqable]` and
-  `swap!` `[object fn(any,a2+) & any]`. Each argument is a descriptor:
-  types, `aN` (argument `N`), `eN` (an element of it), `rN` (what function
+  `swap!` `[object fn(s0,a2+) & any]`. Each argument is a descriptor:
+  types, `aN` (argument `N`), `eN` (an element of it), `sN` (the state of
+  the atom argument `N`, since light-cljs-252), `rN` (what function
   argument `N` returns) and `aN+`/`eN+` (from argument `N` on), joined with
   `|`. Thirty-two rows have shapes: `map`, `mapv`, `mapcat`, `filter`,
   `filterv`, `remove`, `keep`, `keep-indexed`, `map-indexed`, `take-while`,
@@ -2160,8 +2161,8 @@ escaped, so its parameters were `any`.
   - Specialized clones for a dominant call site were not added: lowerings
     only shrink output when they remove a runtime root, so a clone, which
     copies a body, grows every fixture measured here.
-  - The atom's value is `any` in `swap!`'s shape: inference does not track
-    what atoms hold.
+  - The atom's value was `any` in `swap!`'s shape until light-cljs-252
+    ("Phase 2 atom state extension points").
   - `nth`, `first` and `get` on a collection return `any`, not its element
     type, so destructuring a vector parameter does not type the locals.
   - Parameters of protocol and `deftype` methods stayed `any` until
@@ -2255,6 +2256,57 @@ boolean.
     still builds the keyword, although the body never runs.
   - A protocol method passed to a core operation (`(map m xs)`) escapes;
     callback shapes could join its calls as they do for `fn`s.
+
+#### Phase 2 atom state extension points
+
+Atom states are implemented (light-cljs-252) in `src/core_operations.tsv`,
+`src/call_shapes.rs` and `src/inference.rs`, at `Advanced` only. Before, the
+state `swap!` passes its function was `any`, so in `(let [a (atom 0)] (swap!
+a (fn [n] (+ n 1))))` the parameter `n` was `any`.
+
+- **Shape term.** `sN` is the state of the atom argument `N`; `swap!` and
+  `swap-vals!` are `[object fn(s0,a2+) & any]`. Inference resolves it to
+  what a closed atom holds, and to `any` for every other argument.
+- **Closed atoms.** `closed_functions` also finds the atoms the program
+  makes every use of (see "Atoms" in `src/call_shapes.rs`): an `(atom x)`
+  without options whose value goes only to a `let` local that no `reify`
+  captures, or to the `def` of a global defined once and never assigned
+  (not `:dynamic`, not a host path, not exported, its `def` value
+  discarded), whose every read is the atom of `deref` (one argument),
+  `reset!`, `reset-vals!`, `compare-and-set!` (all their arguments),
+  `swap!` or `swap-vals!` (with a function). `ClosedFunctions::atom` maps
+  the `(atom x)` call and those reads to the atom. A `loop` local is left
+  out: `recur` binds it to another value.
+- **Joins.** Inference keeps what each closed atom holds in the same fixed
+  point: the initial value, the new states of `reset!`, `reset-vals!` and
+  `compare-and-set!`, and what the function of each `swap!` or `swap-vals!`
+  returns when called with the state and the call's other arguments (a
+  `fn`'s bodies, a core operation's result, `any` for unknown functions).
+  A call of a replaced operation (`deref` included) or any call while a
+  core protocol is extended beyond the program's types stores `any`. A
+  closed atom is the runtime's own, so a program type implementing `ISwap`,
+  `IReduce` or `IKVReduce` no longer forces `any` on a `swap!` whose target
+  is one; it still does where the target may be a program type.
+- **Tests.** `swap_callback_parameters_join_atom_contents` in the
+  `type_inference` suite checks the failure scenario, a global atom, joins
+  of `reset!`, `reset-vals!`, `compare-and-set!` and of what `swap!`
+  functions (a `fn`, `inc`) return, a closure, and that every other use
+  keeps `any`: host code, a function argument, `add-watch`,
+  `set-validator!`, options, a collection, a `loop` local, a second global,
+  a Var, a dynamic global, a `reify`, `js*`, a property assignment, a
+  replaced `reset!` or `atom`, `IDeref` extended to atoms, `(reset! a)`
+  (which stores `nil`), and program types implementing `IDeref`, `IReset`
+  or `ISwap`. `typed_lowerings_apply_to_atom_states_and_keep_the_results`
+  runs a boolean state's truth test, a string state's `count` and a record
+  state's field read at every level, next to an `ISwap` type that passes
+  `""`, whose callback keeps `truth()`.
+- **Measured.** No ratchet fixture changes at any level: the `swap!`
+  callback in `callbacks` now has a number state, but `+` is an operator
+  for every operand. See "Atom states" in `benchmarks/compiler.md`.
+- **Left for later.**
+  - `deref` of a closed atom and the result of `swap!` (its function's
+    result) are still `any`; the same contents would type them.
+  - An atom passed to a closed function, or held by a record field, escapes.
 
 #### Phase 2 pure initializer and `js*` extension points
 

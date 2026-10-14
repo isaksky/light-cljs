@@ -816,10 +816,12 @@ fn callback_parameters_join_what_core_operations_pass() {
             "k",
             Inferred::of(Type::KEYWORD),
         ),
+        // The state is what the atom holds (light-cljs-252): `0`, then what
+        // the function returns.
         (
             "(def a (atom 0)) (swap! a (fn [n k] k) :key)",
             "n",
-            Inferred::ANY,
+            Inferred::of(Type::NUMBER.union(Type::KEYWORD)),
         ),
         // The element type of what `map` returns is what its function returns.
         ("(mapv (fn [x] x) (map inc [1 2]))", "x", number),
@@ -873,6 +875,140 @@ fn callback_parameters_join_what_core_operations_pass() {
         ),
         number
     );
+}
+
+/// Since light-cljs-252 the state `swap!` and `swap-vals!` pass their function
+/// is what the atom holds when the program makes every use of the atom
+/// itself: an `(atom x)` bound by `let`, or by the sole `def` of a global, read
+/// only as the atom of `deref`, `reset!`, `reset-vals!`, `swap!`, `swap-vals!`
+/// and `compare-and-set!` calls. It holds its initial value and every value
+/// those calls write, including what the functions given to `swap!` return.
+#[test]
+fn swap_callback_parameters_join_atom_contents() {
+    let number = Inferred::of(Type::NUMBER);
+    let number_or_string = Inferred::of(Type::NUMBER.union(Type::STRING));
+    for (source, name, expected) in [
+        ("(let [a (atom 0)] (swap! a (fn [n] (+ n 1))))", "n", number),
+        (
+            "(def a (atom 0)) (defn bump [] (swap! a (fn [n] (inc n)))) (bump)",
+            "n",
+            number,
+        ),
+        (
+            "(let [a (atom 0)] (reset! a \"s\") (swap! a (fn [n] n)))",
+            "n",
+            number_or_string,
+        ),
+        // What a function given to `swap!` returns is written too, here a
+        // string that the next call and the function itself receive.
+        (
+            "(let [a (atom 0)] (swap! a (fn [n] (str n))) (swap! a (fn [m] m)))",
+            "m",
+            number_or_string,
+        ),
+        (
+            "(let [a (atom 0)] (swap! a (fn [n] (str n))) (swap! a (fn [m] m)))",
+            "n",
+            number_or_string,
+        ),
+        (
+            "(let [a (atom 0)] (swap! a inc) @a (swap! a (fn [n] n)))",
+            "n",
+            number,
+        ),
+        (
+            "(let [a (atom false)] (swap! a (fn [b x] x) nil) (swap-vals! a (fn [c] c)))",
+            "c",
+            Inferred::of(Type::BOOLEAN.union(Type::NIL)),
+        ),
+        (
+            "(let [a (atom nil)]
+               (reset-vals! a :k) (compare-and-set! a :k \"s\") (swap! a (fn [v] v)))",
+            "v",
+            Inferred::of(Type::NIL.union(Type::KEYWORD).union(Type::STRING)),
+        ),
+        // A closure that uses the local sees the same atom.
+        (
+            "(let [a (atom 0) f (fn [] (swap! a (fn [n] n)))] (f))",
+            "n",
+            number,
+        ),
+    ] {
+        assert_eq!(local(source, name), expected, "{source}");
+    }
+    // Every other way an atom may be used can write it unseen, or need not
+    // be an atom of the runtime: passed to host code, a function, `add-watch`
+    // (whose function gets it) or `set-validator!`, created with options,
+    // held by a collection, a `loop` local (`recur` binds another), a second
+    // global or a Var, a dynamic global, a `reify` (whose object holds every
+    // visible local), raw JavaScript or a property assignment; a replaced
+    // `reset!` or `atom`, a core protocol extended to atoms, an arity that
+    // writes `nil`, and a program type implementing `IDeref` and `IReset` or
+    // `ISwap`, which is no atom.
+    for source in [
+        "(let [a (atom 0)] (js/console.log a) (swap! a (fn [n] n)))",
+        "(defn f [x] (reset! x \"s\")) (let [a (atom 0)] (f a) (swap! a (fn [n] n)))",
+        "(let [a (atom 0)] (add-watch a :w (fn [k r o v] (reset! r \"s\"))) (swap! a (fn [n] n)))",
+        "(let [a (atom 0)] (set-validator! a number?) (swap! a (fn [n] n)))",
+        "(let [a (atom 0 :validator number?)] (swap! a (fn [n] n)))",
+        "(let [a (atom 0) v [a]] (reset! (first v) \"s\") (swap! a (fn [n] n)))",
+        "(loop [a (atom 0) i 0] (if (< i 1) (recur (atom \"s\") (inc i)) (swap! a (fn [n] n))))",
+        "(def a (atom 0)) (def b a) (reset! b \"s\") (swap! a (fn [n] n))",
+        "(def a (atom 0)) (reset! @#'a \"s\") (swap! a (fn [n] n))",
+        "(def ^:dynamic *a* (atom 0)) (binding [*a* (atom \"s\")] (swap! *a* (fn [n] n)))",
+        "(let [a (atom 0) r (reify Object (toString [_] \"r\"))] (swap! a (fn [n] n)))",
+        "(let [a (atom 0)] (js* \"~{}.state = 's'\" a) (swap! a (fn [n] n)))",
+        "(let [a (atom 0)] (set! (.-state a) \"s\") (swap! a (fn [n] n)))",
+        "(set! cljs.core/reset! (fn [a v] (cljs.core/-reset! a \"s\")))
+         (let [a (atom 0)] (reset! a 1) (swap! a (fn [n] n)))",
+        "(deftype S [] ISwap (-swap! [_ f] (f \"\")))
+         (set! cljs.core/atom (fn [x] (S.)))
+         (let [a (atom 0)] (swap! a (fn [n] n)))",
+        "(extend-type Atom IDeref (-deref [_] \"\")) (let [a (atom 0)] (swap! a (fn [n] n)))",
+        "(let [a (atom 0)] (reset! a) (swap! a (fn [n] n)))",
+        "(deftype R [] IDeref (-deref [_] 0) IReset (-reset! [_ v] v))
+         (swap! (R.) (fn [n] n))",
+        "(deftype S [] ISwap (-swap! [_ f] (f \"\"))) (swap! (S.) (fn [n] n))",
+    ] {
+        assert_eq!(local(source, "n"), Inferred::ANY, "{source}");
+    }
+    // A program type implementing `ISwap` receives the function `swap!` is
+    // given when it is the target, but an atom the program makes every use of
+    // is the runtime's.
+    let source = "(deftype S [] ISwap (-swap! [_ g x] (g \"\" x)))
+                  (let [a (atom 0)] (swap! a (fn [n k] n) :key) (swap! (S.) (fn [m j] m) :key))";
+    assert_eq!(local(source, "n"), number, "{source}");
+    assert_eq!(local(source, "k"), Inferred::of(Type::KEYWORD), "{source}");
+    assert_eq!(local(source, "m"), Inferred::ANY, "{source}");
+    assert_eq!(local(source, "j"), Inferred::ANY, "{source}");
+}
+
+/// The state types lowerings inside `swap!` functions on adversarial values:
+/// `nil`, `false`, `""`, records built both ways, and an `ISwap` program type
+/// that passes `""` where an atom would pass `nil`.
+#[test]
+fn typed_lowerings_apply_to_atom_states_and_keep_the_results() {
+    let js = every_level(
+        r#"(defrecord P [x])
+           (deftype Box [] ISwap (-swap! [_ f k] (f "" k)))
+           (def flag (atom nil))
+           (defn toggle! [] (swap! flag (fn [f] (if f false true))))
+           (toggle!)
+           (toggle!)
+           (let [text (atom "")
+                 point (atom (->P 1))]
+             (swap! text (fn [s k] (str s (count s) k)) "a")
+             (swap! text (fn [s k] (str s (count s) k)) "b")
+             (reset! point (map->P {:x 5}))
+             (swap! point (fn [p] (->P (inc (:x p)))))
+             (pr-str [@flag @text (:x @point)
+                      (swap! (Box.) (fn [b k] (if b :truthy :falsy)) nil)]))"#,
+        "[false \"0a2b\" 6 :truthy]",
+    );
+    for lowered in ["if (l", ").length", ")[\"x\"]", "truth("] {
+        assert!(js.contains(lowered), "{lowered}: {js}");
+    }
+    assert!(!js.contains("rt$count("), "{js}");
 }
 
 #[test]

@@ -34,6 +34,15 @@
 //!   call (within the domain, the operation not replaced, core protocols
 //!   intact, and no program type that receives functions among the other
 //!   arguments); otherwise it binds them to `any`.
+//! - The state that `swap!` and `swap-vals!` pass their function (`sN` in
+//!   their callback shapes) is what a closed atom holds
+//!   ([`crate::call_shapes`], "Atoms", light-cljs-252): the join of the
+//!   initial value of its `(atom x)`, the new states of the `reset!`,
+//!   `reset-vals!` and `compare-and-set!` calls on it, and what the functions
+//!   of the `swap!` and `swap-vals!` calls on it return, while the program
+//!   replaces none of these operations and core protocols are intact. A
+//!   closed atom is the runtime's, so it is no program type that receives
+//!   functions. The state of any other atom is `any`.
 //! - A parameter of an implementation of a closed protocol method
 //!   ([`crate::call_shapes`], "Protocol methods") that the program defines
 //!   once and never assigns has the union of what the method's calls pass it
@@ -105,6 +114,15 @@
 //! implements `IReduce`, `IKVReduce` or `ISwap` receives the function
 //! itself, and the operations whose domain admits program types (`swap!`)
 //! then bind `any`.
+//!
+//! A closed atom's state changes only through the calls on its reads that
+//! `crate::call_shapes` ("Atoms") allows, since no other code gets the atom:
+//! on the runtime's atoms `reset!`, `reset-vals!` and `compare-and-set!`
+//! store their argument, and `swap!` and `swap-vals!` what their function
+//! returns, with no validator or watch (only options to `atom`,
+//! `set-validator!` and `add-watch` add them). A replaced operation may
+//! store anything in the atom it gets, and so may a program method that a
+//! core protocol extension gives atoms.
 //!
 //! An implementation of a closed protocol method runs only from the calls of
 //! the method (`crate::call_shapes`, "Protocol methods"), with the receiver
@@ -1018,6 +1036,9 @@ struct Walker<'p> {
     /// implementation, when its parameters join the calls of its protocol
     /// method.
     receivers: Vec<Option<Receivers>>,
+    /// By index in [`ClosedFunctions::atom`]: every value the closed atom
+    /// holds (light-cljs-252).
+    contents: Vec<Inferred>,
     values: Vec<Inferred>,
     visited: Vec<bool>,
     locals: Vec<Inferred>,
@@ -1205,6 +1226,7 @@ impl<'p> Walker<'p> {
             closed,
             parameters,
             receivers,
+            contents: vec![Inferred::NEVER; closed.atoms()],
             values: vec![Inferred::NEVER; program.exprs.len()],
             visited: vec![false; program.exprs.len()],
             locals,
@@ -1639,6 +1661,7 @@ impl<'p> Walker<'p> {
                     for (index, function) in self.closed.callbacks(id) {
                         self.pass_callback(core, args, &arguments, index, function);
                     }
+                    self.store(id, core, args, &arguments);
                 }
                 self.call(*callee, callee_value, args, &arguments)
             }
@@ -1649,6 +1672,50 @@ impl<'p> Walker<'p> {
             }
         };
         self.record(id, value)
+    }
+
+    /// Join what the call `call` of `core` with argument expressions `args`
+    /// of values `arguments` stores in a closed atom (`crate::call_shapes`,
+    /// "Atoms", light-cljs-252) into what the atom holds: the initial value
+    /// of its `(atom x)`, the new state of `reset!`, `reset-vals!` and
+    /// `compare-and-set!`, and what the function given to `swap!` or
+    /// `swap-vals!` returns when called with the state and the call's other
+    /// arguments, as the runtime calls it on its own atoms. A replaced
+    /// operation, including `deref`, may store anything in the atom it gets,
+    /// and so may a protocol method that a core protocol extension adds to
+    /// atoms.
+    fn store(&mut self, call: ExprId, core: CoreFnId, args: &[ExprId], arguments: &[Inferred]) {
+        let target = if core == CoreFnId::Atom {
+            call
+        } else {
+            match args.first() {
+                Some(&target) => target,
+                None => return,
+            }
+        };
+        let Some(atom) = self.closed.atom(target) else {
+            return;
+        };
+        let argument = |index: usize| arguments.get(index).copied().unwrap_or(Inferred::ANY);
+        let stored = match core {
+            _ if !self.facts.trusted(core, Calls::Invoke) => Inferred::ANY,
+            CoreFnId::Atom => argument(0),
+            CoreFnId::Reset | CoreFnId::ResetVals => argument(1),
+            CoreFnId::CompareAndSet => argument(2),
+            CoreFnId::Swap | CoreFnId::SwapVals => self.callback_returns(core, 1, args, arguments),
+            _ => return,
+        };
+        let joined = self.contents[atom].union(stored);
+        if joined != self.contents[atom] {
+            self.contents[atom] = joined;
+            self.changed = true;
+        }
+    }
+
+    /// What the closed atom read by `arg` holds (`sN`), else `any`.
+    fn state(&self, arg: Option<&ExprId>) -> Inferred {
+        arg.and_then(|arg| self.closed.atom(*arg))
+            .map_or(Inferred::ANY, |atom| self.contents[atom])
     }
 
     /// Bind the parameters of method `method` of the closed `fn` `function`
@@ -1849,6 +1916,7 @@ impl<'p> Walker<'p> {
                         .fold(Inferred::NEVER, |value, argument| {
                             value.union(argument.element())
                         }),
+                    Term::State(index) => self.state(args.get(index)),
                     Term::Returns(index) if returns => {
                         self.callback_returns(core, index, args, arguments)
                     }
@@ -1913,7 +1981,8 @@ impl<'p> Walker<'p> {
     /// `arguments`, to the arguments of every call `core` makes of it
     /// (light-cljs-243). Where the table does not describe the call, or a
     /// program type that receives functions (`IReduce`, `IKVReduce`, `ISwap`)
-    /// may get the function, any call can reach it.
+    /// may get the function, any call can reach it. A closed atom that
+    /// `atom` made (light-cljs-252) is the runtime's, not a program type.
     fn pass_callback(
         &mut self,
         core: CoreFnId,
@@ -1924,9 +1993,17 @@ impl<'p> Walker<'p> {
     ) {
         let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
         let program_types = Type::RECORD.union(Type::OBJECT);
+        let runtime_atom = |position: usize| {
+            !self.facts.replaced(CoreFnId::Atom)
+                && args
+                    .get(position)
+                    .is_some_and(|arg| self.closed.atom(*arg).is_some())
+        };
         let reachable = self.facts.receives_functions()
             && types.iter().enumerate().any(|(position, ty)| {
-                position != index && !ty.intersection(program_types).is_never()
+                position != index
+                    && !ty.intersection(program_types).is_never()
+                    && !runtime_atom(position)
             });
         let callback = core
             .operation()

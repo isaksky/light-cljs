@@ -171,10 +171,36 @@
 //! one depends on the receiver, which inference decides. Host code that
 //! calls a slot the program does not name is outside the contract, as for
 //! rapid type analysis (`crate::rta`).
+//!
+//! # Atoms
+//!
+//! An atom is *closed* when the program makes every use of it itself
+//! (light-cljs-252), so that inference sees every value stored in it
+//! ([`ClosedFunctions::atom`]). It is made by an `(atom x)` call without
+//! options, whose value (through one-form `do`s, each with one parent) goes
+//! only to
+//!
+//! - the `let` binding of a local that no `reify` captures, or
+//! - the `def` of a global that the program defines once and never assigns,
+//!   without `:dynamic` metadata or a dot in its name, which is not exported
+//!   and whose `def` value is discarded,
+//!
+//! and every read of that local or global is the first argument of a call of
+//! `deref` without other arguments, of `reset!`, `reset-vals!` or
+//! `compare-and-set!` with all of theirs, or of `swap!` or `swap-vals!` with
+//! a function. No other code gets the atom, so none can store into it,
+//! watch it or validate it, and the atom is never stored or returned; a
+//! `loop` local is left out, since `recur` binds it to another value. The
+//! `(atom x)` call may run more than once, and each read may see the atom of
+//! any of its runs: every value one of them holds is `x` or a value that one
+//! of these calls stored through such a read. Inference checks the rest:
+//! that the program replaces none of these operations and that core
+//! protocols are intact.
 use std::collections::HashMap;
 
 use crate::analyzer::{
-    ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, Program, ProtocolMethod,
+    CoreFnId, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, Program,
+    ProtocolMethod,
 };
 use crate::core_operations::Type;
 use crate::inference::Inference;
@@ -436,8 +462,9 @@ pub fn analyze(
 }
 
 /// The `fn` expressions whose every call the program makes itself, and those
-/// calls; see "For parameter types" in the module documentation. The result
-/// of [`closed_functions`].
+/// calls; see "For parameter types" in the module documentation. Also the
+/// closed protocol methods ("Protocol methods") and atoms ("Atoms"). The
+/// result of [`closed_functions`].
 #[derive(Clone, Debug, Default)]
 pub struct ClosedFunctions {
     /// By `ExprId`: whether this `fn` expression is closed.
@@ -463,6 +490,12 @@ pub struct ClosedFunctions {
     /// Whether the program names a prototype, see
     /// [`ClosedFunctions::inherits`].
     inherits: bool,
+    /// By `ExprId`: for the `(atom x)` call of a closed atom and for every
+    /// read of the local or global that holds it, the atom's index, else
+    /// `u32::MAX` (light-cljs-252).
+    atom_slots: Vec<u32>,
+    /// How many atoms are closed.
+    atoms: usize,
 }
 
 /// A method of a `deftype`, `defrecord`, `reify` or `extend-type` (or
@@ -532,20 +565,37 @@ impl ClosedFunctions {
         self.inherits
     }
 
+    /// The closed atom that `id` makes or reads: the index, below
+    /// [`ClosedFunctions::atoms`], of the atom an `(atom x)` call makes or a
+    /// local or global read holds, when the program makes every use of it
+    /// (see "Atoms" in the module documentation, light-cljs-252).
+    pub fn atom(&self, id: ExprId) -> Option<usize> {
+        self.atom_slots
+            .get(id.0)
+            .filter(|slot| **slot != u32::MAX)
+            .map(|slot| *slot as usize)
+    }
+
+    /// How many atoms are closed.
+    pub fn atoms(&self) -> usize {
+        self.atoms
+    }
+
     /// How many `fn` expressions are closed.
     pub fn len(&self) -> usize {
         self.functions.iter().filter(|closed| **closed).count()
     }
 
-    /// Whether nothing is closed: no `fn` expression and no implementation of
-    /// a protocol method.
+    /// Whether nothing is closed: no `fn` expression, implementation of a
+    /// protocol method or atom.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0 && self.implementations.is_empty()
+        self.len() == 0 && self.implementations.is_empty() && self.atoms == 0
     }
 }
 
-/// Find the closed `fn` expressions of `program` and their calls, without
-/// inference. `exports` escape.
+/// Find the closed `fn` expressions of `program` and their calls, the closed
+/// protocol methods and the closed atoms, without inference. `exports`
+/// escape.
 pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFunctions {
     let scan = Scan::new(program, exports);
     let count = program.exprs.len();
@@ -558,8 +608,11 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         implementations: Vec::new(),
         dispatches: Vec::new(),
         inherits: false,
+        atom_slots: vec![u32::MAX; count],
+        atoms: 0,
     };
     protocol_methods(program, &scan, exports, &mut closed);
+    closed_atoms(program, &scan, exports, &mut closed);
     let local_calls = &scan.local_calls;
     let mut global_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.globals.len()];
     for &(call, global, _) in &scan.resolved {
@@ -644,6 +697,113 @@ impl Implementation {
             _ => None,
         }
     }
+}
+
+/// Find the closed atoms of `program`, their `(atom x)` calls and the reads
+/// of the locals and globals that hold them, into `closed`; see "Atoms" in
+/// the module documentation (light-cljs-252). `exports` escape.
+fn closed_atoms(
+    program: &Program,
+    scan: &Scan,
+    exports: &[GlobalId],
+    closed: &mut ClosedFunctions,
+) {
+    // Locals and globals read anywhere but as the atom of a use, and locals a
+    // `reify` holds as fields of its object.
+    let mut local_escapes = vec![false; program.locals.len()];
+    let mut global_escapes = vec![false; program.globals.len()];
+    let used = |read: ExprId| {
+        scan.parent_of(read)
+            .is_some_and(|call| atom_use(program, call, read))
+    };
+    for &id in &scan.order {
+        match &program.exprs[id.0].kind {
+            ExprKind::Reify { captures, .. } => {
+                for local in captures {
+                    local_escapes[local.0] = true;
+                }
+            }
+            ExprKind::Local(local) if !used(id) => local_escapes[local.0] = true,
+            ExprKind::Global(global) if !used(id) => global_escapes[global.0] = true,
+            _ => (),
+        }
+    }
+    for global in exports {
+        if let Some(escapes) = global_escapes.get_mut(global.0) {
+            *escapes = true;
+        }
+    }
+    let mut local_atoms = vec![u32::MAX; program.locals.len()];
+    let mut global_atoms = vec![u32::MAX; program.globals.len()];
+    for &id in &scan.order {
+        let ExprKind::Call { callee, args } = &program.exprs[id.0].kind else {
+            continue;
+        };
+        if args.len() != 1
+            || !matches!(
+                program.exprs[callee.0].kind,
+                ExprKind::CoreFn(CoreFnId::Atom)
+            )
+        {
+            continue;
+        }
+        let Some((user, value)) = scan.sole_use(program, id) else {
+            continue;
+        };
+        let holder = match &program.exprs[user.0].kind {
+            ExprKind::Let { bindings, .. } => {
+                match bindings.iter().find(|(_, init)| *init == value) {
+                    Some((local, _)) if !local_escapes[local.0] => &mut local_atoms[local.0],
+                    _ => continue,
+                }
+            }
+            ExprKind::Def {
+                global,
+                init: Some(init),
+                ..
+            } if *init == value
+                && scan.sole_definitions[global.0] == Some(user)
+                && !global_escapes[global.0]
+                && discarded(program, user, &|id| scan.parent_of(id)) =>
+            {
+                &mut global_atoms[global.0]
+            }
+            _ => continue,
+        };
+        let atom = u32::try_from(closed.atoms).expect("fewer than 2^32 atoms");
+        *holder = atom;
+        closed.atom_slots[id.0] = atom;
+        closed.atoms += 1;
+    }
+    for &id in &scan.order {
+        let atom = match program.exprs[id.0].kind {
+            ExprKind::Local(local) => local_atoms[local.0],
+            ExprKind::Global(global) => global_atoms[global.0],
+            _ => continue,
+        };
+        closed.atom_slots[id.0] = atom;
+    }
+}
+
+/// Whether the read `read` of a local or global is the atom of `call`, a call
+/// that gives the atom to nothing but the runtime's own operation on atoms
+/// (light-cljs-252): `deref`, `reset!`, `reset-vals!` and `compare-and-set!`
+/// with all their arguments, and `swap!` and `swap-vals!` with a function.
+fn atom_use(program: &Program, call: ExprId, read: ExprId) -> bool {
+    let ExprKind::Call { callee, args } = &program.exprs[call.0].kind else {
+        return false;
+    };
+    let ExprKind::CoreFn(core) = program.exprs[callee.0].kind else {
+        return false;
+    };
+    args.first() == Some(&read)
+        && match core {
+            CoreFnId::Deref => args.len() == 1,
+            CoreFnId::Reset | CoreFnId::ResetVals => args.len() == 2,
+            CoreFnId::CompareAndSet => args.len() == 3,
+            CoreFnId::Swap | CoreFnId::SwapVals => args.len() >= 2,
+            _ => false,
+        }
 }
 
 /// Find the closed protocol methods of `program`, their implementations and
@@ -882,6 +1042,11 @@ struct Scan {
     local_callbacks: Vec<Vec<(ExprId, usize)>>,
     /// By global: an expression reads it other than as the callee of a call.
     global_reads: Vec<bool>,
+    /// By global: the `def` of a global that the program defines once and
+    /// never assigns otherwise (no second `def`, `defonce`, `:test`
+    /// metadata, `set!`, `binding`, `with-redefs` or `js*` hole), without
+    /// `:dynamic` metadata or a dot in its name (a host path).
+    sole_definitions: Vec<Option<ExprId>>,
 }
 
 impl Scan {
@@ -1044,18 +1209,19 @@ impl Scan {
             local_calls,
             local_values_escape,
             local_callbacks,
+            sole_definitions: (0..globals)
+                .map(|global| {
+                    let sole = definitions[global] == 1
+                        && fixed[global]
+                        && !program.globals[global].name.contains('.')
+                        && !crate::application::dynamic(program, GlobalId(global));
+                    definition[global].filter(|_| sole)
+                })
+                .collect(),
         };
         let mut known = vec![None; globals];
         for global in 0..globals {
-            let binding = &program.globals[global];
-            if definitions[global] != 1
-                || !fixed[global]
-                || binding.name.contains('.')
-                || crate::application::dynamic(program, GlobalId(global))
-            {
-                continue;
-            }
-            let Some(def) = definition[global] else {
+            let Some(def) = scan.sole_definitions[global] else {
                 continue;
             };
             let ExprKind::Def {

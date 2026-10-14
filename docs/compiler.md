@@ -333,7 +333,13 @@ function argument (`map`, `filter`, `reduce`, `swap!` and 28 more) adds that
 operation's calls: `(map f xs)` calls `f` with an element of `xs`, `(reduce f
 init xs)` with the accumulator and an element, `(swap! a f x)` with the state
 and `x`. Inference tracks the elements of sequences, lists, vectors and sets
-for this. A method that a `deftype`, `defrecord`, `reify`, `extend-type` of a
+for this, and what an atom holds when the program makes every use of the atom
+itself: an `(atom x)` without options bound by `let` or by a global's only
+`def`, read only as the atom of `deref`, `reset!`, `reset-vals!`,
+`compare-and-set!`, `swap!` and `swap-vals!` calls, holds `x` and every value
+those calls store, including what the functions given to `swap!` return. The
+state of an atom that goes anywhere else (a function, host code, a
+collection, `add-watch`, `set-validator!`) is unknown. A method that a `deftype`, `defrecord`, `reify`, `extend-type` of a
 program type or `specify!` implements for a program protocol likewise has the
 types of the protocol method's calls whose receiver may run it, when those
 calls are all the method's: its global is only ever called, never passed as a

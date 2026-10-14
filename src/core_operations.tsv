@@ -10,8 +10,9 @@
 ;;            `[fn]:fn` narrows the result type of one arity. `fn(e1)(...)`
 ;;            is a callback shape: the arguments of each call the operation
 ;;            makes of that function, from aN (argument N), eN (an element of
-;;            it), rN (what function argument N returns), aN+ and eN+ (from N
-;;            on) and types. A function argument without one escapes.
+;;            it), sN (the state of atom argument N), rN (what function
+;;            argument N returns), aN+ and eN+ (from N on) and types. A
+;;            function argument without one escapes.
 ;; returns:   result type of a call within params, then optionally the type of
 ;;            the elements of the seqs, lists, vectors and sets it returns:
 ;;            `seq|list<e1>`; otherwise: of any other call.
@@ -709,9 +710,9 @@ Force	force	fn	[any]	any	any	effect	dispatch	force
 Realized	realized?	fn	[seq|object]	boolean	any	effect	-	realized
 Reset	reset!	fn	[object any]	any	any	effect	dispatch	reset
 VReset	vreset!	fn	[object any]	any	any	effect	dispatch	vreset
-Swap	swap!	fn	[object fn(any,a2+) & any]	any	any	effect	invoke	swap
+Swap	swap!	fn	[object fn(s0,a2+) & any]	any	any	effect	invoke	swap
 ResetVals	reset-vals!	fn	[object any]	vector	any	effect	dispatch	resetVals
-SwapVals	swap-vals!	fn	[object fn(any,a2+) & any]	vector	any	effect	invoke	swapVals
+SwapVals	swap-vals!	fn	[object fn(s0,a2+) & any]	vector	any	effect	invoke	swapVals
 CompareAndSet	compare-and-set!	fn	[object any any]	boolean	any	effect	dispatch	compareAndSet
 SetValidator	set-validator!	fn	[object nil|fn]	nil|fn	any	effect	invoke	setValidator
 GetValidator	get-validator	fn	[object]	nil|fn	any	effect	-	getValidator

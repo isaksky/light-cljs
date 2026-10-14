@@ -48,9 +48,10 @@
 //!   comma-separated [`Descriptor`]s. `map` is `[fn(e1+) seqable & seqable]`
 //!   (an element of each collection), `reduce` `[fn()(e1|r0,e1) seqable]`
 //!   (no arguments for an empty collection, else the accumulator and an
-//!   element) and `swap!` `[object fn(any,a2+) & any]`. A descriptor joins
+//!   element) and `swap!` `[object fn(s0,a2+) & any]`. A descriptor joins
 //!   terms with `|`: a type, `aN` (argument `N`), `eN` (an element of it,
-//!   [`crate::inference::Inferred::element`]), `rN` (what the function
+//!   [`crate::inference::Inferred::element`]), `sN` (the state of the atom
+//!   argument `N`: a value it holds, light-cljs-252), `rN` (what the function
 //!   argument `N` returns), and `aN+` or `eN+` (from argument `N` on, which
 //!   alone in a call's last descriptor spreads into one argument each).
 //!   A function argument without a shape escapes: the operation may store,
@@ -306,6 +307,11 @@ pub enum Term {
     /// An element of the argument at this index and of every later one
     /// (`e1+`).
     Elements(usize),
+    /// The state of the atom that is the argument at this index (`s0`): one
+    /// of the values it holds when the call runs. Inference knows what the
+    /// atoms whose every use it sees hold (light-cljs-252); any other
+    /// argument's state is `any`.
+    State(usize),
     /// What the function argument at this index returns when the operation
     /// calls it as its [`Callback`] says (`r0`).
     Returns(usize),
@@ -665,7 +671,8 @@ fn parse_params(text: &str) -> Result<Option<Vec<Arity>>, String> {
             Term::Argument(index)
             | Term::Element(index)
             | Term::Arguments(index)
-            | Term::Elements(index) => names_parameter(index),
+            | Term::Elements(index)
+            | Term::State(index) => names_parameter(index),
             Term::Returns(index) => callbacks.iter().any(|callback| callback.index == index),
         };
         if callbacks
@@ -740,7 +747,7 @@ fn parse_calls(text: &str) -> Option<Vec<Vec<Descriptor>>> {
 }
 
 /// Parses a [`Descriptor`]: terms joined by `|`, each a type, `aN`, `eN`,
-/// `aN+`, `eN+` or `rN`.
+/// `aN+`, `eN+`, `sN` or `rN`.
 fn parse_descriptor(text: &str) -> Option<Descriptor> {
     let terms = text
         .split('|')
@@ -754,12 +761,13 @@ fn parse_descriptor(text: &str) -> Option<Descriptor> {
                     .filter(|digits| !digits.is_empty())
                     .and_then(|digits| digits.parse::<usize>().ok())
             };
-            match (index('a'), index('e'), index('r')) {
-                (Some(index), _, _) if from => Some(Term::Arguments(index)),
-                (Some(index), _, _) => Some(Term::Argument(index)),
-                (_, Some(index), _) if from => Some(Term::Elements(index)),
-                (_, Some(index), _) => Some(Term::Element(index)),
-                (_, _, Some(index)) if !from => Some(Term::Returns(index)),
+            match (index('a'), index('e'), index('r'), index('s')) {
+                (Some(index), ..) if from => Some(Term::Arguments(index)),
+                (Some(index), ..) => Some(Term::Argument(index)),
+                (_, Some(index), ..) if from => Some(Term::Elements(index)),
+                (_, Some(index), ..) => Some(Term::Element(index)),
+                (_, _, Some(index), _) if !from => Some(Term::Returns(index)),
+                (_, _, _, Some(index)) if !from => Some(Term::State(index)),
                 _ if !from => Type::parse(term).map(Term::Type),
                 _ => None,
             }
@@ -931,6 +939,10 @@ mod tests {
         assert_eq!(two.calls[1][0].terms, [Term::Element(1), Term::Returns(0)]);
         let swap = CoreFnId::Swap.operation().arity(3).unwrap();
         assert_eq!(
+            swap.callback(1).unwrap().calls[0][0].terms,
+            [Term::State(0)]
+        );
+        assert_eq!(
             swap.callback(1).unwrap().calls[0][1].spread(),
             Some(Term::Arguments(2))
         );
@@ -993,6 +1005,16 @@ mod tests {
                 "[fn(e2) seqable]",
                 "nil",
                 "a callback shape names a missing parameter in `[fn(e2) seqable]`",
+            ),
+            (
+                "[fn(s1+) object]",
+                "nil",
+                "invalid callback shape `fn(s1+)`",
+            ),
+            (
+                "[fn(s2) object]",
+                "nil",
+                "a callback shape names a missing parameter in `[fn(s2) object]`",
             ),
             (
                 "[fn(e1) seqable]:number",
