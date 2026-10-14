@@ -3012,3 +3012,84 @@ Other programs at `advanced`, raw and gzip bytes:
 for: `count` alone keeps 8,948 bytes and the type 5,437, and the rest is
 the record effects targeting `makeType` and the core dispatchers, which
 this change does not touch.
+
+## Count walks and record hooks — October 14, 2026
+
+The second part of light-cljs-251 (with the two splits light-cljs-254
+filed) has `count` walk a seq only where the program builds a value that
+needs it ("Count walks only what needs walking" in the
+[design](../docs/advanced-optimization.md)): through `kindHooks.countSeq`,
+which the builders of cells, lazy seqs and host iterators' seqs,
+`iteration`, `Eduction`, extensions and a program type implementing
+`ISeqable` install. The map hooks a record can reach wait for
+`recordMethods` instead of `makeType`, and each core dispatcher and its
+`protocolHooks` install is a unit of its own.
+
+**Sizes**, raw and `gzip -9` bytes (of stdin) of `--compile --optimize
+LEVEL`, on the 24-CPU Mac (sizes do not depend on load; load average 9.4).
+"Before" is the first part of light-cljs-251 (`7976b93`, on master
+`f76712a`). `prepare` equals `none` for every fixture but `pure-defs`,
+which is 78 bytes smaller there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 398,805 / 95,292 | 399,203 / 95,432 | 151 / 140 | 151 / 140 | 400,000 / 400,000 / 200 |
+| println-hi | 398,692 / 95,219 | 399,090 / 95,359 | 4,771 / 2,021 | 4,771 / 2,021 | 400,000 / 400,000 / 4,800 |
+| vector-printed | 398,717 / 95,231 | 399,115 / 95,369 | 9,659 / 3,719 | 9,659 / 3,719 | 400,000 / 400,000 / 9,700 |
+| map-printed | 398,720 / 95,223 | 399,118 / 95,362 | 13,453 / 4,807 | 13,453 / 4,807 | 400,000 / 400,000 / 14,000 |
+| seq-pipeline | 399,036 / 95,342 | 399,434 / 95,481 | 24,360 / 7,573 | 24,348 / 7,568 | 400,000 / 400,000 / 25,000 |
+| add | 398,645 / 95,210 | 399,043 / 95,350 | 19 / 39 | 19 / 39 | 400,000 / 400,000 / 100 |
+| rest-fn | 398,989 / 95,348 | 399,387 / 95,487 | 9,410 / 3,147 | 9,400 / 3,145 | 400,000 / 400,000 / 9,400 |
+| keyword-case | 399,277 / 95,374 | 399,675 / 95,512 | 3,428 / 1,324 | 3,428 / 1,324 | 400,000 / 400,000 / 3,500 |
+| record-protocol | 399,598 / 95,543 | 399,996 / 95,682 | 5,750 / 2,423 | 5,750 / 2,423 | 400,000 / 400,000 / 5,800 |
+| pure-defs | 400,234 / 95,656 | 400,632 / 95,796 | 5,640 / 2,372 | 5,640 / 2,372 | 401,000 / 401,000 / 5,700 |
+| keyword-lookups | 399,769 / 95,481 | 400,167 / 95,620 | 29,032 / 9,025 | 29,020 / 9,030 | 401,000 / 401,000 / 30,000 |
+| constant-literals | 399,546 / 95,428 | 399,944 / 95,567 | 20,533 / 6,513 | 20,521 / 6,519 | 400,000 / 400,000 / 21,000 |
+| constant-lookups | 399,964 / 95,570 | 400,362 / 95,709 | 3,808 / 1,453 | 3,808 / 1,453 | 401,000 / 401,000 / 3,900 |
+| three-records | 401,735 / 95,847 | 402,133 / 95,985 | 5,757 / 2,422 | 5,757 / 2,422 | 403,000 / 403,000 / 5,800 |
+| constant-keys | 399,762 / 95,420 | 400,160 / 95,558 | 39,788 / 12,188 | 39,776 / 12,175 | 401,000 / 401,000 / 40,000 |
+| event-maps | 399,294 / 95,389 | 399,692 / 95,526 | 29,266 / 9,086 | 29,254 / 9,078 | 400,000 / 400,000 / 30,000 |
+| vector-only | 398,844 / 95,315 | 399,242 / 95,453 | 4,221 / 1,739 | 4,221 / 1,739 | 400,000 / 400,000 / 4,300 |
+| keyword-only | 398,812 / 95,296 | 399,210 / 95,434 | 3,355 / 1,297 | 3,355 / 1,297 | 400,000 / 400,000 / 3,400 |
+| map-only | 398,850 / 95,305 | 399,248 / 95,443 | 9,116 / 3,185 | 9,116 / 3,185 | 400,000 / 400,000 / 9,200 |
+| atom-str | 398,860 / 95,303 | 399,258 / 95,442 | 2,284 / 904 | 2,284 / 904 | 400,000 / 400,000 / 2,300 |
+| set-only | 398,881 / 95,325 | 399,279 / 95,463 | 5,062 / 1,946 | 5,062 / 1,946 | 400,000 / 400,000 / 5,100 |
+| mapv-count | 398,872 / 95,314 | 399,270 / 95,452 | 28,671 / 8,886 | 28,659 / 8,889 | 400,000 / 400,000 / 29,000 |
+| raw-js | 399,644 / 95,474 | 400,042 / 95,611 | 36 / 54 | 36 / 54 | 401,000 / 401,000 / 100 |
+| multi-arity | 401,473 / 95,743 | 401,871 / 95,882 | 318 / 212 | 318 / 212 | 402,000 / 402,000 / 400 |
+| closed-params | 401,208 / 95,887 | 401,606 / 96,026 | 12,996 / 4,960 | 12,996 / 4,960 | 402,000 / 402,000 / 13,000 |
+| debug-logging | 399,964 / 95,658 | 400,362 / 95,798 | 31 / 51 | 31 / 51 | 401,000 / 401,000 / 100 |
+| local-arities | 401,896 / 95,845 | 402,294 / 95,983 | 490 / 278 | 490 / 278 | 403,000 / 403,000 / 500 |
+| callbacks | 400,656 / 95,749 | 401,054 / 95,888 | 37,186 / 11,741 | 36,161 / 11,495 | 402,000 / 402,000 / 37,000 |
+| protocol-params | 401,961 / 96,020 | 402,359 / 96,158 | 42,315 / 13,332 | 41,291 / 13,092 | 403,000 / 403,000 / 42,000 |
+
+No fixture grows at `advanced`: `callbacks` loses 1,025 bytes and its
+ceiling drops from 38,000 to 37,000, `protocol-params` 1,024 and its
+ceiling, which the first part did not lower, from 48,000 to 42,000, and
+six fixtures that keep the seq walk lose 10 to 12 bytes (`rest-fn`'s
+ceiling drops from 9,500 to 9,400), since `count` no longer tests lazy
+seqs and cells itself; three of those gain 3 to 6 gzipped bytes. The
+`none` and `prepare` ceilings of 20 fixtures rise by 1,000 for the shared runtime's growth of 398 bytes (0.1%; 140
+gzipped): the two hook installs, the `const` of each split dispatcher, and
+their comments.
+
+Other programs at `advanced`, raw and gzip bytes:
+
+| Program | Master `e5ee884` | Before | After |
+| --- | ---: | ---: | ---: |
+| `(deftype T [] ICounted (-count [_] 7)) (count (T.))` | 27,180 / 8,726 | 21,678 / 7,157 | 7,662 / 3,043 |
+| `(count (.split "a,b" ","))` | 8,985 / 2,973 | 8,948 / 2,952 | 1,356 / 593 |
+| `(defrecord R [x]) (count (->R 1))` | | 23,575 / 7,665 | 7,947 / 3,156 |
+| `(deftype T [x]) (first (seq [(.-x (T. 1))]))` | | 21,637 / 7,150 | 19,288 / 6,482 |
+| `(deftype T [] ISeqable (-seq [_] (list 1 2))) (seq? (T.))` | 28,136 / 8,984 | 22,634 / 7,413 | 17,647 / 5,972 |
+| `(deftype S [] ISeqable (-seq [_] (list 1 2 3))) (count (S.))` | | 22,588 / 7,397 | 17,601 / 5,957 |
+| `(count (lazy-seq [1 2]))` | | 12,389 / 4,023 | 12,378 / 4,032 |
+| `(deftype T [] ICounted (-count [_] 7)) (counted? (T.))` | 12,375 / 4,304 | 6,181 / 2,563 | 6,181 / 2,563 |
+| `(defrecord R [x]) (map? (->R 1))` | 12,576 / 4,381 | 5,984 / 2,509 | 5,984 / 2,509 |
+
+`count` of a program type now keeps 7,662 bytes, under the 12,000 the
+pellet asked for: the type's 5,437 and `count` with the protocol hooks it
+reads. Without the seq walk it reaches neither the record hooks nor the
+core dispatchers; those two changes save where a program keeps the walk
+or a seq, as the `deftype` with a `seq` and `count` of a type implementing
+`ISeqable` above.

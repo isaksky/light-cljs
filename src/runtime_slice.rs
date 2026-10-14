@@ -116,13 +116,15 @@ pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
 /// operations: a value of a type implementing one is handled like the values
 /// of the runtime's kinds that implement it natively, so the conditional
 /// effects installing those branches name the protocol's unit as a target
-/// (`cons.equiv`, structural equality of sequential values, for
-/// `ISequential`), besides `extendType` and `extendInstance`. An `Advanced`
-/// slice keeps the unit where emitted code implements the protocol in a
-/// `deftype`, `defrecord`, `reify` or extension, and the runtime's own types
-/// built with `installMethods` are targets themselves. The
+/// (`count.seqs`, the seq walk of `count`, for `ISeqable`; `cons.equiv`,
+/// structural equality of sequential values, for `ISequential`), besides
+/// `extendType` and `extendInstance`. An `Advanced` slice keeps the unit
+/// where emitted code implements the protocol in a `deftype`, `defrecord`,
+/// `reify` or extension, and the runtime's own types built with
+/// `installMethods` are targets themselves. Records, which implement
+/// `ISeqable`, count through their own `ICounted` method first. The
 /// `runtime_manifest` suite checks the list against those targets.
-pub const PROTOCOL_ROOTS: &[&str] = &["ISequential"];
+pub const PROTOCOL_ROOTS: &[&str] = &["ISeqable", "ISequential"];
 
 /// The core protocol methods the runtime gives every record, each with the
 /// arities of its slots (receiver included) and a unit of the `when:` list

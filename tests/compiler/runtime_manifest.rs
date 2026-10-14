@@ -442,10 +442,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     }
     // The record methods, the five type hooks, the kind hooks (ten of them
     // the printer's), the protocol hooks (two installs each of the protocol
-    // tests since light-cljs-251), the printer's hooks, the initial values of
-    // four core cells, the protocol wrappers of seven operations and the
-    // upstream fields of 28 types.
-    assert_eq!(checked, 155);
+    // tests and one per core dispatcher since light-cljs-251), the printer's
+    // hooks, the initial values of four core cells, the protocol wrappers of
+    // seven operations and the upstream fields of 28 types.
+    assert_eq!(checked, 162);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -539,7 +539,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
             "PersistentHashMapValue",
             "publicHashSet",
             "putMember",
-            "makeType",
+            "recordMethods",
         ]),
     ),
     (
@@ -568,6 +568,13 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("conjTransientSet", Kind::Stores(&["sets"])),
     ("transientEntryIndex", Kind::Stores(&["maps", "sets"])),
     ("countTransient", Kind::Stores(&["transients"])),
+    // Values `count` walks: cells (those without a count), lazy seqs and host
+    // iterators' seqs.
+    (
+        "countSeq",
+        Kind::Stores(&["cells", "lazyValues", "iteratorSeqs"]),
+    ),
+    ("countTreeSeq", Kind::Units(&["treeMapSeqConstructor"])),
     (
         "hashSequential",
         Kind::Stores(&["vectors", "cells", "views", "queues", "lazyValues"]),
@@ -649,9 +656,29 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
                         })
                     })
             })
-            .map(|unit| manifest.units[unit].name)
+            // `makeType` adds only records to a store, and emission keeps
+            // `recordMethods` for every record type, so a hook for records
+            // waits for that unit instead (light-cljs-251).
+            .map(|unit| match manifest.units[unit].name {
+                "makeType" => "recordMethods",
+                name => name,
+            })
             .collect()
     };
+    let make_type = body(manifest.unit_named("makeType").unwrap().0);
+    for (_, kind) in KIND_HOOKS {
+        let (Kind::Stores(stores) | Kind::Maps(stores)) = kind else {
+            continue;
+        };
+        for store in *stores {
+            for line in make_type
+                .lines()
+                .filter(|line| line.contains(&format!("{store}.set(")))
+            {
+                assert!(line.contains("if (record === true)"), "{line}");
+            }
+        }
+    }
     let mut seen = Vec::new();
     for (index, unit) in manifest.units.iter().enumerate() {
         let hooks: Vec<&str> = installed_hooks(body(index))
@@ -676,7 +703,7 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
                 Kind::Maps(stores) => stores
                     .iter()
                     .flat_map(|store| writers(store))
-                    .filter(|&builder| builder != "makeType")
+                    .filter(|&builder| builder != "recordMethods")
                     .collect(),
                 Kind::Units(units) => units.to_vec(),
             };
@@ -768,7 +795,8 @@ fn kind_hooks_skip_records() {
 /// `PROTOCOL_ROOTS` are exactly the core protocols that conditional effects
 /// target, and every runtime unit that installs a marker of one, as
 /// `Eduction` does for `ISequential`, is a target of those effects too. Records
-/// implement none of them.
+/// implement only `ISeqable`, whose one effect, `count.seqs`, they never need:
+/// `count` asks their `ICounted` method first.
 #[test]
 fn protocol_roots_are_the_protocols_effects_wait_for() {
     use light_cljs::runtime_slice::PROTOCOL_ROOTS;
@@ -807,13 +835,43 @@ fn protocol_roots_are_the_protocols_effects_wait_for() {
         [manifest.unit_named("recordMethods").unwrap().0]
         .body_range
         .clone()];
+    let unit = |name: &str| manifest.unit_named(name).unwrap();
+    let implements = |protocol: &str| {
+        record
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == protocol)
+    };
     for protocol in PROTOCOL_ROOTS {
-        assert!(
-            !record
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|word| word == *protocol),
-            "records implement `{protocol}`"
-        );
+        let implemented = implements(protocol);
+        if *protocol != "ISeqable" {
+            assert!(!implemented, "records implement `{protocol}`");
+            continue;
+        }
+        // `count.seqs` installs the branch of `count` for values implementing
+        // `ISeqable` without `ICounted`; `count.protocol` asks a value's
+        // `ICounted` method first, which `recordMethods.count` gives a record
+        // wherever `count` is kept.
+        assert!(implemented);
+        let effects: Vec<&str> = manifest
+            .units
+            .iter()
+            .filter(|other| {
+                other
+                    .effect
+                    .as_ref()
+                    .is_some_and(|effect| effect.targets.contains(protocol))
+            })
+            .map(|other| other.name)
+            .collect();
+        assert_eq!(effects, ["count.seqs"]);
+        for effect in ["count.seqs", "count.protocol", "recordMethods.count"] {
+            assert!(
+                manifest.conditions(unit(effect)).contains(&unit("count")),
+                "`{effect}` waits for `count`"
+            );
+        }
+        assert_eq!(manifest.conditions(unit("count.seqs")), [unit("count")]);
+        assert!(implements("ICounted"));
     }
 }
 
@@ -927,11 +985,12 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
     let unit = |name| manifest.unit_named(name).unwrap();
     // Effects travel with the bindings they mutate, and only with them; kind
     // hooks also with the bindings that build their kind, here the sequential
-    // branches of structural equality, hashing, `str` and the printer.
+    // branches of `count`, structural equality, hashing, `str` and the printer.
     assert_eq!(
         manifest.attached_effects(unit("ListValue")),
         [
             unit("ListValue.type"),
+            unit("count.seqs"),
             unit("cons.equiv"),
             unit("makeVector.hash"),
             unit("printsMeta.print"),

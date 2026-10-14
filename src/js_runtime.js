@@ -492,7 +492,7 @@
     if (publicCollectionSlots.has(value) && !subvecSources.has(value)) { const slots = publicCollectionSlots.get(value); if (slots.cnt === 0) return null; if (slots.cnt <= 32) return view(IndexedSeqValue, slots.tail, 0, true); }
     return !items.length ? null : items.length <= 32 ? view(IndexedSeqValue, items, 0, true) : view(ChunkedSeqValue, items, 0, false, "chunked");
   };
-  //@unit makeMap.seq effect: makeMap, treeMapConstructor, makeType when: seq requires: IndexedSeqValue,
+  //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: seq requires: IndexedSeqValue,
   //@ kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType, publicCollectionSlots, view
   kindHooks.seqMap = value => {
     const treeSlots = publicCollectionSlots.get(value);
@@ -1377,7 +1377,7 @@
     const slots = publicCollectionSlots.get(result);
     return SubvecValue(meta(result), assoc(subvecSources.get(result), slots.end, item), slots.start, slots.end + 1, null);
   };
-  //@unit makeMap.conj effect: makeMap, treeMapConstructor, makeType when: conj requires: kindHooks,
+  //@unit makeMap.conj effect: makeMap, treeMapConstructor, recordMethods when: conj requires: kindHooks,
   //@ mapConj
   kindHooks.conjMap = mapConj;
   //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj requires: assoc, copyEntries,
@@ -2071,7 +2071,7 @@
   //@ makeVector
   // A transient vector, map or set comes from a persistent one of its kind.
   kindHooks.persistVector = entries => makeVector(entries);
-  //@unit makeMap.persist effect: makeMap, treeMapConstructor, makeType when: persistTransient
+  //@unit makeMap.persist effect: makeMap, treeMapConstructor, recordMethods when: persistTransient
   //@ requires: kindHooks, makeMap, PersistentArrayMapValue, PersistentHashMapValue
   kindHooks.persistMap = (entries, kind) => makeMap(kind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, entries, kind);
   //@unit makeSet.persist effect: makeSet, treeSetConstructor when: persistTransient requires: kindHooks,
@@ -2096,7 +2096,7 @@
     const index = kindHooks.transientEntryIndex(state, key);
     return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
   }
-  //@unit makeMap.transientLookup effect: makeMap, treeMapConstructor, makeType, makeSet,
+  //@unit makeMap.transientLookup effect: makeMap, treeMapConstructor, recordMethods, makeSet,
   //@ treeSetConstructor when: transientLookup requires: entryIndex, hashEntryIndex, kindHooks
   kindHooks.transientEntryIndex = (state, key) => state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
   //@unit assocTransient requires: editableTransient, entryIndex, makeTransient, outOfBounds,
@@ -2133,7 +2133,7 @@
     if (state.entries.length > 8) state.mapKind = "hash-map";
     return value;
   };
-  //@unit makeMap.conjTransient effect: makeMap, treeMapConstructor, makeType when: conjTransient
+  //@unit makeMap.conjTransient effect: makeMap, treeMapConstructor, recordMethods when: conjTransient
   //@ requires: assocBangProtocol, first, isMapEntry, isVector, keyProtocol, kindHooks, next, seq,
   //@ truth, valProtocol
   kindHooks.conjTransientMap = (value, member) => {
@@ -2352,19 +2352,17 @@
     throw new Error("Doesn't support namespace on this type");
   }
 
-  //@unit count requires: accumulatingCount, cells, chunkBuffers, chunks, kindHooks, lazyValues,
-  //@ maps, next, protocolHooks, publicCollectionSlots, queues, seqableValue, sets, subvecSources,
-  //@ transients, vectors, views
+  //@unit count requires: cells, chunkBuffers, chunks, kindHooks, maps, protocolHooks,
+  //@ publicCollectionSlots, queues, seqableValue, sets, subvecSources, transients, vectors, views
   function count(value) {
-    const slots = publicCollectionSlots.get(value);
-    if (cells.get(value)?.kind === "tree-seq" && slots.cnt < 0) return 1 + count(next(value));
+    const slots = publicCollectionSlots.get(value), cell = cells.get(value);
+    if (cell?.kind === "tree-seq" && slots.cnt < 0) return kindHooks.countTreeSeq(value);
     if (slots && "tree-map" in slots) return count(slots["tree-map"]);
     if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
     if (slots?.vec) return count(slots.vec) - slots.i - slots.off;
     if (slots && subvecSources.has(value)) return slots.end - slots.start;
     if (slots && sets.has(value)) return count(slots["hash-map"]);
     if (transients.has(value)) return kindHooks.countTransient(value);
-    if (lazyValues.has(value)) return accumulatingCount(value);
     if (chunkBuffers.has(value)) return chunkBuffers.get(value).end;
     if (chunks.has(value)) { const c = chunks.get(value); return c.end - c.offset; }
     if (queues.has(value)) return queues.get(value).length;
@@ -2377,11 +2375,11 @@
     if (entries) return entries.length;
     const members = sets.get(value);
     if (members) return members.length;
-    const cell = cells.get(value);
-    if (cell) return "count" in cell ? cell.count : accumulatingCount(value);
+    if (cell && "count" in cell) return cell.count;
     const slice = views.get(value);
     if (slice) return Math.max(0, slice.storage.length - slice.offset) + count(slice.tail);
-    if (protocolHooks.implements?.("ISeqable", value) ?? seqableValue(value)) return accumulatingCount(value);
+    // Lazy seqs, cells without a count and other seqables walk their seqs.
+    if (protocolHooks.implements?.("ISeqable", value) ?? seqableValue(value)) return kindHooks.countSeq(value);
     const nativeCount = protocolHooks.builtin?.(value, "ICounted/-count", 1);
     if (nativeCount) return nativeCount.call(value, value);
     throw new Error("count not supported on this type");
@@ -2401,6 +2399,17 @@
     }
     return result;
   }
+  //@unit count.seqs effect: ChunkedCons, compilerFormBridge, cons, Cons, cycleNode, emptyList,
+  //@ EmptyListValue, Eduction, extendInstance, extendType, iterateNode, iteration, iteratorSeq,
+  //@ ISeqable, LazySeq, ListValue, mapProjection, rangeNode, RepeatValue, reSeq,
+  //@ treeMapSeqConstructor when: count requires: accumulatingCount, kindHooks
+  // Only these units, and a program type implementing `ISeqable`
+  // (`PROTOCOL_ROOTS` in src/runtime_slice.rs), build values `count` walks.
+  kindHooks.countSeq = accumulatingCount;
+  //@unit treeMapSeqConstructor.count effect: treeMapSeqConstructor when: count requires: count,
+  //@ kindHooks, next
+  // A sorted map's seq without a count counts its tail's.
+  kindHooks.countTreeSeq = value => 1 + count(next(value));
 
   //@unit vectorNth requires: missing, outOfBounds
   function vectorNth(items, index, notFound) {
@@ -3765,8 +3774,8 @@
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
   }
-  //@unit PersistentHashMapValue.entryIndex effect: PersistentHashMapValue, makeType, publicHashSet,
-  //@ putMember when: collectionEntryIndex requires: hashEntryIndex, kindHooks
+  //@unit PersistentHashMapValue.entryIndex effect: PersistentHashMapValue, recordMethods,
+  //@ publicHashSet, putMember when: collectionEntryIndex requires: hashEntryIndex, kindHooks
   // Maps and sets of a kind other than array-map or sorted: hash maps, hash
   // sets (public hash sets keep their map's kind) and records.
   kindHooks.hashEntryIndex = hashEntryIndex;
@@ -4572,7 +4581,7 @@
     const c = cells.get(value), state = c.state;
     return cycleNode(c.all, c.previous, state.current, state.following);
   };
-  //@unit makeType.meta effect: makeType when: collectionWithMeta, updatedMap requires: equalPair,
+  //@unit makeType.meta effect: recordMethods when: collectionWithMeta, updatedMap requires: equalPair,
   //@ field, keyword, kindHooks, mapKinds, maps, recordTypes
   // A record copy owns fresh mutable host fields. Copying accessor
   // descriptors would leave their closures pointing at the old instance.
@@ -5462,14 +5471,14 @@
   //@ requires: recordCopy, recordMethodTable
   recordMethodTable.push(Type => [
     ["IWithMeta/-with-meta", 2, function (_self, metadata) { return recordCopy(this, Type, metadata, this.__extmap, this.__hash); }]]);
-  //@unit recordMethods.lookup effect: recordMethods when: get, seqProtocol requires: field, get,
+  //@unit recordMethods.lookup effect: recordMethods when: get, lookupProtocol requires: field, get,
   //@ recordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
     ["ILookup/-lookup", 2, function (_self, key) { return get(this, key, null); }],
     ["ILookup/-lookup", 3, function (_self, key, fallback) {
       const index = recordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : field(this, Type.fieldNames[index]);
     }]]);
-  //@unit recordMethods.count effect: recordMethods when: count, seqProtocol requires: count,
+  //@unit recordMethods.count effect: recordMethods when: count, countProtocol requires: count,
   //@ recordMethodTable
   recordMethodTable.push(Type => [
     ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }]]);
@@ -5480,7 +5489,7 @@
       if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
       return reduce((result, pair) => conj(result, pair), this, entry);
     }]]);
-  //@unit recordMethods.contains effect: recordMethods when: contains, seqProtocol requires: contains,
+  //@unit recordMethods.contains effect: recordMethods when: contains, containsProtocol requires: contains,
   //@ recordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
     ["IAssociative/-contains-key?", 2, function (_self, key) { return recordFieldIndex(Type, key) >= 0 || contains(this.__extmap, key); }]]);
@@ -6568,7 +6577,7 @@
   }
   //@unit printsMeta.print effect: Atom, ChunkedCons, collectionWithMeta, compilerFormBridge, Cons,
   //@ cons, cycleNode, emptyList, EmptyListValue, fnWithMeta, IndexedSeqValue, installMethods,
-  //@ iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet, makeType, makeVar,
+  //@ iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet, recordMethods, makeVar,
   //@ makeVector, mapProjection, queueFromArray, rangeNode, reify, RepeatValue, reSeq, symbol,
   //@ SymbolValue, treeMapConstructor, treeMapSeqConstructor, treeSetConstructor, view when: printWriterImpl
   //@ requires: kindHooks, meta, printsMeta, printWriter, write
@@ -6626,7 +6635,7 @@
   //@ requires: cells, kindHooks, lazyValues, printKind, printSequential, printWriter, queues, views
   kindHooks.print = printKind(kindHooks.print, value => cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value),
     (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value));
-  //@unit makeMap.print effect: makeMap, makeType, treeMapConstructor when: printWriterImpl
+  //@unit makeMap.print effect: makeMap, recordMethods, treeMapConstructor when: printWriterImpl
   //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries
   kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) => printMapEntries(mapTraversal(value), writer, options));
   //@unit makeSet.print effect: makeSet, treeSetConstructor when: printWriterImpl requires: kindHooks,
@@ -6718,7 +6727,8 @@
   //@unit str.collections effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
   //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, makeMap,
-  //@ treeMapConstructor, makeType, makeSet, treeSetConstructor when: str requires: kindHooks, print
+  //@ treeMapConstructor, recordMethods, makeSet, treeSetConstructor when: str requires: kindHooks,
+  //@ print
   kindHooks.strCollection = value => print(value, true);
   //@unit displayStr
   // `str` of one value for error messages, through `toString` for collections.
@@ -7017,10 +7027,22 @@
   //@unit indexedNth requires: missing, nth, transientNth, transients
   // The `-nth` of the runtime's indexed values.
   function indexedNth(value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }
-  //@unit seqProtocol effect requires: associativeValue, contains, coreMethod, count, countedValue,
-  //@ first, get, indexedNth, indexedValue, lookupValue, next, nextValue, rest, seq, seqableValue,
-  //@ seqValue
-  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq, seqableValue), firstProtocol = coreMethod("ISeq/-first", [1], first, seqValue), restProtocol = coreMethod("ISeq/-rest", [1], rest, seqValue), nextProtocol = coreMethod("INext/-next", [1], next, nextValue), countProtocol = coreMethod("ICounted/-count", [1], count, value => value == null || countedValue(value)), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], indexedNth, indexedValue), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get, lookupValue), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains, associativeValue);
+  //@unit seqProtocol effect requires: coreMethod, seq, seqableValue
+  const seqProtocol = coreMethod("ISeqable/-seq", [1], seq, seqableValue);
+  //@unit firstProtocol effect requires: coreMethod, first, seqValue
+  const firstProtocol = coreMethod("ISeq/-first", [1], first, seqValue);
+  //@unit restProtocol effect requires: coreMethod, rest, seqValue
+  const restProtocol = coreMethod("ISeq/-rest", [1], rest, seqValue);
+  //@unit nextProtocol effect requires: coreMethod, next, nextValue
+  const nextProtocol = coreMethod("INext/-next", [1], next, nextValue);
+  //@unit countProtocol effect requires: coreMethod, count, countedValue
+  const countProtocol = coreMethod("ICounted/-count", [1], count, value => value == null || countedValue(value));
+  //@unit nthProtocol effect requires: coreMethod, indexedNth, indexedValue
+  const nthProtocol = coreMethod("IIndexed/-nth", [2, 3], indexedNth, indexedValue);
+  //@unit lookupProtocol effect requires: coreMethod, get, lookupValue
+  const lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get, lookupValue);
+  //@unit containsProtocol effect requires: associativeValue, contains, coreMethod
+  const containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains, associativeValue);
   //@unit upstreamMembers
   // The upstream fields and methods of the runtime's types (`first`, `cnt`,
   // `meta`, `sval`, ...), which their `.fields` effects add, are compiler-owned
@@ -7603,14 +7625,24 @@
   //@ isMapEntry, isUuid, mapSeq, name, namespace, next, nth, printsMeta, rest requires: coreProtocolsByName,
   //@ implementsProtocol, protocolHooks
   protocolHooks.implements = (name, value) => implementsProtocol(coreProtocolsByName.get(name), value);
-  //@unit protocolHooks.dispatchers effect: installMethods when: accumulatingCount, mapConj,
-  //@ mapProjection, nth requires: countProtocol, firstProtocol, keyProtocol, nextProtocol,
-  //@ nthProtocol, protocolHooks, valProtocol
+  //@unit protocolHooks.countProtocol effect: installMethods when: accumulatingCount requires: countProtocol,
+  //@ protocolHooks
+  // One install per core dispatcher the generic operations call.
   protocolHooks.countProtocol = countProtocol;
+  //@unit protocolHooks.nthProtocol effect: installMethods when: mapConj, nth requires: nthProtocol,
+  //@ protocolHooks
   protocolHooks.nthProtocol = nthProtocol;
+  //@unit protocolHooks.firstProtocol effect: installMethods when: mapProjection requires: firstProtocol,
+  //@ protocolHooks
   protocolHooks.firstProtocol = firstProtocol;
+  //@unit protocolHooks.nextProtocol effect: installMethods when: mapProjection requires: nextProtocol,
+  //@ protocolHooks
   protocolHooks.nextProtocol = nextProtocol;
+  //@unit protocolHooks.keyProtocol effect: installMethods when: mapProjection requires: keyProtocol,
+  //@ protocolHooks
   protocolHooks.keyProtocol = keyProtocol;
+  //@unit protocolHooks.valProtocol effect: installMethods when: mapProjection requires: protocolHooks,
+  //@ valProtocol
   protocolHooks.valProtocol = valProtocol;
   //@unit protocolHooks.deref effect: installMethods when: reducedValue requires: deref,
   //@ protocolHooks

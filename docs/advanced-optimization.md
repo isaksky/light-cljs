@@ -1682,8 +1682,9 @@ host-facing methods of the vector and the keyword.
   contract below lists what this leaves unsupported.
 - **Protocol hooks.** `protocolHooks.install` is one install unit per hook
   (`protocolHooks.builtin`, `.ownMethod`, `.satisfies`,
-  `.implementsProtocol`, `.dispatchers`), each waiting for the readers of
-  its hook, so a program keeps only those its operations read.
+  `.implementsProtocol`, `.dispatchers`; since light-cljs-251 one per core
+  dispatcher, `.countProtocol`, `.nthProtocol`, ...), each waiting for the
+  readers of its hook, so a program keeps only those its operations read.
   - `builtin` is the value's own method (`directMethod`); the lookup of
     `extend-type` on host types, `object` and `default` (`externalMethod`:
     `coreDispatchers`, `nativeMethods` and `builtinCoreImplementation`) is
@@ -1850,15 +1851,79 @@ host-facing methods of the vector and the keyword.
     to 38,000), and eleven others lose 16 to 107 bytes. The shared runtime
     grows by 821 bytes (0.2%; 252 gzipped), `ownProtocol` and the two hook
     installs with their `when:` lists.
-  - **Left for later.** The pellet's target of 12,000 bytes for `count` of a
-    program type is out of this mechanism's reach: `count` alone keeps
-    8,948 bytes (`(count (.split "a,b" ","))`: its seq walk for cells and
-    lazy seqs) and a bare `deftype` 5,437. The remaining extra is the record
-    effects that target `makeType` (`makeMap.seq` alone, about 3,300 bytes
-    with the vector type it reaches through `mapEntry`), which a `deftype`
-    never needs, and `protocolHooks.dispatchers` with the one unit declaring
-    eight core dispatchers (`seqProtocol`, `lookupProtocol`, ...), which keep
-    `get`, `nth` and `contains` for a `count`.
+  - That left `(count (T.))` at 21,678 bytes: `count` alone kept 8,948
+    (`(count (.split "a,b" ","))`) and a bare `deftype` 5,437, and the
+    rest were record effects and core dispatchers a `deftype` never needs.
+- **Count walks only what needs walking (light-cljs-251, second part).**
+  Every `count` kept its seq walk (`accumulatingCount`, and with it `seq`,
+  `next`, the seq types and their host-facing methods, `nth` and
+  structural equality) for lazy seqs, cells without a count and values
+  implementing `ISeqable` without `ICounted`.
+  - `count` reaches the walk through `kindHooks.countSeq`, which
+    `count.seqs` installs where `count` is kept and a unit that builds such
+    a value is: every writer of `cells`, `lazyValues` and `iteratorSeqs`,
+    `iteration` and `Eduction` (the runtime's types implementing `ISeqable`
+    through `installMethods`), `extendType`, `extendInstance`, and the
+    protocol's unit `ISeqable`, now in `PROTOCOL_ROOTS`, which emission keeps
+    where a `deftype`, `defrecord`, `reify` or extension implements
+    `ISeqable`. Lazy seqs and cells without a count reach the walk through
+    `count`'s `ISeqable` test, which their native test answers, so `count`
+    no longer tests their stores itself. A record implements `ISeqable` but
+    counts through its own `ICounted` method first, which
+    `recordMethods.count` installs wherever `count` is kept. A sorted map's
+    seq without a count (a negative `cnt`) adds one to its tail's count
+    through `kindHooks.countTreeSeq`, installed with
+    `treeMapSeqConstructor`.
+  - **Records' map hooks (light-cljs-254).** The map hooks that a record can
+    reach (`makeMap.seq`, `.conj`, `.print`, `.persist`, `.transientLookup`,
+    `.conjTransient`, `PersistentHashMapValue.entryIndex`,
+    `str.collections`, `printsMeta.print` and `makeType.meta`, the record
+    copy) target `recordMethods` instead of `makeType`: `makeType` adds a
+    value to those stores only for a record, and emission keeps
+    `recordMethods` for every record type. A `deftype` with a `seq` keeps
+    neither the map seq hook nor `mapEntry` and the vector type it reaches.
+  - **One unit per core dispatcher (light-cljs-254).** The unit
+    `seqProtocol` declared eight core dispatchers and
+    `protocolHooks.dispatchers` installed six; each is a unit of its own now,
+    so the seq walk keeps `countProtocol` without `get`, `nth` and
+    `contains`. A record method waits for its own dispatcher
+    (`recordMethods.lookup when: get, lookupProtocol`).
+  - A host value that declares `ISeqable` by its mask bit without `ICounted`
+    is walked only where the program implements `ISeqable` itself; see the
+    contract below.
+  - **Tests.** `builtin_types::count_walks_the_seqs_of_the_values_that_need_it`
+    counts every kind the walk serves (a lazy seq, a `Cons`, a range of
+    doubles, `keys`, `re-seq`, a chunked cons, a host iterator's seq,
+    `iteration`, `eduction`, `subseq` and a sorted map's seq built with a
+    negative count, a `deftype` and a `reify` implementing `ISeqable`,
+    `extend-type` of a program and a host type, `specify!`), each in a
+    program of its own, at every level against `None`, checks that `count`
+    of a host array, a `deftype`, a record and a `reify` implementing
+    `ICounted` keeps no seqs, and that a host value declaring `ISeqable` by
+    its mask bit throws a `TypeError` at `Advanced`;
+    `map_hooks_for_records_wait_for_records` checks a `deftype` with a seq
+    and seqs, prints, compares, converts and updates records at every level.
+    The `runtime_manifest` suite lists the two hooks in `KIND_HOOKS`, lets a
+    record hook wait for `recordMethods` where `makeType` writes the store
+    (checking that `makeType` writes those stores only for records), and
+    checks that records, which implement `ISeqable`, count through
+    `recordMethods.count` where `count.seqs` would serve them.
+  - **Measured** at `Advanced`, raw / gzip bytes, against the first part
+    (`7976b93`, on master `f76712a`): `(deftype T [] ICounted (-count [_] 7)) (count (T.))` drops
+    from 21,678 / 7,157 to 7,662 / 3,043 (27,180 / 8,726 on master
+    `e5ee884`; the pellet asked for 12,000), `(count (.split "a,b" ","))`
+    from 8,948 / 2,952 to 1,356 / 593, `(defrecord R [x]) (count (->R 1))`
+    from 23,575 / 7,665 to 7,947 / 3,156, a `deftype` with `(first (seq
+    [...]))` from 21,637 / 7,150 to 19,288 / 6,482, and `(seq? (T.))` and
+    `count` of a type implementing `ISeqable` from about 22,600 / 7,400 to
+    17,600 / 5,960. No fixture grows: `callbacks` drops from 37,186 / 11,741
+    to 36,161 / 11,495 (its ceiling from 38,000 to 37,000),
+    `protocol-params` from 42,315 / 13,332 to 41,291 / 13,092 (its ceiling
+    from 48,000 to 42,000), six others lose 10 to 12 bytes (`rest-fn`'s
+    ceiling drops from 9,500 to 9,400). The
+    shared runtime grows by 398 bytes (0.1%; 140 gzipped): the two hook
+    installs, the seven `const` declarations of the split dispatchers and
+    the comments.
 
 #### Phase 2 call shape extension points
 
@@ -3193,6 +3258,15 @@ upstream states that advanced mode is unsafe for certain patterns.
   a pooled constant that contains it. At every level a collection's `__hash`
   is nil until it is hashed and its hash afterwards.
 - `set!` on a core operation forces indirection for that operation only.
+- Protocol masks (`cljs$lang$protocol_mask$partition0$`) are compiler-owned
+  names too, which Closure renames upstream. A host value that declares a
+  core protocol only by its mask bit is seen as declaring it only where the
+  program keeps the protocol hooks (`installMethods`: it defines a type or
+  a `reify`, or extends a protocol), and `count` walks the seq of one
+  declaring `ISeqable` without `ICounted` only where the program implements
+  `ISeqable` itself (light-cljs-251). Elsewhere `count` of it throws, `count
+  not supported on this type` or a `TypeError` naming `kindHooks.countSeq`,
+  where `optimize: false` reports the missing `-seq` method.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the compiler renames every name it binds away from it: the
   hygiene pass gives them the `__light<n>_` prefix, which no raw text of the

@@ -186,7 +186,9 @@ without the protocol tables, so a record next to a vector or a keyword keeps
 about 10 KB instead of 35 KB (light-cljs-246, "Phase 2 builtin types,
 program types"); their protocol tests (`counted?`, `count`, `seq`) read the
 protocols a value declares by name, so `(counted? (T.))` of a `deftype`
-keeps about 6 KB instead of 12 KB (light-cljs-251). Each distinct keyword
+keeps about 6 KB instead of 12 KB, and `count` walks a seq only where the
+program builds a value that needs it, so `(count (T.))` keeps about 8 KB
+instead of 27 KB and `count` of a host array 1.4 KB (light-cljs-251). Each distinct keyword
 and quoted symbol literal the output reads is declared once after the
 runtime, `const k0 = rt$keyword(null, "a");`, and its sites read `k0`;
 keyword `case` switches on

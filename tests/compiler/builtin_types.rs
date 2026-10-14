@@ -200,22 +200,37 @@ fn a_program_type_opens_the_protocol_hooks() {
     // so they dispatch to program types: since light-cljs-246 a type's own
     // methods (`ownMethod`), since light-cljs-251 the protocols it declares
     // (`ownProtocol`), and the whole machinery only with `extend-type` or
-    // `specify!`.
+    // `specify!`. `count` walks a seq only for the values that need it, which
+    // a program type builds only where it implements `ISeqable`, so this one
+    // keeps no seqs: 21,678 bytes before light-cljs-251's second attempt.
     let source = "(deftype T [] ICounted (-count [_] 7)) (count (T.))";
-    let units = units(source);
+    let units = assert_keeps_none(
+        source,
+        &[
+            "accumulatingCount",
+            "count.seqs",
+            "seq",
+            "next",
+            "ISeqable",
+            "makeMap.seq",
+            "protocolHooks.ownSatisfies",
+            "protocolHooks.countProtocol",
+            "countProtocol",
+        ],
+    );
     for unit in [
         "installMethods",
         "ownMethod",
         "ownProtocol",
         "protocolHooks.ownMethod",
         "protocolHooks.ownImplements",
-        "protocolHooks.ownSatisfies",
     ] {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
     for unit in EXTENSION_MACHINERY {
         assert!(!units.contains(&unit), "{unit}: {units:?}");
     }
+    assert!(advanced(source).emit_js().len() < 8_000);
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -572,6 +587,113 @@ fn core_protocol_tables_written_directly_reach_the_protocol_tests() {
              (js-obj \"get\" (fn [] (throw (js/Error. \"marker read\")))))
            (pr-str [(count (T.)) (counted? o)]))",
         "[7 true]",
+    );
+}
+
+/// light-cljs-251: `count` walks the seq of a value it cannot count directly
+/// through `kindHooks.countSeq`, which the units building such values install
+/// (`count.seqs`): cells without a count, lazy seqs, host iterators' seqs,
+/// `iteration`, `Eduction`, a program type implementing `ISeqable` (which
+/// keeps the protocol's unit), `extend-type` and `specify!`; a sorted map's
+/// seq without a count through `kindHooks.countTreeSeq`. Each value in a
+/// program of its own counts as at `None`, and `count` of anything else keeps
+/// no seqs.
+#[test]
+fn count_walks_the_seqs_of_the_values_that_need_it() {
+    for source in [
+        "(count (.split \"a,b\" \",\"))",
+        "(deftype T [] ICounted (-count [_] 7)) (count (T.))",
+        "(defrecord R [x]) (count (->R 1))",
+        "(count (reify ICounted (-count [_] 3)))",
+    ] {
+        assert_keeps_none(source, &["accumulatingCount", "count.seqs", "seq", "next"]);
+    }
+    // 8,948 bytes before.
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 1_500);
+    for (source, expected) in [
+        ("(count (.split \"a,b\" \",\"))", "2"),
+        ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
+        ("(count (reify ICounted (-count [_] 3)))", "3"),
+        ("(count (lazy-seq [1 2]))", "2"),
+        ("(count (cons 1 [2 3]))", "3"),
+        ("(count (range 0.5 3))", "3"),
+        ("(count (keys {:a 1 :b 2}))", "2"),
+        ("(count (re-seq #\"a\" \"aba\"))", "2"),
+        (
+            "(count (chunk-cons (chunk (doto (chunk-buffer 2) (chunk-append 1) (chunk-append 2))) nil))",
+            "2",
+        ),
+        ("(count (es6-iterator-seq (.values #js [1 2 3])))", "3"),
+        (
+            "(count (iteration (fn [k] (when (< k 3) k)) :initk 0 :kf inc))",
+            "3",
+        ),
+        ("(count (eduction (map inc) [1 2 3]))", "3"),
+        ("(count (subseq (sorted-map 1 2 3 4 5 6) > 1))", "2"),
+        (
+            "(let [s (seq (sorted-map 1 2 3 4))] (count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil)))",
+            "1",
+        ),
+        (
+            "(deftype S [] ISeqable (-seq [_] (list 1 2 3))) (count (S.))",
+            "3",
+        ),
+        ("(count (reify ISeqable (-seq [_] (list 1 2))))", "2"),
+        (
+            "(deftype T []) (extend-type T ISeqable (-seq [_] (list 1 2))) (count (T.))",
+            "2",
+        ),
+        (
+            "(extend-type js/Date ISeqable (-seq [_] (list 1))) (count (js/Date. 0))",
+            "1",
+        ),
+        (
+            "(count (specify! #js {} ISeqable (-seq [_] (list 1 2))))",
+            "2",
+        ),
+    ] {
+        every_level(source, expected);
+    }
+    let units = units(
+        "(let [s (seq (sorted-map 1 2 3 4))] (count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil)))",
+    );
+    assert!(units.contains(&"treeMapSeqConstructor.count"), "{units:?}");
+    // A host value declaring `ISeqable` by its mask bit, a compiler-owned
+    // name, is not walked where nothing in the program implements `ISeqable`:
+    // `count` throws a `TypeError` naming the hook at `Advanced`.
+    let masked = "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
+         (try (count (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608))
+           (catch js/TypeError _ :unsupported) (catch :default e (.-message e)))";
+    let printed = execute(&format!("console.log({});", advanced(masked).emit_js()));
+    assert_eq!(printed, "KeywordValue {}\n");
+    let none = prepare_application(
+        &program(masked),
+        ApplicationOptions::new(OptimizationLevel::None),
+    )
+    .emit_js();
+    assert_eq!(
+        execute(&format!("console.log({none});")),
+        "No protocol method ISeqable/-seq defined for this value\n"
+    );
+}
+
+/// light-cljs-251 (light-cljs-254): the map hooks records need (`makeMap.seq`,
+/// `.conj`, `.print`, the transient ones, `str.collections`, ...) wait for
+/// `recordMethods`, which only a program with records keeps, instead of
+/// `makeType`, which every program type keeps. A `deftype` with a seq keeps
+/// none of them, and a record still seqs, prints, compares, converts and
+/// carries metadata at every level.
+#[test]
+fn map_hooks_for_records_wait_for_records() {
+    let deftype = "(deftype T [x]) (first (seq [(.-x (T. 1))]))";
+    assert_keeps_none(deftype, &["recordMethods", "makeMap.seq", "mapEntry"]);
+    every_level(deftype, "1");
+    every_level(
+        "(defrecord R [x])
+         (pr-str [(seq (->R 1)) (->R 1) (= (->R 1) (->R 1)) (= (->R 1) {:x 1}) (conj (->R 1) [:y 2])
+                  (into {} (->R 1)) (persistent! (conj! (transient {}) [:a 1])) (with-meta (->R 1) {:m 1})
+                  (meta (with-meta (->R 1) {:m 1})) (count (->R 1)) (get (assoc (->R 1) :z 3) :z)])",
+        "[([:x 1]) #cljs.user.R{:x 1} true false #cljs.user.R{:x 1, :y 2} {:x 1} {:a 1} #cljs.user.R{:x 1} {:m 1} 1 3]",
     );
 }
 
