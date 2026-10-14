@@ -35,7 +35,7 @@ export const EXAMPLES = [
     id: "macro",
     title: "A macro",
     entry: "hello.macro",
-    expect: ":done",
+    expect: "the body ran",
     files: [
       {
         path: "hello/macro.cljs",
@@ -53,7 +53,8 @@ export const EXAMPLES = [
 (unless (< 1 2)
   (js/console.log "this never prints"))
 
-:done
+;; The last form's value is the program's value, here the macro's body.
+(unless (> 1 2) "the body ran")
 `,
       },
     ],
