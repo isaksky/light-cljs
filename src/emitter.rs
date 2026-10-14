@@ -12,6 +12,7 @@ use crate::analyzer::{
 };
 use crate::call_shapes::{CallShapes, DirectCall, Entry, FunctionShape, LocalFunction, Placement};
 use crate::core_operations::Type;
+use crate::folding::Members;
 use crate::inference::{Inference, Known};
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
 use crate::runtime_slice::{
@@ -747,7 +748,9 @@ pub(crate) enum Composite {
     ArrayMap,
     /// `mapFromArrays([keys], [values])`, a map literal of more entries.
     HashMap,
-    /// `setFromArray([items])`, a set literal of scalars, keywords and symbols.
+    /// `setFromArray([items])`, a set literal of scalars, keywords and symbols;
+    /// `arraySetFromArray` at `Advanced` for at most 8, which builds no hash
+    /// set.
     Set,
     /// `literalSetFromArray([items])`, which throws on members equal at run
     /// time. Never pooled: hoisting would move the throw to load time.
@@ -987,6 +990,21 @@ struct ConstantTable<'a> {
     hashes: Option<ConstantHashes<'a>>,
 }
 
+/// A test of membership in a set literal that emission writes as
+/// comparisons (`Emitter::membership`).
+struct Membership<'a> {
+    /// The tested value.
+    value: ExprId,
+    /// The set literal's members, in order.
+    members: &'a [ExprId],
+    /// Whether they are keywords, compared by spelling; else strings and
+    /// numbers, compared with `===`.
+    keywords: bool,
+    /// `contains?`, which gives a boolean; a call of the set or `get` gives
+    /// the member or nil.
+    contains: bool,
+}
+
 struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
@@ -1068,6 +1086,15 @@ impl<'a> Emitter<'a> {
         if self.replaced_core.is_none() {
             self.runtime.record(name, site, used);
             return name.to_string();
+        }
+        if (name.binding, name.member) == (CORE_HUB, Some("PersistentHashSet")) {
+            // The set type's public constructor, which only a program naming
+            // the type calls (light-cljs-231).
+            self.runtime.record(
+                RuntimeName::direct("publicHashSet", None),
+                site,
+                NameUse::Keep,
+            );
         }
         let resolved = match (name.binding, name.member) {
             (CORE_HUB, Some(member)) => match core_reference(member) {
@@ -1513,7 +1540,16 @@ impl<'a> Emitter<'a> {
     /// (`rt$PersistentVectorValue.EMPTY` at `Advanced`), which an empty
     /// literal reads at every level instead of allocating.
     fn empty_collection(&mut self, empty: EmptyCollection) {
-        self.rt(RuntimeName::core(empty.core_type()));
+        if empty == EmptyCollection::Set
+            && self.replaced_core.is_some()
+            && !self.replaced(empty.core_type())
+        {
+            // The type's binding: `#{}` does not name the public constructor
+            // (`publicHashSet`).
+            self.rt(RuntimeName::direct("PersistentHashSetValue", None));
+        } else {
+            self.rt(RuntimeName::core(empty.core_type()));
+        }
         self.output.push_str(".EMPTY");
     }
 
@@ -1543,6 +1579,11 @@ impl<'a> Emitter<'a> {
             }
             Composite::ArrayMap => RuntimeName::export("mapFromArray"),
             Composite::HashMap => RuntimeName::export("mapFromArrays"),
+            // ... and a set literal of at most 8 constants keeps no hash set
+            // (light-cljs-231).
+            Composite::Set if self.replaced_core.is_some() && count <= 8 => {
+                RuntimeName::export("arraySetFromArray")
+            }
             Composite::Set => RuntimeName::export("setFromArray"),
             Composite::CheckedSet => RuntimeName::export("literalSetFromArray"),
             Composite::LiteralMap => RuntimeName::export("constantMapFromArray"),
@@ -1778,7 +1819,9 @@ impl<'a> Emitter<'a> {
     /// `BooleanHint` or, at `Advanced`, when its inferred type makes JavaScript
     /// truthiness agree with Clojure's (no number, string or host value).
     fn condition(&mut self, id: ExprId) {
-        if let ExprKind::BooleanHint(value) = self.program.exprs[id.0].kind {
+        if let Some(membership) = self.membership(id) {
+            self.membership_value(&membership, true);
+        } else if let ExprKind::BooleanHint(value) = self.program.exprs[id.0].kind {
             self.value(value);
         } else if self
             .inference
@@ -2096,82 +2139,147 @@ impl<'a> Emitter<'a> {
         false
     }
 
-    /// At `Advanced`, an `if` test that asks whether a value is a member of a
-    /// set literal of keywords, `(s x)`, `(contains? s x)` or `(get s x)`:
-    /// the tested value and the members' spellings (light-cljs-221;
-    /// docs/advanced-optimization.md, "Constant pool extension points"). The
-    /// set has at most 8 members, so it is an array set (`setFromArray`,
-    /// `constantSetFromArray`) whose lookup compares the value with each
-    /// member by `equalPair` without hashing it; with core protocols intact
-    /// and no program `IEquiv`, a value is `=` to a keyword exactly when it
-    /// is a keyword of the same spelling, and comparing it runs no code (a
-    /// sequential or map value checks the keyword's kind first). The test is
-    /// then the `switch` on `keywordFqn` that keyword `case` emits, and a
-    /// member is truthy, so `get` agrees with `contains?`.
-    fn membership(&self, test: ExprId) -> Option<(ExprId, Vec<Vec<u16>>)> {
+    /// At `Advanced`, a call that asks whether a value is a member of a set
+    /// literal of keywords, or of strings and numbers, `(s x)`, `(contains? s
+    /// x)` or `(get s x)` (light-cljs-221 for keywords in an `if` test;
+    /// light-cljs-231; docs/advanced-optimization.md, "Constant folding
+    /// extension points"). The set has at most 8 members, so it is an array
+    /// set (`arraySetFromArray`, `setFromArray`, `constantSetFromArray`)
+    /// whose lookup compares the value with each member without hashing it:
+    /// a string or number key with `===`, any other key by `equalPair`. With
+    /// core protocols intact and no program `IEquiv`, a value is `=` to a
+    /// keyword exactly when it is a keyword of the same spelling, and to a
+    /// string or number exactly when it is `===` to it, and comparing it runs
+    /// no code (a sequential or map value checks the other value's kind
+    /// first). So the test compares `keywordFqn` of the value, or the value,
+    /// with each member in order, and finds the member a lookup finds. A
+    /// member is truthy, so in an `if` test `get` agrees with `contains?`.
+    fn membership(&self, test: ExprId) -> Option<Membership<'a>> {
+        let program = self.program;
         let facts = self.inference?.facts();
         if !facts.core_protocols_intact() || facts.implements_equiv() {
             return None;
         }
-        let ExprKind::Call { callee, args } = &self.program.exprs[test.0].kind else {
+        let ExprKind::Call { callee, args } = &program.exprs[test.0].kind else {
             return None;
         };
-        let (set, value) = match (&self.program.exprs[callee.0].kind, &args[..]) {
+        let (set, value, contains) = match (&program.exprs[callee.0].kind, &args[..]) {
             (
                 ExprKind::CoreFn(core @ (crate::CoreFnId::Contains | crate::CoreFnId::Get)),
                 [set, value],
-            ) if !self.replaced(core.runtime_name()) => (*set, *value),
-            (ExprKind::Set(_) | ExprKind::LiteralSet(_), [value]) => (*callee, *value),
+            ) if !self.replaced(core.runtime_name()) => {
+                (*set, *value, *core == crate::CoreFnId::Contains)
+            }
+            (ExprKind::Set(_) | ExprKind::LiteralSet(_), [value]) => (*callee, *value, false),
             _ => return None,
         };
-        let (ExprKind::Set(members) | ExprKind::LiteralSet(members)) =
-            &self.program.exprs[set.0].kind
+        let (ExprKind::Set(members) | ExprKind::LiteralSet(members)) = &program.exprs[set.0].kind
         else {
             return None;
         };
-        if members.len() > 8 {
-            return None;
+        Some(Membership {
+            value,
+            members,
+            keywords: crate::folding::members(program, members)? == Members::Keywords,
+            contains,
+        })
+    }
+
+    /// What a [`Emitter::membership`] test compares with each member: the
+    /// value's spelling, `rt$keywordFqn(x)` (null for any other value), or
+    /// the value itself.
+    fn membership_subject(&mut self, membership: &Membership) {
+        if membership.keywords {
+            self.rt(RuntimeName::export("keywordFqn"));
+            self.output.push('(');
+            self.value(membership.value);
+            self.output.push(')');
+        } else {
+            self.value(membership.value);
         }
-        let spellings = members
-            .iter()
-            .map(|member| match self.program.exprs[member.0].kind {
-                ExprKind::Keyword(literal) => {
-                    let name = &self.program.named_literals[literal.0];
-                    let mut spelling = Vec::new();
-                    if let Some(namespace) = name.namespace {
-                        spelling.extend_from_slice(&self.program.strings[namespace.0]);
-                        spelling.push('/' as u16);
-                    }
-                    spelling.extend_from_slice(&self.program.strings[name.name.0]);
-                    Some(spelling)
+    }
+
+    /// The literal a [`Emitter::membership`] test compares with `member`: a
+    /// keyword's spelling, or the string or number.
+    fn member_label(&mut self, member: ExprId, keywords: bool) {
+        match self.program.exprs[member.0].kind {
+            ExprKind::Keyword(literal) if keywords => {
+                self.string_units(&crate::folding::spelling(self.program, literal));
+            }
+            _ => self.value(member),
+        }
+    }
+
+    /// A [`Emitter::membership`] test in value position: a boolean for
+    /// `contains?` (or wherever only its truth matters, `boolean`), else the
+    /// member a lookup finds or nil, as a conditional expression over the
+    /// members, `(caseValue => caseValue === "a" ? k0 : caseValue === "b" ?
+    /// k1 : null)(rt$keywordFqn(x))`. The subject is read in place where it
+    /// is read once (one member), or where reading it again is reading it
+    /// once (a local compared with strings or numbers).
+    fn membership_value(&mut self, membership: &Membership, boolean: bool) {
+        let members = membership.members;
+        let Some((last, _)) = members.split_last() else {
+            // Nothing is a member of the empty set; the value is still
+            // evaluated.
+            self.output.push('(');
+            self.value(membership.value);
+            self.output
+                .push_str(if boolean { ", false)" } else { ", null)" });
+            return;
+        };
+        let inline =
+            members.len() == 1 || !membership.keywords && self.repeatable(membership.value);
+        self.output
+            .push_str(if inline { "(" } else { "((caseValue) => " });
+        for &member in members {
+            if inline {
+                self.membership_subject(membership);
+            } else {
+                self.output.push_str("caseValue");
+            }
+            self.output.push_str(" === ");
+            self.member_label(member, membership.keywords);
+            if boolean {
+                if member != *last {
+                    self.output.push_str(" || ");
                 }
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some((value, spellings))
+            } else {
+                self.output.push_str(" ? ");
+                self.value(member);
+                self.output.push_str(" : ");
+            }
+        }
+        if !boolean {
+            self.output.push_str("null");
+        }
+        if !inline {
+            self.output.push_str(")(");
+            self.membership_subject(membership);
+        }
+        self.output.push(')');
     }
 
     /// An `if` on a [`Emitter::membership`] test as a `switch` on the tested
-    /// value's spelling, one `case` per member before the branch it selects.
+    /// value's spelling or the value, one `case` per member before the branch
+    /// it selects.
     fn membership_switch(
         &mut self,
-        value: ExprId,
-        members: &[Vec<u16>],
+        membership: &Membership,
         yes: ExprId,
         no: ExprId,
         context: ExprContext,
     ) {
+        let members = membership.members;
         self.indentation();
         self.output.push_str("switch (");
-        self.rt(RuntimeName::export("keywordFqn"));
-        self.output.push('(');
-        self.value(value);
-        self.output.push_str(")) {\n");
+        self.membership_subject(membership);
+        self.output.push_str(") {\n");
         self.indent += 1;
-        for (index, spelling) in members.iter().enumerate() {
+        for (index, &member) in members.iter().enumerate() {
             self.indentation();
             self.output.push_str("case ");
-            self.string_units(spelling);
+            self.member_label(member, membership.keywords);
             self.output.push_str(if index + 1 == members.len() {
                 ": {\n"
             } else {
@@ -2682,8 +2790,8 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("}\n");
             }
             ExprKind::If { test, yes, no } if self.membership(*test).is_some() => {
-                let (value, members) = self.membership(*test).unwrap();
-                self.membership_switch(value, &members, *yes, *no, context);
+                let membership = self.membership(*test).unwrap();
+                self.membership_switch(&membership, *yes, *no, context);
             }
             ExprKind::If { test, yes, no } => {
                 self.indentation();
@@ -4259,6 +4367,10 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(".get(");
                     self.value(map);
                     write!(self.output, ")[{index}].value").unwrap();
+                    return;
+                }
+                if let Some(membership) = self.membership(id) {
+                    self.membership_value(&membership, membership.contains);
                     return;
                 }
                 if self.lowered_call(*callee, args) {

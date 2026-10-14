@@ -4,19 +4,10 @@
 //! Run one suite with `cargo nextest run --test compiler <feature>::` or
 //! `cargo test --test compiler <feature>::`.
 
-/// Declares one `#[test]` per fixture row or row range, so long fixture loops run in
-/// parallel and a failure names its rows: `row_tests!(run; row_00(0), row_01(1));`
-/// expands to `#[test] fn row_00() { run(0) }` and so on.
-macro_rules! row_tests {
-    ($run:ident; $($name:ident($($arg:expr),*)),+ $(,)?) => {
-        $(
-            #[test]
-            fn $name() {
-                $run($($arg),*);
-            }
-        )+
-    };
-}
+// `row_tests!` declares one test per fixture row, row range or share of the rows.
+#[macro_use]
+#[path = "../support/row_tests.rs"]
+mod row_tests;
 
 // The SCI wire protocol is shared by several suites; load it once.
 #[path = "../support/sci_protocol.rs"]

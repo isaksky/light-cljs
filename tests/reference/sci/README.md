@@ -6,7 +6,10 @@ for attribution). These are the original SCI results; they are never rewritten t
 match light-cljs.
 
 `evaluator-dispositions.tsv` assigns every SCI row a status and is executed by
-`tests/evaluation/evaluator_conformance.rs` through a fresh `EvalSession` per row. Each line
+`tests/evaluation/evaluator_conformance.rs` through a fresh `EvalSession` per row.
+`every_historical_sci_case_has_an_evaluator_disposition` checks the accounting of
+the whole corpus; the ten `historical_sci_cases_execute_their_dispositions_<n>`
+tests each execute every tenth row, so nextest runs them in parallel. Each line
 has 14 tab-separated fields: the seven original SCI fields (ID, profile, source,
 outcome, effects, stdout, stderr), then status, the source actually evaluated,
 the light-cljs outcome, effects, stdout, stderr, and a reason with

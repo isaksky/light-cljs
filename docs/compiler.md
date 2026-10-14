@@ -173,12 +173,13 @@ through, so a program keeps of the runtime's collection, keyword and seq types
 only those it can build (see "Phase 2 builtin types extension points" in
 [advanced-optimization.md](advanced-optimization.md)). Core protocol
 dispatchers and protocol tests answer natively without protocol
-implementations, vectors and maps answer their host-facing methods from
-their own items, the printer reads options only where the program can pass
-them, `(atom x)` is a plain constructor call and a map literal of at most 8
-entries builds an array map only, so none of these keeps the protocol
-machinery, seqs or hash maps by itself ("Phase 2 builtin types, second
-pass"). Each distinct keyword and quoted symbol literal
+implementations, vectors, maps and sets answer their host-facing methods
+from their own items, the printer reads options only where the program can
+pass them, `(atom x)` is a plain constructor call, a map literal of at most 8
+entries builds an array map only and a set literal of at most 8 constants an
+array set only, so none of these keeps the protocol machinery, seqs, hash
+maps or hashing by itself ("Phase 2 builtin types, second pass" and "Phase
+2 builtin types, sets"). Each distinct keyword and quoted symbol literal
 the output reads is declared once after the runtime, `const k0 = rt$keyword(null,
 "a");`, and its sites read `k0`; keyword `case` switches on
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it
@@ -425,9 +426,11 @@ leaves unread, in up to four rounds (`src/folding.rs`, `src/inlining.rs`):
   statically. A call that would throw, such as `nth` out of range without a
   default, stays and throws. A map literal with constant keys answers
   `count`, `contains?` and lookups of absent keys whatever its values, and
-  a lookup of a present key reads that key's entry by index. An `if` on
-  membership in a set of at most eight keywords is a `switch` on the
-  value's spelling.
+  a lookup of a present key reads that key's entry by index. Membership in
+  a set literal of at most eight keywords, or of strings and numbers,
+  compares the value with each member: an `if` on it is a `switch` on the
+  value's spelling (or the value), and elsewhere it is a conditional
+  expression that gives the boolean or the member.
 - A call of a known function is replaced with the body of the method it runs
   when the function is called only there (and does not escape), or when its
   body is a small pure computation (at most ten expressions of reads,

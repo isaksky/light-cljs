@@ -319,6 +319,37 @@ fn membership_tests_switch_on_spellings() {
     assert!(!text.contains("switch ("), "{text}");
 }
 
+/// Membership in a set literal of at most 8 keywords, or of strings and
+/// numbers, outside an `if` statement is a conditional expression over its
+/// members (light-cljs-231): `contains?` gives a boolean, a call of the set
+/// and `get` the member or nil. The tested value is evaluated once, read in
+/// place where reading it again is reading it once (one member, or a local
+/// compared with strings and numbers), else passed to an arrow function. An
+/// `if` on membership in a set of strings and numbers is a `switch` on the
+/// value.
+#[test]
+fn membership_in_value_position_compares_with_each_member() {
+    let source = r#"
+      (def ticks (atom 0))
+      (defn tick [x] (swap! ticks inc) x)
+      (defn kw [x] [(contains? #{:a :b} x) (#{:a :b} x) (get #{:a} x) (contains? #{:a :ns/c} (tick x))])
+      (defn st [x] [(contains? #{"a" "b"} x) (get #{"a" "b"} x) (#{1 2} (tick x)) (if (#{1 -0.5} x) "in" "out")])
+      (defn sw [x] (if (contains? #{"a" 2} x) "in" "out"))
+      (pr-str [(mapv kw [:a :b :c (keyword "a") (keyword "ns" "c") "a" nil])
+               (mapv st ["a" "b" 1 2 -0.5 :a nil]) (mapv sw ["a" 2 2.0 "2" :a]) @ticks])"#;
+    let text = every_level(
+        source,
+        r#"[[[true :a :a true] [true :b nil false] [false nil nil false] [true :a :a true] [false nil nil true] [false nil nil false] [false nil nil false]] [[true "a" nil "out"] [true "b" nil "out"] [false nil 1 "in"] [false nil 2 "out"] [false nil nil "in"] [false nil nil "out"] [false nil nil "out"]] ["in" "in" "in" "out" "out"] 14]"#,
+    );
+    for call in ["rt$contains(", "rt$get(", ".call(null, l"] {
+        assert!(!text.contains(call), "{call}: {text}");
+    }
+    assert_eq!(text.matches("((caseValue) => ").count(), 4, "{text}");
+    assert!(text.contains("(rt$keywordFqn(l1) === \"a\" ? k"), "{text}");
+    assert!(text.contains("(l2 === \"a\" || l2 === \"b\")"), "{text}");
+    assert!(text.contains("switch (l3) {"), "{text}");
+}
+
 /// A lookup of a constant key in a map literal whose keys are distinct
 /// constants, or in a local a `let` binds to one: an absent key is `nil` or
 /// the default, and `count`, `contains?`, `empty?` and `map?` fold; a value

@@ -3,7 +3,7 @@ use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
     fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -46,24 +46,35 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
     );
 }
 
-#[test]
-fn hash_branch_effects_execute_in_fresh_and_reused_phases() {
+/// A new directory for one test's artifacts: `LIGHT_HASH_BRANCH_ROOT/<name>` when
+/// that variable is set, kept after the run; otherwise a temporary directory that
+/// `finish` removes.
+fn artifact_root(name: &str) -> (PathBuf, bool) {
     let retained = std::env::var_os("LIGHT_HASH_BRANCH_ROOT");
-    let root = retained
-        .as_ref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!(
-                "light-cljs-hash-branch-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ))
-        });
+    let root = match &retained {
+        Some(root) => PathBuf::from(root).join(name),
+        None => std::env::temp_dir().join(format!(
+            "light-cljs-hash-branch-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+    };
     assert!(!root.exists());
     fs::create_dir_all(&root).unwrap();
+    (root, retained.is_some())
+}
+
+fn finish(root: PathBuf, retained: bool) {
+    if !retained {
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// A host that has already expanded a macro, for the variants that reuse one host.
+fn warmed_host(root: &Path) -> MacroHost {
     let mut reused = MacroHost::new();
     fs::write(
         root.join("warmup.js"),
@@ -71,9 +82,24 @@ fn hash_branch_effects_execute_in_fresh_and_reused_phases() {
             .unwrap(),
     )
     .unwrap();
+    reused
+}
+
+/// The fixture rows run in this many tests, declared below, so they overlap under
+/// nextest.
+const PARTS: usize = 6;
+
+/// Runs every `PARTS`-th fixture row from `part` as an application and as a macro
+/// computation, each with a fresh host and with the part's one reused host, in
+/// QuickJS and Node.
+fn execute_rows(part: usize) {
+    let (root, retained) = artifact_root(&format!("rows-{part}"));
+    let mut reused = warmed_host(&root);
     for row in include_str!("../fixtures/compiler-hash-branch-effects.tsv")
         .lines()
         .filter(|row| !row.is_empty() && !row.starts_with('#'))
+        .skip(part)
+        .step_by(PARTS)
     {
         let fields: Vec<_> = row.split('\t').collect();
         assert_eq!(fields.len(), 3);
@@ -109,6 +135,22 @@ fn hash_branch_effects_execute_in_fresh_and_reused_phases() {
             }
         }
     }
+    finish(root, retained);
+}
+
+row_tests!(execute_rows;
+    hash_branch_effects_execute_in_fresh_and_reused_phases_0(0),
+    hash_branch_effects_execute_in_fresh_and_reused_phases_1(1),
+    hash_branch_effects_execute_in_fresh_and_reused_phases_2(2),
+    hash_branch_effects_execute_in_fresh_and_reused_phases_3(3),
+    hash_branch_effects_execute_in_fresh_and_reused_phases_4(4),
+    hash_branch_effects_execute_in_fresh_and_reused_phases_5(5),
+);
+
+#[test]
+fn hash_branch_failures_leave_fresh_and_reused_hosts_usable() {
+    let (root, retained) = artifact_root("failures");
+    let mut reused = warmed_host(&root);
     // Uncaught branch hash/equality failures must leave the actual MacroHost usable.
     let failures = [
         (
@@ -161,9 +203,7 @@ fn hash_branch_effects_execute_in_fresh_and_reused_phases() {
     let unit = emit_js_unit(&program);
     fs::write(directory.join("unit.js"), &unit).unwrap();
     execute(&unit, "2", &directory);
-    if retained.is_none() {
-        fs::remove_dir_all(root).unwrap();
-    }
+    finish(root, retained);
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in

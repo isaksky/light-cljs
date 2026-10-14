@@ -318,8 +318,18 @@
     if (hasNil) entries.unshift(Object.freeze({key: null, value: nilValue, hash: 0}));
     return constructorSlots(makeMap(PersistentHashMapValue, entries, "hash-map"), {cnt, root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
   }
-  //@unit PersistentHashSetValue requires: constructorSlots, ensureHashRoot, makeSet, mapKinds, maps
+  //@unit PersistentHashSetValue requires: typeHooks
+  // The hash set type, which builders instantiate with `makeSet`. Called, it
+  // is `publicHashSet`, which a program naming `PersistentHashSet` keeps.
   function PersistentHashSetValue(metadata, source, cachedHash) {
+    return typeHooks.hashSet(metadata, source, cachedHash);
+  }
+  //@unit publicHashSet requires: constructorSlots, ensureHashRoot, makeSet, mapKinds, maps,
+  //@ PersistentHashSetValue
+  // The public constructor: a set of a map's keys, of the map's kind (an
+  // array set otherwise only comes from builders, which never build a set of
+  // another kind without promoting it in `putMember`).
+  function publicHashSet(metadata, source, cachedHash) {
     const entries = (maps.get(source) ?? []).map(e => Object.freeze({key: e.key, hash: e.hash}));
     if (mapKinds.get(source) === "hash-map") ensureHashRoot(entries);
     return constructorSlots(makeSet(PersistentHashSetValue, entries, mapKinds.get(source)), {"hash-map": source}, metadata, cachedHash);
@@ -1625,9 +1635,10 @@
     // storage order. Hash-map promotion stays observable after removals.
     return kind !== "hash-map" ? entries : kindHooks.hashTraversal(entries);
   }
-  //@unit PersistentHashMapValue.traversal effect: PersistentHashMapValue, PersistentHashSetValue
+  //@unit PersistentHashMapValue.traversal effect: PersistentHashMapValue, publicHashSet, putMember
   //@ when: collectionTraversal requires: ensureHashRoot, hashTraversals, kindHooks
-  // Only hash maps and hash sets have the hash-map kind.
+  // Only hash maps and hash sets have the hash-map kind: sets that promotion
+  // or the public constructor built.
   kindHooks.hashTraversal = entries => {
     if (!hashTraversals.has(entries)) {
       const ordered = entries.filter(entry => entry.key == null);
@@ -1702,9 +1713,8 @@
     }
     kindHooks.putHashEntry(entries, key, value, edit);
   }
-  //@unit PersistentHashMapValue.put effect: PersistentHashMapValue, PersistentHashSetValue,
-  //@ makeTransient when: putEntry requires: ensureHashRoot, hash, hashNodeAssoc, hashRoots,
-  //@ kindHooks
+  //@unit PersistentHashMapValue.put effect: PersistentHashMapValue, makeTransient, publicHashSet,
+  //@ putMember when: putEntry requires: ensureHashRoot, hash, hashNodeAssoc, hashRoots, kindHooks
   // Only hash maps, hash sets and transients have hash-map entries.
   kindHooks.putHashEntry = (entries, key, value, edit) => {
     const keyHash = key == null ? 0 : hash(key), entry = Object.freeze({key, value, hash: keyHash});
@@ -1796,11 +1806,11 @@
     return PersistentArrayMapValue(null, pairs.length / 2, pairs, null);
   }
 
-  //@unit constantSetFromArray requires: constantMapFromArray, PersistentHashSetValue
+  //@unit constantSetFromArray requires: constantMapFromArray, publicHashSet
   function constantSetFromArray(items) {
     const pairs = [];
     for (const item of items) pairs.push(item, null);
-    return PersistentHashSetValue(null, constantMapFromArray(pairs), null);
+    return publicHashSet(null, constantMapFromArray(pairs), null);
   }
 
   //@unit dissoc requires: collectionEntryIndex, copyEntries, equalPair, hashRoots, keyword,
@@ -1850,15 +1860,24 @@
     return result;
   }
 
-  //@unit setPrototype requires: contains, es6EntriesIterator, es6Iterator, invalidArity, lookup,
-  //@ objectEquiv, printHooks, sets
+  //@unit ownSet requires: protocolHooks, sets
+  // Whether a set iterates and searches its own members (see `hostHooks`).
+  function ownSet(value) { return !protocolHooks.builtin && sets.has(value); }
+  //@unit setIterator requires: itemIterator, setTraversal
+  // Of a set's seq (`makeSet.seq`).
+  function setIterator(value, item) {
+    const entries = setTraversal(value);
+    return itemIterator(entries.length ? entries : null, item);
+  }
+  //@unit setPrototype requires: hostHooks, invalidArity, lookup, missing, objectEquiv, ownSet,
+  //@ printHooks, setIterator, sets
   const setPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    has(key) { return contains(this, key); },
-    keys() { return es6Iterator(this); },
-    values() { return es6Iterator(this); },
-    entries() { return es6EntriesIterator(this, true); },
-    [Symbol.iterator]() { return es6Iterator(this); },
+    has(key) { return ownSet(this) ? lookup(this, key, missing) !== missing : hostHooks.has(this, key); },
+    keys() { return ownSet(this) ? setIterator(this, entry => entry.key) : hostHooks.iterator(this); },
+    values() { return ownSet(this) ? setIterator(this, entry => entry.key) : hostHooks.iterator(this); },
+    entries() { return ownSet(this) ? setIterator(this, entry => [entry.key, entry.key]) : hostHooks.entries(this, true); },
+    [Symbol.iterator]() { return ownSet(this) ? setIterator(this, entry => entry.key) : hostHooks.iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
@@ -1911,6 +1930,14 @@
     const edit = {};
     for (const item of items) putMember(entries, item, edit);
     return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
+  }
+  //@unit arraySetFromArray requires: makeSet, PersistentHashSetValue, putEntry
+  // Advanced set literals of at most 8 constants, which `setFromArray` never
+  // promotes, keep no hash set.
+  function arraySetFromArray(items) {
+    const entries = [];
+    for (const item of items) putEntry(entries, item, null, "array-map", null);
+    return makeSet(PersistentHashSetValue, entries, "array-map");
   }
 
   //@unit literalSetFromArray requires: displayStr, makeSet, PersistentHashSetValue, putMember
@@ -2479,6 +2506,9 @@
     if (items) return Number.isInteger(key) && key >= 0 && key < items.length;
     return get(value, key, missing) !== missing;
   }
+  //@unit contains.host effect: contains, installMethods when: setPrototype, structuralEqualPair
+  //@ requires: contains, hostHooks
+  hostHooks.has = contains;
 
   //@unit every requires: first, next, seq, truth
   function every(predicate, value) {
@@ -2829,13 +2859,23 @@
         ? equalPair(entry.value, found) : equalPair(found, entry.value));
     });
   };
-  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: contains,
-  //@ count, ISet, kindHooks, protocolHooks, sets
+  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: hostHooks,
+  //@ ISet, kindHooks, lookup, missing, protocolHooks, setCount, sets
   kindHooks.equivSet = (leftSet, right) => {
-    if (!(right != null && (protocolHooks.satisfies?.(ISet, right) ?? sets.has(right))) || leftSet.length !== count(right)) return false;
-    try { return leftSet.every(entry => contains(right, entry.key)); }
+    if (!(right != null && (protocolHooks.satisfies?.(ISet, right) ?? sets.has(right))) || leftSet.length !== (protocolHooks.builtin ? hostHooks.count(right) : setCount(right))) return false;
+    try { return leftSet.every(entry => protocolHooks.builtin ? hostHooks.has(right, entry.key) : lookup(right, entry.key, missing) !== missing); }
     catch (error) { if (error instanceof Error) return false; throw error; }
   };
+  //@unit setCount requires: kindHooks, publicCollectionSlots, sets
+  // `count` of a set without protocol implementations.
+  function setCount(value) {
+    const slots = publicCollectionSlots.get(value);
+    return slots ? kindHooks.countPublicSet(slots) : sets.get(value).length;
+  }
+  //@unit publicHashSet.count effect: publicHashSet, treeSetConstructor when: setCount requires: count,
+  //@ kindHooks
+  // A set its public constructor built counts the map it received.
+  kindHooks.countPublicSet = slots => count("tree-map" in slots ? slots["tree-map"] : slots["hash-map"]);
   //@unit makeVector.equiv effect: makeVector when: structuralEqualPair requires: equalPair,
   //@ kindHooks, vectorCount, vectors, vectorStorage
   // Where no other sequential value and no protocol implementation exists.
@@ -3682,10 +3722,10 @@
     const i = sortedPosition(entries, key, comparator);
     return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
   }
-  //@unit PersistentHashMapValue.entryIndex effect: PersistentHashMapValue, PersistentHashSetValue,
-  //@ makeType when: collectionEntryIndex requires: hashEntryIndex, kindHooks
+  //@unit PersistentHashMapValue.entryIndex effect: PersistentHashMapValue, makeType, publicHashSet,
+  //@ putMember when: collectionEntryIndex requires: hashEntryIndex, kindHooks
   // Maps and sets of a kind other than array-map or sorted: hash maps, hash
-  // sets (some public hash sets keep their map's kind) and records.
+  // sets (public hash sets keep their map's kind) and records.
   kindHooks.hashEntryIndex = hashEntryIndex;
   //@unit putSortedEntry requires: entryHashing, equalPair, sortedPosition
   function putSortedEntry(entries, key, value, comparator, member = false) {
@@ -4892,7 +4932,7 @@
     }};
   }
   //@unit es6Iterator.host effect: es6Iterator, installMethods, treeMapConstructor when: mapPrototype,
-  //@ vectorPrototype requires: es6Iterator, hostHooks
+  //@ setPrototype, vectorPrototype requires: es6Iterator, hostHooks
   hostHooks.iterator = es6Iterator;
   //@unit es6EntriesIterator requires: es6Iterator, nth
   function es6EntriesIterator(value, setEntries = false) {
@@ -4904,7 +4944,7 @@
     }};
   }
   //@unit es6EntriesIterator.host effect: es6EntriesIterator, installMethods, treeMapConstructor
-  //@ when: mapPrototype requires: es6EntriesIterator, hostHooks
+  //@ when: mapPrototype, setPrototype requires: es6EntriesIterator, hostHooks
   hostHooks.entries = es6EntriesIterator;
   //@unit sequenceIterator requires: displayStr, IIterable, isSeqable, iterableValue, iteratorInit,
   //@ iteratorProtocol, protocolHooks, SeqIter
@@ -5009,6 +5049,9 @@
   typeHooks.rest = fnRest;
   //@unit fnApplyTo.install effect: fnApplyTo when: ifnInvokeEntry requires: fnApplyTo, typeHooks
   typeHooks.applyTo = fnApplyTo;
+  //@unit publicHashSet.install effect: publicHashSet when: PersistentHashSetValue requires: publicHashSet,
+  //@ typeHooks
+  typeHooks.hashSet = publicHashSet;
   //@unit ifnInvokeEntry requires: typeHooks
   // This is the callable object ABI used by IFn and metadata wrappers.
   // The last method receives twenty values followed by a sequence tail.
@@ -7004,12 +7047,19 @@
     const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
     return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
   }, meta);
-  //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: count,
-  //@ mapFromArray, meta, missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
+  //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: arrayMapFromArray,
+  //@ kindHooks, meta, missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
   publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
-    const slot = slotField(value, field, count);
-    return slot !== missing ? slot : mapFromArray(sets.get(value).flatMap(e => [e.key, null]), setKinds.get(value));
+    const slot = slotField(value, field);
+    if (slot !== missing) return slot;
+    // A map of the set's kind: an array set's is an array map.
+    const pairs = sets.get(value).flatMap(e => [e.key, null]), kind = setKinds.get(value);
+    return kind === "array-map" ? arrayMapFromArray(pairs) : kindHooks.hashSetMap(pairs, kind);
   }, meta);
+  //@unit putMember.setMap effect: publicHashSet, putMember when: PersistentHashSetValue requires: kindHooks,
+  //@ mapFromArray
+  // Only promotion and the public constructor build sets of other kinds.
+  kindHooks.hashSetMap = mapFromArray;
   //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, meta,
   //@ publicFields, seqIndexes, seqMethods, views
   publicFields(IndexedSeqValue, ["arr", "i", "meta"], (value, field) => {
@@ -7273,7 +7323,7 @@
   //@ isList, isMap, isMapEntry, isRecord, isReduceable, isReversible, isSeq, isSeqable,
   //@ isSequential, isSet, isSorted, isUuid, isVector, iterator, jsToClj, keyToJs, mapConj,
   //@ mapProjection, mapSeq, meta, metaSupported, name, namespace, next, notifyWatches, nth,
-  //@ objectEquiv, ownMap, peek, pop, printWriterImpl, printsMeta, reduce, reduceKv,
+  //@ objectEquiv, ownMap, ownSet, peek, pop, printWriterImpl, printsMeta, reduce, reduceKv,
   //@ removeWatchProtocol, rest, rseq, seq, sequenceIterator, stateProtocol, structuralEqualPair,
   //@ vectorIndexOf, vectorPrototype, vresetProtocol, withMetaSupported requires: builtin,
   //@ countProtocol, firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol,
@@ -8221,5 +8271,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()

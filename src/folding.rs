@@ -270,9 +270,48 @@ fn scalar_equal(program: &Program, a: &Constant, b: &Constant) -> Option<bool> {
     })
 }
 
+/// How a membership test compares a value with the members of a set literal
+/// (the emitter's `membership`, [`Folder::member_set`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Members {
+    /// Keywords, which a value is `=` to exactly when it is a keyword of the
+    /// same spelling.
+    Keywords,
+    /// Strings and numbers, which a value is `=` to exactly when it is `===`
+    /// to them: the array set's `entryIndex` compares a string or number key
+    /// with `===` and any other key with `equalPair`, which finds no other
+    /// value `=` to a string or number.
+    Primitives,
+}
+
+/// The [`Members`] of a set literal whose membership tests the emitter writes
+/// as comparisons: at most 8 members (an array set, which compares the value
+/// with each member without hashing it), all keywords or all strings and
+/// numbers. The caller checks that core protocols are intact and that no
+/// program type implements `IEquiv`.
+pub(crate) fn members(program: &Program, members: &[ExprId]) -> Option<Members> {
+    if members.len() > 8 {
+        return None;
+    }
+    let kind = |member: &ExprId| &program.exprs[member.0].kind;
+    if members
+        .iter()
+        .all(|member| matches!(kind(member), ExprKind::Keyword(_)))
+    {
+        Some(Members::Keywords)
+    } else if members
+        .iter()
+        .all(|member| matches!(kind(member), ExprKind::Number(_) | ExprKind::String(_)))
+    {
+        Some(Members::Primitives)
+    } else {
+        None
+    }
+}
+
 /// The spelling `ns/name` (or `name`) of a keyword or symbol literal, which
 /// the runtime's `=` compares.
-fn spelling(program: &Program, literal: NamedLiteralId) -> Vec<u16> {
+pub(crate) fn spelling(program: &Program, literal: NamedLiteralId) -> Vec<u16> {
     let name = &program.named_literals[literal.0];
     let mut units = Vec::new();
     if let Some(namespace) = name.namespace {
@@ -1352,7 +1391,6 @@ impl Folder<'_> {
             }
             ExprKind::If { test, yes, no } => {
                 self.visit(test);
-                self.member_set(test);
                 self.pass_discard(id, yes);
                 self.pass_discard(id, no);
                 let truth = match self.program.exprs[test.0].kind {
@@ -1443,6 +1481,7 @@ impl Folder<'_> {
                     self.folded += 1;
                     return kind;
                 }
+                self.member_set(callee, &args);
                 ExprKind::Call { callee, args }
             }
             // These read a global's binding rather than its value.
@@ -1558,26 +1597,24 @@ impl Folder<'_> {
         evaluate(self.program, core, &constants)
     }
 
-    /// In an `if` test of membership in a set, `(s x)`, `(contains? s x)` or
+    /// In a test of membership in a set, a call `(s x)`, `(contains? s x)` or
     /// `(get s x)`, make a local or `^:const` global `s` bound to a constant
-    /// set literal of at most 8 keywords that literal (a copy, which the pool
-    /// declares as the same value), so that emission switches on the tested
-    /// value's spelling instead of looking it up (the emitter's
-    /// `membership`, which states the conditions checked here).
-    fn member_set(&mut self, test: ExprId) {
+    /// set literal whose [`members`] emission compares that literal (a copy,
+    /// which the pool declares as the same value), so that emission compares
+    /// the tested value with the members instead of looking it up (the
+    /// emitter's `membership`, which states the conditions checked here), in
+    /// an `if` test and in value position alike (light-cljs-231).
+    fn member_set(&mut self, callee: ExprId, args: &[ExprId]) {
         if !self.facts.core_protocols_intact() || self.facts.implements_equiv() {
             return;
         }
-        let ExprKind::Call { callee, args } = &self.program.exprs[test.0].kind else {
-            return;
-        };
-        let operand = match (&self.program.exprs[callee.0].kind, &args[..]) {
+        let operand = match (&self.program.exprs[callee.0].kind, args) {
             (ExprKind::CoreFn(core @ (CoreFnId::Contains | CoreFnId::Get)), [set, _])
                 if !self.facts.replaced(*core) =>
             {
                 *set
             }
-            (_, [_]) => *callee,
+            (_, [_]) => callee,
             _ => return,
         };
         if !matches!(
@@ -1594,11 +1631,7 @@ impl Folder<'_> {
         else {
             return;
         };
-        if members.len() > 8
-            || !members
-                .iter()
-                .all(|member| matches!(self.program.exprs[member.0].kind, ExprKind::Keyword(_)))
-        {
+        if self::members(self.program, members).is_none() {
             return;
         }
         if let Some(kind) = self.copy(set) {

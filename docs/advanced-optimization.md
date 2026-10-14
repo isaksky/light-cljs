@@ -1285,7 +1285,8 @@ the branches of the kept operations that handle it.
   `sets`, `cells`, `views`, `queues`, `lazyValues`, `transients`, `chunks`,
   `deferredVarMetadata`), built by every unit writing to it, or a narrower
   kind that only named units build (maps with a `tree` slot, by
-  `treeMapConstructor`; maps and sets of the hash-map kind, by their types).
+  `treeMapConstructor`; maps of the hash-map kind, by their type, and sets
+  of it, since light-cljs-231 by `putMember` and the public constructor).
   A branch for a kind that no kept unit builds is never taken. The hooks
   cover `seq`, `rest`, `count`, `nth`, `lookup`, structural equality,
   `hash`, `meta` (a Var's deferred `:test`), hash-map traversal, entry
@@ -1446,10 +1447,85 @@ collection's host-facing methods only where it builds another kind of seq.
     native tests, the printer's wrapped entries, the kind hooks and the
     vectors' and maps' native methods.
   Per-fixture sizes are in `benchmarks/compiler.md`.
-- **Left for later** (light-cljs-231). A set keeps the generic seqs and
-  both map types: its `hash-map` field builds a map, and `setFromArray` can
-  build a hash set. The same native methods for sets, and an array-set
-  builder for set literals, would drop them.
+- **Left for later** (light-cljs-231, done; see the next section). A set
+  kept the generic seqs and both map types: its `hash-map` field built a
+  map, and `setFromArray` could build a hash set.
+
+#### Phase 2 builtin types, sets
+
+light-cljs-231 gives sets what light-cljs-230 gave vectors and maps, so a
+program that builds small sets keeps no seq, hash map or hashing.
+
+- **Host-facing methods.** Without protocol implementations a set answers
+  iteration, `keys`, `values` and `entries` from its members in the order
+  `seq` walks them (`ownSet`, `setIterator` over `setTraversal`), and `has`
+  with `lookup`. Two sets compare their counts with `setCount` instead of
+  `count`, and their members with `lookup` instead of `contains`. With
+  protocol implementations, and for a receiver of another type, the methods
+  and the comparison call the generic operations through `hostHooks`
+  (`hostHooks.has`, from `contains.host`; the iterator hooks now name
+  `setPrototype` in their `when:` lists).
+- **Hash-set kind.** A set has the hash-map kind (or another map's kind)
+  only where `putMember` promoted it or the public constructor took the kind
+  of the map it received; every other builder copies an existing set's kind
+  or builds an array set. The hash hooks (`hashTraversal`, `hashEntryIndex`,
+  `putHashEntry`) are installed by effects of those two instead of the set
+  type. The set type's constructor binding is what builders instantiate, so
+  `PersistentHashSetValue` now calls `typeHooks.hashSet`, which
+  `publicHashSet.install` fills in with `publicHashSet`, the constructor's
+  body. The emitter keeps `publicHashSet` (a `NameUse::Keep` root, as for
+  `recordMethods`) wherever the program names `PersistentHashSet` other than
+  by an empty set literal, which reads `PersistentHashSetValue.EMPTY`
+  directly; `constantSetFromArray` calls it itself. The contract below lists
+  what this leaves unsupported.
+- **Public fields.** The `hash-map` field of a set its constructor did not
+  build is an array map for an array set (`arrayMapFromArray`), else
+  `kindHooks.hashSetMap` (`mapFromArray`, installed with the hash-set kind's
+  builders). A set the public constructors built counts the value they
+  received through `kindHooks.countPublicSet`, installed by
+  `publicHashSet` and `treeSetConstructor`.
+- **Set literals.** At `Advanced` a set literal of at most 8 constants calls
+  `arraySetFromArray` (exported), which builds an array set without
+  `putMember`, as `setFromArray` does for so few members.
+- **Membership in value position.** See "Constant folding extension
+  points": `(contains? #{:a :b} x)`, `(#{:a :b} x)` and `(get #{:a :b} x)`
+  outside an `if` statement compare the value with each member, so they
+  build no set.
+- **Tests.**
+  - `builtin_types`: the host-facing methods of sets (array, hash and
+    sorted sets; sets the public constructors built from maps of every kind,
+    from `nil` and from a vector; quoted literals; transients of them), with
+    and without protocol extensions; what `#{1 2}` keeps (no seq, hash map,
+    hashing or promotion), and that naming the type or a larger literal keeps
+    hashing; membership in value position, all at every level against
+    `None`.
+  - `runtime_manifest`: `KIND_HOOKS` lists `hashSetMap` and `countPublicSet`
+    and the hash hooks' new builders; 79 conditional effects.
+  - `constant_lookups`: the `Advanced` text of membership in value position.
+  - Ratchet fixture `set-only`.
+- **Measured.** At `Advanced`, against master `58f8c05` (terse output), raw
+  / gzip bytes:
+  - `(js/console.log #{1 2})` drops from 27,667 / 8,512 to 11,924 / 3,910
+    (188 to 104 units: those of `(js/console.log {:a 1})` but its keyword's,
+    through the array map of the `hash-map` field, and 14 of the set's own).
+    The new `set-only` fixture drops from 27,704 to 11,961.
+  - A membership test in value position, an exported `(defn f [k]
+    (contains? #{:fast :safe} k))`, drops from 28,666 / 8,796 to 4,412 /
+    1,679, as small as the `if` form (4,444); with a number or string set
+    from 27,755 and 27,769 to 241 and 256.
+  - A program that keeps both the native methods and hashing grows: `#{1 2
+    ... 9}` from 27,680 to 28,011 and `(conj #{1} 2)` from 34,457 to
+    34,780; `constant-keys`, which builds sets with a dynamic member, from
+    45,095 to 45,280. Programs that keep `contains` and equality, as every
+    map program does, gain the 9-byte `contains.host`.
+  - `(conj [1] 2)` (16,867) and `closed-params` (37,754 to 37,763) keep the
+    vectors' and maps' native and generic paths as before: this change
+    makes neither smaller.
+  - The shared runtime grows by 2,388 bytes (0.6%; 555 gzipped).
+  Per-fixture sizes are in `benchmarks/compiler.md`.
+- **Left for later.** A set keeps the array map type, about 5 KB, for its
+  public `hash-map` field; installing the field only where the program names
+  it, as `getBasis`, would drop it.
 
 #### Phase 2 call shape extension points
 
@@ -2310,8 +2386,21 @@ runs in its rounds.
   value is `=` to a keyword exactly when it is one of the same spelling; a
   sequential or map value checks the keyword's kind before walking itself,
   so nothing realizes. `Folder::member_set` replaces a local or `^:const`
-  global naming such a set with a copy of the literal. A test in value
-  position keeps its lookup.
+  global naming such a set with a copy of the literal.
+  Since light-cljs-231 (`folding::members`):
+  - a set of strings and numbers, which the array set's `entryIndex`
+    compares with `===` (and nothing else is `=` to one), is a `switch` on
+    the value;
+  - in value position the test is a conditional expression over the members
+    (`Emitter::membership_value`): `contains?` gives
+    `(caseValue => caseValue === "a" || caseValue === "b")(rt$keywordFqn(x))`
+    and a call of the set or `get` gives the member or nil, `... ? k0 :
+    caseValue === "b" ? k1 : null`. The value is read in place, without the
+    arrow function, where it is read once (one member) or where reading it
+    again is reading it once (a local compared with strings or numbers). As
+    an `if` test in value position, or wherever only its truth matters, it
+    is the boolean. An empty set is `(x, false)`. `Folder::member_set` runs
+    on every such call.
 - **Inliner.** A literal argument that is built at each evaluation is no
   longer read in place of its parameter at each read (`inlining::builds`):
   every read of the parameter is the one value the call passed.
@@ -2341,8 +2430,10 @@ runs in its rounds.
     through it needs a seq value in the domain.
   - `=`, `hash` and `identical?` of constant collections, and lookups of
     collection keys, do not fold.
-  - A membership test in value position keeps its lookup; it could be a
-    conditional expression over the spellings.
+  - A membership test in value position kept its lookup (light-cljs-231,
+    done). A set with members of both kinds (keywords and strings), or of
+    other constants (`nil`, booleans, symbols), keeps it, as does `get` with
+    a default.
   - A `case` on a constant does not fold: the inliner takes no `case`
     body.
 
@@ -2578,10 +2669,17 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Where the program has no protocol implementation, the host-facing methods
   of the runtime's vectors and maps (iteration, `indexOf`, `lastIndexOf`,
   `keys`, `values`, `entries` and the `cnt` field) answer from the value's
-  own items (light-cljs-230). Applied to a receiver of another type, through
-  `.call`, `.apply` or a copied method, they run the generic operation, which
-  a program that builds no other collection does not keep; such a call is
-  unsupported there and throws a `TypeError` naming `hostHooks`.
+  own items (light-cljs-230), and those of sets (iteration, `keys`,
+  `values`, `entries` and `has`) from its members (light-cljs-231). Applied
+  to a receiver of another type, through `.call`, `.apply` or a copied
+  method, they run the generic operation, which a program that builds no
+  other collection does not keep; such a call is unsupported there and
+  throws a `TypeError` naming `hostHooks`.
+- The constructor of hash sets is the public `PersistentHashSet` only where
+  the program names it (light-cljs-231). Calling it as a value reached
+  otherwise, `(type s)` or `(.-constructor s)` of a set, where the program
+  never names `PersistentHashSet` is unsupported and throws a `TypeError`
+  (`typeHooks.hashSet is not a function` with `pseudo_names`).
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification
