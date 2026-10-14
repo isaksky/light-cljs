@@ -98,6 +98,9 @@ fn terse_runtime(source: &str) -> String {
         }
     }
     let prologue_end = prologue_end.expect("the runtime has unit headers");
+    let line_starts = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(at, _)| at + 1))
+        .collect::<Vec<_>>();
     let prologue = js_syntax::lex_section(source, 0..prologue_end, false)
         .unwrap_or_else(|error| panic!("runtime prologue: {}", error.message));
     let prologue = js_syntax::terse(source, &prologue);
@@ -180,7 +183,9 @@ fn terse_runtime(source: &str) -> String {
         let joins = js_syntax::joined_declarations(source, tokens, &resolution.statements);
         let mut writer = TerseWriter::default();
         let mut avoid: Vec<(usize, HashSet<String>)> = Vec::new();
+        let mut lines = LineMarks::default();
         for (position, token) in tokens.iter().enumerate() {
+            lines.token(&writer.out, &line_starts, token.start);
             match joins[position] {
                 _ if redundant[position] => continue,
                 Join::Drop => continue,
@@ -242,6 +247,7 @@ fn terse_runtime(source: &str) -> String {
                 writer.write(shape, &written, token.newline_before);
             }
         }
+        lines.settle(&writer.out);
         // The next unit of a slice starts a statement.
         writer.end_statements();
         // A unit that starts with a `let` or `const` statement continues one
@@ -273,13 +279,71 @@ fn terse_runtime(source: &str) -> String {
             .join(", ");
         writeln!(
             code,
-            "    TerseUnit {{ text: {:?}, avoid: &[{avoid}], opens: {opens:?}, closes: {closes:?} }},",
-            writer.out
+            "    TerseUnit {{ text: {:?}, avoid: &[{avoid}], opens: {opens:?}, closes: {closes:?}, lines: {:?} }},",
+            writer.out, lines.encoded
         )
         .unwrap();
     }
     code.push_str("];\n");
     code
+}
+
+/// The source lines of a terse unit for its source map
+/// (`TerseUnit::lines` in `src/terse.rs`): where in the unit's text the
+/// first token of each source line starts, and that token's byte offset in
+/// `src/js_runtime.js`, as pairs of Base64 VLQ deltas from the pair before.
+#[derive(Default)]
+struct LineMarks {
+    encoded: String,
+    line: Option<usize>,
+    /// The first token of the current line, not yet written: the length of
+    /// the text before it and its source offset.
+    pending: Option<(usize, usize)>,
+    previous: (usize, usize),
+}
+
+impl LineMarks {
+    /// Note a token at byte `start` of the source, about to be written
+    /// after `out`, the unit's text so far.
+    fn token(&mut self, out: &str, line_starts: &[usize], start: usize) {
+        self.settle(out);
+        let line = line_starts.partition_point(|&at| at <= start);
+        if self.line != Some(line) {
+            self.line = Some(line);
+            self.pending = Some((out.len(), start));
+        }
+    }
+
+    /// Record the pending token once the writer has written it (a dropped
+    /// token writes nothing and stays pending).
+    fn settle(&mut self, out: &str) {
+        let Some((before, start)) = self.pending.filter(|(before, _)| out.len() > *before) else {
+            return;
+        };
+        self.pending = None;
+        // The writer may separate the token by one space or line break.
+        let at = before + usize::from(matches!(out.as_bytes()[before], b' ' | b'\n'));
+        for (value, previous) in [(at, self.previous.0), (start, self.previous.1)] {
+            vlq(&mut self.encoded, value as i64 - previous as i64);
+        }
+        self.previous = (at, start);
+    }
+}
+
+/// Append `value` as a Base64 VLQ, as source maps write numbers.
+fn vlq(out: &mut String, value: i64) {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut rest = (value.unsigned_abs() << 1) | u64::from(value < 0);
+    loop {
+        let digit = rest & 31;
+        rest >>= 5;
+        out.push(char::from(
+            DIGITS[(digit | if rest > 0 { 32 } else { 0 }) as usize],
+        ));
+        if rest == 0 {
+            break;
+        }
+    }
 }
 
 /// Whether a declaration keeps its name in terse units: a constructor, whose

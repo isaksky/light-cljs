@@ -468,6 +468,44 @@ runtime root. Macro/bootstrap functions remain outside application IR. Deferred
 unit emission bypasses this pass, caches each generation's emitted code, and
 shares runtime operations. Applications have no deferred-unit compiler callback.
 
+### Source maps
+
+`PreparedApplication::emit_js_mapped` and `emit_esm_mapped` return the text of
+`emit_js` and `emit_esm`, unchanged, with a `source_map::SourceMapping`, at
+every level. `SourceMapping::to_json(file, sources, include_sources)` writes it
+as a Source Map v3 (ECMA-426) against the program's sources by source index;
+`compiler::analyze_namespace_entry_with_sources` returns those for a namespace
+build (paths and texts in dependency order), and `source_map::data_url` makes
+an inline `sourceMappingURL`. Generated and original columns count UTF-16 code
+units. `--compile` writes the map with `--source-map PATH` or
+`--source-map-inline`, and `--source-map-include-sources` adds
+`sourcesContent` (see the README's "Compile to JavaScript").
+
+The emitter records where the text of each expression starts, at the byte span
+start the IR carries, and after a nested expression's text the expression
+around it again, so every output position maps to the innermost expression
+whose text it is. Macro-expanded code carries the span of the macro call.
+Folding and inlining keep the spans of the expressions they copy; a form that
+takes over a nested form's code (a `do` of one form, a `let` whose bindings
+all go) keeps its own span, so at `advanced` such code maps to the enclosing
+form. The `function` keyword of each method is named (`names`) after its
+`fn` name, else the definition or local it initializes, which is the name
+Node's `--enable-source-maps` shows for a frame; each local and definition
+name the emitter writes (`l7`, `g3_1`) is named after its source name. The
+marks move with the text inserted before the body (the runtime, the host
+helpers, the constant table, whose entries keep the marks of their
+initializers), through the hygiene renaming of programs with `js*` and through
+the terse rewrite, where each mark moves to the token written for the one it
+was before.
+
+The embedded runtime maps to `src/js_runtime.js`, the source
+`light-cljs/js_runtime.js`: the whole runtime and a readable slice line by
+line (each is the annotated source's text without its headers), and a terse
+slice by the marks `build.rs` writes for each unit (`TerseUnit::lines`: where
+the first token of each source line starts in the unit's terse text), with
+each unit's start named after the first binding it declares. The REPL, the
+macro host and deferred units have no source maps.
+
 ### Lexical environment
 
 The environment is a stack of scopes containing binding IDs. Lookup walks scopes

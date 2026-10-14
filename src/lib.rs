@@ -43,6 +43,7 @@ pub mod parser;
 mod reader_literals;
 pub mod runtime_manifest;
 pub mod runtime_slice;
+pub mod source_map;
 pub mod source_provider;
 mod terse;
 pub mod value_hash;

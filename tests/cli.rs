@@ -660,3 +660,237 @@ fn elide_asserts_omits_assertions_at_every_level() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
 }
+
+/// `--source-map PATH` writes a Source Map v3 of the output at every level
+/// and ends the output with a `sourceMappingURL` comment naming it; the
+/// JavaScript before that comment is the output without the flag. With
+/// Node's `--enable-source-maps`, a throw from inside a function (renamed at
+/// `advanced`) reports the `.cljs` file, line and column of the `js/Error.`
+/// and the function's source name, and a throw from the runtime reports its
+/// line of `src/js_runtime.js` under its own source name. `--esm` namespace
+/// output maps each namespace to its file; `--source-map-inline` embeds the
+/// map, and `--source-map-include-sources` adds the sources' text.
+#[test]
+fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
+    let root = std::env::temp_dir().join(format!("light-cljs-cli-map-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src/app")).unwrap();
+    std::fs::create_dir_all(root.join("out")).unwrap();
+    let program = "(defn explode [x]\n  (throw (js/Error. (str \"boom \" x))))\n\n(defn outer [n]\n  (let [doubled (* 2 n)]\n    (explode doubled)))\n\n(outer 21)\n";
+    std::fs::write(root.join("app.cljs"), program).unwrap();
+    std::fs::write(
+        root.join("pick.cljs"),
+        "(defn pick [v i]\n  (nth v i))\n\n(pick [1 2] 5)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/app/util.cljs"),
+        "(ns app.util)\n\n(defn check [x]\n  (when (neg? x)\n    (throw (js/Error. (str \"negative \" x))))\n  x)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/app/main.cljs"),
+        "(ns app.main\n  (:require [app.util :as u]))\n\n(u/check 1)\n(u/check -2)\n",
+    )
+    .unwrap();
+    let path = |name: &str| root.join(name).to_str().unwrap().to_owned();
+    // Node reports the real path of each source.
+    let real = std::fs::canonicalize(&root).unwrap();
+    let real = |name: &str| real.join(name).to_str().unwrap().to_owned();
+    // The runtime line that throws for an index out of bounds.
+    let runtime =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/js_runtime.js"))
+            .unwrap();
+    let bounds_line = 1 + runtime
+        .lines()
+        .position(|line| line.trim_start().starts_with("const outOfBounds = "))
+        .expect("the runtime declares outOfBounds");
+    // The first frame of the uncaught error that running `file` prints.
+    let first_frame = |file: &str| {
+        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .args(["--enable-source-maps", file])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{file}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        stderr
+            .lines()
+            .find(|line| line.starts_with("    at "))
+            .unwrap_or_else(|| panic!("{file}: no stack trace in\n{stderr}"))
+            .to_owned()
+    };
+    let assert_frame = |frame: &str, name: &str, location: &str, context: &str| {
+        assert!(
+            frame.starts_with(&format!("    at {name} ("))
+                && frame.ends_with(&format!("{location})")),
+            "{context}: {frame}"
+        );
+    };
+    for level in OptimizationLevel::ALL {
+        let name = level.name();
+        let map = path(&format!("out/app-{name}.js.map"));
+        let plain = compiled(&["--compile", "--optimize", name, &path("app.cljs")]);
+        let mapped = compiled(&[
+            "--compile",
+            "--optimize",
+            name,
+            &path("app.cljs"),
+            "--source-map",
+            &map,
+        ]);
+        assert_eq!(
+            mapped,
+            format!("{plain}//# sourceMappingURL=app-{name}.js.map\n"),
+            "{level}: the JavaScript does not change"
+        );
+        let json = std::fs::read_to_string(&map).unwrap();
+        assert!(
+            json.starts_with(&format!(
+                "{{\"version\":3,\"file\":\"app-{name}.js\",\"sources\":[\"../app.cljs\",\"light-cljs/js_runtime.js\"],\"names\":["
+            )),
+            "{level}: {json:.200}"
+        );
+        assert!(!json.contains("sourcesContent"), "{level}");
+        let script = path(&format!("out/app-{name}.js"));
+        std::fs::write(&script, &mapped).unwrap();
+        assert_frame(
+            &first_frame(&script),
+            "explode",
+            &format!("{}:2:10", real("app.cljs")),
+            name,
+        );
+
+        let map = path(&format!("out/pick-{name}.js.map"));
+        let script = path(&format!("out/pick-{name}.js"));
+        let mapped = compiled(&[
+            "--compile",
+            "--optimize",
+            name,
+            "--source-map",
+            &map,
+            &path("pick.cljs"),
+        ]);
+        std::fs::write(&script, &mapped).unwrap();
+        assert_frame(
+            &first_frame(&script),
+            "outOfBounds",
+            &format!("{}:{bounds_line}:3", real("out/light-cljs/js_runtime.js")),
+            name,
+        );
+
+        let map = path(&format!("out/main-{name}.mjs.map"));
+        let script = path(&format!("out/main-{name}.mjs"));
+        let source_root = path("src");
+        let mut args = vec![
+            "--compile",
+            "--optimize",
+            name,
+            "--entry",
+            "app.main",
+            "--source-root",
+            &source_root,
+            "--esm",
+        ];
+        let plain = compiled(&args);
+        args.extend(["--source-map", &map]);
+        let mapped = compiled(&args);
+        assert_eq!(
+            mapped,
+            format!("{plain}//# sourceMappingURL=main-{name}.mjs.map\n"),
+            "{level}"
+        );
+        assert!(
+            std::fs::read_to_string(&map)
+                .unwrap()
+                .contains("\"sources\":[\"../src/app/util.cljs\",\"../src/app/main.cljs\""),
+            "{level}"
+        );
+        std::fs::write(&script, &mapped).unwrap();
+        assert_frame(
+            &first_frame(&script),
+            "check",
+            &format!("{}:5:12", real("src/app/util.cljs")),
+            name,
+        );
+    }
+
+    // Sources of an inline map are relative to the current directory,
+    // where the JavaScript is expected.
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .current_dir(&root)
+        .args([
+            "--compile",
+            "--optimize",
+            "advanced",
+            "--source-map-inline",
+            "--source-map-include-sources",
+            "app.cljs",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let inline = String::from_utf8(output.stdout).unwrap();
+    let (code, url) = inline.split_once("//# sourceMappingURL=").unwrap();
+    assert_eq!(
+        code,
+        compiled(&["--compile", "--optimize", "advanced", &path("app.cljs")])
+    );
+    assert!(url.starts_with("data:application/json;charset=utf-8;base64,"));
+    let script = path("inline.js");
+    std::fs::write(&script, &inline).unwrap();
+    assert_frame(
+        &first_frame(&script),
+        "explode",
+        &format!("{}:2:10", real("app.cljs")),
+        "inline",
+    );
+    // The text of every source, the runtime's too.
+    let map = path("out/sources.js.map");
+    compiled(&[
+        "--compile",
+        "--optimize",
+        "advanced",
+        &path("app.cljs"),
+        "--source-map",
+        &map,
+        "--source-map-include-sources",
+    ]);
+    let json = std::fs::read_to_string(&map).unwrap();
+    assert!(
+        json.contains(&format!("\"sourcesContent\":[{program:?},\"")),
+        "{json:.300}"
+    );
+    assert!(json.len() > runtime.len());
+
+    for (args, message) in [
+        (
+            &["--compile", "--text", "1", "--source-map-include-sources"][..],
+            "--source-map-include-sources requires --source-map PATH or --source-map-inline",
+        ),
+        (
+            &[
+                "--compile",
+                "--source-map",
+                "x.map",
+                "--source-map-inline",
+                "--text",
+                "1",
+            ][..],
+            "--source-map and --source-map-inline exclude each other",
+        ),
+        (
+            &["--compile", "--text", "1", "--source-map"][..],
+            "--source-map requires a path",
+        ),
+        (
+            &["--parse", "--source-map-inline", "--text", "1"][..],
+            "--source-map-inline requires --compile",
+        ),
+    ] {
+        let output = light_cljs(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

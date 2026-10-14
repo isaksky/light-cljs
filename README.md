@@ -159,6 +159,26 @@ as without the assertion, instead of 309. It is the only switch; `--define`
 names only `goog-define` Vars, so `--define cljs.core/*assert*=false` is
 rejected. `--eval` and `--repl` take `--elide-asserts` too.
 
+`--source-map PATH` writes a Source Map v3 of the output to `PATH`, at every
+level and with `--esm` too, and ends the JavaScript with a
+`//# sourceMappingURL=` comment naming the map's file, so write the JavaScript
+next to it; the JavaScript before that comment is the output without the flag.
+Each expression maps to its `.cljs` file, line and column, macro-expanded code
+to the macro call, and renamed `advanced` locals and definitions to their
+source names (the map's `names`); the embedded runtime maps to
+`src/js_runtime.js` as the source `light-cljs/js_runtime.js`. Source paths are
+relative to the map's directory. `--source-map-inline` embeds the map in the
+comment instead (paths relative to the current directory), and
+`--source-map-include-sources` adds every source's text. Node's
+`--enable-source-maps` then reports a stack trace at the source:
+
+```sh
+cargo run --quiet -- --compile --optimize advanced app.cljs --source-map app.js.map > app.js
+node --enable-source-maps app.js
+# Error: boom 42
+#     at explode (/path/to/app.cljs:2:10)
+```
+
 Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
 Vars and arity conflicts become warnings instead of errors), or with
 `--checked-arrays-warn`/`--checked-arrays-error` for array-operand checks.
@@ -237,7 +257,7 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   static imports a bundler (Vite, esbuild, Rollup) resolves and tree-shakes. The
   compiler never reads `node_modules` or `package.json` and does no package
   resolution or CommonJS conversion.
-- **No build tooling:** no per-namespace module output or source maps; output
+- **No build tooling:** no per-namespace module output; output
   is one JavaScript expression, or one ES module with `--esm`. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does

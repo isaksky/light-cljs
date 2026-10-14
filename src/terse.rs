@@ -33,6 +33,45 @@ pub(crate) struct TerseUnit {
     /// The keyword of the `let` or `const` statement the unit ends with,
     /// whose `;` is the text's last character.
     pub(crate) closes: Option<&'static str>,
+    /// For source maps ([`crate::source_map`]): where the first token of
+    /// each source line starts in `text`, and its byte offset in
+    /// `src/js_runtime.js`, as pairs of Base64 VLQ deltas ([`unit_lines`]).
+    pub(crate) lines: &'static str,
+}
+
+/// The pairs of [`TerseUnit::lines`]: offsets in the unit's text, each with
+/// the byte offset in `src/js_runtime.js` of the text there.
+fn unit_lines(encoded: &'static str) -> impl Iterator<Item = (usize, usize)> {
+    let mut digits = encoded.bytes();
+    let mut number = move || {
+        let mut value = 0u64;
+        let mut shift = 0;
+        loop {
+            let byte = digits.next()?;
+            let digit = match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'+' => 62,
+                _ => 63,
+            };
+            value |= u64::from(digit & 31) << shift;
+            shift += 5;
+            if digit & 32 == 0 {
+                let magnitude = (value >> 1) as i64;
+                return Some(if value & 1 == 1 {
+                    -magnitude
+                } else {
+                    magnitude
+                });
+            }
+        }
+    };
+    let mut at = (0i64, 0i64);
+    std::iter::from_fn(move || {
+        at = (at.0 + number()?, at.1 + number()?);
+        Some((at.0 as usize, at.1 as usize))
+    })
 }
 
 include!(concat!(env!("OUT_DIR"), "/terse_runtime.rs"));
@@ -79,6 +118,29 @@ fn binding_index(name: &str) -> usize {
 /// (Closure's same-length batches in order of first occurrence, which the
 /// program's names use, measured no gzip gain here.)
 pub(crate) fn terse_slice(kept: &[bool], returned: &[&str]) -> (String, Vec<usize>) {
+    terse_slice_marked(kept, returned, None)
+}
+
+/// A mark of a terse runtime factory: an offset in the factory, the byte
+/// offset in `src/js_runtime.js` of the text there, and the source name of
+/// the binding a unit declares first, at the unit's start.
+pub(crate) type SliceMark = (usize, usize, Option<&'static str>);
+
+/// The terse runtime factory [`terse_slice`] writes for `kept` and
+/// `returned`, with its marks: each source line of a unit maps to its first
+/// token, and a unit's start is named by its first binding, which a stack
+/// trace through the renamed runtime then shows.
+pub(crate) fn terse_slice_marks(kept: &[bool], returned: &[&str]) -> (String, Vec<SliceMark>) {
+    let mut marks = Vec::new();
+    let (text, _) = terse_slice_marked(kept, returned, Some(&mut marks));
+    (text, marks)
+}
+
+fn terse_slice_marked(
+    kept: &[bool],
+    returned: &[&str],
+    mut marks: Option<&mut Vec<SliceMark>>,
+) -> (String, Vec<usize>) {
     debug_assert_eq!(kept.len(), TERSE_UNITS.len());
     let units = TERSE_UNITS
         .iter()
@@ -146,6 +208,11 @@ pub(crate) fn terse_slice(kept: &[bool], returned: &[&str]) -> (String, Vec<usiz
         None => TERSE_BINDINGS[index],
     };
     let mut text = String::from(TERSE_PROLOGUE);
+    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+    if let Some(marks) = marks.as_deref_mut() {
+        let prologue = &crate::runtime_manifest::ANNOTATED_RUNTIME[manifest.prologue.clone()];
+        marks.push((0, prologue.find("(() =>").unwrap_or_default(), None));
+    }
     let mut closes = None;
     for &(id, unit) in &units {
         let start = text.len();
@@ -157,14 +224,30 @@ pub(crate) fn terse_slice(kept: &[bool], returned: &[&str]) -> (String, Vec<usiz
             text.push(',');
             at = keyword.len() + usize::from(unit.text.as_bytes()[keyword.len()] == b' ');
         }
+        // Line marks before `limit` in the unit's text, where the text from
+        // `at` on is written from `text.len()` on; a mark before `at` (in
+        // the `const` that joining dropped) or at a placeholder maps to
+        // where the copy starts.
+        let mut lines = unit_lines(unit.lines).peekable();
+        let mut first = manifest.units[id].declares.first().copied();
+        let mut copy = |text: &str, at: usize, limit: usize| {
+            if let Some(marks) = marks.as_deref_mut() {
+                while let Some((offset, source)) = lines.next_if(|(offset, _)| *offset < limit) {
+                    marks.push((text.len() + offset.saturating_sub(at), source, first.take()));
+                }
+            }
+        };
         for (range, index) in placeholders(unit.text) {
             if range.start < at {
                 continue;
             }
+            copy(&text, at, range.start);
             text.push_str(&unit.text[at..range.start]);
+            copy(&text, range.start, range.end);
             text.push_str(name(index));
             at = range.end;
         }
+        copy(&text, at, usize::MAX);
         text.push_str(&unit.text[at..]);
         unit_bytes[id] = text.len() - start;
         closes = unit.closes;
@@ -288,11 +371,17 @@ fn short_names<'s>(
 /// is rewritten: a member read with a constant identifier key is dotted
 /// (`x.length`), redundant parentheses and semicolons go, and tokens are
 /// joined by [`TerseWriter`].
+///
+/// `marks`, positions in `source` ([`crate::source_map`]), move with the
+/// text they mark: a mark before a token to where that token is written
+/// (the next written one, for a token the rewrite drops), and a mark in
+/// the runtime factory by its offset there.
 pub(crate) fn terse_program(
     source: &str,
     segments: &[Range<usize>],
     runtime: Option<Range<usize>>,
     raw_js: bool,
+    marks: Option<&mut crate::source_map::Marks>,
 ) -> String {
     let mut raw = segments
         .iter()
@@ -301,10 +390,27 @@ pub(crate) fn terse_program(
         .collect::<Vec<_>>();
     raw.sort_by_key(|range| range.start);
     if raw_js {
-        return hygienic(source, &raw, runtime);
+        let (output, anchors) = hygienic(source, &raw, runtime);
+        if let Some(marks) = marks {
+            marks.relocate(|offset| Some(renamed_offset(&anchors, offset)));
+        }
+        return output;
     }
-    match rewritten(source, runtime) {
-        Some(output) => output,
+    match rewritten(source, runtime.clone()) {
+        Some((output, written)) => {
+            if let Some(marks) = marks {
+                marks.relocate(|offset| match &runtime {
+                    Some(factory) if factory.start < offset && offset < factory.end => {
+                        let at = written.partition_point(|(old, _)| *old < factory.start);
+                        Some(written[at].1 + offset - factory.start)
+                    }
+                    _ => written
+                        .get(written.partition_point(|(old, _)| *old < offset))
+                        .map(|(_, new)| *new),
+                });
+            }
+            output
+        }
         None => {
             debug_assert!(false, "emitted JavaScript does not lex:\n{source}");
             source.to_owned()
@@ -312,10 +418,25 @@ pub(crate) fn terse_program(
     }
 }
 
+/// Where text at `offset` of a source is in its renamed text, given the
+/// `anchors` of [`rename_compiler_names`].
+pub(crate) fn renamed_offset(anchors: &[(usize, usize)], offset: usize) -> usize {
+    match anchors.partition_point(|(old, _)| *old <= offset) {
+        0 => offset,
+        at => {
+            let (old, new) = anchors[at - 1];
+            new + (offset - old)
+        }
+    }
+}
+
 /// The compiler names of `source` outside the `skipped` ranges, with their
 /// ranges: identifiers outside double-quoted strings, the only literals the
 /// emitter writes with free text.
-fn scanned_names<'s>(source: &'s str, skipped: &[Range<usize>]) -> Vec<(Range<usize>, &'s str)> {
+pub(crate) fn scanned_names<'s>(
+    source: &'s str,
+    skipped: &[Range<usize>],
+) -> Vec<(Range<usize>, &'s str)> {
     let mut skipped = skipped
         .iter()
         .filter(|range| !range.is_empty())
@@ -364,7 +485,11 @@ fn scanned_names<'s>(source: &'s str, skipped: &[Range<usize>]) -> Vec<(Range<us
 
 /// A program with raw `js*` text: compiler names become the hygiene prefix
 /// and a short name, and nothing else changes.
-fn hygienic(source: &str, raw: &[Range<usize>], runtime: Option<Range<usize>>) -> String {
+fn hygienic(
+    source: &str,
+    raw: &[Range<usize>],
+    runtime: Option<Range<usize>>,
+) -> (String, Vec<(usize, usize)>) {
     let prefix = hygiene_prefix(source, raw);
     let mut skipped = raw.to_vec();
     skipped.extend(runtime);
@@ -377,20 +502,25 @@ fn hygienic(source: &str, raw: &[Range<usize>], runtime: Option<Range<usize>>) -
 /// `skipped` ranges (raw `js*` text, the runtime) written as `rename` gives
 /// it. The readable output's hygiene pass is `rename` adding the
 /// [`hygiene_prefix`]; terse output with raw text adds it to a short name.
+/// Also returns the anchors of [`renamed_offset`]: the start and end of
+/// each renamed name in `source`, each with its offset in the output.
 pub(crate) fn rename_compiler_names(
     source: &str,
     skipped: &[Range<usize>],
     rename: impl Fn(&str) -> String,
-) -> String {
+) -> (String, Vec<(usize, usize)>) {
     let mut output = String::with_capacity(source.len());
+    let mut anchors = Vec::new();
     let mut at = 0;
     for (range, word) in scanned_names(source, skipped) {
         output.push_str(&source[at..range.start]);
+        anchors.push((range.start, output.len()));
         output.push_str(&rename(word));
+        anchors.push((range.end, output.len()));
         at = range.end;
     }
     output.push_str(&source[at..]);
-    output
+    (output, anchors)
 }
 
 fn punct<'s>(source: &'s str, token: &Token) -> &'s str {
@@ -410,8 +540,9 @@ const BEFORE_EXPRESSION: &[&str] = &[
     "...",
 ];
 
-/// The program rewritten from its tokens, or `None` when it does not lex.
-fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<String> {
+/// The program rewritten from its tokens, or `None` when it does not lex,
+/// with the start of each written token in `source` and in the output.
+fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec<(usize, usize)>)> {
     // The runtime factory is one token, an atom like a template literal.
     let mut tokens = Vec::new();
     match &runtime {
@@ -467,10 +598,16 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<String> {
     };
 
     let mut writer = TerseWriter::default();
+    let mut written = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         if dropped[index] || joins[index] == Join::Drop {
             continue;
         }
+        // The writer separates a token by at most one space or line break.
+        let before = writer.out.len();
+        let separated = |out: &str| {
+            before + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')))
+        };
         let newline = token.newline_before && !cleared[index];
         if joins[index] == Join::Comma {
             let comma = Shape {
@@ -478,6 +615,7 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<String> {
                 text: ",",
             };
             writer.write(comma, ",", newline);
+            written.push((token.start, separated(&writer.out)));
             continue;
         }
         if let Some(name) = dotted[index] {
@@ -497,6 +635,7 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<String> {
                 name,
                 false,
             );
+            written.push((token.start, separated(&writer.out)));
             continue;
         }
         let word = token.text(source);
@@ -524,10 +663,11 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<String> {
             };
             writer.write(shape, word, newline);
         }
+        written.push((token.start, separated(&writer.out)));
     }
     let mut output = writer.out;
     output.push('\n');
-    Some(output)
+    Some((output, written))
 }
 
 /// Keywords after which a `(` opens a parenthesized expression.
@@ -981,6 +1121,70 @@ mod tests {
             let (renamed, _) = terse_slice(&kept, &returned);
             same_bindings(&original, &renamed)
                 .unwrap_or_else(|error| panic!("density {density}: {error}"));
+        }
+    }
+
+    /// The marks of a terse slice ([`terse_slice_marks`]) point at the text
+    /// of the runtime tokens they map: the same punctuator, keyword or
+    /// literal, or a name, which may be renamed, and for a `let` or `const`
+    /// that declarations joining dropped, the `,` or the declarator after it.
+    #[test]
+    fn slice_marks_point_at_the_tokens_they_map() {
+        let manifest = RuntimeManifest::embedded();
+        let source = crate::runtime_manifest::ANNOTATED_RUNTIME;
+        let tokens = lex(source, 0..source.len()).unwrap();
+        for kept in [
+            vec![true; manifest.units.len()],
+            (0..manifest.units.len())
+                .map(|unit| unit % 3 == 0)
+                .collect(),
+        ] {
+            let returned = ["keyword"];
+            let (text, marks) = terse_slice_marks(&kept, &returned);
+            assert_eq!(text, terse_slice(&kept, &returned).0);
+            let lines = manifest
+                .units
+                .iter()
+                .zip(&kept)
+                .filter(|(_, kept)| **kept)
+                .map(|(unit, _)| {
+                    let body = &source[unit.body_range.clone()];
+                    body.lines()
+                        .filter(|line| {
+                            let line = line.trim_start();
+                            !line.is_empty() && !line.starts_with("//")
+                        })
+                        .count()
+                })
+                .sum::<usize>();
+            // Lines of comments in the middle of statements have no mark.
+            assert!(marks.len() * 100 > lines * 95, "{} of {lines}", marks.len());
+            let named = marks.iter().filter(|(_, _, name)| name.is_some()).count();
+            let declaring = manifest
+                .units
+                .iter()
+                .zip(&kept)
+                .filter(|(unit, kept)| **kept && !unit.declares.is_empty())
+                .count();
+            assert_eq!(named, declaring);
+            for &(offset, at, _) in &marks[1..] {
+                let token = &tokens[tokens.partition_point(|token| token.start < at)];
+                assert_eq!(token.start, at);
+                let word = token.text(source);
+                let written = &text[offset..];
+                let name = written
+                    .bytes()
+                    .next()
+                    .is_some_and(crate::js_syntax::identifier_part);
+                let matches = match token.kind {
+                    Kind::Name if matches!(word, "let" | "const") => {
+                        written.starts_with(word) || written.starts_with([',', '[', '{']) || name
+                    }
+                    Kind::Name if !reserved(word) => name,
+                    _ => written.starts_with(word),
+                };
+                assert!(matches, "`{word}` at {at} maps to {:?}", &written[..20]);
+            }
         }
     }
 }

@@ -1229,6 +1229,21 @@ pub fn analyze_namespace_entry(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<crate::Program, NamespaceCompileError> {
+    analyze_namespace_entry_with_sources(entry, source_roots, macros, options, warnings)
+        .map(|(program, _)| program)
+}
+
+/// [`analyze_namespace_entry`], also returning the path and text of each
+/// source the program was analyzed from, by source index (the order of
+/// loading, dependencies first): the sources a source map names
+/// ([`crate::source_map`]).
+pub fn analyze_namespace_entry_with_sources(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -1257,7 +1272,7 @@ pub fn analyze_namespace_entry(
             roots.push(canonical);
         }
     }
-    analyze_namespace_entry_with_provider(
+    analyze_entry(
         entry,
         &FileSourceProvider::new(roots),
         macros,
@@ -1279,6 +1294,18 @@ pub fn analyze_namespace_entry_with_provider(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<crate::Program, NamespaceCompileError> {
+    analyze_entry(entry, sources, macros, options, warnings).map(|(program, _)| program)
+}
+
+/// The program of an entry namespace and the path and text of each source,
+/// by source index.
+fn analyze_entry(
+    entry: &str,
+    sources: &dyn SourceProvider,
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -1511,5 +1538,10 @@ pub fn analyze_namespace_entry_with_provider(
         let file = &loader.ordered[index];
         NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
     })?;
-    Ok(program)
+    let files = loader
+        .ordered
+        .into_iter()
+        .map(|file| (file.path, file.source))
+        .collect();
+    Ok((program, files))
 }

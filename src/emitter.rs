@@ -18,6 +18,7 @@ use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManife
 use crate::runtime_slice::{
     ConstantPool, EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots,
 };
+use crate::source_map::{Mark, Marks, SourceMapping};
 use crate::value_hash::ConstantHashes;
 
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
@@ -39,12 +40,22 @@ pub fn emit_js(program: &Program) -> String {
 /// Emit a prepared application. At `Advanced` the output reads runtime
 /// bindings directly and embeds only the units those reads reach (see
 /// [`crate::runtime_slice`]); see [`Application`] for the other decisions.
+/// With `mapped`, also the output's source map ([`crate::source_map`]).
 pub(crate) fn emit_application(
     program: &Program,
     application: Application<'_>,
     module: bool,
-) -> (String, EmittedRuntime) {
-    emit_js_mode(program, None, false, false, Some(application), module)
+    mapped: bool,
+) -> (String, EmittedRuntime, Option<SourceMapping>) {
+    emit_js_mode(
+        program,
+        None,
+        false,
+        false,
+        Some(application),
+        module,
+        mapped,
+    )
 }
 
 /// What application preparation decided for emission.
@@ -121,13 +132,23 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
     };
     format!(
         "({parameter}) => {}",
-        emit_js_mode(program, Some(&parameter), demand_roots, false, None, false).0
+        emit_js_mode(
+            program,
+            Some(&parameter),
+            demand_roots,
+            false,
+            None,
+            false,
+            false
+        )
+        .0
     )
 }
 
 /// `application` carries the decisions of application preparation, including
 /// whether to read a runtime slice directly (`Advanced`). The returned runtime
-/// report lists every runtime name the output reads.
+/// report lists every runtime name the output reads. With `mapped` the output
+/// also has a source map.
 fn emit_js_mode(
     program: &Program,
     shared: Option<&str>,
@@ -135,7 +156,8 @@ fn emit_js_mode(
     application_roots: bool,
     application: Option<Application<'_>>,
     module: bool,
-) -> (String, EmittedRuntime) {
+    mapped: bool,
+) -> (String, EmittedRuntime, Option<SourceMapping>) {
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
@@ -146,6 +168,12 @@ fn emit_js_mode(
         .and_then(|application| application.shapes)
         .filter(|_| direct.is_some());
     let terse = direct.is_some() && application.is_some_and(|application| application.terse);
+    let mapped = mapped && shared.is_none();
+    let function_names = if mapped {
+        function_names(program)
+    } else {
+        HashMap::new()
+    };
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool| {
         let mut emitter = Emitter {
@@ -196,6 +224,9 @@ fn emit_js_mode(
             inference,
             shapes,
             truth_used: false,
+            marks: mapped.then(Marks::default),
+            constant_marks: Vec::new(),
+            function_names: &function_names,
         };
         emitter.output.push_str(PRELUDE_OPEN);
         emitter.output.push_str(PRELUDE_TRUTH);
@@ -252,6 +283,9 @@ fn emit_js_mode(
                 range.start -= PRELUDE_TRUTH.len();
                 range.end -= PRELUDE_TRUTH.len();
             }
+            if let Some(marks) = &mut emitter.marks {
+                marks.shift(start, -(PRELUDE_TRUTH.len() as isize));
+            }
         }
         (emitter, prelude_end)
     };
@@ -287,6 +321,9 @@ fn emit_js_mode(
                 range.end += host.len();
             }
         }
+        if let Some(marks) = &mut emitter.marks {
+            marks.shift(prelude_end, host.len() as isize);
+        }
         emitter.output.insert_str(prelude_end, host);
     }
     // Advanced application output embeds the units its runtime reads reach;
@@ -304,6 +341,8 @@ fn emit_js_mode(
     let mut runtime_bytes = 0;
     // The embedded runtime factory's range in the output.
     let mut runtime_segment = None;
+    // The runtime's statement, which declares no compiler name.
+    let mut runtime_statement = 0..0;
     let mut unit_bytes = None;
     if embed {
         let mut registration = String::new();
@@ -396,6 +435,8 @@ fn emit_js_mode(
             )
             .unwrap();
         }
+        // Marks of the runtime text, by offset in `runtime`.
+        let mut runtime_marks = Marks::default();
         let mut runtime = if let Some(parameter) = shared {
             format!("  const rt = {parameter};\n")
         } else if slice {
@@ -410,14 +451,37 @@ fn emit_js_mode(
                 .map(|binding| format!("rt${binding}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("  const [{pattern}] = {};\n", factory.trim())
+            let statement = format!("  const [{pattern}] = {};\n", factory.trim());
+            if mapped {
+                // Where the untrimmed factory would start.
+                let at = statement.len() - 2 - factory.trim_end().len();
+                if let Some(bytes) = &unit_bytes {
+                    let kept = bytes.iter().map(|&bytes| bytes > 0).collect::<Vec<_>>();
+                    let (text, marks) = crate::terse::terse_slice_marks(&kept, &bindings);
+                    debug_assert_eq!(text, factory, "the terse slice is written again");
+                    for (offset, source, name) in marks {
+                        let origin = (crate::source_map::RUNTIME, source);
+                        match name {
+                            Some(name) => runtime_marks.named(at + offset, Some(origin), name),
+                            None => runtime_marks.position(at + offset, origin.0, origin.1),
+                        }
+                    }
+                } else {
+                    runtime_marks.readable_slice(&factory, at);
+                }
+            }
+            statement
         } else {
             embedding = RuntimeEmbedding::Whole;
             runtime_bytes = crate::runtime_manifest::RUNTIME.trim().len();
-            format!(
+            let statement = format!(
                 "  const rt = {};\n",
                 crate::runtime_manifest::RUNTIME.trim()
-            )
+            );
+            if mapped {
+                runtime_marks.whole_runtime("  const rt = ".len());
+            }
+            statement
         };
         let source_length = runtime.len();
         // Where the factory expression starts, after the readable runtime's
@@ -432,6 +496,7 @@ fn emit_js_mode(
             writeln!(runtime, "  let core${name} = {initial};").unwrap();
         }
         // The constant table follows the runtime it reads.
+        let constants_at = runtime.len();
         if let Some(constants) = &emitter.constants {
             #[cfg(debug_assertions)]
             check_runtime_reads(
@@ -442,6 +507,7 @@ fn emit_js_mode(
             );
             runtime.push_str(&constants.declarations);
         }
+        let registration_at = runtime.len();
         runtime.push_str(&registration);
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
@@ -453,6 +519,17 @@ fn emit_js_mode(
             let segment = prelude_end + factory..prelude_end + source_length - 2;
             runtime_segment = Some(segment.clone());
             emitter.raw_segments.push(segment);
+        }
+        runtime_statement = prelude_end..prelude_end + source_length;
+        if let Some(marks) = &mut emitter.marks {
+            marks.shift(prelude_end, runtime.len() as isize);
+            marks.absorb(runtime_marks, prelude_end);
+            marks.place(&emitter.constant_marks, prelude_end + constants_at);
+            // The core cells, the namespace registration, the host helpers
+            // and the `let` declarations of definitions are the compiler's.
+            for at in [source_length, registration_at, runtime.len()] {
+                marks.unmapped(prelude_end + at);
+            }
         }
         emitter.output.insert_str(prelude_end, &runtime);
     } else if let Some(constants) = emitter
@@ -469,6 +546,11 @@ fn emit_js_mode(
                 range.end += declarations.len();
             }
         }
+        if let Some(marks) = &mut emitter.marks {
+            marks.shift(prelude_end, declarations.len() as isize);
+            marks.place(&emitter.constant_marks, prelude_end);
+            marks.unmapped(prelude_end + declarations.len());
+        }
         emitter.output.insert_str(prelude_end, declarations);
     }
 
@@ -480,22 +562,41 @@ fn emit_js_mode(
         .used
         .iter()
         .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }));
+    // Each compiler name of a local or definition names its token.
+    if let Some(marks) = &mut emitter.marks {
+        let mut skipped = emitter.raw_segments.clone();
+        skipped.push(runtime_statement);
+        for (range, word) in crate::terse::scanned_names(&emitter.output, &skipped) {
+            if let Some(name) = original_name(program, word) {
+                marks.named(range.start, None, name);
+            }
+        }
+    }
     let output = if terse {
         crate::terse::terse_program(
             &emitter.output,
             &emitter.raw_segments,
             runtime_segment,
             raw_js,
+            emitter.marks.as_mut(),
         )
     } else if raw_js {
-        hygienic_js(emitter.output, emitter.raw_segments)
+        hygienic_js(emitter.output, emitter.raw_segments, emitter.marks.as_mut())
     } else {
         emitter.output
     };
     let output = match emitter.imports {
-        Some(imports) => module_source(&imports, &output),
+        Some(imports) => {
+            let module = module_source(&imports, &output);
+            if let Some(marks) = &mut emitter.marks {
+                // `import ...; export default <output>;`
+                marks.shift(0, (module.len() - output.trim_end().len() - 2) as isize);
+            }
+            module
+        }
         None => output,
     };
+    let mapping = emitter.marks.map(|marks| marks.finish(&output));
     let constants = emitter
         .constants
         .map_or_else(ConstantPool::default, |table| ConstantPool {
@@ -512,7 +613,76 @@ fn emit_js_mode(
         unit_bytes,
         constants,
     };
-    (output, runtime)
+    (output, runtime, mapping)
+}
+
+/// The names that source maps give the functions of `program`, by `fn`
+/// expression: its own name, else the definition or local it initializes
+/// (through `do` and metadata).
+fn function_names(program: &Program) -> HashMap<ExprId, &str> {
+    let mut names = HashMap::new();
+    let function = |mut id: ExprId| loop {
+        match &program.exprs[id.0].kind {
+            ExprKind::Do(items) if !items.is_empty() => id = *items.last().unwrap(),
+            ExprKind::WithMeta { value, .. } => id = *value,
+            ExprKind::Fn { name: None, .. } => break Some(id),
+            _ => break None,
+        }
+    };
+    for (index, expr) in program.exprs.iter().enumerate() {
+        match &expr.kind {
+            ExprKind::Fn {
+                name: Some(local), ..
+            } => {
+                names.insert(ExprId(index), program.locals[local.0].name.as_str());
+            }
+            ExprKind::Def {
+                global,
+                init: Some(init),
+                ..
+            } => {
+                if let Some(id) = function(*init) {
+                    names.insert(id, program.globals[global.0].name.as_str());
+                }
+            }
+            ExprKind::Let { bindings, .. }
+            | ExprKind::LetFn { bindings, .. }
+            | ExprKind::Loop { bindings, .. } => {
+                for (local, init) in bindings {
+                    if let Some(id) = function(*init) {
+                        names
+                            .entry(id)
+                            .or_insert(program.locals[local.0].name.as_str());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// The source name of a compiler name the emitter writes for a local
+/// (`l7`, a method entry `l5_0`) or a definition (`g3`, `g3_1`).
+fn original_name<'p>(program: &'p Program, word: &str) -> Option<&'p str> {
+    let (locals, rest) = match word.split_at_checked(1)? {
+        ("l", rest) => (true, rest),
+        ("g", rest) => (false, rest),
+        _ => return None,
+    };
+    let number = rest.split('_').next()?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number: usize = number.parse().ok()?;
+    if locals {
+        program.locals.get(number).map(|local| local.name.as_str())
+    } else {
+        program
+            .globals
+            .get(number)
+            .map(|global| global.name.as_str())
+    }
 }
 
 /// The opening of every emitted expression, followed by [`PRELUDE_TRUTH`].
@@ -1072,6 +1242,14 @@ struct Emitter<'a> {
     shapes: Option<&'a CallShapes>,
     /// Whether the output calls the prelude's `truth`.
     truth_used: bool,
+    /// With a source map: where the text of each expression starts
+    /// ([`Emitter::mark`]), and the functions' and names' positions.
+    marks: Option<Marks>,
+    /// With a source map: the marks of the constant table, by offset in
+    /// its declarations.
+    constant_marks: Vec<Mark>,
+    /// With a source map: the names of functions ([`function_names`]).
+    function_names: &'a HashMap<ExprId, &'a str>,
 }
 
 impl<'a> Emitter<'a> {
@@ -1202,6 +1380,7 @@ impl<'a> Emitter<'a> {
         }
         let site = std::mem::take(&mut self.output);
         let raw = self.raw_segments.len();
+        let marks = self.marks_len();
         initializer(self);
         debug_assert_eq!(
             self.raw_segments.len(),
@@ -1209,17 +1388,16 @@ impl<'a> Emitter<'a> {
             "a constant holds raw JavaScript"
         );
         let value = std::mem::replace(&mut self.output, site);
-        let constants = self.constants.as_mut().unwrap();
-        let number = constants.lazy.len();
-        if lazy {
-            writeln!(
-                constants.declarations,
-                "  let c{number}; const k{number} = () => c{number} ??= {value};"
-            )
-            .unwrap();
+        let number = self.constants.as_ref().unwrap().lazy.len();
+        let declaration = if lazy {
+            format!("  let c{number}; const k{number} = () => c{number} ??= ")
         } else {
-            writeln!(constants.declarations, "  const k{number} = {value};").unwrap();
-        }
+            format!("  const k{number} = ")
+        };
+        let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
+        self.take_marks(marks, at);
+        let constants = self.constants.as_mut().unwrap();
+        writeln!(constants.declarations, "{declaration}{value};").unwrap();
         constants.composites += usize::from(matches!(key, ConstantKey::Composite { .. }));
         constants.lazy.push(lazy);
         constants.numbers.insert(key, number);
@@ -2415,8 +2593,57 @@ impl<'a> Emitter<'a> {
 
     fn emit(&mut self, id: ExprId, context: ExprContext) {
         let site = self.site.replace(id);
+        self.mark(Some(id));
         self.emit_expr(id, context);
         self.site = site;
+        self.mark(site);
+    }
+
+    /// With a source map, the output from here on is the text of `id`: of
+    /// the expression being written, or after a nested expression's text,
+    /// of the expression around it again.
+    fn mark(&mut self, id: Option<ExprId>) {
+        if let (Some(marks), Some(id)) = (&mut self.marks, id) {
+            let expr = &self.program.exprs[id.0];
+            // The root `do` and other spans that name no source text.
+            if !expr.span.is_empty() {
+                marks.position(self.output.len(), expr.source_index, expr.span.start);
+            }
+        }
+    }
+
+    /// With a source map, the `function` keyword about to be written starts
+    /// the function of the current `fn` expression, which source maps name
+    /// ([`function_names`]): a stack trace names a frame by its function's
+    /// first token.
+    fn function_mark(&mut self) {
+        let (Some(marks), Some(site)) = (&mut self.marks, self.site) else {
+            return;
+        };
+        if let Some(name) = self.function_names.get(&site) {
+            let expr = &self.program.exprs[site.0];
+            let origin = (!expr.span.is_empty()).then_some((expr.source_index, expr.span.start));
+            marks.named(self.output.len(), origin, name);
+        }
+    }
+
+    /// The number of marks so far, from which [`Emitter::take_marks`] takes
+    /// those of text written into another buffer.
+    fn marks_len(&self) -> usize {
+        self.marks.as_ref().map_or(0, |marks| marks.list.len())
+    }
+
+    /// The marks since `start` ([`Emitter::marks_len`]), of text that goes
+    /// to the constant table at offset `at` of its declarations.
+    fn take_marks(&mut self, start: usize, at: usize) {
+        if let Some(marks) = &mut self.marks {
+            let taken = marks.split_off(start);
+            self.constant_marks
+                .extend(taken.into_iter().map(|mark| Mark {
+                    output: mark.output + at,
+                    ..mark
+                }));
+        }
     }
 
     fn emit_expr(&mut self, id: ExprId, context: ExprContext) {
@@ -2967,7 +3194,9 @@ impl<'a> Emitter<'a> {
         method: &FnMethod,
         ifn_call: bool,
     ) {
-        self.output.push_str("(function");
+        self.output.push('(');
+        self.function_mark();
+        self.output.push_str("function");
         if let Some(name) = name {
             self.output.push(' ');
             self.local(name);
@@ -3109,6 +3338,7 @@ impl<'a> Emitter<'a> {
     /// The `arguments.length` dispatcher over methods bound to `entries`:
     /// `function(a0, a1) { switch (arguments.length) { ... } }`.
     fn dispatcher(&mut self, entries: &[String], methods: &[FnMethod], macro_function: bool) {
+        self.function_mark();
         self.output.push_str("function(");
         let count = if macro_function {
             1
@@ -3371,6 +3601,7 @@ impl<'a> Emitter<'a> {
         let returned_definition = self.returned_definition.take();
         let site = self.site.replace(function);
         let raw = self.raw_segments.len();
+        let marks = self.marks_len();
         self.method_with_ifn_captures(None, &methods[method], false);
         debug_assert_eq!(
             self.raw_segments.len(),
@@ -3386,8 +3617,11 @@ impl<'a> Emitter<'a> {
         self.captures = captures;
         self.indent = indent;
         let value = std::mem::replace(&mut self.output, output);
+        let declaration = format!("  const k{number} = ");
+        let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
+        self.take_marks(marks, at);
         let constants = self.constants.as_mut().unwrap();
-        writeln!(constants.declarations, "  const k{number} = {value};").unwrap();
+        writeln!(constants.declarations, "{declaration}{value};").unwrap();
         number
     }
 
@@ -3585,8 +3819,10 @@ impl<'a> Emitter<'a> {
 
     fn value(&mut self, id: ExprId) {
         let site = self.site.replace(id);
+        self.mark(Some(id));
         self.value_expr(id);
         self.site = site;
+        self.mark(site);
     }
 
     fn value_expr(&mut self, id: ExprId) {
@@ -4466,19 +4702,29 @@ fn reads_function_scope(program: &Program, id: ExprId) -> bool {
 // `Advanced` output renames the same names (`crate::terse::terse_program`).
 // `optimization::raw_js_names_resolve_only_to_holes_and_host_globals` in
 // tests/compiler checks it from raw text in each scope the emitter creates.
-fn hygienic_js(source: String, raw: Vec<std::ops::Range<usize>>) -> String {
+fn hygienic_js(
+    source: String,
+    raw: Vec<std::ops::Range<usize>>,
+    marks: Option<&mut Marks>,
+) -> String {
     let prefix = crate::terse::hygiene_prefix(&source, &raw);
-    crate::terse::rename_compiler_names(&source, &raw, |word| format!("{prefix}{word}"))
+    let (output, anchors) =
+        crate::terse::rename_compiler_names(&source, &raw, |word| format!("{prefix}{word}"));
+    if let Some(marks) = marks {
+        marks.relocate(|offset| Some(crate::terse::renamed_offset(&anchors, offset)));
+    }
+    output
 }
 
 /// Interactive application roots live in the application heap, never the macro heap.
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    let (body, _) = emit_js_mode(
+    let (body, ..) = emit_js_mode(
         program,
         Some("__lightInteractiveRuntime"),
         false,
         true,
         None,
+        false,
         false,
     );
     format!(

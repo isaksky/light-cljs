@@ -3,19 +3,20 @@ use std::{
     error::Error,
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_macro_warnings};
+use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
-    ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, TokenKind, Tokenizer,
-    parse, prepare_application,
+    ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, PreparedApplication,
+    TokenKind, Tokenizer, parse, prepare_application,
 };
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -40,9 +41,16 @@ fn optimization_level(
 }
 
 /// The application options `--compile` collects: `--optimize`,
-/// `--size-report`, `--pseudo-names`, `--define` and `--elide-asserts`.
+/// `--size-report`, `--pseudo-names`, `--define`, `--elide-asserts` and the
+/// source map flags.
 #[derive(Default)]
 struct CompileFlags {
+    /// `--source-map PATH`: where to write the source map.
+    source_map: Option<PathBuf>,
+    /// `--source-map-inline`: embed the source map in the output.
+    source_map_inline: bool,
+    /// `--source-map-include-sources`: the map holds the sources' text.
+    include_sources: bool,
     level: OptimizationLevel,
     size_report: bool,
     pseudo_names: bool,
@@ -64,6 +72,13 @@ impl CompileFlags {
             "--size-report" => self.size_report = true,
             "--pseudo-names" => self.pseudo_names = true,
             "--elide-asserts" => self.elide_asserts = true,
+            "--source-map" => {
+                self.source_map = Some(PathBuf::from(
+                    args.next().ok_or("--source-map requires a path")?,
+                ));
+            }
+            "--source-map-inline" => self.source_map_inline = true,
+            "--source-map-include-sources" => self.include_sources = true,
             "--define" => self.defines.push(
                 args.next()
                     .ok_or("--define requires NS/NAME=VALUE")?
@@ -91,6 +106,132 @@ impl CompileFlags {
         }
         Ok(options)
     }
+}
+
+impl CompileFlags {
+    /// The output of `prepared`, an ES module with `esm`, and with a source
+    /// map flag also its source map, written to its file or embedded.
+    /// `sources` are the program's source files by source index: each path
+    /// as given (or a name such as `<text>.cljc`) and its text.
+    fn output(
+        &self,
+        prepared: &PreparedApplication,
+        esm: bool,
+        sources: &[(&Path, &str)],
+    ) -> Result<String, Box<dyn Error>> {
+        if self.source_map.is_some() && self.source_map_inline {
+            return Err("--source-map and --source-map-inline exclude each other".into());
+        }
+        if self.source_map.is_none() && !self.source_map_inline {
+            if self.include_sources {
+                return Err(
+                    "--source-map-include-sources requires --source-map PATH or --source-map-inline"
+                        .into(),
+                );
+            }
+            return Ok(if esm {
+                prepared.emit_esm()
+            } else {
+                prepared.emit_js()
+            });
+        }
+        let (mut code, mapping) = if esm {
+            prepared.emit_esm_mapped()
+        } else {
+            prepared.emit_js_mapped()
+        };
+        // Sources are named relative to the map's directory, or for an
+        // embedded map the current directory.
+        let base = match self.source_map.as_deref().and_then(Path::parent) {
+            Some(directory) if !directory.as_os_str().is_empty() => directory.to_path_buf(),
+            _ => env::current_dir()?,
+        };
+        let base = fs::canonicalize(&base).unwrap_or(base);
+        let urls = sources
+            .iter()
+            .map(|(path, _)| source_url(path, &base))
+            .collect::<Vec<_>>();
+        let files = urls
+            .iter()
+            .zip(sources)
+            .map(|(url, (_, text))| SourceFile { url, text })
+            .collect::<Vec<_>>();
+        let name = self
+            .source_map
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy());
+        let file = name.as_deref().and_then(|name| name.strip_suffix(".map"));
+        let json = mapping.to_json(file, &files, self.include_sources);
+        let url = match (&self.source_map, &name) {
+            (Some(path), Some(name)) => {
+                fs::write(path, &json)
+                    .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+                url_segment(name)
+            }
+            (Some(path), None) => {
+                return Err(format!("--source-map needs a file name: {}", path.display()).into());
+            }
+            _ => data_url(&json),
+        };
+        code.push_str("//# sourceMappingURL=");
+        code.push_str(&url);
+        code.push('\n');
+        Ok(code)
+    }
+}
+
+/// The `sources` entry of the source at `path`: relative to the directory
+/// `base` when the file exists, else the name as given (`<text>.cljc`).
+fn source_url(path: &Path, base: &Path) -> String {
+    let Ok(path) = fs::canonicalize(path) else {
+        return path
+            .to_string_lossy()
+            .split(['/', '\\'])
+            .map(url_segment)
+            .collect::<Vec<_>>()
+            .join("/");
+    };
+    let parts = path.components().collect::<Vec<_>>();
+    let base = base.components().collect::<Vec<_>>();
+    let common = parts.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        // Another drive: an absolute URL.
+        return format!(
+            "file:///{}",
+            path.to_string_lossy()
+                .split(['/', '\\'])
+                .filter(|part| !part.is_empty())
+                .map(|part| if part.ends_with(':') {
+                    part.to_owned()
+                } else {
+                    url_segment(part)
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+    }
+    std::iter::repeat_n("..".to_owned(), base.len() - common)
+        .chain(
+            parts[common..]
+                .iter()
+                .map(|part| url_segment(&part.as_os_str().to_string_lossy())),
+        )
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// `text` as one segment of a URL path, percent-encoded.
+fn url_segment(text: &str) -> String {
+    let mut segment = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@".contains(&byte) {
+            segment.push(char::from(byte));
+        } else {
+            segment.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    segment
 }
 
 /// Print the retention report of `prepared` to stderr (`--size-report`).
@@ -129,7 +270,7 @@ fn run_namespace(
     }
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
     let mut warnings = Vec::new();
-    let program = light_cljs::compiler::analyze_namespace_entry(
+    let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
         &entry,
         &roots,
         &mut flags.host(),
@@ -139,13 +280,13 @@ fn run_namespace(
     if options.warning_mode {
         print_warnings(&warnings);
     }
-    let program = program?;
+    let (program, files) = program?;
     let prepared = prepare_application(&program, flags.options(&program)?);
-    let output = if esm {
-        prepared.emit_esm()
-    } else {
-        prepared.emit_js()
-    };
+    let sources = files
+        .iter()
+        .map(|(path, text)| (path.as_path(), text.as_str()))
+        .collect::<Vec<_>>();
+    let output = flags.output(&prepared, esm, &sources)?;
     io::stdout().lock().write_all(output.as_bytes())?;
     if flags.size_report {
         print_size_report(&prepared)?;
@@ -188,7 +329,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let mut flags = CompileFlags::default();
     while let Some(
-        flag @ ("--optimize" | "--size-report" | "--pseudo-names" | "--define" | "--elide-asserts"),
+        flag @ ("--optimize"
+        | "--size-report"
+        | "--pseudo-names"
+        | "--define"
+        | "--elide-asserts"
+        | "--source-map"
+        | "--source-map-inline"
+        | "--source-map-include-sources"),
     ) = first.as_deref().and_then(|arg| arg.to_str())
     {
         if mode != "compile" {
@@ -279,7 +427,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?;
             if mode == "compile" {
                 let prepared = prepare_application(&program, flags.options(&program)?);
-                write!(out, "{}", prepared.emit_js())?;
+                let sources = [(Path::new(&source_name), source.as_str())];
+                write!(out, "{}", flags.output(&prepared, false, &sources)?)?;
                 if flags.size_report {
                     out.flush()?;
                     print_size_report(&prepared)?;

@@ -209,7 +209,15 @@ pub struct PreparedApplication {
     stats: ApplicationStats,
 }
 impl PreparedApplication {
-    fn emit(&self, module: bool) -> (String, crate::runtime_slice::EmittedRuntime) {
+    fn emit(
+        &self,
+        module: bool,
+        mapped: bool,
+    ) -> (
+        String,
+        crate::runtime_slice::EmittedRuntime,
+        Option<crate::source_map::SourceMapping>,
+    ) {
         let advanced = self.level.advanced();
         crate::emitter::emit_application(
             &self.program,
@@ -226,24 +234,37 @@ impl PreparedApplication {
                 terse: self.terse,
             },
             module,
+            mapped,
         )
     }
     /// One JavaScript expression. At `Advanced` it embeds only the runtime
     /// units the program reaches; see [`PreparedApplication::retention`].
     pub fn emit_js(&self) -> String {
-        self.emit(false).0
+        self.emit(false, false).0
     }
     /// One ES module for a bundler; see [`crate::emitter::emit_esm`]. Its
     /// runtime is the one [`PreparedApplication::emit_js`] embeds.
     pub fn emit_esm(&self) -> String {
-        self.emit(true).0
+        self.emit(true, false).0
+    }
+    /// [`PreparedApplication::emit_js`] (the same text) and its source map,
+    /// which [`crate::source_map::SourceMapping::to_json`] writes against
+    /// the program's sources.
+    pub fn emit_js_mapped(&self) -> (String, crate::source_map::SourceMapping) {
+        let (code, _, mapping) = self.emit(false, true);
+        (code, mapping.expect("a mapped emission"))
+    }
+    /// [`PreparedApplication::emit_esm`] (the same text) and its source map.
+    pub fn emit_esm_mapped(&self) -> (String, crate::source_map::SourceMapping) {
+        let (code, _, mapping) = self.emit(true, true);
+        (code, mapping.expect("a mapped emission"))
     }
     /// Which runtime units the emitted output embeds, each with its size and
     /// the runtime name and source expression that first demanded it. Below
     /// `Advanced` the output embeds the whole runtime and the report
     /// attributes what it can. `--size-report` prints this table.
     pub fn retention(&self) -> crate::RetentionReport {
-        let (_, runtime) = self.emit(false);
+        let (_, runtime, _) = self.emit(false, false);
         crate::RetentionReport::new(&self.program, self.level, &runtime)
     }
     pub fn stats(&self) -> &ApplicationStats {
