@@ -2126,7 +2126,9 @@ escaped, so its parameters were `any`.
 - **Joins.** At each such call inference binds the function's parameters as
   each of the operation's calls would, selecting the method by count, when
   the table describes the call: within the arity's domain, the operation not
-  replaced, core protocols intact, and no other argument that may be a
+  replaced, core protocols intact (also for a lazy operation such as `map`,
+  whose `calls` is `-`, since traversing its collection runs them), and no
+  other argument that may be a
   program type while one implements `IReduce`, `IKVReduce` or `ISwap`, whose
   method receives the function itself (`ProgramFacts::receives_functions`).
   Only `swap!` and `swap-vals!` admit program types in their domain. Any
@@ -2136,7 +2138,10 @@ escaped, so its parameters were `any`.
 - **Tests.** The `type_inference` suite checks the joined types (literals,
   `range`, strings, maps, `conj`, `map` results, records), the cases that
   stay `any` (transducers, comparators, `apply`, a JavaScript array, an
-  `IReduce` or `ISwap` program type), lowerings inside callbacks on
+  `IReduce` or `ISwap` program type, a replaced `mapv`, `ISeqable` extended
+  to vectors, which lazy `map` reaches only when traversed), the return
+  classes `reduce`, `reductions` and `iterate` feed back into their
+  function's parameters, lowerings inside callbacks on
   adversarial values against `None`, including an `ISwap` type that passes
   `""` where the shape says `false`, and every annotated operation with
   callbacks whose truthiness tests `Advanced` lowers, so a shape that puts a

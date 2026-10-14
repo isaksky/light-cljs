@@ -1645,13 +1645,17 @@ impl<'p> Walker<'p> {
 
     /// Whether the table describes a call of `core` with arguments of these
     /// types: the call is within the operation's domain and the program
-    /// keeps the table's conditions for it.
+    /// keeps the table's conditions for it. Elements and callback arguments
+    /// come from traversing the arguments, which runs core protocols even in
+    /// a lazy operation that runs nothing itself (`Calls::None`), so core
+    /// protocols must be intact.
     fn described(&self, core: CoreFnId, types: &[Type]) -> bool {
         let operation = core.operation();
         operation
             .arity(types.len())
             .is_some_and(|arity| arity.admits(types))
             && self.facts.trusted(core, operation.calls)
+            && self.facts.core_protocols_intact()
     }
 
     /// A call of `core` with argument expressions `args` of values

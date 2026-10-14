@@ -957,6 +957,59 @@ fn every_callback_shape_matches_what_the_runtime_passes() {
 }
 
 #[test]
+fn callback_shapes_respect_core_protocol_extensions() {
+    // A program that extends a core protocol to a runtime type changes what
+    // traversing its values yields: here `(seq [false])` is `("")`, so the
+    // callback's parameter is not the vector literal's `false`. The results
+    // print in a list, since printing a vector traverses it too.
+    let source = r#"(extend-type PersistentVector ISeqable (-seq [_] (list "")))
+                    (pr-str (list (first (map (fn [x] (if x :yes :no)) [false]))
+                                  (nth (mapv (fn [y] (if y :yes :no)) [false]) 0)))"#;
+    assert_eq!(local(source, "x"), Inferred::ANY);
+    assert_eq!(local(source, "y"), Inferred::ANY);
+    every_level(source, "(:yes :yes)");
+}
+
+#[test]
+fn callback_feedback_joins_return_classes() {
+    // What the function returns feeds the accumulator of `reduce` and
+    // `reductions` and the next argument of `iterate`: a function that turns
+    // `false` into numbers makes the parameter `boolean|number`, so its
+    // truthiness test keeps `0` truthy.
+    let joined = Inferred::of(Type::BOOLEAN.union(Type::NUMBER));
+    for (source, name) in [
+        (
+            "(reduce (fn [acc x] (if acc 0 1)) false [nil nil nil])",
+            "acc",
+        ),
+        (
+            "(vec (reductions (fn [acc x] (if acc 0 1)) false [nil nil nil]))",
+            "acc",
+        ),
+        ("(vec (take 4 (iterate (fn [x] (if x 0 1)) false)))", "x"),
+    ] {
+        assert_eq!(local(source, name), joined, "{source}");
+    }
+    every_level(
+        "(pr-str [(reduce (fn [acc x] (if acc 0 1)) false [nil nil nil])
+                  (vec (reductions (fn [acc x] (if acc 0 1)) false [nil nil nil]))
+                  (vec (take 4 (iterate (fn [x] (if x 0 1)) false)))])",
+        "[0 [false 1 0 0] [false 1 0 0]]",
+    );
+}
+
+#[test]
+fn replaced_core_operations_leave_callback_parameters_unknown() {
+    // A program that replaces an operation with a callback shape calls its
+    // function its own way, so the shape says nothing about the parameters.
+    let source = r#"(set! cljs.core/mapv (fn [f xs] [(f "")]))
+                    (defn f [x] (if x :yes :no))
+                    (pr-str (mapv f [false]))"#;
+    assert_eq!(local(source, "x"), Inferred::ANY);
+    every_level(source, "[:yes]");
+}
+
+#[test]
 fn protocol_calls_on_parameters_of_one_program_type_are_devirtualized() {
     let source = r#"(defprotocol Area (area [s]))
        (defrecord Rect [w h] Area (area [_] (* w h)))
