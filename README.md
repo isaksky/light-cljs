@@ -155,7 +155,8 @@ the constant table. `--define ns/NAME=VALUE` (repeatable) gives a
 logging path, is removed. `--elide-asserts` omits every `assert` and `fn`
 `:pre`/`:post` check at every level, as upstream's `:elide-asserts` does:
 `(assert (= 1 1) "x") (js/console.log 1)` is 151 bytes at `advanced`, the same
-as without the assertion, instead of 309. It is the only switch; `--define`
+as without the assertion, instead of 309. Source macros read it as a false
+`*assert*` while they expand. It is the only switch; `--define`
 names only `goog-define` Vars, so `--define cljs.core/*assert*=false` is
 rejected. `--eval` and `--repl` take `--elide-asserts` too.
 

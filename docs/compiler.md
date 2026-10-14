@@ -1638,8 +1638,12 @@ Assertions are enabled by default. Call `MacroHost::set_assertions(false)` befor
 `compile_with_macros` or `compile_namespace_with_macros` to omit assertion
 conditions and messages entirely, including unresolved forms and pre/post checks.
 The setting persists on a reused host and is reflected in the compile-time
-runtime's dynamic `clojure.core/*assert*` Var so source macros can choose whether
-to generate checks. It is a compilation setting, not an emitted runtime toggle.
+runtime's dynamic `clojure.core/*assert*` Var (also read as `*assert*` and
+`cljs.core/*assert*`), as upstream binds it while compiling: every heap
+`MacroHost::new_evaluator` allocates starts with it, so source macros, the
+functions they call while expanding and configured data readers can choose
+whether to generate checks. It is a compilation setting, not an emitted runtime
+toggle.
 The default CLI and convenience compilation functions enable it. The CLI's
 `--elide-asserts` (after `--compile`, or with `--eval`/`--repl`, where it sets
 `EvalOptions::assertions`) disables it for the whole build, at every

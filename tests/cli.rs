@@ -661,6 +661,57 @@ fn elide_asserts_omits_assertions_at_every_level() {
     }
 }
 
+/// `--elide-asserts` is also the `*assert*` that source macros read while
+/// expanding, under each of its names, as upstream's `:elide-asserts` binds
+/// `clojure.core/*assert*` while compiling: for text and namespace compiles
+/// (a macro required from another namespace) and for `--eval`.
+#[test]
+fn elide_asserts_reaches_the_assert_source_macros_read() {
+    let flags = "[*assert* clojure.core/*assert* cljs.core/*assert*]";
+    let root = std::env::temp_dir().join(format!(
+        "light-cljs-cli-elide-macros-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/macros.cljs"),
+        format!("(ns app.macros) (defmacro m [] {flags})"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/main.cljs"),
+        "(ns app.main (:require [app.macros :refer [m]])) (pr-str (m))",
+    )
+    .unwrap();
+    let root_arg = root.to_str().unwrap();
+    let text = format!("(defmacro m [] {flags}) (pr-str (m))");
+    let eval = format!("(defmacro m [] {flags}) (m)");
+    let node = |js: &str| {
+        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .args(["--print", js])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{js}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for (elide, expected) in [
+        (false, "[true true true]\n"),
+        (true, "[false false false]\n"),
+    ] {
+        let flag = if elide { &["--elide-asserts"][..] } else { &[] };
+        for input in [
+            &["--text", &text][..],
+            &["--entry", "app.main", "--source-root", root_arg],
+        ] {
+            let args = [&["--compile"][..], flag, input].concat();
+            assert_eq!(node(&compiled(&args)), expected, "{args:?}");
+        }
+        let args = [&["--eval"][..], flag, &["--text", &eval]].concat();
+        assert_eq!(compiled(&args), expected, "{args:?}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `--source-map PATH` writes a Source Map v3 of the output at every level
 /// and ends the output with a `sourceMappingURL` comment naming it; the
 /// JavaScript before that comment is the output without the flag. With

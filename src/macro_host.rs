@@ -74,11 +74,14 @@ struct CompilerDataReaders {
 }
 
 impl MacroHost {
-    /// Allocate a fresh synchronous heap for a clean compilation.
+    /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
+    /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
+    /// data readers it runs read the setting, as upstream's `:elide-asserts`
+    /// binds `clojure.core/*assert*` while compiling.
     pub fn new_evaluator(
         &self,
     ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
-        if let Some(control) = &self.interactive_control {
+        let evaluator = if let Some(control) = &self.interactive_control {
             crate::evaluator::Evaluator::interactive_with_control(
                 self.evaluator_options.clone(),
                 control.clone(),
@@ -87,7 +90,13 @@ impl MacroHost {
             crate::evaluator::Evaluator::interactive(self.evaluator_options.clone())
         } else {
             crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+        }?;
+        if self.assertions_disabled {
+            let done =
+                evaluator.evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
+            evaluator.release(done)?;
         }
+        Ok(evaluator)
     }
 
     /// Execute a compiler-emitted macro function with hidden &form/&env arguments.

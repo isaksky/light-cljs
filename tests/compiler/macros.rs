@@ -2266,6 +2266,46 @@ mod same_file_javascript_macros {
             "7\n"
         );
     }
+
+    /// Source macros, the ordinary functions they call while expanding and
+    /// configured data readers read the host's assertion setting through
+    /// `*assert*` under each of its names, as upstream's `:elide-asserts` binds
+    /// `clojure.core/*assert*` while compiling. A reused host follows each
+    /// change of the setting.
+    #[test]
+    fn source_macros_read_the_host_assertion_setting_as_assert() {
+        let flags = "[*assert* clojure.core/*assert* cljs.core/*assert*]";
+        let source = format!(
+            "(defn on? [] *assert*) (defmacro m [] (conj {flags} (on?))) \
+             (pr-str (conj (m) #test/assert 0))"
+        );
+        let sources = Sources::new();
+        sources.write(
+            "app/macros.cljs",
+            &format!("(ns app.macros) (defmacro m [] {flags})"),
+        );
+        sources.write(
+            "app/main.cljs",
+            "(ns app.main (:require [app.macros :refer [m]])) (js/console.log (pr-str (m)))",
+        );
+        let mut host = javascript_host();
+        host.register_compiler_data_reader(
+            light_cljs::compiler_data::Name::new(Some("test"), "assert"),
+            "(fn [_] *assert*)",
+        )
+        .unwrap();
+        for enabled in [false, true, false] {
+            host.set_assertions(enabled);
+            assert_eq!(
+                result(&compile_with_macros(&source, &mut host).unwrap()),
+                format!("[{enabled} {enabled} {enabled} {enabled} {enabled}]\n")
+            );
+            assert_eq!(
+                execute(&sources.compile_host("app.main", &mut host).unwrap()),
+                format!("[{enabled} {enabled} {enabled}]\n")
+            );
+        }
+    }
 }
 
 mod reentrant_deferred_units {
