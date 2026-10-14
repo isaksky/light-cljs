@@ -67,14 +67,27 @@ fn units(source: &str) -> Vec<&'static str> {
 }
 
 /// The protocol machinery a program without protocol implementations drops.
-const PROTOCOL_MACHINERY: [&str; 7] = [
+const PROTOCOL_MACHINERY: [&str; 9] = [
     "installMethods",
     "builtin",
+    "ownMethod",
     "publicMethod",
     "satisfies",
     "implementsProtocol",
     "builtinCoreImplementation",
-    "protocolHooks.install",
+    "protocolHooks.builtin",
+    "protocolHooks.ownMethod",
+];
+
+/// The machinery that only protocol implementations of the runtime's own or
+/// host values need (`extend-type`, `specify!`), which a program whose
+/// implementations all belong to its own types drops (light-cljs-246).
+const EXTENSION_MACHINERY: [&str; 5] = [
+    "publicMethod",
+    "externalMethod",
+    "protocolHooks.extend",
+    "protocolHooks.publicMethod",
+    "protocolHooks.external",
 ];
 
 fn assert_keeps_none(source: &str, absent: &[&str]) -> Vec<&'static str> {
@@ -173,13 +186,195 @@ fn an_empty_map_keeps_only_its_own_map_type() {
 
 #[test]
 fn a_program_type_opens_the_protocol_hooks() {
-    // `installMethods` keeps the protocol machinery and its install, so the
-    // generic operations dispatch to program types.
-    let units = units("(deftype T [] ICounted (-count [_] 7)) (count (T.))");
-    for unit in ["installMethods", "publicMethod", "protocolHooks.install"] {
+    // `installMethods` keeps the hooks the generic operations it reaches read,
+    // so they dispatch to program types: since light-cljs-246 a type's own
+    // methods (`ownMethod`), and the whole machinery only with `extend-type`
+    // or `specify!`.
+    let source = "(deftype T [] ICounted (-count [_] 7)) (count (T.))";
+    let units = units(source);
+    for unit in ["installMethods", "ownMethod", "protocolHooks.ownMethod"] {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
-    every_level("(deftype T [] ICounted (-count [_] 7)) (count (T.))", "7");
+    for unit in EXTENSION_MACHINERY {
+        assert!(!units.contains(&unit), "{unit}: {units:?}");
+    }
+    every_level(source, "7");
+    let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
+    let units = self::units(extended);
+    for unit in [
+        "publicMethod",
+        "protocolHooks.publicMethod",
+        "protocolHooks.external",
+    ] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
+    every_level(extended, "7");
+}
+
+/// light-cljs-246: a program type and a builtin vector or keyword keep only
+/// what the program can use. The host-facing methods of the runtime's values
+/// take the generic operations only where `extend-type` or `specify!` can
+/// give those values protocol implementations, a keyword invoked on a record
+/// reaches the record's own `-lookup`, and items of program types still
+/// compare through their `IEquiv`. Everything runs at every level against
+/// `None`, including the errors of a protocol declared without the method.
+#[test]
+fn program_types_keep_no_machinery_for_builtin_values() {
+    let record_and_vector = "(defrecord Pt [x y])
+         (loop [i 0 acc 0] (if (< i 10) (recur (inc i) (+ acc (:x (->Pt i 0)) (nth [1 2 3] (rem i 3)))) acc))";
+    let record_and_keyword = "(defrecord Pt [x y]) (js/console.log (:x (->Pt 1 0)) (.toString :a))";
+    for source in [record_and_vector, record_and_keyword] {
+        let units = assert_keeps_none(
+            source,
+            &[
+                "seq",
+                "count",
+                "nth",
+                "satisfies",
+                "implementsProtocol",
+                "cons.equiv",
+                "makeMap.equiv",
+                "makeMap.lookup",
+                "collectionEntryIndex",
+                "builtinCoreImplementation",
+                "coreProtocolNames",
+                "count.host",
+                "es6Iterator.host",
+                "sequentialIndex.host",
+            ],
+        );
+        for unit in EXTENSION_MACHINERY {
+            assert!(!units.contains(&unit), "{source} keeps `{unit}`");
+        }
+        assert!(advanced(source).emit_js().len() < 12_000, "{source}");
+    }
+    every_level(record_and_vector, "64");
+    // The vector's host-facing methods with records about: items of a program
+    // type compare through their `IEquiv`, also inside vectors.
+    every_level(
+        &format!(
+            "{DRAIN}
+             (defrecord Pt [x y])
+             (deftype Box [v] IEquiv (-equiv [_ o] (and (instance? Box o) (= v (.-v o)))))
+             (let [v [(->Pt 1 2) (Box. 3) 4]]
+               (pr-str [(.indexOf v (->Pt 1 2)) (.indexOf v (Box. 3)) (.lastIndexOf v 4) (.indexOf v (->Pt 1 3))
+                        (.equiv v [(->Pt 1 2) (Box. 3) 4]) (.equiv v [(->Pt 1 2) (Box. 9) 4]) (.equiv [1 2] '(1 2))
+                        (count (drain (.call (aget v js/Symbol.iterator) v))) (= (->Pt 1 2) {{:x 1 :y 2}})
+                        (.equiv {{:x 1 :y 2}} (->Pt 1 2)) (= [(->Pt 1 2)] [(->Pt 1 2)])]))"
+        ),
+        "[0 1 2 -1 true false true 4 false false true]",
+    );
+    // A keyword invoked on a record, by the program or the host, reads the
+    // record's fields and its other keys.
+    every_level(
+        "(defrecord Pt [x y])
+         (let [p (assoc (->Pt 1 2) :z 3) ks [:x :y :z :w]]
+           (pr-str [(map :x [p (->Pt 5 6)]) (mapv #(% p) ks) (.call :y nil p) (.call :w nil p :none)
+                    (get p :z) (:w p :none) (.call :x nil {:x 7})]))",
+        "[(1 5) [1 2 3 nil] 2 :none 3 :none 7]",
+    );
+    // A protocol declared without the method fails as at every level, but
+    // where the runtime implements it natively.
+    every_level(
+        "(deftype NoLookup [] ILookup)
+         (deftype HalfLookup [] ILookup (-lookup [_ k] [:got k]))
+         (deftype NoCount [] ICounted)
+         (let [message (fn [f] (try (pr-str (f)) (catch :default e (.-message e))))]
+           (pr-str [(message #(get (NoLookup.) :a)) (message #(get (HalfLookup.) :a))
+                    (message #(get (HalfLookup.) :a :nf)) (message #(:a (HalfLookup.) :nf))
+                    (message #(count (NoCount.))) (message #(meta (reify IMeta)))
+                    (message #(meta (with-meta (reify) {:m 1})))]))",
+        r#"["No protocol method ILookup/-lookup defined for this value" "[:got :a]" "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" "No protocol method ICounted/-count defined for this value" "nil" "{:m 1}"]"#,
+    );
+}
+
+/// light-cljs-246: with a program type but no `extend-type`, a value counts
+/// as implementing a protocol only where it declares it, as `publicMethod`
+/// decides: a host object holding a slot-named function is no lookup, but a
+/// function's `IMeta` slot is its metadata. A core dispatcher read as a value
+/// may be extended by type through its table, so the program keeps the
+/// lookup `extend-type` installs. A record passed to a map's borrowed method
+/// is a receiver of another type: it may throw, but never answers from the
+/// record's empty map payload.
+#[test]
+fn program_types_keep_the_dispatch_of_interop() {
+    every_level(
+        "(let [f (fn [] 1)]
+           (aset f \"cljs$core$IMeta$_meta$arity$1\" (fn [_] {:m 1}))
+           (pr-str [(get (reify ILookup (-lookup [_ k] 1)) \"x\")
+                    (get (js-obj \"cljs$core$ILookup$_lookup$arity$2\" (fn [_ k] 7)) \"x\")
+                    (meta f)]))",
+        "[1 nil {:m 1}]",
+    );
+    let patched = "(let [r (reify ICounted (-count [_] 1))]
+         (aset -count \"object\" (fn [x] 7))
+         (array (-count r) (try (-count #js {}) (catch :default e (.-message e)))))";
+    every_level(patched, "[ 1, 7 ]");
+    assert!(units(patched).contains(&"protocolHooks.external"));
+    every_level(
+        "(aset -count \"object\" (fn [x] 7)) (try (-count #js {}) (catch :default e (.-message e)))",
+        "7",
+    );
+    let borrowed = "(defrecord R [x])
+         (try (.-done (.next (.call (.-keys {:a 1}) (->R 1)))) (catch js/TypeError _ :unsupported))";
+    every_level("(defrecord R [x]) (.-done (.next (.keys {:a 1})))", "false");
+    let printed = execute(&format!("console.log({});", advanced(borrowed).emit_js()));
+    assert!(
+        ["false\n", "KeywordValue {}\n"].contains(&printed.as_str()),
+        "{printed}"
+    );
+}
+
+/// light-cljs-246: a program type implementing `ISequential`, `IMap` or
+/// `ISet` compares with the runtime's collections through the generic
+/// operations: `ISequential` keeps the protocol's unit, so structural
+/// equality of sequential values, and maps and sets count and search the
+/// other value through `protocolHooks`. `specify!` and `extend-type` of the
+/// runtime's values send their host-facing methods through the generic
+/// operations.
+#[test]
+fn program_types_reach_the_runtime_kinds_they_implement() {
+    let sequential = "(deftype Two [a b] ISequential ISeqable (-seq [_] (list a b)))
+         (reify ISequential)
+         (pr-str [(= [1 2] (Two. 1 2)) (= '(1 2) (Two. 1 2)) (= [1 3] (Two. 1 2)) (= [1 2] (Two. 2 1))
+                  (= (range 2) (Two. 0 1)) (.equiv [1 2] (Two. 1 2))])";
+    every_level(sequential, "[true true false false true true]");
+    // Only the program's types are sequential values besides vectors here.
+    for source in [
+        "(deftype Empty [] ISequential ISeqable (-seq [_] nil))
+         (array (= [] (Empty.)) (.equiv [] (Empty.)) (= [1] (Empty.)))",
+        "(array (= [] (reify ISequential ISeqable (-seq [_] nil))) (= [] (reify ISeqable (-seq [_] nil))))",
+    ] {
+        assert!(units(source).contains(&"cons.equiv"), "{source}");
+        assert!(!units(source).contains(&"ListValue"), "{source}");
+    }
+    every_level(
+        "(deftype Empty [] ISequential ISeqable (-seq [_] nil))
+         (array (= [] (Empty.)) (.equiv [] (Empty.)) (= [1] (Empty.)))",
+        "[ true, true, false ]",
+    );
+    every_level(
+        "(array (= [] (reify ISequential ISeqable (-seq [_] nil))) (= [] (reify ISeqable (-seq [_] nil))))",
+        "[ true, false ]",
+    );
+    every_level(
+        "(deftype M [] IMap ICounted (-count [_] 1)
+           ILookup (-lookup [this k] (-lookup this k nil)) (-lookup [_ k nf] (if (= k :a) 1 nf)))
+         (deftype S [] ISet ICounted (-count [_] 2) ILookup (-lookup [_ k] k) (-lookup [_ k nf] (if (#{1 2} k) k nf))
+           IAssociative (-contains-key? [_ k] (contains? #{1 2} k)))
+         (pr-str [(= {:a 1} (M.)) (= {:a 2} (M.)) (= {:a 1 :b 2} (M.)) (= #{1 2} (S.)) (= #{1 3} (S.))
+                  (.equiv {:a 1} (M.)) (.equiv #{2 1} (S.))])",
+        "[true false false true false true true]",
+    );
+    every_level(
+        &format!(
+            "{DRAIN}
+             (def v (specify! [1 2 3] ISeqable (-seq [_] (list 9 8)) ICounted (-count [_] 5)))
+             (defrecord Pt [x])
+             (pr-str [(drain (.call (aget v js/Symbol.iterator) v)) (try (.lastIndexOf v 1) (catch :default e (.-message e))) (.-cnt v) (:x (->Pt 1))])"
+        ),
+        "[[9 8 nil] \"Index out of bounds\" 5 1]",
+    );
 }
 
 #[test]

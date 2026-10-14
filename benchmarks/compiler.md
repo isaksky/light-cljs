@@ -2747,3 +2747,81 @@ protocol-name list `"IFn ICounted ... IDrop"` (524 bytes in
 shrink it. light-cljs-237 is to replace the protocol-key strings of
 dispatch with integers or symbols, which only lowers what a table could
 save.
+
+## Program types beside builtin values — October 14, 2026
+
+light-cljs-246 keeps a program type and a builtin vector or keyword from
+keeping runtime together ("Phase 2 builtin types, program types" in the
+[design](../docs/advanced-optimization.md)). At `--optimize advanced`:
+
+- the host-facing methods and `cnt` fields of vectors, maps and sets take
+  the generic operations only where `extend-type` or `specify!` can give
+  the runtime's values protocol implementations, not wherever a program
+  type exists;
+- `protocolHooks` is installed hook by hook, and a program whose protocol
+  implementations all belong to its own types finds them on its values
+  (`ownMethod`, `builtin` without the tables of `extend-type`);
+- structural equality of maps and lookups no longer wait for `makeType`,
+  since records answer both through their own methods, and the sequential
+  comparison waits for a program type implementing `ISequential`.
+
+**Sizes**, raw and `gzip -9` bytes (of stdin) of `--compile --optimize
+LEVEL`, on the 24-CPU Mac (sizes do not depend on load; load average 2.6).
+"Before" is master `5e83c97`. `prepare` equals `none` for every fixture but
+`pure-defs`, which is 78 bytes smaller there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 395,290 / 94,192 | 397,984 / 95,040 | 151 / 140 | 151 / 140 | 398,000 / 398,000 / 200 |
+| println-hi | 395,177 / 94,120 | 397,871 / 94,965 | 4,771 / 2,021 | 4,771 / 2,021 | 398,000 / 398,000 / 4,800 |
+| vector-printed | 395,202 / 94,129 | 397,896 / 94,976 | 9,703 / 3,740 | 9,700 / 3,743 | 398,000 / 398,000 / 9,700 |
+| map-printed | 395,205 / 94,123 | 397,899 / 94,969 | 13,514 / 4,825 | 13,510 / 4,823 | 398,000 / 398,000 / 14,000 |
+| seq-pipeline | 395,521 / 94,242 | 398,215 / 95,089 | 24,450 / 7,610 | 24,427 / 7,603 | 399,000 / 399,000 / 25,000 |
+| add | 395,130 / 94,110 | 397,824 / 94,957 | 19 / 39 | 19 / 39 | 398,000 / 398,000 / 100 |
+| rest-fn | 395,474 / 94,249 | 398,168 / 95,095 | 9,465 / 3,177 | 9,448 / 3,167 | 399,000 / 399,000 / 9,500 |
+| keyword-case | 395,762 / 94,272 | 398,456 / 95,119 | 3,428 / 1,324 | 3,428 / 1,324 | 399,000 / 399,000 / 3,500 |
+| record-protocol | 396,083 / 94,442 | 398,777 / 95,290 | 5,750 / 2,423 | 5,750 / 2,423 | 399,000 / 399,000 / 5,800 |
+| pure-defs | 396,719 / 94,555 | 399,413 / 95,406 | 5,640 / 2,372 | 5,640 / 2,372 | 400,000 / 400,000 / 5,700 |
+| keyword-lookups | 396,254 / 94,379 | 398,948 / 95,228 | 29,113 / 9,056 | 29,110 / 9,053 | 399,000 / 399,000 / 30,000 |
+| constant-literals | 396,031 / 94,327 | 398,725 / 95,175 | 20,612 / 6,561 | 20,589 / 6,548 | 399,000 / 399,000 / 21,000 |
+| constant-lookups | 396,449 / 94,470 | 399,143 / 95,317 | 3,808 / 1,453 | 3,808 / 1,453 | 400,000 / 400,000 / 3,900 |
+| three-records | 398,220 / 94,742 | 400,914 / 95,595 | 5,757 / 2,422 | 5,757 / 2,422 | 401,000 / 401,000 / 5,800 |
+| constant-keys | 396,247 / 94,317 | 398,941 / 95,166 | 39,897 / 12,202 | 39,895 / 12,210 | 399,000 / 399,000 / 40,000 |
+| event-maps | 395,779 / 94,286 | 398,473 / 95,134 | 29,341 / 9,123 | 29,338 / 9,115 | 399,000 / 399,000 / 30,000 |
+| vector-only | 395,329 / 94,213 | 398,023 / 95,061 | 4,224 / 1,739 | 4,221 / 1,739 | 399,000 / 399,000 / 4,300 |
+| keyword-only | 395,297 / 94,195 | 397,991 / 95,042 | 3,355 / 1,297 | 3,355 / 1,297 | 398,000 / 398,000 / 3,400 |
+| map-only | 395,335 / 94,204 | 398,029 / 95,052 | 9,146 / 3,194 | 9,143 / 3,190 | 399,000 / 399,000 / 9,200 |
+| atom-str | 395,345 / 94,202 | 398,039 / 95,050 | 2,284 / 904 | 2,284 / 904 | 399,000 / 399,000 / 2,300 |
+| set-only | 395,366 / 94,224 | 398,060 / 95,071 | 5,085 / 1,949 | 5,078 / 1,955 | 399,000 / 399,000 / 5,100 |
+| mapv-count | 395,357 / 94,213 | 398,051 / 95,060 | 28,725 / 8,914 | 28,722 / 8,917 | 399,000 / 399,000 / 29,000 |
+| raw-js | 396,129 / 94,372 | 398,823 / 95,222 | 36 / 54 | 36 / 54 | 399,000 / 399,000 / 100 |
+| multi-arity | 397,958 / 94,638 | 400,652 / 95,493 | 318 / 212 | 318 / 212 | 401,000 / 401,000 / 400 |
+| closed-params | 397,693 / 94,782 | 400,387 / 95,637 | 35,923 / 11,755 | 12,996 / 4,960 | 401,000 / 401,000 / 13,000 |
+| debug-logging | 396,449 / 94,557 | 399,143 / 95,406 | 31 / 51 | 31 / 51 | 400,000 / 400,000 / 100 |
+| local-arities | 398,381 / 94,738 | 401,075 / 95,593 | 490 / 278 | 490 / 278 | 402,000 / 402,000 / 500 |
+
+`closed-params` drops by 64% (light-cljs-243 asked for 25%). No fixture
+grows; those with vectors, maps or sets lose up to 23 bytes, of which four
+gain 3 to 8 gzipped bytes.
+
+Other programs at `advanced`, raw and gzip bytes:
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(defrecord Pt [x y]) (loop [i 0 acc 0] (if (< i 10) (recur (inc i) (+ acc (:x (->Pt i 0)) (nth [1 2 3] (rem i 3)))) acc))` | 35,426 / 11,507 | 10,242 / 4,030 |
+| the same with `(deftype Pt [x y])` and `(.-x ...)` | 33,285 / 10,888 | 9,745 / 3,847 |
+| `(defrecord Pt [x y]) (js/console.log (:x (->Pt 1 0)) (.toString :a))` | 35,274 / 11,387 | 9,895 / 3,751 |
+| `(defrecord Pt [x y]) (loop ...)` with `(:x (->Pt i 0))` alone | 5,748 / 2,433 | 5,748 / 2,433 |
+| `(loop ...)` with `(nth [1 2 3] (rem i 3))` alone | 4,296 / 1,789 | 4,293 / 1,791 |
+| `(deftype T [] ICounted (-count [_] 7)) (count (T.))` | 33,027 / 10,728 | 27,180 / 8,726 |
+
+The record and the vector together now keep 10,242 bytes against 5,748
+and 4,296 alone (target 12,000). `count` of a program type still keeps
+the protocol objects and the native tests through `implementsProtocol`.
+
+The shared runtime grows by 2,694 bytes (0.7%), 848 gzipped: `ownMethod`,
+`externalMethod`, the split hook installs and their comments. The `none`
+and `prepare` ceilings rise by 2,000 or 3,000 for that growth (each to its
+new size rounded up to the next 1,000); the `advanced` ceilings of
+`closed-params` (36,000 to 13,000) and `vector-printed` (9,800 to 9,700)
+drop.

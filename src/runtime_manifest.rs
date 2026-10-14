@@ -80,6 +80,10 @@
 //!   dispatches one of its methods' keys, that of a hook install every unit
 //!   reading the hook, and that a kind hook's targets are every unit writing
 //!   to its kind's store.
+//!   A `when:` list may also name an effect unit, `when: makeMap.equiv`,
+//!   which is kept only where that effect is: a hook that the body of an
+//!   effect reads is needed where the effect is kept, not wherever one of
+//!   its own `when:` units is.
 //! - `install: a, b` is an effect that only adds properties to the targets'
 //!   values for code that receives them, such as the variadic arity ABI of a
 //!   core function (`add.variadic`), which `apply` reads. It is kept once a
@@ -156,8 +160,9 @@ pub struct Effect<'a> {
     /// ([`RuntimeManifest::reached_by_uses`]).
     pub install: bool,
     /// `effect: a when: b, c`: bindings of which one must be kept as well,
-    /// the operations that can call what the effect installs. Empty for an
-    /// effect needed wherever a target is.
+    /// the operations that can call what the effect installs, or effect units
+    /// (`makeMap.equiv`) whose bodies can. Empty for an effect needed wherever
+    /// a target is.
     pub when: Vec<&'a str>,
 }
 
@@ -253,7 +258,8 @@ pub struct RuntimeManifest<'a> {
     attached: Vec<Vec<UnitId>>,
     /// Per unit: the `install:` units targeting one of its bindings.
     installs: Vec<Vec<UnitId>>,
-    /// Per unit: the units declaring its `when:` bindings, sorted.
+    /// Per unit: the units declaring its `when:` bindings, or named by it,
+    /// sorted.
     conditions: Vec<Vec<UnitId>>,
     /// Per unit: the `effect: ... when:` units naming one of its bindings
     /// under `when:`.
@@ -476,8 +482,12 @@ impl<'a> RuntimeManifest<'a> {
                     }
                 }
                 for binding in &effect.when {
-                    if let Some(owner) = bindings.get(binding) {
-                        conditions[index].push(*owner);
+                    let owner = bindings
+                        .get(binding)
+                        .copied()
+                        .or_else(|| names.get(binding).map(|&unit| UnitId(unit)));
+                    if let Some(owner) = owner {
+                        conditions[index].push(owner);
                         conditional[owner.0].push(UnitId(index));
                     }
                 }
@@ -565,6 +575,14 @@ impl<'a> RuntimeManifest<'a> {
     /// a core protocol keeps the dispatcher's unit.
     pub fn core_dispatcher(&self, key: &str) -> Option<&'a str> {
         self.dispatchers.get(key).copied()
+    }
+
+    /// Whether `binding` is a core protocol dispatcher
+    /// ([`RuntimeManifest::core_dispatcher`]).
+    pub fn is_core_dispatcher(&self, binding: &str) -> bool {
+        self.dispatchers
+            .values()
+            .any(|&dispatcher| dispatcher == binding)
     }
 
     /// Units declaring the exported bindings, the roots of the full runtime.
@@ -775,9 +793,16 @@ impl<'a> RuntimeManifest<'a> {
                     for (position, &binding) in effect.when.iter().enumerate() {
                         if effect.when[..position].contains(&binding) {
                             fail(format!("names `when:` binding `{binding}` twice"));
-                        } else if self.unit_of(binding).is_none() {
+                        } else if self.unit_of(binding).is_none()
+                            && self.unit_named(binding).is_none_or(|unit| {
+                                self.units[unit.0]
+                                    .effect
+                                    .as_ref()
+                                    .is_none_or(|effect| effect.targets.is_empty())
+                            })
+                        {
                             fail(format!(
-                                "`when:` binding `{binding}` is not a runtime binding"
+                                "`when:` binding `{binding}` is neither a runtime binding nor an effect unit"
                             ));
                         }
                     }
@@ -1084,11 +1109,13 @@ fn header_list<'a>(
     words: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
     name: &str,
     what: &str,
+    units: bool,
 ) -> Result<Vec<&'a str>, String> {
     let mut items = Vec::new();
     while let Some(word) = words.next_if(|word| !HEADER_KEYWORDS.contains(word)) {
         for item in word.split(',').filter(|item| !item.is_empty()) {
-            if !is_identifier(item) {
+            // A `when:` list may name an effect unit (`makeMap.equiv`).
+            if !(is_identifier(item) || units && item.split('.').all(is_identifier)) {
                 return Err(format!("unit `{name}`: invalid {what} `{item}`"));
             }
             items.push(item);
@@ -1126,7 +1153,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     } else if let Some(keyword) = words.next_if(|word| matches!(*word, "effect:" | "install:")) {
         let install = keyword == "install:";
         let keyword = &keyword[..keyword.len() - 1];
-        let targets = header_list(&mut words, name, &format!("{keyword} target"))?;
+        let targets = header_list(&mut words, name, &format!("{keyword} target"), false)?;
         if targets.is_empty() {
             return Err(format!("unit `{name}`: `{keyword}:` names no binding"));
         }
@@ -1139,7 +1166,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     if words.next_if_eq(&"when:").is_some() {
         match &mut effect {
             Some(effect) if !effect.install && !effect.targets.is_empty() => {
-                effect.when = header_list(&mut words, name, "`when:` binding")?;
+                effect.when = header_list(&mut words, name, "`when:` binding", true)?;
             }
             _ => {
                 return Err(format!(
@@ -1150,7 +1177,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     }
     let mut requires = Vec::new();
     if words.next_if_eq(&"requires:").is_some() {
-        requires = header_list(&mut words, name, "required binding")?;
+        requires = header_list(&mut words, name, "required binding", false)?;
     }
     let rest = words.collect::<Vec<_>>();
     if !rest.is_empty() {
@@ -1613,7 +1640,23 @@ mod tests {
         };
         assert_eq!(
             error(&CONDITIONAL.replace("when: op", "when: missing")),
-            "unit `table.entry`: `when:` binding `missing` is not a runtime binding"
+            "unit `table.entry`: `when:` binding `missing` is neither a runtime binding nor an effect unit"
+        );
+        // A `when:` list may name an effect unit, which must be kept as well.
+        let chained = CONDITIONAL.replace(
+            "  //@exports",
+            "  //@unit table.more effect: user when: table.entry requires: table\n  table.push(null);\n  //@exports",
+        );
+        let manifest = RuntimeManifest::parse(&chained).unwrap();
+        manifest.validate().unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let more = unit("table.more");
+        assert_eq!(manifest.conditions(more), [unit("table.entry")]);
+        assert!(!manifest.reachable([unit("user")])[more.0]);
+        assert!(manifest.reachable([unit("op"), unit("user")])[more.0]);
+        assert_eq!(
+            error(&chained.replace("when: table.entry", "when: op.table")),
+            "unit `table.more`: `when:` binding `op.table` is neither a runtime binding nor an effect unit"
         );
         assert_eq!(
             error(&CONDITIONAL.replace("effect: user when: op", "effect when: op")),

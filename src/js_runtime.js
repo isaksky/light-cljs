@@ -1457,9 +1457,10 @@
     return preserveMeta(value, makeVector(items));
   };
 
-  //@unit ownMap requires: maps, protocolHooks, publicCollectionSlots
-  // Whether a map iterates its own entries (see `hostHooks`).
-  function ownMap(value) { return !protocolHooks.builtin && maps.has(value) && !("tree" in (publicCollectionSlots.get(value) ?? {})); }
+  //@unit ownMap requires: maps, protocolHooks, publicCollectionSlots, recordTypes
+  // Whether a map iterates its own entries (see `hostHooks`); a record, whose
+  // entries are its fields, is another type to these methods.
+  function ownMap(value) { return !protocolHooks.extend && maps.has(value) && !recordTypes.has(value) && !("tree" in (publicCollectionSlots.get(value) ?? {})); }
   //@unit mapCount requires: maps, publicCollectionSlots
   // `count` of a map without protocol implementations.
   function mapCount(value) {
@@ -1887,7 +1888,7 @@
 
   //@unit ownSet requires: protocolHooks, sets
   // Whether a set iterates and searches its own members (see `hostHooks`).
-  function ownSet(value) { return !protocolHooks.builtin && sets.has(value); }
+  function ownSet(value) { return !protocolHooks.extend && sets.has(value); }
   //@unit setIterator requires: itemIterator, setTraversal
   // Of a set's seq (`makeSet.seq`).
   function setIterator(value, item) {
@@ -2207,7 +2208,7 @@
   //@unit vectorIndexOf requires: hostHooks, indexIn, mapEntries, missing, outOfBounds,
   //@ protocolHooks, vectorCount, vectorNth, vectors
   function vectorIndexOf(coll, value, start, reverse) {
-    if (protocolHooks.builtin || !vectors.has(coll)) return hostHooks.index(coll, value, start, reverse);
+    if (protocolHooks.extend || !vectors.has(coll)) return hostHooks.index(coll, value, start, reverse);
     const items = vectors.get(coll), entry = mapEntries.has(coll);
     return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(items, i, missing), value, start, reverse);
   }
@@ -2216,12 +2217,12 @@
   //@ vectors, vectorStorage
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    [Symbol.iterator]() { return protocolHooks.builtin || !vectors.has(this) ? hostHooks.iterator(this) : itemIterator(vectorStorage(this), item => item); },
+    [Symbol.iterator]() { return protocolHooks.extend || !vectors.has(this) ? hostHooks.iterator(this) : itemIterator(vectorStorage(this), item => item); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return vectorIndexOf(this, value, start, false); },
     lastIndexOf(value, start) {
-      if (start === undefined) start = protocolHooks.builtin || !vectors.has(this) ? hostHooks.count(this) : vectorCount(this);
+      if (start === undefined) start = protocolHooks.extend || !vectors.has(this) ? hostHooks.count(this) : vectorCount(this);
       return vectorIndexOf(this, value, start, true);
     },
     // The pinned fixed method accepts one index and ignores extra arguments.
@@ -2389,8 +2390,8 @@
   //@unit count.protocol effect: installMethods when: count requires: behindProtocol, count,
   //@ protocolHooks
   count = behindProtocol(count, value => protocolHooks.publicMethod?.(value, "ICounted/-count", 1, true, true));
-  //@unit count.host effect: count, installMethods when: resetMeta, structuralEqualPair,
-  //@ upstreamMembers, vectorPrototype requires: count, hostHooks
+  //@unit count.host effect: count, extendType, extendInstance when: resetMeta, upstreamMembers,
+  //@ vectorPrototype requires: count, hostHooks
   hostHooks.count = count;
   //@unit accumulatingCount requires: count, countedValue, ICounted, next, protocolHooks, seq
   function accumulatingCount(value) {
@@ -2509,8 +2510,10 @@
   //@unit makeTransient.lookup effect: makeTransient when: lookup requires: kindHooks,
   //@ transientLookup
   kindHooks.lookupTransient = transientLookup;
-  //@unit makeMap.lookup effect: makeMap, treeMapConstructor, makeType, makeSet, treeSetConstructor
-  //@ when: lookup requires: collectionEntryIndex, kindHooks
+  //@unit makeMap.lookup effect: makeMap, treeMapConstructor, makeSet, treeSetConstructor when: lookup
+  //@ requires: collectionEntryIndex, kindHooks
+  // A record is a map too, but `get` finds its `-lookup` (`recordMethods.lookup`)
+  // first.
   kindHooks.entryIndex = collectionEntryIndex;
 
   //@unit get requires: invalidArity, lookup, protocolHooks
@@ -2536,9 +2539,15 @@
     if (items) return Number.isInteger(key) && key >= 0 && key < items.length;
     return get(value, key, missing) !== missing;
   }
-  //@unit contains.host effect: contains, installMethods when: setPrototype, structuralEqualPair
-  //@ requires: contains, hostHooks
+  //@unit contains.host effect: contains, extendType, extendInstance when: setPrototype requires: contains,
+  //@ hostHooks
   hostHooks.has = contains;
+  //@unit protocolHooks.count effect: installMethods when: makeMap.equiv, makeSet.equiv requires: contains,
+  //@ count, protocolHooks
+  // A map or set compares with a value of a program type through the generic
+  // operations.
+  protocolHooks.count = count;
+  protocolHooks.has = contains;
 
   //@unit every requires: first, next, seq, truth
   function every(predicate, value) {
@@ -2875,12 +2884,13 @@
     // Primitive NaN stays unequal; foreign objects use identity only.
     return false;
   }
-  //@unit makeMap.equiv effect: makeMap, treeMapConstructor, makeType when: structuralEqualPair
-  //@ requires: equalPair, get, hostHooks, IMap, IRecord, kindHooks, mapCount, mapKinds, maps,
-  //@ mapTraversal, missing, protocolHooks
+  //@unit makeMap.equiv effect: makeMap, treeMapConstructor when: structuralEqualPair requires: equalPair,
+  //@ get, IMap, IRecord, kindHooks, mapCount, mapKinds, maps, mapTraversal, missing, protocolHooks
+  // A record is a map too, but compares through its `IEquiv` method
+  // (`recordMethods.equiv`), which every reader of this hook keeps.
   kindHooks.equivMap = (left, right) => {
     if (!(right != null && (protocolHooks.satisfies?.(IMap, right) ?? maps.has(right))) || (protocolHooks.satisfies?.(IRecord, right) ?? false)) return false;
-    if (protocolHooks.builtin ? hostHooks.count(left) !== hostHooks.count(right) : mapCount(left) !== mapCount(right)) return false;
+    if (protocolHooks.count ? protocolHooks.count(left) !== protocolHooks.count(right) : mapCount(left) !== mapCount(right)) return false;
     return mapTraversal(left).every(entry => {
       const found = get(right, entry.key, missing);
       // Hash/tree maps use equiv-map's right-first value dispatch. Array
@@ -2889,11 +2899,11 @@
         ? equalPair(entry.value, found) : equalPair(found, entry.value));
     });
   };
-  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: hostHooks,
-  //@ ISet, kindHooks, lookup, missing, protocolHooks, setCount, sets
+  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: ISet,
+  //@ kindHooks, lookup, missing, protocolHooks, setCount, sets
   kindHooks.equivSet = (leftSet, right) => {
-    if (!(right != null && (protocolHooks.satisfies?.(ISet, right) ?? sets.has(right))) || leftSet.length !== (protocolHooks.builtin ? hostHooks.count(right) : setCount(right))) return false;
-    try { return leftSet.every(entry => protocolHooks.builtin ? hostHooks.has(right, entry.key) : lookup(right, entry.key, missing) !== missing); }
+    if (!(right != null && (protocolHooks.satisfies?.(ISet, right) ?? sets.has(right))) || leftSet.length !== (protocolHooks.count ? protocolHooks.count(right) : setCount(right))) return false;
+    try { return leftSet.every(entry => protocolHooks.has ? protocolHooks.has(right, entry.key) : lookup(right, entry.key, missing) !== missing); }
     catch (error) { if (error instanceof Error) return false; throw error; }
   };
   //@unit setCount requires: kindHooks, publicCollectionSlots, sets
@@ -2921,10 +2931,13 @@
   };
   //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
   //@ compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq, iterateNode,
-  //@ ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, installMethods when: structuralEqualPair
-  //@ requires: count, countedValue, equalPair, first, ICounted, ISequential, kindHooks, next,
-  //@ protocolHooks, seq, sequential
-  // Sequential values: vectors, cells, views, queues and lazy seqs.
+  //@ ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, Eduction, ISequential,
+  //@ extendType, extendInstance when: structuralEqualPair requires: count, countedValue, equalPair,
+  //@ first, ICounted, ISequential, kindHooks, next, protocolHooks, seq, sequential
+  // Sequential values: vectors, cells, views, queues and lazy seqs, and the
+  // values of a program type that implements `ISequential`, which keep the
+  // protocol's unit (`PROTOCOL_ROOTS` in src/runtime_slice.rs), as
+  // `extend-type` and `specify!` can give any value an implementation.
   kindHooks.equivSequential = (left, right) => {
     if (!(protocolHooks.satisfies?.(ISequential, right) ?? sequential(right))) return false;
     if ((protocolHooks.satisfies?.(ICounted, left) ?? countedValue(left)) && (protocolHooks.satisfies?.(ICounted, right) ?? countedValue(right)) && count(left) !== count(right)) return false;
@@ -3582,8 +3595,8 @@
   function keys(value) { return mapProjection(value, 0); }
   //@unit vals requires: mapProjection
   function vals(value) { return mapProjection(value, 1); }
-  //@unit mapProjection.host effect: mapProjection, installMethods, treeMapConstructor when: mapPrototype
-  //@ requires: es6Iterator, hostHooks, keys, vals
+  //@unit mapProjection.host effect: mapProjection, extendType, extendInstance, treeMapConstructor
+  //@ when: mapPrototype requires: es6Iterator, hostHooks, keys, vals
   hostHooks.keys = value => es6Iterator(keys(value));
   hostHooks.values = value => es6Iterator(vals(value));
   //@unit repeat requires: emptyList, invalidArity, RepeatValue
@@ -3649,8 +3662,8 @@
     }
     return -1;
   }
-  //@unit sequentialIndex.host effect: sequentialIndex, installMethods when: vectorIndexOf requires: hostHooks,
-  //@ sequentialIndex
+  //@unit sequentialIndex.host effect: sequentialIndex, extendType, extendInstance when: vectorIndexOf
+  //@ requires: hostHooks, sequentialIndex
   hostHooks.index = sequentialIndex;
   //@unit treeRoots
   // Comparator equality controls sorted membership; structural hashes remain
@@ -4961,7 +4974,7 @@
       return {value, done: false};
     }};
   }
-  //@unit es6Iterator.host effect: es6Iterator, installMethods, treeMapConstructor when: mapPrototype,
+  //@unit es6Iterator.host effect: es6Iterator, extendType, extendInstance, treeMapConstructor when: mapPrototype,
   //@ setPrototype, vectorPrototype requires: es6Iterator, hostHooks
   hostHooks.iterator = es6Iterator;
   //@unit es6EntriesIterator requires: es6Iterator, nth
@@ -4973,8 +4986,8 @@
       return item;
     }};
   }
-  //@unit es6EntriesIterator.host effect: es6EntriesIterator, installMethods, treeMapConstructor
-  //@ when: mapPrototype, setPrototype requires: es6EntriesIterator, hostHooks
+  //@unit es6EntriesIterator.host effect: es6EntriesIterator, extendType, extendInstance,
+  //@ treeMapConstructor when: mapPrototype, setPrototype requires: es6EntriesIterator, hostHooks
   hostHooks.entries = es6EntriesIterator;
   //@unit sequenceIterator requires: displayStr, IIterable, isSeqable, iterableValue, iteratorInit,
   //@ iteratorProtocol, protocolHooks, SeqIter
@@ -5149,11 +5162,17 @@
   const protocolStores = [multiFns, transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedProtocolValue requires: protocolStores
   function ownedProtocolValue(value) { return protocolStores.some(store => store.has(value)); }
-  //@unit builtin requires: builtinCoreImplementation, coreDispatchers, coreProtocolsByName,
-  //@ directMethod, nativeMethods, nativeType
+  //@unit builtin requires: directMethod, protocolHooks
+  // The value's own implementation, else one that `extend-type` of a host
+  // type, `object` or `default` gave (`externalMethod`).
   function builtin(value, key, arity) {
     const method = directMethod(value, key, arity);
     if (method != null) return method;
+    return protocolHooks.externalMethod?.(value, key, arity);
+  }
+  //@unit externalMethod requires: builtinCoreImplementation, coreDispatchers, coreProtocolsByName,
+  //@ nativeMethods, nativeType
+  function externalMethod(value, key, arity) {
     const external = coreDispatchers.get(key);
     const dispatch = external?.[nativeType(value)] ?? external?._;
     if (!nativeMethods.size && !dispatch) return undefined;
@@ -5179,6 +5198,24 @@
     if (satisfies(protocol, value) && !builtinCoreImplementation(protocol, value))
       throw new Error("No protocol method " + key + " defined for this value");
     return undefined;
+  }
+  //@unit ownMethod requires: directMethod, protocolMaskNames, reifyValues
+  // `publicMethod` where no `extend-type` or `specify!` exists: only values of
+  // the program's types, `reify` and the runtime's types built with
+  // `installMethods` implement protocols, each declaring the protocols it
+  // implements, and only their methods count. Declaring one without the
+  // method is an error, except where the runtime implements it natively:
+  // `IMeta` of a function or a `reify`. A function's `IMeta` slot counts
+  // without the marker. (A record has the method of every operation the
+  // program keeps.)
+  function ownMethod(value, key, arity) {
+    const name = key.slice(0, key.indexOf("/")), mask = protocolMaskNames.lastIndexOf(name);
+    const meta = name === "IMeta" && typeof value === "function";
+    const declared = directMethod(value, name, 0) || mask >= 0 && value?.["cljs$lang$protocol_mask$partition" + (mask >> 5) + "$"] & (1 << (mask % 32));
+    const method = declared || meta ? directMethod(value, key, arity) : undefined;
+    if (method) return method;
+    if (!declared || meta || name === "IMeta" && reifyValues.has(value)) return undefined;
+    throw new Error("No protocol method " + key + " defined for this value");
   }
   //@unit metadataMethod requires: get, meta, symbolCore, truth
   // A protocol method's implementation in the receiver's metadata, or null.
@@ -7153,7 +7190,7 @@
   //@ PersistentVectorValue, protocolHooks, publicFields, slotField, vectorCount, vectorRoots,
   //@ vectors
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
-    const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : vectorCount);
+    const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
     const items = vectors.get(value), tailOffset = items.length < 32 ? 0 : ((items.length - 1) >>> 5) << 5;
     if (field === "tail") return items.slice(tailOffset);
@@ -7200,14 +7237,14 @@
   //@ upstreamMembers requires: hostHooks, mapCount, maps, meta, missing, PersistentArrayMapValue,
   //@ protocolHooks, publicFields, slotField
   publicFields(PersistentArrayMapValue, ["meta", "cnt", "arr", "__hash"], (value, field) => {
-    const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
+    const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : mapCount);
     return slot !== missing ? slot : maps.get(value).flatMap(e => [e.key, e.value]);
   }, meta);
   //@unit PersistentHashMapValue.fields effect: PersistentHashMapValue when: resetMeta,
   //@ upstreamMembers requires: contains, get, hostHooks, mapCount, meta, missing,
   //@ PersistentHashMapValue, protocolHooks, publicFields, slotField
   publicFields(PersistentHashMapValue, ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
-    const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
+    const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : mapCount);
     return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
   }, meta);
   //@unit PersistentHashSetValue.fields effect: PersistentHashSetValue when: resetMeta,
@@ -7507,25 +7544,48 @@
     if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
-  //@unit protocolHooks.install effect: installMethods when: accumulatingCount, addWatchProtocol,
-  //@ assoc, boundedCount, chunkNext, cljToJs, collectionWithMeta, compareKeys, concatMany,
-  //@ concatTwo, conj, cons, contains, coreMethod, count, derefProtocol, disj, dissoc, drop, empty,
-  //@ equalPair, filter, find, first, get, hash, indexedSequence, into, isAssociative, isChunkedSeq,
-  //@ isCloneable, isColl, isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable,
-  //@ isList, isMap, isMapEntry, isRecord, isReduceable, isReversible, isSeq, isSeqable,
-  //@ isSequential, isSet, isSorted, isUuid, isVector, iterator, jsToClj, keyToJs, mapConj,
-  //@ mapProjection, mapSeq, meta, metaSupported, name, namespace, next, notifyWatches, nth,
-  //@ objectEquiv, ownMap, ownSet, peek, pop, printSequential, printValues, printWriterImpl,
-  //@ printsMeta, reduce, reduceKv, removeWatchProtocol, resetMeta, rest, rseq, seq,
-  //@ sequenceIterator, stateProtocol, structuralEqualPair, upstreamMembers, vectorIndexOf,
-  //@ vectorPrototype, vresetProtocol, withMetaSupported requires: builtin, countProtocol,
-  //@ firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol, protocolHooks,
-  //@ publicMethod, satisfies, valProtocol
-  // Every protocol implementation goes through `installMethods`.
+  //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assoc,
+  //@ collectionWithMeta, compareKeys, conj, coreMethod, count, derefProtocol, disj, dissoc,
+  //@ equalPair, first, hash, iterator, metaSupported, name, namespace, notifyWatches, objectEquiv,
+  //@ peek, pop, removeWatchProtocol, rest, rseq, stateProtocol, vresetProtocol, withMetaSupported
+  //@ requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
+  //@unit protocolHooks.external effect: extendType when: builtin requires: externalMethod,
+  //@ protocolHooks
+  // Only `extend-type` gives implementations that are not the value's own.
+  protocolHooks.externalMethod = externalMethod;
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: ownMap, ownSet, resetMeta,
+  //@ upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
+  // Only `extend-type` and `specify!` can give the runtime's own values
+  // protocol implementations, which their host-facing methods and fields then
+  // answer through the generic operations (`hostHooks`).
+  protocolHooks.extend = true;
+  //@unit protocolHooks.ownMethod effect: installMethods when: contains, count, empty, find, first,
+  //@ get, meta, next, nth, printSequential, printValues, printWriterImpl, reduce, reduceKv, rest,
+  //@ seq requires: ownMethod, protocolHooks
+  // Every protocol implementation goes through `installMethods`.
+  protocolHooks.publicMethod = ownMethod;
+  //@unit protocolHooks.publicMethod effect: extendType, extendInstance when: contains, count,
+  //@ empty, find, first, get, meta, next, nth, printSequential, printValues, printWriterImpl,
+  //@ reduce, reduceKv, rest, seq requires: protocolHooks, publicMethod
+  // ... and only `extend-type` and `specify!` give the runtime's values and
+  // host values implementations, which `publicMethod` finds.
   protocolHooks.publicMethod = publicMethod;
+  //@unit protocolHooks.satisfies effect: installMethods when: accumulatingCount, boundedCount,
+  //@ cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty, isFn, isIFind,
+  //@ isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable, isReversible,
+  //@ isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs, makeMap.equiv,
+  //@ makeSet.equiv, mapConj, mapProjection, nth, reduce, sequenceIterator requires: protocolHooks,
+  //@ satisfies
   protocolHooks.satisfies = satisfies;
+  //@unit protocolHooks.implementsProtocol effect: installMethods when: chunkNext, concatMany,
+  //@ concatTwo, cons, count, drop, filter, first, hash, indexedSequence, into, isChunkedSeq,
+  //@ isMapEntry, isUuid, mapSeq, name, namespace, next, nth, printsMeta, rest requires: implementsProtocol,
+  //@ protocolHooks
   protocolHooks.implementsProtocol = implementsProtocol;
+  //@unit protocolHooks.dispatchers effect: installMethods when: accumulatingCount, mapConj,
+  //@ mapProjection, nth requires: countProtocol, firstProtocol, keyProtocol, nextProtocol,
+  //@ nthProtocol, protocolHooks, valProtocol
   protocolHooks.countProtocol = countProtocol;
   protocolHooks.nthProtocol = nthProtocol;
   protocolHooks.firstProtocol = firstProtocol;

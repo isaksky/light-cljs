@@ -1301,6 +1301,7 @@ impl<'a> Emitter<'a> {
                     };
                     if self.replaced(member) {
                         self.runtime.demand(target, site);
+                        self.escaped_dispatcher(target, site);
                         if !self.core_cells.iter().any(|(name, _)| *name == member) {
                             self.core_cells.push((member, target));
                         }
@@ -1312,7 +1313,21 @@ impl<'a> Emitter<'a> {
             (binding, member) => RuntimeName::direct(binding, member),
         };
         self.runtime.record(resolved, site, used);
+        if used == NameUse::Value {
+            self.escaped_dispatcher(resolved, site);
+        }
         resolved.to_string()
+    }
+
+    /// A core protocol dispatcher read as a value (`(aset -count "object" f)`)
+    /// may gain implementations by type as `extend-type` gives them, which only
+    /// `extendType` makes the runtime look up (`protocolHooks.external`), so
+    /// the slice keeps it.
+    fn escaped_dispatcher(&mut self, name: RuntimeName, site: Option<ExprId>) {
+        if name.member.is_none() && RuntimeManifest::embedded().is_core_dispatcher(name.binding) {
+            self.runtime
+                .record(RuntimeName::direct("extendType", None), site, NameUse::Keep);
+        }
     }
 
     /// Whether the program may replace the core operation with this runtime name,
@@ -3782,6 +3797,15 @@ impl<'a> Emitter<'a> {
                     false
                 }
                 MethodDispatch::Builtin(name) => {
+                    // The runtime's branches for the values of a core protocol
+                    // wait for its unit (`PROTOCOL_ROOTS`).
+                    let protocol = name.split_once('/').map_or(name.as_str(), |(p, _)| p);
+                    if let Some(root) = crate::runtime_slice::PROTOCOL_ROOTS
+                        .iter()
+                        .find(|root| **root == protocol)
+                    {
+                        self.keep_runtime(root);
+                    }
                     self.string_units(&name.encode_utf16().collect::<Vec<_>>());
                     name == "IFn/-invoke"
                 }

@@ -179,7 +179,12 @@ pass them, `(atom x)` is a plain constructor call, a map literal of at most 8
 entries builds an array map only and a set literal of at most 8 constants an
 array set only, so none of these keeps the protocol machinery, seqs, hash
 maps or hashing by itself ("Phase 2 builtin types, second pass" and "Phase
-2 builtin types, sets"). Each distinct keyword and quoted symbol literal
+2 builtin types, sets"). The runtime's own values defer to protocol
+implementations only where `extend-type` or `specify!` can give them some,
+and the generic operations find a program type's methods on its values
+without the protocol tables, so a record next to a vector or a keyword keeps
+about 10 KB instead of 35 KB (light-cljs-246, "Phase 2 builtin types,
+program types"). Each distinct keyword and quoted symbol literal
 the output reads is declared once after the runtime, `const k0 = rt$keyword(null,
 "a");`, and its sites read `k0`; keyword `case` switches on
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it

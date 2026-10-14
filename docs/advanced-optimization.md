@@ -1657,6 +1657,119 @@ only where the program has some.
   `first`, `rest`, `count` and `nth` still probe the stores of kinds the
   program does not build (a few hundred bytes).
 
+#### Phase 2 builtin types, program types
+
+light-cljs-246 separates the two things `installMethods` stood for. A
+program type (a `deftype`, `defrecord` or `reify`) implements protocols for
+its own values, which the generic operations dispatch to through their own
+slots. Only `extend-type` and `specify!` (`extendType`, `extendInstance`) give
+the runtime's values or host values implementations, which the runtime's own
+paths for them must then defer to. Before, a program type with a vector or a
+keyword kept about 30 KB of runtime that neither kept alone, through the
+host-facing methods of the vector and the keyword.
+
+- **Extended values.** The host-facing methods and upstream `cnt` fields of
+  vectors, maps and sets take the generic operations (`hostHooks`) only
+  where `protocolHooks.extend` is set, which `protocolHooks.extend effect:
+  extendType, extendInstance` does, instead of wherever `protocolHooks.builtin`
+  is. So `count.host`, `contains.host`, `sequentialIndex.host`,
+  `es6Iterator.host`, `es6EntriesIterator.host` and `mapProjection.host`
+  target `extendType` and `extendInstance` instead of `installMethods`. The
+  contract below lists what this leaves unsupported.
+- **Protocol hooks.** `protocolHooks.install` is one install unit per hook
+  (`protocolHooks.builtin`, `.ownMethod`, `.satisfies`,
+  `.implementsProtocol`, `.dispatchers`), each waiting for the readers of
+  its hook, so a program keeps only those its operations read.
+  - `builtin` is the value's own method (`directMethod`); the lookup of
+    `extend-type` on host types, `object` and `default` (`externalMethod`:
+    `coreDispatchers`, `nativeMethods` and `builtinCoreImplementation`) is
+    `protocolHooks.externalMethod`, which `protocolHooks.external`, an effect
+    of `extendType`, installs: `extendType` is the only unit that fills those
+    tables.
+  - `protocolHooks.publicMethod` is `ownMethod`, installed with
+    `installMethods`, and `publicMethod`, installed later with `extendType`
+    and `extendInstance`. Without them only values that declare a protocol
+    (its marker or mask bit) have its methods, so `ownMethod` returns such a
+    value's method, nothing for a value that does not declare the protocol
+    (a host object holding a slot-named function is no lookup), and throws
+    for one that declares it without the method, as `publicMethod` does,
+    except where the runtime implements it natively (`IMeta` of a function,
+    whose slot counts without a marker, or of a `reify`). A record has the
+    method of every operation the program keeps, since each record method
+    waits for the operations dispatching it.
+  - A core protocol dispatcher read as a value, `(aset -count "object" f)`,
+    can be extended by type through its table as `extend-type` does, so
+    emission keeps `extendType` for it (`Emitter::escaped_dispatcher`), and
+    with it `externalMethod`. Before, this worked only in a program with a
+    protocol implementation.
+  - Maps and sets compare with values of a program type through
+    `protocolHooks.count` and `protocolHooks.has`, installed with
+    `installMethods`, instead of `hostHooks`.
+- **Effects in `when:` lists.** A `when:` list may name an effect unit
+  (`protocolHooks.satisfies effect: installMethods when: ..., makeMap.equiv,
+  ...`), kept only where that effect is. Before, a hook read in the body of
+  an effect waited for the effect's own `when:` list (`structuralEqualPair`),
+  so every program comparing values and having a program type kept
+  `satisfies`, although only maps, sets and seqs read it there.
+- **Records are maps, but not here.** A record is in the `maps` store.
+  `makeMap.equiv` and `makeMap.lookup` no longer target `makeType`: a record
+  reaches structural equality only after `equalPair` and `objectEquiv` found
+  no `IEquiv` method, and `lookup` only after `get` found no `-lookup`, while
+  `recordMethods.equiv` and `recordMethods.lookup` wait for exactly those
+  operations. The `runtime_manifest` suite checks this
+  (`kind_hooks_skip_records`, and `Kind::Maps` in `KIND_HOOKS`). A map's
+  host-facing methods (`ownMap`) treat a record as a receiver of another
+  type.
+- **Protocol roots.** Structural equality of a vector with a value of a
+  program type implementing `ISequential` needs the generic seq comparison
+  (`cons.equiv`), which targeted `installMethods`. It now targets the
+  protocol's unit `ISequential`, besides the runtime's sequential kinds,
+  `Eduction`, `extendType` and `extendInstance`. Emission keeps a unit of
+  `PROTOCOL_ROOTS` (`src/runtime_slice.rs`) where a `deftype`, `defrecord`,
+  `reify` or extension implements the protocol, as `recordMethods` is kept
+  for a record. The `runtime_manifest` suite checks that the list is exactly
+  the core protocols conditional effects target and that every runtime unit
+  installing one's marker is a target too.
+- **Tests.**
+  - `builtin_types`: a record with a vector and with a keyword keep none of
+    the extension machinery, seqs, `satisfies` or the map hooks, and stay
+    under 12 KB; a vector's host-facing methods over records and a `deftype`
+    implementing `IEquiv`; keywords invoked on records by the program, the
+    host and `map`; protocols declared without a method (and `IMeta` of a
+    `reify`); `ISequential`, `IMap` and `ISet` implementations compared with
+    vectors, maps and sets, through `=` and `.equiv`; a `specify!` of a
+    vector; a host object holding a slot-named function, a function's
+    `IMeta` slot and a patched dispatcher table; all at every level against
+    `None`. A record borrowed into a map's `keys` throws at `Advanced` or
+    answers as at `None`.
+  - `runtime_manifest`: the split hooks' `when:` lists, effects named in
+    `when:`, records skipping the map hooks and `PROTOCOL_ROOTS`.
+  - The ratchet ceiling of `closed-params` drops from 36,000 to 13,000.
+- **Measured.** At `Advanced`, raw / gzip bytes, against master `5e83c97`:
+  - `closed-params` drops from 35,923 / 11,755 to 12,996 / 4,960 (64%;
+    light-cljs-243 asked for 25%).
+  - `(defrecord Pt [x y])` with `(nth [1 2 3] ...)` in a loop from 35,426 /
+    11,507 to 10,242 / 4,030 (target 12,000), a `deftype` instead from 33,285
+    / 10,888 to 9,745 / 3,847, and `(defrecord Pt [x y]) (js/console.log (:x
+    (->Pt 1 0)) (.toString :a))` from 35,274 / 11,387 to 9,895 / 3,751.
+  - `(deftype T [] ICounted (-count [_] 7)) (count (T.))` drops from 33,027 /
+    10,728 to 27,180 / 8,726: `count` still tests `implementsProtocol`.
+  - No fixture grows. Those with vectors, maps or sets lose up to 23 bytes
+    (four of them gain 3 to 8 gzipped bytes).
+  - The shared runtime grows by 2,694 bytes (0.7%; 848 gzipped): `ownMethod`,
+    the split hook installs and their comments.
+  Per-fixture sizes are in `benchmarks/compiler.md`.
+- **Left for later.** `satisfies` and `implementsProtocol` still need the
+  protocol objects and `builtinCoreImplementation` wherever a program type
+  exists and an operation tests a protocol (`count`, `seq?`, ...); a test of
+  a value's own marker, like `ownMethod`, would need the protocol's name at
+  each call site (light-cljs-251). Protocol roots cover `ISequential` only,
+  the one protocol whose implementations reach a branch of the runtime's
+  kinds that `installMethods` alone kept. A record's core protocol slot that
+  the program names (`"cljs$core$ILookup$_lookup$arity$3"`) is installed
+  only where an operation dispatching it is kept, as before in a program
+  with records alone (light-cljs-250).
+
 #### Phase 2 call shape extension points
 
 Step 5 is implemented in `src/call_shapes.rs` (light-cljs-212, and
@@ -2805,15 +2918,17 @@ upstream states that advanced mode is unsafe for certain patterns.
 - A `goog-define`'s value comes from the build at every level, as upstream's
   `:closure-defines`; at `Advanced`, a `^:const` or `goog-define` Var read
   after its top-level definition is its value (light-cljs-214).
-- Where the program has no protocol implementation, the host-facing methods
-  of the runtime's vectors and maps (iteration, `indexOf`, `lastIndexOf`,
-  `keys`, `values`, `entries` and the `cnt` field, which exists as below)
-  answer from the value's own items (light-cljs-230), and those of sets
-  (iteration, `keys`, `values`, `entries` and `has`) from its members
-  (light-cljs-231). Applied to a receiver of another type, through `.call`,
-  `.apply` or a copied method, they run the generic operation, which a
-  program that builds no other collection does not keep; such a call is
-  unsupported there and throws a `TypeError` naming `hostHooks`.
+- Where the program has no `extend-type`, `extend-protocol` or `specify!`
+  (before light-cljs-246: no protocol implementation), the host-facing
+  methods of the runtime's vectors and maps (iteration, `indexOf`,
+  `lastIndexOf`, `keys`, `values`, `entries` and the `cnt` field, which
+  exists as below) answer from the value's own items (light-cljs-230), and
+  those of sets (iteration, `keys`, `values`, `entries` and `has`) from its
+  members (light-cljs-231). Applied to a receiver of another type (a record
+  too), through `.call`, `.apply` or a copied method, they run the generic
+  operation, which a program that builds no other collection does not keep;
+  such a call is unsupported there and throws a `TypeError` naming
+  `hostHooks`.
 - The runtime's types have their upstream fields and methods (`first` and
   `rest` of a `Cons`, `cnt` of a vector, `meta`, `__hash`, `sval` of a
   `LazySeq`, ...: `UPSTREAM_MEMBERS` in `src/runtime_slice.rs`) only where

@@ -112,6 +112,18 @@ pub const UPSTREAM_MEMBERS: &[&str] = &[
 /// [`UPSTREAM_MEMBERS`].
 pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
 
+/// Core protocols whose implementations reach branches of the runtime's own
+/// operations: a value of a type implementing one is handled like the values
+/// of the runtime's kinds that implement it natively, so the conditional
+/// effects installing those branches name the protocol's unit as a target
+/// (`cons.equiv`, structural equality of sequential values, for
+/// `ISequential`), besides `extendType` and `extendInstance`. An `Advanced`
+/// slice keeps the unit where emitted code implements the protocol in a
+/// `deftype`, `defrecord`, `reify` or extension, and the runtime's own types
+/// built with `installMethods` are targets themselves. The
+/// `runtime_manifest` suite checks the list against those targets.
+pub const PROTOCOL_ROOTS: &[&str] = &["ISequential"];
+
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
 /// [`CoreFnId`](crate::CoreFnId). Below `Advanced` the binding is an export

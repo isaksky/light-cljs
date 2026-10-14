@@ -348,8 +348,9 @@ fn reads_hook(text: &str, hook: &str) -> bool {
 /// an operation, the operation. A unit filling in
 /// hooks (`typeHooks.rest = fnRest`, `kindHooks.seqVector = ...`) names every
 /// unit that reads one of them; a reader that is itself an effect stands for
-/// its own `when:` list, or else its targets. A new dispatch site or hook
-/// read fails here until the list names it.
+/// its own `when:` list, or else its targets, unless the list names the
+/// effect itself (`when: makeMap.equiv`), which only that effect keeps. A new
+/// dispatch site or hook read fails here until the list names it.
 #[test]
 fn conditional_effects_name_every_unit_that_can_use_them() {
     let manifest = manifest();
@@ -416,6 +417,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                         .iter()
                         .filter_map(|target| manifest.unit_of(target))
                         .collect(),
+                    // A list may name the effect itself, kept only with a
+                    // target, instead of its conditions.
+                    Some(_) if manifest.conditions(id).contains(&reader) => vec![reader],
                     Some(_) => manifest.conditions(reader).to_vec(),
                     None => vec![reader],
                 })
@@ -440,13 +444,17 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // the printer's), the protocol hooks, the printer's hooks, the initial
     // values of four core cells, the protocol wrappers of seven operations and
     // the upstream fields of 28 types.
-    assert_eq!(checked, 145);
+    assert_eq!(checked, 153);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
 /// unit that writes to one, or a narrower kind only the listed units build.
+/// `Maps` is the payload stores without records, which `makeType` adds to
+/// the `maps` store but which answer the operations reading these hooks
+/// through their own methods (`kind_hooks_skip_records`).
 enum Kind {
     Stores(&'static [&'static str]),
+    Maps(&'static [&'static str]),
     Units(&'static [&'static str]),
 }
 
@@ -465,7 +473,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("restChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     // Views of queues.
     ("restQueue", Kind::Stores(&["queues"])),
-    ("equivMap", Kind::Stores(&["maps"])),
+    ("equivMap", Kind::Maps(&["maps"])),
     ("equivSet", Kind::Stores(&["sets"])),
     // Collections `str` prints: sequential values, maps and sets.
     (
@@ -516,7 +524,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("updatedRecord", Kind::Stores(&["recordTypes"])),
     ("lookupTransient", Kind::Stores(&["transients"])),
     ("lookupTree", Kind::Units(&["treeMapConstructor"])),
-    ("entryIndex", Kind::Stores(&["maps", "sets"])),
+    ("entryIndex", Kind::Maps(&["maps", "sets"])),
     // Maps and sets of the hash-map kind, and records. A set has another
     // kind than array-map only where `putMember` promoted it or the public
     // constructor (`publicHashSet`) took its map's kind (light-cljs-231).
@@ -664,6 +672,11 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
                 .unwrap_or_else(|| panic!("kind hook `{hook}` is not in KIND_HOOKS"));
             let builders = match kind {
                 Kind::Stores(stores) => stores.iter().flat_map(|store| writers(store)).collect(),
+                Kind::Maps(stores) => stores
+                    .iter()
+                    .flat_map(|store| writers(store))
+                    .filter(|&builder| builder != "makeType")
+                    .collect(),
                 Kind::Units(units) => units.to_vec(),
             };
             for builder in builders {
@@ -680,6 +693,127 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
     let mut listed: Vec<&str> = KIND_HOOKS.iter().map(|(key, _)| *key).collect();
     listed.sort_unstable();
     assert_eq!(seen, listed);
+}
+
+/// A record is in the `maps` store, but the hooks of `Kind::Maps` need not
+/// wait for `makeType` (light-cljs-246): wherever an operation could pass a
+/// record to them, the record answers through its own method first.
+/// Equality reaches `kindHooks.equivMap` only from `equalPair` and
+/// `objectEquiv`, which dispatch `IEquiv` through `protocolHooks.builtin`;
+/// `recordMethods.equiv` and that hook wait for `equalPair`, which
+/// `structuralEqualPair` requires. `kindHooks.entryIndex` is read by `lookup`,
+/// which a record reaches only from `get`, after `protocolHooks.publicMethod`
+/// finds `recordMethods.lookup`: both wait for `get`. The other callers of
+/// `lookup` take maps and sets: their own prototypes' methods and set
+/// equality, whose other value implements `ISet`.
+#[test]
+fn kind_hooks_skip_records() {
+    let manifest = manifest();
+    let unit = |name: &str| manifest.unit_named(name).unwrap();
+    let body = |name: &str| &ANNOTATED_RUNTIME[manifest.units[unit(name).0].body_range.clone()];
+    let waits_for = |effect: &str, condition: &str| {
+        assert!(
+            manifest.conditions(unit(effect)).contains(&unit(condition)),
+            "`{effect}` waits for `{condition}`"
+        );
+    };
+    for effect in ["recordMethods.equiv", "protocolHooks.builtin"] {
+        waits_for(effect, "equalPair");
+    }
+    assert!(
+        manifest.units[unit("structuralEqualPair").0]
+            .requires
+            .contains(&"equalPair")
+    );
+    let callers = |callee: &str| {
+        let call = format!("{callee}(");
+        manifest
+            .units
+            .iter()
+            .filter(|other| {
+                let text = &ANNOTATED_RUNTIME[other.body_range.clone()];
+                text.match_indices(&call).any(|(start, _)| {
+                    !text[..start]
+                        .ends_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+                })
+            })
+            .map(|other| other.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        callers("structuralEqualPair"),
+        ["objectEquiv", "equalPair", "structuralEqualPair"]
+    );
+    assert_eq!(
+        callers("lookup"),
+        [
+            "mapPrototype",
+            "setPrototype",
+            "lookup",
+            "get",
+            "makeSet.equiv"
+        ]
+    );
+    for effect in [
+        "recordMethods.lookup",
+        "protocolHooks.ownMethod",
+        "protocolHooks.publicMethod",
+    ] {
+        waits_for(effect, "get");
+    }
+    assert!(body("get").contains("protocolHooks.publicMethod?.(value, \"ILookup/-lookup\""));
+}
+
+/// `PROTOCOL_ROOTS` are exactly the core protocols that conditional effects
+/// target, and every runtime unit that installs a marker of one, as
+/// `Eduction` does for `ISequential`, is a target of those effects too. Records
+/// implement none of them.
+#[test]
+fn protocol_roots_are_the_protocols_effects_wait_for() {
+    use light_cljs::runtime_slice::PROTOCOL_ROOTS;
+    let manifest = manifest();
+    let protocols = &manifest.units[manifest.unit_named("coreProtocolNames").unwrap().0].requires;
+    let mut targeted = Vec::new();
+    for (index, effect_unit) in manifest.units.iter().enumerate() {
+        let Some(effect) = effect_unit.effect.as_ref().filter(|e| !e.when.is_empty()) else {
+            continue;
+        };
+        for &protocol in effect.targets.iter().filter(|t| protocols.contains(t)) {
+            targeted.push(protocol);
+            let marker = format!("[\"{protocol}\", 0, null]");
+            for installer in &manifest.units {
+                let text = &ANNOTATED_RUNTIME[installer.body_range.clone()];
+                if !text.contains(&marker) {
+                    continue;
+                }
+                let owners: Vec<&str> = match &installer.effect {
+                    Some(own) if installer.declares.is_empty() => own.targets.clone(),
+                    _ => installer.declares.clone(),
+                };
+                assert!(
+                    owners.iter().any(|owner| effect.targets.contains(owner)),
+                    "`{}` implements `{protocol}`, so `{}` targets one of {owners:?}",
+                    installer.name,
+                    manifest.units[index].name
+                );
+            }
+        }
+    }
+    targeted.sort_unstable();
+    targeted.dedup();
+    assert_eq!(targeted, PROTOCOL_ROOTS);
+    let record = &ANNOTATED_RUNTIME[manifest.units
+        [manifest.unit_named("recordMethods").unwrap().0]
+        .body_range
+        .clone()];
+    for protocol in PROTOCOL_ROOTS {
+        assert!(
+            !record
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|word| word == *protocol),
+            "records implement `{protocol}`"
+        );
+    }
 }
 
 #[test]
