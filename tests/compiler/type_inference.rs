@@ -21,8 +21,8 @@ use super::optimization::{execute, readable};
 use light_cljs::core_operations::Type;
 use light_cljs::inference::{Inferred, Known};
 use light_cljs::{
-    ApplicationOptions, ApplicationStats, LocalId, OptimizationLevel, PreparedApplication, Program,
-    analyze, parse, prepare_application,
+    ApplicationOptions, ApplicationStats, GlobalId, LocalId, OptimizationLevel,
+    PreparedApplication, Program, analyze, parse, prepare_application,
 };
 
 fn program(source: &str) -> Program {
@@ -1223,6 +1223,102 @@ fn typed_lowerings_apply_inside_protocol_methods_and_keep_the_results() {
         ),
     ] {
         every_level(&format!("{protocol} {source}"), expected);
+    }
+}
+
+#[test]
+fn protocol_method_parameters_keep_hidden_callers() {
+    // Calls a receiver's type does not show: a host object that inherits a
+    // type's or a `reify`'s slots (`#js` gives `__proto__` its object-literal
+    // meaning), and an instance whose prototype the program changes. Each
+    // passes `""` where the visible calls pass `false`.
+    let protocol = "(defprotocol P (m [this flag]))";
+    for (source, expected) in [
+        (
+            r#"(deftype T [] P (m [_ flag] (if flag :yes :no)))
+               (let [t (T.) h #js {"__proto__" t}] (pr-str [(m t false) (m h "")]))"#,
+            "[:no :yes]",
+        ),
+        (
+            r#"(let [r (reify P (m [_ flag] (if flag :yes :no))) h (doto #js {} (aset (apply str ["__pro" "to__"]) r))]
+                 (pr-str [(m r false) (m h "")]))"#,
+            "[:no :yes]",
+        ),
+        (
+            r#"(deftype T [] P (m [_ flag] (if flag :t :f)))
+               (deftype U [] P (m [_ flag] (if flag :u :not-u)))
+               (let [u (U.)]
+                 (js/Object.setPrototypeOf u (.-prototype T))
+                 (pr-str [(m (T.) false) (m u "")]))"#,
+            "[:f :t]",
+        ),
+    ] {
+        every_level(&format!("{protocol} {source}"), expected);
+    }
+    // Slots named in ways the visible calls do not show: two methods whose
+    // names munge to one slot, a JavaScript global path ending in a slot, and
+    // a slot whose name holds characters that are not identifier characters.
+    for (source, name, expected) in [
+        (
+            r#"(defprotocol P (m-foo [this x]) (m_foo [this x]))
+               (deftype T [] P (m-foo [_ x] :unused) (m_foo [_ flag] (if flag :yes :no)))
+               (pr-str [(m-foo (T.) "") (m_foo (T.) false)])"#,
+            "flag",
+            "[:yes :no]",
+        ),
+        (
+            r#"(defprotocol P (m [this flag]))
+               (deftype T [] P (m [_ flag] (if flag :yes :no)))
+               (set! js/probe (T.))
+               (pr-str [(m js/probe false) (js/probe.cljs$user$P$m$arity$2 js/probe "")])"#,
+            "flag",
+            "[:no :yes]",
+        ),
+        (
+            r#"(defprotocol P (m😀 [this flag]))
+               (deftype T [] P (m😀 [_ flag] (if flag :yes :no)))
+               (let [t (T.)] (pr-str [(m😀 t false) ((aget t "cljs$user$P$m😀$arity$2") t "")]))"#,
+            "flag",
+            "[:no :yes]",
+        ),
+        (
+            "(defprotocol P (m\u{301} [this flag]))
+             (deftype T [] P (m\u{301} [_ flag] (if flag :yes :no)))
+             (let [t (T.)]
+               (pr-str [(m\u{301} t false) ((aget t \"cljs$user$P$m\u{301}$arity$2\") t \"\")]))",
+            "flag",
+            "[:no :yes]",
+        ),
+    ] {
+        assert_eq!(local(source, name), Inferred::ANY, "{source}");
+        every_level(source, expected);
+    }
+    // An exported protocol method may be called by the host with anything.
+    let source = "(defprotocol P (m [this flag]))
+                  (deftype T [] P (m [_ flag] (if flag :yes :no)))
+                  (m (T.) false)";
+    let program = program(source);
+    let method = program
+        .globals
+        .iter()
+        .position(|binding| binding.name == "m")
+        .expect("the protocol method's global");
+    let flag = LocalId(
+        program
+            .locals
+            .iter()
+            .position(|local| local.name == "flag")
+            .expect("the parameter"),
+    );
+    for (exports, expected) in [
+        (Vec::new(), Inferred::of(Type::BOOLEAN)),
+        (vec![GlobalId(method)], Inferred::ANY),
+    ] {
+        let mut options = options(OptimizationLevel::Advanced);
+        options.exports = exports;
+        let prepared = prepare_application(&program, options);
+        let inference = prepared.inference().expect("Advanced infers types");
+        assert_eq!(inference.local(flag), expected);
     }
 }
 

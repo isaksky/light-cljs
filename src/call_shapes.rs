@@ -148,8 +148,16 @@
 //!   not exported (inference also requires that the program defines it once
 //!   and never assigns it, `crate::inference::Definition::Protocol`);
 //! - its signature is not variadic, whose dispatcher repacks the arguments;
-//! - no property, method, string or `js*` text names one of its slots,
-//!   `ns$P$m$arity$N`, which may be read and called on any instance.
+//! - no other method's slots have the same names (`m-foo` and `m_foo` munge
+//!   alike), so a call of one cannot run the other's implementation;
+//! - no property, method, JavaScript global path, string or `js*` text holds
+//!   one of its slots, `ns$P$m$arity$N`, anywhere in it: the slot may be
+//!   read and called on any instance.
+//!
+//! A program with protocols that names a prototype in such a text
+//! (`prototype`, `__proto__`, `setPrototypeOf`) may give a value the slots of
+//! a type it is not an instance of ([`ClosedFunctions::inherits`]), which
+//! inference then does not exclude by the receiver's type.
 //!
 //! Its *implementations* ([`ClosedFunctions::implementations`]) are the
 //! methods without rest parameters of `deftype`, `defrecord`, `reify` and
@@ -452,6 +460,9 @@ pub struct ClosedFunctions {
     /// `implementations` of those the dispatcher may run for its argument
     /// count, else `(0, 0)`.
     dispatches: Vec<(u32, u32)>,
+    /// Whether the program names a prototype, see
+    /// [`ClosedFunctions::inherits`].
+    inherits: bool,
 }
 
 /// A method of a `deftype`, `defrecord`, `reify` or `extend-type` (or
@@ -513,6 +524,14 @@ impl ClosedFunctions {
         (start as usize..end as usize).map(|index| (index, self.implementations[index]))
     }
 
+    /// Whether a program with protocols names a prototype in a property,
+    /// method, JavaScript global, string or `js*` text (`prototype`,
+    /// `__proto__`, `setPrototypeOf`): then a value may hold the slots of a
+    /// program type, or of a `reify`, that it is not an instance of.
+    pub fn inherits(&self) -> bool {
+        self.inherits
+    }
+
     /// How many `fn` expressions are closed.
     pub fn len(&self) -> usize {
         self.functions.iter().filter(|closed| **closed).count()
@@ -538,6 +557,7 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         callbacks: Vec::new(),
         implementations: Vec::new(),
         dispatches: Vec::new(),
+        inherits: false,
     };
     protocol_methods(program, &scan, exports, &mut closed);
     let local_calls = &scan.local_calls;
@@ -672,25 +692,41 @@ fn protocol_methods(
         })
         .collect();
     // Every slot of a method starts with the same prefix, `ns$P$m$arity$`.
-    let prefixes: HashMap<String, GlobalId> = declared
-        .iter()
-        .flatten()
-        .filter(|method| !open[method.global.0])
-        .map(|method| {
-            let mut slot = crate::rta::protocol_slot(&method.key, 1);
-            slot.pop();
-            (slot, method.global)
-        })
-        .collect();
-    if prefixes.is_empty() {
-        return;
+    // Names that munge alike (`m-foo`, `m_foo`) share their slots, so a call
+    // of one may run the other's implementation: neither is closed.
+    let mut prefixes: HashMap<String, Vec<GlobalId>> = HashMap::new();
+    for method in declared.iter().flatten() {
+        let mut slot = crate::rta::protocol_slot(&method.key, 1);
+        slot.pop();
+        prefixes.entry(slot).or_default().push(method.global);
     }
+    for methods in prefixes.values().filter(|methods| methods.len() > 1) {
+        for global in methods {
+            open[global.0] = true;
+        }
+    }
+    // Any text that names a slot opens its method, wherever the slot appears
+    // in it, and one that names a prototype may give a value the slots of a
+    // type it is not an instance of (`ClosedFunctions::inherits`).
+    let mut lengths: Vec<usize> = prefixes.keys().map(String::len).collect();
+    lengths.sort_unstable();
+    lengths.dedup();
     const ARITY: &str = "$arity$";
     for &id in &scan.order {
-        names(program, &program.exprs[id.0].kind, |name| {
-            for (position, _) in name.match_indices(ARITY) {
-                if let Some(global) = prefixes.get(&name[..position + ARITY.len()]) {
-                    open[global.0] = true;
+        texts(program, &program.exprs[id.0].kind, |text| {
+            closed.inherits |= ["prototype", "__proto__", "setPrototypeOf"]
+                .iter()
+                .any(|name| text.contains(name));
+            for (position, _) in text.match_indices(ARITY) {
+                let end = position + ARITY.len();
+                for &length in &lengths {
+                    let named = end
+                        .checked_sub(length)
+                        .and_then(|start| text.get(start..end))
+                        .and_then(|slot| prefixes.get(slot));
+                    for global in named.into_iter().flatten() {
+                        open[global.0] = true;
+                    }
                 }
             }
         });
@@ -785,22 +821,23 @@ fn dispatched_arity(arities: &[usize], arguments: usize) -> Option<usize> {
     }
 }
 
-/// Call `named` with each name an expression of this kind may give a host
-/// property: the name it reads, calls or indexes, and each identifier in a
-/// string or raw JavaScript. A name computed at run time does not count.
-fn names(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str)) {
-    let mut words = |text: &str| {
-        text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-            .for_each(&mut named)
-    };
+/// Call `text` with each text in which an expression of this kind may name a
+/// host property: the property it reads, the method it calls, the path of a
+/// JavaScript global, a string, and raw JavaScript. A name computed at run
+/// time does not count.
+fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
     match kind {
         ExprKind::Property { property: name, .. }
         | ExprKind::MethodCall { method: name, .. }
         | ExprKind::QualifiedMethod {
             method: Some(name), ..
-        } => words(name),
-        ExprKind::JsTemplate { segments, .. } => segments.iter().for_each(|text| words(text)),
-        ExprKind::String(string) => words(&String::from_utf16_lossy(&program.strings[string.0])),
+        } => text(name),
+        ExprKind::JsGlobal(global) => program.js_globals[global.0]
+            .path
+            .iter()
+            .for_each(|name| text(name)),
+        ExprKind::JsTemplate { segments, .. } => segments.iter().for_each(|segment| text(segment)),
+        ExprKind::String(string) => text(&String::from_utf16_lossy(&program.strings[string.0])),
         _ => (),
     }
 }

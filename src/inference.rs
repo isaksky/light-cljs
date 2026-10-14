@@ -44,6 +44,10 @@
 //!   of that type (of class `object` or `record`, and not known to be an
 //!   instance of another type), a `reify`'s when it may be an `object` that
 //!   is not known to be a program type's instance, and a `specify!`'s always.
+//!   A receiver that may be a host object, which may inherit any object's
+//!   slots (`#js {"__proto__" t}`), reaches every implementation, and so does
+//!   every receiver where the program names a prototype
+//!   ([`ClosedFunctions::inherits`]).
 //!   An `extend-type` of anything but a program type may be reached by the
 //!   receiver's host type, through the dispatcher's own table, so its
 //!   parameters stay `any`.
@@ -108,8 +112,11 @@
 //! `this`, which is that argument. An instance of a program type holds the
 //! slots its `deftype` or `defrecord` and the `extend-type`s of that type
 //! install on its prototype, and `specify!` may give any object more; a
-//! `reify` object is no program type's instance. A call whose receiver cannot
-//! hold an implementation's slot therefore cannot run it. The body of an
+//! `reify` object is no program type's instance. Other values hold those
+//! slots only by inheriting them: host objects, whose prototype is any
+//! object, and values whose prototype the program sets, which it can do only
+//! by naming a prototype. A call whose receiver cannot hold an
+//! implementation's slot therefore cannot run it. The body of an
 //! implementation that no call reaches is typed `never`, as is the body of a
 //! closed function nothing calls: only a slot read by name could run it.
 
@@ -979,9 +986,14 @@ impl Receivers {
     /// Whether a call with receiver `receiver` may run the implementation.
     /// Each instance of one program type has only that type's slots, so a
     /// receiver known to be an instance of another type ([`Known::Instance`])
-    /// does not reach a type's or a `reify`'s method.
-    fn reach(self, receiver: Inferred) -> bool {
+    /// does not reach a type's or a `reify`'s method. A host object may
+    /// inherit any object's slots (`#js {"__proto__" t}`), and where the
+    /// program names a prototype (`inherits`) any value may.
+    fn reach(self, receiver: Inferred, inherits: bool) -> bool {
         match self {
+            _ if inherits || !receiver.ty.intersection(Type::HOST).is_never() => {
+                !receiver.ty.is_never()
+            }
             Self::Type(global, class) => {
                 !receiver.ty.intersection(class).is_never()
                     && !matches!(receiver.known, Known::Instance(other) if other != global)
@@ -1677,7 +1689,8 @@ impl<'p> Walker<'p> {
             .copied()
             .unwrap_or(Inferred::of(Type::NIL));
         for (index, implementation) in self.closed.dispatch(call) {
-            if !self.receivers[index].is_some_and(|receivers| receivers.reach(receiver)) {
+            let inherits = self.closed.inherits();
+            if !self.receivers[index].is_some_and(|receivers| receivers.reach(receiver, inherits)) {
                 continue;
             }
             let Some(method) = implementation.method(self.program) else {

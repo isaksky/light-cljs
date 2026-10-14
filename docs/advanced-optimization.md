@@ -2180,19 +2180,23 @@ boolean.
   protocol methods whose dispatcher runs only for calls the program makes
   (see "Protocol methods" in `src/call_shapes.rs`): the method is declared
   once, its global is read only as the callee of calls and not exported, its
-  signature is not variadic, and no property, method, string or `js*` text
-  names one of its slots (`ns$P$m$arity$`), which could be read and called on
-  any instance. Inference also requires that the program defines it once
-  and never assigns it (`Definition::Protocol`, so `with-redefs` and
-  `set!` count).
+  signature is not variadic, no other method's name munges to the same slots
+  (`m-foo` and `m_foo`), and no property, method, JavaScript global path
+  (`js/probe.cljs$user$P$m$arity$2`), string or `js*` text holds one of its
+  slots (`ns$P$m$arity$`) anywhere in it, whatever characters surround it:
+  such a slot could be read and called on any instance. Inference also
+  requires that the program defines it once and never assigns it
+  (`Definition::Protocol`, so `with-redefs` and `set!` count).
 - **Implementations.** The methods without rest parameters that implement
   such a method in a `deftype`, `defrecord`, `reify`, `specify!` or
   `extend-type` of a program type (`ClosedFunctions::implementations`). An
   `extend-type` or `specify!` whose value is used returns its last method, so
   its methods are left out, unless `specify!` returns its target. An
-  `extend-type` of `string`, `default`, a host constructor or any other
-  value is reached through the dispatcher's own table by the receiver's host
-  type, which may run its only method for any arity, so it is left out too.
+  `extend-type` of anything but a program type is left out too: the
+  dispatcher's own table reaches one of a host type name (`string`,
+  `default`) by the receiver's host type and may run its only method for any
+  arity, and a host constructor's prototype is inherited by values whose
+  class inference does not track.
 - **Dispatch.** Each call runs the arity the dispatcher selects: the
   method's one arity, padding missing arguments with `undefined` and
   dropping extra ones, else the call's argument count when it is one of the
@@ -2208,9 +2212,15 @@ boolean.
   of another program type (`Known::Instance`). A `reify` method runs when the
   receiver may be an `object` not known to be any program type's instance,
   and a `specify!` method for every receiver, since its target may be any
-  object. Receivers only grow during the fixed point, so this stays
-  monotone. A receiver typed as one program type therefore types only that
-  type's methods, and `(m (if c (T.) (U.)) x)` joins `x` into both.
+  object. A receiver that may be a host object reaches every method, since
+  a host object may inherit any object's slots (`#js {"__proto__" t}`, or
+  `aset` of a computed `"__proto__"`), and so does every receiver of a
+  program with protocols that names a prototype in a text as above
+  (`prototype`, `__proto__`, `setPrototypeOf`: `ClosedFunctions::inherits`),
+  which may move an instance of one type onto another's slots. Receivers
+  only grow during the fixed point, so this stays monotone. A receiver typed
+  as one program type therefore types only that type's methods, and
+  `(m (if c (T.) (U.)) x)` joins `x` into both.
 - **Tests.** `protocol_method_parameters_join_visible_calls` in the
   `type_inference` suite checks the failure scenario, the receiver, mixed
   callers of two types, a receiver of either type, missing arguments,
@@ -2224,6 +2234,12 @@ boolean.
   level, and adversarial programs (a receiver of either type, `specify!` on
   an instance, a called `extend-type` value, calls through slot names,
   `apply` and `mapv` of the method) whose output must equal `None`'s.
+  `protocol_method_parameters_keep_hidden_callers` (from the review of this
+  change) runs host objects inheriting a type's and a `reify`'s slots, an
+  instance moved onto another type's prototype, two methods whose names
+  munge alike, a slot called through a JavaScript global path and slots
+  named with an emoji and a combining mark, against `None`, and checks that
+  exporting the method keeps its parameters `any`.
 - **Measured.** No existing ratchet fixture changes at any level. The new
   fixture `protocol-params`, two types pricing records through a protocol,
   shrinks from 47,413 to 47,267 bytes at `Advanced` (14,863 to 14,820
