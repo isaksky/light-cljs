@@ -63,6 +63,11 @@
 //! gives a type its static `getBasis` only when reachable code names it, and
 //! the runtime's types their upstream fields and methods
 //! ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) only when it names one.
+//! The runtime installs the core protocol methods of records each where an
+//! operation dispatching it is kept; for a slot of one that reachable code
+//! names as a slot of a program protocol is named above
+//! ([`crate::runtime_slice::RECORD_METHODS`]), emission of a record keeps a
+//! unit the method waits for as well.
 //!
 //! # Devirtualization
 //!
@@ -118,6 +123,9 @@ pub(crate) struct TypeAnalysis {
     /// The first reachable expression that names an upstream member of the
     /// runtime's types.
     members: Option<ExprId>,
+    /// The units to root for the record methods whose slots reachable code
+    /// names, each with the first expression naming one.
+    record_methods: Vec<(&'static str, ExprId)>,
 }
 
 /// What a rewrite removed, for [`crate::ApplicationStats`].
@@ -335,6 +343,7 @@ pub(crate) fn analyze(
                 })
         })
         .map(ExprId);
+    let record_methods = named_record_methods(program, &live);
     TypeAnalysis {
         live,
         instantiated,
@@ -346,6 +355,7 @@ pub(crate) fn analyze(
         discarded,
         basis,
         members,
+        record_methods,
     }
 }
 
@@ -753,6 +763,14 @@ impl TypeAnalysis {
         self.members
     }
 
+    /// The units an `Advanced` slice of a program with records roots so that
+    /// the runtime installs the record methods whose slots reachable code
+    /// names ([`crate::runtime_slice::RECORD_METHODS`]), each with the first
+    /// expression naming one of its slots.
+    pub(crate) fn named_record_methods(&self) -> &[(&'static str, ExprId)] {
+        &self.record_methods
+    }
+
     /// Rewrite `program` as the analysis decided (see the module docs) and
     /// update `retained`, the globals emission declares.
     pub(crate) fn apply(
@@ -859,7 +877,7 @@ impl TypeAnalysis {
 /// accepts: reads, calls or indexes it, holds it as a string, or is raw
 /// JavaScript containing it as an identifier or a string. A name computed at
 /// run time does not count.
-fn names_property(program: &Program, kind: &ExprKind, named: impl Fn(&str) -> bool) -> bool {
+fn names_property(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str) -> bool) -> bool {
     match kind {
         ExprKind::Property { property, .. } => named(property),
         ExprKind::MethodCall { method, .. } => named(method),
@@ -870,11 +888,61 @@ fn names_property(program: &Program, kind: &ExprKind, named: impl Fn(&str) -> bo
         ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
             segment
                 .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-                .any(&named)
+                .any(&mut named)
         }),
         ExprKind::String(string) => named(&String::from_utf16_lossy(&program.strings[string.0])),
         _ => false,
     }
+}
+
+/// For a program with records, the [`crate::runtime_slice::RECORD_METHODS`]
+/// whose slots a reachable expression names (as [`names_property`] reads
+/// names), as the unit to root and the first such expression, in table order.
+fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
+    let reached = || {
+        program
+            .exprs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| live[*index])
+    };
+    let records = reached().any(|(_, expr)| {
+        matches!(
+            expr.kind,
+            ExprKind::DefType {
+                record: true,
+                constructor: Some(_),
+                ..
+            }
+        )
+    });
+    if !records {
+        return Vec::new();
+    }
+    let methods = crate::runtime_slice::RECORD_METHODS;
+    let slots: HashMap<String, usize> = methods
+        .iter()
+        .enumerate()
+        .flat_map(|(method, (key, arities, _))| {
+            arities
+                .iter()
+                .map(move |&arity| (protocol_slot(key, arity), method))
+        })
+        .collect();
+    let mut first = vec![None; methods.len()];
+    for (index, expr) in reached() {
+        names_property(program, &expr.kind, |name| {
+            if let Some(&method) = slots.get(name) {
+                first[method].get_or_insert(ExprId(index));
+            }
+            false
+        });
+    }
+    methods
+        .iter()
+        .zip(first)
+        .filter_map(|((_, _, unit), site)| Some((*unit, site?)))
+        .collect()
 }
 
 /// Keep the method entries `kept` marks; how many were dropped.

@@ -124,6 +124,34 @@ pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
 /// `runtime_manifest` suite checks the list against those targets.
 pub const PROTOCOL_ROOTS: &[&str] = &["ISequential"];
 
+/// The core protocol methods the runtime gives every record, each with the
+/// arities of its slots (receiver included) and a unit of the `when:` list
+/// of the effect installing it: `recordMethods.lookup`, kept where `get` is.
+/// The effect waits for an operation that dispatches the method, but a
+/// program can also call the method through its slot,
+/// `cljs$core$ILookup$_lookup$arity$3`, by naming it as a string, property
+/// or method, or in `js*` text ([`crate::rta`]). An `Advanced` slice of a
+/// program with records then roots the unit, the one of the list that adds
+/// least: mostly one the effect requires anyway. The `runtime_manifest`
+/// suite checks the table against those effects.
+pub const RECORD_METHODS: &[(&str, &[usize], &str)] = &[
+    ("ICloneable/-clone", &[1], "clone"),
+    ("IHash/-hash", &[1], "hash"),
+    ("IEquiv/-equiv", &[2], "equalPair"),
+    ("IMeta/-meta", &[1], "metaSupported"),
+    ("IWithMeta/-with-meta", &[2], "withMetaSupported"),
+    ("ILookup/-lookup", &[2, 3], "get"),
+    ("ICounted/-count", &[1], "count"),
+    ("ICollection/-conj", &[2], "conj"),
+    ("IAssociative/-contains-key?", &[2], "contains"),
+    ("IAssociative/-assoc", &[3], "assoc"),
+    ("IMap/-dissoc", &[2], "dissoc"),
+    ("ISeqable/-seq", &[1], "seq"),
+    ("IIterable/-iterator", &[1], "iterator"),
+    ("IPrintWithWriter/-pr-writer", &[3], "printWriterImpl"),
+    ("IKVReduce/-kv-reduce", &[3], "reduceKv"),
+];
+
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
 /// [`CoreFnId`](crate::CoreFnId). Below `Advanced` the binding is an export

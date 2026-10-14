@@ -1766,9 +1766,29 @@ host-facing methods of the vector and the keyword.
   each call site (light-cljs-251). Protocol roots cover `ISequential` only,
   the one protocol whose implementations reach a branch of the runtime's
   kinds that `installMethods` alone kept. A record's core protocol slot that
-  the program names (`"cljs$core$ILookup$_lookup$arity$3"`) is installed
+  the program names (`"cljs$core$ILookup$_lookup$arity$3"`) was installed
   only where an operation dispatching it is kept, as before in a program
-  with records alone (light-cljs-250).
+  with records alone, until light-cljs-250 (below).
+- **Named record slots (light-cljs-250).** The runtime installs a record's
+  core protocol method (`recordMethods.lookup`) only where an operation
+  dispatching it (`get`) is kept, but a program can call the method through
+  its slot. Rapid type analysis now also finds the slots of
+  `RECORD_METHODS` (`src/runtime_slice.rs`: each method, the arities of its
+  slots and a unit of its effect's `when:` list) that reachable code names
+  as a string, property or method, or in `js*` text, as for a program
+  protocol's slots; emission of a record roots each such unit with
+  `NameUse::Keep`, so the method is installed. The unit is the one of the
+  list that adds least, mostly one the method requires anyway (`get`,
+  `count`, `hash`; `metaSupported` and `withMetaSupported` for `IMeta` and
+  `IWithMeta`, `printWriterImpl`, `reduceKv`). The `runtime_manifest` suite
+  checks the table against the effects (keys, arities, `when:` lists), and
+  `builtin_types::named_generated_record_slots_remain_callable` calls every
+  record method through a named slot at every level. No fixture changes
+  size; `(defrecord R [x]) (def r (->R 1))` with `(.call (aget r
+  "cljs$core$ILookup$_lookup$arity$3") r r "missing" "nf")` now returns
+  `"nf"` at 9,796 / 3,698 bytes where it threw at 5,695 / 2,395, and the
+  pellet's scenario with `(.equiv [1] [1])` grows from 10,099 / 3,935 to
+  12,358 / 4,598.
 
 #### Phase 2 call shape extension points
 
@@ -2881,7 +2901,10 @@ upstream states that advanced mode is unsafe for certain patterns.
   property access, method call or `js*` text. Host code that calls a slot the
   program does not name is unsupported, as is raw text that builds an
   instance of a type it does not receive. Since light-cljs-211 (rapid type
-  analysis).
+  analysis). Likewise a record has the slot of a core protocol method the
+  runtime generates (`cljs$core$ILookup$_lookup$arity$3`) where the program
+  keeps an operation dispatching the method or names the slot in one of those
+  ways (light-cljs-250).
 - A `deftype` or `defrecord` type has its static `getBasis` method only when
   the program names `getBasis`: in a property read or method call, as a
   string, or in `js*` text. A name computed at run time does not count. Like

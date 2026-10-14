@@ -2825,3 +2825,21 @@ and `prepare` ceilings rise by 2,000 or 3,000 for that growth (each to its
 new size rounded up to the next 1,000); the `advanced` ceilings of
 `closed-params` (36,000 to 13,000) and `vector-printed` (9,800 to 9,700)
 drop.
+
+## Named record slots — October 14, 2026
+
+light-cljs-250 installs a record's core protocol method where the program
+names its slot (`cljs$core$ILookup$_lookup$arity$3`) as a string, property
+or method, or in `js*` text, besides where an operation dispatching it is
+kept ("Named record slots" in the [design](../docs/advanced-optimization.md)).
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize advanced`, on
+the 24-CPU Mac (sizes do not depend on load; load average 3.0). "Before" is
+master `3673641`. No size-ratchet fixture changes size at any level, and the
+runtime is unchanged. With `(defrecord R [x]) (def r (->R 1))` first:
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(.call (aget r "cljs$core$ILookup$_lookup$arity$3") r r "missing" "nf")` | 5,695 / 2,395 (throws) | 9,796 / 3,698 (`"nf"`) |
+| `(array (.equiv [1] [1]) (.call (aget r "cljs$core$ILookup$_lookup$arity$3") r "missing" "nf"))` | 10,099 / 3,935 (throws) | 12,358 / 4,598 |
+| `(.-x r)`, naming no slot | 5,638 / 2,368 | 5,638 / 2,368 |

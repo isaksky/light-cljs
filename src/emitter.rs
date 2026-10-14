@@ -87,6 +87,10 @@ pub(crate) struct Application<'a> {
     /// method of the runtime's types (`crate::rta`), where the slice roots
     /// the unit their `.fields` effects wait for.
     pub upstream_member: Option<ExprId>,
+    /// At `Advanced`: the units that install the record methods whose slots
+    /// the program names (`crate::rta`), each with the first expression
+    /// naming one, which the slice of a program with records roots.
+    pub record_methods: &'a [(&'static str, ExprId)],
     /// At `Advanced`: calls that name the method they run, and definitions
     /// that bind each method to an entry of its own (`crate::call_shapes`).
     pub shapes: Option<&'a CallShapes>,
@@ -195,6 +199,9 @@ fn emit_js_mode(
                 .and_then(|application| application.entries)
                 .filter(|_| direct.is_some()),
             type_basis: direct.is_none() || application.is_none_or(|application| application.basis),
+            record_methods: application
+                .filter(|_| direct.is_some())
+                .map_or(&[], |application| application.record_methods),
             replaced_core: direct,
             core_cells: Vec::new(),
             constants: direct.map(|_| ConstantTable {
@@ -1211,6 +1218,9 @@ struct Emitter<'a> {
     /// Whether types get their static `getBasis` method: below `Advanced`
     /// always, at `Advanced` when the program names it.
     type_basis: bool,
+    /// At `Advanced`: the units that install the record methods whose slots
+    /// the program names, with the first expression naming one.
+    record_methods: &'a [(&'static str, ExprId)],
     /// `Some` at `Advanced`: runtime reads are direct (`rt$add`), and these
     /// replaced core operations read through output-level cells.
     replaced_core: Option<&'a [&'static str]>,
@@ -3983,6 +3993,15 @@ impl<'a> Emitter<'a> {
                 if *record && constructor.is_some() {
                     // `makeType` reads the record methods from `typeHooks`.
                     self.keep_runtime("recordMethods");
+                    // A method whose slot the program names is installed
+                    // where a unit of its effect's `when:` list is kept.
+                    for &(unit, site) in self.record_methods {
+                        self.runtime.record(
+                            RuntimeName::direct(unit, None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
                 }
                 self.output.push('(');
                 self.output.push('[');

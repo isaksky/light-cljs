@@ -197,6 +197,10 @@ pub struct PreparedApplication {
     /// `Advanced`: the first expression that names an upstream field or
     /// method of the runtime's types (`crate::rta`).
     upstream_member: Option<ExprId>,
+    /// `Advanced`: the units that install the record methods whose slots
+    /// the program names, each with the first expression naming one
+    /// (`crate::rta`).
+    record_methods: Vec<(&'static str, ExprId)>,
     /// `Advanced`: lookups of constant keys in map literals with constant keys
     /// (or locals bound to them), with the index of the entry each reads
     /// (`crate::folding::entry_lookups`).
@@ -230,6 +234,7 @@ impl PreparedApplication {
                 entries: advanced.then_some(&self.entry_lookups),
                 basis: !advanced || self.type_basis,
                 upstream_member: self.upstream_member.filter(|_| advanced),
+                record_methods: if advanced { &self.record_methods } else { &[] },
                 shapes: self.shapes.as_ref().filter(|_| advanced),
                 terse: self.terse,
             },
@@ -329,6 +334,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         entry_lookups: HashMap::new(),
         type_basis: true,
         upstream_member: None,
+        record_methods: Vec::new(),
         shapes: None,
         rejected_defines: Vec::new(),
         stats: ApplicationStats::default(),
@@ -417,6 +423,7 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
         prepared.direct_methods = analysis.direct_calls().clone();
         prepared.type_basis = analysis.names_basis();
         prepared.upstream_member = analysis.names_upstream_member();
+        prepared.record_methods = analysis.named_record_methods().to_vec();
         prepared.stats.removed_definitions += rewrite.removed_definitions;
         prepared.stats.uninstantiated_types = rewrite.uninstantiated_types;
         prepared.stats.dropped_methods = rewrite.dropped_methods;

@@ -816,6 +816,58 @@ fn protocol_roots_are_the_protocols_effects_wait_for() {
     }
 }
 
+/// `RECORD_METHODS` lists exactly the methods that the effects of
+/// `recordMethods` install, at the arities they install, each with a unit of
+/// the installing effect's `when:` list, which the slice of a program naming
+/// one of its slots roots (light-cljs-250).
+#[test]
+fn record_methods_name_a_condition_of_the_effect_installing_each() {
+    use light_cljs::runtime_slice::RECORD_METHODS;
+    let manifest = manifest();
+    let mut installed = Vec::new();
+    for unit in &manifest.units {
+        let Some(effect) = unit
+            .effect
+            .as_ref()
+            .filter(|effect| effect.targets == ["recordMethods"] && !effect.when.is_empty())
+        else {
+            continue;
+        };
+        let text = &ANNOTATED_RUNTIME[unit.body_range.clone()];
+        // Method entries: `["ILookup/-lookup", 2, function ...]`.
+        for (start, _) in text.match_indices("[\"") {
+            let Some((key, rest)) = text[start + 2..].split_once("\", ") else {
+                continue;
+            };
+            let arity = rest.split(',').next().unwrap_or("");
+            if method_keys(&format!("[\"{key}\"")) != [(key, true)]
+                || arity.is_empty()
+                || !arity.chars().all(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            let (_, _, condition) = RECORD_METHODS
+                .iter()
+                .find(|(listed, ..)| *listed == key)
+                .unwrap_or_else(|| panic!("`{}` installs `{key}`", unit.name));
+            assert!(
+                effect.when.contains(condition),
+                "`{}` waits for {:?}, not `{condition}`",
+                unit.name,
+                effect.when
+            );
+            installed.push((key, arity.parse::<usize>().unwrap()));
+        }
+    }
+    installed.sort_unstable();
+    let mut listed: Vec<(&str, usize)> = RECORD_METHODS
+        .iter()
+        .flat_map(|(key, arities, _)| arities.iter().map(move |&arity| (*key, arity)))
+        .collect();
+    listed.sort_unstable();
+    assert_eq!(installed, listed);
+}
+
 #[test]
 fn conditional_effects_wait_for_a_condition() {
     let manifest = manifest();

@@ -370,7 +370,9 @@ does the following:
   methods (`equiv`, `indexOf`, iteration) stay.
 
 The runtime's record methods are units of their own, kept only where an
-operation that dispatches them is, so a record that is only constructed and
+operation that dispatches them is, or where the program names a method's
+slot (`cljs$core$ILookup$_lookup$arity$3`) as a string, property or method,
+or in `js*` text (light-cljs-250), so a record that is only constructed and
 read keeps about 11 KB of runtime instead of 145 KB. Collections still keep
 the shared core (light-cljs-227). See "Phase 2 rapid type analysis extension
 points" and the "Advanced-mode contract" in

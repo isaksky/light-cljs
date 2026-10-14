@@ -911,6 +911,119 @@ fn upstream_fields_need_a_program_that_names_them() {
 }
 
 #[test]
+fn named_generated_record_slots_remain_callable() {
+    // A record's core protocol methods come from the runtime, each installed
+    // where an operation dispatching it is kept (`recordMethods.lookup` where
+    // `get` is). A program with records alone that names a slot as a string,
+    // property or method, or in `js*` text, calls it as `None` does, so its
+    // slice keeps the method (light-cljs-250).
+    let record = "(defrecord R [x]) (def r (->R 1))";
+    for (body, expected, method) in [
+        // The pellet's failure scenario, whose `.call` passes the receiver
+        // as `this` only: the method reads "missing" as its receiver argument
+        // and looks up "nf" without a default.
+        (
+            "(array (.equiv [1] [1]) (.call (aget r \"cljs$core$ILookup$_lookup$arity$3\") r \"missing\" \"nf\"))",
+            "[ true, undefined ]",
+            "recordMethods.lookup",
+        ),
+        (
+            "(.call (aget r \"cljs$core$ILookup$_lookup$arity$3\") r r \"missing\" \"nf\")",
+            "nf",
+            "recordMethods.lookup",
+        ),
+        (
+            "(.cljs$core$ILookup$_lookup$arity$2 r r \"x\")",
+            "null",
+            "recordMethods.lookup",
+        ),
+        (
+            "(js* \"~{}.cljs$core$ICounted$_count$arity$1(~{})\" r r)",
+            "1",
+            "recordMethods.count",
+        ),
+        (
+            "(js* \"typeof ~{}\" (.-cljs$core$IPrintWithWriter$_pr_writer$arity$3 r))",
+            "function",
+            "recordMethods.print",
+        ),
+        (
+            "(.cljs$core$IHash$_hash$arity$1 r r)",
+            "2087646226",
+            "recordMethods.hash",
+        ),
+        (
+            "(.cljs$core$IEquiv$_equiv$arity$2 r r (->R 1))",
+            "true",
+            "recordMethods.equiv",
+        ),
+        (
+            "(.cljs$core$IMeta$_meta$arity$1 r r)",
+            "null",
+            "recordMethods.meta",
+        ),
+        (
+            "(.-x (.cljs$core$IWithMeta$_with_meta$arity$2 r r nil))",
+            "1",
+            "recordMethods.withMeta",
+        ),
+        (
+            "(.-x (.cljs$core$ICloneable$_clone$arity$1 r r))",
+            "1",
+            "recordMethods.clone",
+        ),
+        (
+            "(.-x (.cljs$core$ICollection$_conj$arity$2 r r [:x 7]))",
+            "7",
+            "recordMethods.conj",
+        ),
+        (
+            "(.cljs$core$IAssociative$_contains_key_QMARK_$arity$2 r r :x)",
+            "true",
+            "recordMethods.contains",
+        ),
+        (
+            "(.-x (.cljs$core$IAssociative$_assoc$arity$3 r r :x 5))",
+            "5",
+            "recordMethods.assoc",
+        ),
+        (
+            "(.-x (.cljs$core$IMap$_dissoc$arity$2 r r :y))",
+            "1",
+            "recordMethods.dissoc",
+        ),
+        (
+            "(nil? (.cljs$core$ISeqable$_seq$arity$1 r r))",
+            "false",
+            "recordMethods.seq",
+        ),
+        (
+            "(.hasNext (.cljs$core$IIterable$_iterator$arity$1 r r))",
+            "true",
+            "recordMethods.iterator",
+        ),
+        (
+            "(.cljs$core$IKVReduce$_kv_reduce$arity$3 r r (fn [a _ v] (+ a v)) 10)",
+            "11",
+            "recordMethods.kvReduce",
+        ),
+    ] {
+        let source = format!("{record} {body}");
+        every_level(&source, expected);
+        let units = units(&source);
+        assert!(units.contains(&method), "{source} keeps {units:?}");
+    }
+    // A program that names no slot keeps none of them.
+    let units = units(&format!("{record} (.-x r)"));
+    assert!(
+        !units
+            .iter()
+            .any(|unit| unit.starts_with("recordMethods.") && *unit != "recordMethods.install"),
+        "{units:?}"
+    );
+}
+
+#[test]
 fn printing_with_options_dispatchers_and_into() {
     every_level(
         "(let [alt (fn [x w opts] (if (number? x) (-write w (str \"#\" x)) ((:fallback-impl opts) x w opts)))
