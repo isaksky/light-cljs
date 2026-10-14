@@ -1047,6 +1047,135 @@ fn typed_lowerings_apply_to_atom_states_and_keep_the_results() {
     assert!(!js.contains("rt$count("), "{js}");
 }
 
+/// On a closed atom (light-cljs-256), `deref` returns what the atom holds,
+/// `reset!` its argument, `swap!` what its function returns, and
+/// `reset-vals!` and `swap-vals!` vectors of what it holds. Every other atom,
+/// and every atom of a program that may write one unseen, keeps the table's
+/// results.
+#[test]
+fn closed_atom_results_have_the_types_of_their_states() {
+    let states = |ty: Type| Inferred::of(Type::VECTOR).with_elements(Inferred::of(ty));
+    for (source, expected) in [
+        (
+            "(let [flag (atom false)] (swap! flag not) @flag)",
+            Inferred::of(Type::BOOLEAN),
+        ),
+        (
+            "(let [a (atom 0)] (reset! a \"s\") (deref a))",
+            Inferred::of(Type::NUMBER.union(Type::STRING)),
+        ),
+        (
+            "(def a (atom 0)) (defn bump [] (swap! a inc)) (bump) @a",
+            Inferred::of(Type::NUMBER),
+        ),
+        (
+            "(let [a (atom 0)] (swap! a str))",
+            Inferred::of(Type::STRING),
+        ),
+        (
+            "(let [a (atom 0)] (swap! a (fn [n k] k) :k))",
+            Inferred::of(Type::KEYWORD),
+        ),
+        (
+            "(let [a (atom 0)] (reset! a :k))",
+            Inferred::of(Type::KEYWORD),
+        ),
+        (
+            "(let [a (atom nil)] (swap-vals! a (fn [_] 1)))",
+            states(Type::NIL.union(Type::NUMBER)),
+        ),
+        (
+            "(let [a (atom nil)] (reset-vals! a :k))",
+            states(Type::NIL.union(Type::KEYWORD)),
+        ),
+    ] {
+        assert_eq!(last(source), expected, "{source}");
+    }
+    // An atom that escapes, a replaced operation, a core protocol extended to
+    // atoms, a function inference does not know, a named prototype, and a
+    // program type that implements the protocols.
+    let unknown = [
+        "(let [a (atom false)] (js/console.log a) @a)",
+        "(let [a (atom false) r (reify Object (toString [_] \"r\"))] @a)",
+        "(set! cljs.core/deref (fn [a] \"\")) (let [a (atom false)] @a)",
+        "(set! cljs.core/reset! (fn [a v] \"\")) (let [a (atom false)] (reset! a true))",
+        "(set! cljs.core/swap! (fn [a f] \"\")) (let [a (atom false)] (swap! a not))",
+        "(set! cljs.core/atom (fn [x] (volatile! \"\"))) (let [a (atom false)] @a)",
+        // A replaced `atom` may make a program type whose methods return
+        // anything.
+        "(deftype R [] IReset (-reset! [_ v] \"\"))
+         (set! cljs.core/atom (fn [x] (R.)))
+         (let [a (atom false)] (reset! a true))",
+        "(deftype S [] ISwap (-swap! [_ f] \"\"))
+         (set! cljs.core/atom (fn [x] (S.)))
+         (let [a (atom false)] (swap! a not))",
+        "(extend-type Atom IDeref (-deref [_] \"\")) (let [a (atom false)] @a)",
+        "(let [a (atom false)] (swap! a (js* \"(function () { return ''; })\")) @a)",
+        "(let [a (atom false)] (swap! a js/String))",
+        "(js/Object.defineProperty (.-prototype Atom) \"state\" #js {:get (fn [] \"\")})
+         (let [a (atom false)] @a)",
+        "(deftype R [] IDeref (-deref [_] false)) @(R.)",
+        "(deftype S [] ISwap (-swap! [_ f] (f false))) (swap! (S.) not)",
+        "(extend-type Atom IReset (-reset! [_ v] \"\")) (let [a (atom false)] (reset-vals! a true))",
+    ];
+    for source in unknown {
+        assert_eq!(last(source), Inferred::ANY, "{source}");
+    }
+    for source in [
+        "(let [a (atom false)] (js/console.log a) (swap-vals! a not))",
+        "(set! cljs.core/reset! (fn [a v] \"\")) (let [a (atom false)] (reset! a true) (reset-vals! a true))",
+        "(let [a (atom false)] (swap! a js/String) (swap-vals! a not))",
+    ] {
+        assert_eq!(last(source), states(Type::ANY), "{source}");
+    }
+}
+
+/// The acceptance program of light-cljs-256 tests a boolean state without
+/// `truth()`, and the results of every operation on closed atoms holding
+/// adversarial states (`0`, `""`, `nil`, `false`) print what `None` prints.
+#[test]
+fn typed_lowerings_apply_to_closed_atom_results_and_keep_the_results() {
+    let js = every_level(
+        "(pr-str (let [flag (atom false)] (swap! flag not) (if @flag :on :off)))",
+        ":on",
+    );
+    assert!(!js.contains("truth("), "{js}");
+    let js = every_level(
+        r#"(def counter (atom 1))
+           (defn tick! [] (swap! counter dec))
+           (let [flag (atom false)
+                 text (atom "")
+                 none (atom nil)]
+             (swap! flag not)
+             (pr-str [(if @flag :on :off)
+                      (if (tick!) :truthy :falsy)
+                      (if @counter :truthy :falsy)
+                      (if @text :truthy :falsy)
+                      (if (swap! text str) :truthy :falsy)
+                      (count @text)
+                      (if @none :truthy :falsy)
+                      (if (reset! none false) :truthy :falsy)
+                      (mapv (fn [s] (if s :t :f)) (swap-vals! flag not))
+                      (mapv (fn [s] (if s :t :f)) (reset-vals! none nil))]))"#,
+        "[:on :truthy :truthy :truthy :truthy 0 :falsy :falsy [:t :f] [:f :f]]",
+    );
+    // `0` and `""` keep the runtime test; `nil` and booleans need none.
+    for lowered in ["truth(", ").length", "if (l"] {
+        assert!(js.contains(lowered), "{lowered}: {js}");
+    }
+    assert!(!js.contains("rt$count("), "{js}");
+    // A replaced `atom` makes a program type whose `-reset!` and `-swap!`
+    // return `""` where an atom would return `false`.
+    every_level(
+        r#"(deftype R [] IReset (-reset! [_ v] "") ISwap (-swap! [_ f] ""))
+           (set! cljs.core/atom (fn [x] (R.)))
+           (let [a (atom false)]
+             (pr-str [(if (reset! a false) :truthy :falsy)
+                      (if (swap! a not) :truthy :falsy)]))"#,
+        "[:truthy :truthy]",
+    );
+}
+
 #[test]
 fn typed_lowerings_apply_inside_callbacks_and_keep_the_results() {
     // The lowerings inside callbacks run on adversarial elements. A program

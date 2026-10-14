@@ -43,6 +43,11 @@
 //!   replaces none of these operations and core protocols are intact. A
 //!   closed atom is the runtime's, so it is no program type that receives
 //!   functions. The state of any other atom is `any`.
+//! - Under the same conditions, the calls on a closed atom return its states
+//!   (light-cljs-256): `deref` what the atom holds, `reset!` its argument,
+//!   `swap!` what its function returns, and `reset-vals!` and `swap-vals!`
+//!   vectors of what it holds (`vector<s0>` in their rows). On any other atom
+//!   they return what the table says.
 //! - A parameter of an implementation of a closed protocol method
 //!   ([`crate::call_shapes`], "Protocol methods") that the program defines
 //!   once and never assigns has the union of what the method's calls pass it
@@ -123,7 +128,10 @@
 //! no validator or watch (only options to `atom`, `set-validator!` and
 //! `add-watch` add them). A replaced operation may store anything in the
 //! atom it gets, and so may a program method that a core protocol extension
-//! gives atoms.
+//! gives atoms. The runtime's `deref` returns the state, `reset!` and
+//! `swap!` the new state, and the `-vals!` variants the old and the new
+//! (light-cljs-256). A read of a global before its `def` runs is `nil`, on
+//! which these operations throw.
 //!
 //! An implementation of a closed protocol method runs only from the calls of
 //! the method (`crate::call_shapes`, "Protocol methods"), with the receiver
@@ -1719,6 +1727,32 @@ impl<'p> Walker<'p> {
             .map_or(Inferred::ANY, |atom| self.contents[atom])
     }
 
+    /// What a call of `core` with argument expressions `args` of values
+    /// `arguments` returns when its first argument reads a closed atom
+    /// (light-cljs-256), under the conditions of [`Walker::store`]: `deref`
+    /// returns what the atom holds, `reset!` its new state and `swap!` what
+    /// its function returns, as the runtime's atoms do. A replaced `atom`
+    /// may make anything, such as a program type whose `-reset!` returns
+    /// another value. `None` for other calls, whose row applies:
+    /// `reset-vals!` and `swap-vals!` return vectors of states (`sN`).
+    fn atom_result(
+        &self,
+        core: CoreFnId,
+        args: &[ExprId],
+        arguments: &[Inferred],
+    ) -> Option<Inferred> {
+        let atom = self.closed.atom(*args.first()?)?;
+        if !self.facts.trusted(core, Calls::Invoke) || self.facts.replaced(CoreFnId::Atom) {
+            return None;
+        }
+        match core {
+            CoreFnId::Deref => Some(self.contents[atom]),
+            CoreFnId::Reset => arguments.get(1).copied(),
+            CoreFnId::Swap => Some(self.callback_returns(core, 1, args, arguments)),
+            _ => None,
+        }
+    }
+
     /// Bind the parameters of method `method` of the closed `fn` `function`
     /// to the `arguments` of a call, as the dispatcher or a direct call passes
     /// them: `nil` (`undefined`) for missing arguments, and a rest sequence
@@ -1878,9 +1912,13 @@ impl<'p> Walker<'p> {
     /// A call of `core` with argument expressions `args` of values
     /// `arguments`: [`Walker::core_call`], whose sequential collections hold
     /// what the row's element type says when the table describes the call
-    /// (light-cljs-243). `args` may be empty for a call the operation makes,
-    /// whose `rN` terms are then `any`.
+    /// (light-cljs-243), or [`Walker::atom_result`] on a closed atom. `args`
+    /// may be empty for a call the operation makes, whose `rN` terms are then
+    /// `any`.
     fn core_result(&self, core: CoreFnId, args: &[ExprId], arguments: &[Inferred]) -> Inferred {
+        if let Some(result) = self.atom_result(core, args, arguments) {
+            return result;
+        }
         let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
         let result = self.core_call(core, &types);
         match &core.operation().elements {

@@ -15,7 +15,7 @@
 ;;            function argument without one escapes.
 ;; returns:   result type of a call within params, then optionally the type of
 ;;            the elements of the seqs, lists, vectors and sets it returns:
-;;            `seq|list<e1>`; otherwise: of any other call.
+;;            `seq|list<e1>`, `vector<s0>`; otherwise: of any other call.
 ;; purity:    pure, allocates, throws or effect, for calls within params.
 ;; calls:     code the arguments supply that the call may run: -, dispatch
 ;;            (protocol methods, lazy sequences, sorted-collection comparators)
@@ -711,8 +711,8 @@ Realized	realized?	fn	[seq|object]	boolean	any	effect	-	realized
 Reset	reset!	fn	[object any]	any	any	effect	dispatch	reset
 VReset	vreset!	fn	[object any]	any	any	effect	dispatch	vreset
 Swap	swap!	fn	[object fn(s0,a2+) & any]	any	any	effect	invoke	swap
-ResetVals	reset-vals!	fn	[object any]	vector	any	effect	dispatch	resetVals
-SwapVals	swap-vals!	fn	[object fn(s0,a2+) & any]	vector	any	effect	invoke	swapVals
+ResetVals	reset-vals!	fn	[object any]	vector<s0>	any	effect	dispatch	resetVals
+SwapVals	swap-vals!	fn	[object fn(s0,a2+) & any]	vector<s0>	any	effect	invoke	swapVals
 CompareAndSet	compare-and-set!	fn	[object any any]	boolean	any	effect	dispatch	compareAndSet
 SetValidator	set-validator!	fn	[object nil|fn]	nil|fn	any	effect	invoke	setValidator
 GetValidator	get-validator	fn	[object]	nil|fn	any	effect	-	getValidator

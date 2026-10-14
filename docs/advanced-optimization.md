@@ -2458,11 +2458,25 @@ a (fn [n] (+ n 1))))` the parameter `n` was `any`.
 - **Measured.** No ratchet fixture changes at any level: the `swap!`
   callback in `callbacks` now has a number state, but `+` is an operator
   for every operand. See "Atom states" in `benchmarks/compiler.md`.
+- **Results.** Since light-cljs-256 the calls on a closed atom return its
+  states, under the conditions of the joins (the operation not replaced,
+  core protocols intact): `deref` what the atom holds, `reset!` its
+  argument and `swap!` what its function returns (`Walker::atom_result`),
+  and `reset-vals!` and `swap-vals!` vectors of what it holds (`vector<s0>`
+  in their rows; `sN` is `any` for every other atom). A read of a global
+  before its `def` runs is `nil`, on which these calls throw.
+  `closed_atom_results_have_the_types_of_their_states` checks each result,
+  and `any` for an escaping atom, a replaced `deref`, `reset!`, `swap!` or
+  `atom`, `IDeref` or `IReset` extended to atoms, unknown `swap!`
+  functions, a named prototype and program types implementing `IDeref` or
+  `ISwap`. `typed_lowerings_apply_to_closed_atom_results_and_keep_the_results`
+  runs `(if @flag :on :off)` after `(swap! flag not)` without `truth()`, and
+  the results on `0`, `""`, `nil` and `false` states at every level. The
+  ratchet table is unchanged; see "Atom results" in `benchmarks/compiler.md`.
 - **Left for later.**
-  - `deref` of a closed atom and the result of `swap!` (its function's
-    result) are still `any`; the same contents would type them
-    (light-cljs-256).
   - An atom passed to a closed function, or held by a record field, escapes.
+  - The vectors `reset-vals!` and `swap-vals!` return are not known to be
+    flat (`Known::Vector`), so `nth` on them keeps the general path.
 
 #### Phase 2 pure initializer and `js*` extension points
 

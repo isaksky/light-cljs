@@ -59,7 +59,8 @@
 //! - `returns`: the type of every value a call within the domain returns,
 //!   optionally followed by the elements of the `seq`, `list`, `vector` and
 //!   `set` values it returns as a descriptor in angle brackets: `filter` is
-//!   `fn|seq|list<e1>` and `map` `fn|seq|list<r0>`.
+//!   `fn|seq|list<e1>`, `map` `fn|seq|list<r0>` and `swap-vals!`
+//!   `vector<s0>` (the old and the new state, light-cljs-256).
 //! - `otherwise`: the type of every value any other call returns, including
 //!   arity mismatches. `str` returns a string whatever it is given, although
 //!   only scalars are inside its domain.
@@ -308,8 +309,8 @@ pub enum Term {
     /// (`e1+`).
     Elements(usize),
     /// The state of the atom that is the argument at this index (`s0`): one
-    /// of the values it holds when the call runs. Inference knows what the
-    /// atoms whose every use it sees hold (light-cljs-252); any other
+    /// of the values it holds before or after the call. Inference knows what
+    /// the atoms whose every use it sees hold (light-cljs-252); any other
     /// argument's state is `any`.
     State(usize),
     /// What the function argument at this index returns when the operation
@@ -958,6 +959,10 @@ mod tests {
         let conj = CoreFnId::Conj.operation().elements.as_ref().unwrap();
         assert_eq!(conj.terms, [Term::Element(0), Term::Arguments(1)]);
         assert_eq!(conj.spread(), None);
+        for vals in [CoreFnId::ResetVals, CoreFnId::SwapVals] {
+            let elements = vals.operation().elements.as_ref().unwrap();
+            assert_eq!(elements.terms, [Term::State(0)]);
+        }
         // A transducer arity has no shape: its function escapes.
         assert!(
             CoreFnId::MapSeq

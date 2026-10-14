@@ -342,8 +342,10 @@ for this, and what an atom holds when the program makes every use of the atom
 itself: an `(atom x)` without options bound by `let` or by a global's only
 `def`, read only as the atom of `deref`, `reset!`, `reset-vals!`,
 `compare-and-set!`, `swap!` and `swap-vals!` calls, holds `x` and every value
-those calls store, including what the functions given to `swap!` return. The
-state of an atom that goes anywhere else (a function, host code, a
+those calls store, including what the functions given to `swap!` return. On
+such an atom, `deref` returns what it holds, `reset!` its argument, `swap!`
+what its function returns, and `reset-vals!` and `swap-vals!` vectors of what
+it holds. The state of an atom that goes anywhere else (a function, host code, a
 collection, `add-watch`, `set-validator!`) is unknown, as is every atom's in a
 program that names a prototype (`prototype`, `__proto__`, `getPrototypeOf`,
 `setPrototypeOf`). A method that a `deftype`, `defrecord`, `reify`,

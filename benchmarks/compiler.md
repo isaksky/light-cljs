@@ -3093,3 +3093,36 @@ reads. Without the seq walk it reaches neither the record hooks nor the
 core dispatchers; those two changes save where a program keeps the walk
 or a seq, as the `deftype` with a `seq` and `count` of a type implementing
 `ISeqable` above.
+
+## Atom results — October 14, 2026
+
+light-cljs-256 types what `deref`, `reset!`, `swap!`, `reset-vals!` and
+`swap-vals!` return on an atom the program makes every use of, from what the
+atom holds ("Phase 2 atom state extension points" in the
+[design](../docs/advanced-optimization.md)).
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize advanced`, on the
+24-CPU Mac (sizes do not depend on load; load average 4.2). "Before" is
+master `468e71e`. The size ratchet table is identical before and after at
+every level: no fixture reads a closed atom's state outside a `swap!`
+function.
+
+| Program | Advanced before → after |
+| --- | --- |
+| every ratchet fixture | identical bytes |
+| program below | 24,261 / 7,815 → 24,221 / 7,797 |
+
+```clojure
+(def counter (atom 0))
+(defn tick! [] (swap! counter inc))
+(tick!)
+(let [flag (atom false)
+      text (atom "")]
+  (swap! flag not)
+  (swap! text str "ab")
+  (pr-str [(if @flag :on :off) (count @text) (pos? @counter)]))
+```
+
+`(if @flag ...)` loses `truth()` and `(count @text)` becomes `.length`, which
+drops `rt$count` from the program's roots; `pos?` was already `> 0` for
+every operand.
