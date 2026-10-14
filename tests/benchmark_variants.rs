@@ -30,6 +30,7 @@ fn level_benchmark_harness_checks_and_records_every_level() {
         .collect();
     // `--only` takes fixture and workload names.
     assert!(levels::is_workload("event-maps") && !levels::is_workload("rest-fn"));
+    assert!(levels::is_workload("map-assoc") && levels::is_workload("vector-into"));
     let mut config = levels::Config::new(output.clone());
     config.samples = 1;
     config.warmups = 0;
@@ -39,29 +40,45 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     levels::run(&config, &fixtures).unwrap();
     let samples = std::fs::read_to_string(output.join("samples.csv")).unwrap();
     // Startup: 2 fixtures x 3 levels x (4 Node + 1 QuickJS measures). Steady state:
-    // 9 workloads x 3 levels x 2 engines.
-    assert_eq!(samples.lines().count(), 1 + 30 + 54, "{samples}");
+    // 9 ratchet workloads x 3 levels x 2 engines, and 8 collection workloads in Node
+    // at advanced only.
+    assert_eq!(samples.lines().count(), 1 + 30 + 54 + 8, "{samples}");
     for row in [
-        "node,parse+execute,seq-pipeline,advanced,0,",
-        "quickjs,parse+execute,rest-fn,none,0,",
-        "node,call,record-protocol,prepare,0,",
-        "quickjs,call,seq-pipeline,advanced,0,",
-        "quickjs,call,keyword-lookups,none,0,",
-        "node,call,constant-literals,advanced,0,",
-        "quickjs,call,constant-keys,advanced,0,",
-        "quickjs,call,multi-arity,advanced,0,",
-        "node,call,event-maps,advanced,0,",
-        "quickjs,call,closed-params,advanced,0,",
-        "node,call,local-arities,advanced,0,",
+        "node,parse+execute,seq-pipeline,,advanced,0,",
+        "quickjs,parse+execute,rest-fn,,none,0,",
+        "node,call,record-protocol,10,prepare,0,",
+        "quickjs,call,seq-pipeline,10,advanced,0,",
+        "quickjs,call,keyword-lookups,10,none,0,",
+        "node,call,constant-literals,10,advanced,0,",
+        "quickjs,call,constant-keys,10,advanced,0,",
+        "quickjs,call,multi-arity,10,advanced,0,",
+        "node,call,event-maps,10,advanced,0,",
+        "quickjs,call,closed-params,10,advanced,0,",
+        "node,call,local-arities,10,advanced,0,",
+        "node,call,vector-conj,10,advanced,0,",
+        "node,call,map-assoc,10,advanced,0,",
+        "node,call,set-conj,10,advanced,0,",
+        "node,call,vector-nth,10,advanced,0,",
+        "node,call,map-get,10,advanced,0,",
+        "node,call,map-assoc-existing,10,advanced,0,",
+        "node,call,subvec-reduce,10,advanced,0,",
+        "node,call,vector-into,10,advanced,0,",
     ] {
         assert!(samples.contains(row), "missing {row}:\n{samples}");
     }
+    assert!(
+        !samples.contains("node,call,map-assoc,10,none,"),
+        "{samples}"
+    );
+    assert!(!samples.contains("quickjs,call,map-assoc,"), "{samples}");
     let summary = std::fs::read_to_string(output.join("summary.md")).unwrap();
     assert!(summary.contains("| rest-fn | prepare |"), "{summary}");
     assert!(
         summary.contains("| record-protocol | 10 | none |"),
         "{summary}"
     );
+    assert!(summary.contains("| map-get | 10 | advanced |"), "{summary}");
+    assert!(!summary.contains("| map-get | 10 | none |"), "{summary}");
     assert!(
         summary.contains("Not measured; pass `--upstream"),
         "{summary}"
