@@ -1013,6 +1013,17 @@ fn named_generated_record_slots_remain_callable() {
         let units = units(&source);
         assert!(units.contains(&method), "{source} keeps {units:?}");
     }
+    // One `js*` text naming two slots keeps both methods.
+    let source = format!(
+        "{record} {}",
+        "(js* \"[~{}.cljs$core$IMeta$_meta$arity$1(~{}), ~{}.cljs$core$ICounted$_count$arity$1(~{})]\" r r r r)"
+    );
+    every_level(&source, "[ null, 1 ]");
+    let kept = units(&source);
+    assert!(
+        kept.contains(&"recordMethods.meta") && kept.contains(&"recordMethods.count"),
+        "{source} keeps {kept:?}"
+    );
     // A program that names no slot keeps none of them.
     let units = units(&format!("{record} (.-x r)"));
     assert!(

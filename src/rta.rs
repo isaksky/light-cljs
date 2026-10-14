@@ -63,11 +63,11 @@
 //! gives a type its static `getBasis` only when reachable code names it, and
 //! the runtime's types their upstream fields and methods
 //! ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) only when it names one.
-//! The runtime installs the core protocol methods of records each where an
-//! operation dispatching it is kept; for a slot of one that reachable code
-//! names as a slot of a program protocol is named above
-//! ([`crate::runtime_slice::RECORD_METHODS`]), emission of a record keeps a
-//! unit the method waits for as well.
+//! The runtime installs each core protocol method of records where an
+//! operation dispatching it is kept; where reachable code names the slot of
+//! one ([`crate::runtime_slice::RECORD_METHODS`]) in the ways it can name a
+//! program protocol's slot, emission of a record also keeps a unit that the
+//! method waits for.
 //!
 //! # Devirtualization
 //!
