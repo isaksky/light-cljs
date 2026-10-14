@@ -2413,3 +2413,151 @@ array-set builder and the new hooks. The `none` and `prepare` ceilings
 rise by 1,000 to 3,000 for that growth (each to its new size rounded up to
 the next 1,000); the `advanced` ceilings do not change, and `set-only`'s is
 12,000.
+
+## Collection throughput against upstream — October 13, 2026
+
+light-cljs-233 extends `--levels` ("Startup and steady state by optimization
+level" above) for the runtime-performance pellets to measure against. Every
+steady-state workload is now also compiled by the pinned ClojureScript
+checkout and timed next to light-cljs. Eight new collection workloads, each at
+n = 2,000 and n = 20,000, measure the operations that are linear per element
+today:
+
+| Workload | `(f n)` |
+| --- | --- |
+| vector-conj | `(reduce conj [] (range n))`, then its count plus its last element |
+| map-assoc | `(reduce (fn [m i] (assoc m i i)) {} (range n))`, likewise |
+| set-conj | `(reduce conj #{} (range n))`, likewise |
+| vector-nth | `nth` at each index of a built `(vec (range n))`, summed |
+| map-get | `get` of each key of a built n-entry map, summed |
+| map-assoc-existing | 1,000 `assoc`s of a new key, each onto the same built n-entry map; the counts summed |
+| subvec-reduce | `(reduce + 0 (subvec v 1 n))` over a built vector |
+| vector-into | `(into [] (range n))`, which goes through a transient |
+
+A built collection is made by the first call, which is untimed, and kept in a
+volatile; the map is built by `into` with a transducer, which both compilers
+do with a transient. From n = 2,000 to 20,000, n constant-time operations
+take ten times as long and n linear-time ones a hundred times;
+`map-assoc-existing` makes 1,000 operations at both sizes, so with a
+logarithmic `assoc` its time barely grows.
+
+The pellet's acceptance command, the eight collection workloads with upstream,
+took 194 s (3 min 14 s) on the shared machine:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only vector-conj,map-assoc,set-conj,vector-nth,map-get,map-assoc-existing,subvec-reduce,vector-into \
+  --output DIR
+```
+
+Method, where it differs from the section above:
+
+- **Upstream steady state.** Each workload becomes namespace
+  `bench.steady.NAME`, whose last form is stored with `(aset js/globalThis
+  "levelsSteady" ...)`. It is compiled at `:optimizations :advanced` before
+  the rounds, in the same JVM as the size column
+  ([support/upstream_sizes.clj](support/upstream_sizes.clj) now takes the
+  variants per program). The Node driver calls `globalThis.levelsSteady` when
+  the program sets it and checks the result against the value Rust computes,
+  as for light-cljs. Each round samples the upstream build next to the
+  light-cljs builds of the same workload, rotating their order. `summary.md`
+  has the two medians and their ratio under "Upstream ClojureScript". A
+  compilation failure leaves the light-cljs timings in place and fails the run
+  at the end.
+- **Collection workloads** run in Node at `advanced` only, the build compared
+  with upstream: at n = 20,000 a QuickJS call to map-assoc would take about a
+  minute. The nine ratchet workloads still run at every level in both engines.
+- **Call budget.** A sample makes up to 10 untimed and then up to 20 timed
+  calls, as before, but each phase stops early when one more call, at its
+  average so far, would take it past 0.5 s; every phase makes at least one
+  call. Calls under 25 ms are unaffected. Longer ones are averaged over fewer
+  calls: QuickJS `multi-arity` at `none` (147 ms) over 3, Node
+  `constant-literals` at `none` (48 ms) over 9 or 10. Their medians match the
+  earlier runs within the noise (QuickJS `multi-arity` at `none`, 147 ms
+  against 144 ms in "Local function entries"). `samples.csv` now has each
+  sample's n and timed calls.
+- **Slow targets.** A target (workload, n, engine and build) whose call takes
+  longer than the budget is sampled in 3 rounds only, so that a 5-second call
+  costs 30 seconds instead of minutes. Today that is vector-conj, map-assoc,
+  set-conj and map-assoc-existing at n = 20,000 in light-cljs; their medians
+  are of 3 samples.
+- **Warm-up rounds** run only the startup fixtures. Each steady-state sample is
+  a fresh process or session that warms itself with its untimed calls, so a
+  warm-up round added nothing but time.
+
+Baseline: this change on master `49e64cc`. Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM,
+24 CPUs; 15 timed rounds. Another worker was building and testing on the
+machine: the one-minute load average was 2.4–11.2 (median 3.7) over the
+rounds, so single numbers can be off by 10%, and runs of the same commit
+differed by up to that much. The ratios are large enough not to depend on it.
+[summary.md](results/collections-2026-10-13/summary.md) has every measure with
+its minimum (including the startup and size tables of the nine ratchet
+fixtures), and [samples.csv](results/collections-2026-10-13/samples.csv) all
+3,402 samples. Its command was the one above with the nine ratchet workloads
+added to `--only`.
+
+Collection workloads, Node, median ms per call. Growth is the time at n =
+20,000 over the time at n = 2,000, light-cljs / upstream:
+
+| Workload | n | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream | Growth |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| vector-conj | 2,000 | 5.63 | 0.092 | 61× | |
+| vector-conj | 20,000 | 717 | 0.483 | 1,486× | 127× / 5.3× |
+| map-assoc | 2,000 | 56.4 | 0.294 | 192× | |
+| map-assoc | 20,000 | 5,643 | 3.38 | 1,670× | 100× / 11.5× |
+| set-conj | 2,000 | 55.8 | 0.314 | 178× | |
+| set-conj | 20,000 | 5,730 | 3.50 | 1,639× | 103× / 11.1× |
+| vector-nth | 2,000 | 0.082 | 0.018 | 4.5× | |
+| vector-nth | 20,000 | 0.566 | 0.124 | 4.6× | 6.9× / 6.9× |
+| map-get | 2,000 | 0.629 | 0.053 | 12× | |
+| map-get | 20,000 | 36.9 | 0.545 | 68× | 59× / 10.3× |
+| map-assoc-existing | 2,000 | 50.8 | 0.117 | 435× | |
+| map-assoc-existing | 20,000 | 608 | 0.136 | 4,460× | 12× / 1.2× |
+| subvec-reduce | 2,000 | 0.162 | 0.019 | 8.7× | |
+| subvec-reduce | 20,000 | 1.54 | 0.079 | 19× | 9.5× / 4.2× |
+| vector-into | 2,000 | 1.93 | 0.029 | 68× | |
+| vector-into | 20,000 | 19.8 | 0.195 | 101× | 10× / 6.7× |
+
+The ratchet workloads, same run (n as in the section above):
+
+| Workload | n | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | ---: | ---: | ---: | ---: |
+| seq-pipeline | 200 | 1.09 | 0.074 | 15× |
+| record-protocol | 2,000 | 9.83 | 0.022 | 452× |
+| keyword-lookups | 2,000 | 3.70 | 0.165 | 22× |
+| constant-literals | 2,000 | 0.003 | 0.220 | 0.02× |
+| constant-keys | 200 | 1.11 | 0.290 | 3.8× |
+| multi-arity | 50,000 | 0.119 | 0.111 | 1.1× |
+| event-maps | 5,000 | 3.85 | 0.128 | 30× |
+| closed-params | 1,000 | 9.52 | 0.077 | 123× |
+| local-arities | 50,000 | 0.109 | 0.375 | 0.29× |
+
+What the baseline shows:
+
+- **Quadratic builds.** Building a vector, map or set one element at a time
+  grows 100–127× for tenfold n in light-cljs and 5–12× upstream, so the gap
+  widens from 61–192× at n = 2,000 to about 1,500× at n = 20,000: 0.7 s for
+  a 20,000-element vector and 5.6 s for a map or set, against 0.5 ms and 3.4
+  ms. Every `conj` copies the vector, and every `assoc` or `conj` copies and
+  searches the linear entry array (the group context's causes). vector-conj
+  at 20,000 is the number light-cljs-234 must bring within 3× of upstream,
+  map-assoc and map-get light-cljs-235's, set-conj light-cljs-236's.
+- **Updating a large map** costs light-cljs 0.05 ms per `assoc` on a
+  2,000-entry map and 0.6 ms on a 20,000-entry one, linear in the size;
+  upstream's 0.12–0.14 µs barely moves. That is the largest ratio, 4,460×.
+- **Lookups.** `get` on a built hash map grows 59× for tenfold n (upstream
+  10×), so it is far from constant; `nth` on a vector is within 5× of
+  upstream and grows with n, as upstream's does.
+- **Transients and views.** `into` through a transient is linear (10×), 70–100×
+  slower than upstream per element; `subvec` then `reduce` is linear and
+  9–19× slower.
+- **Ratchet workloads.** Where advanced output folds the work away
+  (`constant-literals`) or calls local arities directly (`local-arities`,
+  `multi-arity`), light-cljs matches or beats upstream. Where a call reaches
+  the runtime's sequences or dispatch it is 15–30× slower (`seq-pipeline`,
+  `keyword-lookups`, `event-maps`), lookups with collection keys 3.8×
+  (`constant-keys`), and record construction with a protocol
+  call is 120–450× slower (`closed-params`, `record-protocol`); upstream's
+  `record-protocol` takes 11 ns per iteration, so Closure and V8 have likely
+  removed the record allocation. `seq-pipeline` and `record-protocol` are the
+  numbers light-cljs-237 must bring within 2× of upstream.
