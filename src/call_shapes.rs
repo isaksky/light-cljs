@@ -193,9 +193,14 @@
 //! `loop` local is left out, since `recur` binds it to another value. The
 //! `(atom x)` call may run more than once, and each read may see the atom of
 //! any of its runs: every value one of them holds is `x` or a value that one
-//! of these calls stored through such a read. Inference checks the rest:
-//! that the program replaces none of these operations and that core
-//! protocols are intact.
+//! of these calls stored through such a read. A program in which a
+//! property, method, JavaScript global path, string or `js*` text names a
+//! prototype (`prototype`, `__proto__`, `getPrototypeOf`, `setPrototypeOf`)
+//! has no closed atom: it may give the runtime's atoms, or every object, an
+//! accessor for a slot the atom operations read or write (`state`,
+//! `watches`, `validator`), or replace a function they call. Inference
+//! checks the rest: that the program replaces none of these operations and
+//! that core protocols are intact.
 use std::collections::HashMap;
 
 use crate::analyzer::{
@@ -699,6 +704,10 @@ impl Implementation {
     }
 }
 
+/// Names that reach a prototype; a program with a text ([`texts`]) holding
+/// one has no closed atom (light-cljs-252).
+const PROTOTYPE_NAMES: [&str; 4] = ["prototype", "__proto__", "getPrototypeOf", "setPrototypeOf"];
+
 /// Find the closed atoms of `program`, their `(atom x)` calls and the reads
 /// of the locals and globals that hold them, into `closed`; see "Atoms" in
 /// the module documentation (light-cljs-252). `exports` escape.
@@ -716,8 +725,13 @@ fn closed_atoms(
         scan.parent_of(read)
             .is_some_and(|call| atom_use(program, call, read))
     };
+    let mut prototypes = false;
     for &id in &scan.order {
-        match &program.exprs[id.0].kind {
+        let kind = &program.exprs[id.0].kind;
+        texts(program, kind, |text| {
+            prototypes |= PROTOTYPE_NAMES.iter().any(|name| text.contains(name));
+        });
+        match kind {
             ExprKind::Reify { captures, .. } => {
                 for local in captures {
                     local_escapes[local.0] = true;
@@ -727,6 +741,11 @@ fn closed_atoms(
             ExprKind::Global(global) if !used(id) => global_escapes[global.0] = true,
             _ => (),
         }
+    }
+    // A program that names a prototype may change what the runtime's atom
+    // operations do.
+    if prototypes {
+        return;
     }
     for global in exports {
         if let Some(escapes) = global_escapes.get_mut(global.0) {

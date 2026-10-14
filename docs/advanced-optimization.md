@@ -2276,7 +2276,12 @@ a (fn [n] (+ n 1))))` the parameter `n` was `any`.
   `reset!`, `reset-vals!`, `compare-and-set!` (all their arguments),
   `swap!` or `swap-vals!` (with a function). `ClosedFunctions::atom` maps
   the `(atom x)` call and those reads to the atom. A `loop` local is left
-  out: `recur` binds it to another value.
+  out: `recur` binds it to another value. A program whose property, method,
+  JavaScript global path, string or `js*` text names a prototype
+  (`prototype`, `__proto__`, `getPrototypeOf`, `setPrototypeOf`) has no
+  closed atom: it may give `Atom.prototype` or `Object.prototype` an
+  accessor for `state`, `watches` or `validator`, which the atom
+  operations read and write (found by the review of this change).
 - **Joins.** Inference keeps what each closed atom holds in the same fixed
   point: the initial value, the new states of `reset!`, `reset-vals!` and
   `compare-and-set!`, and what the function of each `swap!` or `swap-vals!`
@@ -2300,12 +2305,18 @@ a (fn [n] (+ n 1))))` the parameter `n` was `any`.
   runs a boolean state's truth test, a string state's `count` and a record
   state's field read at every level, next to an `ISwap` type that passes
   `""`, whose callback keeps `truth()`.
+  `unknown_swap_writers_poison_atom_contents` stores `""` and `"false"`
+  through raw JavaScript and `js/String` given to `swap!` and `swap-vals!`,
+  and `atom_prototype_accessors_keep_swap_state_unknown` defines a `state`
+  accessor on `Atom.prototype` (named, and through `getPrototypeOf`); both
+  keep the later state `any` and print what `None` prints.
 - **Measured.** No ratchet fixture changes at any level: the `swap!`
   callback in `callbacks` now has a number state, but `+` is an operator
   for every operand. See "Atom states" in `benchmarks/compiler.md`.
 - **Left for later.**
   - `deref` of a closed atom and the result of `swap!` (its function's
-    result) are still `any`; the same contents would type them.
+    result) are still `any`; the same contents would type them
+    (light-cljs-256).
   - An atom passed to a closed function, or held by a record field, escapes.
 
 #### Phase 2 pure initializer and `js*` extension points

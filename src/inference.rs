@@ -116,13 +116,14 @@
 //! then bind `any`.
 //!
 //! A closed atom's state changes only through the calls on its reads that
-//! `crate::call_shapes` ("Atoms") allows, since no other code gets the atom:
-//! on the runtime's atoms `reset!`, `reset-vals!` and `compare-and-set!`
-//! store their argument, and `swap!` and `swap-vals!` what their function
-//! returns, with no validator or watch (only options to `atom`,
-//! `set-validator!` and `add-watch` add them). A replaced operation may
-//! store anything in the atom it gets, and so may a program method that a
-//! core protocol extension gives atoms.
+//! `crate::call_shapes` ("Atoms") allows, since no other code gets the atom
+//! and the program names no prototype it could patch: on the runtime's
+//! atoms `reset!`, `reset-vals!` and `compare-and-set!` store their
+//! argument, and `swap!` and `swap-vals!` what their function returns, with
+//! no validator or watch (only options to `atom`, `set-validator!` and
+//! `add-watch` add them). A replaced operation may store anything in the
+//! atom it gets, and so may a program method that a core protocol extension
+//! gives atoms.
 //!
 //! An implementation of a closed protocol method runs only from the calls of
 //! the method (`crate::call_shapes`, "Protocol methods"), with the receiver

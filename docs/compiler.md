@@ -339,8 +339,10 @@ itself: an `(atom x)` without options bound by `let` or by a global's only
 `compare-and-set!`, `swap!` and `swap-vals!` calls, holds `x` and every value
 those calls store, including what the functions given to `swap!` return. The
 state of an atom that goes anywhere else (a function, host code, a
-collection, `add-watch`, `set-validator!`) is unknown. A method that a `deftype`, `defrecord`, `reify`, `extend-type` of a
-program type or `specify!` implements for a program protocol likewise has the
+collection, `add-watch`, `set-validator!`) is unknown, as is every atom's in a
+program that names a prototype (`prototype`, `__proto__`, `getPrototypeOf`,
+`setPrototypeOf`). A method that a `deftype`, `defrecord`, `reify`,
+`extend-type` of a program type or `specify!` implements for a program protocol likewise has the
 types of the protocol method's calls whose receiver may run it, when those
 calls are all the method's: its global is only ever called, never passed as a
 value, exported or reassigned, its signature is not variadic, nothing names its

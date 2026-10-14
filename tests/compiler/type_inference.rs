@@ -983,6 +983,42 @@ fn swap_callback_parameters_join_atom_contents() {
     assert_eq!(local(source, "j"), Inferred::ANY, "{source}");
 }
 
+/// A function given to `swap!` or `swap-vals!` that inference does not know
+/// (raw JavaScript, a host function) may return anything, so the state a
+/// later function gets is `any`: here `""` and `"false"`, which are truthy.
+#[test]
+fn unknown_swap_writers_poison_atom_contents() {
+    let source = r#"(let [a (atom false)
+                          b (atom false)
+                          writer (js* "(function () { return ''; })")]
+                      (swap! a writer)
+                      (swap-vals! b js/String)
+                      (pr-str [(swap! a (fn [s] (if s :truthy :falsy)))
+                               (swap-vals! b (fn [t] (if t :truthy :falsy)))]))"#;
+    assert_eq!(local(source, "s"), Inferred::ANY);
+    assert_eq!(local(source, "t"), Inferred::ANY);
+    every_level(source, "[:truthy [\"false\" :truthy]]");
+}
+
+/// A program that names a prototype may give the runtime's atoms an accessor
+/// for their state, which then holds what the program's getter returns
+/// (light-cljs-252 review): every atom's state stays `any`.
+#[test]
+fn atom_prototype_accessors_keep_swap_state_unknown() {
+    let accessor = r#"#js {:get (fn [] "") :set (fn [_] nil) :configurable true}"#;
+    for prototype in [
+        "(.-prototype Atom)",
+        "(js/Object.getPrototypeOf (atom nil))",
+    ] {
+        let source = format!(
+            "(js/Object.defineProperty {prototype} \"state\" {accessor})
+             (pr-str (let [a (atom false)] (swap! a (fn [s] (if s :truthy :falsy)))))"
+        );
+        assert_eq!(local(&source, "s"), Inferred::ANY, "{source}");
+        every_level(&source, ":truthy");
+    }
+}
+
 /// The state types lowerings inside `swap!` functions on adversarial values:
 /// `nil`, `false`, `""`, records built both ways, and an `ISwap` program type
 /// that passes `""` where an atom would pass `nil`.
