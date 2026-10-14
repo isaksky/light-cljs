@@ -441,10 +441,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
         checked += 1;
     }
     // The record methods, the five type hooks, the kind hooks (ten of them
-    // the printer's), the protocol hooks, the printer's hooks, the initial
-    // values of four core cells, the protocol wrappers of seven operations and
-    // the upstream fields of 28 types.
-    assert_eq!(checked, 153);
+    // the printer's), the protocol hooks (with the by-name protocol tests of light-cljs-251),
+    // the printer's hooks, the initial values of four core cells, the protocol
+    // wrappers of seven operations and the upstream fields of 28 types.
+    assert_eq!(checked, 155);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every

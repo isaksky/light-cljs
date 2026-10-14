@@ -184,9 +184,12 @@ implementations only where `extend-type` or `specify!` can give them some,
 and the generic operations find a program type's methods on its values
 without the protocol tables, so a record next to a vector or a keyword keeps
 about 10 KB instead of 35 KB (light-cljs-246, "Phase 2 builtin types,
-program types"). Each distinct keyword and quoted symbol literal
-the output reads is declared once after the runtime, `const k0 = rt$keyword(null,
-"a");`, and its sites read `k0`; keyword `case` switches on
+program types"); their protocol tests (`counted?`, `count`, `seq`) read the
+protocols a value declares by name, so `(counted? (T.))` of a `deftype`
+keeps about 6 KB instead of 12 KB (light-cljs-251). Each distinct keyword
+and quoted symbol literal the output reads is declared once after the
+runtime, `const k0 = rt$keyword(null, "a");`, and its sites read `k0`;
+keyword `case` switches on
 `rt$keywordFqn(caseValue)`, the keyword's full name, instead of printing it
 (see "Phase 1 constant table extension points" in
 [advanced-optimization.md](advanced-optimization.md)). The same table holds

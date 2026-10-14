@@ -67,27 +67,37 @@ fn units(source: &str) -> Vec<&'static str> {
 }
 
 /// The protocol machinery a program without protocol implementations drops.
-const PROTOCOL_MACHINERY: [&str; 9] = [
+const PROTOCOL_MACHINERY: [&str; 12] = [
     "installMethods",
     "builtin",
     "ownMethod",
+    "ownProtocol",
     "publicMethod",
     "satisfies",
     "implementsProtocol",
     "builtinCoreImplementation",
     "protocolHooks.builtin",
     "protocolHooks.ownMethod",
+    "protocolHooks.ownSatisfies",
+    "protocolHooks.ownImplements",
 ];
 
 /// The machinery that only protocol implementations of the runtime's own or
 /// host values need (`extend-type`, `specify!`), which a program whose
-/// implementations all belong to its own types drops (light-cljs-246).
-const EXTENSION_MACHINERY: [&str; 5] = [
+/// implementations all belong to its own types drops (light-cljs-246), with
+/// the protocol tables its protocol tests read (light-cljs-251).
+const EXTENSION_MACHINERY: [&str; 11] = [
     "publicMethod",
     "externalMethod",
     "protocolHooks.extend",
     "protocolHooks.publicMethod",
     "protocolHooks.external",
+    "satisfies",
+    "implementsProtocol",
+    "builtinCoreImplementation",
+    "coreProtocolNames",
+    "protocolHooks.satisfies",
+    "protocolHooks.implements",
 ];
 
 fn assert_keeps_none(source: &str, absent: &[&str]) -> Vec<&'static str> {
@@ -188,11 +198,19 @@ fn an_empty_map_keeps_only_its_own_map_type() {
 fn a_program_type_opens_the_protocol_hooks() {
     // `installMethods` keeps the hooks the generic operations it reaches read,
     // so they dispatch to program types: since light-cljs-246 a type's own
-    // methods (`ownMethod`), and the whole machinery only with `extend-type`
-    // or `specify!`.
+    // methods (`ownMethod`), since light-cljs-251 the protocols it declares
+    // (`ownProtocol`), and the whole machinery only with `extend-type` or
+    // `specify!`.
     let source = "(deftype T [] ICounted (-count [_] 7)) (count (T.))";
     let units = units(source);
-    for unit in ["installMethods", "ownMethod", "protocolHooks.ownMethod"] {
+    for unit in [
+        "installMethods",
+        "ownMethod",
+        "ownProtocol",
+        "protocolHooks.ownMethod",
+        "protocolHooks.ownImplements",
+        "protocolHooks.ownSatisfies",
+    ] {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
     for unit in EXTENSION_MACHINERY {
@@ -205,6 +223,8 @@ fn a_program_type_opens_the_protocol_hooks() {
         "publicMethod",
         "protocolHooks.publicMethod",
         "protocolHooks.external",
+        "protocolHooks.implements",
+        "protocolHooks.satisfies",
     ] {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
@@ -375,6 +395,139 @@ fn program_types_reach_the_runtime_kinds_they_implement() {
         ),
         "[[9 8 nil] \"Index out of bounds\" 5 1]",
     );
+}
+
+/// The protocol tests of light-cljs-251's scenario over every kind of value:
+/// program types, a record, `reify`, the runtime's values and host values,
+/// among them one declaring `ICounted` by its mask bit and one holding the
+/// marker's name as a property, each a row of its label, one digit per
+/// predicate (`counted?`, `seq?`, `seqable?`, `sequential?`, `coll?`, `map?`,
+/// `vector?`, `set?`, `record?`, `associative?`, `reversible?`, `indexed?`,
+/// `reduceable?`, `ifn?`, `fn?`, `list?`, `iterable?`, `cloneable?`,
+/// `map-entry?` and `satisfies?` of `ICounted`, `ISeqable` and `ISeq`), and
+/// its `count`, the `first` of its `seq` and `empty?`, or their errors.
+fn protocol_test_rows(extensions: &str, extra: &str) -> String {
+    format!(
+        "(deftype T [] ICounted (-count [_] 7))
+         (deftype S [] ISeq (-first [_] 1) (-rest [_] (list 2)) ISeqable (-seq [this] this) ISequential)
+         (defrecord R [x])
+         {extensions}
+         (defn attempt [f x] (try (f x) (catch :default e (if (fn? x) :threw (.-message e)))))
+         (apply str (interpose \"\\n\"
+           (for [[label v] [[:T (T.)] [:S (S.)] [:R (->R 1)] [:reify-counted (reify ICounted (-count [_] 3))]
+                            [:reify (reify)] [:vector [1 2]] [:list '(1 2)] [:map {{:a 1}}] [:set #{{1}}]
+                            [:range (range 3)] [:lazy (map inc [1])] [:string \"ab\"] [:nil nil] [:number 5]
+                            [:array #js [1 2]] [:object #js {{:a 1}}] [:fn (fn [] 1)]
+                            [:masked (js-obj \"cljs$lang$protocol_mask$partition0$\" 2)]
+                            [:marker (js-obj \"cljs$core$ICounted$\" true)] {extra}]]
+             (pr-str [label
+                      (apply str (map #(if (% v) 1 0)
+                                      [counted? seq? seqable? sequential? coll? map? vector? set? record?
+                                       associative? reversible? indexed? reduceable? ifn? fn? list? iterable?
+                                       cloneable? map-entry? #(satisfies? ICounted %) #(satisfies? ISeqable %)
+                                       #(satisfies? ISeq %)]))
+                      (attempt count v) (attempt #(some-> (seq %) first) v) (attempt empty? v)]))))"
+    )
+}
+
+/// light-cljs-251: the generic operations test core protocols by name, so
+/// where no `extend-type` or `specify!` exists a value satisfies the
+/// protocols it declares (`ownProtocol`), and otherwise what the runtime's
+/// values satisfy natively, and a program type keeps none of the protocol
+/// tables (`satisfies`, `implementsProtocol`, `coreProtocolNames`,
+/// `builtinCoreImplementation`). Every level answers as `None` does, with and
+/// without extensions, which keep the tables.
+#[test]
+fn protocol_tests_of_program_types_need_no_protocol_tables() {
+    let closed = protocol_test_rows("", "");
+    // `satisfies?` of a core protocol calls `satisfies` itself, which keeps
+    // the tables, but the generic operations still test the program's own.
+    let units = assert_keeps_none(
+        &closed,
+        &[
+            "publicMethod",
+            "externalMethod",
+            "protocolHooks.publicMethod",
+            "protocolHooks.satisfies",
+            "protocolHooks.implements",
+        ],
+    );
+    for unit in [
+        "ownProtocol",
+        "protocolHooks.ownSatisfies",
+        "protocolHooks.ownImplements",
+    ] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
+    every_level(
+        &closed,
+        r#"[:T "1000000000000000000100" 7 "[object Object] is not ISeqable" false]
+[:S "0111000000000000000011" 2 1 false]
+[:R "1010110011000000110110" 1 [:x 1] false]
+[:reify-counted "1000000000000000000100" 3 "[object Object] is not ISeqable" false]
+[:reify "0000000000000000000000" "count not supported on this type" "[object Object] is not ISeqable" "[object Object] is not ISeqable"]
+[:vector "1011101001111100110110" 2 1 false]
+[:list "1111100000001001110111" 2 1 false]
+[:map "1010110001001100110110" 1 [:a 1] false]
+[:set "1010100100000100110110" 1 1 false]
+[:range "1111100000011000110111" 3 0 false]
+[:lazy "0111100000001000100011" 1 2 false]
+[:string "0010000000000000000000" 2 "a" false]
+[:nil "1010000000000000000100" 0 nil true]
+[:number "0000000000000000000000" "count not supported on this type" "5 is not ISeqable" "5 is not ISeqable"]
+[:array "0010000000000000000000" 2 1 false]
+[:object "0000000000000000000000" "count not supported on this type" "[object Object] is not ISeqable" "[object Object] is not ISeqable"]
+[:fn "0000000000000110000000" :threw :threw :threw]
+[:masked "1000000000000000000100" "No protocol method ICounted/-count defined for this value" "[object Object] is not ISeqable" "No protocol method ICounted/-count defined for this value"]
+[:marker "0000000000000000000000" "count not supported on this type" "[object Object] is not ISeqable" "[object Object] is not ISeqable"]"#,
+    );
+    // `extend-type` of a program type and of a host type, and `specify!` of a
+    // vector, keep the tables, which find what they add.
+    let extended = protocol_test_rows(
+        "(extend-type T ISeqable (-seq [_] (list 7 8))) (extend-type number ICounted (-count [n] n))",
+        "[:specified (specify! (vec #js [1 2]) ICounted (-count [_] 42))]",
+    );
+    let units = self::units(&extended);
+    for unit in [
+        "satisfies",
+        "implementsProtocol",
+        "protocolHooks.satisfies",
+        "protocolHooks.implements",
+    ] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
+    every_level(
+        &extended,
+        r#"[:T "1010000000000000000110" 7 7 false]
+[:S "0111000000000000000011" 2 1 false]
+[:R "1010110011000000110110" 1 [:x 1] false]
+[:reify-counted "1000000000000000000100" 3 "[object Object] is not ISeqable" false]
+[:reify "0000000000000000000000" "count not supported on this type" "[object Object] is not ISeqable" "[object Object] is not ISeqable"]
+[:vector "1011101001111100110110" 2 1 false]
+[:list "1111100000001001110111" 2 1 false]
+[:map "1010110001001100110110" 1 [:a 1] false]
+[:set "1010100100000100110110" 1 1 false]
+[:range "1111100000011000110111" 3 0 false]
+[:lazy "0111100000001000100011" 1 2 false]
+[:string "0010000000000000000000" 2 "a" false]
+[:nil "1010000000000000000100" 0 nil true]
+[:number "1000000000000000000100" 5 "5 is not ISeqable" false]
+[:array "0010000000000000000000" 2 1 false]
+[:object "0000000000000000000000" "count not supported on this type" "[object Object] is not ISeqable" "[object Object] is not ISeqable"]
+[:fn "0000000000000110000000" :threw :threw :threw]
+[:masked "1000000000000000000100" "No protocol method ICounted/-count defined for this value" "[object Object] is not ISeqable" "No protocol method ICounted/-count defined for this value"]
+[:marker "0000000000000000000000" "count not supported on this type" "[object Object] is not ISeqable" "[object Object] is not ISeqable"]
+[:specified "1011101001111100110110" 42 1 false]"#,
+    );
+    // Protocol tests alone of a program type or a record keep no seqs:
+    // 12,375 and 12,576 bytes before.
+    for source in [
+        "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
+        "(defrecord R [x]) (map? (->R 1))",
+    ] {
+        assert_keeps_none(source, &EXTENSION_MACHINERY);
+        assert!(advanced(source).emit_js().len() < 6_500, "{source}");
+    }
 }
 
 #[test]

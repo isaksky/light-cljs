@@ -2941,3 +2941,74 @@ the `callbacks` fixture now has a `number` state, but it only adds to it, and
 The `toggle!` callback tests its `nil`/`boolean` state without `truth()`, and
 the `text` callback counts its string state with `.length`, which drops
 `rt$count` from the program's roots.
+
+## Protocol tests by name — October 14, 2026
+
+light-cljs-251 has the generic operations test core protocols by name
+("Protocol tests by name" in the
+[design](../docs/advanced-optimization.md)): where no `extend-type` or
+`specify!` exists, a value satisfies the protocols it declares
+(`ownProtocol`) and otherwise what the runtime's values satisfy natively,
+so a program type keeps neither `satisfies` nor `implementsProtocol`, nor
+the protocol objects and native tests they read.
+
+**Sizes**, raw and `gzip -9` bytes (of stdin) of `--compile --optimize
+LEVEL`, on the 24-CPU Mac (sizes do not depend on load; load average 7.8).
+"Before" is master `e5ee884`. `prepare` equals `none` for every fixture but
+`pure-defs`, which is 78 bytes smaller there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 397,984 / 95,040 | 398,827 / 95,308 | 151 / 140 | 151 / 140 | 399,000 / 399,000 / 200 |
+| println-hi | 397,871 / 94,965 | 398,714 / 95,234 | 4,771 / 2,021 | 4,771 / 2,021 | 399,000 / 399,000 / 4,800 |
+| vector-printed | 397,896 / 94,976 | 398,739 / 95,246 | 9,700 / 3,743 | 9,659 / 3,719 | 399,000 / 399,000 / 9,700 |
+| map-printed | 397,899 / 94,969 | 398,742 / 95,238 | 13,510 / 4,823 | 13,453 / 4,807 | 399,000 / 399,000 / 14,000 |
+| seq-pipeline | 398,215 / 95,089 | 399,058 / 95,357 | 24,427 / 7,603 | 24,360 / 7,573 | 400,000 / 400,000 / 25,000 |
+| add | 397,824 / 94,957 | 398,667 / 95,226 | 19 / 39 | 19 / 39 | 399,000 / 399,000 / 100 |
+| rest-fn | 398,168 / 95,095 | 399,011 / 95,364 | 9,448 / 3,167 | 9,410 / 3,147 | 400,000 / 400,000 / 9,500 |
+| keyword-case | 398,456 / 95,119 | 399,299 / 95,389 | 3,428 / 1,324 | 3,428 / 1,324 | 400,000 / 400,000 / 3,500 |
+| record-protocol | 398,777 / 95,290 | 399,620 / 95,559 | 5,750 / 2,423 | 5,750 / 2,423 | 400,000 / 400,000 / 5,800 |
+| pure-defs | 399,413 / 95,406 | 400,256 / 95,672 | 5,640 / 2,372 | 5,640 / 2,372 | 401,000 / 401,000 / 5,700 |
+| keyword-lookups | 398,948 / 95,228 | 399,791 / 95,497 | 29,110 / 9,053 | 29,032 / 9,025 | 400,000 / 400,000 / 30,000 |
+| constant-literals | 398,725 / 95,175 | 399,568 / 95,444 | 20,589 / 6,548 | 20,533 / 6,513 | 400,000 / 400,000 / 21,000 |
+| constant-lookups | 399,143 / 95,317 | 399,986 / 95,586 | 3,808 / 1,453 | 3,808 / 1,453 | 400,000 / 400,000 / 3,900 |
+| three-records | 400,914 / 95,595 | 401,757 / 95,862 | 5,757 / 2,422 | 5,757 / 2,422 | 402,000 / 402,000 / 5,800 |
+| constant-keys | 398,941 / 95,166 | 399,784 / 95,436 | 39,895 / 12,210 | 39,788 / 12,188 | 400,000 / 400,000 / 40,000 |
+| event-maps | 398,473 / 95,134 | 399,316 / 95,404 | 29,338 / 9,115 | 29,266 / 9,086 | 400,000 / 400,000 / 30,000 |
+| vector-only | 398,023 / 95,061 | 398,866 / 95,329 | 4,221 / 1,739 | 4,221 / 1,739 | 399,000 / 399,000 / 4,300 |
+| keyword-only | 397,991 / 95,042 | 398,834 / 95,311 | 3,355 / 1,297 | 3,355 / 1,297 | 399,000 / 399,000 / 3,400 |
+| map-only | 398,029 / 95,052 | 398,872 / 95,321 | 9,143 / 3,190 | 9,116 / 3,185 | 399,000 / 399,000 / 9,200 |
+| atom-str | 398,039 / 95,050 | 398,882 / 95,317 | 2,284 / 904 | 2,284 / 904 | 399,000 / 399,000 / 2,300 |
+| set-only | 398,060 / 95,071 | 398,903 / 95,341 | 5,078 / 1,955 | 5,062 / 1,946 | 399,000 / 399,000 / 5,100 |
+| mapv-count | 398,051 / 95,060 | 398,894 / 95,329 | 28,722 / 8,917 | 28,671 / 8,886 | 399,000 / 399,000 / 29,000 |
+| raw-js | 398,823 / 95,222 | 399,666 / 95,488 | 36 / 54 | 36 / 54 | 400,000 / 400,000 / 100 |
+| multi-arity | 400,652 / 95,493 | 401,495 / 95,759 | 318 / 212 | 318 / 212 | 402,000 / 402,000 / 400 |
+| closed-params | 400,387 / 95,637 | 401,230 / 95,903 | 12,996 / 4,960 | 12,996 / 4,960 | 402,000 / 402,000 / 13,000 |
+| debug-logging | 399,143 / 95,406 | 399,986 / 95,673 | 31 / 51 | 31 / 51 | 400,000 / 400,000 / 100 |
+| local-arities | 401,075 / 95,593 | 401,918 / 95,859 | 490 / 278 | 490 / 278 | 402,000 / 402,000 / 500 |
+| callbacks | 399,835 / 95,498 | 400,678 / 95,764 | 42,261 / 13,257 | 37,186 / 11,741 | 401,000 / 401,000 / 38,000 |
+
+No fixture grows at `advanced`. `callbacks`, whose records meet `filter`,
+`reduce` and `map`, loses 5,075 bytes (12%) and its ceiling drops from
+43,000 to 38,000; eleven others lose 16 to 107 bytes, since the generic
+operations no longer read the protocol objects. The `none` and `prepare`
+ceilings of 20 fixtures rise by 1,000 for the shared runtime's growth of
+843 bytes (0.2%; 268 gzipped): `ownProtocol`, the two hook installs with
+their `when:` lists, and the protocol names at the call sites, less 8
+bytes at each of the 22 reads of the renamed `protocolHooks.implements`.
+
+Other programs at `advanced`, raw and gzip bytes:
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(deftype T [] ICounted (-count [_] 7)) (count (T.))` | 27,180 / 8,726 | 21,678 / 7,155 |
+| `(deftype T [] ICounted (-count [_] 7)) (counted? (T.))` | 12,375 / 4,304 | 6,181 / 2,563 |
+| `(deftype T [] ISeqable (-seq [_] (list 1 2))) (seq? (T.))` | 28,136 / 8,984 | 22,634 / 7,412 |
+| `(defrecord R [x]) (map? (->R 1))` | 12,576 / 4,381 | 5,984 / 2,509 |
+| `(count (.split "a,b" ","))` | 8,985 / 2,973 | 8,948 / 2,952 |
+| `(deftype T [] ICounted (-count [_] 7)) (.-x (T.))` | 5,437 / 2,296 | 5,437 / 2,296 |
+
+`count` of a program type stays above the 12,000 bytes the pellet asked
+for: `count` alone keeps 8,948 bytes and the type 5,437, and the rest is
+the record effects targeting `makeType` and the core dispatchers, which
+this change does not touch.

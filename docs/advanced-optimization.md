@@ -1767,12 +1767,13 @@ host-facing methods of the vector and the keyword.
   protocol objects and `builtinCoreImplementation` wherever a program type
   exists and an operation tests a protocol (`count`, `seq?`, ...); a test of
   a value's own marker, like `ownMethod`, would need the protocol's name at
-  each call site (light-cljs-251). Protocol roots cover `ISequential` only,
-  the one protocol whose implementations reach a branch of the runtime's
-  kinds that `installMethods` alone kept. A record's core protocol slot that
-  the program names (`"cljs$core$ILookup$_lookup$arity$3"`) was installed
-  only where an operation dispatching it is kept, as before in a program
-  with records alone, until light-cljs-250 (below).
+  each call site, which light-cljs-251 (below) gives. Protocol roots cover
+  `ISequential` only, the one protocol whose implementations reach a branch
+  of the runtime's kinds that `installMethods` alone kept. A record's core
+  protocol slot that the program names
+  (`"cljs$core$ILookup$_lookup$arity$3"`) was installed only where an
+  operation dispatching it is kept, as before in a program with records
+  alone, until light-cljs-250 (below).
 - **Named record slots (light-cljs-250).** The runtime installs a record's
   core protocol method (`recordMethods.lookup`) only where an operation
   dispatching it (`get`) is kept, but a program can call the method through
@@ -1793,6 +1794,62 @@ host-facing methods of the vector and the keyword.
   `"nf"` at 9,796 / 3,698 bytes where it threw at 5,695 / 2,395, and the
   pellet's scenario with `(.equiv [1] [1])` grows from 10,099 / 3,935 to
   12,358 / 4,598.
+- **Protocol tests by name (light-cljs-251).** The generic operations test
+  core protocols through `protocolHooks.satisfies` and
+  `protocolHooks.implements` (renamed from `implementsProtocol`, 8 bytes
+  longer at each of its 22 reads) with the protocol's name,
+  `protocolHooks.satisfies?.("ICounted", value) ?? countedValue(value)`,
+  instead of its object, which only `coreProtocolNames` maps to a name.
+  - Where no extension exists both hooks are `ownProtocol` (installed with
+    `installMethods` by `protocolHooks.ownSatisfies` and
+    `.ownImplements`): `true` where the value declares the protocol (its
+    marker or mask bit, as `ownMethod` tests), else nothing, so the call
+    site's native test answers. That equals the full functions there:
+    `implementsProtocol` is the declaration or the protocol's native test
+    (`builtinCoreImplementation`), which each call site's fallback is, and
+    `satisfies` adds the protocol's type table, which only `extend-type`
+    fills besides the defaults (`ICounted` of nil, `Fn` and `IMeta` of
+    functions, `IHash` and `IEquiv` of anything) that the call sites'
+    fallbacks include or never test. `nth` tests `ISeq` and `ISequential`
+    together, `(implementing?.("ISeq", value) || implementing?.("ISequential",
+    value)) ?? (seqValue(value) || sequential(value))`.
+  - `extendType` and `extendInstance` install the full functions instead
+    (`protocolHooks.satisfies`, `.implements`), mapping the name back
+    through `coreProtocolsByName`, so the shared runtime answers as before.
+  - The call sites no longer read the protocol objects, so a program
+    without program types keeps fewer of them.
+  - `satisfies?` and `implements?` of a core protocol still call
+    `satisfies` and `implementsProtocol` themselves, which keep the tables.
+    Writing a core protocol object's type table directly (`(aset ICounted
+    "string" true)`) instead of through `extend-type` reaches only those,
+    as before in a program without protocol implementations.
+  - **Tests.** `builtin_types::protocol_tests_of_program_types_need_no_protocol_tables`
+    runs 19 core predicates, `satisfies?` of three core protocols, `count`,
+    `seq` and `empty?` over program types, a record, `reify`, the
+    runtime's values and host values (one declaring `ICounted` by its mask
+    bit, one holding the marker's name as a property) at every level against
+    `None`, without and with `extend-type` of a program and a host type and a
+    `specify!` of a vector, and checks which hooks each keeps;
+    `PROTOCOL_MACHINERY` and `EXTENSION_MACHINERY` list the new units.
+  - **Measured** at `Advanced`, raw / gzip bytes, against master `e5ee884`:
+    `(deftype T [] ICounted (-count [_] 7)) (count (T.))` drops from 27,180
+    / 8,726 to 21,678 / 7,155, `(counted? (T.))` from 12,375 / 4,304 to
+    6,181 / 2,563, `(seq? (T.))` of a type implementing `ISeqable` from
+    28,136 / 8,984 to 22,634 / 7,412, and `(defrecord R [x]) (map? (->R 1))`
+    from 12,576 / 4,381 to 5,984 / 2,509. No fixture grows: `callbacks`
+    drops from 42,261 / 13,257 to 37,186 / 11,741 (its ceiling from 43,000
+    to 38,000), and eleven others lose 16 to 107 bytes. The shared runtime
+    grows by 843 bytes (0.2%; 268 gzipped), `ownProtocol` and the two hook
+    installs with their `when:` lists.
+  - **Left for later.** The pellet's target of 12,000 bytes for `count` of a
+    program type is out of this mechanism's reach: `count` alone keeps
+    8,948 bytes (`(count (.split "a,b" ","))`: its seq walk for cells and
+    lazy seqs) and a bare `deftype` 5,437. The remaining extra is the record
+    effects that target `makeType` (`makeMap.seq` alone, about 3,300 bytes
+    with the vector type it reaches through `mapEntry`), which a `deftype`
+    never needs, and `protocolHooks.dispatchers` with the one unit declaring
+    eight core dispatchers (`seqProtocol`, `lookupProtocol`, ...), which keep
+    `get`, `nth` and `contains` for a `count`.
 
 #### Phase 2 call shape extension points
 
