@@ -2488,7 +2488,8 @@ a (fn [n] (+ n 1))))` the parameter `n` was `any`.
   - A function given to `swap!` is summarized by its bodies even where the
     program reassigns its `call` property, which the runtime invokes; direct
     calls, inlining and inference all assume no program does (found by the
-    review of this change; light-cljs-257 decides it).
+    review of this change). light-cljs-257 states that assumption in the
+    Advanced-mode contract instead of detecting such writes.
 
 #### Phase 2 pure initializer and `js*` extension points
 
@@ -3349,6 +3350,28 @@ upstream states that advanced mode is unsafe for certain patterns.
   `g3_1 is not a function` with `pseudo_names`) where lower levels name the
   property they read (`Cannot read properties of undefined (reading
   'call')`).
+- A function's `call` and `apply` are those of `Function.prototype`
+  (light-cljs-257). Direct calls (light-cljs-212) and inlining (214) run the
+  method a call selects without reading `call`, and inference (210) types
+  the calls of a program function from its bodies, as it types what a core
+  operation that calls it through `call` gets back (`map`, `swap!`: 243,
+  252, 256). Reassigning or redefining the `call` or `apply` property of a
+  program function or a core operation, through `set!`, `aset`,
+  `Object.defineProperty`, host code or `js*` text, or those of
+  `Function.prototype`, is unsupported. After `(set! (.-call f) (fn [_ x]
+  ""))` on `f`, `(fn [x] false)`, `(if (f 1) :on :off)` gives `:off` at
+  `Advanced`, where lower levels call `f.call(null, 1)` and give `:on`, and
+  so do `(swap! a f)`, a later `@a` and the items of `(map f xs)`. Upstream
+  makes the same assumption for the calls a program writes: its analyzer
+  types `(f 1)` from `f`'s bodies at every level, so the `if` gives `:off` at
+  `:none` too, and `:static-fns`, on under `:advanced`, calls a known
+  function without `call`; its runtime's `swap!` and `map` do call the
+  replacement. Supporting such writes would mean finding every write of a
+  `call` property, which host code and computed names hide, and turning off
+  direct calls, inlining and those summaries for every function a write may
+  reach. No ratchet fixture writes one; turning off inlining alone adds
+  29,246 bytes to 7 of the 29 (see "Reassigned call properties" in
+  `benchmarks/compiler.md`).
 - Messages the JavaScript engine generates quote the output's identifiers,
   which terse output shortens (light-cljs-215), so their text differs at
   `Advanced`: calling a core value that is not a function, such as `INIT`,

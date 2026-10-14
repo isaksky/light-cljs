@@ -546,6 +546,53 @@ fn boolean_tags_are_trusted_like_upstream() {
     assert_eq!(printed, [":truthy\n", ":truthy\n", ":falsy\n"]);
 }
 
+/// A program that reassigns a function's `call` property is unsupported at
+/// `Advanced` (light-cljs-257; docs/advanced-optimization.md, "Advanced-mode
+/// contract"): direct calls (light-cljs-212) and inlining (214) run the
+/// function's bodies, and inference (210) types its calls, and what `swap!`,
+/// `deref` and `map` get from it (243, 252, 256), from those bodies, where
+/// lower levels call the replacement through `f.call(null, ...)`. Upstream
+/// prints `[:off :off :off]` for the first program at every level, since its
+/// analyzer types `(f 1)` from `f`'s bodies too.
+#[test]
+fn reassigned_call_properties_are_unsupported_at_advanced() {
+    let calls = r#"(defn g [x] false)
+(set! (.-call g) (fn [context x] ""))
+(pr-str
+ (let [f (fn [x] false)
+       h (fn ([x] false) ([x y] true))]
+   (set! (.-call f) (fn [context x] ""))
+   (set! (.-call h) (fn [context x] ""))
+   [(if (f 1) :on :off) (if (g 1) :on :off) (if (h 1) :on :off)]))"#;
+    let callbacks = r#"(pr-str
+ [(let [a (atom false)
+        f (fn [s] false)]
+    (set! (.-call f) (fn [c s] ""))
+    [(if (swap! a f) :on :off) (if @a :on :off)])
+  (let [f (fn [x] false)]
+    (set! (.-call f) (fn [c x] ""))
+    (mapv #(if % :on :off) (map f [1])))])"#;
+    for (source, lower, advanced) in [
+        (calls, "[:on :on :on]\n", "[:off :off :off]\n"),
+        (callbacks, "[[:on :on] [:on]]\n", "[[:off :off] [:off]]\n"),
+    ] {
+        let program = program(source);
+        for no_inlining in [false, true] {
+            let printed = OptimizationLevel::ALL.map(|level| {
+                let mut options = ApplicationOptions::new(level);
+                options.no_inlining = no_inlining;
+                let js = prepare_application(&program, options).emit_js();
+                execute(&format!("console.log({js});"))
+            });
+            assert_eq!(
+                printed,
+                [lower, lower, advanced],
+                "no_inlining {no_inlining}: {source}"
+            );
+        }
+    }
+}
+
 #[test]
 fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
     let [number, string, nil] = [Type::NUMBER, Type::STRING, Type::NIL].map(Inferred::of);

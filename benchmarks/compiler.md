@@ -3126,3 +3126,36 @@ an operand of `+`, which is an operator for every operand already.
 `(if @flag ...)` loses `truth()` and `(count @text)` becomes `.length`, which
 drops `rt$count` from the program's roots; `pos?` was already `> 0` for
 every operand.
+
+## Reassigned call properties — October 14, 2026
+
+light-cljs-257 states in the Advanced-mode contract of the
+[design](../docs/advanced-optimization.md) that reassigning a function's
+`call` or `apply` property is unsupported, instead of detecting such writes
+and turning off direct calls, inlining and the call summaries of inference
+for the functions they may reach. No ratchet fixture writes a `call`
+property, so detection would change none of them; what it would cost is
+what those passes save in a program that does. As a lower bound, turning off
+inlining alone (`ApplicationOptions::no_inlining` in the size ratchet's
+`emit`, `cargo nextest run --test compiler size_ratchet:: --no-capture`, on
+the 24-CPU Mac at master `7514c6e`; sizes do not depend on load) changes 7
+of the 29 fixtures at `Advanced`, by 29,246 bytes in all:
+
+| Fixture | Advanced | without inlining |
+| --- | ---: | ---: |
+| constant-literals | 20,521 | 31,845 |
+| event-maps | 29,254 | 29,302 |
+| raw-js | 36 | 250 |
+| multi-arity | 318 | 756 |
+| closed-params | 12,996 | 13,119 |
+| debug-logging | 31 | 17,101 |
+| callbacks | 36,161 | 36,190 |
+
+Upstream ClojureScript at `a5e94c9`, through `cljs.build.api` with
+`:target :nodejs` in Node 24, prints `[:off :off :off]` for the pellet's
+program at `:none`, `:simple` and `:advanced` alike (its analyzer types
+`(f 1)` from `f`'s bodies and tests it without `truth_`), and for calls whose
+results it does not type, `[:replaced :replaced :replaced]` at `:none` and
+`[:body :body :body]` at `:advanced`, where `:static-fns` calls known
+functions directly. Its `swap!` and `map` call the replacement at every
+level.
