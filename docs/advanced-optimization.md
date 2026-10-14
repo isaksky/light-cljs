@@ -954,7 +954,11 @@ Step 2 is implemented (light-cljs-209). Later steps read it:
   when no argument can run code (`-`, or `dispatch` over plain data, or
   `invoke` with pure function arguments); folding (step 8 and the constant
   folder) needs `pure`. `Operation::runtime_units(manifest)` maps the units
-  column to `UnitId`s, the roots of a direct reference for slicing.
+  column to `UnitId`s, the roots of a direct reference for slicing. Since
+  light-cljs-243 an arity may narrow the result (`[fn]:fn`), a `fn`
+  parameter may carry a callback shape, and `returns` may give the elements
+  of the collections a call returns; see "Phase 2 callback parameter
+  extension points".
 - **Maintenance.** The `core_operations` suite in `tests/compiler/` requires
   every named unit to exist and to be the unit that defines the operation's
   value in the runtime `core` object (read from the core table,
@@ -2067,11 +2071,96 @@ the lowerings of step 3 and the devirtualization of step 4 mostly applied to
   `benchmarks/compiler.md`.
 - **Left for later.**
   - Parameters of functions that escape, of protocol methods and of
-    `deftype` methods stay `any`. Methods of program types called only
-    through devirtualized calls could join their arguments too.
+    `deftype` methods stay `any`, except that light-cljs-243 joins the calls
+    core operations make of the functions they are given (next section).
+    Methods of program types called only through devirtualized calls could
+    join their arguments too.
   - Return types do not depend on the call: a function called with a string
     and with a vector returns the join for every call (no context
     sensitivity).
+
+#### Phase 2 callback parameter extension points
+
+Callback parameter types are implemented (light-cljs-243) in
+`src/core_operations.tsv`, `src/call_shapes.rs` and `src/inference.rs`, at
+`Advanced` only. Before, a function passed to `map`, `reduce` or `swap!`
+escaped, so its parameters were `any`.
+
+- **Callback shapes.** In the table's `params` column a `fn` parameter may
+  carry the argument lists of every call the operation makes of it, one
+  parenthesized list per call: `map` is `[fn]:fn [fn(e1+) seqable & seqable]:seq|list`,
+  `reduce` `[fn()(e1|r0,e1) seqable] [fn(a1|r0,e2) any seqable]` and
+  `swap!` `[object fn(any,a2+) & any]`. Each argument is a descriptor:
+  types, `aN` (argument `N`), `eN` (an element of it), `rN` (what function
+  argument `N` returns) and `aN+`/`eN+` (from argument `N` on), joined with
+  `|`. Thirty-two rows have shapes: `map`, `mapv`, `mapcat`, `filter`,
+  `filterv`, `remove`, `keep`, `keep-indexed`, `map-indexed`, `take-while`,
+  `drop-while`, `partition-by`, `every?`, `not-every?`, `not-any?`, `some`,
+  `run!`, `group-by`, `sort`, `sort-by` (its key function), `reduce`,
+  `reductions`, `reduce-kv`, `iterate`, `repeatedly`, `update`, `update-in`,
+  `merge-with`, `update-vals`, `update-keys`, `swap!` and `swap-vals!`. A
+  function argument without a shape escapes: transducer arities, the
+  comparator of `sort-by`, `apply`, `comp`, `partial` and every other row.
+- **Arity returns.** `[fn]:fn` narrows the result of one arity, so `(filter
+  p xs)` is `seq|list` rather than `fn|seq|list` and stays within `reduce`'s
+  domain. `Operation::returns_for(count)` gives it; the row's `returns` is
+  the union, so results stay monotone.
+- **Elements.** `Inferred::elements` is the type and representation of the
+  elements of a value's `seq`, `list`, `vector` and `set` values, which are
+  immutable: `never` without those classes, `any` when unknown.
+  `Inferred::element()` is what a sequence over a value yields: those
+  elements, a map's entries (vectors), a string's characters, nothing for
+  `nil` and `any` for every other class. Collection literals set them, they
+  pass through bindings, parameters and joins, and a core call within its
+  domain sets them from the `returns` column's descriptor in angle brackets
+  (`filter` `<e1>`, `map` `<r0>`, `range` `<number>`, `conj` `<e0|a1+>`,
+  `vector`, `list`, `hash-set`, `vec`, `set`, `seq`, `rest`, `next`,
+  `reverse`, `cons`, `concat`, `take`, `drop`, `take-while`, `drop-while`,
+  `keep`, `keep-indexed`, `map-indexed`, `mapv`, `filterv`, `iterate`).
+  `(map vector xs ys)` holds vectors, `(map inc xs)` numbers: `rN` calls
+  the function argument with the shape's arguments.
+- **Closure.** `closed_functions` treats a function argument with a shape as
+  a visible use: a global (which still escapes for emission and keeps its
+  value and dispatcher), a `let` local, or the `fn` itself. The calls go to
+  `ClosedFunctions::callbacks(call)`.
+- **Joins.** At each such call inference binds the function's parameters as
+  each of the operation's calls would, selecting the method by count, when
+  the table describes the call: within the arity's domain, the operation not
+  replaced, core protocols intact, and no other argument that may be a
+  program type while one implements `IReduce`, `IKVReduce` or `ISwap`, whose
+  method receives the function itself (`ProgramFacts::receives_functions`).
+  Only `swap!` and `swap-vals!` admit program types in their domain. Any
+  other call binds every parameter to `any`. `rN` inside the arguments is the
+  function's current result, so a `reduce` accumulator is the initial value
+  joined with what the function returns.
+- **Tests.** The `type_inference` suite checks the joined types (literals,
+  `range`, strings, maps, `conj`, `map` results, records), the cases that
+  stay `any` (transducers, comparators, `apply`, a JavaScript array, an
+  `IReduce` or `ISwap` program type), lowerings inside callbacks on
+  adversarial values against `None`, including an `ISwap` type that passes
+  `""` where the shape says `false`, and every annotated operation with
+  callbacks whose truthiness tests `Advanced` lowers, so a shape that puts a
+  value where the runtime passes another prints differently. The
+  `core_operations` suite checks each arity's return type on samples.
+- **Measured.** No existing ratchet fixture changes at any level;
+  `closed-params` stays 12,996 bytes, since its functions are closed already
+  (light-cljs-229). It was 37,763 bytes when this work was planned; the
+  runtime a record type and a vector or keyword kept together went with
+  light-cljs-246. The new fixture `callbacks` shrinks from 42,345 to 42,261
+  bytes: its callbacks read record fields, so no `:qty`, `:price` or
+  `:label` keyword is built. A typed lowering is not smaller by itself where
+  the runtime keeps the operation for other calls: `(.-length s)` is longer
+  than a renamed `count` call. See "Callback parameter types" in
+  `benchmarks/compiler.md`.
+- **Left for later.**
+  - Specialized clones for a dominant call site were not added: lowerings
+    only shrink output when they remove a runtime root, so a clone, which
+    copies a body, grows every fixture measured here.
+  - The atom's value is `any` in `swap!`'s shape: inference does not track
+    what atoms hold.
+  - `nth`, `first` and `get` on a collection return `any`, not its element
+    type, so destructuring a vector parameter does not type the locals.
+  - Parameters of protocol and `deftype` methods stay `any`.
 
 #### Phase 2 pure initializer and `js*` extension points
 
@@ -2995,6 +3084,9 @@ upstream states that advanced mode is unsafe for certain patterns.
 - How deep type inference should go before diminishing returns. Step 3
   infers booleans, numbers, strings, collections and program types within a
   function, and since light-cljs-229 the parameters of functions only the
-  program calls, joined over their calls. It has no context sensitivity: a
-  function's result is the same for every call, and parameters of functions
-  that escape stay `any`.
+  program calls, joined over their calls, and since light-cljs-243 over the
+  calls core operations make of them and the elements of sequential
+  collections. It has no context sensitivity: a function's result is the
+  same for every call, and parameters of functions that escape otherwise
+  stay `any`. Measured so far, the lowerings types enable are for speed: they
+  shrink output only where they remove a runtime root.

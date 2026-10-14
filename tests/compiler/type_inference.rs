@@ -106,7 +106,11 @@ fn inference_types_literals_calls_locals_and_definitions() {
     assert_eq!(last("(+ 1 2)"), number);
     assert_eq!(last("(< 1 2)"), Inferred::of(Type::BOOLEAN));
     assert_eq!(last("(str 1 :a)"), Inferred::of(Type::STRING));
-    assert_eq!(last("[1 2]"), Inferred::known(Type::VECTOR, Known::Vector));
+    // Since light-cljs-243 a collection literal also carries its elements.
+    assert_eq!(
+        last("[1 2]"),
+        Inferred::known(Type::VECTOR, Known::Vector).with_elements(number)
+    );
     assert_eq!(last("#js [1 2]"), Inferred::known(Type::HOST, Known::Array));
     // Outside an operation's domain its result also includes the row's
     // `otherwise`.
@@ -587,10 +591,10 @@ fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
         last("(letfn [(g [x] (if (pos? x) (h (dec x)) x)) (h [y] (g y))] (g 3))"),
         number
     );
-    // Representations pass through parameters.
+    // Representations and elements pass through parameters.
     assert_eq!(
         last("(defn f [v] v) (f [1 2])"),
-        Inferred::known(Type::VECTOR, Known::Vector)
+        Inferred::known(Type::VECTOR, Known::Vector).with_elements(number)
     );
     let record = last("(defrecord R [a]) (defn f [r] r) (f (->R 1))");
     assert_eq!(record.ty, Type::RECORD);
@@ -600,13 +604,21 @@ fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
     // a local), a `loop` local, assignable parameters, a call that underfills a
     // variadic method or selects no method, and `with-redefs`.
     assert_eq!(local("(defn f [x] x) (f 1)", "x"), number);
+    // Since light-cljs-243 a core operation that calls its function argument
+    // as its callback shape says is one more caller (see
+    // `callback_parameters_join_what_core_operations_pass` below).
+    let number_or_string = Inferred::of(Type::NUMBER.union(Type::STRING));
+    for source in [
+        "(defn f [x] x) (mapv f [\"a\"]) (f 1)",
+        "(let [g (fn [x] x)] (mapv g [\"a\"]) (g 1))",
+    ] {
+        assert_eq!(local(source, "x"), number_or_string, "{source}");
+    }
     for source in [
         "(defn f [x] x) (apply f [1]) (f 1)",
-        "(defn f [x] x) (mapv f [\"a\"]) (f 1)",
         "(defn f [x] x) (def g f) (f 1)",
         "(declare f) (def h (defn f [x] x)) (f 1)",
         "(def f (fn self [x] (js/Array.of self) x)) (f 1)",
-        "(let [g (fn [x] x)] (mapv g [\"a\"]) (g 1))",
         "(let [g (fn [x] x) h g] (h \"a\") (g 1))",
         "(loop [g (fn [x] x)] (g 1))",
         "(defn f [x] (js* \"~{} = 'a'\" x) x) (f 1)",
@@ -764,6 +776,184 @@ fn parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations() {
     for lowered in [").length", "rt$vectorNth(", ")[\"x\"]", " === "] {
         assert!(!js.contains(lowered), "{lowered}: {js}");
     }
+}
+
+/// Since light-cljs-243 a function passed to a core operation with a callback
+/// shape in `src/core_operations.tsv` has that operation as one more caller:
+/// `map` calls it with an element of each collection, `reduce` with the
+/// accumulator and an element, `swap!` with the state and its arguments.
+#[test]
+fn callback_parameters_join_what_core_operations_pass() {
+    let number = Inferred::of(Type::NUMBER);
+    let string = Inferred::of(Type::STRING);
+    for (source, name, expected) in [
+        ("(mapv (fn [x] x) [1 2])", "x", number),
+        ("(defn f [x] x) (mapv f [\"a\"])", "x", string),
+        ("(let [g (fn [x] x)] (mapv g (range 3)))", "x", number),
+        ("(map (fn [x y] y) [1] [\"a\"])", "y", string),
+        ("(map-indexed (fn [i x] i) [\"a\"])", "i", number),
+        ("(reduce (fn [acc x] (+ acc x)) 0 [1 2])", "acc", number),
+        (
+            "(reduce (fn ([] 0) ([acc x] (+ acc x))) [1 2])",
+            "acc",
+            number,
+        ),
+        (
+            "(filterv (fn [x] (pos? x)) (filter even? (range 10)))",
+            "x",
+            number,
+        ),
+        ("(mapv (fn [c] c) \"ab\")", "c", string),
+        ("(mapv (fn [e] e) {:a 1})", "e", Inferred::of(Type::VECTOR)),
+        // `conj` may return a map, whose elements are entries (vectors).
+        (
+            "(mapv (fn [x] x) (conj [1] \"a\"))",
+            "x",
+            Inferred::of(Type::NUMBER.union(Type::STRING).union(Type::VECTOR)),
+        ),
+        (
+            "(def a (atom 0)) (swap! a (fn [n k] k) :key)",
+            "k",
+            Inferred::of(Type::KEYWORD),
+        ),
+        (
+            "(def a (atom 0)) (swap! a (fn [n k] k) :key)",
+            "n",
+            Inferred::ANY,
+        ),
+        // The element type of what `map` returns is what its function returns.
+        ("(mapv (fn [x] x) (map inc [1 2]))", "x", number),
+        (
+            "(mapv (fn [x] x) (map (fn [y] (str y)) [1 2]))",
+            "x",
+            string,
+        ),
+    ] {
+        assert_eq!(local(source, name), expected, "{source}");
+    }
+    let record = local("(defrecord R [a]) (mapv (fn [r] r) [(->R 1)])", "r");
+    assert!(matches!(record.known, Known::Instance(_)), "{record:?}");
+    // Every other way an operation may call the function keeps `any`: a
+    // transducer or comparator (no callback shape), `apply`, an argument
+    // outside the operation's domain (a JavaScript array is not `seqable`),
+    // and a program type implementing `IReduce`, `IKVReduce` or `ISwap`, whose
+    // method receives the function itself.
+    for (source, name) in [
+        ("(into [] (map (fn [x] x)) [1])", "x"),
+        ("(sort-by first (fn [a b] (compare a b)) [[1] [2]])", "a"),
+        ("(apply mapv (fn [x] x) [[1]])", "x"),
+        ("(mapv (fn [x] x) (js/Array.of 1))", "x"),
+        (
+            "(deftype T [] IReduce (-reduce [_ f init] (f init \"\")))
+             (reduce (fn [acc x] x) 0 (T.))",
+            "acc",
+        ),
+        (
+            "(deftype T [] IReduce (-reduce [_ f init] (f init \"\")))
+             (reduce (fn [acc x] x) 0 [1])
+             (reduce (fn [acc y] y) 0 (T.))",
+            "y",
+        ),
+        (
+            "(deftype S [] ISwap (-swap! [_ f a] (f \"\" a)))
+             (swap! (S.) (fn [n k] k) :key)",
+            "k",
+        ),
+    ] {
+        assert_eq!(local(source, name), Inferred::ANY, "{source}");
+    }
+    // Only `IReduce` makes the second program's first `reduce` keep `any`
+    // where its collection may be a program type: here it is a vector.
+    assert_eq!(
+        local(
+            "(deftype T [] IReduce (-reduce [_ f init] (f init \"\")))
+             (reduce (fn [acc x] x) 0 [1])
+             (reduce (fn [acc y] y) 0 (T.))",
+            "x"
+        ),
+        number
+    );
+}
+
+#[test]
+fn typed_lowerings_apply_inside_callbacks_and_keep_the_results() {
+    // The lowerings inside callbacks run on adversarial elements. A program
+    // type implementing `ISwap` gets the function `swap!` is given and may
+    // pass it anything (here `""` where the shape says `false`), so its
+    // callback keeps the runtime test; `reduce` over a program type is
+    // outside the table's domain.
+    let js = every_level(
+        r#"(defrecord Item [label qty])
+           (deftype Odd [] IReduce (-reduce [_ f init] (f "" init)))
+           (deftype Box [] ISwap (-swap! [_ f a] (f nil "")))
+           (defn heavy? [item] (> (:qty item) 2))
+           (defn flag [b] (if b :yes :no))
+           (def total (atom 0))
+           (let [items [(->Item "a" 1) (->Item "bb" 3) (map->Item {:label "" :qty 5})]]
+             (swap! total (fn [n k] (if (= k :all) (+ n (count items)) n)) :all)
+             (swap! total (fn [n k] (if (= k :all) (+ n 100) n)) (keyword "all"))
+             (pr-str [(mapv :label (filter heavy? items))
+                      (reduce (fn [n item] (+ n (count (:label item)))) 0 items)
+                      (mapv flag [nil false true])
+                      (mapv (fn [x] (if x 1 0)) [0 "" nil false (/ 0 0)])
+                      (reduce (fn [acc x] (if acc :truthy :falsy)) false (Odd.))
+                      (swap! (Box.) (fn [n k] (if k :truthy :falsy)) false)
+                      @total]))"#,
+        "[[\"bb\" \"\"] 3 [:no :no :yes] [1 1 0 0 1] :truthy :truthy 103]",
+    );
+    for lowered in [")[\"qty\"] > 2", "if (l", " || rt$keywordFqn(l"] {
+        assert!(js.contains(lowered), "{lowered}: {js}");
+    }
+}
+
+#[test]
+fn every_callback_shape_matches_what_the_runtime_passes() {
+    // Each operation with a callback shape calls a function that tests the
+    // truthiness of the parameters its shape types as `nil`, `boolean` or
+    // `keyword`, which `Advanced` lowers to JavaScript tests. A shape that put
+    // an index, a `\"\"` or another argument where it says such a value is
+    // would print differently from `None`.
+    let js = every_level(
+        r#"(def els [nil false :k])
+           (pr-str
+            [(mapv (fn [x] (if x :t :f)) els)
+             (vec (map (fn [x y] (if y :t :f)) els els))
+             (vec (map-indexed (fn [i x] (if x (if i :t :i) :f)) (reverse els)))
+             (vec (keep-indexed (fn [i x] (if x (if i :t :i) :f)) (reverse els)))
+             (vec (filter (fn [x] (if x true false)) els))
+             (vec (remove (fn [x] (if x true false)) els))
+             (vec (keep (fn [x] (if x :t nil)) els))
+             (vec (take-while (fn [x] (if x false true)) els))
+             (vec (drop-while (fn [x] (if x false true)) els))
+             (vec (partition-by (fn [x] (if x :t :f)) els))
+             (vec (mapcat (fn [x y] [(if x :t :f) (if y :t :f)]) els els))
+             (reduce (fn ([] :empty) ([acc x] (if x acc :f))) els)
+             (reduce (fn ([] :empty) ([acc x] (if x acc :f))) [])
+             (reduce (fn [acc x] (if acc (if x :t :f) :none)) nil els)
+             (vec (reductions (fn [acc x] (if acc (if x :t :f) :none)) nil els))
+             (vec (reductions (fn ([] :empty) ([acc x] (if x acc :f))) []))
+             (reduce-kv (fn [acc k v] (if acc acc (if v :t :f))) nil {:a false :b :k})
+             (filterv (fn [x] (if x true false)) els)
+             (every? (fn [x] (if x true false)) els)
+             (some (fn [x] (if x x nil)) els)
+             (not-any? (fn [x] (if x true false)) els)
+             (not-every? (fn [x] (if x true false)) els)
+             (run! (fn [x] (if x :t :f)) els)
+             (group-by (fn [x] (if x :t :f)) els)
+             (vec (sort (fn [a b] (if a (if b 0 1) (if b -1 0))) [:k nil :k false]))
+             (vec (sort-by (fn [x] (if x 1 0)) els))
+             (vec (take 3 (iterate (fn [x] (if x nil :k)) false)))
+             (vec (repeatedly 2 (fn [] :r)))
+             (update {:a false} :a (fn [v x] (if x :t :f)) false)
+             (update-in {:a {:b 1}} [:a :b] (fn [v x] (if x :t :f)) nil)
+             (merge-with (fn [a b] (if b :t :f)) {:a 1} {:a false})
+             (update-vals {:a false} (fn [v] (if v :t :f)))
+             (update-keys {:a 1} (fn [k] (if k k :f)))
+             (let [a (atom nil)] (swap! a (fn [v x] (if x :t :f)) false) @a)
+             (let [a (atom nil)] (swap-vals! a (fn [v x y] (if y :t :f)) :k false))])"#,
+        "[[:f :f :t] [:f :f :t] [:t :f :f] [:t :f :f] [:k] [nil false] [:t] [nil false] [:k] [(nil false) (:k)] [:f :f :f :f :t :t] :f :empty :t [nil :none :f :t] [:empty] :f [:k] false :k false true nil {:f [nil false], :t [:k]} [nil false :k :k] [nil false :k] [false :k nil] [:r :r] {:a :f} {:a {:b :f}} {:a :f} {:a :f} {:a 1} :f [nil :f]]",
+    );
+    assert!(js.contains("if (l"), "{js}");
 }
 
 #[test]

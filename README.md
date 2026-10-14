@@ -130,8 +130,9 @@ mode, still being built from
   with its hash computed by the compiler, and builds map literals with constant
   keys from a precomputed key shape;
 - infers types, of parameters too from the calls of functions only the program
-  calls, to write truth tests, arithmetic, comparisons and typed core calls as
-  plain JavaScript;
+  calls or passes to core operations such as `map`, `reduce` and `swap!`, to
+  write truth tests, arithmetic, comparisons and typed core calls as plain
+  JavaScript;
 - drops the methods and types no instance can use, and keeps of the runtime's
   collection, keyword and seq types only those the program can build, with the
   parts of each operation that handle them;

@@ -328,4 +328,26 @@ pub const FIXTURES: &[Fixture] = &[
         removed: [0, 0, 0],
         printed: "194\n",
     },
+    // Functions passed to `filter`, `reduce`, `map` and `swap!`, whose
+    // parameters take what those operations pass them, as their callback
+    // shapes in src/core_operations.tsv say (light-cljs-243): at `Advanced`
+    // `heavy?`, `add-cost` (with `cost` inlined) and the `map` callback read
+    // the record's fields, so no `:qty`, `:price` or `:label` keyword is
+    // built, and the `swap!` callback compares its keyword argument directly.
+    Fixture {
+        name: "callbacks",
+        source: "(defrecord Item [label qty price])
+                 (defn cost [item] (* (:qty item) (:price item)))
+                 (defn heavy? [item] (> (:qty item) 2))
+                 (defn add-cost [total item] (+ total (cost item)))
+                 (def counter (atom 0))
+                 (let [items [(->Item \"a\" 1 2) (->Item \"bb\" 3 4) (->Item \"ccc\" 5 1)]]
+                   (swap! counter (fn [n k] (if (= k :all) (+ n (count items)) n)) :all)
+                   (+ (reduce add-cost 0 (filter heavy? items))
+                      (reduce + (map (fn [item] (count (:label item))) items))
+                      @counter))",
+        ceilings: [400_000, 400_000, 43_000],
+        removed: [0, 0, 1],
+        printed: "26\n",
+    },
 ];

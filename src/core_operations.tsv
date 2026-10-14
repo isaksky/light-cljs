@@ -7,7 +7,14 @@
 ;; params:    call signatures, one bracketed arity each, `&` before the rest type;
 ;;            `-` when no call is described. Types are classes joined by `|`, or
 ;;            the aliases scalar, coll (runtime collections) and seqable.
-;; returns:   result type of a call within params; otherwise: of any other call.
+;;            `[fn]:fn` narrows the result type of one arity. `fn(e1)(...)`
+;;            is a callback shape: the arguments of each call the operation
+;;            makes of that function, from aN (argument N), eN (an element of
+;;            it), rN (what function argument N returns), aN+ and eN+ (from N
+;;            on) and types. A function argument without one escapes.
+;; returns:   result type of a call within params, then optionally the type of
+;;            the elements of the seqs, lists, vectors and sets it returns:
+;;            `seq|list<e1>`; otherwise: of any other call.
 ;; purity:    pure, allocates, throws or effect, for calls within params.
 ;; calls:     code the arguments supply that the call may run: -, dispatch
 ;;            (protocol methods, lazy sequences, sorted-collection comparators)
@@ -337,35 +344,35 @@ Name	name	fn	[string|keyword|symbol]	string	any	pure	-	name
 Namespace	namespace	fn	[keyword|symbol]	nil|string	any	pure	-	namespace
 ;;
 ;; Collection construction
-Vector	vector	fn	[& any]	vector	vector	allocates	-	vector
-List	list	fn	[& any]	list	list	allocates	-	list
+Vector	vector	fn	[& any]	vector<a0+>	vector	allocates	-	vector
+List	list	fn	[& any]	list<a0+>	list	allocates	-	list
 HashMap	hash-map	fn	[] [any any] [any any any any] [any any any any any any] [any any any any any any any any]	map	map	allocates	dispatch	hashMap
 ArrayMap	array-map	fn	[] [any any] [any any any any] [any any any any any any] [any any any any any any any any]	map	map	allocates	dispatch	arrayMap
-HashSet	hash-set	fn	[& any]	set	set	allocates	dispatch	hashSet
+HashSet	hash-set	fn	[& any]	set<a0+>	set	allocates	dispatch	hashSet
 SortedMap	sorted-map	fn	[& any]	map	any	throws	dispatch	sortedMap
 SortedSet	sorted-set	fn	[& any]	set	any	throws	dispatch	sortedSet
 SortedMapBy	sorted-map-by	fn	[fn & any]	map	any	throws	invoke	sortedMapBy
 SortedSetBy	sorted-set-by	fn	[fn & any]	set	any	throws	invoke	sortedSetBy
-Vec	vec	fn	[seqable]	vector	any	allocates	dispatch	vec
-Set	set	fn	[seqable]	set	any	allocates	dispatch	set
+Vec	vec	fn	[seqable]	vector<e0>	any	allocates	dispatch	vec
+Set	set	fn	[seqable]	set<e0>	any	allocates	dispatch	set
 Zipmap	zipmap	fn	[seqable seqable]	map	any	allocates	dispatch	zipmap
 Frequencies	frequencies	fn	[seqable]	map	any	allocates	dispatch	frequencies
-GroupBy	group-by	fn	[fn seqable]	map	any	allocates	invoke	groupBy
+GroupBy	group-by	fn	[fn(e1) seqable]	map	any	allocates	invoke	groupBy
 Into	into	fn	[] [nil|coll seqable] [nil|coll fn seqable]	nil|coll	any	throws	invoke	into
 ;;
 ;; Collection update
-Conj	conj	fn	[] [nil|coll] [nil|coll any & any]	nil|coll	any	throws	dispatch	conj
+Conj	conj	fn	[] [nil|coll] [nil|coll any & any]	nil|coll<e0|a1+>	any	throws	dispatch	conj
 Assoc	assoc	fn	[nil|map|vector any any & any]	map|vector	any	throws	dispatch	assoc
 Dissoc	dissoc	fn	[nil|map & any]	nil|map	any	allocates	dispatch	dissoc
 Disj	disj	fn	[nil|set & any]	nil|set	any	allocates	dispatch	disj
 AssocIn	assoc-in	fn	[nil|map|vector seqable any]	map|vector	any	throws	dispatch	assocIn
-UpdateIn	update-in	fn	[nil|map|vector seqable fn & any]	map|vector	any	throws	invoke	updateIn
-Update	update	fn	[nil|map|vector any fn & any]	map|vector	any	throws	invoke	update
+UpdateIn	update-in	fn	[nil|map|vector seqable fn(any,a3+) & any]	map|vector	any	throws	invoke	updateIn
+Update	update	fn	[nil|map|vector any fn(any,a3+) & any]	map|vector	any	throws	invoke	update
 Merge	merge	fn	[& nil|map]	nil|map	any	allocates	dispatch	merge
-MergeWith	merge-with	fn	[fn & nil|map]	nil|map	any	allocates	invoke	mergeWith
+MergeWith	merge-with	fn	[fn(any,any) & nil|map]	nil|map	any	allocates	invoke	mergeWith
 SelectKeys	select-keys	fn	[nil|map seqable]	map	any	allocates	dispatch	selectKeys
-UpdateVals	update-vals	fn	[nil|map fn]	map	any	allocates	invoke	updateVals
-UpdateKeys	update-keys	fn	[nil|map fn]	map	any	allocates	invoke	updateKeys
+UpdateVals	update-vals	fn	[nil|map fn(any)]	map	any	allocates	invoke	updateVals
+UpdateKeys	update-keys	fn	[nil|map fn(any)]	map	any	allocates	invoke	updateKeys
 Empty	empty	fn	[scalar|fn|coll]	nil|coll	any	allocates	-	empty
 Peek	peek	fn	[nil|vector|list]	any	any	pure	-	peek
 Pop	pop	fn	[nil|vector|list]	nil|vector|list	any	throws	-	pop
@@ -408,10 +415,10 @@ JsDelete	js-delete	fn	-	any	any	effect	invoke	jsDelete
 JsInvoke	js-invoke	fn	-	any	any	effect	invoke	jsInvoke
 ;;
 ;; Sequences
-Seq	seq	fn	[seqable]	nil|seq|list	nil|seq|list|record|object	allocates	dispatch	seq
+Seq	seq	fn	[seqable]	nil|seq|list<e0>	nil|seq|list|record|object	allocates	dispatch	seq
 First	first	fn	[seqable]	any	any	allocates	dispatch	first
-Rest	rest	fn	[seqable]	seq|list	seq|list|record|object	allocates	dispatch	rest
-Next	next	fn	[seqable]	nil|seq|list	nil|seq|list|record|object	allocates	dispatch	next
+Rest	rest	fn	[seqable]	seq|list<e0>	seq|list|record|object	allocates	dispatch	rest
+Next	next	fn	[seqable]	nil|seq|list<e0>	nil|seq|list|record|object	allocates	dispatch	next
 Second	second	fn	[seqable]	any	any	allocates	dispatch	second
 Fnext	fnext	fn	[seqable]	any	any	allocates	dispatch	fnext
 Last	last	fn	[seqable]	any	any	allocates	dispatch	last
@@ -433,16 +440,16 @@ Vals	vals	fn	[nil|map]	nil|seq	any	allocates	-	vals
 KeyProtocol	-key	fn	[vector]	any	any	throws	-	keyProtocol
 ValProtocol	-val	fn	[vector]	any	any	throws	-	valProtocol
 Rseq	rseq	fn	[vector]	nil|seq	any	allocates	-	rseq
-Reverse	reverse	fn	[seqable]	list	any	allocates	dispatch	reverse
-Cons	cons	fn	[any seqable]	seq|list	any	allocates	-	consCore
+Reverse	reverse	fn	[seqable]	list<e0>	any	allocates	dispatch	reverse
+Cons	cons	fn	[any seqable]	seq|list<a0|e1>	any	allocates	-	consCore
 ListStar	list*	fn	[seqable] [any seqable] [any any seqable] [any any any seqable]	nil|seq|list	any	allocates	dispatch	listStar
-Concat	concat	fn	[& seqable]	seq|list	any	allocates	-	concat
-Range	range	fn	[] [number] [number number] [number number number]	seq|list	any	allocates	-	range
+Concat	concat	fn	[& seqable]	seq|list<e0+>	any	allocates	-	concat
+Range	range	fn	[] [number] [number number] [number number number]	seq|list<number>	any	allocates	-	range
 Repeat	repeat	fn	[any] [number any]	seq|list	any	allocates	-	repeat
 Replicate	replicate	fn	[number any]	seq|list	any	allocates	-	replicate
 Cycle	cycle	fn	[seqable]	seq|list	any	allocates	dispatch	cycle
-Iterate	iterate	fn	[fn any]	seq	any	allocates	-	iterate
-Repeatedly	repeatedly	fn	[fn] [number fn]	seq|list	any	allocates	-	repeatedly
+Iterate	iterate	fn	[fn(a1|r0) any]	seq<a1|r0>	any	allocates	-	iterate
+Repeatedly	repeatedly	fn	[fn()] [number fn()]	seq|list	any	allocates	-	repeatedly
 TreeSeq	tree-seq	fn	[fn fn any]	seq|list	any	allocates	-	treeSeq
 Flatten	flatten	fn	[any]	seq|list	any	allocates	dispatch	flatten
 Doall	doall	fn	[seqable] [number seqable]	seqable	any	pure	dispatch	doall
@@ -452,18 +459,18 @@ IsEmpty	empty?	fn	[seqable]	boolean	boolean	pure	dispatch	isEmpty
 SeqToMap	seq-to-map-for-destructuring	fn	-	any	any	effect	invoke	seqToMap
 ;;
 ;; Lazy sequence functions and transducers: they capture their function arguments
-MapSeq	map	fn	[fn] [fn seqable & seqable]	fn|seq|list	any	allocates	-	mapSeq
-Filter	filter	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	filter
-Remove	remove	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	remove
-Keep	keep	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	keep
-KeepIndexed	keep-indexed	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	keepIndexed
-MapIndexed	map-indexed	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	mapIndexed
-TakeWhile	take-while	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	takeWhile
-DropWhile	drop-while	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	dropWhile
-PartitionBy	partition-by	fn	[fn] [fn seqable]	fn|seq|list	any	allocates	-	partitionBy
-Mapcat	mapcat	fn	[fn] [fn & seqable]	fn|seq|list	any	allocates	invoke	mapcat
-Take	take	fn	[number] [number seqable]	fn|seq|list	any	allocates	-	take
-Drop	drop	fn	[number] [number seqable]	fn|seq|list	any	allocates	-	drop
+MapSeq	map	fn	[fn]:fn [fn(e1+) seqable & seqable]:seq|list	fn|seq|list<r0>	any	allocates	-	mapSeq
+Filter	filter	fn	[fn]:fn [fn(e1) seqable]:seq|list	fn|seq|list<e1>	any	allocates	-	filter
+Remove	remove	fn	[fn]:fn [fn(e1) seqable]:seq|list	fn|seq|list<e1>	any	allocates	-	remove
+Keep	keep	fn	[fn]:fn [fn(e1) seqable]:seq|list	fn|seq|list<r0>	any	allocates	-	keep
+KeepIndexed	keep-indexed	fn	[fn]:fn [fn(number,e1) seqable]:seq|list	fn|seq|list<r0>	any	allocates	-	keepIndexed
+MapIndexed	map-indexed	fn	[fn]:fn [fn(number,e1) seqable]:seq|list	fn|seq|list<r0>	any	allocates	-	mapIndexed
+TakeWhile	take-while	fn	[fn]:fn [fn(e1) seqable]:seq|list	fn|seq|list<e1>	any	allocates	-	takeWhile
+DropWhile	drop-while	fn	[fn]:fn [fn(e1) seqable]:seq|list	fn|seq|list<e1>	any	allocates	-	dropWhile
+PartitionBy	partition-by	fn	[fn]:fn [fn(e1) seqable]:seq|list	fn|seq|list	any	allocates	-	partitionBy
+Mapcat	mapcat	fn	[fn]:fn [fn(e1+) seqable & seqable]:seq|list	fn|seq|list	any	allocates	invoke	mapcat
+Take	take	fn	[number]:fn [number seqable]:seq|list	fn|seq|list<e1>	any	allocates	-	take
+Drop	drop	fn	[number]:fn [number seqable]:seq|list	fn|seq|list<e1>	any	allocates	-	drop
 TakeNth	take-nth	fn	[number] [number seqable]	fn|seq|list	any	allocates	-	takeNth
 PartitionAll	partition-all	fn	[number] [number seqable]	fn|seq|list	any	allocates	-	partitionAll
 PartitionVAll	partitionv-all	fn	[number] [number seqable]	fn|seq|list	any	allocates	-	partitionVAll
@@ -478,7 +485,7 @@ Interleave	interleave	fn	[] [seqable] [seqable seqable & seqable]	seq|list	any	a
 Interpose	interpose	fn	[any] [any seqable]	fn|seq|list	any	allocates	-	interpose
 Distinct	distinct	fn	[] [seqable]	fn|seq|list	any	allocates	-	distinct
 Dedupe	dedupe	fn	[] [seqable]	fn|seq|list	any	allocates	-	dedupe
-Reductions	reductions	fn	[fn seqable] [fn any seqable]	seq|list	any	allocates	invoke	reductions
+Reductions	reductions	fn	[fn()(e1|r0,e1) seqable] [fn(a1|r0,e2) any seqable]	seq|list	any	allocates	invoke	reductions
 Sequence	sequence	fn	[seqable] [fn seqable & seqable]	seq|list	any	allocates	invoke	sequence
 Eduction	eduction	fn	[any & any]	object	any	allocates	-	eduction
 Cat	cat	fn	[fn]	fn	any	allocates	-	cat
@@ -487,22 +494,22 @@ HaltWhen	halt-when	fn	[fn] [fn fn]	fn	any	allocates	-	haltWhen
 RandomSample	random-sample	fn	[number] [number seqable]	fn|seq|list	any	effect	-	randomSample
 ;;
 ;; Reduction and higher-order consumers
-Reduce	reduce	fn	[fn seqable] [fn any seqable]	any	any	throws	invoke	reduce
-ReduceKv	reduce-kv	fn	[fn any nil|map|vector]	any	any	throws	invoke	reduceKv
+Reduce	reduce	fn	[fn()(e1|r0,e1) seqable] [fn(a1|r0,e2) any seqable]	any	any	throws	invoke	reduce
+ReduceKv	reduce-kv	fn	[fn(a1|r0,any,any) any nil|map|vector]	any	any	throws	invoke	reduceKv
 Transduce	transduce	fn	[fn fn seqable] [fn fn any seqable]	any	any	throws	invoke	transduce
-Mapv	mapv	fn	[fn seqable & seqable]	vector	any	allocates	invoke	mapv
-Filterv	filterv	fn	[fn seqable]	vector	any	allocates	invoke	filterv
-Every	every?	fn	[fn seqable]	boolean	boolean	pure	invoke	every
-NotEvery	not-every?	fn	[fn seqable]	boolean	boolean	pure	invoke	notEvery
-NotAny	not-any?	fn	[fn seqable]	boolean	boolean	pure	invoke	notAny
-Some	some	fn	[fn seqable]	any	any	allocates	invoke	some
-Run	run!	fn	[fn seqable]	nil	any	pure	invoke	run
+Mapv	mapv	fn	[fn(e1+) seqable & seqable]	vector<r0>	any	allocates	invoke	mapv
+Filterv	filterv	fn	[fn(e1) seqable]	vector<e1>	any	allocates	invoke	filterv
+Every	every?	fn	[fn(e1) seqable]	boolean	boolean	pure	invoke	every
+NotEvery	not-every?	fn	[fn(e1) seqable]	boolean	boolean	pure	invoke	notEvery
+NotAny	not-any?	fn	[fn(e1) seqable]	boolean	boolean	pure	invoke	notAny
+Some	some	fn	[fn(e1) seqable]	any	any	allocates	invoke	some
+Run	run!	fn	[fn(e1) seqable]	nil	any	pure	invoke	run
 Apply	apply	fn	[fn & any]	any	any	throws	invoke	apply
 Trampoline	trampoline	fn	[fn & any]	any	any	pure	invoke	trampoline
 MinKey	min-key	fn	[fn any & any]	any	any	pure	invoke	minKey
 MaxKey	max-key	fn	[fn any & any]	any	any	pure	invoke	maxKey
-Sort	sort	fn	[seqable] [fn seqable]	seq|list	any	throws	invoke	sort
-SortBy	sort-by	fn	[fn seqable] [fn fn seqable]	seq|list	any	throws	invoke	sortBy
+Sort	sort	fn	[seqable] [fn(e1,e1) seqable]	seq|list	any	throws	invoke	sort
+SortBy	sort-by	fn	[fn(e1) seqable] [fn(e2) fn seqable]	seq|list	any	throws	invoke	sortBy
 Subseq	subseq	fn	[map|set fn any] [map|set fn any fn any]	nil|seq	any	throws	invoke	subseq
 Rsubseq	rsubseq	fn	[map|set fn any] [map|set fn any fn any]	nil|seq	any	throws	invoke	rsubseq
 ;;
@@ -702,9 +709,9 @@ Force	force	fn	[any]	any	any	effect	dispatch	force
 Realized	realized?	fn	[seq|object]	boolean	any	effect	-	realized
 Reset	reset!	fn	[object any]	any	any	effect	dispatch	reset
 VReset	vreset!	fn	[object any]	any	any	effect	dispatch	vreset
-Swap	swap!	fn	[object fn & any]	any	any	effect	invoke	swap
+Swap	swap!	fn	[object fn(any,a2+) & any]	any	any	effect	invoke	swap
 ResetVals	reset-vals!	fn	[object any]	vector	any	effect	dispatch	resetVals
-SwapVals	swap-vals!	fn	[object fn & any]	vector	any	effect	invoke	swapVals
+SwapVals	swap-vals!	fn	[object fn(any,a2+) & any]	vector	any	effect	invoke	swapVals
 CompareAndSet	compare-and-set!	fn	[object any any]	boolean	any	effect	dispatch	compareAndSet
 SetValidator	set-validator!	fn	[object nil|fn]	nil|fn	any	effect	invoke	setValidator
 GetValidator	get-validator	fn	[object]	nil|fn	any	effect	-	getValidator

@@ -118,6 +118,13 @@
 //!   every visible local);
 //! - it is the callee of a call (`((fn [x] ...) 1)`);
 //!
+//! where, since light-cljs-243, a read of the global or local, or the `fn`
+//! itself, may also be a function argument with a callback shape of a core
+//! operation call (`(map f xs)`, `crate::core_operations::Callback`): such a
+//! global still escapes for emission, which keeps its value, but the
+//! operation's calls of it are known ([`ClosedFunctions::callbacks`]), as
+//! long as the table describes the call, which inference checks;
+//!
 //! and, for a named `fn`, its name is read only as the callee of calls. The
 //! `fn` expression and the one-form `do`s around it must have one parent each,
 //! since an expression reached twice is evaluated twice. Every call of a
@@ -398,6 +405,13 @@ pub struct ClosedFunctions {
     slots: Vec<u32>,
     /// Each call of a closed `fn`, with the `fn` and the method it runs.
     calls: Vec<(ExprId, ExprId, usize)>,
+    /// By `ExprId`: the index in `callbacks` of the call's first callback, or
+    /// `u32::MAX`.
+    callback_slots: Vec<u32>,
+    /// Each core operation call that receives a closed `fn` as a function
+    /// argument with a callback shape, with the argument's index and the
+    /// `fn`, ordered by call (light-cljs-243).
+    callbacks: Vec<(ExprId, usize, ExprId)>,
 }
 
 impl ClosedFunctions {
@@ -413,6 +427,21 @@ impl ClosedFunctions {
         self.calls
             .get(slot as usize)
             .map(|&(_, function, method)| (function, method))
+    }
+
+    /// The closed `fn`s that the core operation call `call` receives as
+    /// function arguments with a callback shape, with their argument indices.
+    pub fn callbacks(&self, call: ExprId) -> impl Iterator<Item = (usize, ExprId)> + '_ {
+        let start = self
+            .callback_slots
+            .get(call.0)
+            .map_or(self.callbacks.len(), |&slot| slot as usize);
+        self.callbacks
+            .get(start..)
+            .unwrap_or(&[])
+            .iter()
+            .take_while(move |(site, ..)| *site == call)
+            .map(|&(_, index, function)| (index, function))
     }
 
     /// How many `fn` expressions are closed.
@@ -435,6 +464,8 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         functions: vec![false; count],
         slots: vec![u32::MAX; count],
         calls: Vec::new(),
+        callback_slots: vec![u32::MAX; count],
+        callbacks: Vec::new(),
     };
     let local_calls = &scan.local_calls;
     let mut global_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.globals.len()];
@@ -451,13 +482,18 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         let Some((user, value)) = scan.sole_use(program, function) else {
             continue;
         };
-        let mut calls = match &program.exprs[user.0].kind {
-            ExprKind::Call { callee, .. } if *callee == value => vec![user],
+        let (mut calls, callbacks) = match &program.exprs[user.0].kind {
+            ExprKind::Call { callee, .. } if *callee == value => (vec![user], Vec::new()),
+            ExprKind::Call { .. } => match scan.callback_site(program, value) {
+                Some(site) => (Vec::new(), vec![site]),
+                None => continue,
+            },
             ExprKind::Let { bindings, .. } | ExprKind::LetFn { bindings, .. } => {
                 match bindings.iter().find(|(_, init)| *init == value) {
-                    Some((local, _)) if !scan.local_escapes[local.0] => {
-                        local_calls[local.0].clone()
-                    }
+                    Some((local, _)) if !scan.local_values_escape[local.0] => (
+                        local_calls[local.0].clone(),
+                        scan.local_callbacks[local.0].clone(),
+                    ),
                     _ => continue,
                 }
             }
@@ -466,13 +502,19 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
                 init: Some(init),
                 ..
             } if *init == value
-                && scan.closed[global.0]
+                && scan.typed[global.0]
                 && scan.functions[global.0].function() == Some(function) =>
             {
-                global_calls[global.0].clone()
+                (
+                    global_calls[global.0].clone(),
+                    scan.global_callbacks[global.0].clone(),
+                )
             }
             _ => continue,
         };
+        for (call, index) in callbacks {
+            closed.callbacks.push((call, index, function));
+        }
         if let Some(name) = name {
             calls.extend(&local_calls[name.0]);
         }
@@ -489,6 +531,12 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         }
     }
     closed
+        .callbacks
+        .sort_unstable_by_key(|&(call, index, _)| (call.0, index));
+    for (slot, &(call, ..)) in closed.callbacks.iter().enumerate().rev() {
+        closed.callback_slots[call.0] = u32::try_from(slot).expect("fewer than 2^32 calls");
+    }
+    closed
 }
 
 /// What [`analyze`] and [`closed_functions`] decide without inference: the
@@ -502,6 +550,13 @@ struct Scan {
     functions: Vec<FunctionShape>,
     /// By global: the function is known and does not escape.
     closed: Vec<bool>,
+    /// By global: the function is known and escapes only as a function
+    /// argument with a callback shape of core operation calls, which
+    /// `global_callbacks` lists (light-cljs-243).
+    typed: Vec<bool>,
+    /// By global: the core operation calls that receive it as a function
+    /// argument with a callback shape, with the argument's index.
+    global_callbacks: Vec<Vec<(ExprId, usize)>>,
     /// The calls of known globals whose argument count selects a method, with
     /// the global and the method.
     resolved: Vec<(ExprId, GlobalId, usize)>,
@@ -518,6 +573,10 @@ struct Scan {
     object_captures: Vec<bool>,
     /// By `LocalId`: the calls whose callee is the local.
     local_calls: Vec<Vec<ExprId>>,
+    /// By `LocalId`: as `local_escapes`, except reads that are function
+    /// arguments with a callback shape, which `local_callbacks` lists.
+    local_values_escape: Vec<bool>,
+    local_callbacks: Vec<Vec<(ExprId, usize)>>,
 }
 
 impl Scan {
@@ -568,6 +627,16 @@ impl Scan {
         let mut local_escapes = vec![false; program.locals.len()];
         let mut object_captures = vec![false; program.locals.len()];
         let mut local_calls = vec![Vec::new(); program.locals.len()];
+        let mut values_escape = vec![false; globals];
+        let mut global_callbacks = vec![Vec::new(); globals];
+        let mut local_values_escape = vec![false; program.locals.len()];
+        let mut local_callbacks = vec![Vec::new(); program.locals.len()];
+        // A read that is a function argument with a callback shape of a core
+        // operation call: the call and the argument's index.
+        let callback_of = |id: ExprId| {
+            let call = parent_of(id)?;
+            callback_index(program, call, id).map(|index| (call, index))
+        };
         for &id in &order {
             let mut assign = |target: &ExprId| {
                 if let ExprKind::Global(global) = program.exprs[target.0].kind {
@@ -582,9 +651,10 @@ impl Scan {
                 ExprKind::Reify {
                     captures, methods, ..
                 } => {
-                    captures
-                        .iter()
-                        .for_each(|local| local_escapes[local.0] = true);
+                    for local in captures {
+                        local_escapes[local.0] = true;
+                        local_values_escape[local.0] = true;
+                    }
                     methods.as_slice()
                 }
                 ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
@@ -621,12 +691,22 @@ impl Scan {
                 ExprKind::Global(global) => {
                     if callee_of(id).is_none() {
                         escaped[global.0] = true;
+                        match callback_of(id) {
+                            Some(site) => global_callbacks[global.0].push(site),
+                            None => values_escape[global.0] = true,
+                        }
                     }
                 }
                 // A local that is assigned (`set!`, a `js*` hole) is read there.
                 ExprKind::Local(local) => match callee_of(id) {
                     Some(call) => local_calls[local.0].push(call),
-                    None => local_escapes[local.0] = true,
+                    None => {
+                        local_escapes[local.0] = true;
+                        match callback_of(id) {
+                            Some(site) => local_callbacks[local.0].push(site),
+                            None => local_values_escape[local.0] = true,
+                        }
+                    }
                 },
                 ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
                     ExprKind::Global(global) => sites.push((id, global, args.len())),
@@ -648,12 +728,16 @@ impl Scan {
             order,
             functions: vec![FunctionShape::Generic; globals],
             closed: vec![false; globals],
+            typed: vec![false; globals],
+            global_callbacks,
             resolved: Vec::new(),
             name_resolved: Vec::new(),
             inferred_sites,
             local_escapes,
             object_captures,
             local_calls,
+            local_values_escape,
+            local_callbacks,
         };
         let mut known = vec![None; globals];
         for global in 0..globals {
@@ -715,11 +799,13 @@ impl Scan {
             known[global] = Some(function);
             if !discarded(program, def, &|id| scan.parent_of(id)) {
                 escaped[global] = true;
+                values_escape[global] = true;
             }
         }
         for global in exports {
             if let Some(escaped) = escaped.get_mut(global.0) {
                 *escaped = true;
+                values_escape[global.0] = true;
             }
         }
         // Calls whose count selects no method go through the dispatcher.
@@ -729,7 +815,10 @@ impl Scan {
             };
             match method_for(methods_of(program, function), arguments) {
                 Some(method) => scan.resolved.push((call, global, method)),
-                None => escaped[global.0] = true,
+                None => {
+                    escaped[global.0] = true;
+                    values_escape[global.0] = true;
+                }
             }
         }
         for global in 0..globals {
@@ -741,12 +830,13 @@ impl Scan {
             let ExprKind::Fn { name, .. } = program.exprs[function.0].kind else {
                 continue;
             };
-            let closed = !escaped[global]
-                && scan.name_closed(name)
+            let defined = scan.name_closed(name)
                 && scan
                     .sole_use(program, function)
                     .is_some_and(|(user, _)| Some(user) == definition[global]);
+            let closed = !escaped[global] && defined;
             scan.closed[global] = closed;
+            scan.typed[global] = !values_escape[global] && defined;
             scan.functions[global] = if single(methods_of(program, function)) {
                 FunctionShape::Single { function, closed }
             } else {
@@ -775,6 +865,14 @@ impl Scan {
                 _ => return Some((parent, child)),
             }
         }
+    }
+
+    /// Where the value of `id` goes when it is a function argument with a
+    /// callback shape of a core operation call: the call and the argument's
+    /// index.
+    fn callback_site(&self, program: &Program, id: ExprId) -> Option<(ExprId, usize)> {
+        let call = self.parent_of(id)?;
+        callback_index(program, call, id).map(|index| (call, index))
     }
 
     /// Whether a `fn` with this name, if any, has its name read only as the
@@ -1075,6 +1173,23 @@ fn methods_of(program: &Program, function: ExprId) -> &[FnMethod] {
     }
 }
 
+/// The index of `argument` among the arguments of `call` when `call` is a
+/// call of a core operation that describes how it calls that argument (a
+/// callback shape, `crate::core_operations::Callback`) for its argument
+/// count. Inference checks whether the table describes the call: its
+/// argument types, and the operation not being replaced.
+fn callback_index(program: &Program, call: ExprId, argument: ExprId) -> Option<usize> {
+    let ExprKind::Call { callee, args } = &program.exprs[call.0].kind else {
+        return None;
+    };
+    let ExprKind::CoreFn(core) = program.exprs[callee.0].kind else {
+        return None;
+    };
+    let index = args.iter().position(|arg| *arg == argument)?;
+    let arity = core.operation().arity(args.len())?;
+    arity.callback(index).map(|_| index)
+}
+
 /// The method the dispatcher runs for `arguments` arguments, when it calls one
 /// with exactly those: the fixed method of that count, else the variadic
 /// method when there are at least its fixed parameters. A function with one
@@ -1098,7 +1213,7 @@ fn method_for(methods: &[FnMethod], arguments: usize) -> Option<usize> {
 /// the dispatcher also runs for fewer arguments than its fixed parameters
 /// (they are `undefined`). `None` when the call throws. A call that
 /// [`method_for`] resolves runs the same method.
-fn dispatched_method(methods: &[FnMethod], arguments: usize) -> Option<usize> {
+pub(crate) fn dispatched_method(methods: &[FnMethod], arguments: usize) -> Option<usize> {
     if single(methods) {
         return Some(0);
     }

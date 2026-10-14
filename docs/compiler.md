@@ -327,9 +327,14 @@ truthiness, through `and`, `or` and `not`). A parameter has the types of the
 arguments its function's calls pass when the program makes every call of the
 function itself: the function is only ever called, through its global, a
 `let` or `letfn` local or its own name, or called in place, and never passed
-as a value (`apply`, `map`, `partial`), exported or reassigned. Other
-parameters, and those that `js*` text or `(js-arguments)` may assign, are
-unknown. Emission uses the types:
+as a value (`apply`, `partial`), exported or reassigned. Passing it to a core
+operation whose row in `src/core_operations.tsv` describes how it calls its
+function argument (`map`, `filter`, `reduce`, `swap!` and 28 more) adds that
+operation's calls: `(map f xs)` calls `f` with an element of `xs`, `(reduce f
+init xs)` with the accumulator and an element, `(swap! a f x)` with the state
+and `x`. Inference tracks the elements of sequences, lists, vectors and sets
+for this. Other parameters, and those that `js*` text or `(js-arguments)` may
+assign, are unknown. Emission uses the types:
 
 - An `if` tests a value directly instead of through `truth()` when it cannot
   be a number, string or host value (`(< a b)`, `(seq xs)`, a keyword), and

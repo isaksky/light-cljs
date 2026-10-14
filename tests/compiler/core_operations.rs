@@ -214,8 +214,8 @@ fn classes(ty: Type) -> String {
 
 /// Calls every operation that is not `effect` on sample arguments of every
 /// class its parameters admit, in the canonical runtime, and reports each
-/// call that contradicts its row: a result outside `returns` (or `otherwise`
-/// for calls outside the domain), a `pure` or `allocates` call that throws,
+/// call that contradicts its row: a result outside its arity's `returns` (or
+/// `otherwise` for calls outside the domain), a `pure` or `allocates` call that throws,
 /// a call that invokes a function argument without `invoke`, or one that
 /// realizes a lazy sequence argument with `-` calls. Function arguments are
 /// traps that throw when called, except for `invoke` rows; lazy sequence
@@ -230,7 +230,11 @@ fn signatures_hold_on_sample_arguments() {
                 .map(|arity| {
                     let params = arity.params.iter().map(|p| classes(*p)).collect::<Vec<_>>();
                     let rest = arity.rest.map_or("null".into(), classes);
-                    format!("{{params: [{}], rest: {rest}}}", params.join(","))
+                    let returns = classes(arity.returns.unwrap_or(operation.returns));
+                    format!(
+                        "{{params: [{}], rest: {rest}, returns: {returns}}}",
+                        params.join(",")
+                    )
                 })
                 .collect::<Vec<_>>(),
             _ => Vec::new(),
@@ -361,7 +365,7 @@ fn signatures_hold_on_sample_arguments() {
     for (const arity of row.arities)
       for (const shape of shapes(arity))
         for (const args of tuples(shape.map(classes => {{ const pool = samples(); return classes.flatMap(k => pool[k]); }})))
-          check(args, row.returns, true);
+          check(args, arity.returns, true);
     calls = "invoke";
     if (row.arities.length && row.otherwise.length < 15) {{
       const everything = Object.values(samples()).flat();

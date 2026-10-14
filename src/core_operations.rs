@@ -41,8 +41,24 @@
 //! - `params`: the call signatures, one bracketed arity each, with `&` before
 //!   the type of every rest argument: `[] [number] [number & number]`. `-` means
 //!   no call is described. The arities and their parameter types are the
-//!   operation's *domain*.
-//! - `returns`: the type of every value a call within the domain returns.
+//!   operation's *domain*. An arity may narrow `returns` for its calls
+//!   (`[fn]:fn`, a transducer), and a `fn` parameter may carry a callback
+//!   shape ([`Callback`], light-cljs-243): the argument lists of every call
+//!   the operation makes of that argument, one parenthesized list each, of
+//!   comma-separated [`Descriptor`]s. `map` is `[fn(e1+) seqable & seqable]`
+//!   (an element of each collection), `reduce` `[fn()(e1|r0,e1) seqable]`
+//!   (no arguments for an empty collection, else the accumulator and an
+//!   element) and `swap!` `[object fn(any,a2+) & any]`. A descriptor joins
+//!   terms with `|`: a type, `aN` (argument `N`), `eN` (an element of it,
+//!   [`crate::inference::Inferred::element`]), `rN` (what the function
+//!   argument `N` returns), and `aN+` or `eN+` (from argument `N` on, which
+//!   alone in a call's last descriptor spreads into one argument each).
+//!   A function argument without a shape escapes: the operation may store,
+//!   return or call it otherwise.
+//! - `returns`: the type of every value a call within the domain returns,
+//!   optionally followed by the elements of the `seq`, `list`, `vector` and
+//!   `set` values it returns as a descriptor in angle brackets: `filter` is
+//!   `fn|seq|list<e1>` and `map` `fn|seq|list<r0>`.
 //! - `otherwise`: the type of every value any other call returns, including
 //!   arity mismatches. `str` returns a string whatever it is given, although
 //!   only scalars are inside its domain.
@@ -274,15 +290,80 @@ pub enum Calls {
     Invoke,
 }
 
+/// One term of a [`Descriptor`], naming a value through the arguments of a
+/// call of the operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Term {
+    /// A value of this type (`number`, `any`, ...).
+    Type(Type),
+    /// The argument at this index (`a1`).
+    Argument(usize),
+    /// An element of the argument at this index (`e1`): one of the values a
+    /// sequence over it yields.
+    Element(usize),
+    /// The argument at this index and every later one (`a1+`).
+    Arguments(usize),
+    /// An element of the argument at this index and of every later one
+    /// (`e1+`).
+    Elements(usize),
+    /// What the function argument at this index returns when the operation
+    /// calls it as its [`Callback`] says (`r0`).
+    Returns(usize),
+}
+
+/// A value described through a call's arguments: the join of its terms
+/// (`a1|r0`). In a [`Callback`]'s call, a descriptor that is one `Arguments`
+/// or `Elements` term comes last and spreads: it is one argument per call
+/// argument from that index on. Anywhere else such a term is the join of
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Descriptor {
+    pub terms: Vec<Term>,
+}
+
+impl Descriptor {
+    /// The term of a descriptor that spreads in a callback's call.
+    pub fn spread(&self) -> Option<Term> {
+        match self.terms[..] {
+            [term @ (Term::Arguments(_) | Term::Elements(_))] => Some(term),
+            _ => None,
+        }
+    }
+}
+
+/// How an operation calls one of its function arguments (a callback shape):
+/// the argument lists of every call it makes of the function at `index`,
+/// for calls within the arity's domain. Written after the `fn` parameter in
+/// the table, one parenthesized list per call: `fn()(e1|r0,e1)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Callback {
+    pub index: usize,
+    pub calls: Vec<Vec<Descriptor>>,
+}
+
 /// One arity of a call signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arity {
     pub params: Vec<Type>,
     /// The type of every argument after `params`, for a variadic arity.
     pub rest: Option<Type>,
+    /// The function parameters with a callback shape. The operation calls a
+    /// function argument without one in ways the table does not describe
+    /// (it may also return or store it), so that function escapes.
+    pub callbacks: Vec<Callback>,
+    /// The type of every value a call within this arity's domain returns,
+    /// when narrower than the row's `returns` (written `[fn]:fn`).
+    pub returns: Option<Type>,
 }
 
 impl Arity {
+    /// The callback shape of the function argument at `index`.
+    pub fn callback(&self, index: usize) -> Option<&Callback> {
+        self.callbacks
+            .iter()
+            .find(|callback| callback.index == index)
+    }
+
     /// Whether a call with `count` arguments uses this arity's shape.
     pub fn accepts_count(&self, count: usize) -> bool {
         if self.rest.is_some() {
@@ -325,6 +406,11 @@ pub struct Operation {
     /// `None` when no call is described (`-`).
     pub arities: Option<Vec<Arity>>,
     pub returns: Type,
+    /// For calls within the domain: the values the `seq`, `list`, `vector`
+    /// and `set` collections a call returns hold, written after the
+    /// `returns` type (`seq|list<e1>`). A term naming an argument the call
+    /// does not pass is `any`.
+    pub elements: Option<Descriptor>,
     pub otherwise: Type,
     pub purity: Purity,
     pub calls: Calls,
@@ -344,13 +430,21 @@ impl Operation {
             .or_else(|| arities.iter().find(|arity| arity.accepts_count(count)))
     }
 
+    /// What a call with `count` arguments within the domain returns: the
+    /// arity's `returns`, else the row's.
+    pub fn returns_for(&self, count: usize) -> Type {
+        self.arity(count)
+            .and_then(|arity| arity.returns)
+            .unwrap_or(self.returns)
+    }
+
     /// What a call with arguments of these types does. Within the domain it is
-    /// the row's `returns`, `purity` and `calls`; outside it the call returns
-    /// `otherwise` and may do anything.
+    /// the arity's or the row's `returns`, and the row's `purity` and `calls`;
+    /// outside it the call returns `otherwise` and may do anything.
     pub fn call(&self, arguments: &[Type]) -> CallSummary {
         match self.arity(arguments.len()) {
             Some(arity) if arity.admits(arguments) => CallSummary {
-                returns: self.returns,
+                returns: arity.returns.unwrap_or(self.returns),
                 purity: self.purity,
                 calls: self.calls,
             },
@@ -448,12 +542,23 @@ fn parse_row(row: &'static str, line: usize) -> Result<Operation, String> {
     let ty = |column: &str, text: &str| {
         Type::parse(text).ok_or_else(|| format!("{variant}: invalid {column} type `{text}`"))
     };
+    let (returns, elements) = match returns.split_once('<') {
+        Some((returns, elements)) => {
+            let descriptor = elements
+                .strip_suffix('>')
+                .and_then(parse_descriptor)
+                .ok_or_else(|| format!("{variant}: invalid element type `<{elements}`"))?;
+            (returns, Some(descriptor))
+        }
+        None => (returns, None),
+    };
     let operation = Operation {
         variant,
         name,
         value: ty("value", value)?,
         arities: parse_params(params).map_err(|message| format!("{variant}: {message}"))?,
         returns: ty("returns", returns)?,
+        elements,
         otherwise: ty("otherwise", otherwise)?,
         purity: match purity {
             "pure" => Purity::Pure,
@@ -481,6 +586,16 @@ fn parse_row(row: &'static str, line: usize) -> Result<Operation, String> {
     if operation.units.iter().any(|unit| unit.is_empty()) {
         return Err(format!("{variant}: invalid units `{units}`"));
     }
+    if operation.arities.iter().flatten().any(|arity| {
+        arity
+            .returns
+            .is_some_and(|returns| !operation.returns.contains(returns))
+    }) {
+        return Err(format!(
+            "{variant}: an arity's returns type is not part of the row's `{}`",
+            operation.returns
+        ));
+    }
     if operation.arities.is_none()
         && (operation.returns != Type::ANY
             || operation.purity != Purity::Effect
@@ -507,9 +622,20 @@ fn parse_params(text: &str) -> Result<Option<Vec<Arity>>, String> {
             .and_then(|after| after.split_once(']'))
             .ok_or_else(|| format!("invalid params `{text}`"))?;
         let (body, after) = inner;
+        let (returns, after) = match after.strip_prefix(':') {
+            Some(after) => {
+                let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                let returns = &after[..end];
+                let ty = Type::parse(returns)
+                    .ok_or_else(|| format!("invalid arity returns type `{returns}`"))?;
+                (Some(ty), &after[end..])
+            }
+            None => (None, after),
+        };
         rest_text = after.trim_start();
         let mut params = Vec::new();
         let mut rest = None;
+        let mut callbacks = Vec::new();
         let mut words = body.split_whitespace();
         while let Some(word) = words.next() {
             if word == "&" {
@@ -520,11 +646,43 @@ fn parse_params(text: &str) -> Result<Option<Vec<Arity>>, String> {
                 if words.next().is_some() {
                     return Err(format!("the rest type must come last in `{text}`"));
                 }
+            } else if let Some(shape) = word.strip_prefix("fn(") {
+                let calls =
+                    parse_calls(shape).ok_or_else(|| format!("invalid callback shape `{word}`"))?;
+                callbacks.push(Callback {
+                    index: params.len(),
+                    calls,
+                });
+                params.push(Type::FN);
             } else {
                 params.push(Type::parse(word).ok_or_else(|| format!("invalid type `{word}`"))?);
             }
         }
-        arities.push(Arity { params, rest });
+        // Every term names a parameter, and `rN` one with a callback shape.
+        let names_parameter = |index: usize| index < params.len() || rest.is_some();
+        let valid = |term: &Term| match *term {
+            Term::Type(_) => true,
+            Term::Argument(index)
+            | Term::Element(index)
+            | Term::Arguments(index)
+            | Term::Elements(index) => names_parameter(index),
+            Term::Returns(index) => callbacks.iter().any(|callback| callback.index == index),
+        };
+        if callbacks
+            .iter()
+            .flat_map(|callback| callback.calls.iter().flatten())
+            .any(|descriptor| !descriptor.terms.iter().all(valid))
+        {
+            return Err(format!(
+                "a callback shape names a missing parameter in `{text}`"
+            ));
+        }
+        arities.push(Arity {
+            params,
+            rest,
+            callbacks,
+            returns,
+        });
     }
     if arities.is_empty() {
         return Err("empty params; use `-`".into());
@@ -547,6 +705,67 @@ fn parse_params(text: &str) -> Result<Option<Vec<Arity>>, String> {
         ));
     }
     Ok(Some(arities))
+}
+
+/// Parses the calls of a callback shape after its `fn(`: comma-separated
+/// descriptors per call, each call closed by `)`, the next opened by `(`:
+/// `e1)` or `)(e1|r0,e1)`. An `aN+` or `eN+` term is alone in the last
+/// descriptor of its call, which it spreads.
+fn parse_calls(text: &str) -> Option<Vec<Vec<Descriptor>>> {
+    let mut calls = Vec::new();
+    let mut rest = text;
+    loop {
+        let (body, after) = rest.split_once(')')?;
+        let call = if body.is_empty() {
+            Vec::new()
+        } else {
+            body.split(',')
+                .map(parse_descriptor)
+                .collect::<Option<Vec<_>>>()?
+        };
+        let from = |term: &Term| matches!(term, Term::Arguments(_) | Term::Elements(_));
+        let misplaced = call.iter().enumerate().any(|(position, descriptor)| {
+            descriptor.terms.iter().any(from)
+                && (position + 1 != call.len() || descriptor.spread().is_none())
+        });
+        if misplaced {
+            return None;
+        }
+        calls.push(call);
+        if after.is_empty() {
+            return Some(calls);
+        }
+        rest = after.strip_prefix('(')?;
+    }
+}
+
+/// Parses a [`Descriptor`]: terms joined by `|`, each a type, `aN`, `eN`,
+/// `aN+`, `eN+` or `rN`.
+fn parse_descriptor(text: &str) -> Option<Descriptor> {
+    let terms = text
+        .split('|')
+        .map(|term| {
+            let (term, from) = match term.strip_suffix('+') {
+                Some(term) => (term, true),
+                None => (term, false),
+            };
+            let index = |prefix: char| {
+                term.strip_prefix(prefix)
+                    .filter(|digits| !digits.is_empty())
+                    .and_then(|digits| digits.parse::<usize>().ok())
+            };
+            match (index('a'), index('e'), index('r')) {
+                (Some(index), _, _) if from => Some(Term::Arguments(index)),
+                (Some(index), _, _) => Some(Term::Argument(index)),
+                (_, Some(index), _) if from => Some(Term::Elements(index)),
+                (_, Some(index), _) => Some(Term::Element(index)),
+                (_, _, Some(index)) if !from => Some(Term::Returns(index)),
+                _ if !from => Type::parse(term).map(Term::Type),
+                _ => None,
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Descriptor { terms })
 }
 
 impl CoreFnId {
@@ -702,5 +921,92 @@ mod tests {
                 "src/core_operations.tsv:1: Add: without `params`, write `any`, `effect` and `invoke` (the type of every result goes in `otherwise`)"
             ]
         );
+    }
+    #[test]
+    fn callback_shapes_element_types_and_arity_returns_parse() {
+        let reduce = CoreFnId::Reduce.operation();
+        let two = reduce.arity(2).unwrap().callback(0).unwrap();
+        assert_eq!(two.calls.len(), 2);
+        assert!(two.calls[0].is_empty());
+        assert_eq!(two.calls[1][0].terms, [Term::Element(1), Term::Returns(0)]);
+        let swap = CoreFnId::Swap.operation().arity(3).unwrap();
+        assert_eq!(
+            swap.callback(1).unwrap().calls[0][1].spread(),
+            Some(Term::Arguments(2))
+        );
+        assert!(swap.callback(0).is_none());
+        let filter = CoreFnId::Filter.operation();
+        assert_eq!(filter.returns_for(1), Type::FN);
+        assert_eq!(filter.returns_for(2), Type::SEQ.union(Type::LIST));
+        assert_eq!(
+            filter.call(&[Type::FN, Type::VECTOR]).returns,
+            Type::SEQ.union(Type::LIST)
+        );
+        assert_eq!(filter.elements.as_ref().unwrap().terms, [Term::Element(1)]);
+        let conj = CoreFnId::Conj.operation().elements.as_ref().unwrap();
+        assert_eq!(conj.terms, [Term::Element(0), Term::Arguments(1)]);
+        assert_eq!(conj.spread(), None);
+        // A transducer arity has no shape: its function escapes.
+        assert!(
+            CoreFnId::MapSeq
+                .operation()
+                .arity(1)
+                .unwrap()
+                .callbacks
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn malformed_callback_shapes_are_rejected() {
+        let message = |params: &str, returns: &str| {
+            let row = format!("Run\trun!\tfn\t{params}\t{returns}\tany\tpure\tinvoke\trun");
+            parse_table(Box::leak(row.into_boxed_str()))
+                .unwrap_err()
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+        };
+        for (params, returns, expected) in [
+            ("[fn(e1 seqable]", "nil", "invalid callback shape `fn(e1`"),
+            (
+                "[fn(e1)x seqable]",
+                "nil",
+                "invalid callback shape `fn(e1)x`",
+            ),
+            (
+                "[fn(e1+,a0) seqable]",
+                "nil",
+                "invalid callback shape `fn(e1+,a0)`",
+            ),
+            (
+                "[fn(e1|a2+) seqable]",
+                "nil",
+                "invalid callback shape `fn(e1|a2+)`",
+            ),
+            (
+                "[fn(r1) seqable]",
+                "nil",
+                "a callback shape names a missing parameter in `[fn(r1) seqable]`",
+            ),
+            (
+                "[fn(e2) seqable]",
+                "nil",
+                "a callback shape names a missing parameter in `[fn(e2) seqable]`",
+            ),
+            (
+                "[fn(e1) seqable]:number",
+                "nil",
+                "an arity's returns type is not part of the row's `nil`",
+            ),
+            ("[fn(e1) seqable]", "nil<e1", "invalid element type `<e1`"),
+            ("[fn(e1) seqable]", "nil<r+>", "invalid element type `<r+>`"),
+        ] {
+            assert_eq!(
+                message(params, returns),
+                [format!("src/core_operations.tsv:1: Run: {expected}")],
+                "{params} {returns}"
+            );
+        }
     }
 }

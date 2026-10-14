@@ -2843,3 +2843,43 @@ runtime is unchanged. With `(defrecord R [x]) (def r (->R 1))` first:
 | `(.call (aget r "cljs$core$ILookup$_lookup$arity$3") r r "missing" "nf")` | 5,695 / 2,395 (throws) | 9,796 / 3,698 (`"nf"`) |
 | `(array (.equiv [1] [1]) (.call (aget r "cljs$core$ILookup$_lookup$arity$3") r "missing" "nf"))` | 10,099 / 3,935 (throws) | 12,358 / 4,598 |
 | `(.-x r)`, naming no slot | 5,638 / 2,368 | 5,638 / 2,368 |
+
+## Callback parameter types — October 14, 2026
+
+light-cljs-243 types the parameters of functions passed to core operations
+whose rows in `src/core_operations.tsv` give a callback shape (`map`,
+`filter`, `reduce`, `swap!` and 28 more), from the elements of their
+collections and their other arguments ("Phase 2 callback parameter extension
+points" in the [design](../docs/advanced-optimization.md)). The new ratchet
+fixture `callbacks` passes record-reading functions to `filter`, `reduce`
+and `map`, and a keyword-comparing one to `swap!`.
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL`, on the
+24-CPU Mac (sizes do not depend on load; load average 2.9). "Before" is
+master `3673641`.
+
+| Fixture | None before → after | Advanced before → after |
+| --- | --- | --- |
+| every existing fixture (28) | identical bytes | identical bytes |
+| closed-params | 400,387 / 95,659 → same | 12,996 / 4,986 → same |
+| callbacks (new) | 399,835 / 95,520 → same | 42,345 / 13,298 → 42,261 / 13,283 |
+
+The new fixture's ceilings are 400,000 / 400,000 / 43,000. In `callbacks`
+the record reads inside `heavy?`, `add-cost` and the `map` callback become
+field reads, so the `:qty`, `:price` and `:label` keywords are no longer
+built (84 bytes).
+
+`closed-params` does not change with this pellet. Its functions have been
+closed since light-cljs-229, so their parameters were already typed. The
+pellet's target was 25% below the 37,763 bytes it measured when filed; the
+fixture is 12,996 bytes (66% smaller) because light-cljs-246 stopped a
+program type and a vector or keyword from keeping runtime together.
+
+Typed lowerings make the code faster but not always smaller: a string
+`count` written as `(.length s)` is longer than a renamed runtime call, and
+the direct vector `nth` path is longer than `rt$nth`. A program whose
+callbacks only count strings went from 32,709 to 32,717 bytes on master
+`0d00e45`, because `count` stays in the runtime for its other calls. A
+lowering shrinks output only when it removes a runtime root. For that
+reason no specialized clones were added for call sites that dominate an
+`any` join: a clone copies a body.

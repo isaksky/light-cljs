@@ -27,8 +27,22 @@
 //!   it (light-cljs-229). A call with fewer arguments than parameters passes
 //!   `nil` (`undefined`) for the others; the rest parameter is a `seq` when the
 //!   call has arguments beyond the fixed parameters and `nil` otherwise, as
-//!   `fnRest` builds it. The parameters of other functions, `catch` and
-//!   `this-as` bindings, type fields and locals the program assigns are `any`.
+//!   `fnRest` builds it. A closed `fn` may also be the function argument of
+//!   core operation calls with a callback shape (light-cljs-243): each such
+//!   call binds its parameters as the calls the operation makes of it, from
+//!   the call's arguments and their elements, when the table describes the
+//!   call (within the domain, the operation not replaced, core protocols
+//!   intact, and no program type that receives functions among the other
+//!   arguments); otherwise it binds them to `any`. The parameters of other
+//!   functions, `catch` and `this-as` bindings, type fields and locals the
+//!   program assigns are `any`.
+//! - The elements of sequences, lists, vectors and sets
+//!   ([`Inferred::elements`], light-cljs-243) come from collection literals,
+//!   pass through bindings and joins as types do, and come from core calls
+//!   whose row gives the elements of what they return (`map` returns what
+//!   its function returns, `filter` the elements of its collection). Every
+//!   other such collection holds `any`. These collections are immutable, so
+//!   their elements do not change.
 //! - A global defined exactly once (and never assigned, rebound or passed to
 //!   `js*`) by `def`, `deftype`/`defrecord` or `defprotocol` has its
 //!   initializer's type. A read can see `nil` before the definition runs,
@@ -67,7 +81,13 @@
 //! assignable parameters (a `js*` hole, `set!`, a method that reads
 //! `(js-arguments)`) stay `any`. A closed function's calls are all calls of it
 //! (`crate::call_shapes`, "For parameter types"), every one of which the walk
-//! visits, since it visits every expression reachable from the root.
+//! visits, since it visits every expression reachable from the root. Calls
+//! that a core operation makes of a closed function are those its callback
+//! shape describes, which the `core_operations` suite and the
+//! `type_inference` suite check against the runtime; a program type that
+//! implements `IReduce`, `IKVReduce` or `ISwap` receives the function
+//! itself, and the operations whose domain admits program types (`swap!`)
+//! then bind `any`.
 
 use std::collections::HashMap;
 
@@ -76,7 +96,7 @@ use crate::analyzer::{
 };
 use crate::call_shapes::ClosedFunctions;
 use crate::compiler_data::CompilerLiteralKind;
-use crate::core_operations::{Calls, Type};
+use crate::core_operations::{Calls, Descriptor, Term, Type};
 
 /// The fixed point gives up after this many rounds and infers `any`
 /// everywhere. Real programs converge in a handful.
@@ -114,36 +134,124 @@ impl Known {
     }
 }
 
-/// An inferred value: its type and what else is known. Values join (`union`)
-/// as types do; a [`Known`] survives a join with a value that has none of its
-/// classes.
+/// The classes whose values hold the elements [`Inferred::elements`]
+/// describes: the runtime's sequences, lists, vectors and sets, which are
+/// immutable.
+pub const SEQUENTIAL: Type = Type::SEQ
+    .union(Type::LIST)
+    .union(Type::VECTOR)
+    .union(Type::SET);
+
+/// The join of two values' types and representations: a [`Known`] survives
+/// a join with a value that has none of its classes.
+fn join(a: (Type, Known), b: (Type, Known)) -> (Type, Known) {
+    let ((a_ty, a_known), (b_ty, b_known)) = (a, b);
+    let known = if a_known == b_known {
+        a_known
+    } else if a_known == Known::Unknown && a_ty.intersection(b_known.classes()).is_never() {
+        b_known
+    } else if b_known == Known::Unknown && b_ty.intersection(a_known.classes()).is_never() {
+        a_known
+    } else {
+        Known::Unknown
+    };
+    let ty = a_ty.union(b_ty);
+    if ty.intersection(known.classes()).is_never() {
+        (ty, Known::Unknown)
+    } else {
+        (ty, known)
+    }
+}
+
+/// What the elements of a value's [`SEQUENTIAL`] values are: a type and a
+/// representation, as for [`Inferred`], one level deep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Element {
+    pub ty: Type,
+    pub known: Known,
+}
+
+impl Element {
+    pub const NEVER: Self = Self {
+        ty: Type::NEVER,
+        known: Known::Unknown,
+    };
+    pub const ANY: Self = Self {
+        ty: Type::ANY,
+        known: Known::Unknown,
+    };
+
+    fn union(self, other: Self) -> Self {
+        let (ty, known) = join((self.ty, self.known), (other.ty, other.known));
+        Self { ty, known }
+    }
+}
+
+/// An inferred value: its type, what else is known, and what the elements of
+/// its sequential collections are. Values join (`union`) as types do; a
+/// [`Known`] survives a join with a value that has none of its classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Inferred {
     pub ty: Type,
     pub known: Known,
+    /// Every element of the values of `ty`'s [`SEQUENTIAL`] classes (since
+    /// light-cljs-243): `never` when `ty` has none, `any` when nothing is
+    /// known. Elements of other classes follow from the class
+    /// ([`Inferred::element`]).
+    pub elements: Element,
 }
 
 impl Inferred {
     pub const NEVER: Self = Self::of(Type::NEVER);
     pub const ANY: Self = Self::of(Type::ANY);
 
+    /// A value of type `ty`, with nothing known about its elements.
     pub const fn of(ty: Type) -> Self {
         Self {
             ty,
             known: Known::Unknown,
+            elements: if ty.intersection(SEQUENTIAL).is_never() {
+                Element::NEVER
+            } else {
+                Element::ANY
+            },
         }
     }
 
     /// A value of type `ty` refined by `known`.
     pub fn known(ty: Type, known: Known) -> Self {
-        Self { ty, known }.normalized()
+        Self {
+            known,
+            ..Self::of(ty)
+        }
+        .normalized()
+    }
+
+    /// This value, whose sequential collections hold only `element`.
+    pub fn with_elements(self, element: Self) -> Self {
+        let (ty, known) = join((element.ty, element.known), (Type::NEVER, Known::Unknown));
+        Self {
+            elements: Element { ty, known },
+            ..self
+        }
+        .normalized()
     }
 
     fn normalized(self) -> Self {
-        if self.ty.intersection(self.known.classes()).is_never() {
-            Self::of(self.ty)
+        let known = if self.ty.intersection(self.known.classes()).is_never() {
+            Known::Unknown
         } else {
-            self
+            self.known
+        };
+        let elements = if self.ty.intersection(SEQUENTIAL).is_never() {
+            Element::NEVER
+        } else {
+            self.elements
+        };
+        Self {
+            ty: self.ty,
+            known,
+            elements,
         }
     }
 
@@ -155,30 +263,57 @@ impl Inferred {
         if other.ty.is_never() {
             return self;
         }
-        let known = if self.known == other.known {
-            self.known
-        } else if self.known == Known::Unknown
-            && self.ty.intersection(other.known.classes()).is_never()
-        {
-            other.known
-        } else if other.known == Known::Unknown
-            && other.ty.intersection(self.known.classes()).is_never()
-        {
-            self.known
-        } else {
-            Known::Unknown
-        };
-        Self::known(self.ty.union(other.ty), known)
+        let (ty, known) = join((self.ty, self.known), (other.ty, other.known));
+        Self {
+            ty,
+            known,
+            elements: self.elements.union(other.elements),
+        }
     }
 
     /// The values of classes `classes`.
     pub fn keep(self, classes: Type) -> Self {
-        Self::known(self.ty.intersection(classes), self.known)
+        Self {
+            ty: self.ty.intersection(classes),
+            ..self
+        }
+        .normalized()
     }
 
     /// The values of classes other than `classes`.
     pub fn remove(self, classes: Type) -> Self {
-        Self::known(self.ty.difference(classes), self.known)
+        Self {
+            ty: self.ty.difference(classes),
+            ..self
+        }
+        .normalized()
+    }
+
+    /// What a sequence over this value yields (`seq`, `first`, `map`, ...):
+    /// the elements of its sequential collections, the entries (vectors) of
+    /// its maps and the characters (strings) of its strings; `nil` yields
+    /// nothing, and every other class anything.
+    pub fn element(self) -> Self {
+        let mut element = Self::NEVER;
+        if !self.ty.intersection(SEQUENTIAL).is_never() {
+            element = Self::known(self.elements.ty, self.elements.known);
+        }
+        if !self.ty.intersection(Type::MAP).is_never() {
+            element = element.union(Self::of(Type::VECTOR));
+        }
+        if !self.ty.intersection(Type::STRING).is_never() {
+            element = element.union(Self::of(Type::STRING));
+        }
+        let other = self.ty.difference(
+            SEQUENTIAL
+                .union(Type::MAP)
+                .union(Type::STRING)
+                .union(Type::NIL),
+        );
+        if !other.is_never() {
+            element = Self::ANY;
+        }
+        element
     }
 
     /// Whether JavaScript truthiness agrees with Clojure's (only `nil` and
@@ -242,6 +377,9 @@ pub struct ProgramFacts {
     core_protocols: bool,
     /// Some program type implements `IEquiv`.
     equiv: bool,
+    /// Some program type implements a core protocol whose methods receive the
+    /// function an operation is given: `IReduce`, `IKVReduce` or `ISwap`.
+    receives_functions: bool,
     globals: Vec<Definition>,
     /// Type globals the program implements `ILookup` on (in the definition
     /// or with `extend-type`).
@@ -297,7 +435,13 @@ impl ProgramFacts {
             }
         };
         let lookup = implements("ILookup");
+        let receives = |method: &(MethodDispatch, FnMethod)| {
+            ["IReduce", "IKVReduce", "ISwap"]
+                .into_iter()
+                .any(|protocol| implements(protocol)(method))
+        };
         let mut equiv = false;
+        let mut receives_functions = false;
         // Assigning a property of a core value (`PersistentHashMap.fromArrays`)
         // counts as replacing it.
         let mut assign = |target: &ExprId| {
@@ -341,14 +485,17 @@ impl ProgramFacts {
                         lookup_targets.push(*target);
                     }
                     equiv |= methods.iter().any(implements("IEquiv"));
+                    receives_functions |= methods.iter().any(receives);
                 }
                 ExprKind::Reify { methods, .. } => {
                     equiv |= methods.iter().any(implements("IEquiv"));
+                    receives_functions |= methods.iter().any(receives);
                 }
                 ExprKind::Global(_) => (),
                 kind => {
                     if let ExprKind::DefType { methods, .. } = kind {
                         equiv |= methods.iter().any(implements("IEquiv"));
+                        receives_functions |= methods.iter().any(receives);
                     }
                     if emitted[index] {
                         for global in crate::application::globals(kind) {
@@ -528,6 +675,7 @@ impl ProgramFacts {
             replaced,
             core_protocols,
             equiv,
+            receives_functions,
             globals,
             lookups,
             top: top_positions,
@@ -568,6 +716,15 @@ impl ProgramFacts {
     /// compares only with records of its type.
     pub fn implements_equiv(&self) -> bool {
         self.equiv
+    }
+
+    /// Whether a `deftype`, `defrecord`, `reify` or `extend-type` of the program
+    /// implements `IReduce`, `IKVReduce` or `ISwap`, whose methods receive the
+    /// function that `reduce`, `reduce-kv` or `swap!` is given and may call it
+    /// with anything. Otherwise the runtime makes every call of an
+    /// operation's function argument, as its callback shape says.
+    pub fn receives_functions(&self) -> bool {
+        self.receives_functions
     }
 
     /// Whether the table's description of calls of `core` holds: the program
@@ -1037,6 +1194,12 @@ impl<'p> Walker<'p> {
         ids.iter().map(|id| self.walk(*id)).collect()
     }
 
+    /// Walk `ids` and join their values.
+    fn join_all(&mut self, ids: &[ExprId]) -> Inferred {
+        ids.iter()
+            .fold(Inferred::NEVER, |value, id| value.union(self.walk(*id)))
+    }
+
     fn methods(&mut self, methods: &[FnMethod]) -> Inferred {
         let mut value = Inferred::NEVER;
         for method in methods {
@@ -1092,20 +1255,20 @@ impl<'p> Walker<'p> {
                 Inferred::of(Type::OBJECT)
             }
             K::List(items) => {
-                self.walk_all(items);
-                Inferred::of(Type::LIST)
+                let element = self.join_all(items);
+                Inferred::of(Type::LIST).with_elements(element)
             }
             K::Vector(items) => {
-                self.walk_all(items);
-                Inferred::known(Type::VECTOR, Known::Vector)
+                let element = self.join_all(items);
+                Inferred::known(Type::VECTOR, Known::Vector).with_elements(element)
             }
             K::Map(items) | K::LiteralMap(items) => {
                 self.walk_all(items);
                 Inferred::of(Type::MAP)
             }
             K::Set(items) | K::LiteralSet(items) => {
-                self.walk_all(items);
-                Inferred::of(Type::SET)
+                let element = self.join_all(items);
+                Inferred::of(Type::SET).with_elements(element)
             }
             K::CoreFn(core) => {
                 if self.facts.replaced(*core) {
@@ -1350,7 +1513,12 @@ impl<'p> Walker<'p> {
                 if let Some((function, method)) = self.closed.call(id) {
                     self.pass(function, method, &arguments);
                 }
-                self.call(*callee, callee_value, &arguments)
+                if let K::CoreFn(core) = program.exprs[callee.0].kind {
+                    for (index, function) in self.closed.callbacks(id) {
+                        self.pass_callback(core, args, &arguments, index, function);
+                    }
+                }
+                self.call(*callee, callee_value, args, &arguments)
             }
             K::InstanceOf { class, value } => {
                 self.walk(*class);
@@ -1466,7 +1634,7 @@ impl<'p> Walker<'p> {
         }
         // Joining `returns` keeps the result monotone in the arguments: a call
         // outside the domain may also return what one inside does.
-        let returns = call.returns.union(operation.returns);
+        let returns = call.returns.union(operation.returns_for(arguments.len()));
         let known = match core {
             CoreFnId::Vector => Known::Vector,
             CoreFnId::Array => Known::Array,
@@ -1475,13 +1643,174 @@ impl<'p> Walker<'p> {
         Inferred::known(returns, known)
     }
 
-    fn call(&self, callee: ExprId, value: Inferred, arguments: &[Inferred]) -> Inferred {
+    /// Whether the table describes a call of `core` with arguments of these
+    /// types: the call is within the operation's domain and the program
+    /// keeps the table's conditions for it.
+    fn described(&self, core: CoreFnId, types: &[Type]) -> bool {
+        let operation = core.operation();
+        operation
+            .arity(types.len())
+            .is_some_and(|arity| arity.admits(types))
+            && self.facts.trusted(core, operation.calls)
+    }
+
+    /// A call of `core` with argument expressions `args` of values
+    /// `arguments`: [`Walker::core_call`], whose sequential collections hold
+    /// what the row's element type says when the table describes the call
+    /// (light-cljs-243). `args` may be empty for a call the operation makes,
+    /// whose `rN` terms are then `any`.
+    fn core_result(&self, core: CoreFnId, args: &[ExprId], arguments: &[Inferred]) -> Inferred {
+        let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
+        let result = self.core_call(core, &types);
+        match &core.operation().elements {
+            Some(elements) if self.described(core, &types) => {
+                result.with_elements(self.describe(core, elements, args, arguments, true))
+            }
+            _ => result,
+        }
+    }
+
+    /// The value `descriptor` names for a call of `core` (see
+    /// [`crate::core_operations::Descriptor`]), joining `aN+` and `eN+`
+    /// terms. `rN` is `any` unless `returns`.
+    fn describe(
+        &self,
+        core: CoreFnId,
+        descriptor: &Descriptor,
+        args: &[ExprId],
+        arguments: &[Inferred],
+        returns: bool,
+    ) -> Inferred {
+        let argument = |index: usize| arguments.get(index).copied().unwrap_or(Inferred::ANY);
+        let from = |index: usize| arguments.get(index..).unwrap_or(&[]).iter().copied();
+        descriptor
+            .terms
+            .iter()
+            .fold(Inferred::NEVER, |value, term| {
+                value.union(match *term {
+                    Term::Type(ty) => Inferred::of(ty),
+                    Term::Argument(index) => argument(index),
+                    Term::Element(index) => argument(index).element(),
+                    Term::Arguments(index) => from(index).fold(Inferred::NEVER, Inferred::union),
+                    Term::Elements(index) => from(index)
+                        .fold(Inferred::NEVER, |value, argument| {
+                            value.union(argument.element())
+                        }),
+                    Term::Returns(index) if returns => {
+                        self.callback_returns(core, index, args, arguments)
+                    }
+                    Term::Returns(_) => Inferred::ANY,
+                })
+            })
+    }
+
+    /// The arguments of one call that `core` makes of a function argument,
+    /// as its callback shape describes them (`call`), with `rN` as in
+    /// [`Walker::describe`].
+    fn callback_arguments(
+        &self,
+        core: CoreFnId,
+        call: &[Descriptor],
+        args: &[ExprId],
+        arguments: &[Inferred],
+        returns: bool,
+    ) -> Vec<Inferred> {
+        let mut values = Vec::new();
+        for descriptor in call {
+            match descriptor.spread() {
+                Some(Term::Arguments(from)) => {
+                    values.extend(arguments.iter().skip(from).copied());
+                }
+                Some(Term::Elements(from)) => {
+                    values.extend(arguments.iter().skip(from).map(|value| value.element()));
+                }
+                _ => values.push(self.describe(core, descriptor, args, arguments, returns)),
+            }
+        }
+        values
+    }
+
+    /// What the function argument at `index` of a call of `core` returns when
+    /// `core` calls it as its callback shape says, with its `rN` arguments
+    /// `any`.
+    fn callback_returns(
+        &self,
+        core: CoreFnId,
+        index: usize,
+        args: &[ExprId],
+        arguments: &[Inferred],
+    ) -> Inferred {
+        let callback = core
+            .operation()
+            .arity(arguments.len())
+            .and_then(|arity| arity.callback(index));
+        let (Some(callback), Some(&callee), Some(&value)) =
+            (callback, args.get(index), arguments.get(index))
+        else {
+            return Inferred::ANY;
+        };
+        callback.calls.iter().fold(Inferred::NEVER, |result, call| {
+            let call_arguments = self.callback_arguments(core, call, args, arguments, false);
+            result.union(self.call(callee, value, &[], &call_arguments))
+        })
+    }
+
+    /// Bind the parameters of the closed `fn` `function`, the argument at
+    /// `index` of a call of `core` with argument expressions `args` of values
+    /// `arguments`, to the arguments of every call `core` makes of it
+    /// (light-cljs-243). Where the table does not describe the call, or a
+    /// program type that receives functions (`IReduce`, `IKVReduce`, `ISwap`)
+    /// may get the function, any call can reach it.
+    fn pass_callback(
+        &mut self,
+        core: CoreFnId,
+        args: &[ExprId],
+        arguments: &[Inferred],
+        index: usize,
+        function: ExprId,
+    ) {
+        let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
+        let program_types = Type::RECORD.union(Type::OBJECT);
+        let reachable = self.facts.receives_functions()
+            && types.iter().enumerate().any(|(position, ty)| {
+                position != index && !ty.intersection(program_types).is_never()
+            });
+        let callback = core
+            .operation()
+            .arity(arguments.len())
+            .and_then(|arity| arity.callback(index))
+            .filter(|_| self.described(core, &types) && !reachable);
+        let ExprKind::Fn { methods, .. } = &self.program.exprs[function.0].kind else {
+            return;
+        };
+        let Some(callback) = callback else {
+            for method in methods {
+                for &param in method.params.iter().chain(&method.rest) {
+                    self.bind(param, Inferred::ANY);
+                }
+            }
+            return;
+        };
+        for call in &callback.calls {
+            let call_arguments = self.callback_arguments(core, call, args, arguments, true);
+            if let Some(method) =
+                crate::call_shapes::dispatched_method(methods, call_arguments.len())
+            {
+                self.pass(function, method, &call_arguments);
+            }
+        }
+    }
+
+    fn call(
+        &self,
+        callee: ExprId,
+        value: Inferred,
+        args: &[ExprId],
+        arguments: &[Inferred],
+    ) -> Inferred {
         let program = self.program;
         match &program.exprs[callee.0].kind {
-            ExprKind::CoreFn(core) => {
-                let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
-                return self.core_call(*core, &types);
-            }
+            ExprKind::CoreFn(core) => return self.core_result(*core, args, arguments),
             ExprKind::Global(global) => {
                 if let Some(instance) = self.instance(*global, false) {
                     return instance;
