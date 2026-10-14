@@ -41,10 +41,13 @@ Two things differ from the native build:
   ClojureScript.
 
 The example dropdown replaces all files with one of the programs in
-`examples.js`, from a single namespace up to a calculator spread over several;
-each entry carries the value its program must produce, and `check.mjs` compiles
-and runs all of them at every optimization level. To add one, append to
-`EXAMPLES` and run `bb playground/build.bb check`.
+`examples.js`, from a single namespace up to a calculator spread over several.
+Most log through `js/console.log` so the emitted JavaScript stays small and
+shows one feature; "Printing" and the calculator use `(enable-console-print!)`.
+Each entry carries the value its program must produce, and `check.mjs`
+compiles and runs all of them at every optimization level, checking that they
+log the same lines. To add one, append to `EXAMPLES` and run
+`bb playground/build.bb check`.
 
 Compile time in the browser is a few hundred milliseconds for the first
 compile (the macro bootstrap) and tens of milliseconds after that. The wasm

@@ -20,11 +20,13 @@ function check(condition, message) {
   }
 }
 
-function runQuietly(js) {
+// Runs a compiled program, returning its value and what it logged.
+function run(js) {
+  const printed = [];
   const log = console.log;
-  console.log = () => {};
+  console.log = (...args) => printed.push(args.map(String).join(" "));
   try {
-    return (0, eval)(js);
+    return { value: (0, eval)(js), printed };
   } finally {
     console.log = log;
   }
@@ -33,6 +35,7 @@ function runQuietly(js) {
 console.log(`playground ${version()}`);
 check(EXAMPLES.length > 0, "no examples");
 for (const example of EXAMPLES) {
+  let printedAtNone = null;
   for (const level of ["none", "prepare", "advanced"]) {
     const label = `${example.id} @ ${level}`;
     const result = compile(
@@ -49,13 +52,20 @@ for (const example of EXAMPLES) {
     check(result.warnings === "", `${label}: unexpected warnings ${result.warnings}`);
     if (result.js == null) continue;
     let value;
+    let printed;
     try {
-      value = runQuietly(result.js);
+      ({ value, printed } = run(result.js));
     } catch (error) {
       check(false, `${label}: threw ${error && error.stack ? error.stack : error}`);
       continue;
     }
-    check(String(value) === example.expect, `${label}: value ${String(value)}, expected ${example.expect}`);
+    const text = String(value);
+    // A program that never prints has no printer at advanced, so a collection
+    // value has no toString there; every level must log the same lines.
+    const acceptable = text === example.expect || (level === "advanced" && text === "[object Object]");
+    check(acceptable, `${label}: value ${text}, expected ${example.expect}`);
+    if (level === "none") printedAtNone = printed.join("\n");
+    else check(printed.join("\n") === printedAtNone, `${label}: logged\n${printed.join("\n")}\nbut none logged\n${printedAtNone}`);
     check(level !== "advanced" || result.size_report.includes("runtime slice"), `${label}: no size report`);
     console.log(`${label}: ${result.millis.toFixed(0)} ms, ${result.js.length} bytes`);
   }

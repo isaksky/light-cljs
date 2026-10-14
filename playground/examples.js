@@ -1,33 +1,32 @@
 // The examples the playground offers, smallest first. Each is a complete
 // program: an entry namespace and its files. `expect` is the printed value of
 // the entry's last form, which check.mjs verifies at every optimization level.
+//
+// Most examples log through js/console.log so that the emitted JavaScript
+// stays small and shows just the feature at hand; "Printing" and the
+// calculator use (enable-console-print!) and println. At --optimize advanced
+// a program that never prints embeds no printer, so its final value, when it
+// is a collection, has no toString and the page shows [object Object];
+// check.mjs allows that at advanced only.
 
 export const EXAMPLES = [
   {
     id: "hello",
     title: "Hello, world",
     entry: "hello.core",
-    expect: '{:count 5, :longest "world", :sum 15}',
+    expect: "[1 4 9 16 25]",
     files: [
       {
         path: "hello/core.cljs",
         source: `(ns hello.core)
 
-;; As in ClojureScript, println needs a print function: this one is console.log.
-(enable-console-print!)
-
 (defn greet [name]
   (str "Hello, " name "!"))
 
-(println (greet "world"))
-
-(doseq [n (range 1 6)]
-  (println n "squared is" (* n n)))
+(js/console.log (greet "world"))
 
 ;; The entry namespace's last form is the program's value.
-{:count   (count (range 1 6))
- :longest (apply max-key count ["hi" "hello" "world"])
- :sum     (reduce + (range 1 6))}
+(mapv #(* % %) [1 2 3 4 5])
 `,
       },
     ],
@@ -36,208 +35,207 @@ export const EXAMPLES = [
     id: "macro",
     title: "A macro",
     entry: "hello.macro",
-    expect: "[0 1 1 2 3 5 8 13 21 34]",
+    expect: ":done",
     files: [
       {
         path: "hello/macro.cljs",
         source: `(ns hello.macro)
 
-(enable-console-print!)
-
 ;; defmacro works in an ordinary .cljs file and the macro is usable right
-;; below it: the compiler runs macros in its embedded JavaScript engine while
-;; compiling. Try the JavaScript tab to see what the expansion became.
+;; below it: the compiler runs macros in its embedded JavaScript engine
+;; while compiling. Open the JavaScript tab to see the expansion.
 (defmacro unless [test & body]
   \`(if ~test nil (do ~@body)))
 
-(defmacro timed [label & body]
-  \`(let [start# (js/performance.now)
-         value# (do ~@body)]
-     (println ~label "took" (- (js/performance.now) start#) "ms")
-     value#))
+(unless (> 1 2)
+  (js/console.log "one is not greater than two"))
 
-(defn fib-seq []
+(unless (< 1 2)
+  (js/console.log "this never prints"))
+
+:done
+`,
+      },
+    ],
+  },
+  {
+    id: "destructuring",
+    title: "Destructuring",
+    entry: "feature.destructuring",
+    expect: '{:x 1, :y 2, :rest (3 4 5), :city "Oslo"}',
+    files: [
+      {
+        path: "feature/destructuring.cljs",
+        source: `(ns feature.destructuring)
+
+(defn point->map [[x y & more]]
+  {:x x :y y :rest more})
+
+(defn address-city [{:keys [city] :or {city "unknown"}}]
+  city)
+
+(js/console.log (address-city {:street "Main" :city "Oslo"}))
+(js/console.log (address-city {}))
+
+(let [{:keys [x y]} (point->map [10 20])]
+  (js/console.log "x + y =" (+ x y)))
+
+(assoc (point->map [1 2 3 4 5]) :city (address-city {:city "Oslo"}))
+`,
+      },
+    ],
+  },
+  {
+    id: "lazy",
+    title: "Lazy sequences",
+    entry: "feature.lazy",
+    expect: "[0 1 1 2 3 5 8 13 21 34]",
+    files: [
+      {
+        path: "feature/lazy.cljs",
+        source: `(ns feature.lazy)
+
+;; An infinite sequence: only what is consumed gets computed.
+(def fibs
   (map first (iterate (fn [[a b]] [b (+ a b)]) [0 1])))
 
-(unless (> 1 2)
-  (println "one is not greater than two"))
+(def evens (filter even? (range)))
 
-(timed "ten fibonacci numbers"
-  (vec (take 10 (fib-seq))))
+(js/console.log (str (take 5 evens)))
+(js/console.log (str (first (drop 100 fibs))))
+
+(vec (take 10 fibs))
 `,
       },
     ],
   },
   {
-    id: "sequences",
-    title: "Sequences and destructuring",
-    entry: "seqs.core",
-    expect: '{:fizzbuzz "1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz", :primes [2 3 5 7 11 13 17 19 23 29], :by-length {3 ["the" "fox"], 5 ["quick" "brown" "jumps"]}}',
+    id: "atoms",
+    title: "Atoms",
+    entry: "feature.atoms",
+    expect: "{:count 3, :items [:a :b :c]}",
     files: [
       {
-        path: "seqs/core.cljs",
-        source: `(ns seqs.core
-  (:require [clojure.string :as str]))
+        path: "feature/atoms.cljs",
+        source: `(ns feature.atoms)
 
-(enable-console-print!)
+(def state (atom {:count 0 :items []}))
 
-(defn fizzbuzz [n]
-  (cond (zero? (mod n 15)) "FizzBuzz"
-        (zero? (mod n 3))  "Fizz"
-        (zero? (mod n 5))  "Buzz"
-        :else              n))
-
-;; Lazy, infinite sequences are fine; only what is consumed gets computed.
-(def naturals (iterate inc 1))
-
-(defn prime? [n]
-  (and (> n 1)
-       (not-any? #(zero? (rem n %))
-                 (range 2 (inc (js/Math.floor (js/Math.sqrt n)))))))
-
-;; Destructuring in let, fn parameters and loop.
-(let [[first-word & more :as all] (str/split "the quick brown fox jumps" #" ")
-      {:keys [x y] :or {y 0}} {:x 10}]
-  (println "first:" first-word "rest:" more "all:" (count all))
-  (println "x + y =" (+ x y)))
-
-(loop [[n & more] (range 1 16), acc []]
-  (if n
-    (recur more (conj acc (fizzbuzz n)))
-    (println "fizzbuzz:" acc)))
-
-{:fizzbuzz  (str/join " " (map fizzbuzz (range 1 16)))
- :primes    (vec (take 10 (filter prime? naturals)))
- :by-length (into (sorted-map)
-                  (group-by count (str/split "the quick brown fox jumps" #" ")))}
-`,
-      },
-    ],
-  },
-  {
-    id: "state",
-    title: "Atoms and watches",
-    entry: "state.core",
-    expect: "{:balance 120, :history [100 70 120], :overdraft-rejected 1}",
-    files: [
-      {
-        path: "state/core.cljs",
-        source: `(ns state.core)
-
-(enable-console-print!)
-
-(def account (atom {:balance 0 :history []}))
-(def rejected (atom 0))
-
-(add-watch account :log
+(add-watch state :log
   (fn [_ _ old new]
-    (println "balance:" (:balance old) "->" (:balance new))))
+    (js/console.log "count" (:count old) "->" (:count new))))
 
-(defn deposit! [amount]
-  (swap! account (fn [{:keys [balance] :as acct}]
-                   (-> acct
-                       (assoc :balance (+ balance amount))
-                       (update :history conj (+ balance amount))))))
+(defn add-item! [item]
+  (swap! state #(-> % (update :count inc) (update :items conj item))))
 
-(defn withdraw! [amount]
-  (if (< (:balance @account) amount)
-    (do (swap! rejected inc)
-        (println "rejected: cannot withdraw" amount))
-    (deposit! (- amount))))
-
-(deposit! 100)
-(withdraw! 30)
-(withdraw! 500)
-(deposit! 50)
+(add-item! :a)
+(add-item! :b)
+(add-item! :c)
 
 ;; Reading an atom yields a plain, immutable value.
-(assoc @account :overdraft-rejected @rejected)
+@state
 `,
       },
     ],
   },
   {
     id: "protocols",
-    title: "Protocols, records and multimethods",
-    entry: "shapes.core",
-    expect: '{:areas [78.54 12 4.5], :largest "circle", :described ("a circle of radius 5" "a 3 by 4 rectangle" "a triangle")}',
+    title: "Protocols and records",
+    entry: "feature.protocols",
+    expect: "[12 25]",
     files: [
       {
-        path: "shapes/core.cljs",
-        source: `(ns shapes.core)
-
-(enable-console-print!)
+        path: "feature/protocols.cljs",
+        source: `(ns feature.protocols)
 
 (defprotocol Shape
-  (area [this])
-  (perimeter [this]))
-
-(defrecord Circle [r]
-  Shape
-  (area [_] (* js/Math.PI r r))
-  (perimeter [_] (* 2 js/Math.PI r)))
+  (area [this]))
 
 (defrecord Rect [w h]
   Shape
-  (area [_] (* w h))
-  (perimeter [_] (* 2 (+ w h))))
+  (area [_] (* w h)))
 
-;; A plain map can take part too: extend the protocol to maps by shape kind.
-(extend-protocol Shape
-  cljs.core/PersistentArrayMap
-  (area [{:keys [base height]}] (/ (* base height) 2))
-  (perimeter [{:keys [a b c]}] (+ a b c)))
+(defrecord Square [side]
+  Shape
+  (area [_] (* side side)))
 
-(defmulti describe (fn [shape] (if (record? shape) (type shape) :map)))
-(defmethod describe Circle [{:keys [r]}] (str "a circle of radius " r))
-(defmethod describe Rect [{:keys [w h]}] (str "a " w " by " h " rectangle"))
-(defmethod describe :default [_] "a triangle")
+(def shapes [(->Rect 3 4) (map->Square {:side 5})])
 
-(def shapes [(->Circle 5) (map->Rect {:w 3 :h 4}) {:base 3 :height 3 :a 3 :b 3 :c 3}])
+;; Records are maps too.
+(js/console.log (:w (first shapes)))
+(js/console.log (str (into {} (assoc (->Rect 1 2) :colour "red"))))
 
-(defn round2 [x] (/ (js/Math.round (* 100 x)) 100))
+(mapv area shapes)
+`,
+      },
+    ],
+  },
+  {
+    id: "multimethods",
+    title: "Multimethods",
+    entry: "feature.multimethods",
+    expect: '["Woof" "Meow" "..."]',
+    files: [
+      {
+        path: "feature/multimethods.cljs",
+        source: `(ns feature.multimethods)
 
-(doseq [shape shapes]
-  (println (describe shape) "has area" (round2 (area shape))
-           "and perimeter" (round2 (perimeter shape))))
+(defmulti speak :kind)
 
-(println "records are maps too:" (assoc (->Circle 1) :colour "red"))
+(defmethod speak :dog [_] "Woof")
+(defmethod speak :cat [_] "Meow")
+(defmethod speak :default [_] "...")
 
-{:areas     (mapv (comp round2 area) shapes)
- :largest   (if (instance? Circle (apply max-key area shapes)) "circle" "other")
- :described (map describe shapes)}
+(js/console.log (speak {:kind :dog :name "Rex"}))
+
+(mapv speak [{:kind :dog} {:kind :cat} {:kind :fish}])
+`,
+      },
+    ],
+  },
+  {
+    id: "printing",
+    title: "Printing with println",
+    entry: "feature.printing",
+    expect: '{:a 1, :b [2 3], :c "text"}',
+    files: [
+      {
+        path: "feature/printing.cljs",
+        source: `(ns feature.printing)
+
+;; As in ClojureScript, println needs a print function: this one is
+;; console.log. It brings the printer into the program, so the emitted
+;; JavaScript grows; compare the sizes with the other examples.
+(enable-console-print!)
+
+(def data {:a 1 :b [2 3] :c "text"})
+
+(println "println:" data)
+(prn data)
+(println (pr-str "strings keep their quotes with pr"))
+(print "print")
+(println " and println")
+
+data
 `,
       },
     ],
   },
   {
     id: "namespaces",
-    title: "Several namespaces and macros",
+    title: "Two namespaces",
     entry: "demo.main",
-    expect: '{:total 55, :words ["the" "quick" "brown" "fox"], :sorted {:a 1, :b 2, :c 3}}',
+    expect: "[1 4 9 16 25]",
     files: [
       {
         path: "demo/main.cljs",
         source: `(ns demo.main
-  (:require [demo.math :as math]
-            [demo.macros :refer [twice unless]]
-            [clojure.string :as str]))
+  (:require [demo.math :as math]))
 
-;; As in ClojureScript, println needs a print function: this one is console.log.
-(enable-console-print!)
+;; demo.math lives in demo/math.cljs: namespace dots become directories.
+(js/console.log "the sum of the squares is" (reduce + (math/squares 5)))
 
-(defn describe [x]
-  (str x " doubled is " (twice x)))
-
-(println "squares:" (mapv math/square (range 1 6)))
-(println (str/join ", " (map describe [1 2 3])))
-(unless (empty? math/primes)
-  (println "primes below 30:" math/primes))
-
-;; The entry's last form is the program's value.
-{:total (reduce + (map math/square (range 1 6)))
- :words (str/split "the quick brown fox" #" ")
- :sorted (into (sorted-map) {:b 2 :a 1 :c 3})}
+(math/squares 5)
 `,
       },
       {
@@ -246,31 +244,15 @@ export const EXAMPLES = [
 
 (defn square [x] (* x x))
 
-(defn prime? [n]
-  (and (> n 1)
-       (not-any? #(zero? (rem n %)) (range 2 (inc (js/Math.floor (js/Math.sqrt n)))))))
-
-(def primes (vec (filter prime? (range 30))))
-`,
-      },
-      {
-        path: "demo/macros.cljs",
-        source: `(ns demo.macros)
-
-;; Macros are ordinary defmacros in .cljs files; the compiler runs them in
-;; its embedded JavaScript engine while compiling.
-(defmacro twice [x]
-  \`(let [v# ~x] (+ v# v#)))
-
-(defmacro unless [test & body]
-  \`(if ~test nil (do ~@body)))
+(defn squares [n]
+  (mapv square (range 1 (inc n))))
 `,
       },
     ],
   },
   {
     id: "calculator",
-    title: "Larger: a calculator in three namespaces",
+    title: "Larger: a calculator in several namespaces",
     entry: "calc.main",
     expect: '{"1 + 2 * 3" 7, "(1 + 2) * 3" 9, "2 ^ 3 ^ 2" 512, "10 / 4 - 1" 1.5, "-(3 + 4) * 2" -14, "x * (x + 1) / 2" 55}',
     files: [

@@ -229,6 +229,13 @@ function run(js) {
       appendLine(ui.consoleText, message.text, message.level === "error" ? "error" : message.level === "warn" ? "warn" : "");
     } else if (message.type === "result") {
       appendLine(ui.consoleText, "=> " + message.text, "result");
+      if (message.text === "[object Object]" && state.optimize === "advanced") {
+        appendLine(
+          ui.consoleText,
+          "at --optimize advanced a program that never prints embeds no printer, so its collections have no toString; use str, pr-str or (enable-console-print!) to see the value",
+          "meta",
+        );
+      }
       appendLine(ui.consoleText, `ran in ${message.millis.toFixed(1)} ms`, "meta");
       stopRun();
     } else if (message.type === "error") {
