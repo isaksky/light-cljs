@@ -447,10 +447,10 @@ method their argument count selects, at every call site:
   `arguments` or holds `js*`.
 
 A call that runs before the definition still throws a `TypeError`, whose
-message now names the output binding. Calls of a known function never read
-its `call` property, and inference types the calls of a program function
-from its bodies, so a program that reassigns `call` is unsupported
-(light-cljs-257). See "Phase 2 call shape extension
+message now names the output binding. Calls of a known function do not
+read its `call` property, except those of a method holding `js*`, and
+inference types the calls of a program function from its bodies, so a
+program that reassigns `call` is unsupported (light-cljs-257). See "Phase 2 call shape extension
 points" and the "Advanced-mode contract" in
 [advanced-optimization.md](advanced-optimization.md).
 

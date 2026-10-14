@@ -3352,7 +3352,8 @@ upstream states that advanced mode is unsafe for certain patterns.
   'call')`).
 - A function's `call` and `apply` are those of `Function.prototype`
   (light-cljs-257). Direct calls (light-cljs-212) and inlining (214) run the
-  method a call selects without reading `call`, and inference (210) types
+  method a call selects without reading `call` (a method holding `js*`
+  keeps `.call(null, ...)`), and inference (210) types
   the calls of a program function from its bodies, as it types what a core
   operation that calls it through `call` gets back (`map`, `swap!`: 243,
   252, 256). Reassigning or redefining the `call` or `apply` property of a
