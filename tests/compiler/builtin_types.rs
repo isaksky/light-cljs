@@ -658,23 +658,73 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
         "(let [s (seq (sorted-map 1 2 3 4))] (count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil)))",
     );
     assert!(units.contains(&"treeMapSeqConstructor.count"), "{units:?}");
-    // A host value declaring `ISeqable` by its mask bit, a compiler-owned
-    // name, is not walked where nothing in the program implements `ISeqable`:
-    // `count` throws a `TypeError` naming the hook at `Advanced`.
-    let masked = "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
-         (try (count (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608))
-           (catch js/TypeError _ :unsupported) (catch :default e (.-message e)))";
-    let printed = execute(&format!("console.log({});", advanced(masked).emit_js()));
+    // A host value the program builds can declare `ISeqable` (or any core
+    // protocol) by a protocol mask, whose name keeps the protocol hooks and
+    // the units of `PROTOCOL_ROOTS`, with or without a program type.
+    for (source, expected) in [
+        (
+            "(deftype T [] ICounted (-count [_] 7))
+             (let [o (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608
+                             \"cljs$core$ISeqable$_seq$arity$1\" (fn [_] nil))]
+               (array (count (T.)) (count o)))",
+            "[ 7, 0 ]",
+        ),
+        (
+            "(count (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608
+                            \"cljs$core$ISeqable$_seq$arity$1\" (fn [_] (list 1 2))))",
+            "2",
+        ),
+        (
+            "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
+             (try (count (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608))
+               (catch :default e (.-message e)))",
+            "No protocol method ISeqable/-seq defined for this value",
+        ),
+        (
+            "(try (count (js-obj \"cljs$lang$protocol_mask$partition0$\" 2))
+               (catch :default e (.-message e)))",
+            "No protocol method ICounted/-count defined for this value",
+        ),
+    ] {
+        every_level(source, expected);
+    }
+    let masked = self::units("(count (js-obj \"cljs$lang$protocol_mask$partition0$\" 2))");
+    for unit in ["installMethods", "ISeqable", "ISequential", "count.seqs"] {
+        assert!(masked.contains(&unit), "{unit}: {masked:?}");
+    }
+    // A mask whose name the program computes is outside the contract: where
+    // nothing implements `ISeqable`, `count` throws a `TypeError` naming the
+    // hook at `Advanced`.
+    let computed = "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
+         (let [o (js-obj)]
+           (aset o (.concat \"cljs$lang$protocol_mask$\" \"partition0$\") 8388608)
+           (try (count o) (catch js/TypeError _ :unsupported) (catch :default e (.-message e))))";
+    let printed = execute(&format!("console.log({});", advanced(computed).emit_js()));
     assert_eq!(printed, "KeywordValue {}\n");
-    let none = prepare_application(
-        &program(masked),
-        ApplicationOptions::new(OptimizationLevel::None),
-    )
-    .emit_js();
-    assert_eq!(
-        execute(&format!("console.log({none});")),
-        "No protocol method ISeqable/-seq defined for this value\n"
-    );
+}
+
+/// light-cljs-251: `satisfies?` and `implements?` only read their protocol
+/// operand, so it does not keep `extendType`, unless the program replaces
+/// them: a replacement may write the protocol's table, which the full
+/// protocol tests then read, as at `None`.
+#[test]
+fn replaced_protocol_predicates_keep_the_full_protocol_tests() {
+    for source in [
+        "(deftype T [] ICounted (-count [_] 7))
+         (set! cljs.core/satisfies? (fn [p _] (aset p \"number\" true)))
+         (satisfies? ICounted nil)
+         (array (counted? (T.)) (counted? (js/parseInt \"5\")))",
+        "(deftype T [] ICounted (-count [_] 7))
+         (with-redefs [cljs.core/implements? (fn [p _] (aset p \"number\" true))]
+           (implements? ICounted nil))
+         (array (counted? (T.)) (counted? (js/parseInt \"5\")))",
+    ] {
+        assert!(
+            units(source).contains(&"protocolHooks.satisfies"),
+            "{source}"
+        );
+        every_level(source, "[ true, true ]");
+    }
 }
 
 /// light-cljs-251 (light-cljs-254): the map hooks records need (`makeMap.seq`,

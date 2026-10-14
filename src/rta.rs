@@ -67,7 +67,10 @@
 //! operation dispatching it is kept; where reachable code names the slot of
 //! one ([`crate::runtime_slice::RECORD_METHODS`]) in the ways it can name a
 //! program protocol's slot, emission of a record also keeps a unit that the
-//! method waits for.
+//! method waits for. Where it names a protocol mask, with which a host value
+//! can declare core protocols, or the marker or a method slot of a protocol
+//! of [`crate::runtime_slice::PROTOCOL_ROOTS`], emission keeps the units such
+//! a value needs ([`TypeAnalysis::named_protocol_declarations`]).
 //!
 //! # Devirtualization
 //!
@@ -126,6 +129,9 @@ pub(crate) struct TypeAnalysis {
     /// The units to root for the record methods whose slots reachable code
     /// names, each with the first expression naming one.
     record_methods: Vec<(&'static str, ExprId)>,
+    /// The units to root for the core protocol declarations reachable code
+    /// names, each with the first expression naming one.
+    declarations: Vec<(&'static str, ExprId)>,
 }
 
 /// What a rewrite removed, for [`crate::ApplicationStats`].
@@ -344,6 +350,7 @@ pub(crate) fn analyze(
         })
         .map(ExprId);
     let record_methods = named_record_methods(program, &live);
+    let declarations = named_protocol_declarations(program, &live);
     TypeAnalysis {
         live,
         instantiated,
@@ -356,6 +363,7 @@ pub(crate) fn analyze(
         basis,
         members,
         record_methods,
+        declarations,
     }
 }
 
@@ -771,6 +779,19 @@ impl TypeAnalysis {
         &self.record_methods
     }
 
+    /// The units an `Advanced` slice roots because reachable code names a core
+    /// protocol declaration, each with the first expression naming it. A host
+    /// value the program builds can declare core protocols by a protocol mask
+    /// (`cljs$lang$protocol_mask$partition0$`), which then needs the protocol
+    /// hooks that `installMethods`' effects install and every unit of
+    /// [`crate::runtime_slice::PROTOCOL_ROOTS`], and by the marker of one of
+    /// those protocols, which naming it or one of its method slots
+    /// (`cljs$core$ISeqable$`) roots. A name computed at run time does not
+    /// count, as for protocol slots.
+    pub(crate) fn named_protocol_declarations(&self) -> &[(&'static str, ExprId)] {
+        &self.declarations
+    }
+
     /// Rewrite `program` as the analysis decided (see the module docs) and
     /// update `retained`, the globals emission declares.
     pub(crate) fn apply(
@@ -942,6 +963,42 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
         .iter()
         .zip(first)
         .filter_map(|((_, _, unit), site)| Some((*unit, site?)))
+        .collect()
+}
+
+/// See [`TypeAnalysis::named_protocol_declarations`]: the units to root, in
+/// [`crate::runtime_slice::PROTOCOL_ROOTS`] order and then `installMethods`,
+/// each with the first reachable expression naming it as [`names_property`]
+/// reads names.
+fn named_protocol_declarations(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
+    const MASK: &str = "cljs$lang$protocol_mask$partition";
+    let roots = crate::runtime_slice::PROTOCOL_ROOTS;
+    let mut first = vec![None; roots.len() + 1];
+    for (index, expr) in program.exprs.iter().enumerate() {
+        if !live[index] {
+            continue;
+        }
+        names_property(program, &expr.kind, |name| {
+            let mask = name.starts_with(MASK);
+            for (unit, site) in first.iter_mut().enumerate() {
+                let declares = roots.get(unit).is_some_and(|root| {
+                    name.strip_prefix("cljs$core$")
+                        .and_then(|rest| rest.strip_prefix(root))
+                        .is_some_and(|rest| rest.starts_with('$'))
+                });
+                if mask || declares {
+                    site.get_or_insert(ExprId(index));
+                }
+            }
+            false
+        });
+    }
+    roots
+        .iter()
+        .copied()
+        .chain(["installMethods"])
+        .zip(first)
+        .filter_map(|(unit, site)| Some((unit, site?)))
         .collect()
 }
 

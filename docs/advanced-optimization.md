@@ -1826,7 +1826,9 @@ host-facing methods of the vector and the keyword.
     "number" true)`), so emission keeps `extendType` for it, as for an
     escaped dispatcher (`Emitter::escaped_dispatcher`,
     `RuntimeManifest::is_core_protocol`). Before, `counted?` missed such a
-    write in a program without protocol implementations.
+    write in a program without protocol implementations. Where the program
+    replaces `satisfies?` or `implements?` (`set!`, `with-redefs`), the
+    replacement may write its operand too, which then keeps `extendType`.
   - `ownProtocol` reads the mask bit before the marker, as
     `implementsProtocol` does, so a marker getter runs as at `None`.
   - **Tests.** `builtin_types::protocol_tests_of_program_types_need_no_protocol_tables`
@@ -1888,9 +1890,17 @@ host-facing methods of the vector and the keyword.
     so the seq walk keeps `countProtocol` without `get`, `nth` and
     `contains`. A record method waits for its own dispatcher
     (`recordMethods.lookup when: get, lookupProtocol`).
-  - A host value that declares `ISeqable` by its mask bit without `ICounted`
-    is walked only where the program implements `ISeqable` itself; see the
-    contract below.
+  - **Declarations the program names.** A host value can declare core
+    protocols by a protocol mask (`cljs$lang$protocol_mask$partition0$`), so
+    where reachable code names a mask, emission keeps `installMethods`, whose
+    effects install the protocol hooks, and every unit of `PROTOCOL_ROOTS`;
+    naming the marker or a method slot of one of those protocols
+    (`cljs$core$ISeqable$`) keeps its unit
+    (`TypeAnalysis::named_protocol_declarations` in src/rta.rs, as for named
+    record slots). So a masked host value's `count` walks its seq as at
+    `None`, and before, a program without protocol implementations ignored
+    the mask altogether. A mask whose name the program computes is outside
+    the contract below.
   - **Tests.** `builtin_types::count_walks_the_seqs_of_the_values_that_need_it`
     counts every kind the walk serves (a lazy seq, a `Cons`, a range of
     doubles, `keys`, `re-seq`, a chunked cons, a host iterator's seq,
@@ -1899,8 +1909,12 @@ host-facing methods of the vector and the keyword.
     `extend-type` of a program and a host type, `specify!`), each in a
     program of its own, at every level against `None`, checks that `count`
     of a host array, a `deftype`, a record and a `reify` implementing
-    `ICounted` keeps no seqs, and that a host value declaring `ISeqable` by
-    its mask bit throws a `TypeError` at `Advanced`;
+    `ICounted` keeps no seqs, counts host values declaring `ISeqable` or
+    `ICounted` by a mask with and without a program type at every level, and
+    checks that a mask whose name is computed throws a `TypeError` at
+    `Advanced`; `replaced_protocol_predicates_keep_the_full_protocol_tests`
+    replaces `satisfies?` and `implements?` with functions writing their
+    operand;
     `map_hooks_for_records_wait_for_records` checks a `deftype` with a seq
     and seqs, prints, compares, converts and updates records at every level.
     The `runtime_manifest` suite lists the two hooks in `KIND_HOOKS`, lets a
@@ -1909,7 +1923,7 @@ host-facing methods of the vector and the keyword.
     checks that records, which implement `ISeqable`, count through
     `recordMethods.count` where `count.seqs` would serve them.
   - **Measured** at `Advanced`, raw / gzip bytes, against the first part
-    (`7976b93`, on master `f76712a`): `(deftype T [] ICounted (-count [_] 7)) (count (T.))` drops
+    (on master `468e71e`): `(deftype T [] ICounted (-count [_] 7)) (count (T.))` drops
     from 21,678 / 7,157 to 7,662 / 3,043 (27,180 / 8,726 on master
     `e5ee884`; the pellet asked for 12,000), `(count (.split "a,b" ","))`
     from 8,948 / 2,952 to 1,356 / 593, `(defrecord R [x]) (count (->R 1))`
@@ -3259,14 +3273,16 @@ upstream states that advanced mode is unsafe for certain patterns.
   is nil until it is hashed and its hash afterwards.
 - `set!` on a core operation forces indirection for that operation only.
 - Protocol masks (`cljs$lang$protocol_mask$partition0$`) are compiler-owned
-  names too, which Closure renames upstream. A host value that declares a
-  core protocol only by its mask bit is seen as declaring it only where the
-  program keeps the protocol hooks (`installMethods`: it defines a type or
-  a `reify`, or extends a protocol), and `count` walks the seq of one
-  declaring `ISeqable` without `ICounted` only where the program implements
-  `ISeqable` itself (light-cljs-251). Elsewhere `count` of it throws, `count
-  not supported on this type` or a `TypeError` naming `kindHooks.countSeq`,
-  where `optimize: false` reports the missing `-seq` method.
+  names too, which Closure renames upstream. A host value declares core
+  protocols by a mask as at `optimize: false` where the program names a
+  mask, in the ways it can name a protocol slot (light-cljs-251). A mask the
+  program does not name, set by host code or under a name computed at run
+  time, is unsupported: the generic operations may ignore it, or `count` of
+  a value it declares `ISeqable` for may throw a `TypeError` naming
+  `kindHooks.countSeq`. How often and in which order the runtime reads a
+  mask or marker property is not part of the contract either: a getter
+  defined on one may run another number of times than at `optimize:
+  false`.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the compiler renames every name it binds away from it: the
   hygiene pass gives them the `__light<n>_` prefix, which no raw text of the

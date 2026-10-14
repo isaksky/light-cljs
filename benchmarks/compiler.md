@@ -3027,8 +3027,8 @@ which the builders of cells, lazy seqs and host iterators' seqs,
 
 **Sizes**, raw and `gzip -9` bytes (of stdin) of `--compile --optimize
 LEVEL`, on the 24-CPU Mac (sizes do not depend on load; load average 9.4).
-"Before" is the first part of light-cljs-251 (`7976b93`, on master
-`f76712a`). `prepare` equals `none` for every fixture but `pure-defs`,
+"Before" is the first part of light-cljs-251 (its two earlier commits) on
+master `468e71e`. `prepare` equals `none` for every fixture but `pure-defs`,
 which is 78 bytes smaller there.
 
 | Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |

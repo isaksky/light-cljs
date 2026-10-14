@@ -91,6 +91,10 @@ pub(crate) struct Application<'a> {
     /// the program names (`crate::rta`), each with the first expression
     /// naming one, which the slice of a program with records roots.
     pub record_methods: &'a [(&'static str, ExprId)],
+    /// At `Advanced`: the units the core protocol declarations the program
+    /// names need (`crate::rta`), each with the first expression naming one,
+    /// which the slice roots.
+    pub protocol_declarations: &'a [(&'static str, ExprId)],
     /// At `Advanced`: calls that name the method they run, and definitions
     /// that bind each method to an entry of its own (`crate::call_shapes`).
     pub shapes: Option<&'a CallShapes>,
@@ -268,6 +272,17 @@ fn emit_js_mode(
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
         emitter.emit(program.root, ExprContext::Return);
+        // A host value the program builds may declare core protocols by
+        // their masks or markers, which it names (`crate::rta`).
+        if let Some(application) =
+            application.filter(|_| direct.is_some() && !emitter.runtime.is_empty())
+        {
+            for &(unit, site) in application.protocol_declarations {
+                emitter
+                    .runtime
+                    .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+            }
+        }
         // Only code naming them reads the upstream fields and methods of the
         // runtime's types, so an `Advanced` slice keeps them only then.
         if let Some(site) = application
@@ -1340,7 +1355,8 @@ impl<'a> Emitter<'a> {
     /// the slice keeps it. Likewise a core protocol read as a value
     /// (`(aset ICounted "number" true)`) may gain types, which only the hooks
     /// `extendType` installs read (`protocolHooks.satisfies`, light-cljs-251),
-    /// except as the operand of `satisfies?` or `implements?`.
+    /// except as the operand of `satisfies?` or `implements?` where the program
+    /// does not replace them.
     fn escaped_dispatcher(&mut self, name: RuntimeName, site: Option<ExprId>) {
         let manifest = RuntimeManifest::embedded();
         if name.member.is_none()
@@ -4673,11 +4689,13 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
-                if let ExprKind::CoreFn(crate::CoreFnId::Satisfies | crate::CoreFnId::Implements) =
-                    self.program.exprs[callee.0].kind
+                if let ExprKind::CoreFn(
+                    core @ (crate::CoreFnId::Satisfies | crate::CoreFnId::Implements),
+                ) = self.program.exprs[callee.0].kind
+                    && !self.replaced(core.runtime_name())
                 {
                     // `(satisfies? ICounted x)` reads the protocol's table
-                    // without writing it.
+                    // without writing it, unless the program replaces it.
                     self.protocol_operand = args.first().copied();
                 }
                 if let Some(&index) = self.entry_lookups.and_then(|lookups| lookups.get(&id)) {
