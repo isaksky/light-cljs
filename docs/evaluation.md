@@ -185,6 +185,7 @@ initializer value.
 | `--output-limit N` | 1048576 | UTF-8 emitted/rendered bytes per operation |
 | `--print-length N` | 100 | Result collection item bound |
 | `--print-level N` | 20 | Result collection depth bound |
+| `--elide-asserts` | off | Compile without `assert` and `fn` `:pre`/`:post` checks |
 
 Numbers are nonnegative integers; zero is a real bound. Startup rejects a heap
 limit below its supported minimum. The obsolete `--fuel`, `--allocation-limit`,

@@ -1589,7 +1589,15 @@ conditions and messages entirely, including unresolved forms and pre/post checks
 The setting persists on a reused host and is reflected in the compile-time
 runtime's dynamic `clojure.core/*assert*` Var so source macros can choose whether
 to generate checks. It is a compilation setting, not an emitted runtime toggle.
-The default CLI and convenience compilation functions enable it.
+The default CLI and convenience compilation functions enable it. The CLI's
+`--elide-asserts` (after `--compile`, or with `--eval`/`--repl`, where it sets
+`EvalOptions::assertions`) disables it for the whole build, at every
+optimization level, as upstream's `:elide-asserts` does. An omitted assertion
+analyzes to `nil`, which `none` and `prepare` emit as a `null;` statement and
+`advanced` removes. The flag is the only switch: `--define` names `goog-define`
+Vars of the analyzed program, read after analysis, while this setting must hold
+before it, so `--define cljs.core/*assert*=false` is rejected as naming no
+`goog-define`.
 
 `case` checks duplicate constants after macro conversion. JavaScript Number
 treats integer and floating spellings such as `1` and `1.0` as the same constant;

@@ -2909,12 +2909,31 @@ pub fn analyze_named_with_warnings(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<Program, AnalysisError> {
-    let mut host = MacroHost::new();
-    host.begin_compilation();
+    analyze_named_with_macro_warnings(
+        name,
+        source,
+        syntax,
+        &mut MacroHost::new(),
+        options,
+        warnings,
+    )
+}
+
+/// [`analyze_named_with_warnings`] with an explicitly supplied macro host, whose
+/// settings (such as [`MacroHost::set_assertions`]) apply to the analysis.
+pub fn analyze_named_with_macro_warnings(
+    name: &str,
+    source: &str,
+    syntax: &SyntaxTree,
+    macro_host: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<Program, AnalysisError> {
+    macro_host.begin_compilation();
     analyze_input(
         source,
         syntax,
-        &mut host,
+        macro_host,
         options,
         warnings,
         AnalysisInputState {

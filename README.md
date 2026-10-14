@@ -152,7 +152,12 @@ their sizes and the source expression that first demanded each, and the size of
 the constant table. `--define ns/NAME=VALUE` (repeatable) gives a
 `(goog-define NAME default)` Var its value for the build, at every level; at
 `advanced` the code that only another value runs, such as a `(when DEBUG ...)`
-logging path, is removed.
+logging path, is removed. `--elide-asserts` omits every `assert` and `fn`
+`:pre`/`:post` check at every level, as upstream's `:elide-asserts` does:
+`(assert (= 1 1) "x") (js/console.log 1)` is 151 bytes at `advanced`, the same
+as without the assertion, instead of 309. It is the only switch; `--define`
+names only `goog-define` Vars, so `--define cljs.core/*assert*=false` is
+rejected. `--eval` and `--repl` take `--elide-asserts` too.
 
 Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
 Vars and arity conflicts become warnings instead of errors), or with

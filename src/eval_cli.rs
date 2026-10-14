@@ -29,6 +29,7 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
   --output-limit N   UTF-8 emitted/rendered bytes per operation (1048576)
   --print-length N   Collection result length (100)
   --print-level N    Collection result depth (20)
+  --elide-asserts    Compile without assert and fn :pre/:post checks
 
 --eval prints the final value only after success; program output is immediate.
 --repl retains namespaces and *1/*2/*3/*e and recovers language/reader errors.
@@ -141,6 +142,10 @@ fn options(repl: bool, mut args: impl Iterator<Item = OsString>) -> Result<Optio
                 }
                 "--print-level" => {
                     options.eval.print.level = Some(size(&mut args, flag)?);
+                    continue;
+                }
+                "--elide-asserts" => {
+                    options.eval.assertions = false;
                     continue;
                 }
                 "--text" if !repl && !has_input => {

@@ -7,7 +7,7 @@ use std::{
     process::ExitCode,
 };
 
-use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_warnings};
+use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_macro_warnings};
 use light_cljs::{
     ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, TokenKind, Tokenizer,
     parse, prepare_application,
@@ -15,7 +15,7 @@ use light_cljs::{
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -40,7 +40,7 @@ fn optimization_level(
 }
 
 /// The application options `--compile` collects: `--optimize`,
-/// `--size-report`, `--pseudo-names` and `--define`.
+/// `--size-report`, `--pseudo-names`, `--define` and `--elide-asserts`.
 #[derive(Default)]
 struct CompileFlags {
     level: OptimizationLevel,
@@ -48,6 +48,8 @@ struct CompileFlags {
     pseudo_names: bool,
     /// `NS/NAME=VALUE` texts, read against the program once it is analyzed.
     defines: Vec<String>,
+    /// Omit assertions, a setting of analysis rather than of the application.
+    elide_asserts: bool,
 }
 
 impl CompileFlags {
@@ -61,6 +63,7 @@ impl CompileFlags {
             "--optimize" => self.level = optimization_level(args)?,
             "--size-report" => self.size_report = true,
             "--pseudo-names" => self.pseudo_names = true,
+            "--elide-asserts" => self.elide_asserts = true,
             "--define" => self.defines.push(
                 args.next()
                     .ok_or("--define requires NS/NAME=VALUE")?
@@ -70,6 +73,13 @@ impl CompileFlags {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// The macro host that analyzes the program.
+    fn host(&self) -> MacroHost {
+        let mut host = MacroHost::new();
+        host.set_assertions(!self.elide_asserts);
+        host
     }
 
     /// The application options for `program`.
@@ -122,7 +132,7 @@ fn run_namespace(
     let program = light_cljs::compiler::analyze_namespace_entry(
         &entry,
         &roots,
-        &mut MacroHost::new(),
+        &mut flags.host(),
         options,
         &mut warnings,
     );
@@ -177,8 +187,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         first = args.next();
     }
     let mut flags = CompileFlags::default();
-    while let Some(flag @ ("--optimize" | "--size-report" | "--pseudo-names" | "--define")) =
-        first.as_deref().and_then(|arg| arg.to_str())
+    while let Some(
+        flag @ ("--optimize" | "--size-report" | "--pseudo-names" | "--define" | "--elide-asserts"),
+    ) = first.as_deref().and_then(|arg| arg.to_str())
     {
         if mode != "compile" {
             return Err(format!("{flag} requires --compile").into());
@@ -248,8 +259,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         })?;
         if mode != "parse" {
             let mut warnings = Vec::new();
-            let program =
-                analyze_named_with_warnings(&source_name, &source, &tree, options, &mut warnings);
+            let program = analyze_named_with_macro_warnings(
+                &source_name,
+                &source,
+                &tree,
+                &mut flags.host(),
+                options,
+                &mut warnings,
+            );
             print_warnings(&warnings);
             let program = program.map_err(|error| {
                 let (line, column) = LineIndex::new(&source)

@@ -532,3 +532,131 @@ fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
             .contains("--size-report requires --compile")
     );
 }
+
+/// `--elide-asserts` omits assertions while compiling, as upstream's
+/// `:elide-asserts` does: at every level, for text and namespace compiles and
+/// for `--eval`, an `assert` compiles to the same bytes as `nil` in its place
+/// (at `advanced`, as the program without it), and a failing `:pre` condition
+/// no longer throws.
+#[test]
+fn elide_asserts_omits_assertions_at_every_level() {
+    let asserting = r#"(assert (= 1 1) "x") (js/console.log 1)"#;
+    let plain = "(js/console.log 1)";
+    let nil = "nil (js/console.log 1)";
+    let pre = "(defn twice [x] {:pre [(pos? x)]} (* 2 x)) (twice -1)";
+    let root = std::env::temp_dir().join(format!("light-cljs-cli-elide-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(root.join("app/main.cljs"), format!("(ns app.main) {pre}")).unwrap();
+    let root_arg = root.to_str().unwrap();
+    let node = |js: &str| {
+        Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .args(["--print", js])
+            .output()
+            .unwrap()
+    };
+    for level in OptimizationLevel::ALL {
+        let name = level.name();
+        // `none` and `prepare` emit the `nil` statement an elided assertion
+        // leaves; `advanced` drops it.
+        let expected = compiled(&["--compile", "--optimize", name, "--text", nil]);
+        if level == OptimizationLevel::Advanced {
+            assert_eq!(
+                expected,
+                compiled(&["--compile", "--optimize", name, "--text", plain])
+            );
+        }
+        assert!(
+            compiled(&["--compile", "--optimize", name, "--text", asserting]).len()
+                > expected.len(),
+            "{level}: assertions are kept by default"
+        );
+        // The flag may come before or after the input.
+        for args in [
+            [
+                "--compile",
+                "--elide-asserts",
+                "--optimize",
+                name,
+                "--text",
+                asserting,
+            ],
+            [
+                "--compile",
+                "--optimize",
+                name,
+                "--text",
+                asserting,
+                "--elide-asserts",
+            ],
+        ] {
+            assert_eq!(compiled(&args), expected, "{args:?}");
+        }
+
+        let failing = node(&compiled(&["--compile", "--optimize", name, "--text", pre]));
+        assert!(!failing.status.success(), "{level}");
+        assert!(
+            String::from_utf8_lossy(&failing.stderr).contains("Assert failed"),
+            "{level}: {}",
+            String::from_utf8_lossy(&failing.stderr)
+        );
+        let elided = compiled(&[
+            "--compile",
+            "--optimize",
+            name,
+            "--elide-asserts",
+            "--text",
+            pre,
+        ]);
+        assert_eq!(node(&elided).stdout, b"-2\n", "{level}");
+        let entry = |elide: bool| {
+            let mut args = vec!["--compile", "--optimize", name];
+            if elide {
+                args.push("--elide-asserts");
+            }
+            args.extend(["--entry", "app.main", "--source-root", root_arg]);
+            node(&compiled(&args))
+        };
+        assert!(!entry(false).status.success(), "{level}");
+        assert_eq!(entry(true).stdout, b"-2\n", "{level}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+
+    let output = light_cljs(&["--eval", "--text", pre]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Assert failed"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = light_cljs(&["--eval", "--elide-asserts", "--text", pre]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"-2\n");
+
+    // The flag is the only switch: `*assert*` is no `goog-define`.
+    for (args, message) in [
+        (
+            &["--parse", "--elide-asserts", "--text", pre][..],
+            "--elide-asserts requires --compile",
+        ),
+        (
+            &[
+                "--compile",
+                "--define",
+                "cljs.core/*assert*=false",
+                "--text",
+                pre,
+            ][..],
+            "no goog-define named cljs.core/*assert* in the program",
+        ),
+    ] {
+        let output = light_cljs(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+}
