@@ -72,17 +72,18 @@
             (= uri (subs base-path 0 (dec (count base-path)))) (redirect base-path)
             (not (str/starts-with? uri base-path)) (not-found uri)
             :else
-            (let [relative (subs uri (count base-path))
-                  file (fs/path root relative)]
+            (let [file (fs/canonicalize (fs/path root (subs uri (count base-path))))]
               (cond
+                ;; Compare path components, so a sibling such as dist-backup
+                ;; is outside the root.
+                (not (fs/starts-with? file root)) (not-found uri)
                 ;; Like GitHub Pages: a directory redirects to its slash form,
                 ;; whose index.html the relative links resolve against.
                 (and (fs/directory? file) (not (str/ends-with? uri "/")))
                 (redirect (str uri "/"))
                 :else
                 (let [file (if (fs/directory? file) (fs/path file "index.html") file)]
-                  (if (and (fs/regular-file? file)
-                           (str/starts-with? (str (fs/canonicalize file)) (str root)))
+                  (if (fs/regular-file? file)
                     {:status 200
                      :headers {"Content-Type" (get content-types (fs/extension file) "application/octet-stream")
                                "Cache-Control" "no-cache"}

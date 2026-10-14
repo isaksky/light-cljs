@@ -144,7 +144,7 @@
                   (let [relative (if (= uri "/") "index.html" (subs uri 1))
                         file (fs/path root relative)]
                     (if (and (fs/regular-file? file)
-                             (str/starts-with? (str (fs/canonicalize file)) (str root)))
+                             (fs/starts-with? (fs/canonicalize file) root))
                       {:status 200
                        :headers {"Content-Type" (get content-types (fs/extension file) "application/octet-stream")
                                  "Cache-Control" "no-cache"}
