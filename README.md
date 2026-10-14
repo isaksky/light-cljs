@@ -116,27 +116,36 @@ its default export (see [JavaScript packages](docs/compiler.md#javascript-packag
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
 builds, with or without `--esm`) picks the optimization level. `prepare`, the
 default, removes unused definitions with inert initializers and specializes
-top-level calls; `none` emits everything as analyzed; `advanced` is the release
-mode being built from [docs/advanced-optimization.md](docs/advanced-optimization.md);
-so far it also removes unused definitions whose initializers only call pure core
-operations, does not let retained `js*` disable these passes, reads runtime
-functions directly, embeds just the runtime units the program reaches,
-registers namespaces with the runtime only for programs that use reflection
-such as `*ns*`, `find-ns` or `read-string`, keeps the printer (and with it
-a printing `toString` on collections) only for programs that print,
-builds each distinct constant literal once, with its hash computed by the
-compiler, builds map literals with constant keys from a precomputed key
-shape, drops the methods and types of the program that no instance can use,
-keeps of the runtime's collection, keyword and seq types only those the
-program can build, with the parts of each operation that handle them,
-calls the program's own functions directly, without an arity
-dispatcher when nothing else sees them, creating once the methods of local
-functions that capture nothing, and folds constants, dead branches and
-lookups in constant collections and inlines single-use and small pure
-functions, and writes the program and the runtime it embeds tersely, with
-short names and without comments or whitespace (see
-[Application preparation](docs/compiler.md#application-preparation)). Add
-`--pseudo-names` to keep `advanced` output readable for debugging: the
+top-level calls; `none` emits everything as analyzed. `advanced` is the release
+mode, still being built from
+[docs/advanced-optimization.md](docs/advanced-optimization.md). So far it:
+
+- removes unused definitions whose initializers only call pure core operations,
+  and does not let retained `js*` disable these passes;
+- embeds just the runtime units the program reaches and reads runtime functions
+  directly; registers namespaces with the runtime only for programs that use
+  reflection such as `*ns*`, `find-ns` or `read-string`; keeps the printer (and
+  with it a printing `toString` on collections) only for programs that print;
+- builds each distinct keyword, symbol and constant collection literal once,
+  with its hash computed by the compiler, and builds map literals with constant
+  keys from a precomputed key shape;
+- infers types, of parameters too from the calls of functions only the program
+  calls, to write truth tests, arithmetic, comparisons and typed core calls as
+  plain JavaScript;
+- drops the methods and types no instance can use, and keeps of the runtime's
+  collection, keyword and seq types only those the program can build, with the
+  parts of each operation that handle them;
+- calls the program's own functions directly through the method a call selects,
+  without an arity dispatcher when nothing else sees them, and creates once the
+  methods of local functions that capture nothing;
+- folds constants, dead branches, `goog-define` values and lookups in constant
+  collections, and inlines single-use and small pure functions;
+- writes the program and the runtime it embeds tersely, with short names and
+  without comments or whitespace.
+
+See [Application preparation](docs/compiler.md#application-preparation) for
+the passes and [known boundaries](#known-boundaries) for typical output sizes.
+Add `--pseudo-names` to keep `advanced` output readable for debugging: the
 compiler's own names, the runtime as written and an indented layout. Add
 `--size-report` to print to stderr which runtime units the output embeds, with
 their sizes and the source expression that first demanded each, and the size of
@@ -223,26 +232,16 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   static imports a bundler (Vite, esbuild, Rollup) resolves and tree-shakes. The
   compiler never reads `node_modules` or `package.json` and does no package
   resolution or CommonJS conversion.
-- **No build tooling:** no per-namespace module output, source maps or advanced
-  optimization; output is one JavaScript expression, or one ES module with `--esm`.
-  A release optimizer is designed in [docs/advanced-optimization.md](docs/advanced-optimization.md);
-  `--optimize advanced` so far drops unused definitions with pure initializers
-  and the runtime units a program does not reach, declares each keyword,
-  symbol and constant collection literal once, leaves out the compiler's
-  namespace registry unless the program uses reflection and the printer unless
-  it prints, infers types (of parameters too, from the calls of functions
-  only the program calls) to write truth tests, arithmetic, comparisons
-  and typed core calls as plain JavaScript, drops the protocol methods and
-  types no instance can use, calls known functions directly through the
-  method a call selects, keeps only the runtime types a program can
-  build, and folds constants, dead branches, `goog-define` values and
-  lookups in constant collections and inlines small functions.
-  `(js/console.log (+ 1 2))` drops from about 390 KB to about 150 bytes, a
-  small record and protocol program to about 6 KB, a program that only
-  builds a keyword to 4 KB, a vector to 6 KB and a map or set literal to
-  12 KB; a program that prints keeps the printer (about 21 KB), and one
-  that uses the generic sequence operations most of the collection
-  machinery (30-50 KB).
+- **No build tooling:** no per-namespace module output or source maps; output
+  is one JavaScript expression, or one ES module with `--esm`. The release
+  optimizer, `--optimize advanced`, is still being built
+  ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
+  so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes
+  today: `(js/console.log (+ 1 2))` drops from about 390 KB to about 150 bytes,
+  a small record and protocol program to about 6 KB, a program that only builds
+  a keyword to 4 KB, a vector to 6 KB and a map or set literal to 12 KB; a
+  program that prints keeps the printer (about 21 KB), and one that uses the
+  generic sequence operations most of the collection machinery (30-50 KB).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
