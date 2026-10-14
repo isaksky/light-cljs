@@ -3102,15 +3102,15 @@ atom holds ("Phase 2 atom state extension points" in the
 [design](../docs/advanced-optimization.md)).
 
 **Sizes**, raw and `gzip -9` bytes of `--compile --optimize advanced`, on the
-24-CPU Mac (sizes do not depend on load; load average 4.2). "Before" is
-master `468e71e`. The size ratchet table is identical before and after at
-every level: no fixture reads a closed atom's state outside a `swap!`
-function.
+24-CPU Mac (sizes do not depend on load; load average 4.3). "Before" is
+master `421b72d`. The size ratchet table is identical before and after at
+every level: the `callbacks` fixture's `@counter` is now a number, but it is
+an operand of `+`, which is an operator for every operand already.
 
 | Program | Advanced before → after |
 | --- | --- |
 | every ratchet fixture | identical bytes |
-| program below | 24,261 / 7,815 → 24,221 / 7,797 |
+| program below | 24,158 / 7,786 → 24,118 / 7,766 |
 
 ```clojure
 (def counter (atom 0))

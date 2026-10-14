@@ -2477,6 +2477,10 @@ a (fn [n] (+ n 1))))` the parameter `n` was `any`.
   - An atom passed to a closed function, or held by a record field, escapes.
   - The vectors `reset-vals!` and `swap-vals!` return are not known to be
     flat (`Known::Vector`), so `nth` on them keeps the general path.
+  - A function given to `swap!` is summarized by its bodies even where the
+    program reassigns its `call` property, which the runtime invokes; direct
+    calls, inlining and inference all assume no program does (found by the
+    review of this change; light-cljs-257 decides it).
 
 #### Phase 2 pure initializer and `js*` extension points
 
