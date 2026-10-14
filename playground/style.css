@@ -40,6 +40,9 @@ h1 {
   margin: 0;
 }
 
+h1 a { color: inherit; text-decoration: none; }
+h1 a:hover { text-decoration: underline; }
+
 .muted { color: var(--muted); font-weight: normal; }
 
 .toolbar {

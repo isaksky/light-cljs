@@ -1,0 +1,72 @@
+name: Pages
+
+# Builds the landing page in site/ and the browser playground, and publishes
+# them to https://isaksky.github.io/light-cljs/ (`bb site/build.bb serve`
+# reproduces the result locally).
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push waits rather than cancelling one
+# that is already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The same toolchain steps as the conformance `playground` job.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          # Must match the pin in playground/crate/Cargo.toml.
+          tool: wasm-bindgen@0.2.129
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          bb: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      # ubuntu-latest has `clang` but llvm-ar only as `llvm-ar-<major>`, and cc-rs
+      # needs an llvm-ar to archive QuickJS's wasm32 objects. Name the one
+      # matching the default clang, installing that LLVM if the image lacks it.
+      - name: Select the LLVM archiver for wasm32
+        run: |
+          ls /usr/bin/llvm-ar* /usr/bin/clang* || true
+          major=$(clang -dumpversion | cut -d. -f1)
+          command -v "llvm-ar-$major" || { sudo apt-get update -q && sudo apt-get install -y -q "llvm-$major"; }
+          echo "AR_wasm32_unknown_unknown=llvm-ar-$major" >> "$GITHUB_ENV"
+      - run: clang --version && bb --version
+      - run: bb playground/build.bb build
+      # A playground that fails its checks must not deploy.
+      - run: bb playground/build.bb check
+      - run: bb site/build.bb build --reuse-playground
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>light-cljs</title>
+  <meta name="description" content="light-cljs: a ClojureScript-to-JavaScript compiler written in Rust, with a browser playground.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <p class="notice"><strong>Under construction.</strong> This site is new and still being
+      built: for now it is this page and the playground, and the documentation lives in the
+      repository.</p>
+
+    <header>
+      <h1>light-cljs</h1>
+      <p class="lede">A ClojureScript compiler written in Rust.</p>
+    </header>
+
+    <nav class="links" aria-label="Main links">
+      <a class="button primary" href="playground/">Try the playground</a>
+      <a class="button" href="https://github.com/isaksky/light-cljs">GitHub repository</a>
+      <a class="button" href="#documentation">Documentation</a>
+    </nav>
+
+    <p>light-cljs is a ClojureScript-to-JavaScript compiler written in Rust. It reads
+      <code>.cljs</code>/<code>.cljc</code> source, resolves and analyzes it in Rust, and emits
+      a single self-contained JavaScript expression that carries its own persistent-collection
+      runtime. The same compiler powers a script runner, a REPL and an embedding API that
+      execute the emitted JavaScript in an embedded QuickJS engine, so no Node, JVM or
+      installed <code>cljs.core</code> is needed to run code.</p>
+
+    <p><strong>Status:</strong> ClojureScript support is substantial but partial. Core special
+      forms, macros, namespaces, persistent and sorted collections, lazy sequences,
+      transducers, protocols, types, records, multimethods, atoms, exceptions and JavaScript
+      interop work, and behavior is regularly compared against standard ClojureScript. It is
+      not a drop-in replacement; the differences are below.</p>
+
+    <p>The <a href="playground/">playground</a> runs the compiler itself in your browser,
+      built for WebAssembly: edit a few namespaces, compile them at any optimization level,
+      read the JavaScript and run it.</p>
+
+    <section id="differences">
+      <h2>How it differs from ClojureScript</h2>
+      <ul>
+        <li><strong>Numbers</strong> are always JavaScript Numbers, including at
+          macro-expansion time. <code>N</code>/<code>M</code> literals and integral ratios
+          become Numbers; a ratio such as <code>1/3</code> is rejected.</li>
+        <li><strong>Libraries:</strong> only <code>cljs.core</code> (the supported subset),
+          <code>clojure.string</code>, <code>clojure.set</code>, <code>clojure.walk</code>,
+          <code>clojure.edn</code> and <code>cljs.reader</code> are bundled. There is no Google
+          Closure Library, <code>cljs.pprint</code>, <code>cljs.test</code>,
+          <code>core.async</code> or <code>test.check</code>; other namespaces are supplied as
+          source.</li>
+        <li><strong>JavaScript packages come from the host.</strong> A libspec such as
+          <code>["react" :as r]</code> reads the <code>globalThis.lightCljsPackages</code>
+          registry, or, with <code>--esm</code>, becomes a static import for a bundler such
+          as Vite or esbuild. The compiler does no package resolution and never reads
+          <code>node_modules</code>.</li>
+        <li><strong>Output</strong> is one JavaScript expression, or one ES module with
+          <code>--esm</code>; there are no per-namespace modules. Source maps (v3) are
+          supported at every optimization level.</li>
+        <li><strong>Macros</strong> are written in <code>.cljs</code>/<code>.cljc</code> and
+          run in the embedded QuickJS engine, not the JVM; <code>.clj</code> macro files are
+          never loaded.</li>
+        <li><strong>Optimization:</strong> the release mode, <code>--optimize
+          advanced</code>, is light-cljs's own and still being built. Today
+          <code>(js/console.log (+ 1 2))</code> compiles to about 150 bytes, a small record and
+          protocol program to about 6 KB, and a program that prints keeps the printer (about
+          21 KB).</li>
+        <li><strong>The embedded engine</strong> used by the script runner and REPL provides
+          ECMAScript only: no DOM, Node APIs, filesystem or network unless the host supplies
+          them. Compiled output runs wherever JavaScript does.</li>
+      </ul>
+      <p>The README's <a href="https://github.com/isaksky/light-cljs#known-boundaries">known
+        boundaries</a> keep this list current, and the
+        <a href="https://github.com/isaksky/light-cljs/blob/master/docs/compiler.md">compiler
+        reference</a> documents supported forms, runtime semantics and the deliberate
+        differences in detail.</p>
+    </section>
+
+    <section id="documentation">
+      <h2>Documentation</h2>
+      <p>The documentation is Markdown in the repository for now:</p>
+      <ul class="docs">
+        <li><a href="https://github.com/isaksky/light-cljs#readme">README</a>: building,
+          command-line usage, library usage, testing.</li>
+        <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/compiler.md">Compiler
+          reference</a>: pipeline, supported forms, runtime semantics, macros, namespaces,
+          interop.</li>
+        <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/advanced-optimization.md">Advanced
+          optimization</a>: the design of <code>--optimize advanced</code>.</li>
+        <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/evaluation.md">Evaluation
+          and embedding</a>: the <code>EvalSession</code> API, <code>--eval</code> and
+          <code>--repl</code>.</li>
+        <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/evaluator.md">Evaluator</a>:
+          the QuickJS evaluator and the compile-time phase contract.</li>
+        <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/parser.md">Parser</a> and
+          <a href="https://github.com/isaksky/light-cljs/blob/master/docs/lexer.md">tokenizer</a>:
+          the syntax layers.</li>
+        <li><a href="https://github.com/isaksky/light-cljs/blob/master/playground/README.md">Playground</a>:
+          how the WebAssembly build works.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    light-cljs is released under the MIT License; files adapted from ClojureScript and SCI
+    stay under the Eclipse Public License 1.0 (see the
+    <a href="https://github.com/isaksky/light-cljs#license">license notes</a>).
+  </footer>
+</body>
+</html>

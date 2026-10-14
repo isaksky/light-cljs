@@ -4,3 +4,4 @@
 .claude/
 /playground/dist
 /playground/crate/target
+/site/dist

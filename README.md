@@ -8,6 +8,9 @@ that execute the emitted JavaScript in an embedded QuickJS engine (via
 [`rquickjs`](https://crates.io/crates/rquickjs) 0.14.0), so no Node, JVM or
 installed `cljs.core` is needed to run code.
 
+The project site, <https://isaksky.github.io/light-cljs/>, has an overview and
+the [browser playground](https://isaksky.github.io/light-cljs/playground/).
+
 **Status:** ClojureScript support is substantial but partial. Core special forms,
 macros, namespaces, persistent and sorted collections, lazy sequences,
 transducers, protocols, types, records, multimethods, atoms, exceptions and
@@ -199,12 +202,19 @@ cargo run --quiet -- --analyze --text '(let* [x 10] x)'  # resolved Program
 ## Browser playground
 
 [playground/](playground/) is a static page that runs the compiler in the
-browser: light-cljs built for `wasm32-unknown-unknown` (QuickJS included, for
-macro expansion) compiles several in-memory namespaces at any `--optimize`
-level, and the emitted JavaScript runs in the browser's own engine inside a
-worker. A dropdown offers examples from a single namespace to a calculator in
-several. `bb playground/build.bb` builds and serves it; see
+browser, published at <https://isaksky.github.io/light-cljs/playground/>:
+light-cljs built for `wasm32-unknown-unknown` (QuickJS included, for macro
+expansion) compiles several in-memory namespaces at any `--optimize` level, and
+the emitted JavaScript runs in the browser's own engine inside a worker.
+A dropdown offers examples from a single namespace to a calculator in several.
+`bb playground/build.bb` builds and serves it; see
 [playground/README.md](playground/README.md) for the toolchain it needs.
+
+`bb site/build.bb build` assembles the project site (the landing page in
+[site/](site/) plus the playground) into `site/dist`, and
+`bb site/build.bb serve` serves it at <http://localhost:8788/light-cljs/>;
+[.github/workflows/pages.yml](.github/workflows/pages.yml) publishes it to GitHub
+Pages on every push to `master`.
 
 ## Library usage
 
