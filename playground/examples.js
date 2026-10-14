@@ -2,19 +2,19 @@
 // program: an entry namespace and its files. `expect` is the printed value of
 // the entry's last form, which check.mjs verifies at every optimization level.
 //
-// Most examples log through js/console.log so that the emitted JavaScript
-// stays small and shows just the feature at hand; "Printing" and the
-// calculator use (enable-console-print!) and println. At --optimize advanced
-// a program that never prints embeds no printer, so its final value, when it
-// is a collection, has no toString and the page shows [object Object];
-// check.mjs allows that at advanced only.
+// The small examples show one feature each, log through js/console.log and
+// end in a number or string, so that the emitted JavaScript holds little
+// beyond the feature; only "Printing" and the calculator call
+// (enable-console-print!). At --optimize advanced a program that never prints
+// embeds no printer, so a collection as its final value has no toString and
+// the page shows [object Object]; check.mjs allows that at advanced only.
 
 export const EXAMPLES = [
   {
     id: "hello",
     title: "Hello, world",
     entry: "hello.core",
-    expect: "[1 4 9 16 25]",
+    expect: "Hello, playground!",
     files: [
       {
         path: "hello/core.cljs",
@@ -26,7 +26,7 @@ export const EXAMPLES = [
 (js/console.log (greet "world"))
 
 ;; The entry namespace's last form is the program's value.
-(mapv #(* % %) [1 2 3 4 5])
+(greet "playground")
 `,
       },
     ],
@@ -62,25 +62,26 @@ export const EXAMPLES = [
     id: "destructuring",
     title: "Destructuring",
     entry: "feature.destructuring",
-    expect: '{:x 1, :y 2, :rest (3 4 5), :city "Oslo"}',
+    expect: "6",
     files: [
       {
         path: "feature/destructuring.cljs",
         source: `(ns feature.destructuring)
 
-(defn point->map [[x y & more]]
-  {:x x :y y :rest more})
+(defn sum-first-two [[x y & more]]
+  (js/console.log "ignoring" (count more) "more")
+  (+ x y))
 
-(defn address-city [{:keys [city] :or {city "unknown"}}]
+(defn city [{:keys [city] :or {city "unknown"}}]
   city)
 
-(js/console.log (address-city {:street "Main" :city "Oslo"}))
-(js/console.log (address-city {}))
+(js/console.log (city {:street "Main" :city "Oslo"}))
+(js/console.log (city {}))
 
-(let [{:keys [x y]} (point->map [10 20])]
+(let [{:keys [x y]} {:x 10 :y 20}]
   (js/console.log "x + y =" (+ x y)))
 
-(assoc (point->map [1 2 3 4 5]) :city (address-city {:city "Oslo"}))
+(sum-first-two [1 5 3 4 5])
 `,
       },
     ],
@@ -89,7 +90,7 @@ export const EXAMPLES = [
     id: "lazy",
     title: "Lazy sequences",
     entry: "feature.lazy",
-    expect: "[0 1 1 2 3 5 8 13 21 34]",
+    expect: "12586269025",
     files: [
       {
         path: "feature/lazy.cljs",
@@ -99,12 +100,10 @@ export const EXAMPLES = [
 (def fibs
   (map first (iterate (fn [[a b]] [b (+ a b)]) [0 1])))
 
-(def evens (filter even? (range)))
+(js/console.log "the tenth fibonacci number is" (nth fibs 10))
+(js/console.log (count (take-while #(< % 1000) fibs)) "of them are below 1000")
 
-(js/console.log (str (take 5 evens)))
-(js/console.log (str (first (drop 100 fibs))))
-
-(vec (take 10 fibs))
+(nth fibs 50)
 `,
       },
     ],
@@ -113,27 +112,23 @@ export const EXAMPLES = [
     id: "atoms",
     title: "Atoms",
     entry: "feature.atoms",
-    expect: "{:count 3, :items [:a :b :c]}",
+    expect: "101",
     files: [
       {
         path: "feature/atoms.cljs",
         source: `(ns feature.atoms)
 
-(def state (atom {:count 0 :items []}))
+(def counter (atom 0))
 
-(add-watch state :log
-  (fn [_ _ old new]
-    (js/console.log "count" (:count old) "->" (:count new))))
+(js/console.log "start:" @counter)
+(swap! counter inc)
+(swap! counter #(+ % 10))
+(js/console.log "after two swaps:" @counter)
+(reset! counter 100)
+(js/console.log "after reset:" @counter)
 
-(defn add-item! [item]
-  (swap! state #(-> % (update :count inc) (update :items conj item))))
-
-(add-item! :a)
-(add-item! :b)
-(add-item! :c)
-
-;; Reading an atom yields a plain, immutable value.
-@state
+;; swap! returns the new value.
+(swap! counter inc)
 `,
       },
     ],
@@ -142,7 +137,7 @@ export const EXAMPLES = [
     id: "protocols",
     title: "Protocols and records",
     entry: "feature.protocols",
-    expect: "[12 25]",
+    expect: "12",
     files: [
       {
         path: "feature/protocols.cljs",
@@ -159,13 +154,13 @@ export const EXAMPLES = [
   Shape
   (area [_] (* side side)))
 
-(def shapes [(->Rect 3 4) (map->Square {:side 5})])
+(js/console.log "square:" (area (->Square 5)))
 
-;; Records are maps too.
-(js/console.log (:w (first shapes)))
-(js/console.log (str (into {} (assoc (->Rect 1 2) :colour "red"))))
+;; Records are maps too: fields answer keyword lookup.
+(def rect (->Rect 3 4))
+(js/console.log "width:" (:w rect))
 
-(mapv area shapes)
+(area rect)
 `,
       },
     ],
@@ -174,7 +169,7 @@ export const EXAMPLES = [
     id: "multimethods",
     title: "Multimethods",
     entry: "feature.multimethods",
-    expect: '["Woof" "Meow" "..."]',
+    expect: "Meow",
     files: [
       {
         path: "feature/multimethods.cljs",
@@ -187,8 +182,9 @@ export const EXAMPLES = [
 (defmethod speak :default [_] "...")
 
 (js/console.log (speak {:kind :dog :name "Rex"}))
+(js/console.log (speak {:kind :fish}))
 
-(mapv speak [{:kind :dog} {:kind :cat} {:kind :fish}])
+(speak {:kind :cat})
 `,
       },
     ],
@@ -225,7 +221,7 @@ data
     id: "namespaces",
     title: "Two namespaces",
     entry: "demo.main",
-    expect: "[1 4 9 16 25]",
+    expect: "55",
     files: [
       {
         path: "demo/main.cljs",
@@ -233,9 +229,9 @@ data
   (:require [demo.math :as math]))
 
 ;; demo.math lives in demo/math.cljs: namespace dots become directories.
-(js/console.log "the sum of the squares is" (reduce + (math/squares 5)))
+(js/console.log "5 squared is" (math/square 5))
 
-(math/squares 5)
+(math/sum-of-squares 5)
 `,
       },
       {
@@ -244,8 +240,11 @@ data
 
 (defn square [x] (* x x))
 
-(defn squares [n]
-  (mapv square (range 1 (inc n))))
+(defn sum-of-squares [n]
+  (loop [i 1, total 0]
+    (if (> i n)
+      total
+      (recur (inc i) (+ total (square i))))))
 `,
       },
     ],

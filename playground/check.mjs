@@ -66,7 +66,10 @@ for (const example of EXAMPLES) {
     check(acceptable, `${label}: value ${text}, expected ${example.expect}`);
     if (level === "none") printedAtNone = printed.join("\n");
     else check(printed.join("\n") === printedAtNone, `${label}: logged\n${printed.join("\n")}\nbut none logged\n${printedAtNone}`);
-    check(level !== "advanced" || result.size_report.includes("runtime slice"), `${label}: no size report`);
+    check(
+      level !== "advanced" || result.size_report.includes("runtime slice") || result.size_report.includes("no runtime embedded"),
+      `${label}: no size report`,
+    );
     console.log(`${label}: ${result.millis.toFixed(0)} ms, ${result.js.length} bytes`);
   }
 }

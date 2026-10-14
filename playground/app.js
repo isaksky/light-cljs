@@ -78,7 +78,7 @@ function loadExample(example, { ask = true } = {}) {
     renderExamples();
     return;
   }
-  const options = { optimize: state.optimize, warnings: state.warnings, pseudo: state.pseudo, sizes: state.sizes };
+  const options = { optimize: ui.optimize.value, warnings: ui.warnings.checked, pseudo: ui.pseudo.checked, sizes: ui.sizes.checked };
   state = Object.assign(fromExample(example), options);
   save();
   applyState();
