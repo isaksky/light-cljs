@@ -679,6 +679,19 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
             }
         }
     }
+    // So the hooks a record reaches (`makeMap.seq`, `makeMap.print`,
+    // `str.collections`, ...) wait for `recordMethods`, which only a program
+    // with records keeps; none waits for `makeType`, which every `deftype`
+    // keeps (light-cljs-254).
+    for unit in &manifest.units {
+        if let Some(effect) = &unit.effect {
+            assert!(
+                !effect.targets.contains(&"makeType"),
+                "`{}` targets `makeType`; records wait for `recordMethods`",
+                unit.name
+            );
+        }
+    }
     let mut seen = Vec::new();
     for (index, unit) in manifest.units.iter().enumerate() {
         let hooks: Vec<&str> = installed_hooks(body(index))

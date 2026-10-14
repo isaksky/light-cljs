@@ -658,6 +658,44 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
         "(let [s (seq (sorted-map 1 2 3 4))] (count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil)))",
     );
     assert!(units.contains(&"treeMapSeqConstructor.count"), "{units:?}");
+    // Each core dispatcher and its `protocolHooks` install is a unit of its
+    // own (light-cljs-254), so a walk keeps `countProtocol` without the
+    // dispatchers the unit `seqProtocol` declared with it, nor the `get`,
+    // `contains` and entry accessors they dispatch to.
+    let walked = "(deftype S [] ISeqable (-seq [_] (list 1 2 3))) (count (S.))";
+    let dropped = [
+        "seqProtocol",
+        "firstProtocol",
+        "restProtocol",
+        "nextProtocol",
+        "lookupProtocol",
+        "containsProtocol",
+        "keyProtocol",
+        "valProtocol",
+        "protocolHooks.firstProtocol",
+        "protocolHooks.nextProtocol",
+        "protocolHooks.keyProtocol",
+        "protocolHooks.valProtocol",
+        "get",
+        "lookup",
+        "contains",
+        "entryKey",
+        "entryVal",
+    ];
+    for unit in dropped {
+        assert!(
+            RuntimeManifest::embedded().unit_named(unit).is_some(),
+            "{unit}"
+        );
+    }
+    let units = assert_keeps_none(walked, &dropped);
+    for unit in [
+        "accumulatingCount",
+        "countProtocol",
+        "protocolHooks.countProtocol",
+    ] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
     // A host value the program builds can declare `ISeqable` (or any core
     // protocol) by a protocol mask, whose name keeps the protocol hooks and
     // the units of `PROTOCOL_ROOTS`, with or without a program type.
