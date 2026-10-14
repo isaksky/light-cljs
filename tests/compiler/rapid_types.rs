@@ -202,6 +202,74 @@ fn slots_the_program_names_keep_their_methods() {
 }
 
 #[test]
+fn slots_named_through_javascript_global_paths_keep_their_methods() {
+    // A `js/` path names its components as host properties: a slot there can
+    // be read on the value the global holds (light-cljs-255).
+    let protocol = "(defprotocol P (m [this x])) (deftype T [] P (m [_ x] x)) (set! js/probe (T.))";
+    for (read, expected) in [
+        ("(js/probe.cljs$user$P$m$arity$2 js/probe 1)", "1"),
+        ("(some? js/probe.cljs$user$P$)", "true"),
+        // A string holding JavaScript names the slot wherever it appears.
+        ("(js/eval \"probe.cljs$user$P$m$arity$2(probe, 1)\")", "1"),
+    ] {
+        every_level(&format!("{protocol} {read}"), expected);
+    }
+    // A slot whose method name holds characters outside identifiers, within
+    // a string.
+    every_level(
+        "(defprotocol P (m😀 [this x])) (deftype T [] P (m😀 [_ x] x)) (set! js/probe (T.))
+         (js/eval \"probe['cljs$user$P$m😀$arity$2'](probe, 1)\")",
+        "1",
+    );
+}
+
+#[test]
+fn runtime_names_in_javascript_global_paths_and_strings_keep_their_units() {
+    // A record method's slot, named through a `js/` path or inside a string
+    // of JavaScript, keeps the record method (light-cljs-255).
+    let record = "(defrecord R [a b]) (set! js/probe (->R 1 2))";
+    for read in [
+        "(js/probe.cljs$core$ICounted$_count$arity$1 js/probe)",
+        "(js/eval \"probe.cljs$core$ICounted$_count$arity$1(probe)\")",
+    ] {
+        let source = format!("{record} {read}");
+        every_level(&source, "2");
+        let kept = units(&source);
+        assert!(kept.contains(&"recordMethods.count"), "{kept:?}");
+    }
+    // ... and so do a type's `getBasis` and an upstream member of the
+    // runtime's types through a path.
+    every_level(
+        "(deftype T [a b]) (set! js/probe T) (count (js/probe.getBasis))",
+        "2",
+    );
+    every_level("(set! js/probe [1 2 3]) js/probe.cnt", "3");
+    // A protocol mask named through a path or inside a string keeps the
+    // protocol hooks and the units of `PROTOCOL_ROOTS`, as a whole mask
+    // string does (`builtin_types::count_walks_the_seqs_of_the_values_that_need_it`).
+    for source in [
+        "(set! js/probe (js-obj)) (set! js/probe.cljs$lang$protocol_mask$partition0$ 2)
+         (try (count js/probe) (catch :default e (.-message e)))",
+        "(try (count (js/eval \"({cljs$lang$protocol_mask$partition0$: 2})\"))
+           (catch :default e (.-message e)))",
+    ] {
+        every_level(
+            source,
+            "No protocol method ICounted/-count defined for this value",
+        );
+        let kept = units(source);
+        for unit in ["installMethods", "ISeqable", "ISequential"] {
+            assert!(kept.contains(&unit), "{unit}: {kept:?}");
+        }
+    }
+    // A slot of `ISeqable` inside a string keeps the unit of that protocol.
+    let kept = units("(count (js/eval \"[1]\"))");
+    assert!(!kept.contains(&"ISeqable"), "{kept:?}");
+    let kept = units("(count (js/eval \"probe.cljs$core$ISeqable$_seq$arity$1(probe)\"))");
+    assert!(kept.contains(&"ISeqable"), "{kept:?}");
+}
+
+#[test]
 fn reachable_methods_follow_construction_inside_methods_to_a_least_fixed_point() {
     // A's method makes a B and B's method an A, but nothing makes either.
     let source = "(defprotocol P (m [x]))

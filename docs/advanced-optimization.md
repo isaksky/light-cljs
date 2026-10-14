@@ -1133,7 +1133,12 @@ extension points").
     devirtualized. A protocol is *observed* when code reads it or tests it
     with `satisfies?` or `implements?`. Code that names a slot as a string,
     property or method, or in `js*` text, calls its method and observes its
-    protocol.
+    protocol. Since light-cljs-255 a component of a JavaScript global path
+    (`js/probe.cljs$user$P$m$arity$2`) names one too, and so does any of
+    these texts that holds a slot anywhere in it, as the closed protocol
+    methods of `src/call_shapes.rs` read them: a text holding
+    `ns$P$m$arity$` names the method whatever surrounds it, and the record
+    method slots and protocol masks are found the same way.
   - A method entry stays when it can run:
     - on a program type when the type is instantiated and the method called
       (its marker: the protocol observed);
@@ -1223,7 +1228,10 @@ extension points").
     - `extend-type`, `specify!` and metadata extension;
     - munged slot names in a namespace with dashes;
     - the record methods each operation keeps;
-    - `getBasis` and callable types.
+    - `getBasis` and callable types;
+    - program and record slots, protocol masks, `getBasis` and upstream
+      members named through JavaScript global paths, and slots and masks
+      inside strings of JavaScript (light-cljs-255).
   - The ratchet fixture `three-records` has three records implementing one
     protocol, of which one is constructed.
   - The generated programs' `uninstantiated-type` and
@@ -3317,17 +3325,20 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Protocol slots (`cljs$user$P$m$arity$1` and the `cljs$user$P$` markers) are
   compiler-owned names. A program type has the slots of the methods the
   program can call on it, and a type the program never instantiates has none.
-  The program can call a method through it, or by naming its slot in a string,
-  property access, method call or `js*` text. Host code that calls a slot the
-  program does not name is unsupported, as is raw text that builds an
-  instance of a type it does not receive. Since light-cljs-211 (rapid type
-  analysis). Likewise a record has the slot of a core protocol method the
-  runtime generates (`cljs$core$ILookup$_lookup$arity$3`) where the program
-  keeps an operation dispatching the method or names the slot in one of those
-  ways (light-cljs-250).
+  The program can call a method through it, or by naming its slot anywhere in
+  a property access, method call, component of a JavaScript global path
+  (`js/probe.cljs$user$P$m$arity$2`, light-cljs-255), string or `js*` text.
+  Host code that calls a slot the program does not name is unsupported, as is
+  raw text that builds an instance of a type it does not receive. Since
+  light-cljs-211 (rapid type analysis). Likewise a record has the slot of a
+  core protocol method the runtime generates
+  (`cljs$core$ILookup$_lookup$arity$3`) where the program keeps an operation
+  dispatching the method or names the slot in one of those ways
+  (light-cljs-250).
 - A `deftype` or `defrecord` type has its static `getBasis` method only when
   the program names `getBasis`: in a property read or method call, as a
-  string, or in `js*` text. A name computed at run time does not count. Like
+  component of a JavaScript global path, as a string, or in `js*` text. A
+  name computed at run time does not count. Like
   Closure's removal of properties nothing reads, this keeps `getBasis`'s
   vector of symbols from pulling the collection runtime into every program
   that defines a type. Since light-cljs-211.
@@ -3375,8 +3386,9 @@ upstream states that advanced mode is unsafe for certain patterns.
 - The runtime's types have their upstream fields and methods (`first` and
   `rest` of a `Cons`, `cnt` of a vector, `meta`, `__hash`, `sval` of a
   `LazySeq`, ...: `UPSTREAM_MEMBERS` in `src/runtime_slice.rs`) only where
-  reachable code names one of them as a property, a method or a string, or
-  as an identifier in `js*` text, or calls `reset-meta!` or `alter-meta!`,
+  reachable code names one of them as a property, a method, a component of a
+  JavaScript global path or a string, or as an identifier in `js*` text, or
+  calls `reset-meta!` or `alter-meta!`,
   which assign `meta` (light-cljs-238). Upstream they are compiler-owned
   names, which Closure renames and removes where nothing names them. Host
   code that reads one the program does not name gets `undefined`, which is

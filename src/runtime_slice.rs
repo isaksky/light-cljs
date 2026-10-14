@@ -45,7 +45,8 @@ pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 /// `.fields` effects add. Upstream they are compiler-owned names, which
 /// Closure renames and removes where nothing names them. An `Advanced` program
 /// keeps them likewise only where reachable code names one of them as a
-/// property, method or string or in `js*` text ([`crate::rta`]): its slice
+/// property, method, component of a `js/` path or string or in `js*` text
+/// ([`crate::rta`]): its slice
 /// then roots [`UPSTREAM_MEMBERS_UNIT`], whose `when:` the effects wait for.
 /// The `builtin_types` suite checks the list against the runtime's prototypes.
 pub const UPSTREAM_MEMBERS: &[&str] = &[
@@ -131,10 +132,10 @@ pub const PROTOCOL_ROOTS: &[&str] = &["ISeqable", "ISequential"];
 /// of the effect installing it: `recordMethods.lookup`, kept where `get` is.
 /// The effect waits for an operation that dispatches the method, but a
 /// program can also call the method through its slot,
-/// `cljs$core$ILookup$_lookup$arity$3`, by naming it as a string, property
-/// or method, or in `js*` text ([`crate::rta`]). An `Advanced` slice of a
-/// program with records then roots the unit, the one of the list that adds
-/// least: mostly one the effect requires anyway. The `runtime_manifest`
+/// `cljs$core$ILookup$_lookup$arity$3`, by naming it anywhere in a property,
+/// method, `js/` path, string or `js*` text ([`crate::rta`]). An `Advanced`
+/// slice of a program with records then roots the unit, the one of the list
+/// that adds least: mostly one the effect requires anyway. The `runtime_manifest`
 /// suite checks the table against those effects.
 pub const RECORD_METHODS: &[(&str, &[usize], &str)] = &[
     ("ICloneable/-clone", &[1], "clone"),

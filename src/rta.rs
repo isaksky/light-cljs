@@ -28,9 +28,11 @@
 //!   tests it with `satisfies?` or `implements?`, which read the marker slots
 //!   of its implementations.
 //! - Code that names a protocol slot (`cljs$user$P$m$arity$1`, or the marker
-//!   `cljs$user$P$`) as a string, property or method, or in `js*` text, may
-//!   read it on any instance: the method counts as called, the protocol as
-//!   observed.
+//!   `cljs$user$P$`) anywhere in a property, method, component of a `js/`
+//!   path, string or `js*` text may read it on any instance: the method
+//!   counts as called, the protocol as observed. A text names a method where
+//!   it holds `cljs$user$P$m$arity$`, whatever follows, so no character
+//!   around a slot hides it.
 //!
 //! # What stays installed
 //!
@@ -179,9 +181,13 @@ struct Walker<'p> {
     method_of: Vec<Option<usize>>,
     protocol_of: Vec<Option<usize>>,
     type_of: Vec<Option<GlobalId>>,
-    /// The protocol slots (`cljs$user$P$m$arity$1`, and `cljs$user$P$` for a
-    /// marker), with the method (none for a marker) and protocol ids.
-    slots: HashMap<String, (Option<usize>, usize)>,
+    /// What every slot of a program protocol method starts with
+    /// (`cljs$user$P$m$arity$`), and the marker slots (`cljs$user$P$`), each
+    /// with the method (none for a marker) and protocol ids, more than one
+    /// pair where names munge alike.
+    slots: HashMap<String, Vec<(Option<usize>, usize)>>,
+    /// The distinct lengths of the keys of `slots`, ascending.
+    slot_lengths: Vec<usize>,
 
     live: Vec<bool>,
     instantiated: Vec<bool>,
@@ -217,7 +223,7 @@ pub(crate) fn analyze(
     let mut method_of = vec![None; globals];
     let mut protocol_of = vec![None; globals];
     let mut type_of = vec![None; globals];
-    let mut slots = HashMap::new();
+    let mut slots: HashMap<String, Vec<(Option<usize>, usize)>> = HashMap::new();
     let mut raw_types = Vec::new();
     for expr in &program.exprs {
         match &expr.kind {
@@ -229,14 +235,17 @@ pub(crate) fn analyze(
                 let next = protocol_ids.len();
                 let protocol = *protocol_ids.entry(marker.clone()).or_insert(next);
                 protocol_of[global.0] = Some(protocol);
-                slots.insert(protocol_slot(&marker, 0), (None, protocol));
+                slots
+                    .entry(protocol_slot(&marker, 0))
+                    .or_default()
+                    .push((None, protocol));
                 for method in methods {
                     let next = method_ids.len();
                     let id = *method_ids.entry(method.key.as_str()).or_insert(next);
                     method_of[method.global.0] = Some(id);
-                    for &arity in &method.arities {
-                        slots.insert(protocol_slot(&method.key, arity), (Some(id), protocol));
-                    }
+                    let mut prefix = protocol_slot(&method.key, 1);
+                    prefix.pop();
+                    slots.entry(prefix).or_default().push((Some(id), protocol));
                 }
             }
             ExprKind::DefType {
@@ -260,6 +269,9 @@ pub(crate) fn analyze(
     }
     let methods = method_ids.len();
     let protocols = protocol_ids.len();
+    let mut slot_lengths: Vec<usize> = slots.keys().map(String::len).collect();
+    slot_lengths.sort_unstable();
+    slot_lengths.dedup();
     // Emission discards the value of every form of a `do` but the last
     // (the expression's own `context` is how analysis saw it, which for a
     // top-level form is `Return`).
@@ -294,6 +306,7 @@ pub(crate) fn analyze(
         protocol_of,
         type_of,
         slots,
+        slot_lengths,
         live: vec![false; program.exprs.len()],
         instantiated: vec![false; globals],
         read: vec![false; globals],
@@ -610,36 +623,27 @@ impl Walker<'_> {
         }
     }
 
-    /// A protocol slot the program names, as a string, property, method or
-    /// in `js*` text, may be read on any instance: its method counts as
-    /// called, and a marker's protocol as observed.
+    /// A protocol slot the program names anywhere in one of the [`texts`] of
+    /// an expression may be read on any instance: its method counts as
+    /// called, and a marker's protocol as observed. Every key of `slots` ends
+    /// in `$`, so each `$` of a text ends the keys the text holds there.
     fn named_slots(&mut self, kind: &ExprKind) {
         if self.slots.is_empty() {
             return;
         }
-        let program = self.program;
-        let named: Vec<(Option<usize>, usize)> = match kind {
-            ExprKind::String(string) => {
-                let text = String::from_utf16_lossy(&program.strings[string.0]);
-                self.slots.get(&text).copied().into_iter().collect()
+        let (slots, lengths) = (&self.slots, &self.slot_lengths);
+        let mut named = Vec::new();
+        texts(self.program, kind, |text| {
+            for (position, _) in text.match_indices('$') {
+                let end = position + 1;
+                for &length in lengths.iter().take_while(|&&length| length <= end) {
+                    let key = text.get(end - length..end);
+                    if let Some(found) = key.and_then(|key| slots.get(key)) {
+                        named.extend_from_slice(found);
+                    }
+                }
             }
-            ExprKind::Property { property: name, .. }
-            | ExprKind::MethodCall { method: name, .. }
-            | ExprKind::QualifiedMethod {
-                method: Some(name), ..
-            } => self.slots.get(name).copied().into_iter().collect(),
-            ExprKind::JsTemplate { segments, .. } => self
-                .slots
-                .iter()
-                .filter(|(slot, _)| {
-                    segments
-                        .iter()
-                        .any(|segment| segment.contains(slot.as_str()))
-                })
-                .map(|(_, named)| *named)
-                .collect(),
-            _ => return,
-        };
+        });
         for (method, protocol) in named {
             self.observe(protocol);
             if let Some(method) = method {
@@ -894,31 +898,48 @@ impl TypeAnalysis {
     }
 }
 
+/// Call `text` with each text in which an expression of this kind may name a
+/// host property: the property it reads, the method it calls, each component
+/// of the path of a JavaScript global, a string, and raw JavaScript. A name
+/// computed at run time does not count.
+fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
+    match kind {
+        ExprKind::Property { property: name, .. }
+        | ExprKind::MethodCall { method: name, .. }
+        | ExprKind::QualifiedMethod {
+            method: Some(name), ..
+        } => text(name),
+        ExprKind::JsGlobal(global) => program.js_globals[global.0]
+            .path
+            .iter()
+            .for_each(|name| text(name)),
+        ExprKind::JsTemplate { segments, .. } => segments.iter().for_each(|segment| text(segment)),
+        ExprKind::String(string) => text(&String::from_utf16_lossy(&program.strings[string.0])),
+        _ => (),
+    }
+}
+
 /// Whether an expression of this kind names a host property that `named`
-/// accepts: reads, calls or indexes it, holds it as a string, or is raw
-/// JavaScript containing it as an identifier or a string. A name computed at
-/// run time does not count.
+/// accepts, an identifier such as `getBasis`: one of its [`texts`] is the
+/// name, or raw JavaScript holds it as an identifier or a string.
 fn names_property(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str) -> bool) -> bool {
     match kind {
-        ExprKind::Property { property, .. } => named(property),
-        ExprKind::MethodCall { method, .. } => named(method),
-        ExprKind::QualifiedMethod {
-            method: Some(method),
-            ..
-        } => named(method),
         ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
             segment
                 .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
                 .any(&mut named)
         }),
-        ExprKind::String(string) => named(&String::from_utf16_lossy(&program.strings[string.0])),
-        _ => false,
+        _ => {
+            let mut found = false;
+            texts(program, kind, |text| found = found || named(text));
+            found
+        }
     }
 }
 
 /// For a program with records, the [`crate::runtime_slice::RECORD_METHODS`]
-/// whose slots a reachable expression names (as [`names_property`] reads
-/// names), as the unit to root and the first such expression, in table order.
+/// whose slots a reachable expression names anywhere in one of its [`texts`],
+/// as the unit to root and the first such expression, in table order.
 fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
     let reached = || {
         program
@@ -941,7 +962,7 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
         return Vec::new();
     }
     let methods = crate::runtime_slice::RECORD_METHODS;
-    let slots: HashMap<String, usize> = methods
+    let slots: Vec<(String, usize)> = methods
         .iter()
         .enumerate()
         .flat_map(|(method, (key, arities, _))| {
@@ -952,11 +973,15 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
         .collect();
     let mut first = vec![None; methods.len()];
     for (index, expr) in reached() {
-        names_property(program, &expr.kind, |name| {
-            if let Some(&method) = slots.get(name) {
-                first[method].get_or_insert(ExprId(index));
+        texts(program, &expr.kind, |text| {
+            if !text.contains('$') {
+                return;
             }
-            false
+            for (slot, method) in &slots {
+                if text.contains(slot.as_str()) {
+                    first[*method].get_or_insert(ExprId(index));
+                }
+            }
         });
     }
     methods
@@ -968,29 +993,28 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
 
 /// See [`TypeAnalysis::named_protocol_declarations`]: the units to root, in
 /// [`crate::runtime_slice::PROTOCOL_ROOTS`] order and then `installMethods`,
-/// each with the first reachable expression naming it as [`names_property`]
-/// reads names.
+/// each with the first reachable expression naming it anywhere in one of its
+/// [`texts`]: a mask, or the marker (`cljs$core$ISeqable$`) with which every
+/// slot of the protocol starts.
 fn named_protocol_declarations(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
     const MASK: &str = "cljs$lang$protocol_mask$partition";
     let roots = crate::runtime_slice::PROTOCOL_ROOTS;
+    let markers: Vec<String> = roots.iter().map(|root| protocol_slot(root, 0)).collect();
     let mut first = vec![None; roots.len() + 1];
     for (index, expr) in program.exprs.iter().enumerate() {
         if !live[index] {
             continue;
         }
-        names_property(program, &expr.kind, |name| {
-            let mask = name.starts_with(MASK);
+        texts(program, &expr.kind, |text| {
+            let mask = text.contains(MASK);
             for (unit, site) in first.iter_mut().enumerate() {
-                let declares = roots.get(unit).is_some_and(|root| {
-                    name.strip_prefix("cljs$core$")
-                        .and_then(|rest| rest.strip_prefix(root))
-                        .is_some_and(|rest| rest.starts_with('$'))
-                });
+                let declares = markers
+                    .get(unit)
+                    .is_some_and(|marker| text.contains(marker.as_str()));
                 if mask || declares {
                     site.get_or_insert(ExprId(index));
                 }
             }
-            false
         });
     }
     roots

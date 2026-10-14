@@ -383,8 +383,10 @@ points" in [advanced-optimization.md](advanced-optimization.md).
 protocols (`src/rta.rs`). A `deftype`, `defrecord`, `reify` or `extend-type`
 method stays only when an instance can run it: its type is constructed by
 reachable code, or its constructor escapes as a value, and the program calls
-the method (or tests the protocol with `satisfies?` for its marker). It also
-does the following:
+the method (or tests the protocol with `satisfies?` for its marker). Naming
+a slot (`cljs$user$P$m$arity$2`) anywhere in a property, method, `js/` path,
+string or `js*` text calls the method (light-cljs-255). It also does the
+following:
 
 - A type nothing constructs loses its methods, its factories and, unless
   `instance?` or `extend-type` names it, its definition.
@@ -401,8 +403,9 @@ does the following:
 
 The runtime's record methods are units of their own, kept only where an
 operation that dispatches them is, or where the program names a method's
-slot (`cljs$core$ILookup$_lookup$arity$3`) as a string, property or method,
-or in `js*` text (light-cljs-250), so a record that is only constructed and
+slot (`cljs$core$ILookup$_lookup$arity$3`) anywhere in a property, method,
+`js/` path, string or `js*` text (light-cljs-250, light-cljs-255), as it can
+name a program protocol's slot, so a record that is only constructed and
 read keeps about 11 KB of runtime instead of 145 KB. Collections still keep
 the shared core (light-cljs-227). See "Phase 2 rapid type analysis extension
 points" and the "Advanced-mode contract" in
