@@ -2658,3 +2658,92 @@ the new kind hooks, the split of each type's members into `.members` and
 `.fields`, and their comments. The `none` and `prepare` ceilings rise by
 7,000 for that growth (each to its new size rounded up to the next 1,000);
 the `advanced` ceilings of every fixture that shrank drop.
+
+## String table — October 13, 2026
+
+light-cljs-242 measures Phase 3's last item in the
+[design](../docs/advanced-optimization.md), a string table for repeated
+long strings "when it pays after gzip". It does not pay: hoisting the
+repeated string literals of terse output into one `const` saves about 1%
+raw and makes every fixture that has one larger gzipped, so nothing is
+built.
+
+**Method.** The `--compile --optimize advanced` output of each ratchet
+fixture (27 now: `set-only` and `mapv-count` joined the 25 since
+light-cljs-232) and of `(read-string "{:a 1}")`, on master `50eeded`
+(after light-cljs-238 and light-cljs-240; light-cljs-237, which takes
+the protocol-key strings out of dispatch, had not landed). A throwaway
+babashka script lexed each output as `src/js_syntax.rs` does (strings,
+templates, regular expressions) and replaced every string literal that
+occurs at least twice, except the `"use strict"` directive, by a name
+declared once at the top of the program, `(()=>{const gA="array-map",...;`.
+Names are the shortest identifiers the output does not use, the first to
+the strings with the most bytes: one letter in small outputs, two in large
+ones. An object key becomes `[gA]:` and a name next to an identifier gets a
+space (`case gA:`). Every rewritten program runs under Node with the same
+output as the original. Three tables:
+
+- *All*: every repeated string;
+- *Paying*: only the strings whose raw saving is positive (their uses
+  minus the names and the declaration);
+- *Greedy*: the paying strings added one at a time, largest first, each
+  kept only if it lowers the gzipped size: a greedy search guided by gzip,
+  not an exhaustive one.
+
+**Sizes** of the output, and bytes saved by each table, raw and `gzip -9`
+(of stdin); a negative saving is growth. Sizes do not depend on load.
+
+| Fixture | Advanced | Repeated strings (uses) | All | Paying | Greedy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| console-log-sum | 151 / 140 | 0 (0) | 0 / 0 | 0 / 0 | 0 / 0 |
+| println-hi | 4,771 / 2,021 | 7 (29) | 34 / -30 | 35 / -27 | 0 / 0 |
+| vector-printed | 9,703 / 3,740 | 11 (40) | 8 / -52 | 20 / -14 | 0 / 0 |
+| map-printed | 13,514 / 4,825 | 16 (58) | 59 / -82 | 79 / -31 | 0 / 0 |
+| seq-pipeline | 24,450 / 7,610 | 20 (73) | 239 / -62 | 250 / -54 | 0 / 0 |
+| add | 19 / 39 | 0 (0) | 0 / 0 | 0 / 0 | 0 / 0 |
+| rest-fn | 9,465 / 3,177 | 10 (26) | 22 / -38 | 33 / -31 | 0 / 0 |
+| keyword-case | 3,428 / 1,324 | 7 (15) | 17 / -25 | 23 / -14 | 0 / 0 |
+| record-protocol | 5,750 / 2,423 | 7 (22) | 75 / -23 | 77 / -20 | 0 / 0 |
+| pure-defs | 5,640 / 2,372 | 7 (22) | 75 / -22 | 77 / -19 | 0 / 0 |
+| keyword-lookups | 29,113 / 9,056 | 28 (105) | 370 / -89 | 381 / -77 | 78 / 1 |
+| constant-literals | 20,612 / 6,561 | 19 (64) | 190 / -51 | 201 / -40 | 0 / 0 |
+| constant-lookups | 3,808 / 1,453 | 6 (15) | 40 / -18 | 40 / -15 | 0 / 0 |
+| three-records | 5,757 / 2,422 | 7 (22) | 75 / -22 | 77 / -20 | 0 / 0 |
+| constant-keys | 39,897 / 12,202 | 29 (148) | 686 / -101 | 691 / -96 | 0 / 0 |
+| event-maps | 29,341 / 9,123 | 27 (102) | 361 / -84 | 366 / -76 | 0 / 0 |
+| vector-only | 4,224 / 1,739 | 3 (6) | 10 / -4 | 10 / -4 | 0 / 0 |
+| keyword-only | 3,355 / 1,297 | 5 (11) | 23 / -20 | 23 / -17 | 0 / 0 |
+| map-only | 9,146 / 3,194 | 11 (32) | 73 / -52 | 86 / -30 | 0 / 0 |
+| atom-str | 2,284 / 904 | 4 (8) | 7 / -15 | 10 / -12 | 4 / 1 |
+| set-only | 5,085 / 1,949 | 7 (18) | 49 / -19 | 50 / -9 | 0 / 0 |
+| mapv-count | 28,725 / 8,914 | 27 (100) | 325 / -90 | 333 / -79 | 8 / 2 |
+| raw-js | 36 / 54 | 0 (0) | 0 / 0 | 0 / 0 | 0 / 0 |
+| multi-arity | 318 / 212 | 0 (0) | 0 / 0 | 0 / 0 | 0 / 0 |
+| closed-params | 35,923 / 11,755 | 52 (198) | 765 / -166 | 800 / -118 | 0 / 0 |
+| debug-logging | 31 / 51 | 0 (0) | 0 / 0 | 0 / 0 | 0 / 0 |
+| local-arities | 490 / 278 | 0 (0) | 0 / 0 | 0 / 0 | 0 / 0 |
+| total | 295,036 / 98,835 | 310 (1,114) | 3,503 / -1,065 | 3,662 / -803 | 90 / 4 |
+| `(read-string "{:a 1}")` | 102,314 / 32,233 | 142 (724) | 2,346 / -563 | 2,514 / -370 | 512 / 18 |
+
+Over the fixtures, the full table saves 1.2% raw and adds 1.1% gzipped;
+the paying strings save 1.2% raw and add 0.8% gzipped. Guided by gzip, a
+table keeps three strings in three fixtures for 4 gzipped bytes in all
+(0.004%), and four strings of the reader program for 18 bytes (0.06%).
+Even one-letter names for the 52 most used strings, which would collide
+with the program's own bindings (a size-only bound), leave the fixtures
+511 bytes (0.5%) larger gzipped.
+
+The repeated strings are short: the kind tags the runtime compares
+(`"hash-map"` 31 times in the reader program, `"array-map"` 29, `"list"`
+22), `typeof` results (`"string"`, `"number"`), separators (`" "`, `"/"`,
+`":"`), protocol keys (`"IEquiv/-equiv"`, `"ISeq/-first"`), the arity
+prefix `"cljs$core$IFn$_invoke$arity$"` and a few error messages
+(`"Expected keyword"`, `"Unsupported operation"`). Deflate already codes
+each repeat as a back-reference, usually inside a longer repeated run
+such as `==="array-map"` or `,"array-map")`; a name breaks that run, and
+the declaration adds the literal once more. The one long string, the
+protocol-name list `"IFn ICounted ... IDrop"` (524 bytes in
+`closed-params` and the reader program), occurs once, so a table cannot
+shrink it. light-cljs-237 is to replace the protocol-key strings of
+dispatch with integers or symbols, which only lowers what a table could
+save.

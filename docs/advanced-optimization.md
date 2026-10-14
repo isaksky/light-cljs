@@ -13,8 +13,8 @@ analysis extension points", "Phase 2 call shape extension points" and
 collection literals, folding against them included (see "Constant pool
 extension points" and "Constant folding extension points"), and Phase 3's
 renaming, runtime stripping and terse syntax (see "Phase 3 terse emission
-extension points"); the rest (ABI property mangling, a string table) is
-not. The work items are
+extension points"); the rest (ABI property mangling, a string table) was
+measured and is not worth building (light-cljs-232, light-cljs-242). The work items are
 tracked as Pellets in the `advanced-optimization` group; this document is the
 shared context those pellets cite.
 
@@ -2578,7 +2578,8 @@ runs in its rounds.
   small Rust lexer; no Node dependency. Decide later whether local renaming
   inside runtime units is worth its own pass or whether units are simply
   written tersely.
-- String table for repeated long strings when it pays after gzip.
+- String table for repeated long strings when it pays after gzip. It does
+  not (light-cljs-242); see "Phase 3 terse emission extension points".
 
 #### Phase 3 terse emission extension points
 
@@ -2679,8 +2680,16 @@ run the terse output.
     `getBasis`. They are at most 568 bytes of any fixture (`closed-params`),
     mostly in the runtime slice, and repeat, so gzip shrinks them well:
     light-cljs-232 (maybe later) tracks it with these numbers.
-  - A string table for repeated long strings, and whitespace and
-    parenthesis rewriting of programs with raw `js*` text.
+  - A string table: measured by light-cljs-242 and not built. Hoisting
+    every string literal that occurs twice or more in the terse output into
+    one `const` saves 1.2% raw over the 27 ratchet fixtures but makes the
+    gzipped output 1.1% larger, and every fixture with one grows; kept
+    only where it lowers the gzipped size, a table saves 4 bytes in all.
+    The repeated strings are short kind tags, protocol keys and separators
+    that deflate already codes as back-references inside longer runs, and
+    the one long string (the protocol-name list) occurs once. See "String
+    table" in `benchmarks/compiler.md`.
+  - Whitespace and parenthesis rewriting of programs with raw `js*` text.
   - Joining `if`/`else` blocks and dropping block braces around single
     statements in the program (`else{{const ...}}`).
 
