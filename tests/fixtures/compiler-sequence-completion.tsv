@@ -1,7 +1,7 @@
 # Copyright (c) Rich Hickey. All rights reserved.
 # The use and distribution terms for upstream adapted bodies are covered by
 # the Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php).
-# See research/clojurescript/epl-v10.html. This notice must be retained.
+# See epl-v10.html at the repository root. This notice must be retained.
 # id	source	expected JSON	original complete body/hash
 cljs-sequence-completion-collections-test-test-lazy-seq-realized-p	(do (do (let [xs (lazy-seq                (cons 1                  (lazy-seq                    (cons 2                      (lazy-seq (cons 3 nil))))))]       (assert (not (realized? xs)))       (assert (not (realized? (rest xs))))       (assert (realized? xs))       (assert (not (realized? (nthrest xs 2))))       (assert (realized? (rest xs))))) true)	true	collections_test.cljs::test-lazy-seq-realized?;sha256=7b34d51deea5ce4e47f7dbd27ec40e6c5fe30635058703a108cf551cf4eeec63
 cljs-sequence-completion-collections-test-test-cljs-1809	(do (assert (= (into) [])) (assert (= (into [1 2]) [1 2])) true)	true	collections_test.cljs::test-cljs-1809;sha256=29c1a2f656b8517f3db7e2444eb96b9221f29eca82effcf6176e42b63d9f135b

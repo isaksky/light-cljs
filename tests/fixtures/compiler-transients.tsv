@@ -1,7 +1,7 @@
 # Copyright (c) Rich Hickey. All rights reserved.
 # The use and distribution terms for upstream adapted bodies are covered by
 # the Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php).
-# See research/clojurescript/epl-v10.html. This notice must be retained.
+# See epl-v10.html at the repository root. This notice must be retained.
 # id	source	expected printed value	original body/hash
 cljs-transients-collections-test-test-849	(do (let [xs [44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24]] (do (assert (loop [m (transient (zipmap xs (repeat 1))) xs xs] (if-let [x (first xs)] (if (contains? m x) (recur (dissoc! m x) (next xs)) false) true))))) true)	true	collections_test.cljs::test-849;sha256=8649bc0e3d14889af5c358020292c245f1acdd768d137a5ad4cd0a2650727a37
 cljs-transients-collections-test-test-transient-edge-case-1	(do (let [v1 (vec (range 15 48)) v2 (vec (range 40 57)) v1 (persistent! (assoc! (conj! (pop! (transient v1)) :foo) 0 :quux)) v2 (persistent! (assoc! (conj! (transient v2) :bar) 0 :quux)) v (into v1 v2)] (assert (= v (vec (concat [:quux] (range 16 47) [:foo] [:quux] (range 41 57) [:bar]))))) true)	true	collections_test.cljs::test-transient-edge-case-1;sha256=202672b4036dc16c9450b191319cc1063d412f880b8ee1c7ffc10b902360c5a0

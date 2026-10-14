@@ -1,5 +1,5 @@
 ;; Core Var metadata is data for the finite first-party runtime, not runtime code.
-;; Upstream data is EPL-1.0: research/clojurescript/epl-v10.html.
+;; Upstream data is EPL-1.0: epl-v10.html at the repository root.
 (require '[cljs.analyzer :as ana] '[cljs.env :as env] '[clojure.java.io :as io]
          '[clojure.string :as str] '[clojure.java.shell :as shell])
 (def revision "a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e")

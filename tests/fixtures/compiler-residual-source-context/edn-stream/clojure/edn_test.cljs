@@ -1,5 +1,5 @@
 ;; Copyright (c) Rich Hickey. Eclipse Public License 1.0.
-;; See research/clojurescript/epl-v10.html; retain this notice.
+;; See epl-v10.html at the repository root; retain this notice.
 (ns clojure.edn-test (:require [clojure.edn :as edn] [cljs.reader :as reader] [cljs.reader :as reader-types]))
 (defn- test-reader []
   (reader-types/string-push-back-reader "[1 2 3]"))

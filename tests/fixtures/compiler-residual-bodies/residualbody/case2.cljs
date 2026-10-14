@@ -1,4 +1,4 @@
 ;; Copyright (c) Rich Hickey. Eclipse Public License 1.0.
-;; See research/clojurescript/epl-v10.html; retain this notice.
+;; See epl-v10.html at the repository root; retain this notice.
 (ns residualbody.case2 (:require [clojure.set] [clojure.string] [cljs.reader] [goog.object]))
 (defn run [] (do (do (do (assert (array? (cljs.reader/read-string "#js [1 2 3]"))) (assert (= (alength (cljs.reader/read-string "#js [1 2 3]")) 3)) (assert (= (seq (cljs.reader/read-string "#js [1 2 3]")) (seq [1 2 3]))) (assert (= (set (js-keys (cljs.reader/read-string "#js {:foo \"bar\" :baz \"woz\"}"))) #{"foo" "baz"})) (assert (= (aget (cljs.reader/read-string "#js {:foo \"bar\"}") "foo") "bar")) (assert (= (aget (cljs.reader/read-string "#js {\"foo\" \"bar\"}") "foo") "bar")) (assert (array? (aget (cljs.reader/read-string "#js {\"foo\" #js [1 2 3]}") "foo"))) (assert (= (seq (aget (cljs.reader/read-string "#js {\"foo\" #js [1 2 3]}") "foo")) '(1 2 3)))) true)))

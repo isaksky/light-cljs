@@ -341,3 +341,28 @@ ratchet programs at every `--optimize` level, in Node and QuickJS:
   layers.
 - [docs/dos-and-donts.md](docs/dos-and-donts.md) — performance guidelines for
   compiler work.
+
+## Acknowledgements
+
+light-cljs stands on the work of the Clojure community:
+
+- [Rich Hickey](https://github.com/richhickey) for Clojure and ClojureScript,
+  whose language design, core library and test suite this compiler follows and
+  is checked against.
+- [David Nolen](https://github.com/swannodette) for leading ClojureScript; its
+  analyzer and compiler shaped how this project resolves and emits code.
+- [Thomas Heller](https://github.com/thheller) for shadow-cljs, which served as
+  the reference for the npm dependency and build model.
+- [Michiel Borkent](https://github.com/borkdude) for SCI and babashka; SCI's
+  test suite provides the evaluator conformance fixtures, and babashka runs the
+  scripts in this repository.
+
+## License
+
+light-cljs is released under the [MIT License](LICENSE). Files adapted from
+ClojureScript and SCI stay under the Eclipse Public License 1.0, keep their
+upstream copyright notices, and are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the EPL text is in
+[epl-v10.html](epl-v10.html). Compiled programs that use `clojure.string` or
+`clojure.set` embed JavaScript compiled from those EPL-1.0 files. The embedded
+QuickJS-ng engine is MIT-licensed.

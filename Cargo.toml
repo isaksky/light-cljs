@@ -2,6 +2,13 @@
 name = "light-cljs"
 version = "0.1.0"
 edition = "2024"
+description = "ClojureScript-to-JavaScript compiler and QuickJS runner written in Rust"
+authors = ["Isak Sky"]
+repository = "https://github.com/isaksky/light-cljs"
+readme = "README.md"
+# MIT for original work; files adapted from ClojureScript and SCI stay EPL-1.0.
+# See LICENSE, epl-v10.html and THIRD_PARTY_NOTICES.md.
+license = "MIT AND EPL-1.0"
 
 [dependencies]
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }

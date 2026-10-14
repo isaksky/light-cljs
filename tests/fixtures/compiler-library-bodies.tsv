@@ -1,5 +1,5 @@
 # Copyright (c) Rich Hickey. Eclipse Public License 1.0.
-# Retain this notice; see research/clojurescript/epl-v10.html.
+# Retain this notice; see epl-v10.html at the repository root.
 # id	source	expected	complete body/setup provenance
 cljs-library-body-src-test-cljs-cljs-walk-test-t-prewalk-replace	(do (do (assert (= (clojure.walk/prewalk-replace {:a :b} [:a {:a :a} (list 3 :c :a)])         [:b {:b :b} (list 3 :c :b)])) true))	true	src/test/cljs/cljs/walk_test.cljs::t-prewalk-replace;sha256=2896ab6e0e3cc6e404b8ee3fd7d0958181768e4674fdd0c894fd3420f42a4e53
 cljs-library-body-src-test-cljs-cljs-walk-test-t-postwalk-replace	(do (do (assert (= (clojure.walk/postwalk-replace {:a :b} [:a {:a :a} (list 3 :c :a)])         [:b {:b :b} (list 3 :c :b)])) true))	true	src/test/cljs/cljs/walk_test.cljs::t-postwalk-replace;sha256=76bc6a6638930ca3dd46c15e2a9196646735290a36425f126cd13790be0b9407
