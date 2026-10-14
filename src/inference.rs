@@ -33,9 +33,22 @@
 //!   the call's arguments and their elements, when the table describes the
 //!   call (within the domain, the operation not replaced, core protocols
 //!   intact, and no program type that receives functions among the other
-//!   arguments); otherwise it binds them to `any`. The parameters of other
-//!   functions, `catch` and `this-as` bindings, type fields and locals the
-//!   program assigns are `any`.
+//!   arguments); otherwise it binds them to `any`.
+//! - A parameter of an implementation of a closed protocol method
+//!   ([`crate::call_shapes`], "Protocol methods") that the program defines
+//!   once and never assigns has the union of what the method's calls pass it
+//!   (light-cljs-253), as its dispatcher passes them: the receiver first, and
+//!   `nil` for missing arguments. A call joins only into the implementations
+//!   its receiver may run (`Receivers`): a `deftype`'s, `defrecord`'s or
+//!   `extend-type`'s of a program type when the receiver may be an instance
+//!   of that type (of class `object` or `record`, and not known to be an
+//!   instance of another type), a `reify`'s when it may be an `object` that
+//!   is not known to be a program type's instance, and a `specify!`'s always.
+//!   An `extend-type` of anything but a program type may be reached by the
+//!   receiver's host type, through the dispatcher's own table, so its
+//!   parameters stay `any`.
+//! - The parameters of other functions, `catch` and `this-as` bindings, type
+//!   fields and locals the program assigns are `any`.
 //! - The elements of sequences, lists, vectors and sets
 //!   ([`Inferred::elements`], light-cljs-243) come from collection literals,
 //!   pass through bindings and joins as types do, and come from core calls
@@ -88,6 +101,17 @@
 //! implements `IReduce`, `IKVReduce` or `ISwap` receives the function
 //! itself, and the operations whose domain admits program types (`swap!`)
 //! then bind `any`.
+//!
+//! An implementation of a closed protocol method runs only from the calls of
+//! the method (`crate::call_shapes`, "Protocol methods"), with the receiver
+//! as `this` and first argument; a method's receiver parameter is bound to
+//! `this`, which is that argument. An instance of a program type holds the
+//! slots its `deftype` or `defrecord` and the `extend-type`s of that type
+//! install on its prototype, and `specify!` may give any object more; a
+//! `reify` object is no program type's instance. A call whose receiver cannot
+//! hold an implementation's slot therefore cannot run it. The body of an
+//! implementation that no call reaches is typed `never`, as is the body of a
+//! closed function nothing calls: only a slot read by name could run it.
 
 use std::collections::HashMap;
 
@@ -938,12 +962,50 @@ impl Narrowing {
     }
 }
 
+/// The receivers whose calls of a protocol method may run one implementation
+/// of it (light-cljs-253).
+#[derive(Clone, Copy)]
+enum Receivers {
+    /// Instances of the program type of this global, of class `record` or
+    /// `object`: its `deftype` or `defrecord`, or an `extend-type` of it.
+    Type(GlobalId, Type),
+    /// Objects of a `reify`, which are no program type's instances.
+    Reify,
+    /// Any receiver: the target of `specify!` may be any object.
+    Any,
+}
+
+impl Receivers {
+    /// Whether a call with receiver `receiver` may run the implementation.
+    /// Each instance of one program type has only that type's slots, so a
+    /// receiver known to be an instance of another type ([`Known::Instance`])
+    /// does not reach a type's or a `reify`'s method.
+    fn reach(self, receiver: Inferred) -> bool {
+        match self {
+            Self::Type(global, class) => {
+                !receiver.ty.intersection(class).is_never()
+                    && !matches!(receiver.known, Known::Instance(other) if other != global)
+            }
+            Self::Reify => {
+                !receiver.ty.intersection(Type::OBJECT).is_never()
+                    && !matches!(receiver.known, Known::Instance(_))
+            }
+            Self::Any => true,
+        }
+    }
+}
+
 struct Walker<'p> {
     program: &'p Program,
     facts: &'p ProgramFacts,
     closed: &'p ClosedFunctions,
-    /// The parameters of closed functions that are not pinned.
+    /// The parameters of closed functions and protocol method
+    /// implementations that are not pinned.
     parameters: Vec<LocalId>,
+    /// By index in [`ClosedFunctions::implementations`]: who may run the
+    /// implementation, when its parameters join the calls of its protocol
+    /// method.
+    receivers: Vec<Option<Receivers>>,
     values: Vec<Inferred>,
     visited: Vec<bool>,
     locals: Vec<Inferred>,
@@ -1053,6 +1115,52 @@ impl<'p> Walker<'p> {
                 }
             }
         }
+        // So do the parameters of the implementations of closed protocol
+        // methods (light-cljs-253) that the program defines once and never
+        // assigns. An `extend-type` installs its methods on the prototype of
+        // a program type; on anything else the dispatcher may also reach it
+        // by the receiver's host type.
+        let receivers: Vec<Option<Receivers>> = closed
+            .implementations()
+            .iter()
+            .map(|implementation| {
+                if !matches!(
+                    facts.definition(implementation.global),
+                    Definition::Protocol(_)
+                ) {
+                    return None;
+                }
+                let class = |record: bool| if record { Type::RECORD } else { Type::OBJECT };
+                match &program.exprs[implementation.owner.0].kind {
+                    ExprKind::DefType { global, record, .. } => {
+                        Some(Receivers::Type(*global, class(*record)))
+                    }
+                    ExprKind::Reify { .. } => Some(Receivers::Reify),
+                    ExprKind::ExtendType { instance: true, .. } => Some(Receivers::Any),
+                    ExprKind::ExtendType { target, .. } => match program.exprs[target.0].kind {
+                        ExprKind::Global(global) => facts
+                            .program_type(global)
+                            .map(|(_, record)| Receivers::Type(global, class(record))),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
+        for (implementation, receivers) in closed.implementations().iter().zip(&receivers) {
+            let Some(method) = implementation
+                .method(program)
+                .filter(|_| receivers.is_some())
+            else {
+                continue;
+            };
+            for &param in &method.params {
+                if !pinned[param.0] {
+                    bound[param.0] = true;
+                    parameters.push(param);
+                }
+            }
+        }
         // Other parameters and `catch` and `this-as` bindings are `any`, but
         // their tests narrow them; locals bound by `let`, `loop` and `letfn`
         // grow from `never`.
@@ -1084,6 +1192,7 @@ impl<'p> Walker<'p> {
             facts,
             closed,
             parameters,
+            receivers,
             values: vec![Inferred::NEVER; program.exprs.len()],
             visited: vec![false; program.exprs.len()],
             locals,
@@ -1513,6 +1622,7 @@ impl<'p> Walker<'p> {
                 if let Some((function, method)) = self.closed.call(id) {
                     self.pass(function, method, &arguments);
                 }
+                self.dispatch(id, &arguments);
                 if let K::CoreFn(core) = program.exprs[callee.0].kind {
                     for (index, function) in self.closed.callbacks(id) {
                         self.pass_callback(core, args, &arguments, index, function);
@@ -1554,6 +1664,32 @@ impl<'p> Walker<'p> {
                 Type::NIL
             };
             self.bind(rest, Inferred::of(rest_type));
+        }
+    }
+
+    /// Bind the parameters of each implementation that the protocol method
+    /// call `call` with `arguments` may run, as its dispatcher passes them:
+    /// the receiver and the arguments, `nil` (`undefined`) for missing ones
+    /// (light-cljs-253).
+    fn dispatch(&mut self, call: ExprId, arguments: &[Inferred]) {
+        let receiver = arguments
+            .first()
+            .copied()
+            .unwrap_or(Inferred::of(Type::NIL));
+        for (index, implementation) in self.closed.dispatch(call) {
+            if !self.receivers[index].is_some_and(|receivers| receivers.reach(receiver)) {
+                continue;
+            }
+            let Some(method) = implementation.method(self.program) else {
+                continue;
+            };
+            for (position, &param) in method.params.iter().enumerate() {
+                let argument = arguments
+                    .get(position)
+                    .copied()
+                    .unwrap_or(Inferred::of(Type::NIL));
+                self.bind(param, argument);
+            }
         }
     }
 

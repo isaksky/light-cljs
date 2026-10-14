@@ -134,7 +134,40 @@
 //! removes code, so the calls of a function closed before it are a superset
 //! of its calls after it: joining over them stays sound, and a function that
 //! only those removals close keeps `any` parameters.
-use crate::analyzer::{ExprId, ExprKind, FnMethod, GlobalId, LocalId, Program};
+//!
+//! # Protocol methods
+//!
+//! The methods that implement a program protocol's method run only through
+//! the method's dispatcher (`protocolMethod` in `src/js_runtime.js`), the
+//! calls rapid type analysis devirtualizes from its calls (which read the
+//! slot the dispatcher reads), and code that names one of their slots
+//! (light-cljs-253). The protocol method is *closed* when every run of its
+//! dispatcher is a call that [`ClosedFunctions::dispatch`] lists:
+//!
+//! - its global is declared once and read only as the callee of calls, and
+//!   not exported (inference also requires that the program defines it once
+//!   and never assigns it, `crate::inference::Definition::Protocol`);
+//! - its signature is not variadic, whose dispatcher repacks the arguments;
+//! - no property, method, string or `js*` text names one of its slots,
+//!   `ns$P$m$arity$N`, which may be read and called on any instance.
+//!
+//! Its *implementations* ([`ClosedFunctions::implementations`]) are the
+//! methods without rest parameters of `deftype`, `defrecord`, `reify` and
+//! `extend-type` (or `specify!`) that implement it, except those of an
+//! `extend-type` whose value is used, which returns its last method (a
+//! `specify!` that returns its target is fine). A call selects the arity the
+//! dispatcher does: the method's one arity, to which it pads the arguments
+//! with `undefined` or truncates them, else the call's argument count, which
+//! must be one of its arities or the call throws. It may run each
+//! implementation with that many parameters, the receiver included; which
+//! one depends on the receiver, which inference decides. Host code that
+//! calls a slot the program does not name is outside the contract, as for
+//! rapid type analysis (`crate::rta`).
+use std::collections::HashMap;
+
+use crate::analyzer::{
+    ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, Program, ProtocolMethod,
+};
 use crate::core_operations::Type;
 use crate::inference::Inference;
 use crate::program_fragment::children;
@@ -412,6 +445,26 @@ pub struct ClosedFunctions {
     /// argument with a callback shape, with the argument's index and the
     /// `fn`, ordered by call (light-cljs-243).
     callbacks: Vec<(ExprId, usize, ExprId)>,
+    /// The implementations of closed protocol methods, ordered by protocol
+    /// method and parameter count (light-cljs-253).
+    implementations: Vec<Implementation>,
+    /// By `ExprId`: for a call of a closed protocol method, the range in
+    /// `implementations` of those the dispatcher may run for its argument
+    /// count, else `(0, 0)`.
+    dispatches: Vec<(u32, u32)>,
+}
+
+/// A method of a `deftype`, `defrecord`, `reify` or `extend-type` (or
+/// `specify!`) that implements a closed protocol method: see "Protocol
+/// methods" in the module documentation (light-cljs-253).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Implementation {
+    /// The protocol method's global.
+    pub global: GlobalId,
+    /// The `DefType`, `Reify` or `ExtendType` expression.
+    pub owner: ExprId,
+    /// The method's index among the owner's methods.
+    pub method: usize,
 }
 
 impl ClosedFunctions {
@@ -444,14 +497,31 @@ impl ClosedFunctions {
             .map(|&(_, index, function)| (index, function))
     }
 
+    /// The implementations of closed protocol methods, whose every call is
+    /// one that [`ClosedFunctions::dispatch`] lists (light-cljs-253).
+    pub fn implementations(&self) -> &[Implementation] {
+        &self.implementations
+    }
+
+    /// The implementations, with their indices in
+    /// [`ClosedFunctions::implementations`], that the dispatcher of the closed
+    /// protocol method `call` calls may run: those of the arity it selects
+    /// for the call's argument count. Which of them runs depends on the
+    /// receiver.
+    pub fn dispatch(&self, call: ExprId) -> impl Iterator<Item = (usize, Implementation)> + '_ {
+        let (start, end) = self.dispatches.get(call.0).copied().unwrap_or((0, 0));
+        (start as usize..end as usize).map(|index| (index, self.implementations[index]))
+    }
+
     /// How many `fn` expressions are closed.
     pub fn len(&self) -> usize {
         self.functions.iter().filter(|closed| **closed).count()
     }
 
-    /// Whether no `fn` expression is closed.
+    /// Whether nothing is closed: no `fn` expression and no implementation of
+    /// a protocol method.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.len() == 0 && self.implementations.is_empty()
     }
 }
 
@@ -466,7 +536,10 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         calls: Vec::new(),
         callback_slots: vec![u32::MAX; count],
         callbacks: Vec::new(),
+        implementations: Vec::new(),
+        dispatches: Vec::new(),
     };
+    protocol_methods(program, &scan, exports, &mut closed);
     let local_calls = &scan.local_calls;
     let mut global_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.globals.len()];
     for &(call, global, _) in &scan.resolved {
@@ -539,6 +612,199 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
     closed
 }
 
+impl Implementation {
+    /// The implementing method.
+    pub fn method<'p>(&self, program: &'p Program) -> Option<&'p FnMethod> {
+        match &program.exprs[self.owner.0].kind {
+            ExprKind::DefType { methods, .. }
+            | ExprKind::Reify { methods, .. }
+            | ExprKind::ExtendType { methods, .. } => {
+                methods.get(self.method).map(|(_, method)| method)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Find the closed protocol methods of `program`, their implementations and
+/// the implementations each of their calls may run, into `closed`; see
+/// "Protocol methods" in the module documentation (light-cljs-253).
+/// `exports` escape.
+fn protocol_methods(
+    program: &Program,
+    scan: &Scan,
+    exports: &[GlobalId],
+    closed: &mut ClosedFunctions,
+) {
+    let globals = program.globals.len();
+    // The methods the program's protocols declare, by global and by key. A
+    // global or key declared twice is not closed.
+    let mut declared: Vec<Option<&ProtocolMethod>> = vec![None; globals];
+    let mut declarations = vec![0u32; globals];
+    let mut keys: HashMap<&str, Option<GlobalId>> = HashMap::new();
+    for &id in &scan.order {
+        let ExprKind::DefProtocol { methods, .. } = &program.exprs[id.0].kind else {
+            continue;
+        };
+        for method in methods {
+            declared[method.global.0] = Some(method);
+            declarations[method.global.0] += 1;
+            keys.entry(method.key.as_str())
+                .and_modify(|global| *global = None)
+                .or_insert(Some(method.global));
+        }
+    }
+    if declared.iter().all(Option::is_none) {
+        return;
+    }
+    // A method is open when its global is read other than as a callee or
+    // exported, when it has a variadic signature, whose dispatcher repacks
+    // the arguments, or when the program names one of its slots.
+    let mut open: Vec<bool> = (0..globals)
+        .map(|global| match declared[global] {
+            Some(method) => {
+                declarations[global] != 1
+                    || method.variadic.is_some()
+                    || scan.global_reads[global]
+                    || exports.contains(&GlobalId(global))
+            }
+            None => true,
+        })
+        .collect();
+    // Every slot of a method starts with the same prefix, `ns$P$m$arity$`.
+    let prefixes: HashMap<String, GlobalId> = declared
+        .iter()
+        .flatten()
+        .filter(|method| !open[method.global.0])
+        .map(|method| {
+            let mut slot = crate::rta::protocol_slot(&method.key, 1);
+            slot.pop();
+            (slot, method.global)
+        })
+        .collect();
+    if prefixes.is_empty() {
+        return;
+    }
+    const ARITY: &str = "$arity$";
+    for &id in &scan.order {
+        names(program, &program.exprs[id.0].kind, |name| {
+            for (position, _) in name.match_indices(ARITY) {
+                if let Some(global) = prefixes.get(&name[..position + ARITY.len()]) {
+                    open[global.0] = true;
+                }
+            }
+        });
+    }
+    // The implementations of closed methods. An `extend-type` returns its
+    // last method, which escapes where its value is used, and `specify!`
+    // returns its target or its last method.
+    let mut implementations = Vec::new();
+    for &id in &scan.order {
+        let methods = match &program.exprs[id.0].kind {
+            ExprKind::DefType { methods, .. } | ExprKind::Reify { methods, .. } => methods,
+            ExprKind::ExtendType {
+                instance,
+                return_target,
+                methods,
+                ..
+            } if (*instance && *return_target)
+                || discarded(program, id, &|id| scan.parent_of(id)) =>
+            {
+                methods
+            }
+            _ => continue,
+        };
+        for (index, (dispatch, method)) in methods.iter().enumerate() {
+            let MethodDispatch::Protocol(key) = dispatch else {
+                continue;
+            };
+            if let Some(&Some(global)) = keys.get(key.as_str())
+                && !open[global.0]
+                && method.rest.is_none()
+            {
+                implementations.push(Implementation {
+                    global,
+                    owner: id,
+                    method: index,
+                });
+            }
+        }
+    }
+    if implementations.is_empty() {
+        return;
+    }
+    let parameters = |implementation: &Implementation| {
+        implementation
+            .method(program)
+            .map_or(0, |method| method.params.len())
+    };
+    implementations.sort_by_key(|implementation| {
+        (
+            implementation.global.0,
+            parameters(implementation),
+            implementation.owner.0,
+            implementation.method,
+        )
+    });
+    // Each call runs an implementation of the arity its dispatcher selects.
+    let mut dispatches = vec![(0u32, 0u32); program.exprs.len()];
+    for &id in &scan.order {
+        let ExprKind::Call { callee, args } = &program.exprs[id.0].kind else {
+            continue;
+        };
+        let ExprKind::Global(global) = program.exprs[callee.0].kind else {
+            continue;
+        };
+        let Some(method) = declared[global.0].filter(|_| !open[global.0]) else {
+            continue;
+        };
+        let Some(arity) = dispatched_arity(&method.arities, args.len()) else {
+            continue;
+        };
+        let key =
+            |implementation: &Implementation| (implementation.global.0, parameters(implementation));
+        let start = implementations.partition_point(|i| key(i) < (global.0, arity));
+        let end = implementations.partition_point(|i| key(i) <= (global.0, arity));
+        let slot = |index: usize| u32::try_from(index).expect("fewer than 2^32 implementations");
+        dispatches[id.0] = (slot(start), slot(end));
+    }
+    closed.implementations = implementations;
+    closed.dispatches = dispatches;
+}
+
+/// The arity, receiver included, whose slot the dispatcher of a protocol
+/// method with these arities and no variadic signature reads for a call with
+/// `arguments` arguments (`protocolMethod` in `src/js_runtime.js`): its one
+/// arity, to which it pads or truncates the arguments, else the argument
+/// count when it is one of them. `None` when the call throws instead.
+fn dispatched_arity(arities: &[usize], arguments: usize) -> Option<usize> {
+    match arities {
+        [arity] => Some(*arity),
+        [] => Some(arguments),
+        _ => arities.contains(&arguments).then_some(arguments),
+    }
+}
+
+/// Call `named` with each name an expression of this kind may give a host
+/// property: the name it reads, calls or indexes, and each identifier in a
+/// string or raw JavaScript. A name computed at run time does not count.
+fn names(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str)) {
+    let mut words = |text: &str| {
+        text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .for_each(&mut named)
+    };
+    match kind {
+        ExprKind::Property { property: name, .. }
+        | ExprKind::MethodCall { method: name, .. }
+        | ExprKind::QualifiedMethod {
+            method: Some(name), ..
+        } => words(name),
+        ExprKind::JsTemplate { segments, .. } => segments.iter().for_each(|text| words(text)),
+        ExprKind::String(string) => words(&String::from_utf16_lossy(&program.strings[string.0])),
+        _ => (),
+    }
+}
+
 /// What [`analyze`] and [`closed_functions`] decide without inference: the
 /// known functions and their shapes, which values escape, and the calls of
 /// known globals and of locals.
@@ -577,6 +843,8 @@ struct Scan {
     /// arguments with a callback shape, which `local_callbacks` lists.
     local_values_escape: Vec<bool>,
     local_callbacks: Vec<Vec<(ExprId, usize)>>,
+    /// By global: an expression reads it other than as the callee of a call.
+    global_reads: Vec<bool>,
 }
 
 impl Scan {
@@ -723,6 +991,7 @@ impl Scan {
         }
 
         let mut scan = Self {
+            global_reads: escaped.clone(),
             parent,
             parents,
             order,

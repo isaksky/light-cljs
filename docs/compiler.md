@@ -333,8 +333,15 @@ function argument (`map`, `filter`, `reduce`, `swap!` and 28 more) adds that
 operation's calls: `(map f xs)` calls `f` with an element of `xs`, `(reduce f
 init xs)` with the accumulator and an element, `(swap! a f x)` with the state
 and `x`. Inference tracks the elements of sequences, lists, vectors and sets
-for this. Other parameters, and those that `js*` text or `(js-arguments)` may
-assign, are unknown. Emission uses the types:
+for this. A method that a `deftype`, `defrecord`, `reify`, `extend-type` of a
+program type or `specify!` implements for a program protocol likewise has the
+types of the protocol method's calls whose receiver may run it, when those
+calls are all the method's: its global is only ever called, never passed as a
+value, exported or reassigned, its signature is not variadic, nothing names its
+slots (`.cljs$user$P$m$arity$2`, a string, `js*`), and the value of an
+`extend-type` or `specify!` holding it, its last method, is not used. Other
+parameters, and those that `js*` text or `(js-arguments)` may assign, are
+unknown. Emission uses the types:
 
 - An `if` tests a value directly instead of through `truth()` when it cannot
   be a number, string or host value (`(< a b)`, `(seq xs)`, a keyword), and

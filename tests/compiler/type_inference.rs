@@ -1025,6 +1025,207 @@ fn protocol_calls_on_parameters_of_one_program_type_are_devirtualized() {
     assert_eq!(stats.devirtualized_calls, 1);
 }
 
+/// Since light-cljs-253 a method of a `deftype`, `defrecord`, `reify`,
+/// `extend-type` of a program type or `specify!` that implements a program
+/// protocol joins the arguments of the protocol method's calls, when the
+/// program makes every call of the method: its global is read only as a
+/// callee, and nothing names its slots.
+#[test]
+fn protocol_method_parameters_join_visible_calls() {
+    let [nil, boolean, number, string, keyword] = [
+        Type::NIL,
+        Type::BOOLEAN,
+        Type::NUMBER,
+        Type::STRING,
+        Type::KEYWORD,
+    ]
+    .map(Inferred::of);
+    // The failure scenario of the pellet: every call supplies a boolean.
+    let single = "(defprotocol P (m [this flag]))
+                  (deftype T [] P (m [_ flag] (if flag 1 0)))
+                  (m (T.) true)";
+    assert_eq!(local(single, "flag"), boolean);
+    // The receiver is what the calls pass, here an instance of `T`.
+    let receiver = local(
+        "(defprotocol P (m [this flag]))
+         (deftype T [] P (m [self flag] self))
+         (m (T.) true)",
+        "self",
+    );
+    assert_eq!(receiver.ty, Type::OBJECT, "{receiver:?}");
+    assert!(matches!(receiver.known, Known::Instance(_)), "{receiver:?}");
+    let mixed = "(defprotocol P (m [this x]))
+                 (deftype T [] P (m [_ flag] flag))
+                 (defrecord U [] P (m [_ s] s))
+                 (m (T.) true) (m (->U) \"s\")";
+    let either = "(defprotocol P (m [this x]))
+                  (deftype T [] P (m [_ flag] flag))
+                  (deftype U [] P (m [_ s] s))
+                  (m (T.) true) (m (U.) \"s\")
+                  (m (if (odd? (count [1])) (T.) (U.)) 0)";
+    for (source, name, expected) in [
+        // Mixed callers: a method joins the calls whose receiver may be an
+        // instance of its type, and a receiver of either type reaches both.
+        (mixed, "flag", boolean),
+        (mixed, "s", string),
+        (either, "flag", boolean.union(number)),
+        (either, "s", string.union(number)),
+        // The dispatcher of a method with one arity passes nil for missing
+        // arguments; with several, each implementation joins the calls of its
+        // count.
+        (
+            "(defprotocol P (m [this x])) (deftype T [] P (m [_ x] x)) (m (T.))",
+            "x",
+            nil,
+        ),
+        (
+            "(defprotocol P (m [this] [this x]))
+             (deftype T [] P (m [_] :none) (m [_ x] x))
+             (m (T.)) (m (T.) \"a\")",
+            "x",
+            string,
+        ),
+        // `reify`, `extend-type` of a program type and `specify!`; a `reify`
+        // does not receive the calls on an instance of a program type.
+        (
+            "(defprotocol P (m [this x]))
+             (deftype T [] P (m [_ y] y))
+             (m (reify P (m [_ x] x)) :k) (m (T.) 1)",
+            "x",
+            keyword,
+        ),
+        (
+            "(defprotocol P (m [this x])) (deftype T [])
+             (extend-type T P (m [_ x] x)) (m (T.) :k)",
+            "x",
+            keyword,
+        ),
+        (
+            "(defprotocol P (m [this x]))
+             (m (specify! (js-obj) P (m [_ x] x)) :k)",
+            "x",
+            keyword,
+        ),
+        // Calls inside methods are calls too.
+        (
+            "(defprotocol P (m [this x]) (n [this y]))
+             (deftype T [] P (m [this x] (n this x)) (n [_ y] y))
+             (m (T.) :k)",
+            "y",
+            keyword,
+        ),
+    ] {
+        assert_eq!(local(source, name), expected, "{source}");
+    }
+    // Every other way to reach a method keeps `any`: the protocol method as a
+    // value (`apply`, `mapv`, a `def`), its slot named as a method, a string
+    // or in `js*`, an assignment of the method (`with-redefs`), a variadic
+    // signature, an `extend-type` whose value (its last method) is used, an
+    // `extend-type` of a host type, which the dispatcher reaches by the
+    // receiver's host type, a core protocol method and a method that reads
+    // `(js-arguments)`.
+    let protocol = "(defprotocol P (m [this x])) (deftype T [] P (m [_ x] x)) (m (T.) 1)";
+    for source in [
+        format!("{protocol} (apply m (T.) [\"a\"])"),
+        format!("{protocol} (mapv m [(T.)])"),
+        format!("{protocol} (def g m)"),
+        format!("{protocol} (.cljs$user$P$m$arity$2 (T.) (T.) \"a\")"),
+        format!("{protocol} (aget (T.) \"cljs$user$P$m$arity$2\")"),
+        format!("{protocol} (js* \"~{{}}.cljs$user$P$m$arity$2(~{{}}, 'a')\" (T.) (T.))"),
+        format!("{protocol} (with-redefs [m (fn [_ x] x)] (m (T.) 1))"),
+        "(defprotocol P (m [this x])) (deftype T [])
+         (def e (extend-type T P (m [_ x] x))) (m (T.) 1)"
+            .to_owned(),
+        "(defprotocol P (m [this x])) (extend-type string P (m [_ x] x)) (m \"s\" 1)".to_owned(),
+        "(defprotocol P (m [this x]))
+         (deftype T [] P (m [_ x] (aset (js-arguments) 1 \"a\") x)) (m (T.) 1)"
+            .to_owned(),
+    ] {
+        assert_eq!(local(&source, "x"), Inferred::ANY, "{source}");
+    }
+    assert_eq!(
+        local(
+            "(defprotocol P (m [this & more])) (deftype T [] P (m [_ a more] more)) (m (T.) 1 2)",
+            "more"
+        ),
+        Inferred::ANY
+    );
+    assert_eq!(
+        local(
+            "(deftype T [] ILookup (-lookup [_ k] k) (-lookup [_ k nf] nf)) (get (T.) :a)",
+            "k"
+        ),
+        Inferred::ANY
+    );
+}
+
+#[test]
+fn typed_lowerings_apply_inside_protocol_methods_and_keep_the_results() {
+    // Every call passes booleans or nil and instances of one type: the
+    // methods test truthiness in JavaScript and read the record's field
+    // through the receiver.
+    let js = every_level(
+        r#"(defprotocol Shape (label [this flag]) (scaled [this k] [this k nf]))
+           (defrecord Circle [r] Shape
+             (label [this flag] (if flag (:r this) :hidden))
+             (scaled [this k] (* k (:r this)))
+             (scaled [this k nf] (if (pos? k) (* k (:r this)) nf)))
+           (deftype Square [s] Shape
+             (label [_ flag] (if flag s :hidden))
+             (scaled [_ k] (* k s))
+             (scaled [_ k nf] (if (pos? k) (* k s) nf)))
+           (pr-str [(label (->Circle 2) true) (label (map->Circle {:r 3}) false)
+                    (label (Square. 4) (< 1 2)) (label (Square. 5) nil)
+                    (scaled (->Circle 2) 3) (scaled (Square. 2) -0.5)
+                    (scaled (->Circle 2) 0 :nf) (scaled (Square. 1) 2 nil)])"#,
+        "[2 :hidden 4 :hidden 6 -1 :nf 2]",
+    );
+    for lowered in ["if (l", ")[\"r\"]"] {
+        assert!(js.contains(lowered), "{lowered}: {js}");
+    }
+    assert!(!js.contains("truth("), "{js}");
+    // Adversarial callers keep the runtime test, each in a program of its
+    // own: a receiver of either type, `specify!` on an instance, an
+    // `extend-type` whose value is called, and calls through the slot's name.
+    let protocol = "(defprotocol P (m [this flag]))";
+    for (source, expected) in [
+        (
+            r#"(deftype T [] P (m [_ flag] (if flag :yes :no)))
+               (deftype U [] P (m [_ flag] (if flag :yes :no)))
+               (pr-str [(m (T.) true) (m (T.) false) (m (U.) false)
+                        (m (if (odd? (count [1])) (T.) (U.)) (/ 0 0))])"#,
+            "[:yes :no :no :yes]",
+        ),
+        (
+            r#"(deftype T [] P (m [_ flag] (if flag :yes :no)))
+               (def t (T.))
+               (specify! t P (m [_ flag] (if flag :s :not-s)))
+               (pr-str [(m (T.) false) (m t false) (m t 0)])"#,
+            "[:no :not-s :s]",
+        ),
+        (
+            r#"(deftype V [])
+               (def e (extend-type V P (m [_ flag] (if flag :y :n))))
+               (pr-str [(m (V.) false) (e nil "")])"#,
+            "[:n :y]",
+        ),
+        (
+            r#"(deftype W [] P (m [_ flag] (if flag :yes :no)))
+               (def w (W.))
+               (pr-str [(m w false) (.cljs$user$P$m$arity$2 w w "")
+                        ((aget w "cljs$user$P$m$arity$2") w 0)])"#,
+            "[:no :yes :yes]",
+        ),
+        (
+            r#"(deftype X [] P (m [_ flag] (if flag :yes :no)))
+               (pr-str [(m (X.) false) (apply m (X.) [""]) (mapv m [(X.)] [0])])"#,
+            "[:no :yes [:yes]]",
+        ),
+    ] {
+        every_level(&format!("{protocol} {source}"), expected);
+    }
+}
+
 /// A linear congruential generator, so that every seed gives one program.
 struct Rng(u64);
 

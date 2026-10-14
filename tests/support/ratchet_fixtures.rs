@@ -350,4 +350,30 @@ pub const FIXTURES: &[Fixture] = &[
         removed: [0, 0, 1],
         printed: "26\n",
     },
+    // Protocol methods whose parameters take what the protocol's calls pass
+    // them (light-cljs-253): at `Advanced` both types' methods read the
+    // record's fields, so no `:qty`, `:price` or `:label` keyword is built,
+    // and `tag` tests its boolean flag directly.
+    Fixture {
+        name: "protocol-params",
+        source: "(defrecord Item [label qty price])
+                 (defprotocol Pricing (cost [p item]) (tag [p item flag]))
+                 (deftype Plain [] Pricing
+                   (cost [_ item] (* (:qty item) (:price item)))
+                   (tag [_ item flag] (if flag (:label item) \"-\")))
+                 (deftype Sale [pct] Pricing
+                   (cost [_ item] (* (:qty item) (:price item) (- 1 pct)))
+                   (tag [_ item flag] (if flag (str (:label item) \"%\") \"-\")))
+                 (let [items [(->Item \"a\" 1 2) (->Item \"bb\" 3 4) (->Item \"ccc\" 5 1)]
+                       plain (Plain.)
+                       sale (Sale. 0.5)]
+                   (str (reduce + (map (fn [item] (+ (cost plain item) (cost sale item))) items))
+                        (apply str (map (fn [item]
+                                          (str (tag plain item true)
+                                               (tag sale item (> (:qty item) 2))))
+                                        items))))",
+        ceilings: [402_000, 402_000, 48_000],
+        removed: [0, 0, 0],
+        printed: "28.5a-bbbb%cccccc%\n",
+    },
 ];

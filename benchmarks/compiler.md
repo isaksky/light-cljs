@@ -2883,3 +2883,28 @@ callbacks only count strings went from 32,709 to 32,717 bytes on master
 lowering shrinks output only when it removes a runtime root. For that
 reason no specialized clones were added for call sites that dominate an
 `any` join: a clone copies a body.
+
+## Protocol method parameter types — October 14, 2026
+
+light-cljs-253 types the parameters of the methods that implement a program
+protocol (`deftype`, `defrecord`, `reify`, `specify!`, `extend-type` of a
+program type) from the protocol method's calls, when the program makes every
+call of the method and the call's receiver may run the method ("Phase 2
+protocol method parameter extension points" in the
+[design](../docs/advanced-optimization.md)). The new ratchet fixture
+`protocol-params` prices records through two types implementing one protocol.
+
+**Sizes**, raw and `gzip -9` bytes of `--compile --optimize LEVEL`, on the
+24-CPU Mac (sizes do not depend on load; load average 8.5). "Before" is master
+`e5ee884`; the size ratchet table is identical with and without this change
+except for the new fixture.
+
+| Fixture | None before → after | Advanced before → after |
+| --- | --- | --- |
+| every existing fixture (29) | identical bytes | identical bytes |
+| protocol-params (new) | 401,140 / 95,777 → same | 47,413 / 14,863 → 47,267 / 14,820 |
+
+The new fixture's ceilings are 402,000 / 402,000 / 48,000. Its methods'
+`item` parameters are records of one type, so `(:qty item)`, `(:price item)`
+and `(:label item)` become field reads and those keywords are no longer
+built (146 bytes), and `tag` tests its boolean `flag` without `truth()`.

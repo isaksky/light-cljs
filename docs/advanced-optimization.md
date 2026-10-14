@@ -2070,11 +2070,10 @@ the lowerings of step 3 and the devirtualization of step 4 mostly applied to
   and without parameter types. See "Parameter types" in
   `benchmarks/compiler.md`.
 - **Left for later.**
-  - Parameters of functions that escape, of protocol methods and of
-    `deftype` methods stay `any`, except that light-cljs-243 joins the calls
-    core operations make of the functions they are given (next section).
-    Methods of program types called only through devirtualized calls could
-    join their arguments too.
+  - Parameters of functions that escape stay `any`, except that
+    light-cljs-243 joins the calls core operations make of the functions
+    they are given, and light-cljs-253 the calls of protocol methods into
+    their implementations (next two sections).
   - Return types do not depend on the call: a function called with a string
     and with a vector returns the join for every call (no context
     sensitivity).
@@ -2165,7 +2164,81 @@ escaped, so its parameters were `any`.
     what atoms hold.
   - `nth`, `first` and `get` on a collection return `any`, not its element
     type, so destructuring a vector parameter does not type the locals.
-  - Parameters of protocol and `deftype` methods stay `any`.
+  - Parameters of protocol and `deftype` methods stayed `any` until
+    light-cljs-253 (next section).
+
+#### Phase 2 protocol method parameter extension points
+
+Protocol method parameter types are implemented (light-cljs-253) in
+`src/call_shapes.rs` and `src/inference.rs`, at `Advanced` only. Before, the
+methods of `deftype`, `defrecord`, `reify` and `extend-type` had `any`
+parameters, so `(defprotocol P (m [this flag])) (deftype T [] P (m [_ flag]
+(if flag 1 0))) (m (T.) true)` kept `truth()` although every call passes a
+boolean.
+
+- **Closed protocol methods.** `closed_functions` also finds the program
+  protocol methods whose dispatcher runs only for calls the program makes
+  (see "Protocol methods" in `src/call_shapes.rs`): the method is declared
+  once, its global is read only as the callee of calls and not exported, its
+  signature is not variadic, and no property, method, string or `js*` text
+  names one of its slots (`ns$P$m$arity$`), which could be read and called on
+  any instance. Inference also requires that the program defines it once
+  and never assigns it (`Definition::Protocol`, so `with-redefs` and
+  `set!` count).
+- **Implementations.** The methods without rest parameters that implement
+  such a method in a `deftype`, `defrecord`, `reify`, `specify!` or
+  `extend-type` of a program type (`ClosedFunctions::implementations`). An
+  `extend-type` or `specify!` whose value is used returns its last method, so
+  its methods are left out, unless `specify!` returns its target. An
+  `extend-type` of `string`, `default`, a host constructor or any other
+  value is reached through the dispatcher's own table by the receiver's host
+  type, which may run its only method for any arity, so it is left out too.
+- **Dispatch.** Each call runs the arity the dispatcher selects: the
+  method's one arity, padding missing arguments with `undefined` and
+  dropping extra ones, else the call's argument count when it is one of the
+  arities (otherwise the call throws). `ClosedFunctions::dispatch(call)`
+  lists the implementations with that many parameters, the receiver included.
+- **Joins.** In inference's fixed point each such call binds the parameters
+  of the implementations its receiver may run to its arguments, `nil` for
+  missing ones. A method's receiver parameter is `this`, which the
+  dispatcher and devirtualized calls set to the first argument. A `deftype`
+  or `defrecord` method, or an `extend-type` method of a program type, runs
+  when the receiver may be an instance of that type: its type has the
+  type's class (`object` or `record`) and it is not known to be an instance
+  of another program type (`Known::Instance`). A `reify` method runs when the
+  receiver may be an `object` not known to be any program type's instance,
+  and a `specify!` method for every receiver, since its target may be any
+  object. Receivers only grow during the fixed point, so this stays
+  monotone. A receiver typed as one program type therefore types only that
+  type's methods, and `(m (if c (T.) (U.)) x)` joins `x` into both.
+- **Tests.** `protocol_method_parameters_join_visible_calls` in the
+  `type_inference` suite checks the failure scenario, the receiver, mixed
+  callers of two types, a receiver of either type, missing arguments,
+  several arities, `reify`, `extend-type`, `specify!` and calls inside
+  methods, and that every other way to reach a method keeps `any`: `apply`,
+  `mapv`, a `def` of the method, its slot named as a method, a string or in
+  `js*`, `with-redefs`, a variadic signature, an `extend-type` whose value is
+  used or that extends `string`, a core protocol method and `(js-arguments)`.
+  `typed_lowerings_apply_inside_protocol_methods_and_keep_the_results` runs
+  lowered truth tests and record field reads through the receiver at every
+  level, and adversarial programs (a receiver of either type, `specify!` on
+  an instance, a called `extend-type` value, calls through slot names,
+  `apply` and `mapv` of the method) whose output must equal `None`'s.
+- **Measured.** No existing ratchet fixture changes at any level. The new
+  fixture `protocol-params`, two types pricing records through a protocol,
+  shrinks from 47,413 to 47,267 bytes at `Advanced` (14,863 to 14,820
+  gzipped): the methods read the record's fields, so no `:qty`, `:price` or
+  `:label` keyword is built. See "Protocol method parameter types" in
+  `benchmarks/compiler.md`.
+- **Left for later.**
+  - Protocol method calls return `any`; the union of the bodies of the
+    implementations a call may run would type them.
+  - An implementation that no call reaches, but that rapid type analysis
+    keeps because its method is called on another type, has `never`
+    parameters: a keyword lookup on one keeps the generic operation, which
+    still builds the keyword, although the body never runs.
+  - A protocol method passed to a core operation (`(map m xs)`) escapes;
+    callback shapes could join its calls as they do for `fn`s.
 
 #### Phase 2 pure initializer and `js*` extension points
 
