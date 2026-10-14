@@ -516,17 +516,18 @@ fn builtin_type_members_travel_with_their_constructors() {
     for kept in [
         "PersistentVectorValue",
         "PersistentVectorValue.type",
-        "PersistentVectorValue.members",
         "PersistentVectorValue.statics",
     ] {
         assert!(units.contains(&kept), "{kept}");
     }
+    // The upstream fields only where the program names one (light-cljs-238).
     for left_out in [
+        "PersistentVectorValue.fields",
         "Eduction.members",
         "UUIDType",
         "TransientVectorType",
         "Delay",
-        "ChunkBuffer.members",
+        "ChunkBuffer.fields",
     ] {
         assert!(!units.contains(&left_out), "{left_out}");
     }
@@ -539,4 +540,6 @@ fn builtin_type_members_travel_with_their_constructors() {
         same_at_every_level(source),
         "[[] 2 #js [:a 1] 3 \"a\" 4 [2 3] [1] 2 [0 1 2] {:k 1}]\n"
     );
+    let named = embedded(&prepared(source, OptimizationLevel::Advanced));
+    assert!(named.contains(&"upstreamMembers") && named.contains(&"PersistentVectorValue.fields"));
 }

@@ -247,7 +247,7 @@ print extension points" in [advanced-optimization.md](advanced-optimization.md).
 Since light-cljs-238 the printer keeps a branch only for the kinds of value
 the program builds, and walks arrays, vectors, maps and sets without seqs
 where the program has no protocol implementation, so `(println "hi")` is
-about 4.8 KB and `(println [1 2 3])` about 11 KB; the generic seq
+about 4.8 KB and `(println [1 2 3])` about 9.7 KB; the generic seq
 operations look up protocol implementations only in a program that has
 some ("Phase 2 builtin types, seq operations and the printer").
 
@@ -359,6 +359,10 @@ does the following:
   reads the method from the receiver's slot instead of calling the
   dispatcher.
 - A type gets its static `getBasis` only when the program names it.
+- The runtime's types get their upstream fields and methods (`first`, `cnt`,
+  `meta`, `sval`, ...) only when the program names one, or calls
+  `reset-meta!` or `alter-meta!` (light-cljs-238); their host-facing
+  methods (`equiv`, `indexOf`, iteration) stay.
 
 The runtime's record methods are units of their own, kept only where an
 operation that dispatches them is, so a record that is only constructed and

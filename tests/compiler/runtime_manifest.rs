@@ -249,13 +249,15 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
     assert_eq!(sliced, expected);
 }
 
-/// Compile-time units the export list does not reach; any other unreached
-/// unit is dead code. None today: the compiler, macro host and REPL reach the
-/// `compile-time` units through the shared runtime's exports (`compilerForms`,
-/// `compilerFormBridge`, `setDeclarationDemand`, ...), and `core` reaches the
-/// reader and the namespace registry. A pellet that stops exporting
-/// compile-time machinery lists its units here.
-const UNREACHABLE_FROM_EXPORTS: &[&str] = &[];
+/// Units the export list does not reach; any other unreached unit is dead
+/// code. The compiler, macro host and REPL reach the `compile-time` units
+/// through the shared runtime's exports (`compilerForms`, `compilerFormBridge`,
+/// `setDeclarationDemand`, ...), and `core` reaches the reader and the
+/// namespace registry; a pellet that stops exporting compile-time machinery
+/// lists its units here. `upstreamMembers` is the condition of the types'
+/// `.fields` effects, which only an `Advanced` program that names one of
+/// `UPSTREAM_MEMBERS` roots (light-cljs-238).
+const UNREACHABLE_FROM_EXPORTS: &[&str] = &["upstreamMembers"];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
 /// with whether it is the first item of a method entry (`["IHash/-hash", 1,
@@ -390,6 +392,12 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     .unit_of(wrapped)
                     .expect("a wrapped runtime binding"),
             ]
+        } else if unit.name.ends_with(".fields") {
+            // A type's upstream fields and methods, which only code naming
+            // them reads (`upstreamMembers`) or `reset-meta!` assigns.
+            ["resetMeta", "upstreamMembers"]
+                .map(|binding| manifest.unit_of(binding).unwrap())
+                .to_vec()
         } else {
             let hooks = installed_hooks(body(id));
             assert!(
@@ -430,8 +438,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     }
     // The record methods, the five type hooks, the kind hooks (ten of them
     // the printer's), the protocol hooks, the printer's hooks, the initial
-    // values of four core cells and the protocol wrappers of seven operations.
-    assert_eq!(checked, 115);
+    // values of four core cells, the protocol wrappers of seven operations and
+    // the upstream fields of 28 types.
+    assert_eq!(checked, 145);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -742,12 +751,20 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("cons.print"),
             unit("printSequential.seq"),
             unit("str.collections"),
+            unit("ListValue.fields"),
             unit("ListValue.members"),
             unit("ListValue.statics")
         ]
     );
     let list = manifest.reachable([unit("ListValue")]);
     assert!(list[unit("ListValue.members").0] && !list[unit("Eduction.members").0]);
+    // A type's upstream fields wait for a program that names one, or assigns
+    // `meta` through `reset-meta!`.
+    assert!(!list[unit("ListValue.fields").0]);
+    for condition in ["upstreamMembers", "resetMeta"] {
+        let kept = manifest.reachable([unit("ListValue"), unit(condition)]);
+        assert!(kept[unit("ListValue.fields").0] && !kept[unit("Cons.fields").0]);
+    }
     // Installs travel with a binding whose value escapes: a value root or a
     // kept unit that requires it. A root the program only calls keeps none.
     assert!(manifest.attached_effects(unit("add")).is_empty());

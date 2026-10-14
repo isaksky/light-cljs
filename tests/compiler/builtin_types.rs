@@ -25,6 +25,7 @@
 //! members in value position too.
 use super::optimization::execute;
 use light_cljs::runtime_manifest::RuntimeManifest;
+use light_cljs::runtime_slice::UPSTREAM_MEMBERS;
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, PreparedApplication, Program, analyze, parse,
     prepare_application,
@@ -612,6 +613,106 @@ fn small_programs_keep_only_what_they_use() {
             "makeSet.persist",
         ],
     );
+}
+
+/// The prototype members of the runtime's types other than their upstream
+/// fields and methods: host-facing methods (and protocol slots, `cljs$...`).
+const HOST_FACING_MEMBERS: [&str; 7] = [
+    "apply",
+    "call",
+    "constructor",
+    "equiv",
+    "indexOf",
+    "lastIndexOf",
+    "toString",
+];
+
+#[test]
+fn upstream_members_are_every_other_member_of_the_runtime_types() {
+    // At `None`, every prototype member of a runtime type with a `.fields`
+    // effect is host-facing or one of `UPSTREAM_MEMBERS`, and each of those
+    // is a member of one (light-cljs-238).
+    let source = "(let [names (js/Set.)]
+       (doseq [v [(cons 1 nil) (list 1 2) () :k 'sym (repeat 2 1) (cycle [1 2]) (iterate inc 0)
+                  [1] (subvec [1 2 3] 1) (seq (vec (range 40))) (conj cljs.core/PersistentQueue.EMPTY 1)
+                  {} (apply hash-map (range 20)) #{1} (seq [1 2]) (range 0.5 3) (range 3)
+                  (sorted-map 1 2) (sorted-set 1) (seq (sorted-map 1 2)) (eduction (map inc) [1])
+                  (delay 1) (lazy-seq nil) (seq (map inc (range 3))) (chunk-buffer 2)
+                  (array-chunk #js [1]) (reduced 1) (seq (apply hash-map (range 20)))]
+               n (js/Object.getOwnPropertyNames (js/Object.getPrototypeOf v))]
+         (.add names n))
+       (.join (.sort (js/Array.from names)) \" \"))";
+    let js = prepare_application(
+        &program(source),
+        ApplicationOptions::new(OptimizationLevel::None),
+    )
+    .emit_js();
+    let printed = execute(&format!("console.log({js});"));
+    let upstream: Vec<&str> = printed
+        .split_whitespace()
+        .filter(|name| !name.starts_with("cljs$") && !HOST_FACING_MEMBERS.contains(name))
+        .collect();
+    assert_eq!(upstream, UPSTREAM_MEMBERS);
+}
+
+#[test]
+fn upstream_fields_need_a_program_that_names_them() {
+    // A program that names none keeps neither the fields nor `publicFields`,
+    // but keeps the host-facing members of the seqs it builds.
+    let unnamed = assert_keeps_none(
+        "(js/console.log (count (map inc (range 3))))",
+        &[
+            "upstreamMembers",
+            "publicFields",
+            "LazySeq.fields",
+            "ChunkedCons.fields",
+            "IntegerRangeValue.fields",
+        ],
+    );
+    assert!(unnamed.contains(&"LazySeq.members") && unnamed.contains(&"IntegerRangeValue.members"));
+    // A program naming one as a property, method or string, or in `js*`
+    // text, reads the fields as `None` does.
+    for (source, expected, fields) in [
+        (
+            "(let [c (cons 1 (list 2 3))] (array (.-first c) (count (.-rest c)) (.-__hash c)))",
+            "[ 1, 2, null ]",
+            "Cons.fields",
+        ),
+        (
+            "(let [s (lazy-seq [1 2])] (array (count (.sval s)) (count (.-s s))))",
+            "[ 2, 2 ]",
+            "LazySeq.fields",
+        ),
+        ("(aget (range 3) \"cnt\")", "3", "IntegerRangeValue.fields"),
+        ("(js* \"~{}.first\" (cons 5 nil))", "5", "Cons.fields"),
+    ] {
+        every_level(source, expected);
+        let units = units(source);
+        assert!(
+            units.contains(&"upstreamMembers") && units.contains(&fields),
+            "{source} keeps {units:?}"
+        );
+    }
+    // `alter-meta!` reads and assigns `meta`.
+    for (source, expected, fields) in [
+        (
+            "(let [l (with-meta (list 1 2) {:a 1})] (pr-str (alter-meta! l assoc :b 2)))",
+            "{:a 1, :b 2}",
+            "ListValue.fields",
+        ),
+        (
+            "(let [l (with-meta (lazy-seq [1]) {:a 1})] (pr-str (alter-meta! l assoc :b 2) (meta l)))",
+            "{:a 1, :b 2} {:a 1, :b 2}",
+            "LazySeq.fields",
+        ),
+    ] {
+        every_level(source, expected);
+        let units = units(source);
+        assert!(
+            !units.contains(&"upstreamMembers") && units.contains(&fields),
+            "{source} keeps {units:?}"
+        );
+    }
 }
 
 #[test]

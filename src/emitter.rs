@@ -72,6 +72,10 @@ pub(crate) struct Application<'a> {
     /// Whether types get their static `getBasis` method, which at `Advanced`
     /// only a program that names it can call (`crate::rta`).
     pub basis: bool,
+    /// At `Advanced`: the first expression that names an upstream field or
+    /// method of the runtime's types (`crate::rta`), where the slice roots
+    /// the unit their `.fields` effects wait for.
+    pub upstream_member: Option<ExprId>,
     /// At `Advanced`: calls that name the method they run, and definitions
     /// that bind each method to an entry of its own (`crate::call_shapes`).
     pub shapes: Option<&'a CallShapes>,
@@ -225,6 +229,18 @@ fn emit_js_mode(
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
         emitter.emit(program.root, ExprContext::Return);
+        // Only code naming them reads the upstream fields and methods of the
+        // runtime's types, so an `Advanced` slice keeps them only then.
+        if let Some(site) = application
+            .and_then(|application| application.upstream_member)
+            .filter(|_| direct.is_some() && !emitter.runtime.is_empty())
+        {
+            emitter.runtime.record(
+                RuntimeName::direct(crate::runtime_slice::UPSTREAM_MEMBERS_UNIT, None),
+                Some(site),
+                NameUse::Keep,
+            );
+        }
         // `Advanced` output that tests no value with `truth` does not declare it.
         if emitter.inference.is_some() && !emitter.truth_used {
             let start = PRELUDE_OPEN.len();

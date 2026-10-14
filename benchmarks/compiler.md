@@ -2579,7 +2579,14 @@ printer" in the [design](../docs/advanced-optimization.md)). At
 - the seq operations' branches for vectors and public array maps, and
   `reduce`'s for `iterate` and `cycle`, are kind hooks, so a program that
   builds no vector keeps none for them;
-- the host clock and random source are kept only with a reader.
+- the host clock and random source are kept only with a reader;
+- the runtime's types have their upstream fields and methods (`first`,
+  `cnt`, `meta`, `sval`, ...) only where the program names one, or calls
+  `reset-meta!` or `alter-meta!`; their host-facing methods (`equiv`,
+  `indexOf`, `lastIndexOf`, iteration) stay;
+- `reduce` takes a `reduced` value apart without `deref` where no protocol
+  implementation exists, and the printer fallback for messages is kept
+  apart from the collections' `toString` fallback.
 
 The new ratchet fixture `mapv-count` is the pellet's `mapv` program:
 
@@ -2594,60 +2601,60 @@ for every fixture but `pure-defs`, which is 78 bytes smaller there.
 
 | Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
 | --- | ---: | ---: | ---: | ---: | --- |
-| console-log-sum | 388,296 / 92,339 | 394,188 / 93,896 | 151 / 140 | 151 / 140 | 395,000 / 395,000 / 200 |
-| println-hi | 388,183 / 92,268 | 394,075 / 93,823 | 21,456 / 6,737 | 4,771 / 2,021 | 395,000 / 395,000 / 4,800 |
-| vector-printed | 388,208 / 92,278 | 394,100 / 93,833 | 24,932 / 7,794 | 11,002 / 4,160 | 395,000 / 395,000 / 12,000 |
-| map-printed | 388,211 / 92,271 | 394,103 / 93,826 | 28,179 / 8,662 | 14,956 / 5,276 | 395,000 / 395,000 / 15,000 |
-| seq-pipeline | 388,527 / 92,388 | 394,419 / 93,945 | 33,742 / 10,138 | 28,594 / 8,669 | 395,000 / 395,000 / 29,000 |
-| add | 388,136 / 92,260 | 394,028 / 93,811 | 19 / 39 | 19 / 39 | 395,000 / 395,000 / 100 |
-| rest-fn | 388,480 / 92,395 | 394,372 / 93,952 | 11,423 / 3,709 | 10,837 / 3,636 | 395,000 / 395,000 / 11,000 |
-| keyword-case | 388,768 / 92,417 | 394,660 / 93,975 | 4,343 / 1,647 | 4,343 / 1,647 | 395,000 / 395,000 / 4,400 |
-| record-protocol | 389,089 / 92,586 | 394,981 / 94,143 | 5,750 / 2,423 | 5,750 / 2,423 | 395,000 / 395,000 / 5,800 |
-| pure-defs | 389,725 / 92,692 | 395,617 / 94,256 | 5,640 / 2,372 | 5,640 / 2,372 | 396,000 / 396,000 / 5,700 |
-| keyword-lookups | 389,260 / 92,521 | 395,152 / 94,082 | 34,474 / 10,416 | 33,741 / 10,276 | 396,000 / 396,000 / 34,000 |
-| constant-literals | 389,037 / 92,471 | 394,929 / 94,029 | 29,502 / 8,968 | 24,601 / 7,603 | 395,000 / 395,000 / 25,000 |
-| constant-lookups | 389,455 / 92,606 | 395,347 / 94,172 | 4,723 / 1,775 | 4,723 / 1,775 | 396,000 / 396,000 / 4,800 |
-| three-records | 391,226 / 92,876 | 397,118 / 94,442 | 5,757 / 2,422 | 5,757 / 2,422 | 398,000 / 398,000 / 5,800 |
-| constant-keys | 389,253 / 92,458 | 395,145 / 94,019 | 45,280 / 13,599 | 44,750 / 13,486 | 396,000 / 396,000 / 45,000 |
-| event-maps | 388,785 / 92,431 | 394,677 / 93,989 | 35,057 / 10,573 | 34,324 / 10,437 | 395,000 / 395,000 / 35,000 |
-| vector-only | 388,335 / 92,358 | 394,227 / 93,917 | 5,883 / 2,321 | 5,888 / 2,323 | 395,000 / 395,000 / 5,900 |
-| keyword-only | 388,303 / 92,341 | 394,195 / 93,898 | 4,270 / 1,617 | 4,270 / 1,617 | 395,000 / 395,000 / 4,300 |
-| map-only | 388,341 / 92,349 | 394,233 / 93,908 | 11,077 / 3,829 | 11,082 / 3,832 | 395,000 / 395,000 / 12,000 |
-| atom-str | 388,351 / 92,349 | 394,243 / 93,906 | 2,284 / 904 | 2,284 / 904 | 395,000 / 395,000 / 2,300 |
-| set-only | 388,372 / 92,369 | 394,264 / 93,927 | 11,961 / 3,934 | 11,966 / 3,934 | 395,000 / 395,000 / 12,000 |
-| mapv-count | - | 394,255 / 93,916 | - | 32,820 / 9,987 | 395,000 / 395,000 / 33,000 |
-| raw-js | 389,135 / 92,510 | 395,027 / 94,074 | 36 / 54 | 36 / 54 | 396,000 / 396,000 / 100 |
-| multi-arity | 390,964 / 92,771 | 396,856 / 94,339 | 318 / 212 | 318 / 212 | 397,000 / 397,000 / 400 |
-| closed-params | 390,699 / 92,913 | 396,591 / 94,483 | 37,763 / 12,282 | 37,964 / 12,399 | 397,000 / 397,000 / 38,000 |
-| debug-logging | 389,455 / 92,697 | 395,347 / 94,256 | 31 / 51 | 31 / 51 | 396,000 / 396,000 / 100 |
-| local-arities | 391,387 / 92,865 | 397,279 / 94,436 | 490 / 278 | 490 / 278 | 398,000 / 398,000 / 500 |
+| console-log-sum | 388,296 / 92,339 | 395,290 / 94,192 | 151 / 140 | 151 / 140 | 396,000 / 396,000 / 200 |
+| println-hi | 388,183 / 92,268 | 395,177 / 94,120 | 21,456 / 6,737 | 4,771 / 2,021 | 396,000 / 396,000 / 4,800 |
+| vector-printed | 388,208 / 92,278 | 395,202 / 94,129 | 24,932 / 7,794 | 9,703 / 3,740 | 396,000 / 396,000 / 9,800 |
+| map-printed | 388,211 / 92,271 | 395,205 / 94,123 | 28,179 / 8,662 | 13,514 / 4,825 | 396,000 / 396,000 / 14,000 |
+| seq-pipeline | 388,527 / 92,388 | 395,521 / 94,242 | 33,742 / 10,138 | 24,450 / 7,610 | 396,000 / 396,000 / 25,000 |
+| add | 388,136 / 92,260 | 395,130 / 94,110 | 19 / 39 | 19 / 39 | 396,000 / 396,000 / 100 |
+| rest-fn | 388,480 / 92,395 | 395,474 / 94,249 | 11,423 / 3,709 | 9,465 / 3,177 | 396,000 / 396,000 / 9,500 |
+| keyword-case | 388,768 / 92,417 | 395,762 / 94,272 | 4,343 / 1,647 | 3,428 / 1,324 | 396,000 / 396,000 / 3,500 |
+| record-protocol | 389,089 / 92,586 | 396,083 / 94,442 | 5,750 / 2,423 | 5,750 / 2,423 | 397,000 / 397,000 / 5,800 |
+| pure-defs | 389,725 / 92,692 | 396,719 / 94,555 | 5,640 / 2,372 | 5,640 / 2,372 | 397,000 / 397,000 / 5,700 |
+| keyword-lookups | 389,260 / 92,521 | 396,254 / 94,379 | 34,474 / 10,416 | 29,113 / 9,056 | 397,000 / 397,000 / 30,000 |
+| constant-literals | 389,037 / 92,471 | 396,031 / 94,327 | 29,502 / 8,968 | 20,612 / 6,561 | 397,000 / 397,000 / 21,000 |
+| constant-lookups | 389,455 / 92,606 | 396,449 / 94,470 | 4,723 / 1,775 | 3,808 / 1,453 | 397,000 / 397,000 / 3,900 |
+| three-records | 391,226 / 92,876 | 398,220 / 94,742 | 5,757 / 2,422 | 5,757 / 2,422 | 399,000 / 399,000 / 5,800 |
+| constant-keys | 389,253 / 92,458 | 396,247 / 94,317 | 45,280 / 13,599 | 39,897 / 12,202 | 397,000 / 397,000 / 40,000 |
+| event-maps | 388,785 / 92,431 | 395,779 / 94,286 | 35,057 / 10,573 | 29,341 / 9,123 | 396,000 / 396,000 / 30,000 |
+| vector-only | 388,335 / 92,358 | 395,329 / 94,213 | 5,883 / 2,321 | 4,224 / 1,739 | 396,000 / 396,000 / 4,300 |
+| keyword-only | 388,303 / 92,341 | 395,297 / 94,195 | 4,270 / 1,617 | 3,355 / 1,297 | 396,000 / 396,000 / 3,400 |
+| map-only | 388,341 / 92,349 | 395,335 / 94,204 | 11,077 / 3,829 | 9,146 / 3,194 | 396,000 / 396,000 / 9,200 |
+| atom-str | 388,351 / 92,349 | 395,345 / 94,202 | 2,284 / 904 | 2,284 / 904 | 396,000 / 396,000 / 2,300 |
+| set-only | 388,372 / 92,369 | 395,366 / 94,224 | 11,961 / 3,934 | 5,085 / 1,949 | 396,000 / 396,000 / 5,100 |
+| mapv-count | - | 395,357 / 94,213 | - | 28,725 / 8,914 | 396,000 / 396,000 / 29,000 |
+| raw-js | 389,135 / 92,510 | 396,129 / 94,372 | 36 / 54 | 36 / 54 | 397,000 / 397,000 / 100 |
+| multi-arity | 390,964 / 92,771 | 397,958 / 94,638 | 318 / 212 | 318 / 212 | 398,000 / 398,000 / 400 |
+| closed-params | 390,699 / 92,913 | 397,693 / 94,782 | 37,763 / 12,282 | 35,923 / 11,755 | 398,000 / 398,000 / 36,000 |
+| debug-logging | 389,455 / 92,697 | 396,449 / 94,557 | 31 / 51 | 31 / 51 | 397,000 / 397,000 / 100 |
+| local-arities | 391,387 / 92,865 | 398,381 / 94,738 | 490 / 278 | 490 / 278 | 399,000 / 399,000 / 500 |
 
-Against the design's targets: `println-hi` (4,771, target 5,000),
-`vector-printed` (11,002, target 15,000) and `map-printed` (14,956, target
-20,000) meet them; `seq-pipeline` (28,594, target 25,000) does not. It
-still keeps about 5 KB of host-facing members of the seq types it builds
-(`Cons.members`, `LazySeq.members`, `ChunkedCons.members`, the ranges',
-`publicFields`, `seqMethods`) and, through their `equiv`, structural
-equality.
+All four of the design's targets are met: `println-hi` (4,771, target
+5,000), `vector-printed` (9,703, target 15,000), `map-printed` (13,514,
+target 20,000) and `seq-pipeline` (24,450, target 25,000). The
+upstream fields alone were about 3.7 KB of `seq-pipeline`: the getters of
+its seq types, `publicFields` and the stores `publicFields` tests to
+tell a runtime value from a host one.
 
 Other programs at `advanced`, raw and gzip bytes:
 
 | Program | Before | After |
 | --- | ---: | ---: |
-| `(js/console.log (count (mapv inc [1 2 3])))` | 33,935 / 10,231 | 32,820 / 9,987 |
-| `(enable-console-print!) (defmulti area :shape) (defmethod area :square [{:keys [side]}] (* side side)) (println (area {:shape :square :side 3}))` | 57,807 / 17,303 | 56,292 / 16,921 |
-| `(js/console.log (conj [1] 2))` | 16,867 / 5,280 | 16,313 / 5,176 |
+| `(js/console.log (count (mapv inc [1 2 3])))` | 33,935 / 10,231 | 28,725 / 8,914 |
+| `(enable-console-print!) (defmulti area :shape) (defmethod area :square [{:keys [side]}] (* side side)) (println (area {:shape :square :side 3}))` | 57,807 / 17,303 | 52,739 / 16,068 |
+| `(js/console.log (conj [1] 2))` | 16,867 / 5,280 | 13,759 / 4,433 |
 
 `println-hi` keeps 31 runtime units instead of 139: the printer's host
 branches, its string writer and the print functions, no seq, keyword,
 symbol, collection type or metadata. A program with protocol
-implementations keeps the operations' protocol wrappers: `closed-params`
-grows by 201 bytes. Programs that keep a collection's host-facing
-`toString` (`vector-only`, `map-only`, `set-only`) grow by 5 bytes, the
-printer fallbacks now being installed one by one.
+implementations keeps the operations' protocol wrappers (about 200 bytes),
+but no longer the upstream fields of the types it builds: `closed-params`
+drops by 1,840 bytes. Every fixture that builds a runtime value without
+naming an upstream member shrinks; none grows.
 
-The shared runtime grows by 5,892 bytes (1.5%), 1,557 gzipped: the kind
+The shared runtime grows by 6,994 bytes (1.8%), 1,853 gzipped: the kind
 printers and their chain, the walks without seqs, the protocol wrappers,
-the new kind hooks and their comments. The `none` and `prepare` ceilings
-rise by 5,000 to 6,000 for that growth (each to its new size rounded up to
-the next 1,000); the `advanced` ceilings of every fixture that shrank drop.
+the new kind hooks, the split of each type's members into `.members` and
+`.fields`, and their comments. The `none` and `prepare` ceilings rise by
+7,000 for that growth (each to its new size rounded up to the next 1,000);
+the `advanced` ceilings of every fixture that shrank drop.

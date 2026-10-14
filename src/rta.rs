@@ -60,7 +60,9 @@
 //! nothing reads is not defined; a `defprotocol` defines only the protocol and
 //! dispatchers something reads; and a top-level definition that preparation
 //! would remove once unread goes when only dropped methods read it. Emission
-//! gives a type its static `getBasis` only when reachable code names it.
+//! gives a type its static `getBasis` only when reachable code names it, and
+//! the runtime's types their upstream fields and methods
+//! ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) only when it names one.
 //!
 //! # Devirtualization
 //!
@@ -113,6 +115,9 @@ pub(crate) struct TypeAnalysis {
     discarded: Vec<bool>,
     /// Whether reachable code names `getBasis` (see [`names_property`]).
     basis: bool,
+    /// The first reachable expression that names an upstream member of the
+    /// runtime's types.
+    members: Option<ExprId>,
 }
 
 /// What a rewrite removed, for [`crate::ApplicationStats`].
@@ -316,11 +321,20 @@ pub(crate) fn analyze(
         .iter()
         .map(|method| method.is_some_and(|id| dispatched[id]))
         .collect();
-    let basis = program
+    let basis = program.exprs.iter().zip(&live).any(|(expr, live)| {
+        *live && names_property(program, &expr.kind, |name| name == "getBasis")
+    });
+    let members = program
         .exprs
         .iter()
         .zip(&live)
-        .any(|(expr, live)| *live && names_property(program, &expr.kind, "getBasis"));
+        .position(|(expr, live)| {
+            *live
+                && names_property(program, &expr.kind, |name| {
+                    crate::runtime_slice::UPSTREAM_MEMBERS.contains(&name)
+                })
+        })
+        .map(ExprId);
     TypeAnalysis {
         live,
         instantiated,
@@ -331,6 +345,7 @@ pub(crate) fn analyze(
         quiet,
         discarded,
         basis,
+        members,
     }
 }
 
@@ -731,6 +746,13 @@ impl TypeAnalysis {
         self.basis
     }
 
+    /// The first reachable expression that names an upstream field or method
+    /// of the runtime's types ([`crate::runtime_slice::UPSTREAM_MEMBERS`]),
+    /// which only then can read one.
+    pub(crate) fn names_upstream_member(&self) -> Option<ExprId> {
+        self.members
+    }
+
     /// Rewrite `program` as the analysis decided (see the module docs) and
     /// update `retained`, the globals emission declares.
     pub(crate) fn apply(
@@ -833,24 +855,24 @@ impl TypeAnalysis {
     }
 }
 
-/// Whether an expression of this kind names the host property `name`: reads,
-/// calls or indexes it, holds it as a string, or is raw JavaScript containing
-/// it. A name computed at run time does not count.
-fn names_property(program: &Program, kind: &ExprKind, name: &str) -> bool {
+/// Whether an expression of this kind names a host property that `named`
+/// accepts: reads, calls or indexes it, holds it as a string, or is raw
+/// JavaScript containing it as an identifier or a string. A name computed at
+/// run time does not count.
+fn names_property(program: &Program, kind: &ExprKind, named: impl Fn(&str) -> bool) -> bool {
     match kind {
-        ExprKind::Property { property, .. } => property == name,
-        ExprKind::MethodCall { method, .. } => method == name,
+        ExprKind::Property { property, .. } => named(property),
+        ExprKind::MethodCall { method, .. } => named(method),
         ExprKind::QualifiedMethod {
             method: Some(method),
             ..
-        } => method == name,
-        ExprKind::JsTemplate { segments, .. } => {
-            segments.iter().any(|segment| segment.contains(name))
-        }
-        ExprKind::String(string) => program.strings[string.0]
-            .iter()
-            .copied()
-            .eq(name.encode_utf16()),
+        } => named(method),
+        ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
+            segment
+                .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                .any(&named)
+        }),
+        ExprKind::String(string) => named(&String::from_utf16_lossy(&program.strings[string.0])),
         _ => false,
     }
 }

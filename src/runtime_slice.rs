@@ -40,6 +40,78 @@ use crate::runtime_manifest::{CORE_CELLS, RootUse, RuntimeManifest, UnitId};
 /// binds one reaches reflection.
 pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 
+/// The upstream fields and methods of the runtime's types, munged: `first` of
+/// a `Cons`, `cnt` of a vector, `sval` of a `LazySeq`, ..., which the types'
+/// `.fields` effects add. Upstream they are compiler-owned names, which
+/// Closure renames and removes where nothing names them. An `Advanced` program
+/// keeps them likewise only where reachable code names one of them as a
+/// property, method or string or in `js*` text ([`crate::rta`]): its slice
+/// then roots [`UPSTREAM_MEMBERS_UNIT`], whose `when:` the effects wait for.
+/// The `builtin_types` suite checks the list against the runtime's prototypes.
+pub const UPSTREAM_MEMBERS: &[&str] = &[
+    "__hash",
+    "_hash",
+    "_meta",
+    "_next",
+    "add",
+    "all",
+    "arr",
+    "ascending_QMARK_",
+    "buf",
+    "chunk",
+    "chunk_next",
+    "cnt",
+    "coll",
+    "comp",
+    "count",
+    "current",
+    "currentval",
+    "end",
+    "f",
+    "first",
+    "fn",
+    "forceChunk",
+    "fqn",
+    "front",
+    "has_nil_QMARK_",
+    "hash_map",
+    "i",
+    "meta",
+    "more",
+    "name",
+    "next",
+    "nil_val",
+    "node",
+    "ns",
+    "off",
+    "prev",
+    "prev_seed",
+    "rear",
+    "rest",
+    "root",
+    "s",
+    "seed",
+    "shift",
+    "stack",
+    "start",
+    "step",
+    "str",
+    "sval",
+    "tail",
+    "tree",
+    "tree_map",
+    "v",
+    "val",
+    "value",
+    "vec",
+    "xform",
+];
+
+/// The runtime unit that the `.fields` effects of the runtime's types wait
+/// for, which an `Advanced` slice keeps only where the program names one of
+/// [`UPSTREAM_MEMBERS`].
+pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
+
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
 /// [`CoreFnId`](crate::CoreFnId). Below `Advanced` the binding is an export

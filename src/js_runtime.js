@@ -625,6 +625,10 @@
   function ensureReduced(value) { return isReduced(value) ? value : reduced(value); }
   //@unit unreduced requires: isReduced, reducedValues
   function unreduced(value) { return isReduced(value) ? reducedValues.get(value) : value; }
+  //@unit reducedValue requires: protocolHooks, reducedValues
+  // The value of a `reduced`, as `deref` gives it: only a protocol
+  // implementation (`protocolHooks.deref`) can give another.
+  function reducedValue(value) { return protocolHooks.deref ? protocolHooks.deref(value) : reducedValues.get(value); }
   //@unit deref requires: derefProtocol
   function deref(value) { return derefProtocol(value); }
   //@unit derefProtocol requires: atoms, deferredValue, delays, isReduced, protocolHooks,
@@ -1006,9 +1010,9 @@
   //@unit isEmpty requires: countedValue, countProtocol, ICounted, protocolHooks, seq
   const isEmpty = x => x == null || ((protocolHooks.satisfies?.(ICounted, x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
 
-  //@unit reduce requires: cells, chunks, deref, first, IIterable, invalidArity, isReduced,
-  //@ iterableValue, iterator, iteratorProtocol, kindHooks, lazyValues, next, protocolHooks,
-  //@ publicCollectionSlots, reduceValue, seq, vectors, views
+  //@unit reduce requires: cells, chunks, first, IIterable, invalidArity, isReduced, iterableValue,
+  //@ iterator, iteratorProtocol, kindHooks, lazyValues, next, protocolHooks, publicCollectionSlots,
+  //@ reducedValue, reduceValue, seq, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -1018,7 +1022,7 @@
       if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
       while (iter.hasNext()) {
         init = rf.call(null, init, iter.next());
-        if (isReduced(init)) return deref(init);
+        if (isReduced(init)) return reducedValue(init);
       }
       return init;
     }
@@ -1026,7 +1030,7 @@
     if (chunkedSlots?.arr) {
       const iter = iterator(source);
       if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
-      while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return deref(init); }
+      while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return reducedValue(init); }
       return init;
     }
     if (chunkedSlots?.cnt != null && vectors.has(source) && arity === 2) return reduce(rf, vectors.get(source));
@@ -1040,7 +1044,7 @@
       init = producer.head;
       for (let i = 1; i < producer.count; i++) {
         init = rf.call(null, init, producer.head + i * producer.step);
-        if (isReduced(init)) return deref(init);
+        if (isReduced(init)) return reducedValue(init);
       }
       return init;
     }
@@ -1048,7 +1052,7 @@
       const n = producer.remaining, item = producer.head;
       let i = arity === 2 ? 1 : 0;
       if (arity === 2) init = item;
-      while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return deref(init); }
+      while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
       return init;
     }
     if (producer?.kind === "iterate") return kindHooks.reduceIterate(rf, init, source, producer, arity);
@@ -1056,7 +1060,7 @@
     if (chunks.has(source) && !chunks.get(source).integer) {
       const c = chunks.get(source); let i = c.offset;
       if (arity === 2) init = c.array[i++];
-      for (; i < c.array.length; i++) { init = rf.call(null, init, c.array[i]); if (isReduced(init)) return deref(init); }
+      for (; i < c.array.length; i++) { init = rf.call(null, init, c.array[i]); if (isReduced(init)) return reducedValue(init); }
       return init;
     }
     const sequenceReduction = cells.has(source) || lazyValues.has(source) || (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string");
@@ -1067,7 +1071,7 @@
     if (sequenceReduction) {
       for (let current = seq(source); current != null; current = next(current)) {
         init = rf.call(null, init, first(current));
-        if (isReduced(init)) return deref(init);
+        if (isReduced(init)) return reducedValue(init);
       }
       return init;
     }
@@ -1086,7 +1090,7 @@
         // Read .call on every invocation, after the source/arguments have been
         // evaluated. Callable data and user functions share this ordinary ABI.
         result = rf.call(null, result, item);
-        if (isReduced(result)) return deref(result);
+        if (isReduced(result)) return reducedValue(result);
       }
       if (cell || !slice) {
         current = cell ? seq(cell.tail) : next(current);
@@ -1100,19 +1104,19 @@
     return initialized ? result : rf.call(null);
   }
 
-  //@unit iterateNode.reduce effect: iterateNode when: reduce requires: deref, first, isReduced,
-  //@ kindHooks
+  //@unit iterateNode.reduce effect: iterateNode when: reduce requires: first, isReduced, kindHooks,
+  //@ reducedValue
   kindHooks.reduceIterate = (rf, init, source, producer, arity) => {
     let value = first(source);
     if (arity === 2) { init = value; value = producer.fn.call(null, value); }
-    while (true) { init = rf.call(null, init, value); if (isReduced(init)) return deref(init); value = producer.fn.call(null, value); }
+    while (true) { init = rf.call(null, init, value); if (isReduced(init)) return reducedValue(init); value = producer.fn.call(null, value); }
   };
-  //@unit cycleNode.reduce effect: cycleNode when: reduce requires: deref, first, isReduced,
-  //@ kindHooks, next
+  //@unit cycleNode.reduce effect: cycleNode when: reduce requires: first, isReduced, kindHooks,
+  //@ next, reducedValue
   kindHooks.reduceCycle = (rf, init, producer, arity) => {
     let current = producer.currentValue();
     if (arity === 2) { init = first(current); current = next(current) ?? producer.all; }
-    while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return deref(init); current = next(current) ?? producer.all; }
+    while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return reducedValue(init); current = next(current) ?? producer.all; }
   };
   //@unit reduce.protocol effect: installMethods when: reduce requires: protocolHooks, reduce
   reduce = (operation => Object.defineProperty(function (rf, init, collection) {
@@ -1230,8 +1234,8 @@
     return invalidArity(arguments.length);
   }
 
-  //@unit reduceKv requires: deref, isReduced, keyProtocol, mapEntries, mapTraversal, protocolHooks,
-  //@ reduce, valProtocol, vectors
+  //@unit reduceKv requires: isReduced, keyProtocol, mapEntries, mapTraversal, protocolHooks,
+  //@ reduce, reducedValue, valProtocol, vectors
   function reduceKv(rf, init, collection) {
     const method = protocolHooks.publicMethod?.(collection, "IKVReduce/-kv-reduce", 3);
     if (method) return method.call(collection, collection, rf, init);
@@ -1242,7 +1246,7 @@
     if (!entries) return reduce((result, entry) => rf.call(null, result, keyProtocol(entry), valProtocol(entry)), init, collection);
     for (const [key, value] of entries) {
       init = rf.call(null, init, key, value);
-      if (isReduced(init)) return deref(init);
+      if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
@@ -2385,9 +2389,8 @@
   //@unit count.protocol effect: installMethods when: count requires: behindProtocol, count,
   //@ protocolHooks
   count = behindProtocol(count, value => protocolHooks.publicMethod?.(value, "ICounted/-count", 1, true, true));
-  //@unit count.host effect: count, installMethods when: PersistentArrayMapValue,
-  //@ PersistentHashMapValue, PersistentVectorValue, structuralEqualPair, vectorPrototype requires: count,
-  //@ hostHooks
+  //@unit count.host effect: count, installMethods when: resetMeta, structuralEqualPair,
+  //@ upstreamMembers, vectorPrototype requires: count, hostHooks
   hostHooks.count = count;
   //@unit accumulatingCount requires: count, countedValue, ICounted, next, protocolHooks, seq
   function accumulatingCount(value) {
@@ -6462,12 +6465,14 @@
   //@unit printHooks
   // The printer's hooks, which the units that can use them fill in.
   const printHooks = {};
-  //@unit printHooks.defaults effect: printHooks when: derive, getMethod, mapPrototype, MultiFn,
-  //@ preferMethod, sequencePrototype, setPrototype, transientPrototype, vectorPrototype requires: printHooks,
-  //@ printNumber
+  //@unit printHooks.defaults effect: printHooks when: mapPrototype, sequencePrototype,
+  //@ setPrototype, transientPrototype, vectorPrototype requires: printHooks
   // The printer for code that must not keep it; `printWriterImpl.install`
-  // replaces it where the program can print.
+  // replaces it where the program can print. A collection's `toString`...
   printHooks.collection = value => Object.prototype.toString.call(value);
+  //@unit printHooks.messages effect: printHooks when: derive, getMethod, MultiFn, preferMethod
+  //@ requires: printHooks, printNumber
+  // ... and the values in messages.
   printHooks.text = value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value);
   //@unit printWriter requires: printHooks, printWriterImpl
   function printWriter(value, writer, options) {
@@ -6974,6 +6979,14 @@
   //@ first, get, indexedNth, indexedValue, lookupValue, next, nextValue, rest, seq, seqableValue,
   //@ seqValue
   const seqProtocol = coreMethod("ISeqable/-seq", [1], seq, seqableValue), firstProtocol = coreMethod("ISeq/-first", [1], first, seqValue), restProtocol = coreMethod("ISeq/-rest", [1], rest, seqValue), nextProtocol = coreMethod("INext/-next", [1], next, nextValue), countProtocol = coreMethod("ICounted/-count", [1], count, value => value == null || countedValue(value)), nthProtocol = coreMethod("IIndexed/-nth", [2, 3], indexedNth, indexedValue), lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get, lookupValue), containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains, associativeValue);
+  //@unit upstreamMembers
+  // The upstream fields and methods of the runtime's types (`first`, `cnt`,
+  // `meta`, `sval`, ...), which their `.fields` effects add, are compiler-owned
+  // names, which Closure renames and removes upstream: the effects wait for
+  // this unit, which an `Advanced` program keeps only where it names one of
+  // them (`UPSTREAM_MEMBERS` in src/runtime_slice.rs), or for `resetMeta`,
+  // which assigns `meta`.
+  const upstreamMembers = null;
   //@unit publicFields mutator requires: constructorHashes, ownedProtocolValue
   // The upstream deftype fields; `read` answers all but `meta` (from `meta`)
   // and the hash, and `write` sets a mutable field other than the hash.
@@ -7043,8 +7056,8 @@
       lastIndexOf: seqMethods.lastIndexOf
     }));
   }
-  //@unit SymbolValue.members effect: SymbolValue requires: constructorHashes, metadataValues,
-  //@ symbols, SymbolValue
+  //@unit SymbolValue.fields effect: SymbolValue when: resetMeta, upstreamMembers requires: constructorHashes,
+  //@ metadataValues, symbols, SymbolValue
   for (const [field, key] of Object.entries({ns: "namespace", name: "name", str: "spelling"})) Object.defineProperty(SymbolValue.prototype, field, {
     get() { return symbols.get(this)[key]; },
     set(value) {
@@ -7065,8 +7078,8 @@
       metadataValues.set(this, value);
     }
   });
-  //@unit Cons.members effect: Cons requires: cells, Cons, constructorHashes, metadataValues,
-  //@ seqIndexes, seqMethods
+  //@unit Cons.fields effect: Cons when: resetMeta, upstreamMembers requires: cells, Cons,
+  //@ constructorHashes, metadataValues
   for (const [field, key] of Object.entries({first: "head", rest: "tail"})) Object.defineProperty(Cons.prototype, field, {
     get() { return cells.get(this)[key]; },
     set(value) {
@@ -7087,50 +7100,58 @@
       metadataValues.set(this, value);
     }
   });
+  //@unit Cons.members effect: Cons requires: Cons, seqIndexes, seqMethods
   seqIndexes(Cons);
   Cons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit Reduced.members effect: Reduced requires: Reduced, reducedValues
+  //@unit Reduced.fields effect: Reduced when: resetMeta, upstreamMembers requires: Reduced,
+  //@ reducedValues
   Object.defineProperty(Reduced.prototype, "val", {
     get() { return reducedValues.get(this); }, set(value) {
       if (!reducedValues.has(this)) throw new Error("Expected Reduced");
       reducedValues.set(this, value);
     }
   });
-  //@unit ListValue.members effect: ListValue requires: cells, ListValue, meta, publicFields,
-  //@ seqIndexes, seqMethods
+  //@unit ListValue.fields effect: ListValue when: resetMeta, upstreamMembers requires: cells,
+  //@ ListValue, meta, publicFields
   publicFields(ListValue, ["meta", "first", "rest", "count", "__hash"], (value, field) => cells.get(value)[{first: "head", rest: "tail", count: "count"}[field]], meta);
+  //@unit ListValue.members effect: ListValue requires: ListValue, seqIndexes, seqMethods
   seqIndexes(ListValue);
   ListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit EmptyListValue.members effect: EmptyListValue requires: EmptyListValue, meta,
-  //@ publicFields, seqIndexes, seqMethods
+  //@unit EmptyListValue.fields effect: EmptyListValue when: resetMeta, upstreamMembers requires: EmptyListValue,
+  //@ meta, publicFields
   publicFields(EmptyListValue, ["meta"], null, meta);
+  //@unit EmptyListValue.members effect: EmptyListValue requires: EmptyListValue, seqIndexes,
+  //@ seqMethods
   seqIndexes(EmptyListValue);
   EmptyListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit KeywordValue.members effect: KeywordValue requires: keywords, KeywordValue, publicFields
+  //@unit KeywordValue.fields effect: KeywordValue when: resetMeta, upstreamMembers requires: keywords,
+  //@ KeywordValue, publicFields
   publicFields(KeywordValue, ["ns", "name", "fqn", "_hash"], (value, field) => keywords.get(value)[{ns: "namespace", name: "name", fqn: "spelling"}[field]]);
-  //@unit RepeatValue.members effect: RepeatValue requires: cells, cellStateField, meta,
-  //@ publicFields, RepeatValue, seqIndexes
+  //@unit RepeatValue.fields effect: RepeatValue when: resetMeta, upstreamMembers requires: cells,
+  //@ cellStateField, meta, publicFields, RepeatValue
   publicFields(RepeatValue, ["meta", "count", "val", "next", "__hash"], (value, field) => {
     const c = cells.get(value);
     return field === "count" ? c.remaining : field === "val" ? c.head : c.state?.following ?? null;
   }, meta, cellStateField);
+  //@unit RepeatValue.members effect: RepeatValue requires: RepeatValue, seqIndexes
   seqIndexes(RepeatValue);
-  //@unit CycleValue.members effect: CycleValue requires: cells, cellStateField, CycleValue, meta,
-  //@ publicFields
+  //@unit CycleValue.fields effect: CycleValue when: resetMeta, upstreamMembers requires: cells,
+  //@ cellStateField, CycleValue, meta, publicFields
   publicFields(CycleValue, ["meta", "all", "prev", "current", "_next"], (value, field) => {
     const c = cells.get(value);
     return field === "all" ? c.all : field === "prev" ? c.previous : c.state[field === "current" ? "current" : "following"];
   }, meta, cellStateField);
   CycleValue.prototype.currentval = function () { return cells.get(this).currentValue(); };
-  //@unit IterateValue.members effect: IterateValue requires: cells, cellStateField, IterateValue,
-  //@ meta, publicFields
+  //@unit IterateValue.fields effect: IterateValue when: resetMeta, upstreamMembers requires: cells,
+  //@ cellStateField, IterateValue, meta, publicFields
   publicFields(IterateValue, ["meta", "f", "prev-seed", "seed", "next"], (value, field) => {
     const c = cells.get(value);
     return field === "f" ? c.fn : field === "prev-seed" ? c.previous : c.state[field === "seed" ? "value" : "following"];
   }, meta, cellStateField);
-  //@unit PersistentVectorValue.members effect: PersistentVectorValue requires: canonicalVectorRoots,
-  //@ hostHooks, meta, missing, PersistentVectorValue, protocolHooks, publicFields, slotField,
-  //@ vectorCount, vectorRoots, vectors
+  //@unit PersistentVectorValue.fields effect: PersistentVectorValue when: resetMeta,
+  //@ upstreamMembers requires: canonicalVectorRoots, hostHooks, meta, missing,
+  //@ PersistentVectorValue, protocolHooks, publicFields, slotField, vectorCount, vectorRoots,
+  //@ vectors
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
@@ -7142,49 +7163,56 @@
       return canonicalVectorRoots.get(value);
     }
   }, meta);
-  //@unit SubvecValue.members effect: SubvecValue requires: count, meta, missing, publicFields,
-  //@ slotField, subvecSources, SubvecValue
+  //@unit SubvecValue.fields effect: SubvecValue when: resetMeta, upstreamMembers requires: count,
+  //@ meta, missing, publicFields, slotField, subvecSources, SubvecValue
   publicFields(SubvecValue, ["meta", "start", "end", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "start" ? 0 : count(value);
   }, meta);
   Object.defineProperty(SubvecValue.prototype, "v", {get() { return subvecSources.get(this); }});
-  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, count,
-  //@ kindHooks, meta, missing, publicFields, slotField, views
+  //@unit ChunkedSeqValue.fields effect: ChunkedSeqValue when: resetMeta, upstreamMembers requires: ChunkedSeqValue,
+  //@ count, kindHooks, meta, missing, publicFields, slotField, views
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     if (slot !== missing) return slot;
     const v = views.get(value);
     return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : kindHooks.vectorOfItems(v.storage);
   }, meta);
-  //@unit makeVector.chunkedSeq effect: makeVector when: ChunkedSeqValue requires: ChunkedSeqValue,
-  //@ kindHooks, seqIndexes, seqMethods, vectorFromArray
+  //@unit makeVector.chunkedSeq effect: makeVector when: resetMeta, upstreamMembers requires: kindHooks,
+  //@ vectorFromArray
   // A chunked seq its public constructor did not build walks a vector's items.
   kindHooks.vectorOfItems = vectorFromArray;
+  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, seqIndexes,
+  //@ seqMethods
   seqIndexes(ChunkedSeqValue);
   ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: count, meta, missing,
-  //@ PersistentQueueValue, publicFields, queues, seq, seqMethods, slotField, vector
+  //@unit PersistentQueueValue.fields effect: PersistentQueueValue when: resetMeta, upstreamMembers
+  //@ requires: count, meta, missing, PersistentQueueValue, publicFields, queues, seq, slotField,
+  //@ vector
   publicFields(PersistentQueueValue, ["meta", "count", "front", "rear", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "front" ? seq(queues.get(value)) : vector();
   }, meta);
+  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: PersistentQueueValue,
+  //@ seqMethods
   PersistentQueueValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentArrayMapValue.members effect: PersistentArrayMapValue requires: hostHooks,
-  //@ mapCount, maps, meta, missing, PersistentArrayMapValue, protocolHooks, publicFields, slotField
+  //@unit PersistentArrayMapValue.fields effect: PersistentArrayMapValue when: resetMeta,
+  //@ upstreamMembers requires: hostHooks, mapCount, maps, meta, missing, PersistentArrayMapValue,
+  //@ protocolHooks, publicFields, slotField
   publicFields(PersistentArrayMapValue, ["meta", "cnt", "arr", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
     return slot !== missing ? slot : maps.get(value).flatMap(e => [e.key, e.value]);
   }, meta);
-  //@unit PersistentHashMapValue.members effect: PersistentHashMapValue requires: contains, get,
-  //@ hostHooks, mapCount, meta, missing, PersistentHashMapValue, protocolHooks, publicFields,
-  //@ slotField
+  //@unit PersistentHashMapValue.fields effect: PersistentHashMapValue when: resetMeta,
+  //@ upstreamMembers requires: contains, get, hostHooks, mapCount, meta, missing,
+  //@ PersistentHashMapValue, protocolHooks, publicFields, slotField
   publicFields(PersistentHashMapValue, ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.builtin ? hostHooks.count : mapCount);
     return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
   }, meta);
-  //@unit PersistentHashSetValue.members effect: PersistentHashSetValue requires: arrayMapFromArray,
-  //@ kindHooks, meta, missing, PersistentHashSetValue, publicFields, setKinds, sets, slotField
+  //@unit PersistentHashSetValue.fields effect: PersistentHashSetValue when: resetMeta,
+  //@ upstreamMembers requires: arrayMapFromArray, kindHooks, meta, missing, PersistentHashSetValue,
+  //@ publicFields, setKinds, sets, slotField
   publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     if (slot !== missing) return slot;
@@ -7192,48 +7220,56 @@
     const pairs = sets.get(value).flatMap(e => [e.key, null]), kind = setKinds.get(value);
     return kind === "array-map" ? arrayMapFromArray(pairs) : kindHooks.hashSetMap(pairs, kind);
   }, meta);
-  //@unit putMember.setMap effect: publicHashSet, putMember when: PersistentHashSetValue requires: kindHooks,
-  //@ mapFromArray
+  //@unit putMember.setMap effect: publicHashSet, putMember when: resetMeta, upstreamMembers
+  //@ requires: kindHooks, mapFromArray
   // Only promotion and the public constructor build sets of other kinds.
   kindHooks.hashSetMap = mapFromArray;
-  //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, meta,
-  //@ publicFields, seqIndexes, seqMethods, views
+  //@unit IndexedSeqValue.fields effect: IndexedSeqValue when: resetMeta, upstreamMembers requires: IndexedSeqValue,
+  //@ meta, publicFields, views
   publicFields(IndexedSeqValue, ["arr", "i", "meta"], (value, field) => {
     const v = views.get(value);
     return field === "arr" ? v.storage : v.offset;
   }, meta);
+  //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, seqIndexes,
+  //@ seqMethods
   seqIndexes(IndexedSeqValue);
   IndexedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit RangeValue.members effect: RangeValue requires: cells, forceRangeChunk, meta,
-  //@ publicFields, rangeChunkField, rangeField, RangeValue, seqIndexes, seqMethods
+  //@unit RangeValue.fields effect: RangeValue when: resetMeta, upstreamMembers requires: cells,
+  //@ forceRangeChunk, meta, publicFields, rangeChunkField, rangeField, RangeValue
   publicFields(RangeValue, ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField, meta, rangeChunkField);
   RangeValue.prototype.forceChunk = function () { forceRangeChunk(cells.get(this)); return null; };
+  //@unit RangeValue.members effect: RangeValue requires: RangeValue, seqIndexes, seqMethods
   seqIndexes(RangeValue);
   RangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit IntegerRangeValue.members effect: IntegerRangeValue requires: IntegerRangeValue, meta,
-  //@ publicFields, rangeField, seqIndexes, seqMethods
+  //@unit IntegerRangeValue.fields effect: IntegerRangeValue when: resetMeta, upstreamMembers
+  //@ requires: IntegerRangeValue, meta, publicFields, rangeField
   publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField, meta);
+  //@unit IntegerRangeValue.members effect: IntegerRangeValue requires: IntegerRangeValue,
+  //@ seqIndexes, seqMethods
   seqIndexes(IntegerRangeValue);
   IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit treeMapConstructor.members effect: treeMapConstructor requires: count, meta, publicFields,
-  //@ publicTree, slotField, sortedComparators, treeMapConstructor
+  //@unit treeMapConstructor.fields effect: treeMapConstructor when: resetMeta, upstreamMembers
+  //@ requires: count, meta, publicFields, publicTree, slotField, sortedComparators,
+  //@ treeMapConstructor
   publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field, count), meta);
   Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return sortedComparators.get(this); }});
-  //@unit treeSetConstructor.members effect: treeSetConstructor requires: makeMap, meta,
-  //@ publicCollectionSlots, publicFields, sets, sortedComparators, treeMapConstructor,
-  //@ treeSetConstructor, treeSetMaps
+  //@unit treeSetConstructor.fields effect: treeSetConstructor when: resetMeta, upstreamMembers
+  //@ requires: makeMap, meta, publicCollectionSlots, publicFields, sets, sortedComparators,
+  //@ treeMapConstructor, treeSetConstructor, treeSetMaps
   publicFields(treeSetConstructor, ["meta", "tree-map", "__hash"], (value, field) => {
     const slots = publicCollectionSlots.get(value);
     if (slots && field in slots) return slots[field];
     if (!treeSetMaps.has(value)) treeSetMaps.set(value, makeMap(treeMapConstructor, sets.get(value).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", sortedComparators.get(value)));
     return treeSetMaps.get(value);
   }, meta);
-  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: count, meta,
-  //@ missing, publicFields, seqMethods, slotField, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.fields effect: treeMapSeqConstructor when: resetMeta,
+  //@ upstreamMembers requires: count, meta, missing, publicFields, slotField, treeMapSeqConstructor
   publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     return slot !== missing ? slot : undefined;
   }, meta);
+  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: seqMethods,
+  //@ treeMapSeqConstructor
   treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit Eduction.members effect: Eduction requires: completing, count, Eduction, eductions,
   //@ es6Iterator, installMethods, printHooks, seq, sequence, sequenceIterator, sequentialIndex,
@@ -7262,20 +7298,24 @@
     }]
   ]);
   Object.defineProperties(Eduction.prototype, Object.getOwnPropertyDescriptors({
-    get xform() { return eductions.get(this).xform; },
-    set xform(value) { eductions.get(this).xform = value; },
-    get coll() { return eductions.get(this).coll; },
-    set coll(value) { eductions.get(this).coll = value; },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
     [Symbol.iterator]() { return es6Iterator(this); }
   }));
-  //@unit Delay.members effect: Delay requires: Delay, delays
+  //@unit Eduction.fields effect: Eduction when: resetMeta, upstreamMembers requires: Eduction,
+  //@ eductions
+  Object.defineProperties(Eduction.prototype, Object.getOwnPropertyDescriptors({
+    get xform() { return eductions.get(this).xform; },
+    set xform(value) { eductions.get(this).xform = value; },
+    get coll() { return eductions.get(this).coll; },
+    set coll(value) { eductions.get(this).coll = value; }
+  }));
+  //@unit Delay.fields effect: Delay when: resetMeta, upstreamMembers requires: Delay, delays
   for (const [field, key] of Object.entries({f: "thunk", value: "value"})) Object.defineProperty(Delay.prototype, field, {
     configurable: true, get() { return delays.get(this)[key]; }, set(value) { delays.get(this)[key] = value; }
   });
-  //@unit LazySeq.members effect: LazySeq requires: deferredValue, LazySeq, lazyValues,
-  //@ metadataValues, objectEquiv, seqMethods
+  //@unit LazySeq.fields effect: LazySeq when: resetMeta, upstreamMembers requires: deferredValue,
+  //@ LazySeq, lazyValues, metadataValues
   for (const [field, key] of Object.entries({fn: "thunk", s: "value", __hash: "hash"})) Object.defineProperty(LazySeq.prototype, field, {
     configurable: true, get() { return lazyValues.get(this)[key]; }, set(value) { lazyValues.get(this)[key] = value; }
   });
@@ -7283,7 +7323,10 @@
     configurable: true, get() { return metadataValues.get(this); }, set(value) { metadataValues.set(this, value); }
   });
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
-    sval() { return deferredValue(lazyValues.get(this), true); },
+    sval() { return deferredValue(lazyValues.get(this), true); }
+  }));
+  //@unit LazySeq.members effect: LazySeq requires: LazySeq, objectEquiv, seqMethods
+  Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     equiv(other) { return objectEquiv(this, other); },
     indexOf: seqMethods.indexOf,
     lastIndexOf: seqMethods.lastIndexOf,
@@ -7291,15 +7334,17 @@
   }));
   //@unit NodeSeqType.members effect: NodeSeqType requires: NodeSeqType, seqMethods
   NodeSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit ChunkedCons.members effect: ChunkedCons requires: cells, ChunkedCons, meta, seqMethods
+  //@unit ChunkedCons.members effect: ChunkedCons requires: ChunkedCons, seqMethods
   ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: cells,
+  //@ ChunkedCons, meta
   for (const [field, key] of Object.entries({chunk: "chunk", more: "more", __hash: "hash"})) Object.defineProperty(ChunkedCons.prototype, field, {
     configurable: true, get() { return cells.get(this)[key]; },
     set: field === "__hash" ? function (value) { cells.get(this).chunkedState.hash = value; } : undefined
   });
   Object.defineProperty(ChunkedCons.prototype, "meta", {get() { return meta(this); }});
-  //@unit ChunkBuffer.members effect: ChunkBuffer requires: chunk, chunkAppend, ChunkBuffer,
-  //@ chunkBuffers
+  //@unit ChunkBuffer.fields effect: ChunkBuffer when: resetMeta, upstreamMembers requires: chunk,
+  //@ chunkAppend, ChunkBuffer, chunkBuffers
   for (const [field, key] of Object.entries({buf: "array", end: "end"})) Object.defineProperty(ChunkBuffer.prototype, field, {
     configurable: true, get() { return chunkBuffers.get(this)[key]; }, set(value) { chunkBuffers.get(this)[key] = value; }
   });
@@ -7307,7 +7352,8 @@
     add(value) { return chunkAppend(this, value); },
     chunk() { return chunk(this); }
   }));
-  //@unit arrayChunk.members effect: arrayChunk requires: arrayChunk, chunks
+  //@unit arrayChunk.fields effect: arrayChunk when: resetMeta, upstreamMembers requires: arrayChunk,
+  //@ chunks
   for (const [field, key] of Object.entries({arr: "array", off: "offset", end: "end"})) Object.defineProperty(arrayChunk.prototype, field, {
     configurable: true, get() { return chunks.get(this)[key]; }, set(value) { chunks.get(this)[key] = value; }
   });
@@ -7461,20 +7507,20 @@
     if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
-  //@unit protocolHooks.install effect: installMethods when: PersistentArrayMapValue,
-  //@ PersistentHashMapValue, PersistentVectorValue, accumulatingCount, addWatchProtocol, assoc,
-  //@ boundedCount, chunkNext, cljToJs, collectionWithMeta, compareKeys, concatMany, concatTwo,
-  //@ conj, cons, contains, coreMethod, count, derefProtocol, disj, dissoc, drop, empty, equalPair,
-  //@ filter, find, first, get, hash, indexedSequence, into, isAssociative, isChunkedSeq,
+  //@unit protocolHooks.install effect: installMethods when: accumulatingCount, addWatchProtocol,
+  //@ assoc, boundedCount, chunkNext, cljToJs, collectionWithMeta, compareKeys, concatMany,
+  //@ concatTwo, conj, cons, contains, coreMethod, count, derefProtocol, disj, dissoc, drop, empty,
+  //@ equalPair, filter, find, first, get, hash, indexedSequence, into, isAssociative, isChunkedSeq,
   //@ isCloneable, isColl, isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable,
   //@ isList, isMap, isMapEntry, isRecord, isReduceable, isReversible, isSeq, isSeqable,
   //@ isSequential, isSet, isSorted, isUuid, isVector, iterator, jsToClj, keyToJs, mapConj,
   //@ mapProjection, mapSeq, meta, metaSupported, name, namespace, next, notifyWatches, nth,
   //@ objectEquiv, ownMap, ownSet, peek, pop, printSequential, printValues, printWriterImpl,
-  //@ printsMeta, reduce, reduceKv, removeWatchProtocol, rest, rseq, seq, sequenceIterator,
-  //@ stateProtocol, structuralEqualPair, vectorIndexOf, vectorPrototype, vresetProtocol,
-  //@ withMetaSupported requires: builtin, countProtocol, firstProtocol, implementsProtocol,
-  //@ keyProtocol, nextProtocol, nthProtocol, protocolHooks, publicMethod, satisfies, valProtocol
+  //@ printsMeta, reduce, reduceKv, removeWatchProtocol, resetMeta, rest, rseq, seq,
+  //@ sequenceIterator, stateProtocol, structuralEqualPair, upstreamMembers, vectorIndexOf,
+  //@ vectorPrototype, vresetProtocol, withMetaSupported requires: builtin, countProtocol,
+  //@ firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol, protocolHooks,
+  //@ publicMethod, satisfies, valProtocol
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.builtin = builtin;
   protocolHooks.publicMethod = publicMethod;
@@ -7486,6 +7532,10 @@
   protocolHooks.nextProtocol = nextProtocol;
   protocolHooks.keyProtocol = keyProtocol;
   protocolHooks.valProtocol = valProtocol;
+  //@unit protocolHooks.deref effect: installMethods when: reducedValue requires: deref,
+  //@ protocolHooks
+  // A protocol implementation can give the value of a `reduced`.
+  protocolHooks.deref = deref;
   //@unit protocolHooks.withMeta effect: installMethods when: withMetaProtocol requires: fnWithMeta,
   //@ protocolHooks
   // A function with a protocol implementation reaches `-with-meta`.

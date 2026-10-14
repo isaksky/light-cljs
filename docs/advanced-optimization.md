@@ -1584,6 +1584,25 @@ only where the program has some.
   `kindHooks.dropChunkedSeq`) and the chunk rest of a public ChunkedSeq
   (`kindHooks.chunkedVectorRest`) are kind hooks. `reduce` of `iterate` and
   `cycle` seqs is `kindHooks.reduceIterate` and `kindHooks.reduceCycle`.
+- **Upstream fields.** Each runtime type's upstream fields and methods,
+  which upstream are compiler-owned names that Closure renames and removes,
+  are its `.fields` effect (`Cons.fields effect: Cons when: resetMeta,
+  upstreamMembers`), apart from its host-facing `.members` (`indexOf`,
+  `lastIndexOf`, iteration, `equiv`). The `when:` unit `upstreamMembers`
+  is a marker that only an `Advanced` slice roots, where rapid type
+  analysis finds a reachable expression naming one of `UPSTREAM_MEMBERS`
+  (`TypeAnalysis::names_upstream_member`; `names_property` now matches
+  `js*` text by identifier); `resetMeta` assigns `meta`. So `publicFields`
+  and the stores it tests are kept only then. The hooks only fields read
+  (`kindHooks.vectorOfItems`, `kindHooks.hashSetMap`, `hostHooks.count`,
+  `protocolHooks`) wait for the same condition.
+- **Reduced values.** `reduce`, `reduce-kv` and the `iterate` and `cycle`
+  reductions take a `reduced` value apart with `reducedValue`, which calls
+  `deref` only where a protocol implementation can give another value
+  (`protocolHooks.deref`), so they keep no `deref` dispatch.
+- **Messages.** The printer fallback for values in multimethod and
+  hierarchy messages (`printHooks.messages`, with `printNumber`) is no
+  longer kept with every collection's `toString` fallback.
 - **Core cells.** The initial values of the cells `hostClock`, `hostRandom`,
   `execTapFn` and `rand` are units of their own (`coreCells.rand effect:
   coreCells when: randomSample`), kept with a runtime reader of the cell or
@@ -1600,8 +1619,14 @@ only where the program has some.
     install, each for its own kind, once per unit (`print/makeVector.print`);
     a unit wrapping an operation needs exactly that operation in its
     `when:` list, and a protocol key in a wrapper stands for the operation;
-    `coreCells` is a hook table for the cells' initial values; 115
-    conditional effects.
+    `coreCells` is a hook table for the cells' initial values; a `.fields`
+    unit waits for exactly `resetMeta` and `upstreamMembers`, which the
+    export list does not reach; 145 conditional effects.
+  - `builtin_types`: at `None` the prototype members of the runtime's types
+    are host-facing or exactly `UPSTREAM_MEMBERS`; a program naming none
+    keeps no `.fields` unit nor `publicFields`; programs naming a field as
+    a property, method, string or in `js*` text, or calling `alter-meta!`,
+    read the fields at every level as at `None`.
   - `size_ratchet`: the new fixture `mapv-count`; the printing and
     pipeline fixtures' ceilings drop. The printer's behavior over every kind,
     options, metadata, levels and lengths, namespace maps, `#js` values and
@@ -1609,29 +1634,28 @@ only where the program has some.
     level against `None`.
 - **Measured.** At `Advanced`, raw / gzip bytes, against master `49e64cc`:
   - `println-hi` drops from 21,456 / 6,737 to 4,771 / 2,021 (target 5,000),
-    `vector-printed` from 24,932 / 7,794 to 11,002 / 4,160 (target 15,000)
-    and `map-printed` from 28,179 / 8,662 to 14,956 / 5,276 (target
-    20,000).
-  - `seq-pipeline` drops from 33,742 / 10,138 to 28,594 / 8,669: still above
-    its 25,000 target. `(js/console.log (count (mapv inc [1 2 3])))` (the
-    new `mapv-count`) drops from 33,935 to 32,820, a `defmulti` program (in
-    `benchmarks/compiler.md`) from 57,807 to 56,292, `constant-literals`
-    from 29,502 to 24,601 and `(conj [1] 2)` from 16,867 to 16,313.
-  - A program with protocol implementations keeps the wrappers:
-    `closed-params` grows from 37,763 to 37,964. Programs that keep a
-    vector's, map's or set's host-facing `toString` grow by 5 bytes.
-  - The shared runtime grows by 5,892 bytes (1.5%): the kind printers and
+    `vector-printed` from 24,932 / 7,794 to 9,703 / 3,740 (target 15,000),
+    `map-printed` from 28,179 / 8,662 to 13,514 / 4,825 (target 20,000)
+    and `seq-pipeline` from 33,742 / 10,138 to 24,450 / 7,610 (target
+    25,000), of which the upstream fields were about 3.7 KB.
+  - `(js/console.log (count (mapv inc [1 2 3])))` (the new `mapv-count`)
+    drops from 33,935 to 28,725, a `defmulti` program (in
+    `benchmarks/compiler.md`) from 57,807 to 52,739, `constant-literals`
+    from 29,502 to 20,612 and `(conj [1] 2)` from 16,867 to 13,759.
+  - A program with protocol implementations keeps the wrappers (about 200
+    bytes) but no longer the fields: `closed-params` drops from 37,763 to
+    35,923. No fixture grows.
+  - The shared runtime grows by 6,994 bytes (1.8%): the kind printers and
     their chain, the walks without seqs, the protocol wrappers, the new kind
-    hooks and their comments.
+    hooks, the types' `.fields` units and their comments.
   Per-fixture sizes are in `benchmarks/compiler.md`.
-- **Left for later.** `seq-pipeline` keeps about 5 KB of host-facing
-  members of the seq types it builds (`Cons.members`, `LazySeq.members`,
-  `ChunkedCons.members`, the range types', `publicFields`, `seqMethods`)
-  and, through their `equiv` method, structural equality (about 1.2 KB);
-  dropping those where the program never reaches them from the host is the
-  next step to its target. `seq`, `first`, `rest`, `count` and `nth` still
-  probe the stores of kinds the program does not build (a few hundred
-  bytes).
+- **Left for later.** The host-facing members stay with their type:
+  `seq-pipeline` keeps `seqMethods`, iteration and, through `equiv`,
+  structural equality (about 1.4 KB), which only a program whose seqs
+  cannot reach the host could drop. Upstream members of other runtime
+  values (a Var's `sym`, `val` and `isMacro`) are not sliced. `seq`,
+  `first`, `rest`, `count` and `nth` still probe the stores of kinds the
+  program does not build (a few hundred bytes).
 
 #### Phase 2 call shape extension points
 
@@ -2774,13 +2798,24 @@ upstream states that advanced mode is unsafe for certain patterns.
   after its top-level definition is its value (light-cljs-214).
 - Where the program has no protocol implementation, the host-facing methods
   of the runtime's vectors and maps (iteration, `indexOf`, `lastIndexOf`,
-  `keys`, `values`, `entries` and the `cnt` field) answer from the value's
-  own items (light-cljs-230), and those of sets (iteration, `keys`,
-  `values`, `entries` and `has`) from its members (light-cljs-231). Applied
-  to a receiver of another type, through `.call`, `.apply` or a copied
-  method, they run the generic operation, which a program that builds no
-  other collection does not keep; such a call is unsupported there and
-  throws a `TypeError` naming `hostHooks`.
+  `keys`, `values`, `entries` and the `cnt` field, which exists as below)
+  answer from the value's own items (light-cljs-230), and those of sets
+  (iteration, `keys`, `values`, `entries` and `has`) from its members
+  (light-cljs-231). Applied to a receiver of another type, through `.call`,
+  `.apply` or a copied method, they run the generic operation, which a
+  program that builds no other collection does not keep; such a call is
+  unsupported there and throws a `TypeError` naming `hostHooks`.
+- The runtime's types have their upstream fields and methods (`first` and
+  `rest` of a `Cons`, `cnt` of a vector, `meta`, `__hash`, `sval` of a
+  `LazySeq`, ...: `UPSTREAM_MEMBERS` in `src/runtime_slice.rs`) only where
+  reachable code names one of them as a property, a method or a string, or
+  as an identifier in `js*` text, or calls `reset-meta!` or `alter-meta!`,
+  which assign `meta` (light-cljs-238). Upstream they are compiler-owned
+  names, which Closure renames and removes where nothing names them. Host
+  code that reads one the program does not name gets `undefined`, which is
+  unsupported, as for protocol slots. The host-facing methods that
+  upstream's externs keep (`equiv`, `indexOf`, `lastIndexOf`, `toString`,
+  iteration) stay with their type.
 - The constructor of hash sets is the public `PersistentHashSet` only where
   the program names it (light-cljs-231). Calling it as a value reached
   otherwise, `(type s)` or `(.-constructor s)` of a set, where the program
