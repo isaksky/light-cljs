@@ -281,13 +281,15 @@ fn method_keys(text: &str) -> Vec<(&str, bool)> {
 }
 
 /// The hook tables a conditional effect may fill in (`typeHooks.rest =
-/// fnRest`), each read as `<table>.<key>`.
-const HOOK_TABLES: [&str; 5] = [
+/// fnRest`), each read as `<table>.<key>`, and the core cells, whose initial
+/// value such an effect may set (`coreCells.rand = hostRand`).
+const HOOK_TABLES: [&str; 6] = [
     "typeHooks",
     "kindHooks",
     "protocolHooks",
     "printHooks",
     "hostHooks",
+    "coreCells",
 ];
 
 /// The `<table>.<key>` hooks a unit body fills in.
@@ -302,6 +304,22 @@ fn installed_hooks(text: &str) -> Vec<&str> {
             })
         })
         .collect()
+}
+
+/// The runtime binding a unit body replaces with a wrapper of itself in a
+/// top-level statement, as `seq = behindProtocol(seq, ...)` and `nth =
+/// (operation => ...)(nth)` do, if any.
+fn wrapped_binding(text: &str) -> Option<&str> {
+    text.lines().find_map(|line| {
+        let statement = line
+            .strip_prefix("  ")
+            .filter(|rest| !rest.starts_with(' '))?;
+        let (name, _) = statement.split_once(" = ")?;
+        (!name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric())
+            && (text.contains(&format!("({name}, ")) || text.contains(&format!("({name});"))))
+        .then_some(name)
+    })
 }
 
 /// Whether `text` reads `hook`: `kindHooks.seqMap`, but not
@@ -320,10 +338,12 @@ fn reads_hook(text: &str, hook: &str) -> bool {
 }
 
 /// An `effect: ... when:` unit installs what only some code can use, and its
-/// `when:` list must name exactly that code. A unit installing protocol
+/// `when:` list must name exactly that code. A unit wrapping an operation
+/// names the operation. A unit installing protocol
 /// methods (`recordMethods.hash` adds `IHash/-hash` for records) is needed
 /// where one of them can be dispatched: its list names every unit whose body
-/// holds one of its keys other than as a method entry. A unit filling in
+/// holds one of its keys other than as a method entry, or for a unit wrapping
+/// an operation, the operation. A unit filling in
 /// hooks (`typeHooks.rest = fnRest`, `kindHooks.seqVector = ...`) names every
 /// unit that reads one of them; a reader that is itself an effect stands for
 /// its own `when:` list, or else its targets. A new dispatch site or hook
@@ -355,12 +375,26 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                             .iter()
                             .any(|(key, entry)| !entry && installed.contains(key))
                 })
+                // A dispatch site in a unit wrapping an operation is needed
+                // wherever the operation is.
+                .flat_map(|user| match wrapped_binding(body(user)) {
+                    Some(_) => manifest.conditions(user).to_vec(),
+                    None => vec![user],
+                })
                 .collect()
+        } else if let Some(wrapped) = wrapped_binding(body(id)) {
+            // A unit wrapping an operation (`seq = behindProtocol(seq, ...)`)
+            // is needed wherever the operation is.
+            vec![
+                manifest
+                    .unit_of(wrapped)
+                    .expect("a wrapped runtime binding"),
+            ]
         } else {
             let hooks = installed_hooks(body(id));
             assert!(
                 !hooks.is_empty(),
-                "`{}` installs neither protocol methods nor a hook",
+                "`{}` installs neither protocol methods, a hook nor a wrapper",
                 unit.name
             );
             (0..manifest.units.len())
@@ -394,9 +428,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
         assert_eq!(listed, expected, "`when:` of unit `{}`", unit.name);
         checked += 1;
     }
-    // The record methods, the five type hooks, the kind hooks and the
-    // protocol hooks.
-    assert_eq!(checked, 79);
+    // The record methods, the five type hooks, the kind hooks (ten of them
+    // the printer's), the protocol hooks, the printer's hooks, the initial
+    // values of four core cells and the protocol wrappers of seven operations.
+    assert_eq!(checked, 115);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -406,7 +441,8 @@ enum Kind {
     Units(&'static [&'static str]),
 }
 
-/// Every `kindHooks` entry and its kind.
+/// Every `kindHooks` entry and its kind. A hook that several units install,
+/// each for its own kind, has an entry per unit, `<hook>/<unit>`.
 const KIND_HOOKS: &[(&str, Kind)] = &[
     ("seqLazy", Kind::Stores(&["lazyValues"])),
     ("seqQueue", Kind::Stores(&["queues"])),
@@ -518,6 +554,57 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         "hashSequential",
         Kind::Stores(&["vectors", "cells", "views", "queues", "lazyValues"]),
     ),
+    // The printer's branch for each kind, chained through one hook, which
+    // each unit adding a kind's printer names (`print/<unit>`).
+    ("print/ExceptionInfo.print", Kind::Units(&["ExceptionInfo"])),
+    ("print/makeTransient.print", Kind::Stores(&["transients"])),
+    ("print/Atom.print", Kind::Stores(&["atoms", "volatiles"])),
+    ("print/Delay.print", Kind::Stores(&["delays"])),
+    (
+        "print/makeKeyword.print",
+        Kind::Stores(&["keywords", "symbols", "vars"]),
+    ),
+    ("print/uuidValue.print", Kind::Stores(&["uuids"])),
+    ("print/makeVector.print", Kind::Stores(&["vectors"])),
+    (
+        "print/cons.print",
+        Kind::Stores(&["cells", "views", "queues", "lazyValues"]),
+    ),
+    ("print/makeMap.print", Kind::Stores(&["maps"])),
+    ("print/makeSet.print", Kind::Stores(&["sets"])),
+    // Values whose metadata the printer prints (`metaValue`).
+    (
+        "printMetadata",
+        Kind::Stores(&[
+            "symbols",
+            "vectors",
+            "maps",
+            "sets",
+            "cells",
+            "views",
+            "queues",
+            "lazyValues",
+            "vars",
+            "atoms",
+            "metaFunctions",
+            "reifyValues",
+        ]),
+    ),
+    (
+        "iteratorArrayMap",
+        Kind::Units(&["PersistentArrayMapValue"]),
+    ),
+    ("iteratorVector", Kind::Stores(&["vectors"])),
+    // A chunked seq that its public constructor did not build is a vector's.
+    ("vectorOfItems", Kind::Stores(&["vectors"])),
+    ("dropChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
+    ("dropVector", Kind::Stores(&["vectors"])),
+    ("chunkedVectorRest", Kind::Units(&["ChunkedSeqValue"])),
+    ("reduceIterate", Kind::Units(&["iterateNode"])),
+    ("reduceCycle", Kind::Units(&["cycleNode"])),
+    // Keys of these kinds lift a namespace out of a printed map.
+    ("namespaceOf", Kind::Stores(&["keywords", "symbols"])),
+    ("unqualified", Kind::Stores(&["keywords", "symbols"])),
 ];
 
 /// A kind hook is the branch of a generic operation for one kind of value,
@@ -562,9 +649,9 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
             .expect("a kind hook install is an effect");
         assert!(!effect.when.is_empty(), "`{}` needs `when:`", unit.name);
         for hook in hooks {
-            let (_, kind) = KIND_HOOKS
+            let (key, kind) = KIND_HOOKS
                 .iter()
-                .find(|(key, _)| *key == hook)
+                .find(|(key, _)| *key == hook || key.split_once('/') == Some((hook, unit.name)))
                 .unwrap_or_else(|| panic!("kind hook `{hook}` is not in KIND_HOOKS"));
             let builders = match kind {
                 Kind::Stores(stores) => stores.iter().flat_map(|store| writers(store)).collect(),
@@ -577,7 +664,7 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
                     unit.name
                 );
             }
-            seen.push(hook);
+            seen.push(*key);
         }
     }
     seen.sort_unstable();
@@ -644,13 +731,16 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
     let unit = |name| manifest.unit_named(name).unwrap();
     // Effects travel with the bindings they mutate, and only with them; kind
     // hooks also with the bindings that build their kind, here the sequential
-    // branches of structural equality, hashing and `str`.
+    // branches of structural equality, hashing, `str` and the printer.
     assert_eq!(
         manifest.attached_effects(unit("ListValue")),
         [
             unit("ListValue.type"),
             unit("cons.equiv"),
             unit("makeVector.hash"),
+            unit("printsMeta.print"),
+            unit("cons.print"),
+            unit("printSequential.seq"),
             unit("str.collections"),
             unit("ListValue.members"),
             unit("ListValue.statics")

@@ -217,13 +217,22 @@ impl RuntimeRoots {
     }
 
     /// The unit declaring each root's binding with its use, in root order. A
-    /// member read uses the binding as a value.
+    /// member read uses the binding as a value. A core cell whose initial
+    /// value is a unit of its own, `coreCells.<cell>` (an effect that only the
+    /// runtime's readers of the cell otherwise keep), roots that unit, which
+    /// requires the cells.
     fn units(&self, manifest: &RuntimeManifest) -> Vec<(UnitId, RootUse)> {
         self.names
             .iter()
             .map(|(name, _, used)| {
-                let unit = manifest
-                    .unit_of(name.binding)
+                let cell = match name.member {
+                    Some(member) if name.binding == CORE_CELLS => {
+                        manifest.unit_named(&format!("{CORE_CELLS}.{member}"))
+                    }
+                    _ => None,
+                };
+                let unit = cell
+                    .or_else(|| manifest.unit_of(name.binding))
                     .unwrap_or_else(|| panic!("{name} is not a runtime binding"));
                 (unit, root_use(name, *used))
             })
@@ -343,7 +352,8 @@ impl fmt::Display for Demand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeRoot {
     pub name: RuntimeName,
-    /// The unit declaring the name's binding.
+    /// The unit declaring the name's binding, or for a core cell with an
+    /// initial value of its own, that unit (`coreCells.rand`).
     pub unit: UnitId,
     pub demand: Demand,
     /// How the output uses the name, over all its reads.

@@ -1527,6 +1527,112 @@ program that builds small sets keeps no seq, hash map or hashing.
   public `hash-map` field; installing the field only where the program names
   it, as `getBasis`, would drop it.
 
+#### Phase 2 builtin types, seq operations and the printer
+
+light-cljs-238 slices the printer and the generic seq operations by the
+kinds a program builds. The printer is polymorphic over those kinds, not
+over all of them, and the generic operations call protocol implementations
+only where the program has some.
+
+- **Kind printers.** `printWriterImpl` prints nil, strings, numbers,
+  booleans and functions itself and passes anything else to
+  `kindHooks.print`, a chain of the printers of the kinds the program
+  builds, each added by an effect of the kind's builders (`makeVector.print
+  effect: makeVector when: printWriterImpl`): `ExceptionInfo`, transients,
+  atoms and volatiles, delays, keywords, symbols and Vars, UUIDs, vectors,
+  the other sequential kinds (`cons.print`), maps and sets. Each is
+  `printKind(previous, test, print)`; the chain ends in `printHost`, which
+  prints host values (errors, dates, regular expressions, arrays, objects,
+  JavaScript symbols). The printer's metadata prefix is
+  `kindHooks.printMetadata`, from the builders of the kinds `metaValue`
+  tests and `installMethods`. `ExceptionInfo`'s `toString` is installed with
+  its printer.
+- **Walks without seqs.** Where no protocol implementation exists, which
+  could see the seq of an array, `printSequential` walks an array by index
+  and anything else through `printHooks.seq`, `first` and `next`, which the
+  builders of sequential kinds, `pr-sequential-writer` and `installMethods`
+  install. So a vector prints its items as `seq` walks them
+  (`vectorStorage`), maps and sets their entries, `#js` arrays and objects
+  their elements, all without `seq`. `pr-str` and the other variadic
+  printers print their arguments by index (`printValues`), through
+  `printText` where protocol implementations exist (`printHooks.seqText`).
+- **Names in printed maps.** Lifting a namespace out of a map's keys
+  (`*print-namespace-maps*`) is `kindHooks.namespaceOf` and
+  `kindHooks.unqualified`, from the keyword and symbol builders. A key of a
+  JavaScript object that reads as a keyword prints as `:key` without
+  building one (`printJsKey`), unless options, protocol implementations or
+  the program's keyword type could see the keyword
+  (`printHooks.jsKeyword`).
+- **Printer hooks.** `printHooks` starts empty: the fallbacks for collection
+  `toString` and messages (`printHooks.defaults`) and the printer's
+  replacements (`printWriterImpl.install`) are kept only with a unit that
+  reads them, so printing a string keeps no collection `toString`.
+- **Protocol wrappers.** `seq`, `first`, `rest`, `next`, `count`, `nth` and
+  `reduce` no longer start by looking up a protocol implementation. The
+  effect `seq.protocol effect: installMethods when: seq` replaces the
+  operation with `behindProtocol(seq, ...)`, which calls the implementation
+  the old prologue found and else the operation, under the operation's
+  name; `nth.protocol` and `reduce.protocol` do the same for their
+  arities. A program without protocol implementations keeps neither the
+  wrappers nor the prologues.
+- **Vectors in seq operations.** A program that builds no vector keeps none
+  for the seq operations' sake: `iterator`'s branches for vectors and for
+  array maps from the public constructor (`kindHooks.iteratorVector`,
+  `kindHooks.iteratorArrayMap`), the `vec` field of a ChunkedSeq its
+  constructor did not build (`kindHooks.vectorOfItems`), `drop` of a vector
+  or a public ChunkedSeq (`kindHooks.dropVector`,
+  `kindHooks.dropChunkedSeq`) and the chunk rest of a public ChunkedSeq
+  (`kindHooks.chunkedVectorRest`) are kind hooks. `reduce` of `iterate` and
+  `cycle` seqs is `kindHooks.reduceIterate` and `kindHooks.reduceCycle`.
+- **Core cells.** The initial values of the cells `hostClock`, `hostRandom`,
+  `execTapFn` and `rand` are units of their own (`coreCells.rand effect:
+  coreCells when: randomSample`), kept with a runtime reader of the cell or
+  where the program reads it: a root `rt$coreCells.<cell>` keeps the unit
+  `coreCells.<cell>` (`RuntimeRoots::units`). So printing keeps neither the
+  host clock nor the random source.
+- **Smaller changes.** `enable-console-print!` sets the print functions
+  without calling `set-print-fn!`, and the types whose prototype is a plain
+  object (`Delay`, `Eduction`, `ChunkBuffer`, `arrayChunk`,
+  `StringBufferWriter`) no longer call `builtinType`, which gave them the
+  prototype a function already has.
+- **Tests.**
+  - `runtime_manifest`: `KIND_HOOKS` names a hook that several units
+    install, each for its own kind, once per unit (`print/makeVector.print`);
+    a unit wrapping an operation needs exactly that operation in its
+    `when:` list, and a protocol key in a wrapper stands for the operation;
+    `coreCells` is a hook table for the cells' initial values; 115
+    conditional effects.
+  - `size_ratchet`: the new fixture `mapv-count`; the printing and
+    pipeline fixtures' ceilings drop. The printer's behavior over every kind,
+    options, metadata, levels and lengths, namespace maps, `#js` values and
+    protocol extensions is covered by the existing printing suites at every
+    level against `None`.
+- **Measured.** At `Advanced`, raw / gzip bytes, against master `49e64cc`:
+  - `println-hi` drops from 21,456 / 6,737 to 4,771 / 2,021 (target 5,000),
+    `vector-printed` from 24,932 / 7,794 to 11,002 / 4,160 (target 15,000)
+    and `map-printed` from 28,179 / 8,662 to 14,956 / 5,276 (target
+    20,000).
+  - `seq-pipeline` drops from 33,742 / 10,138 to 28,594 / 8,669: still above
+    its 25,000 target. `(js/console.log (count (mapv inc [1 2 3])))` (the
+    new `mapv-count`) drops from 33,935 to 32,820, a `defmulti` program (in
+    `benchmarks/compiler.md`) from 57,807 to 56,292, `constant-literals`
+    from 29,502 to 24,601 and `(conj [1] 2)` from 16,867 to 16,313.
+  - A program with protocol implementations keeps the wrappers:
+    `closed-params` grows from 37,763 to 37,964. Programs that keep a
+    vector's, map's or set's host-facing `toString` grow by 5 bytes.
+  - The shared runtime grows by 5,892 bytes (1.5%): the kind printers and
+    their chain, the walks without seqs, the protocol wrappers, the new kind
+    hooks and their comments.
+  Per-fixture sizes are in `benchmarks/compiler.md`.
+- **Left for later.** `seq-pipeline` keeps about 5 KB of host-facing
+  members of the seq types it builds (`Cons.members`, `LazySeq.members`,
+  `ChunkedCons.members`, the range types', `publicFields`, `seqMethods`)
+  and, through their `equiv` method, structural equality (about 1.2 KB);
+  dropping those where the program never reaches them from the host is the
+  next step to its target. `seq`, `first`, `rest`, `count` and `nth` still
+  probe the stores of kinds the program does not build (a few hundred
+  bytes).
+
 #### Phase 2 call shape extension points
 
 Step 5 is implemented in `src/call_shapes.rs` (light-cljs-212, and

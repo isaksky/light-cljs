@@ -525,7 +525,7 @@ fn builtin_type_members_travel_with_their_constructors() {
         "Eduction.members",
         "UUIDType",
         "TransientVectorType",
-        "Delay.type",
+        "Delay",
         "ChunkBuffer.members",
     ] {
         assert!(!units.contains(&left_out), "{left_out}");

@@ -2561,3 +2561,93 @@ What the baseline shows:
   `record-protocol` takes 11 ns per iteration, so Closure and V8 have likely
   removed the record allocation. `seq-pipeline` and `record-protocol` are the
   numbers light-cljs-237 must bring within 2× of upstream.
+
+## Seq operations and the printer by kind — October 13, 2026
+
+light-cljs-238 slices the printer and the generic seq operations by the
+kinds a program builds ("Phase 2 builtin types, seq operations and the
+printer" in the [design](../docs/advanced-optimization.md)). At
+`--optimize advanced`:
+
+- the printer prints host values itself and other values through a chain
+  of the printers of the kinds the program builds, each added by the kind's
+  builders; without protocol implementations it walks arrays, vectors, maps
+  and sets, and `pr-str` its arguments, by index rather than through seqs;
+- `seq`, `first`, `rest`, `next`, `count`, `nth` and `reduce` look up
+  protocol implementations only through a wrapper that `installMethods`
+  installs;
+- the seq operations' branches for vectors and public array maps, and
+  `reduce`'s for `iterate` and `cycle`, are kind hooks, so a program that
+  builds no vector keeps none for them;
+- the host clock and random source are kept only with a reader.
+
+The new ratchet fixture `mapv-count` is the pellet's `mapv` program:
+
+```clojure
+(js/console.log (count (mapv inc [1 2 3])))
+```
+
+**Sizes**, raw and `gzip -9` bytes (of stdin) of `--compile --optimize
+LEVEL`, on the 24-CPU Mac (sizes do not depend on load; load average 10.2
+from peer builds). "Before" is master `49e64cc`. `prepare` equals `none`
+for every fixture but `pure-defs`, which is 78 bytes smaller there.
+
+| Fixture | None before | None after | Advanced before | Advanced after | Ceilings after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| console-log-sum | 388,296 / 92,339 | 394,188 / 93,896 | 151 / 140 | 151 / 140 | 395,000 / 395,000 / 200 |
+| println-hi | 388,183 / 92,268 | 394,075 / 93,823 | 21,456 / 6,737 | 4,771 / 2,021 | 395,000 / 395,000 / 4,800 |
+| vector-printed | 388,208 / 92,278 | 394,100 / 93,833 | 24,932 / 7,794 | 11,002 / 4,160 | 395,000 / 395,000 / 12,000 |
+| map-printed | 388,211 / 92,271 | 394,103 / 93,826 | 28,179 / 8,662 | 14,956 / 5,276 | 395,000 / 395,000 / 15,000 |
+| seq-pipeline | 388,527 / 92,388 | 394,419 / 93,945 | 33,742 / 10,138 | 28,594 / 8,669 | 395,000 / 395,000 / 29,000 |
+| add | 388,136 / 92,260 | 394,028 / 93,811 | 19 / 39 | 19 / 39 | 395,000 / 395,000 / 100 |
+| rest-fn | 388,480 / 92,395 | 394,372 / 93,952 | 11,423 / 3,709 | 10,837 / 3,636 | 395,000 / 395,000 / 11,000 |
+| keyword-case | 388,768 / 92,417 | 394,660 / 93,975 | 4,343 / 1,647 | 4,343 / 1,647 | 395,000 / 395,000 / 4,400 |
+| record-protocol | 389,089 / 92,586 | 394,981 / 94,143 | 5,750 / 2,423 | 5,750 / 2,423 | 395,000 / 395,000 / 5,800 |
+| pure-defs | 389,725 / 92,692 | 395,617 / 94,256 | 5,640 / 2,372 | 5,640 / 2,372 | 396,000 / 396,000 / 5,700 |
+| keyword-lookups | 389,260 / 92,521 | 395,152 / 94,082 | 34,474 / 10,416 | 33,741 / 10,276 | 396,000 / 396,000 / 34,000 |
+| constant-literals | 389,037 / 92,471 | 394,929 / 94,029 | 29,502 / 8,968 | 24,601 / 7,603 | 395,000 / 395,000 / 25,000 |
+| constant-lookups | 389,455 / 92,606 | 395,347 / 94,172 | 4,723 / 1,775 | 4,723 / 1,775 | 396,000 / 396,000 / 4,800 |
+| three-records | 391,226 / 92,876 | 397,118 / 94,442 | 5,757 / 2,422 | 5,757 / 2,422 | 398,000 / 398,000 / 5,800 |
+| constant-keys | 389,253 / 92,458 | 395,145 / 94,019 | 45,280 / 13,599 | 44,750 / 13,486 | 396,000 / 396,000 / 45,000 |
+| event-maps | 388,785 / 92,431 | 394,677 / 93,989 | 35,057 / 10,573 | 34,324 / 10,437 | 395,000 / 395,000 / 35,000 |
+| vector-only | 388,335 / 92,358 | 394,227 / 93,917 | 5,883 / 2,321 | 5,888 / 2,323 | 395,000 / 395,000 / 5,900 |
+| keyword-only | 388,303 / 92,341 | 394,195 / 93,898 | 4,270 / 1,617 | 4,270 / 1,617 | 395,000 / 395,000 / 4,300 |
+| map-only | 388,341 / 92,349 | 394,233 / 93,908 | 11,077 / 3,829 | 11,082 / 3,832 | 395,000 / 395,000 / 12,000 |
+| atom-str | 388,351 / 92,349 | 394,243 / 93,906 | 2,284 / 904 | 2,284 / 904 | 395,000 / 395,000 / 2,300 |
+| set-only | 388,372 / 92,369 | 394,264 / 93,927 | 11,961 / 3,934 | 11,966 / 3,934 | 395,000 / 395,000 / 12,000 |
+| mapv-count | - | 394,255 / 93,916 | - | 32,820 / 9,987 | 395,000 / 395,000 / 33,000 |
+| raw-js | 389,135 / 92,510 | 395,027 / 94,074 | 36 / 54 | 36 / 54 | 396,000 / 396,000 / 100 |
+| multi-arity | 390,964 / 92,771 | 396,856 / 94,339 | 318 / 212 | 318 / 212 | 397,000 / 397,000 / 400 |
+| closed-params | 390,699 / 92,913 | 396,591 / 94,483 | 37,763 / 12,282 | 37,964 / 12,399 | 397,000 / 397,000 / 38,000 |
+| debug-logging | 389,455 / 92,697 | 395,347 / 94,256 | 31 / 51 | 31 / 51 | 396,000 / 396,000 / 100 |
+| local-arities | 391,387 / 92,865 | 397,279 / 94,436 | 490 / 278 | 490 / 278 | 398,000 / 398,000 / 500 |
+
+Against the design's targets: `println-hi` (4,771, target 5,000),
+`vector-printed` (11,002, target 15,000) and `map-printed` (14,956, target
+20,000) meet them; `seq-pipeline` (28,594, target 25,000) does not. It
+still keeps about 5 KB of host-facing members of the seq types it builds
+(`Cons.members`, `LazySeq.members`, `ChunkedCons.members`, the ranges',
+`publicFields`, `seqMethods`) and, through their `equiv`, structural
+equality.
+
+Other programs at `advanced`, raw and gzip bytes:
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(js/console.log (count (mapv inc [1 2 3])))` | 33,935 / 10,231 | 32,820 / 9,987 |
+| `(enable-console-print!) (defmulti area :shape) (defmethod area :square [{:keys [side]}] (* side side)) (println (area {:shape :square :side 3}))` | 57,807 / 17,303 | 56,292 / 16,921 |
+| `(js/console.log (conj [1] 2))` | 16,867 / 5,280 | 16,313 / 5,176 |
+
+`println-hi` keeps 31 runtime units instead of 139: the printer's host
+branches, its string writer and the print functions, no seq, keyword,
+symbol, collection type or metadata. A program with protocol
+implementations keeps the operations' protocol wrappers: `closed-params`
+grows by 201 bytes. Programs that keep a collection's host-facing
+`toString` (`vector-only`, `map-only`, `set-only`) grow by 5 bytes, the
+printer fallbacks now being installed one by one.
+
+The shared runtime grows by 5,892 bytes (1.5%), 1,557 gzipped: the kind
+printers and their chain, the walks without seqs, the protocol wrappers,
+the new kind hooks and their comments. The `none` and `prepare` ceilings
+rise by 5,000 to 6,000 for that growth (each to its new size rounded up to
+the next 1,000); the `advanced` ceilings of every fixture that shrank drop.

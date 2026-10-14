@@ -244,6 +244,12 @@ multimethod errors print nil, booleans, numbers, strings, keywords and
 symbols as the printer does. With the printer every message is the same as
 at `None`; `[1 2 3]` alone is about 120 KB instead of 132 KB. See "Phase 1
 print extension points" in [advanced-optimization.md](advanced-optimization.md).
+Since light-cljs-238 the printer keeps a branch only for the kinds of value
+the program builds, and walks arrays, vectors, maps and sets without seqs
+where the program has no protocol implementation, so `(println "hi")` is
+about 4.8 KB and `(println [1 2 3])` about 11 KB; the generic seq
+operations look up protocol implementations only in a program that has
+some ("Phase 2 builtin types, seq operations and the printer").
 
 At `Advanced` the output is terse (light-cljs-215; "Phase 3 terse emission
 extension points" in [advanced-optimization.md](advanced-optimization.md)).

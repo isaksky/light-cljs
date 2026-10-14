@@ -84,7 +84,8 @@
   // Generic operations' branches for one kind, installed by the kind's builders.
   const kindHooks = {};
   //@unit builtinType mutator
-  // Called once per type, before any of its values exist. Extension prototypes
+  // Called once per type, before any of its values exist; a type whose base
+  // is `Object.prototype` has that prototype already. Extension prototypes
   // are public and mutable; immutable collection payloads and their base
   // callability remain private and frozen.
   function builtinType(Type, base) {
@@ -92,17 +93,6 @@
     Object.defineProperty(Type.prototype, "constructor", {value: Type, writable: true, configurable: true});
     return Type;
   }
-  //@unit Delay.type effect: Delay requires: builtinType, Delay
-  builtinType(Delay, Object.prototype);
-  //@unit Eduction.type effect: Eduction requires: builtinType, Eduction
-  builtinType(Eduction, Object.prototype);
-  //@unit ChunkBuffer.type effect: ChunkBuffer requires: builtinType, ChunkBuffer
-  builtinType(ChunkBuffer, Object.prototype);
-  //@unit arrayChunk.type effect: arrayChunk requires: arrayChunk, builtinType
-  builtinType(arrayChunk, Object.prototype);
-  //@unit StringBufferWriter.type effect: StringBufferWriter requires: builtinType,
-  //@ StringBufferWriter
-  builtinType(StringBufferWriter, Object.prototype);
   //@unit reducedPrototype
   const reducedPrototype = Object.freeze({});
   //@unit Reduced.type effect: Reduced requires: builtinType, Reduced, reducedPrototype
@@ -444,11 +434,8 @@
   }
 
   //@unit seq requires: cells, IndexedSeqValue, iteratorSeq, iteratorSeqs, kindHooks, lazyValues,
-  //@ maps, protocolHooks, publicCollectionSlots, queues, sets, vectors, view, views
+  //@ maps, publicCollectionSlots, queues, sets, vectors, view, views
   function seq(value) {
-    if (value == null) return null;
-    const method = protocolHooks.publicMethod?.(value, "ISeqable/-seq", 1, true);
-    if (method) return method.call(value, value);
     if (value == null || (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value))) return null;
     const lazy = lazyValues.get(value);
     if (lazy) return kindHooks.seqLazy(lazy);
@@ -467,6 +454,18 @@
     if (value[Symbol.iterator] != null) return iteratorSeq(value[Symbol.iterator]());
     throw new Error(String(value) + " is not ISeqable");
   }
+  //@unit behindProtocol
+  // A generic operation of one value behind the protocol implementation
+  // `method` finds for it: the operations call protocol implementations only
+  // where `installMethods` is kept, which wraps them (`seq.protocol`).
+  function behindProtocol(operation, method) {
+    return Object.defineProperty(function (value) {
+      const implementation = value == null ? null : method(value);
+      return implementation ? implementation.call(value, value) : operation(value);
+    }, "name", {value: operation.name});
+  }
+  //@unit seq.protocol effect: installMethods when: seq requires: behindProtocol, protocolHooks, seq
+  seq = behindProtocol(seq, value => protocolHooks.publicMethod?.(value, "ISeqable/-seq", 1, true));
   //@unit LazySeq.seq effect: LazySeq when: seq requires: deferredValue, kindHooks, lazyValues, seq
   kindHooks.seqLazy = lazy => {
     let current = deferredValue(lazy, true);
@@ -530,12 +529,10 @@
     }});
     return value;
   }
-  //@unit first requires: cells, chunks, ISeq, iteratorSeqs, lazyValues, protocolHooks,
+  //@unit first requires: cells, chunks, iteratorSeqs, lazyValues, protocolHooks,
   //@ publicCollectionSlots, queues, seq, views
   function first(value) {
     if (value == null) return null;
-    const method = protocolHooks.implementsProtocol?.(ISeq, value) ? protocolHooks.publicMethod(value, "ISeq/-first", 1) : null;
-    if (method) return method.call(value, value);
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (chunks.get(value)?.integer) return chunks.get(value).start;
     if (lazyValues.has(value)) { seq(value); return first(lazyValues.get(value).value); }
@@ -552,12 +549,14 @@
     throw new Error("ISeq.-first not supported on this type");
   }
 
-  //@unit rest requires: cells, emptyList, ISeq, iteratorSeqs, kindHooks, lazyValues, protocolHooks,
+  //@unit first.protocol effect: installMethods when: first requires: behindProtocol, first, ISeq,
+  //@ protocolHooks
+  first = behindProtocol(first, value => protocolHooks.implementsProtocol?.(ISeq, value) ? protocolHooks.publicMethod(value, "ISeq/-first", 1) : null);
+
+  //@unit rest requires: cells, emptyList, iteratorSeqs, kindHooks, lazyValues, protocolHooks,
   //@ publicCollectionSlots, seq, view, views
   function rest(value) {
     if (value == null) return emptyList;
-    const method = protocolHooks.implementsProtocol?.(ISeq, value) ? protocolHooks.publicMethod(value, "ISeq/-rest", 1) : null;
-    if (method) return method.call(value, value);
     if (lazyValues.has(value)) { seq(value); return rest(lazyValues.get(value).value); }
     const current = seq(value);
     if (current === null) return emptyList;
@@ -577,6 +576,9 @@
       ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
     return slice.kind === "queue" ? kindHooks.restQueue(tail, current) : tail;
   }
+  //@unit rest.protocol effect: installMethods when: rest requires: behindProtocol, ISeq,
+  //@ protocolHooks, rest
+  rest = behindProtocol(rest, value => protocolHooks.implementsProtocol?.(ISeq, value) ? protocolHooks.publicMethod(value, "ISeq/-rest", 1) : null);
   //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest requires: ChunkedSeqValue,
   //@ chunkedVectorRest, kindHooks
   // A view with the `vec` slot is a ChunkedSeq its public constructor built.
@@ -586,17 +588,19 @@
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
-  //@unit next requires: cells, INext, lazyValues, protocolHooks, publicCollectionSlots, rest, seq
+  //@unit next requires: cells, lazyValues, publicCollectionSlots, rest, seq
   function next(value) {
     if (value == null) return null;
-    const method = protocolHooks.implementsProtocol?.(INext, value) ? protocolHooks.publicMethod(value, "INext/-next", 1) : null;
-    if (method) return method.call(value, value);
     if (lazyValues.has(value)) { seq(value); return next(lazyValues.get(value).value); }
     const cell = cells.get(value);
     if (cell?.kind === "list") return cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(value) ? null : cell.tail;
     if (cell?.kind === "repeat") return cell.state?.following ?? (cell.remaining === -1 ? value : cell.remaining > 1 ? cell.tail : null);
     return seq(rest(value));
   }
+
+  //@unit next.protocol effect: installMethods when: next requires: behindProtocol, INext, next,
+  //@ protocolHooks
+  next = behindProtocol(next, value => protocolHooks.implementsProtocol?.(INext, value) ? protocolHooks.publicMethod(value, "INext/-next", 1) : null);
 
   //@unit seqToMap requires: first, into, mapFromArray, next, seq, toArray
   function seqToMap(value) {
@@ -1003,14 +1007,12 @@
   const isEmpty = x => x == null || ((protocolHooks.satisfies?.(ICounted, x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
 
   //@unit reduce requires: cells, chunks, deref, first, IIterable, invalidArity, isReduced,
-  //@ iterableValue, iterator, iteratorProtocol, lazyValues, next, protocolHooks,
+  //@ iterableValue, iterator, iteratorProtocol, kindHooks, lazyValues, next, protocolHooks,
   //@ publicCollectionSlots, reduceValue, seq, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     const source = arity === 3 ? collection : init;
-    const method = protocolHooks.publicMethod?.(source, "IReduce/-reduce", arity, true);
-    if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
     if (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string" && (protocolHooks.satisfies?.(IIterable, source) ?? iterableValue(source))) {
       const iter = iteratorProtocol(source);
       if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
@@ -1049,16 +1051,8 @@
       while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return deref(init); }
       return init;
     }
-    if (producer?.kind === "iterate") {
-      let value = first(source);
-      if (arity === 2) { init = value; value = producer.fn.call(null, value); }
-      while (true) { init = rf.call(null, init, value); if (isReduced(init)) return deref(init); value = producer.fn.call(null, value); }
-    }
-    if (producer?.kind === "cycle") {
-      let current = producer.currentValue();
-      if (arity === 2) { init = first(current); current = next(current) ?? producer.all; }
-      while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return deref(init); current = next(current) ?? producer.all; }
-    }
+    if (producer?.kind === "iterate") return kindHooks.reduceIterate(rf, init, source, producer, arity);
+    if (producer?.kind === "cycle") return kindHooks.reduceCycle(rf, init, producer, arity);
     if (chunks.has(source) && !chunks.get(source).integer) {
       const c = chunks.get(source); let i = c.offset;
       if (arity === 2) init = c.array[i++];
@@ -1106,6 +1100,27 @@
     return initialized ? result : rf.call(null);
   }
 
+  //@unit iterateNode.reduce effect: iterateNode when: reduce requires: deref, first, isReduced,
+  //@ kindHooks
+  kindHooks.reduceIterate = (rf, init, source, producer, arity) => {
+    let value = first(source);
+    if (arity === 2) { init = value; value = producer.fn.call(null, value); }
+    while (true) { init = rf.call(null, init, value); if (isReduced(init)) return deref(init); value = producer.fn.call(null, value); }
+  };
+  //@unit cycleNode.reduce effect: cycleNode when: reduce requires: deref, first, isReduced,
+  //@ kindHooks, next
+  kindHooks.reduceCycle = (rf, init, producer, arity) => {
+    let current = producer.currentValue();
+    if (arity === 2) { init = first(current); current = next(current) ?? producer.all; }
+    while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return deref(init); current = next(current) ?? producer.all; }
+  };
+  //@unit reduce.protocol effect: installMethods when: reduce requires: protocolHooks, reduce
+  reduce = (operation => Object.defineProperty(function (rf, init, collection) {
+    const arity = arguments.length, source = arity === 3 ? collection : init;
+    const method = arity === 2 || arity === 3 ? protocolHooks.publicMethod?.(source, "IReduce/-reduce", arity, true) : null;
+    if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(reduce);
   //@unit reducingFunction requires: invalidArity
   // Reducers and transforms use the same .call ABI as emitted functions and
   // custom IFn values. State is allocated when a transform receives its reducer.
@@ -1282,22 +1297,28 @@
   }
   //@unit seqIter requires: iteratorInit, SeqIter
   function seqIter(value) { return new SeqIter(iteratorInit, value); }
-  //@unit iterator requires: count, iteratorInit, mapEntry, protocolHooks, publicCollectionSlots,
-  //@ rangedIterator, SeqIter, subvecSources, vectors
+  //@unit iterator requires: iteratorInit, kindHooks, protocolHooks, publicCollectionSlots, SeqIter,
+  //@ subvecSources, vectors
   function iterator(value) {
     const method = protocolHooks.builtin?.(value, "IIterable/-iterator", 1);
     if (method) return method.call(value, value);
     const slots = publicCollectionSlots.get(value);
-    if (slots?.arr) {
-      let i = 0;
-      return {hasNext: () => i < slots.cnt * 2, next() {
-        if (i >= slots.cnt * 2) throw new Error("No such element");
-        const entry = mapEntry(slots.arr[i], slots.arr[i + 1]); i += 2; return entry;
-      }, remove() { return new Error("Unsupported operation"); }};
-    }
-    const source = subvecSources.get(value) ?? value;
-    return vectors.has(source) ? rangedIterator(value, 0, count(value)) : new SeqIter(iteratorInit, value);
+    if (slots?.arr) return kindHooks.iteratorArrayMap(slots);
+    return vectors.has(subvecSources.get(value) ?? value) ? kindHooks.iteratorVector(value) : new SeqIter(iteratorInit, value);
   }
+  //@unit PersistentArrayMapValue.iterator effect: PersistentArrayMapValue when: iterator requires: kindHooks,
+  //@ mapEntry
+  // Maps with an `arr` slot, which only the public array map constructor builds.
+  kindHooks.iteratorArrayMap = slots => {
+    let i = 0;
+    return {hasNext: () => i < slots.cnt * 2, next() {
+      if (i >= slots.cnt * 2) throw new Error("No such element");
+      const entry = mapEntry(slots.arr[i], slots.arr[i + 1]); i += 2; return entry;
+    }, remove() { return new Error("Unsupported operation"); }};
+  };
+  //@unit makeVector.iterator effect: makeVector when: iterator requires: count, kindHooks,
+  //@ rangedIterator
+  kindHooks.iteratorVector = value => rangedIterator(value, 0, count(value));
   //@unit equivMap requires: count, equalPair, first, get, isMap, missing, next, nth, seq
   function equivMap(value, other) {
     if (!isMap(other)) return false;
@@ -2330,8 +2351,6 @@
   //@ lazyValues, maps, next, protocolHooks, publicCollectionSlots, queues, seqableValue, sets,
   //@ subvecSources, transients, vectors, views
   function count(value) {
-    const method = value == null ? null : protocolHooks.publicMethod?.(value, "ICounted/-count", 1, true, true);
-    if (method) return method.call(value, value);
     const slots = publicCollectionSlots.get(value);
     if (cells.get(value)?.kind === "tree-seq" && slots.cnt < 0) return 1 + count(next(value));
     if (slots && "tree-map" in slots) return count(slots["tree-map"]);
@@ -2363,6 +2382,9 @@
     throw new Error("count not supported on this type");
   }
 
+  //@unit count.protocol effect: installMethods when: count requires: behindProtocol, count,
+  //@ protocolHooks
+  count = behindProtocol(count, value => protocolHooks.publicMethod?.(value, "ICounted/-count", 1, true, true));
   //@unit count.host effect: count, installMethods when: PersistentArrayMapValue,
   //@ PersistentHashMapValue, PersistentVectorValue, structuralEqualPair, vectorPrototype requires: count,
   //@ hostHooks
@@ -2392,8 +2414,6 @@
     if (typeof index !== "number") throw new Error("Index argument to nth must be a number");
     if (value == null) return arity === 2 ? value : notFound;
     const fallback = arity === 2 ? missing : notFound;
-    const method = protocolHooks.publicMethod?.(value, "IIndexed/-nth", arity, true, true);
-    if (method) return method.call(value, ...arguments);
     if (transients.has(value)) return kindHooks.nthTransient(value, index, fallback);
     if (chunks.has(value)) return kindHooks.nthChunk(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
@@ -2438,6 +2458,13 @@
     if (nativeNth) return nativeNth.call(value, ...arguments);
     throw new Error("nth not supported on this type");
   }
+
+  //@unit nth.protocol effect: installMethods when: nth requires: nth, protocolHooks
+  nth = (operation => Object.defineProperty(function (value, index, notFound) {
+    const arity = arguments.length;
+    const method = value == null || typeof index !== "number" || arity !== 2 && arity !== 3 ? null : protocolHooks.publicMethod?.(value, "IIndexed/-nth", arity, true, true);
+    return method ? method.call(value, ...arguments) : operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(nth);
 
   //@unit lookup requires: kindHooks, mapEntries, maps, publicCollectionSlots, sets, transients,
   //@ vectors
@@ -5648,17 +5675,21 @@
     }
     return rangeChunks.get(cell);
   }
-  //@unit ownedChunkRest requires: cells, chunkedVectorRest, emptyList, forceRangeChunk,
+  //@unit ownedChunkRest requires: cells, emptyList, forceRangeChunk, kindHooks,
   //@ publicCollectionSlots, rangeNode, view, views
   function ownedChunkRest(value) {
     const cell = cells.get(value);
     if (cell?.kind === "chunked-cons") return cell.more ?? emptyList;
     if (cell?.kind === "range") return cell.integer ? (cell.count <= 32 ? emptyList : rangeNode(cell.head + 32 * cell.step, cell.end, cell.step, true)) : forceRangeChunk(cell).tail ?? emptyList;
     const slice = views.get(value), slots = publicCollectionSlots.get(value);
-    if (slots?.vec) return chunkedVectorRest(slots);
+    if (slots?.vec) return kindHooks.chunkedVectorRest(slots);
     const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
     return end < slice.storage.length ? view(slice.Type, slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
   }
+  //@unit ChunkedSeqValue.chunkRest effect: ChunkedSeqValue when: ownedChunkRest requires: chunkedVectorRest,
+  //@ kindHooks
+  // A view with the `vec` slot is a ChunkedSeq its public constructor built.
+  kindHooks.chunkedVectorRest = chunkedVectorRest;
   //@unit chunkedVectorRest requires: ChunkedSeqValue, count, emptyList, vectors
   // The chunks after a public ChunkedSeq's node.
   function chunkedVectorRest(slots) {
@@ -5678,24 +5709,33 @@
   }
   //@unit chunkCons requires: ChunkedCons, count
   function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : new ChunkedCons(chunk, tail, null, null); }
-  //@unit dropOwned requires: cells, ChunkedSeqValue, count, IndexedSeqValue, maps,
-  //@ publicCollectionSlots, rangeNode, repeat, seq, vectors, view, views
+  //@unit dropOwned requires: cells, kindHooks, maps, publicCollectionSlots, rangeNode, repeat, seq,
+  //@ vectors, view, views
   function dropOwned(value, n) {
     if (value == null) return null;
     if (maps.has(value)) return dropOwned(seq(value), n);
     const cell = cells.get(value);
     if (cell?.kind === "repeat") return cell.remaining === -1 ? value : repeat(cell.remaining - n, cell.head);
     if (cell?.kind === "range") return n > 0 ? n < cell.count ? rangeNode(cell.head + cell.step * n, cell.end, cell.step, true) : null : value;
-    const items = vectors.get(value), slice = views.get(value), slots = publicCollectionSlots.get(value);
-    if (slots?.vec) {
-      const offset = slots.off + n;
-      if (offset < slots.node.length) return ChunkedSeqValue(slots.vec, slots.node, slots.i, offset, null, null);
-      const i = slots.i + offset, newOffset = i % 32;
-      return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice(i - newOffset, i - newOffset + 32), i - newOffset, newOffset, null, null) : null;
-    }
-    const storage = items ?? slice.storage, offset = (items ? 0 : slice.offset) + n;
-    return offset < storage.length ? view(items ? items.length <= 32 ? IndexedSeqValue : ChunkedSeqValue : slice.Type, storage, offset, items ? items.length <= 32 : slice.indexed, items ? items.length <= 32 ? "indexed" : "chunked" : slice.kind) : null;
+    const slice = views.get(value), slots = publicCollectionSlots.get(value);
+    if (slots?.vec) return kindHooks.dropChunkedSeq(slots, n);
+    if (vectors.has(value)) return kindHooks.dropVector(vectors.get(value), n);
+    const offset = slice.offset + n;
+    return offset < slice.storage.length ? view(slice.Type, slice.storage, offset, slice.indexed, slice.kind) : null;
   }
+  //@unit ChunkedSeqValue.drop effect: ChunkedSeqValue when: dropOwned requires: ChunkedSeqValue,
+  //@ count, kindHooks, vectors
+  // A view with the `vec` slot is a ChunkedSeq its public constructor built.
+  kindHooks.dropChunkedSeq = (slots, n) => {
+    const offset = slots.off + n;
+    if (offset < slots.node.length) return ChunkedSeqValue(slots.vec, slots.node, slots.i, offset, null, null);
+    const i = slots.i + offset, newOffset = i % 32;
+    return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice(i - newOffset, i - newOffset + 32), i - newOffset, newOffset, null, null) : null;
+  };
+  //@unit makeVector.drop effect: makeVector when: dropOwned requires: ChunkedSeqValue,
+  //@ IndexedSeqValue, kindHooks, view
+  kindHooks.dropVector = (items, n) => n < items.length
+    ? view(items.length <= 32 ? IndexedSeqValue : ChunkedSeqValue, items, n, items.length <= 32, items.length <= 32 ? "indexed" : "chunked") : null;
   //@unit numberArgument
   function numberArgument(value) {
     if (typeof value !== "number") throw new Error("Assert failed: (number? n)");
@@ -6277,12 +6317,12 @@
   function setPrintFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return coreCells.printFn = fn; }
   //@unit setPrintErrFn requires: coreCells, invalidArity
   function setPrintErrFn(fn) { if (arguments.length !== 1) return invalidArity(arguments.length); return coreCells.printErrFn = fn; }
-  //@unit enableConsolePrint requires: coreCells, invalidArity, setPrintErrFn, setPrintFn
+  //@unit enableConsolePrint requires: coreCells, invalidArity
   function enableConsolePrint() {
     if (arguments.length !== 0) return invalidArity(arguments.length);
     coreCells.printNewline = false;
-    setPrintFn((...args) => globalThis.console.log(...args));
-    setPrintErrFn((...args) => globalThis.console.error(...args));
+    coreCells.printFn = (...args) => globalThis.console.log(...args);
+    coreCells.printErrFn = (...args) => globalThis.console.error(...args);
     return null;
   }
   //@unit stringPrint requires: coreCells, invalidArity
@@ -6369,21 +6409,23 @@
     if (arguments.length !== 7) return invalidArity(arguments.length);
     return printSequential(writer, printOne, begin, separator, end, options, coll);
   }
-  //@unit printSequential requires: coreCells, first, next, printHooks, printOption, seq, truth,
-  //@ write
+  //@unit printSequential requires: coreCells, printHooks, printOption, protocolHooks, truth, write
   // The printer's own entries pass on the options they receive (see
-  // `printOptions`).
+  // `printOptions`). Without protocol implementations, which could see the
+  // seq of an array, an array is walked by index, other collections through
+  // `printHooks.seq`, which the units that can pass it install.
   function printSequential(writer, printOne, begin, separator, end, options, coll) {
     const saved = coreCells.printLevel;
     coreCells.printLevel = saved == null ? null : saved - 1;
     try {
       if (coreCells.printLevel != null && coreCells.printLevel < 0) return write(writer, "#");
       write(writer, begin);
-      let current = seq(coll), remaining = printOption(options, "print-length", "printLength"), printed = false;
+      const items = Array.isArray(coll) && !protocolHooks.publicMethod;
+      let current = items ? coll.length ? 0 : null : printHooks.seq(coll), remaining = printOption(options, "print-length", "printLength"), printed = false;
       while (current != null && (remaining == null || remaining !== 0)) {
         if (printed) write(writer, separator);
-        printOne.call(null, first(current), writer, options); printed = true;
-        current = next(current); if (remaining != null) remaining--;
+        printOne.call(null, items ? coll[current] : printHooks.first(current), writer, options); printed = true;
+        current = items ? current + 1 < coll.length ? current + 1 : null : printHooks.next(current); if (remaining != null) remaining--;
       }
       if (current != null) {
         if (printed) write(writer, separator);
@@ -6392,41 +6434,64 @@
       return write(writer, end);
     } finally { coreCells.printLevel = saved; }
   }
-  //@unit printMapEntries requires: coreCells, freshKeyword, keywords, name, printSequential,
-  //@ printWriter, symbol, symbols, truth, write
-  function printMapEntries(entries, writer, options, prefix = "") {
-    const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
-    const ns = truth(coreCells.printNamespaceMaps) && names.length && names[0]?.namespace;
-    const lifted = !prefix && ns && names.every(name => name?.namespace === ns);
+  //@unit printMapEntries requires: kindHooks, printSequential, printWriter, write
+  // Only keys of the kinds that keyword and symbol builders print lift a
+  // namespace (`kindHooks.namespaceOf`).
+  function printMapEntries(entries, writer, options, prefix = "", printKey = printWriter) {
+    const ns = !prefix && kindHooks.namespaceOf?.(entries);
     // JavaScript object tags precede the map printer's depth suppression.
     if (prefix) write(writer, prefix);
     return printSequential(writer, (entry, target, opts) => {
-      const key = lifted ? keywords.has(entry.key) ? freshKeyword(null, name(entry.key)) : symbol(null, name(entry.key)) : entry.key;
-      printWriter(key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
-    }, (lifted ? "#:" + ns : "") + "{", ", ", "}", options, entries);
+      printKey(ns ? kindHooks.unqualified(entry.key) : entry.key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
+    }, (ns ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
+  //@unit makeKeyword.namespaceOf effect: makeKeyword, SymbolValue, symbol when: printMapEntries
+  //@ requires: coreCells, freshKeyword, keywords, kindHooks, name, symbol, symbols, truth
+  // The namespace `*print-namespace-maps*` lifts out of keys that all have
+  // it, else a falsy value.
+  kindHooks.namespaceOf = entries => {
+    const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
+    const ns = truth(coreCells.printNamespaceMaps) && names.length && names[0]?.namespace;
+    return ns && names.every(name => name?.namespace === ns) && ns;
+  };
+  kindHooks.unqualified = key => keywords.has(key) ? freshKeyword(null, name(key)) : symbol(null, name(key));
   //@unit printNumber
   function printNumber(value) {
     return Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value);
   }
-  //@unit printHooks requires: printNumber
+  //@unit printHooks
+  // The printer's hooks, which the units that can use them fill in.
+  const printHooks = {};
+  //@unit printHooks.defaults effect: printHooks when: derive, getMethod, mapPrototype, MultiFn,
+  //@ preferMethod, sequencePrototype, setPrototype, transientPrototype, vectorPrototype requires: printHooks,
+  //@ printNumber
   // The printer for code that must not keep it; `printWriterImpl.install`
-  // fills it in and adds the writers, which only the printer calls.
-  const printHooks = {
-    collection: value => Object.prototype.toString.call(value),
-    text: value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value)
-  };
+  // replaces it where the program can print.
+  printHooks.collection = value => Object.prototype.toString.call(value);
+  printHooks.text = value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value);
   //@unit printWriter requires: printHooks, printWriterImpl
   function printWriter(value, writer, options) {
     return options == null ? printWriterImpl(value, writer, options) : printHooks.optionsWriter(value, writer, options);
   }
-  //@unit printWriterImpl requires: atoms, coreCells, delays, ExceptionInfo, freshKeyword, keywords,
-  //@ maps, mapTraversal, meta, printMapEntries, printNumber, printOption, printSequential,
-  //@ printsMeta, printWriter, protocolHooks, queues, sequential, sets, setTraversal, symbols,
-  //@ transients, truth, typeNames, uuids, vars, vectors, volatiles, write
+  //@unit printJsKey requires: printHooks, printWriter, write
+  // A key of a JavaScript object prints as a keyword where it can be one. The
+  // keyword is built only where options or protocol implementations could
+  // see it, or the program keeps the keyword type (`printHooks.jsKeyword`).
+  function printJsKey(key, writer, options) {
+    if (!/^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(key)) return printWriter(key, writer, options);
+    return printHooks.jsKeyword ? printWriter(printHooks.jsKeyword(key), writer, options) : write(writer, ":" + key);
+  }
+  //@unit freshKeyword.jsKey effect: installMethods, KeywordValue, printMetaQ, prSequentialWriter,
+  //@ prSeqWriter, prStrWithOpts, prWriter when: printJsKey requires: freshKeyword, printHooks
+  printHooks.jsKeyword = key => freshKeyword(null, key);
+  //@unit printWriterImpl requires: coreCells, kindHooks, printHost, printNumber, printOption,
+  //@ protocolHooks, truth, typeNames, write
+  // The printer is polymorphic over the kinds the program builds: the units
+  // building a kind of value add its printer to `kindHooks.print`, which
+  // falls back to the host values' `printHost`.
   function printWriterImpl(value, writer, options, skipMetadata = false) {
     if (value == null) return write(writer, "nil");
-    if (!skipMetadata && printsMeta(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
+    if (!skipMetadata) kindHooks.printMetadata?.(value, writer, options);
     const writerMethod = protocolHooks.publicMethod?.(value, "IPrintWithWriter/-pr-writer", 3);
     if (writerMethod) return writerMethod.call(value, value, writer, options);
     const readable = truth(printOption(options, "readably", "printReadably"));
@@ -6438,37 +6503,96 @@
     if (typeof value === "number") return write(writer, printNumber(value));
     if (typeof value === "boolean") return write(writer, String(value));
     if (typeof value === "function") return write(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(coreCells.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
-    if (value instanceof ExceptionInfo) return write(writer, value.toString());
-    if (transients.has(value)) {
-      const state = transients.get(value);
-      return write(writer, "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]");
-    }
-    if (atoms.has(value) || volatiles.has(value)) {
-      write(writer, "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val "); printWriter(value.state, writer, options); return write(writer, "}]");
-    }
-    if (delays.has(value)) {
-      const state = delays.get(value);
-      write(writer, "#object[cljs.core.Delay {:status " + (state.thunk == null ? ":ready" : ":pending") + ", :val "); printWriter(state.value, writer, options); return write(writer, "}]");
-    }
+    return (kindHooks.print ?? printHost)(value, writer, options);
+  }
+  //@unit printHost requires: printJsKey, printMapEntries, printSequential, printWriter, write
+  // Host values: no kind's printer took them.
+  function printHost(value, writer, options) {
     if (value instanceof Error) return write(writer, "#object[" + (value.constructor?.name || "Object") + " " + String(value) + "]");
-    if (keywords.has(value) || symbols.has(value) || vars.has(value)) return write(writer, String(value));
-    if (uuids.has(value)) return write(writer, '#uuid "' + uuids.get(value) + '"');
     if (value instanceof Date) return write(writer, '#inst "' + value.toISOString().replace(/Z$/, "-00:00") + '"');
     if (value instanceof RegExp) return write(writer, '#"' + value.source + '"');
-    if (sequential(value) || queues.has(value)) {
-      const [start, end] = queues.has(value) ? ["#queue [", "]"] : vectors.has(value) ? ["[", "]"] : ["(", ")"];
-      return printSequential(writer, printWriter, start, " ", end, options, value);
-    }
-    const entries = maps.get(value);
-    if (entries) return printMapEntries(mapTraversal(value), writer, options);
-    const members = sets.get(value);
-    if (members) return printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value));
     if (Array.isArray(value)) return printSequential(writer, printWriter, "#js [", " ", "]", options, value);
     if (typeof value === "object" && Object.getPrototypeOf(value) === null) return write(writer, "#object[Object]");
-    if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(k => ({key: /^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(k) ? freshKeyword(null, k) : k, value: value[k]})), writer, options, "#js ");
+    if (typeof value === "object" && value.constructor === Object) return printMapEntries(Object.keys(value).map(key => ({key, value: value[key]})), writer, options, "#js ", printJsKey);
     if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
+  //@unit printsMeta.print effect: Atom, ChunkedCons, collectionWithMeta, compilerFormBridge, Cons,
+  //@ cons, cycleNode, emptyList, EmptyListValue, fnWithMeta, IndexedSeqValue, installMethods,
+  //@ iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet, makeType, makeVar,
+  //@ makeVector, mapProjection, queueFromArray, rangeNode, reify, RepeatValue, reSeq, symbol,
+  //@ SymbolValue, treeMapConstructor, treeMapSeqConstructor, treeSetConstructor, view when: printWriterImpl
+  //@ requires: kindHooks, meta, printsMeta, printWriter, write
+  // Only values of these kinds, and of types with protocol implementations,
+  // have metadata to print.
+  kindHooks.printMetadata = (value, writer, options) => {
+    if (printsMeta(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
+  };
+  //@unit printKind requires: printHost
+  // The kind printer chain with `print` for the values `test` takes: each kind's
+  // printer passes other values on, to `printHost` last.
+  const printKind = (previous = printHost, test, print) => (value, writer, options) => (test(value) ? print : previous)(value, writer, options);
+  //@unit ExceptionInfo.print effect: ExceptionInfo when: printWriterImpl requires: ExceptionInfo,
+  //@ kindHooks, print, printKind, truth, write
+  kindHooks.print = printKind(kindHooks.print, value => value instanceof ExceptionInfo, (value, writer) => write(writer, value.toString()));
+  ExceptionInfo.prototype.toString = function () {
+    return "#error {:message " + print(this.message, true)
+      + (truth(this.data) ? ", :data " + print(this.data, true) : "")
+      + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
+  };
+  //@unit makeTransient.print effect: makeTransient when: printWriterImpl requires: kindHooks,
+  //@ printKind, transients, write
+  kindHooks.print = printKind(kindHooks.print, value => transients.has(value), (value, writer) => {
+    const state = transients.get(value);
+    return write(writer, "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]");
+  });
+  //@unit Atom.print effect: Atom, Volatile when: printWriterImpl requires: atoms, kindHooks,
+  //@ printKind, printWriter, volatiles, write
+  kindHooks.print = printKind(kindHooks.print, value => atoms.has(value) || volatiles.has(value), (value, writer, options) => {
+    write(writer, "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val "); printWriter(value.state, writer, options); return write(writer, "}]");
+  });
+  //@unit Delay.print effect: Delay when: printWriterImpl requires: delays, kindHooks, printKind,
+  //@ printWriter, write
+  kindHooks.print = printKind(kindHooks.print, value => delays.has(value), (value, writer, options) => {
+    const state = delays.get(value);
+    write(writer, "#object[cljs.core.Delay {:status " + (state.thunk == null ? ":ready" : ":pending") + ", :val "); printWriter(state.value, writer, options); return write(writer, "}]");
+  });
+  //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
+  //@ requires: keywords, kindHooks, printKind, symbols, vars, write
+  kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value), (value, writer) => write(writer, String(value)));
+  //@unit uuidValue.print effect: uuidValue when: printWriterImpl requires: kindHooks, printKind,
+  //@ uuids, write
+  kindHooks.print = printKind(kindHooks.print, value => uuids.has(value), (value, writer) => write(writer, '#uuid "' + uuids.get(value) + '"'));
+  //@unit makeVector.print effect: makeVector when: printWriterImpl requires: kindHooks, printKind,
+  //@ printSequential, printWriter, protocolHooks, vectors, vectorStorage
+  // A vector prints the items `seq` walks, through `seq` where protocol
+  // implementations could see it.
+  kindHooks.print = printKind(kindHooks.print, value => vectors.has(value), (value, writer, options) => {
+    const storage = vectorStorage(value) ?? [];
+    return printSequential(writer, printWriter, "[", " ", "]", options, protocolHooks.publicMethod ? value : Array.isArray(storage) ? storage : Array.from(storage));
+  });
+  //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, cycleNode, emptyList,
+  //@ EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
+  //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view when: printWriterImpl
+  //@ requires: cells, kindHooks, lazyValues, printKind, printSequential, printWriter, queues, views
+  kindHooks.print = printKind(kindHooks.print, value => cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value),
+    (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value));
+  //@unit makeMap.print effect: makeMap, makeType, treeMapConstructor when: printWriterImpl
+  //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries
+  kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) => printMapEntries(mapTraversal(value), writer, options));
+  //@unit makeSet.print effect: makeSet, treeSetConstructor when: printWriterImpl requires: kindHooks,
+  //@ printKind, printSequential, printWriter, sets, setTraversal
+  kindHooks.print = printKind(kindHooks.print, value => sets.has(value),
+    (value, writer, options) => printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value)));
+  //@unit printSequential.seq effect: ChunkedCons, compilerFormBridge, Cons, cons, cycleNode,
+  //@ emptyList, EmptyListValue, IndexedSeqValue, installMethods, iterateNode, LazySeq, ListValue,
+  //@ mapProjection, prSequentialWriter, queueFromArray, rangeNode, RepeatValue, reSeq,
+  //@ treeMapSeqConstructor, view when: printSequential requires: first, next, printHooks, seq
+  // What `printSequential` walks other than arrays: the seqs these build, and
+  // what the public entry and protocol implementations pass.
+  printHooks.seq = seq;
+  printHooks.first = first;
+  printHooks.next = next;
   //@unit prSeqWriter requires: invalidArity, printSeq
   function prSeqWriter(values, writer, options) {
     if (arguments.length !== 3) return invalidArity(arguments.length);
@@ -6498,22 +6622,30 @@
     try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
     finally { coreCells.printReadably = saved; }
   }
-  //@unit printWriterImpl.install effect: printWriterImpl requires: ExceptionInfo, print,
-  //@ printHooks, printSequential, printWriter, truth
-  // Only a program that can print has collection and ExceptionInfo `toString`.
-  Object.assign(printHooks, {
-    collection: value => print(value, true),
-    text: value => print(value, false),
-    writer: printWriter,
-    sequentialWriter: printSequential
-  });
-  ExceptionInfo.prototype.toString = function () {
-    return "#error {:message " + print(this.message, true)
-      + (truth(this.data) ? ", :data " + print(this.data, true) : "")
-      + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
-  };
-  //@unit prStr requires: printText
-  function prStr(...values) { return printText(values, null); }
+  //@unit printWriterImpl.install effect: printWriterImpl when: derive, Eduction, getMethod,
+  //@ mapPrototype, MultiFn, preferMethod, sequencePrototype, setPrototype, transientPrototype,
+  //@ vectorPrototype requires: print, printHooks, printSequential, printWriter
+  // Only a program that can print has collection `toString`, where it keeps a
+  // collection type, and prints values into messages.
+  printHooks.collection = value => print(value, true);
+  printHooks.text = value => print(value, false);
+  printHooks.writer = printWriter;
+  printHooks.sequentialWriter = printSequential;
+  //@unit prStr requires: printValues
+  function prStr(...values) { return printValues(values, null); }
+  //@unit printValues requires: flushWriter, printHooks, printWriter, protocolHooks, stringWriter,
+  //@ write
+  // `printText` of an array of arguments, by index where no protocol
+  // implementation could see its seq.
+  function printValues(values, options) {
+    if (protocolHooks.publicMethod) return printHooks.seqText(values, options);
+    if (!values.length) return "";
+    const {buffer, writer} = stringWriter();
+    values.forEach((value, index) => { if (index) write(writer, " "); printWriter(value, writer, options); });
+    flushWriter(writer); return buffer.text;
+  }
+  //@unit printText.install effect: installMethods when: printValues requires: printHooks, printText
+  printHooks.seqText = printText;
   //@unit printOptions effect: printMetaQ, prSequentialWriter, prSeqWriter, prStrWithOpts, prWriter
   //@ requires: get, keyword, printHooks
   // Options other than nil reach the printer only from these entries.
@@ -7017,14 +7149,18 @@
     return slot !== missing ? slot : field === "start" ? 0 : count(value);
   }, meta);
   Object.defineProperty(SubvecValue.prototype, "v", {get() { return subvecSources.get(this); }});
-  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, count, meta,
-  //@ missing, publicFields, seqIndexes, seqMethods, slotField, vectorFromArray, views
+  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, count,
+  //@ kindHooks, meta, missing, publicFields, slotField, views
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     if (slot !== missing) return slot;
     const v = views.get(value);
-    return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : vectorFromArray(v.storage);
+    return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : kindHooks.vectorOfItems(v.storage);
   }, meta);
+  //@unit makeVector.chunkedSeq effect: makeVector when: ChunkedSeqValue requires: ChunkedSeqValue,
+  //@ kindHooks, seqIndexes, seqMethods, vectorFromArray
+  // A chunked seq its public constructor did not build walks a vector's items.
+  kindHooks.vectorOfItems = vectorFromArray;
   seqIndexes(ChunkedSeqValue);
   ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: count, meta, missing,
@@ -7216,8 +7352,7 @@
       return Reflect.construct(Type, args);
     };
   }
-  //@unit coreCells requires: defaultHostClock, defaultHostRandom, defaultTapSchedule, flush,
-  //@ hostRand
+  //@unit coreCells requires: flush
   // Mutable core cells: dynamic Vars, host hooks, and operations the runtime reads
   // through a cell so `set!` reaches it. The `core` hub extends this object.
   const coreCells = {
@@ -7226,8 +7361,20 @@
     printReadably: true, printLength: null, printLevel: null, printNamespaceMaps: false,
     printMeta: false, printDup: false, flushOnNewline: true, printFnBodies: false,
     readerCurrentInputValue: null, currentNs: null, assertions: true,
-    hostClock: defaultHostClock, hostRandom: defaultHostRandom, execTapFn: defaultTapSchedule,
-    rand: hostRand, flush};
+    hostClock: null, hostRandom: null, execTapFn: null, rand: null, flush};
+  //@unit coreCells.hostClock effect: coreCells when: systemTime requires: coreCells,
+  //@ defaultHostClock
+  // The initial value of a cell that only its readers need: these units, and
+  // a program reading the cell, whose slice keeps the unit (`RuntimeRoots`).
+  coreCells.hostClock = defaultHostClock;
+  //@unit coreCells.hostRandom effect: coreCells when: hostRandom requires: coreCells,
+  //@ defaultHostRandom
+  coreCells.hostRandom = defaultHostRandom;
+  //@unit coreCells.execTapFn effect: coreCells when: tapGreater requires: coreCells,
+  //@ defaultTapSchedule
+  coreCells.execTapFn = defaultTapSchedule;
+  //@unit coreCells.rand effect: coreCells when: randomSample requires: coreCells, hostRand
+  coreCells.rand = hostRand;
   //@unit removeAllMethods effect requires: coreMethod, multiFnValue, resetMulti
   // Core operations without a function of their own, one unit each.
   const removeAllMethods = coreMethod("IMultiFn/-reset", [1], resetMulti, multiFnValue);
@@ -7323,11 +7470,11 @@
   //@ isList, isMap, isMapEntry, isRecord, isReduceable, isReversible, isSeq, isSeqable,
   //@ isSequential, isSet, isSorted, isUuid, isVector, iterator, jsToClj, keyToJs, mapConj,
   //@ mapProjection, mapSeq, meta, metaSupported, name, namespace, next, notifyWatches, nth,
-  //@ objectEquiv, ownMap, ownSet, peek, pop, printWriterImpl, printsMeta, reduce, reduceKv,
-  //@ removeWatchProtocol, rest, rseq, seq, sequenceIterator, stateProtocol, structuralEqualPair,
-  //@ vectorIndexOf, vectorPrototype, vresetProtocol, withMetaSupported requires: builtin,
-  //@ countProtocol, firstProtocol, implementsProtocol, keyProtocol, nextProtocol, nthProtocol,
-  //@ protocolHooks, publicMethod, satisfies, valProtocol
+  //@ objectEquiv, ownMap, ownSet, peek, pop, printSequential, printValues, printWriterImpl,
+  //@ printsMeta, reduce, reduceKv, removeWatchProtocol, rest, rseq, seq, sequenceIterator,
+  //@ stateProtocol, structuralEqualPair, vectorIndexOf, vectorPrototype, vresetProtocol,
+  //@ withMetaSupported requires: builtin, countProtocol, firstProtocol, implementsProtocol,
+  //@ keyProtocol, nextProtocol, nthProtocol, protocolHooks, publicMethod, satisfies, valProtocol
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.builtin = builtin;
   protocolHooks.publicMethod = publicMethod;
