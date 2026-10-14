@@ -1820,9 +1820,14 @@ host-facing methods of the vector and the keyword.
     without program types keeps fewer of them.
   - `satisfies?` and `implements?` of a core protocol still call
     `satisfies` and `implementsProtocol` themselves, which keep the tables.
-    Writing a core protocol object's type table directly (`(aset ICounted
-    "string" true)`) instead of through `extend-type` reaches only those,
-    as before in a program without protocol implementations.
+  - A core protocol read as a value other than as their operand may gain
+    types as `extend-type` of a host type gives them (`(aset ICounted
+    "number" true)`), so emission keeps `extendType` for it, as for an
+    escaped dispatcher (`Emitter::escaped_dispatcher`,
+    `RuntimeManifest::is_core_protocol`). Before, `counted?` missed such a
+    write in a program without protocol implementations.
+  - `ownProtocol` reads the mask bit before the marker, as
+    `implementsProtocol` does, so a marker getter runs as at `None`.
   - **Tests.** `builtin_types::protocol_tests_of_program_types_need_no_protocol_tables`
     runs 19 core predicates, `satisfies?` of three core protocols, `count`,
     `seq` and `empty?` over program types, a record, `reify`, the
@@ -1830,16 +1835,20 @@ host-facing methods of the vector and the keyword.
     bit, one holding the marker's name as a property) at every level against
     `None`, without and with `extend-type` of a program and a host type and a
     `specify!` of a vector, and checks which hooks each keeps;
-    `PROTOCOL_MACHINERY` and `EXTENSION_MACHINERY` list the new units.
+    `core_protocol_tables_written_directly_reach_the_protocol_tests` writes
+    `ICounted`'s table with and without a program type, reads it only through
+    `satisfies?` and `implements?`, and tests a mask bit beside a throwing
+    marker getter; `PROTOCOL_MACHINERY` and `EXTENSION_MACHINERY` list the
+    new units.
   - **Measured** at `Advanced`, raw / gzip bytes, against master `e5ee884`:
     `(deftype T [] ICounted (-count [_] 7)) (count (T.))` drops from 27,180
-    / 8,726 to 21,678 / 7,155, `(counted? (T.))` from 12,375 / 4,304 to
+    / 8,726 to 21,678 / 7,157, `(counted? (T.))` from 12,375 / 4,304 to
     6,181 / 2,563, `(seq? (T.))` of a type implementing `ISeqable` from
-    28,136 / 8,984 to 22,634 / 7,412, and `(defrecord R [x]) (map? (->R 1))`
+    28,136 / 8,984 to 22,634 / 7,413, and `(defrecord R [x]) (map? (->R 1))`
     from 12,576 / 4,381 to 5,984 / 2,509. No fixture grows: `callbacks`
     drops from 42,261 / 13,257 to 37,186 / 11,741 (its ceiling from 43,000
     to 38,000), and eleven others lose 16 to 107 bytes. The shared runtime
-    grows by 843 bytes (0.2%; 268 gzipped), `ownProtocol` and the two hook
+    grows by 821 bytes (0.2%; 252 gzipped), `ownProtocol` and the two hook
     installs with their `when:` lists.
   - **Left for later.** The pellet's target of 12,000 bytes for `count` of a
     program type is out of this mechanism's reach: `count` alone keeps

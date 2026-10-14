@@ -585,6 +585,14 @@ impl<'a> RuntimeManifest<'a> {
             .any(|&dispatcher| dispatcher == binding)
     }
 
+    /// Whether `binding` is a core protocol (`ICounted`), one of those
+    /// `coreProtocolNames` names. Its object is the protocol's type table,
+    /// which `extend-type` of a host type writes (`ICounted.number = true`).
+    pub fn is_core_protocol(&self, binding: &str) -> bool {
+        self.unit_named("coreProtocolNames")
+            .is_some_and(|unit| self.units[unit.0].requires.contains(&binding))
+    }
+
     /// Units declaring the exported bindings, the roots of the full runtime.
     pub fn export_roots(&self) -> Vec<UnitId> {
         let mut roots = self

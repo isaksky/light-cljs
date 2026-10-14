@@ -5200,12 +5200,12 @@
     return undefined;
   }
   //@unit ownProtocol requires: directMethod, protocolMaskNames
-  // `true` where the value declares the core protocol `name` (its marker or
-  // mask bit, as `ownMethod` tests), else nothing, for the caller's native
-  // test (`?? countedValue(value)`), which covers protocol defaults too.
+  // `true` where the value declares the core protocol `name` (its mask bit
+  // or marker, as `implementsProtocol` reads them), else nothing, for the
+  // caller's native test (`?? countedValue(value)`).
   function ownProtocol(name, value) {
     const mask = protocolMaskNames.lastIndexOf(name);
-    return directMethod(value, name, 0) || mask >= 0 && value?.["cljs$lang$protocol_mask$partition" + (mask >> 5) + "$"] & (1 << (mask % 32)) ? true : undefined;
+    return mask >= 0 && value?.["cljs$lang$protocol_mask$partition" + (mask >> 5) + "$"] & (1 << (mask % 32)) || directMethod(value, name, 0) ? true : undefined;
   }
   //@unit ownMethod requires: directMethod, protocolMaskNames, reifyValues
   // `publicMethod` where no `extend-type` or `specify!` exists: only values of

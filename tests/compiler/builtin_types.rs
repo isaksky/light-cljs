@@ -530,6 +530,51 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     }
 }
 
+/// light-cljs-251: a core protocol read as a value may gain types as
+/// `extend-type` of a host type gives them (`(aset ICounted "number"
+/// true)`), which only the full protocol tests read, so the program keeps
+/// them as for an escaped dispatcher; the operand of `satisfies?` or
+/// `implements?` is only read. `ownProtocol` reads a value's mask bit before
+/// its marker, as `implementsProtocol` does.
+#[test]
+fn core_protocol_tables_written_directly_reach_the_protocol_tests() {
+    for (source, expected) in [
+        (
+            "(aset ICounted \"number\" true)
+             (let [v (js/parseInt \"5\")] (pr-str [(counted? v) (satisfies? ICounted v)]))",
+            "[true true]",
+        ),
+        (
+            "(deftype T [] ICounted (-count [_] 7)) (aset ICounted \"number\" true)
+             (let [v (js/parseInt \"5\")] (pr-str [(count (T.)) (counted? v) (satisfies? ICounted v)]))",
+            "[7 true true]",
+        ),
+    ] {
+        assert!(units(source).contains(&"protocolHooks.satisfies"), "{source}");
+        every_level(source, expected);
+    }
+    let read = "(deftype T [] ICounted (-count [_] 7))
+         (let [v (js/parseInt \"5\")]
+           (pr-str [(count (T.)) (counted? v) (satisfies? ICounted v) (implements? ICounted v)]))";
+    assert_keeps_none(
+        read,
+        &[
+            "extendType",
+            "protocolHooks.satisfies",
+            "protocolHooks.implements",
+        ],
+    );
+    every_level(read, "[7 false false false]");
+    every_level(
+        "(deftype T [] ICounted (-count [_] 7))
+         (let [o (js-obj \"cljs$lang$protocol_mask$partition0$\" 2)]
+           (js/Object.defineProperty o \"cljs$core$ICounted$\"
+             (js-obj \"get\" (fn [] (throw (js/Error. \"marker read\")))))
+           (pr-str [(count (T.)) (counted? o)]))",
+        "[7 true]",
+    );
+}
+
 #[test]
 fn host_facing_methods_of_builtin_prototypes() {
     every_level(

@@ -228,6 +228,7 @@ fn emit_js_mode(
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
             site: None,
+            protocol_operand: None,
             inference,
             shapes,
             truth_used: false,
@@ -1244,6 +1245,10 @@ struct Emitter<'a> {
     runtime: RuntimeRoots,
     /// The innermost expression being emitted, to which runtime reads are attributed.
     site: Option<ExprId>,
+    /// The protocol operand of the last `satisfies?` or `implements?` of a
+    /// core protocol emitted, whose read does not escape
+    /// ([`Emitter::escaped_dispatcher`]).
+    protocol_operand: Option<ExprId>,
     /// At `Advanced`: the program's inferred types (`crate::inference`).
     inference: Option<&'a Inference>,
     /// At `Advanced`: direct calls and method entries (`crate::call_shapes`).
@@ -1332,9 +1337,16 @@ impl<'a> Emitter<'a> {
     /// A core protocol dispatcher read as a value (`(aset -count "object" f)`)
     /// may gain implementations by type as `extend-type` gives them, which only
     /// `extendType` makes the runtime look up (`protocolHooks.external`), so
-    /// the slice keeps it.
+    /// the slice keeps it. Likewise a core protocol read as a value
+    /// (`(aset ICounted "number" true)`) may gain types, which only the hooks
+    /// `extendType` installs read (`protocolHooks.satisfies`, light-cljs-251),
+    /// except as the operand of `satisfies?` or `implements?`.
     fn escaped_dispatcher(&mut self, name: RuntimeName, site: Option<ExprId>) {
-        if name.member.is_none() && RuntimeManifest::embedded().is_core_dispatcher(name.binding) {
+        let manifest = RuntimeManifest::embedded();
+        if name.member.is_none()
+            && (manifest.is_core_dispatcher(name.binding)
+                || manifest.is_core_protocol(name.binding) && site != self.protocol_operand)
+        {
             self.runtime
                 .record(RuntimeName::direct("extendType", None), site, NameUse::Keep);
         }
@@ -4661,6 +4673,13 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
             ExprKind::Call { callee, args } => {
+                if let ExprKind::CoreFn(crate::CoreFnId::Satisfies | crate::CoreFnId::Implements) =
+                    self.program.exprs[callee.0].kind
+                {
+                    // `(satisfies? ICounted x)` reads the protocol's table
+                    // without writing it.
+                    self.protocol_operand = args.first().copied();
+                }
                 if let Some(&index) = self.entry_lookups.and_then(|lookups| lookups.get(&id)) {
                     // `rt$maps.get(m)[i].value`: the entry of a map whose
                     // literal makes one entry per key, in order.
