@@ -172,7 +172,7 @@ fn emit_js_mode(
     let function_names = if mapped {
         function_names(program)
     } else {
-        HashMap::new()
+        Vec::new()
     };
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool| {
@@ -617,10 +617,10 @@ fn emit_js_mode(
 }
 
 /// The names that source maps give the functions of `program`, by `fn`
-/// expression: its own name, else the definition or local it initializes
-/// (through `do` and metadata).
-fn function_names(program: &Program) -> HashMap<ExprId, &str> {
-    let mut names = HashMap::new();
+/// expression (`ExprId`): its own name, else the definition or local it
+/// initializes (through `do` and metadata).
+fn function_names(program: &Program) -> Vec<Option<&str>> {
+    let mut names = vec![None; program.exprs.len()];
     let function = |mut id: ExprId| loop {
         match &program.exprs[id.0].kind {
             ExprKind::Do(items) if !items.is_empty() => id = *items.last().unwrap(),
@@ -634,7 +634,7 @@ fn function_names(program: &Program) -> HashMap<ExprId, &str> {
             ExprKind::Fn {
                 name: Some(local), ..
             } => {
-                names.insert(ExprId(index), program.locals[local.0].name.as_str());
+                names[index] = Some(program.locals[local.0].name.as_str());
             }
             ExprKind::Def {
                 global,
@@ -642,7 +642,7 @@ fn function_names(program: &Program) -> HashMap<ExprId, &str> {
                 ..
             } => {
                 if let Some(id) = function(*init) {
-                    names.insert(id, program.globals[global.0].name.as_str());
+                    names[id.0] = Some(program.globals[global.0].name.as_str());
                 }
             }
             ExprKind::Let { bindings, .. }
@@ -650,9 +650,7 @@ fn function_names(program: &Program) -> HashMap<ExprId, &str> {
             | ExprKind::Loop { bindings, .. } => {
                 for (local, init) in bindings {
                     if let Some(id) = function(*init) {
-                        names
-                            .entry(id)
-                            .or_insert(program.locals[local.0].name.as_str());
+                        names[id.0].get_or_insert(program.locals[local.0].name.as_str());
                     }
                 }
             }
@@ -1249,7 +1247,7 @@ struct Emitter<'a> {
     /// its declarations.
     constant_marks: Vec<Mark>,
     /// With a source map: the names of functions ([`function_names`]).
-    function_names: &'a HashMap<ExprId, &'a str>,
+    function_names: &'a [Option<&'a str>],
 }
 
 impl<'a> Emitter<'a> {
@@ -1364,11 +1362,13 @@ impl<'a> Emitter<'a> {
     /// [`Emitter::rt`] as usual (the first site is the one the retention
     /// report names). The entry is eager, or a lazy cell when `lazy` is set;
     /// an existing entry keeps how it was declared. Sites write the entry with
-    /// [`Emitter::constant_reference`]. `Advanced` only.
+    /// [`Emitter::constant_reference`]. `Advanced` only. With a source map
+    /// the initializer maps to the literal `origin`, else to the site.
     fn constant_entry(
         &mut self,
         key: ConstantKey<'a>,
         lazy: bool,
+        origin: Option<ExprId>,
         initializer: impl FnOnce(&mut Self),
     ) -> usize {
         let constants = self
@@ -1381,6 +1381,7 @@ impl<'a> Emitter<'a> {
         let site = std::mem::take(&mut self.output);
         let raw = self.raw_segments.len();
         let marks = self.marks_len();
+        self.mark(origin.or(self.site));
         initializer(self);
         debug_assert_eq!(
             self.raw_segments.len(),
@@ -1432,12 +1433,17 @@ impl<'a> Emitter<'a> {
         if self.constants.is_none() {
             return self.construct_named(literal, symbol);
         }
-        let number = self.named_entry(literal, symbol);
+        let number = self.named_entry(literal, symbol, None);
         self.constant_reference(number);
     }
 
     /// The table entry of a keyword or quoted symbol literal (`Advanced`).
-    fn named_entry(&mut self, literal: NamedLiteralId, symbol: bool) -> usize {
+    fn named_entry(
+        &mut self,
+        literal: NamedLiteralId,
+        symbol: bool,
+        origin: Option<ExprId>,
+    ) -> usize {
         let constants = self.constants.as_ref().unwrap();
         if let Some(number) = constants.named[literal.0][usize::from(symbol)] {
             return number;
@@ -1451,7 +1457,7 @@ impl<'a> Emitter<'a> {
         } else {
             ConstantKey::Keyword { namespace, name }
         };
-        let number = self.constant_entry(key, false, |emitter| {
+        let number = self.constant_entry(key, false, origin, |emitter| {
             emitter.construct_named(literal, symbol)
         });
         let constants = self.constants.as_mut().unwrap();
@@ -1501,8 +1507,12 @@ impl<'a> Emitter<'a> {
                 value.to_bits()
             }),
             ExprKind::String(string) => ConstantPart::String(&program.strings[string.0]),
-            ExprKind::Keyword(literal) => ConstantPart::Entry(self.named_entry(*literal, false)),
-            ExprKind::Symbol(literal) => ConstantPart::Entry(self.named_entry(*literal, true)),
+            ExprKind::Keyword(literal) => {
+                ConstantPart::Entry(self.named_entry(*literal, false, Some(id)))
+            }
+            ExprKind::Symbol(literal) => {
+                ConstantPart::Entry(self.named_entry(*literal, true, Some(id)))
+            }
             _ => {
                 let (constructor, items) =
                     composite(program, kind).expect("a classified constant is a composite");
@@ -1515,7 +1525,7 @@ impl<'a> Emitter<'a> {
                     parts: parts.clone(),
                 };
                 let (mut created, mut hash) = (false, None);
-                let number = self.constant_entry(key, lazy, |emitter| {
+                let number = self.constant_entry(key, lazy, Some(id), |emitter| {
                     created = true;
                     hash = emitter
                         .constants
@@ -1613,7 +1623,7 @@ impl<'a> Emitter<'a> {
             set: false,
             keys: keys.clone(),
         };
-        let number = self.constant_entry(shape, lazy.contains(&true), |emitter| {
+        let number = self.constant_entry(shape, lazy.contains(&true), None, |emitter| {
             emitter.rt(RuntimeName::export(if hash_map {
                 "hashMapShape"
             } else {
@@ -1663,7 +1673,7 @@ impl<'a> Emitter<'a> {
             set: true,
             keys: members.clone(),
         };
-        let number = self.constant_entry(shape, false, |emitter| {
+        let number = self.constant_entry(shape, false, None, |emitter| {
             emitter.rt(RuntimeName::export("setShape"));
             emitter.output.push('(');
             emitter.parts(&members);
@@ -2620,7 +2630,7 @@ impl<'a> Emitter<'a> {
         let (Some(marks), Some(site)) = (&mut self.marks, self.site) else {
             return;
         };
-        if let Some(name) = self.function_names.get(&site) {
+        if let Some(name) = self.function_names[site.0] {
             let expr = &self.program.exprs[site.0];
             let origin = (!expr.span.is_empty()).then_some((expr.source_index, expr.span.start));
             marks.named(self.output.len(), origin, name);

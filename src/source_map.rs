@@ -200,14 +200,33 @@ impl Marks {
     }
 
     /// The finished table of `code`, the output these marks are positions of.
+    /// A mapping applies only on its generated line, so each line that
+    /// starts inside mapped text also starts with the origin mapped there.
     pub(crate) fn finish(mut self, code: &str) -> SourceMapping {
         self.list.sort_by_key(|mark| mark.output);
+        self.list
+            .retain(|mark| mark.output <= code.len() && code.is_char_boundary(mark.output));
         let mut segments: Vec<Segment> = Vec::new();
         let mut cursor = Cursor::default();
         let mut origin: Option<(usize, usize)> = None;
+        let mut lines = Vec::new();
         let mut index = 0;
-        while index < self.list.len() {
-            let output = self.list[index].output;
+        while index <= self.list.len() {
+            let output = self.list.get(index).map_or(code.len(), |mark| mark.output);
+            let (line, column) = cursor.advance(code, output, &mut lines);
+            if let Some((source, byte)) = origin.filter(|(source, _)| *source != UNMAPPED) {
+                segments.extend(lines.drain(..).map(|line| Segment {
+                    line,
+                    column: 0,
+                    source,
+                    byte,
+                    name: None,
+                }));
+            }
+            lines.clear();
+            if index == self.list.len() {
+                break;
+            }
             // Of the marks at one position, the last recorded is the
             // innermost expression's.
             let mut name = None;
@@ -221,10 +240,6 @@ impl Marks {
                 continue;
             };
             let name = name.filter(|_| source != UNMAPPED);
-            if output > code.len() || !code.is_char_boundary(output) {
-                continue;
-            }
-            let (line, column) = cursor.advance(code, output);
             if name.is_none()
                 && segments.last().is_some_and(|last| {
                     last.line == line && (last.source, last.byte) == (source, byte)
@@ -270,13 +285,16 @@ struct Cursor {
 }
 
 impl Cursor {
-    fn advance(&mut self, code: &str, to: usize) -> (u32, u32) {
+    /// The line and column of `to`, adding the lines that start before it
+    /// to `lines`.
+    fn advance(&mut self, code: &str, to: usize, lines: &mut Vec<u32>) -> (u32, u32) {
         for ch in code[self.at..to].chars() {
             match ch {
                 '\n' if self.carriage => {}
                 '\n' | '\r' | '\u{2028}' | '\u{2029}' => {
                     self.line += 1;
                     self.column = 0;
+                    lines.push(self.line);
                 }
                 _ => self.column += ch.len_utf16() as u32,
             }
@@ -338,7 +356,8 @@ impl SourceMapping {
             .segments
             .iter()
             .any(|segment| segment.source == RUNTIME);
-        let mut lines: Vec<Option<crate::LineIndex>> = vec![None; sources.len() + 1];
+        let mut positions: Vec<Option<Positions>> = Vec::new();
+        positions.resize_with(sources.len() + 1, || None);
         let mut mappings = String::new();
         let mut line = 0;
         let mut previous = [0i64; 5];
@@ -359,17 +378,10 @@ impl SourceMapping {
                 while !text.is_char_boundary(byte) {
                     byte -= 1;
                 }
-                let (original_line, line_column) = lines[index]
-                    .get_or_insert_with(|| crate::LineIndex::new(text))
-                    .line_column(byte)
-                    .expect("a position in the source");
-                let line_start = byte + 1 - line_column;
-                let original_column = text[line_start..byte].encode_utf16().count();
-                fields.extend([
-                    index as i64,
-                    original_line as i64 - 1,
-                    original_column as i64,
-                ]);
+                let (original_line, original_column) = positions[index]
+                    .get_or_insert_with(|| Positions::new(text))
+                    .at(byte);
+                fields.extend([index as i64, original_line as i64, original_column as i64]);
                 fields.extend(segment.name.map(i64::from));
             }
             while line < segment.line {
@@ -434,6 +446,47 @@ impl SourceMapping {
         json_string(&mut json, &mappings);
         json.push_str("}\n");
         json
+    }
+}
+
+/// The zero-based line and UTF-16 column of each byte offset of a source.
+struct Positions {
+    lines: crate::LineIndex,
+    /// The UTF-16 code units before each byte offset; `None` for ASCII text,
+    /// where they are the offset.
+    units: Option<Vec<u32>>,
+}
+
+impl Positions {
+    fn new(text: &str) -> Self {
+        let units = (!text.is_ascii()).then(|| {
+            let mut units = Vec::with_capacity(text.len() + 1);
+            let mut count = 0;
+            for ch in text.chars() {
+                units.extend(std::iter::repeat_n(count, ch.len_utf8()));
+                count += ch.len_utf16() as u32;
+            }
+            units.push(count);
+            units
+        });
+        Self {
+            lines: crate::LineIndex::new(text),
+            units,
+        }
+    }
+
+    /// The position of `byte`, a character boundary of the text.
+    fn at(&self, byte: usize) -> (usize, usize) {
+        let (line, column) = self
+            .lines
+            .line_column(byte)
+            .expect("a position in the source");
+        let start = byte + 1 - column;
+        let column = match &self.units {
+            Some(units) => (units[byte] - units[start]) as usize,
+            None => byte - start,
+        };
+        (line - 1, column)
     }
 }
 
@@ -549,6 +602,29 @@ mod tests {
             let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
             assert_eq!(marks.list.len() + own, lines);
         }
+    }
+
+    /// A line that starts inside mapped text starts with its origin; text
+    /// after an unmapped mark maps to nothing on later lines too. Original
+    /// columns count a supplementary character as two UTF-16 units.
+    #[test]
+    fn lines_continue_their_origin() {
+        let mut marks = Marks::default();
+        let code = "f(\n  x\n);\ng\nh";
+        marks.position(0, 0, 5);
+        marks.unmapped(9);
+        let json = marks.finish(code).to_json(
+            None,
+            &[SourceFile {
+                url: "in.cljs",
+                text: "\u{1f600} (f x)",
+            }],
+            false,
+        );
+        assert!(
+            json.ends_with("\"mappings\":\"AAAG;AAAA;AAAA,E;\"}\n"),
+            "{json}"
+        );
     }
 
     #[test]

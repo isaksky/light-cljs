@@ -221,11 +221,12 @@ fn source_url(path: &Path, base: &Path) -> String {
         .join("/")
 }
 
-/// `text` as one segment of a URL path, percent-encoded.
+/// `text` as one segment of a URL path, percent-encoded, `:` too, so that
+/// a first segment never reads as a scheme.
 fn url_segment(text: &str) -> String {
     let mut segment = String::new();
     for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@".contains(&byte) {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=@".contains(&byte) {
             segment.push(char::from(byte));
         } else {
             segment.push_str(&format!("%{byte:02X}"));

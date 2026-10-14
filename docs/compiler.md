@@ -493,10 +493,13 @@ form. The `function` keyword of each method is named (`names`) after its
 Node's `--enable-source-maps` shows for a frame; each local and definition
 name the emitter writes (`l7`, `g3_1`) is named after its source name. The
 marks move with the text inserted before the body (the runtime, the host
-helpers, the constant table, whose entries keep the marks of their
-initializers), through the hygiene renaming of programs with `js*` and through
-the terse rewrite, where each mark moves to the token written for the one it
-was before.
+helpers, the constant table, whose entries map to the literals they pool),
+through the hygiene renaming of programs with `js*` and through the terse
+rewrite, where each mark moves to the token written for the one it was
+before. A mapping holds only on its generated line, so each line that starts
+inside mapped text (raw `js*` of several lines, say) starts with the same
+origin. The host helpers, core cells and namespace registration map to no
+source.
 
 The embedded runtime maps to `src/js_runtime.js`, the source
 `light-cljs/js_runtime.js`: the whole runtime and a readable slice line by

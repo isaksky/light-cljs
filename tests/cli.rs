@@ -692,6 +692,18 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
         "(ns app.main\n  (:require [app.util :as u]))\n\n(u/check 1)\n(u/check -2)\n",
     )
     .unwrap();
+    // A macro's throw in a local function, and raw JavaScript of several
+    // lines.
+    std::fs::write(
+        root.join("local.cljs"),
+        "(defmacro fail! [message]\n  `(throw (js/Error. ~message)))\n\n(defn run [xs]\n  (let [check (fn [n]\n                (when (neg? n)\n                  (fail! (str \"negative \" n)))\n                n)]\n    (mapv check xs)))\n\n(run [1 -2])\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("raw.cljs"),
+        "(defn raw [x]\n  (js* \"(() => {\\n  const y = ~{};\\n  throw new Error(y);\\n})()\" x))\n\n(raw 1)\n",
+    )
+    .unwrap();
     let path = |name: &str| root.join(name).to_str().unwrap().to_owned();
     // Node reports the real path of each source.
     let real = std::fs::canonicalize(&root).unwrap();
@@ -759,6 +771,50 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             name,
         );
 
+        // The macro's code maps to its call, and the local function has
+        // the local's name; the map names the local and the parameter.
+        let map = path(&format!("out/local-{name}.js.map"));
+        let script = path(&format!("out/local-{name}.js"));
+        let mapped = compiled(&[
+            "--compile",
+            "--optimize",
+            name,
+            "--source-map",
+            &map,
+            &path("local.cljs"),
+        ]);
+        std::fs::write(&script, &mapped).unwrap();
+        assert_frame(
+            &first_frame(&script),
+            "check",
+            &format!("{}:7:19", real("local.cljs")),
+            name,
+        );
+        let json = std::fs::read_to_string(&map).unwrap();
+        assert!(
+            json.contains("\"check\"") && json.contains("\"n\""),
+            "{level}: {json:.300}"
+        );
+
+        // Each line of the raw text maps to the `js*` form.
+        let map = path(&format!("out/raw-{name}.js.map"));
+        let script = path(&format!("out/raw-{name}.js"));
+        let mapped = compiled(&[
+            "--compile",
+            "--optimize",
+            name,
+            "--source-map",
+            &map,
+            &path("raw.cljs"),
+        ]);
+        std::fs::write(&script, &mapped).unwrap();
+        assert_frame(
+            &first_frame(&script),
+            "<anonymous>",
+            &format!("{}:2:3", real("raw.cljs")),
+            name,
+        );
+
         let map = path(&format!("out/pick-{name}.js.map"));
         let script = path(&format!("out/pick-{name}.js"));
         let mapped = compiled(&[
@@ -812,6 +868,22 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             name,
         );
     }
+
+    // A `:` in a file name is no URL scheme.
+    let mapped = compiled(&[
+        "--compile",
+        &path("app.cljs"),
+        "--source-map",
+        &path("out/app:dev.js.map"),
+    ]);
+    assert!(mapped.ends_with("\n//# sourceMappingURL=app%3Adev.js.map\n"));
+    std::fs::write(path("out/app:dev.js"), &mapped).unwrap();
+    assert_frame(
+        &first_frame(&path("out/app:dev.js")),
+        "explode",
+        &format!("{}:2:10", real("app.cljs")),
+        "colon",
+    );
 
     // Sources of an inline map are relative to the current directory,
     // where the JavaScript is expected.
