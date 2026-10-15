@@ -304,17 +304,23 @@ impl PreparedApplication {
         plan: &crate::chunks::ChunkPlan,
         reflective: bool,
     ) -> Option<crate::chunks::ChunkedOutput> {
-        let emitted = if plan.chunks.len() == 1 {
-            vec![crate::emitter::EmittedChunk {
+        if plan.chunks.len() == 1 {
+            let emitted = vec![crate::emitter::EmittedChunk {
                 source: self.emit_esm(),
                 imports: Vec::new(),
-            }]
-        } else {
-            crate::emitter::emit_chunked(&self.program, self.application(), plan, reflective)?
-        };
+            }];
+            return Some(crate::chunks::ChunkedOutput::new(
+                &self.program,
+                plan,
+                emitted,
+            ));
+        }
+        // The constant table may add chunks to the plan.
+        let (plan, emitted) =
+            crate::emitter::emit_chunked(&self.program, self.application(), plan, reflective)?;
         Some(crate::chunks::ChunkedOutput::new(
             &self.program,
-            plan,
+            &plan,
             emitted,
         ))
     }

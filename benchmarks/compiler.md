@@ -4121,3 +4121,38 @@ The rewritten unit is larger because the session's unit of each of the
 namespace's four forms registers the reader context of every namespace the
 session knows, which the build's unit does once for its own (light-cljs-301
 is to register only the unit's own).
+
+## Constants placed by their readers — October 15, 2026
+
+light-cljs-278 splits the `advanced` constant table across the chunks of a
+chunked build: each entry is declared once, in the chunk of the roots whose
+code reads it, directly or through a collection holding it
+([code-splitting design](../docs/code-splitting.md), Phase 3, "As built
+(light-cljs-278)"). Measured with `light-cljs --compile --optimize LEVEL
+--entry app.main --source-root examples/features --out-dir DIR`, `wc -c` and
+`gzip -9 -n`, against the same command built from master `6c98a81`
+(light-cljs-277). `none` and `prepare`, which write no constant table, are
+byte for byte as before, as is the single `--esm` file, and
+`bb benchmarks/features.bb` prints the bounds it printed before (startup
+lower bound 4,680 / 1,753). Apple M3 Ultra virtual machine of the
+[environment](results/environment.txt), macOS 15.7.3, one-minute load average
+11.5 from peers' builds (sizes do not depend on it). Raw / `gzip -9` bytes at
+`advanced`, terse:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 69,539 / 21,551 | 69,000 / 21,242 |
+| `app.editor+app.reports.js` | 63 / 81 | 632 / 397 |
+| `app.editor.js` | 361 / 255 | 361 / 258 |
+| `app.reports.js` | 874 / 531 | 874 / 531 |
+
+Startup shrinks by 539 bytes, 309 gzipped: the table of
+`app.shared/documents`, eleven keywords, four sets, four maps (with the four
+title strings) and the vector, which only the features read, now sits with
+`documents` in their shared chunk, and both features import the keywords
+they read (`:id`, `:title`, `:words`, `:tags`, `:draft`) from there instead
+of from startup. Startup keeps `:editor` and `:reports`, which its menu
+reads. The features' files keep their sizes: their import lines name
+the same number of bindings, split between startup and the shared chunk.
+What remains of startup beyond the lower bound is the whole-program runtime
+slice, which light-cljs-279 splits.

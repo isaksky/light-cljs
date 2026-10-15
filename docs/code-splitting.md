@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -1134,6 +1134,84 @@ runtime units toward their first readers; per-chunk runtime factories.
     keeps every seed; `LIGHT_CLJS_GENERATED_COUNT=480` passed too. Seven of
     the fixed seeds do not call `resolve`, and their two or three
     lazy-reader definitions each leave startup at `Advanced`.
+
+- **As built (light-cljs-278): constants follow their readers.**
+  - The emitter records, per entry of the `Advanced` constant table, the
+    signatures of the chunks whose code reads it (`Emitter::constant_reference`
+    while the chunk is written) and the entries its initializer reads (the
+    parts of a composite or a shape, which are earlier entries). After the
+    chunks are written, `place_constants` (`src/emitter/chunked.rs`) walks the
+    entries from the last down and adds each one's signature to its parts', so
+    an entry's signature is the union over its reading chunks and the
+    composites holding it. Per-chunk recording is enough: a chunk's signature
+    is its items', except startup's, which holds every root, and an entry
+    read in startup is startup's either way. A hoisted method (light-cljs-228)
+    keeps its function's chunk, whose globals its body reads; its body's
+    reads count as that chunk's.
+  - `ChunkPlan::place` gives each signature its chunk: startup when it holds
+    startup's root, else the chunk of that signature, which it adds, holding
+    no item, when the plan has none. Added chunks are named as shared chunks
+    are and sorted among the plan's by size, after those of their size, so
+    every import still precedes its importer; chunk ids change, and
+    `emit_chunked` returns the plan it wrote, which `ChunkedOutput::new`
+    describes. A chunk of constants alone has no namespace, no definition
+    and no forms function, only its declarations and its exports, and its
+    importers list it last, after the chunks whose namespaces they load,
+    since only their code needs it. `ChunkFile::imports`, and so the
+    manifest's `imports`, now follow the import lines rather than chunk ids:
+    a chunk of constants alone of three roots precedes a namespace chunk of
+    two in the plan, but follows it in its importers' lines. Placement
+    happens after writing, which decided each loadable's residency from the
+    plan's imports: an import a constant adds reaches only chunks whose
+    namespaces every root of the importer reaches statically, so at worst a
+    loadable of such a chunk stays an `import()` of a chunk that has loaded,
+    which resolves at once.
+  - Each chunk declares its entries in the table's declaration order (index
+    order, except that a hoisted method follows the entries its body
+    declared): the parts of a composite come before it, in its chunk or in a
+    chunk it imports, whose signature contains its own. Names are the table's
+    `k<n>` and `c<n>`, renamed with the rest, and read off the text as
+    before: a reader imports an entry from its chunk, which exports it. Debug
+    builds check that every constant a chunk imports comes from a chunk whose
+    signature strictly contains its own. Keyword interning is one table at
+    run time and each keyword is declared once.
+  - examples/features at `advanced`, terse, raw / `gzip -9` bytes, before
+    (light-cljs-277) and after; `none` and `prepare`, which write no table,
+    are byte for byte as before:
+
+    | File | Before | After |
+    | --- | ---: | ---: |
+    | `app.main.js` | 69,539 / 21,551 | 69,000 / 21,242 |
+    | `app.editor+app.reports.js` | 63 / 81 | 632 / 397 |
+    | `app.editor.js` | 361 / 255 | 361 / 258 |
+    | `app.reports.js` | 874 / 531 | 874 / 531 |
+
+    Startup keeps the two keywords its menu reads, `:editor` and
+    `:reports`; the table of `app.shared/documents` (eleven keywords, four
+    strings, four sets, four maps and the vector) moves to the shared chunk
+    with it, and both features import the keywords they read from there.
+    The rest of startup is the whole-program runtime slice, which
+    light-cljs-279 splits.
+  - Tests (`tests/compiler/chunks.rs`): a `constants` fixture joined the
+    matrix, whose editor and reports share `app.common` and whose editor and
+    settings share only a keyword. A keyword only the editor reads is in the
+    editor's chunk alone, one both features read in their shared chunk
+    alone, once; a map literal of that keyword read by both lands with it,
+    and one only the editor reads in the editor's chunk, which imports the
+    keyword; the keyword the editor and the settings share is a chunk of
+    constants alone, `app.editor+app.settings.js`, which only `Advanced` has
+    (`n/a` in `membership.tsv`), and so is the one all three features read,
+    `app.editor+app.reports+app.settings.js`, which the editor imports after
+    `app.common`'s chunk. Hoisted methods, map shapes and a lazy cell
+    of 1,101 items are placed by their readers too, and print what the
+    single file prints at every level. The features example's startup
+    declares only its menu's keywords. No other fixture's membership
+    changed: the features example already imported its shared chunk, and no
+    other fixture's chunk gained an import.
+    `chunks::check_manifest`, which since light-cljs-281 asserts that every
+    chunk holds a namespace or a definition, accepts a chunk of neither
+    only at `Advanced`, with no root or loadable, exporting a name another
+    chunk imports.
 
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk

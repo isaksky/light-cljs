@@ -802,7 +802,8 @@ fn printed(startup: &str, stdout: &str) -> String {
 /// against the single file at every level, and its files at `none`. The
 /// files hold the same namespaces at every level; what they import differs
 /// where `Advanced` code reads nothing of a chunk, and `Advanced` adds the
-/// chunks that hold only definitions moved toward their readers.
+/// chunks that hold no namespace: only definitions moved toward their
+/// readers, or only constants.
 fn chunk_files(program: &Program) -> (String, Vec<String>) {
     let (record, outputs) = runs_as_chunks(program);
     let members = |output: &ChunkedOutput| {
@@ -810,7 +811,7 @@ fn chunk_files(program: &Program) -> (String, Vec<String>) {
             .files
             .iter()
             .zip(files(output))
-            .filter(|(chunk, _)| !chunk.namespaces.is_empty() || chunk.definitions.is_empty())
+            .filter(|(chunk, _)| !chunk.namespaces.is_empty())
             .map(|(_, file)| file.split(" | imports").next().unwrap().to_owned())
             .collect::<Vec<_>>()
     };
@@ -1183,6 +1184,225 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
         "{editor}"
     );
     assert!(!startup.contains("app.shared/Shape"));
+}
+
+/// The files of `output` whose text contains `text`, by name.
+fn files_containing(output: &ChunkedOutput, text: &str) -> Vec<String> {
+    output
+        .files
+        .iter()
+        .filter(|file| file.source.contains(text))
+        .map(|file| file.name.clone())
+        .collect()
+}
+
+/// The constant table at `Advanced` is split by the signatures of its
+/// entries' readers (the `constants` fixture, which [`matrix`] runs): a
+/// keyword only the editor reads is declared in the editor's chunk alone,
+/// one both features read in their shared chunk alone, once; a map literal
+/// of that keyword lands with it when both features read it, and in the
+/// editor's chunk, which imports the keyword, when only the editor does.
+/// A keyword only the editor and the settings read, which share no
+/// namespace or definition, gets a chunk of constants alone, and so does one
+/// all three features read; importers list such chunks after the chunks
+/// holding namespaces, larger signatures first, and the manifest lists
+/// imports in that order too.
+#[test]
+fn constants_go_to_the_chunks_of_their_readers() {
+    let program = fixture_program("constants");
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let output = prepared.emit_chunks();
+    let file = |name: &str| {
+        output
+            .files
+            .iter()
+            .find(|file| file.name == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+    };
+    for (text, name) in [
+        ("\"menu-item\"", "app.main.js"),
+        ("\"editor-only\"", "app.editor.js"),
+        ("\"editor-map\"", "app.editor.js"),
+        ("\"both-features\"", "app.editor+app.reports.js"),
+        ("\"shared-map\"", "app.editor+app.reports.js"),
+        ("\"reports-only\"", "app.reports.js"),
+        ("\"settings-only\"", "app.settings.js"),
+        ("\"editor-and-settings\"", "app.editor+app.settings.js"),
+        ("\"all-features\"", "app.editor+app.reports+app.settings.js"),
+    ] {
+        assert_eq!(files_containing(&output, text), [name], "{text}");
+        assert_eq!(file(name).source.matches(text).count(), 1, "{text}");
+    }
+    assert!(
+        file("app.editor.js")
+            .imports
+            .contains(&"app.editor+app.reports.js".to_owned())
+    );
+    for name in [
+        "app.editor+app.settings.js",
+        "app.editor+app.reports+app.settings.js",
+    ] {
+        let constants = file(name);
+        assert!(constants.namespaces.is_empty() && constants.definitions.is_empty());
+        assert!(!constants.source.contains("=>"), "{}", constants.source);
+        assert_eq!(constants.imports, ["app.main.js"]);
+    }
+    assert_eq!(
+        file("app.editor.js").imports,
+        [
+            "app.main.js",
+            "app.editor+app.reports.js",
+            "app.editor+app.reports+app.settings.js",
+            "app.editor+app.settings.js"
+        ]
+    );
+    // Below `Advanced` each site builds its keyword: no table, no chunk of
+    // constants.
+    for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
+        let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
+        assert_eq!(output.files.len(), 5, "{level}");
+        assert_eq!(
+            files_containing(&output, "\"editor-and-settings\""),
+            ["app.editor.js", "app.settings.js"],
+            "{level}"
+        );
+    }
+}
+
+/// Hoisted methods, map shapes and lazy cells are table entries placed as
+/// any other: the keyword both features' hoisted methods return and the key
+/// both features' map shapes hold go to a chunk of constants alone, which
+/// only `Advanced` has; the methods, each shape and the reports' lazy
+/// vector stay with their one reader. The chunks print what the single file
+/// prints at every level.
+#[test]
+fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
+    let reports = format!(
+        "(ns app.reports)\n\
+         (def big [{} :big-key])\n\
+         (defn start [n]\n\
+           (let [g (fn ([] :in-method) ([x] (+ x (count big))))]\n\
+             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}])))\n",
+        (0..1100)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let program = analyze(&[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (def reports (lazy/loadable app.reports/start))\n\
+             (defn start []\n\
+               (-> (lazy/load editor)\n\
+                   (.then (fn [f] (js/console.log (f 1)) (lazy/load reports)))\n\
+                   (.then (fn [f] (js/console.log (f 2)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n\
+             (defn start [n]\n\
+               (let [f (fn ([] :in-method) ([x] [x :in-method :editor-method]))]\n\
+                 (pr-str [(f) (f n) {:shape-key n :other-key (inc n)}])))\n",
+        ),
+        ("app/reports.cljs", &reports),
+    ]);
+    let (record, files) = chunk_files(&program);
+    assert_eq!(
+        record,
+        printed(
+            "app.main.js",
+            r"[:in-method [1 :in-method :editor-method] {:shape-key 1, :other-key 2}]\n[:in-method 1103 2 :big-key {:shape-key 2}]\n"
+        )
+    );
+    assert_eq!(files.len(), 3, "{files:?}");
+    let options = ApplicationOptions {
+        pseudo_names: true,
+        ..ApplicationOptions::new(OptimizationLevel::Advanced)
+    };
+    let output = prepare_application(&program, options).emit_chunks();
+    let names = output
+        .files
+        .iter()
+        .map(|file| file.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "app.main.js",
+            "app.editor+app.reports.js",
+            "app.editor.js",
+            "app.reports.js"
+        ]
+    );
+    let shared = &output.files[1];
+    assert!(shared.namespaces.is_empty() && shared.definitions.is_empty());
+    for (text, chunks) in [
+        ("\"in-method\"", &["app.editor+app.reports.js"][..]),
+        ("\"shape-key\"", &["app.editor+app.reports.js"]),
+        ("\"editor-method\"", &["app.editor.js"]),
+        ("\"other-key\"", &["app.editor.js"]),
+        ("\"big-key\"", &["app.reports.js"]),
+        ("rt$mapShape(", &["app.editor.js", "app.reports.js"]),
+        (" ??= ", &["app.reports.js"]),
+    ] {
+        assert_eq!(files_containing(&output, text), chunks, "{text}");
+    }
+    // Each feature declares its hoisted methods, which read the shared
+    // keyword from the chunk of constants.
+    for file in &output.files[2..] {
+        let methods = file
+            .source
+            .lines()
+            .filter(|line| line.starts_with("  const k") && line.ends_with("(function() {"))
+            .count();
+        assert_eq!(methods, 1, "{}", file.source);
+        assert!(file.imports.contains(&shared.name), "{}", file.name);
+    }
+}
+
+/// At `Advanced` the features example's startup declares only the
+/// constants its menu reads: the keywords, strings and collections of
+/// `app.shared/documents`, which only the features read, are declared once,
+/// in their shared chunk.
+#[test]
+fn the_features_startup_declares_only_the_constants_it_reads() {
+    let program = fixture_program("features");
+    let options = ApplicationOptions {
+        pseudo_names: true,
+        ..ApplicationOptions::new(OptimizationLevel::Advanced)
+    };
+    let output = prepare_application(&program, options).emit_chunks();
+    let startup = &output.startup().source;
+    for keyword in ["editor", "reports"] {
+        let declaration = format!("keyword(null, \"{keyword}\")");
+        assert_eq!(files_containing(&output, &declaration), ["app.main.js"]);
+    }
+    for constant in [
+        "keyword(null, \"id\")",
+        "keyword(null, \"title\")",
+        "keyword(null, \"words\")",
+        "keyword(null, \"tags\")",
+        "keyword(null, \"draft\")",
+        "keyword(null, \"guide\")",
+        "\"Introduction\"",
+        "\"Questions\"",
+        "vectorFromArray([",
+        "arrayMapFromArray([",
+        "arraySetFromArray([",
+    ] {
+        assert!(!startup.contains(constant), "{constant}");
+        assert_eq!(
+            files_containing(&output, constant),
+            ["app.editor+app.reports.js"],
+            "{constant}"
+        );
+    }
 }
 
 /// What moves at `Advanced`, and what stays: a record and the definition
@@ -1650,6 +1870,7 @@ macro_rules! fixture_matrix {
 fixture_matrix! {
     matrix_features_example: "features",
     matrix_definitions_move_toward_their_readers: "definitions",
+    matrix_constants_go_to_their_readers: "constants",
     matrix_reflection_keeps_namespaces_whole: "reflection",
     matrix_diamond: "diamond",
     matrix_sub_feature: "sub-feature",
@@ -1831,7 +2052,8 @@ fn reach(chunks: &[ManifestChunk], level: OptimizationLevel) -> Vec<Vec<bool>> {
 /// root and loadable target in its chunk; and every import edge targets a
 /// strictly larger signature, the roots whose chunks reach a chunk. The
 /// first chunk is startup, whose first root is `entry`, and every chunk
-/// holds a namespace or a definition.
+/// holds a namespace, a definition or, at `Advanced`, constants another
+/// chunk imports.
 pub(super) fn check_manifest(
     out: &Path,
     startup: &str,
@@ -1864,12 +2086,25 @@ pub(super) fn check_manifest(
         let source = &sources[i];
         assert_eq!(chunk.file, format!("{}.js", chunk.name), "{level}");
         // No chunk is empty in the manifest. Its code may still be, at
-        // `Advanced`, `(()=>{})();` (light-cljs-299 drops such chunks).
-        assert!(
-            !chunk.namespaces.is_empty() || !chunk.definitions.is_empty(),
-            "{level}: {} holds neither a namespace nor a definition",
-            chunk.file
-        );
+        // `Advanced`, `(()=>{})();` (light-cljs-299 drops such chunks). A
+        // chunk of neither namespace nor definition holds constants
+        // (light-cljs-278): only `Advanced` writes a table, and the chunk
+        // has no root or loadable and exports a name another chunk imports.
+        if chunk.namespaces.is_empty() && chunk.definitions.is_empty() {
+            let exported = exported_names(source);
+            assert!(
+                level.advanced()
+                    && chunk.roots.is_empty()
+                    && chunk.loadables.is_empty()
+                    && sources.iter().any(|other| {
+                        imported_names(other).iter().any(|(from, names)| {
+                            *from == chunk.file && names.iter().any(|name| exported.contains(name))
+                        })
+                    }),
+                "{level}: {} holds neither a namespace, a definition nor a constant another chunk imports",
+                chunk.file
+            );
+        }
         assert_eq!(source.len(), chunk.bytes, "{level}: {}", chunk.file);
         assert_eq!(
             static_imports(source),
@@ -1968,8 +2203,9 @@ fn membership_rows(chunks: &[ManifestChunk]) -> Vec<String> {
 
 /// The rows of fixture `name`'s `membership.tsv` at `level`, as
 /// [`membership_rows`] writes them. A chunk whose imports below `Advanced`
-/// are `n/a` holds only definitions that move at `Advanced`, and exists only
-/// there; below it no definition moves.
+/// are `n/a` holds only definitions that move at `Advanced`, or only
+/// constants, and exists only there; below it no definition moves and no
+/// constant table is written.
 fn expected_membership(name: &str, level: OptimizationLevel) -> Vec<String> {
     let table = fs::read_to_string(fixture_dir(name).join("membership.tsv")).unwrap();
     table

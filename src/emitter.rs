@@ -1668,8 +1668,17 @@ impl<'a> Emitter<'a> {
         let raw = self.raw_segments.len();
         let marks = self.marks_len();
         self.mark(origin.or(self.site));
+        // A chunked build records the entries the initializer reads.
+        let enclosing = self
+            .chunks
+            .as_mut()
+            .map(|chunks| chunks.begin_initializer());
         // A table entry is declared at the top of the output.
         self.without_operands(initializer);
+        let parts = match (&mut self.chunks, enclosing) {
+            (Some(chunks), Some(enclosing)) => chunks.end_initializer(enclosing),
+            _ => Vec::new(),
+        };
         debug_assert_eq!(
             self.raw_segments.len(),
             raw,
@@ -1685,18 +1694,24 @@ impl<'a> Emitter<'a> {
         let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
         self.take_marks(marks, at);
         let constants = self.constants.as_mut().unwrap();
+        let start = constants.declarations.len();
         writeln!(constants.declarations, "{declaration}{value};").unwrap();
+        let declared = start..constants.declarations.len();
         constants.composites += usize::from(matches!(key, ConstantKey::Composite { .. }));
         constants.lazy.push(lazy);
         constants.numbers.insert(key, number);
         if let Some(chunks) = &mut self.chunks {
-            chunks.constant(false);
+            chunks.constant(number, parts);
+            chunks.declared(number, declared);
         }
         number
     }
 
     /// A read of table entry `number`: `k<n>`, or `k<n>()` for a lazy cell.
     fn constant_reference(&mut self, number: usize) {
+        if let Some(chunks) = &mut self.chunks {
+            chunks.read_constant(number);
+        }
         let lazy = self.constants.as_ref().unwrap().lazy[number];
         write!(self.output, "k{number}{}", if lazy { "()" } else { "" }).unwrap();
     }
@@ -4257,7 +4272,7 @@ impl<'a> Emitter<'a> {
         constants.functions += 1;
         constants.numbers.insert(key, number);
         if let Some(chunks) = &mut self.chunks {
-            chunks.constant(true);
+            chunks.method(number);
         }
         let program = self.program;
         let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
@@ -4292,14 +4307,13 @@ impl<'a> Emitter<'a> {
         let declaration = format!("  const k{number} = ");
         let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
         self.take_marks(marks, at);
-        // A chunked build declares the method in the chunk of its function.
-        let declarations = match &mut self.chunks {
-            Some(chunks) => chunks.method_declarations(),
-            None => None,
-        };
-        let declarations =
-            declarations.unwrap_or(&mut self.constants.as_mut().unwrap().declarations);
+        let declarations = &mut self.constants.as_mut().unwrap().declarations;
+        let start = declarations.len();
         writeln!(declarations, "{declaration}{value};").unwrap();
+        // A chunked build declares the method in the chunk of its function.
+        if let Some(chunks) = &mut self.chunks {
+            chunks.declared(number, start..declarations.len());
+        }
         number
     }
 

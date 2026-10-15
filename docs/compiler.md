@@ -1734,9 +1734,17 @@ signatures"). The other forms stay in their namespace's chunk: effects, a
 reflection ("Namespace reflection and reading": `*ns*`, `find-ns`, the
 reader, `eval`, ...) keeps every form in its namespace's chunk at `advanced`
 too, so the namespaces it registers are whole.
-Items keep source order within a chunk. The runtime (the whole runtime
-below `advanced`, the whole-program slice at `advanced`) and every
-constant stay in startup.
+Items keep source order within a chunk. At `advanced` each entry of the
+constant table (a keyword, a quoted symbol, a constant collection, a map or
+set shape, a hoisted method) is declared once, in the chunk of the roots
+whose code reads it, directly or through a collection holding it: a keyword
+only the editor reads is the editor's, one both features read their shared
+chunk's, and one startup reads startup's. When no chunk has those roots,
+the constants get a chunk of their own, named as a shared chunk is, which
+holds no namespace and no definition, only constant declarations that its
+readers import; a hoisted method stays in its function's chunk. The
+runtime (the whole runtime below `advanced`, the whole-program slice at
+`advanced`) stays in startup.
 Analysis and optimization run once over the whole program, so each chunk's
 code is what the single file would hold. A chunk imports statically the
 chunks holding what its namespaces require and the bindings its code reads,
@@ -1747,9 +1755,10 @@ loaded. examples/features is three files at `none` and `prepare`,
 `app.main.js`, `app.editor.js` and `app.reports.js`: 441,976, 1,295 and
 13,101 bytes, against 455,109 for the single file. At `advanced` it is
 four: `app.shared/documents`, which both features read and the menu does
-not, moves to `app.editor+app.reports.js`, and `app.shared/index-by` to
-`app.editor.js`, so the files are 69,539, 63, 361 and 874 bytes, against
-69,500 for the single file. A program without a loadable whose
+not, moves to `app.editor+app.reports.js` with the keywords, strings and
+collections of its value, and `app.shared/index-by` to `app.editor.js`, so
+the files are 69,000, 632, 361 and 874 bytes, against 69,500 for the
+single file. A program without a loadable whose
 target another chunk holds, every program without a loadable among them, is
 one file, byte for byte its `--esm` output.
 
@@ -1761,8 +1770,8 @@ examples/features at `advanced`:
 {
   "startup": "app.main.js",
   "chunks": [
-    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": [], "bytes": 69539},
-    {"name": "app.editor+app.reports", "file": "app.editor+app.reports.js", "imports": ["app.main.js"], "namespaces": [], "definitions": ["app.shared/documents"], "roots": [], "loadables": [], "bytes": 63},
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": [], "bytes": 69000},
+    {"name": "app.editor+app.reports", "file": "app.editor+app.reports.js", "imports": ["app.main.js"], "namespaces": [], "definitions": ["app.shared/documents"], "roots": [], "loadables": [], "bytes": 632},
     {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["app.editor"], "definitions": ["app.shared/index-by"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}], "bytes": 361},
     {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["clojure.string", "app.reports"], "definitions": [], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}], "bytes": 874}
   ]
@@ -1774,7 +1783,10 @@ examples/features at `advanced`:
 - `name`: the chunk's name, its file name without `.js`.
 - `file`: the file, which the other chunks import as `./FILE`, so the files
   stay together in one directory.
-- `imports`: the files it imports statically, which evaluate before it.
+- `imports`: the files it imports statically, which evaluate before it, in
+  the order of its import lines: those holding namespaces or moved
+  definitions in the order the single file loads these, then those holding
+  only constants.
 - `namespaces`: the namespaces whose top-level forms it holds, in load order:
   the forms that stay in their namespace's chunk.
 - `definitions`: the definitions it holds of namespaces another chunk holds,

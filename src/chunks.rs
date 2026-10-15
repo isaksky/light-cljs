@@ -28,6 +28,12 @@
 //! larger signatures, and the chunk graph is acyclic by construction (debug
 //! builds check every edge). Chunk ids are ordered so that a chunk's imports
 //! precede it: startup first, then larger signatures before smaller ones.
+//!
+//! The constant table's entries are items only emission finds, so the
+//! emitter places them once it has written the chunks
+//! ([`ChunkPlan::place`]): each in the chunk of the roots whose code reads
+//! it, which the plan gains, holding no item, when it has no chunk of that
+//! signature.
 
 use crate::analyzer::{ExprId, ExprKind, GlobalId, LazyTargetId, Program};
 use crate::application::PreparedApplication;
@@ -82,6 +88,13 @@ impl Signature {
     }
     pub fn is_empty(&self) -> bool {
         self.0.iter().all(|&word| word == 0)
+    }
+    /// Add the roots of `other`, a set over as many roots.
+    pub fn union(&mut self, other: &Self) {
+        debug_assert_eq!(self.0.len(), other.0.len(), "signatures of one plan");
+        for (word, other) in self.0.iter_mut().zip(&other.0) {
+            *word |= other;
+        }
     }
     /// Whether every root of `other` is in this set.
     pub fn is_superset(&self, other: &Self) -> bool {
@@ -206,8 +219,9 @@ pub struct ChunkFile {
     /// `./<name>`, so the files go in one directory.
     pub name: String,
     pub source: String,
-    /// The names of the files it imports statically: every chunk holding a
-    /// namespace its namespaces require or a binding its code reads.
+    /// The names of the files it imports statically, in the order of its
+    /// import lines: every chunk holding a namespace its namespaces require
+    /// or a binding its code reads.
     pub imports: Vec<String>,
     /// The namespaces whose top-level forms it holds, in source order.
     pub namespaces: Vec<String>,
@@ -375,6 +389,107 @@ impl ChunkPlan {
             .iter()
             .map(|&item| &self.items[item])
             .filter(move |item| self.namespace_chunks[item.namespace] != chunk)
+    }
+
+    /// Place what only the emitter finds, the constant table's entries
+    /// (docs/code-splitting.md, "Phase 3"), by their signatures, each the
+    /// roots whose code reads one: a signature holding startup's root, or
+    /// none, is startup's; any other is its chunk's, which is added, holding
+    /// no item, when the plan has no chunk of that signature. Added chunks
+    /// are named as the plan names chunks, and ordered as it orders them,
+    /// after the chunks of as many roots, so chunk ids change. Returns the
+    /// chunk of each of `signatures`, and by chunk id before the call, its id
+    /// after it.
+    pub fn place(
+        &mut self,
+        program: &Program,
+        signatures: &[Signature],
+    ) -> (Vec<ChunkId>, Vec<ChunkId>) {
+        let startup =
+            |signature: &Signature| signature.contains(STARTUP_ROOT) || signature.is_empty();
+        let before = self.chunks.len();
+        let mut chunk_of_signature = self
+            .chunks
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(chunk, members)| (members.signature.clone(), chunk))
+            .collect::<HashMap<_, _>>();
+        let mut taken = self
+            .chunks
+            .iter()
+            .map(|chunk| chunk.name.clone())
+            .collect::<HashSet<_>>();
+        for signature in signatures {
+            if startup(signature) || chunk_of_signature.contains_key(signature) {
+                continue;
+            }
+            chunk_of_signature.insert(signature.clone(), self.chunks.len());
+            let roots = signature
+                .roots()
+                .map(|root| program.namespaces[self.roots[root].namespace].as_str())
+                .collect();
+            let name = chunk_name(roots);
+            let stem = name.strip_suffix(".js").unwrap_or_default().to_owned();
+            let (mut name, mut suffix) = (name, 1);
+            while !taken.insert(name.clone()) {
+                suffix += 1;
+                name = format!("{stem}-{suffix}.js");
+            }
+            self.chunks.push(Chunk {
+                name,
+                signature: signature.clone(),
+                namespaces: Vec::new(),
+                roots: Vec::new(),
+                items: Vec::new(),
+                imports: Vec::new(),
+                setters: Vec::new(),
+                sites: Vec::new(),
+            });
+        }
+        let mut renumbered = (0..self.chunks.len()).map(ChunkId).collect::<Vec<_>>();
+        if self.chunks.len() > before {
+            // Larger signatures first, so every import still precedes its
+            // importer; the sort is stable, so the plan's chunks keep their
+            // order and an added chunk follows those of its size.
+            let mut order = (1..self.chunks.len()).collect::<Vec<_>>();
+            order.sort_by_key(|&chunk| std::cmp::Reverse(self.chunks[chunk].signature.len()));
+            for (position, &chunk) in order.iter().enumerate() {
+                renumbered[chunk] = ChunkId(1 + position);
+            }
+            let mut chunks = std::mem::take(&mut self.chunks)
+                .into_iter()
+                .map(Some)
+                .collect::<Vec<_>>();
+            self.chunks = std::iter::once(STARTUP.0)
+                .chain(order)
+                .map(|chunk| chunks[chunk].take().expect("each chunk once"))
+                .collect();
+            let renumber = |chunk: &mut ChunkId| *chunk = renumbered[chunk.0];
+            for chunk in &mut self.chunks {
+                chunk.imports.iter_mut().for_each(renumber);
+            }
+            for root in &mut self.roots {
+                renumber(&mut root.chunk);
+            }
+            self.namespace_chunks.iter_mut().for_each(renumber);
+            for item in &mut self.items {
+                renumber(&mut item.chunk);
+            }
+            self.global_chunks.iter_mut().for_each(renumber);
+        }
+        let placed = signatures
+            .iter()
+            .map(|signature| {
+                if startup(signature) {
+                    STARTUP
+                } else {
+                    renumbered[chunk_of_signature[signature]]
+                }
+            })
+            .collect();
+        renumbered.truncate(before);
+        (placed, renumbered)
     }
 }
 

@@ -7,10 +7,12 @@
 //! single file. Each chunk's forms run in a function of their own, as the
 //! single file's do, and what other chunks may read is declared at module
 //! level: startup's runtime (the whole runtime below `Advanced`, the
-//! whole-program slice at `Advanced`), output-level core cells and constant
-//! table, and each chunk's `let` declarations of the globals it owns. Hoisted
-//! methods, which only their function's code reads, are declared in that
-//! function's chunk.
+//! whole-program slice at `Advanced`) and output-level core cells, each
+//! chunk's entries of the constant table, and each chunk's `let`
+//! declarations of the globals it owns. The table's entries are placed once
+//! the chunks are written ([`place_constants`]): each in the chunk of the
+//! roots whose code reads it, which may be a chunk of constants alone that
+//! the plan lacks, and a hoisted method in its function's chunk.
 //!
 //! Which names a chunk imports is read off its text: every compiler name
 //! (`crate::terse::compiler_name`) that it reads and another chunk declares.
@@ -22,7 +24,7 @@
 //! exports is the name another imports.
 use super::*;
 use crate::analyzer::LazyTargetId;
-use crate::chunks::{ChunkId, ChunkPlan, STARTUP};
+use crate::chunks::{ChunkId, ChunkPlan, STARTUP, Signature};
 use crate::terse::{Text, scanned_names};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,11 +36,10 @@ pub(super) struct Chunks<'a> {
     /// By chunk: the chunks that have evaluated before its forms run, by
     /// chunk index: itself, startup, and what it imports, transitively.
     loaded: Vec<Vec<bool>>,
-    /// By constant table entry: the chunk declaring it.
-    constants: Vec<ChunkId>,
-    /// By chunk other than startup: the declarations of the hoisted methods
-    /// of its functions ([`ConstantKey::Method`]).
-    methods: Vec<String>,
+    /// By constant table entry: what placing it needs.
+    constants: Vec<Constant>,
+    /// While an entry's initializer is written: the entries it reads.
+    initializer: Option<Vec<usize>>,
     /// The globals the getter of a loadable reads from its target chunk's
     /// module namespace object, each with that chunk, which exports it.
     targets: Vec<(ChunkId, String)>,
@@ -47,19 +48,76 @@ pub(super) struct Chunks<'a> {
     lazy: bool,
 }
 
+/// A constant table entry of a chunked build (docs/code-splitting.md,
+/// "Phase 3", constants): where its declaration is, and what decides its
+/// chunk.
+struct Constant {
+    /// Its declaration, `const k3 = ...;`, in the table's declarations.
+    declaration: std::ops::Range<usize>,
+    /// For a hoisted method ([`ConstantKey::Method`]), the chunk of its
+    /// function, which declares it: its body reads that chunk's globals.
+    method: Option<ChunkId>,
+    /// The entries its initializer reads: the parts of a composite or a
+    /// shape, which are earlier entries.
+    parts: Vec<usize>,
+    /// The roots whose chunks' code reads it: the union of their
+    /// signatures, startup's holding every root.
+    readers: Signature,
+}
+
 impl Chunks<'_> {
-    /// Record a new constant table entry: a hoisted method, declared in the
-    /// chunk being written, or a constant, which stays in startup.
-    pub(super) fn constant(&mut self, method: bool) {
-        self.constants
-            .push(if method { self.current } else { STARTUP });
+    /// Record constant table entry `number`, whose initializer reads the
+    /// entries `parts`. Its readers place it.
+    pub(super) fn constant(&mut self, number: usize, parts: Vec<usize>) {
+        debug_assert_eq!(
+            number,
+            self.constants.len(),
+            "entries are numbered in order"
+        );
+        let roots = self.plan.roots.len();
+        self.constants.push(Constant {
+            declaration: 0..0,
+            method: None,
+            parts,
+            readers: Signature::empty(roots),
+        });
     }
 
-    /// Where the declaration of a hoisted method of the chunk being written
-    /// goes, unless that chunk is startup, whose methods are entries of the
-    /// constant table as in the single file.
-    pub(super) fn method_declarations(&mut self) -> Option<&mut String> {
-        (self.current != STARTUP).then(|| &mut self.methods[self.current.0])
+    /// Record constant table entry `number`, a hoisted method of a function
+    /// of the chunk being written, which declares it.
+    pub(super) fn method(&mut self, number: usize) {
+        self.constant(number, Vec::new());
+        self.constants[number].method = Some(self.current);
+    }
+
+    /// Where the declaration of entry `number` is in the table's
+    /// declarations.
+    pub(super) fn declared(&mut self, number: usize, declaration: std::ops::Range<usize>) {
+        self.constants[number].declaration = declaration;
+    }
+
+    /// Start recording the entries an initializer reads, returning what an
+    /// enclosing initializer recorded so far.
+    pub(super) fn begin_initializer(&mut self) -> Option<Vec<usize>> {
+        self.initializer.replace(Vec::new())
+    }
+
+    /// The entries the initializer just written reads, restoring the
+    /// recording of `enclosing`.
+    pub(super) fn end_initializer(&mut self, enclosing: Option<Vec<usize>>) -> Vec<usize> {
+        std::mem::replace(&mut self.initializer, enclosing).unwrap_or_default()
+    }
+
+    /// A read of entry `number`: by the initializer being written, or else
+    /// by the code of the chunk being written.
+    pub(super) fn read_constant(&mut self, number: usize) {
+        match &mut self.initializer {
+            Some(parts) => parts.push(number),
+            None => {
+                let signature = &self.plan.chunks[self.current.0].signature;
+                self.constants[number].readers.union(signature);
+            }
+        }
     }
 
     /// The chunk a loadable of `target` written in the chunk being written
@@ -255,7 +313,7 @@ const LAZY: &str = "  const lazy$ = (() => {
 ";
 
 /// One chunk of a chunked build: its ES module, and the chunks it imports,
-/// ascending.
+/// in the order of its import lines.
 pub(crate) struct EmittedChunk {
     pub(crate) source: String,
     pub(crate) imports: Vec<ChunkId>,
@@ -276,33 +334,10 @@ struct Written {
     packages: Vec<PackageImport>,
 }
 
-/// The chunks of `plan` for `program` with the decisions of `application`,
-/// in plan order; see the module documentation. `None` when the forms reach
-/// reflection at `Advanced` and `plan` moves a definition out of its
-/// namespace's chunk: such a program is planned at namespace granularity
-/// (docs/code-splitting.md, "Phase 3", the reflection gate). `reflective`:
-/// the forms are known to reach reflection, so they are written once, with
-/// the namespaces' registration.
-pub(crate) fn emit_chunked(
-    program: &Program,
-    application: Application<'_>,
-    plan: &ChunkPlan,
-    reflective: bool,
-) -> Option<Vec<EmittedChunk>> {
-    let direct = application.direct;
-    let slice = direct.is_some();
-    let terse = slice && application.terse;
+/// By chunk of `plan`: the chunks that have evaluated before its forms run,
+/// by chunk index: itself, startup, and what it imports, transitively.
+fn loaded_chunks(plan: &ChunkPlan) -> Vec<Vec<bool>> {
     let count = plan.chunks.len();
-    let sources = program
-        .namespaces
-        .iter()
-        .enumerate()
-        .map(|(source, name)| (name.as_str(), source))
-        .collect::<HashMap<_, _>>();
-    let mut forms = vec![None; program.exprs.len()];
-    for item in &plan.items {
-        forms[item.expr.0] = Some(item.chunk);
-    }
     // Imports precede their importers, so each chunk's prerequisites are
     // known when it is reached.
     let mut loaded = vec![vec![false; count]; count];
@@ -317,6 +352,69 @@ pub(crate) fn emit_chunked(
             }
         }
     }
+    loaded
+}
+
+/// Place the constant table's entries (docs/code-splitting.md, "Phase 3",
+/// constants): an entry's signature is the union of the signatures of the
+/// chunks whose code reads it and of the entries whose initializers read it,
+/// which are later entries; a hoisted method's is its function's chunk's.
+/// Returns `plan` with a chunk for each signature no chunk has
+/// ([`ChunkPlan::place`]), the chunk of each entry in it, and the id in it
+/// of each chunk of `plan`.
+fn place_constants(
+    program: &Program,
+    plan: &ChunkPlan,
+    constants: &[Constant],
+) -> (ChunkPlan, Vec<ChunkId>, Vec<ChunkId>) {
+    let mut signatures = constants
+        .iter()
+        .map(|constant| match constant.method {
+            Some(chunk) => plan.chunks[chunk.0].signature.clone(),
+            None => constant.readers.clone(),
+        })
+        .collect::<Vec<_>>();
+    for (entry, constant) in constants.iter().enumerate().rev() {
+        let (earlier, rest) = signatures.split_at_mut(entry);
+        for &part in &constant.parts {
+            debug_assert!(part < entry, "k{entry} reads a later entry, k{part}");
+            earlier[part].union(&rest[0]);
+        }
+    }
+    let mut placed = plan.clone();
+    let (owners, renumbered) = placed.place(program, &signatures);
+    (placed, owners, renumbered)
+}
+
+/// The chunks of `plan` for `program` with the decisions of `application`,
+/// in plan order, with the plan they follow: `plan` and the chunks its
+/// constants add, which hold no form ([`place_constants`]); see the module
+/// documentation. `None` when the forms reach reflection at `Advanced` and
+/// `plan` moves a definition out of its namespace's chunk: such a program is
+/// planned at namespace granularity (docs/code-splitting.md, "Phase 3", the
+/// reflection gate). `reflective`: the forms are known to reach reflection,
+/// so they are written once, with the namespaces' registration.
+pub(crate) fn emit_chunked(
+    program: &Program,
+    application: Application<'_>,
+    plan: &ChunkPlan,
+    reflective: bool,
+) -> Option<(ChunkPlan, Vec<EmittedChunk>)> {
+    let direct = application.direct;
+    let slice = direct.is_some();
+    let terse = slice && application.terse;
+    let count = plan.chunks.len();
+    let sources = program
+        .namespaces
+        .iter()
+        .enumerate()
+        .map(|(source, name)| (name.as_str(), source))
+        .collect::<HashMap<_, _>>();
+    let mut forms = vec![None; program.exprs.len()];
+    for item in &plan.items {
+        forms[item.expr.0] = Some(item.chunk);
+    }
+    let loaded = loaded_chunks(plan);
     // A form outside every namespace's body is the entry's.
     let entry = plan.roots[crate::chunks::STARTUP_ROOT].namespace;
     let setup = Setup {
@@ -337,7 +435,7 @@ pub(crate) fn emit_chunked(
             current: STARTUP,
             loaded: loaded.clone(),
             constants: Vec::new(),
-            methods: vec![String::new(); count],
+            initializer: None,
             targets: Vec::new(),
             lazy: false,
         });
@@ -409,18 +507,52 @@ pub(crate) fn emit_chunked(
             writeln!(startup_head, "  let core${name} = {initial};").unwrap();
         }
     }
+    let mut chunks = emitter.chunks.take().expect("a chunked build");
+    // Each constant table entry goes to the chunk of its signature, which
+    // may be a chunk the plan does not have; each chunk declares its entries
+    // in the order the table declares them, the parts of a composite first.
+    let (placed_plan, owners, renumbered) = place_constants(program, plan, &chunks.constants);
+    let plan = &placed_plan;
+    let count = plan.chunks.len();
+    let mut tables = vec![String::new(); count];
     if let Some(constants) = &emitter.constants {
-        startup_head.push_str(&constants.declarations);
+        let mut order = (0..chunks.constants.len()).collect::<Vec<_>>();
+        order.sort_unstable_by_key(|&entry| chunks.constants[entry].declaration.start);
+        for entry in order {
+            let declaration = chunks.constants[entry].declaration.clone();
+            tables[owners[entry].0].push_str(&constants.declarations[declaration]);
+        }
     }
-    let chunks = emitter.chunks.take().expect("a chunked build");
-    let mut written = bodies
+    #[cfg(debug_assertions)]
+    for table in &tables {
+        check_runtime_reads(table, &[], &emitter.runtime, &emitter.core_cells);
+    }
+    startup_head.push_str(&tables[STARTUP.0]);
+    let mut placed = (0..count).map(|_| None).collect::<Vec<_>>();
+    for (chunk, body) in bodies.into_iter().enumerate() {
+        placed[renumbered[chunk].0] = Some(body);
+    }
+    for (chunk, _) in &mut chunks.targets {
+        *chunk = renumbered[chunk.0];
+    }
+    let mut written = placed
         .into_iter()
         .enumerate()
-        .map(|(chunk, (forms, raw, packages))| {
+        .map(|(chunk, body)| {
             let (head, runtime) = if chunk == STARTUP.0 {
                 (std::mem::take(&mut startup_head), runtime.clone())
             } else {
-                (chunks.methods[chunk].clone(), None)
+                (std::mem::take(&mut tables[chunk]), None)
+            };
+            // A chunk the constants add holds no form.
+            let Some((forms, raw, packages)) = body else {
+                return Written {
+                    head,
+                    runtime,
+                    run: String::new(),
+                    raw: Vec::new(),
+                    packages: Vec::new(),
+                };
             };
             let open = if chunk == STARTUP.0 {
                 format!("{PRELUDE_OPEN}{registration}")
@@ -440,6 +572,7 @@ pub(crate) fn emit_chunked(
             }
         })
         .collect::<Vec<_>>();
+    let loaded = loaded_chunks(plan);
 
     // The names each chunk reads, and their owners.
     let owner = |name: &str| -> Option<ChunkId> {
@@ -448,24 +581,13 @@ pub(crate) fn emit_chunked(
         } else if let Some(global) = owned_global(name) {
             Some(plan.global_chunks[global])
         } else {
-            constant_entry(name).map(|entry| chunks.constants[entry])
+            constant_entry(name).map(|entry| owners[entry])
         }
     };
     let mut read = vec![BTreeSet::new(); count];
     for (chunk, text) in written.iter_mut().enumerate() {
         #[cfg(debug_assertions)]
-        {
-            let declarations = if chunk == STARTUP.0 {
-                emitter
-                    .constants
-                    .as_ref()
-                    .map_or("", |constants| constants.declarations.as_str())
-            } else {
-                &chunks.methods[chunk]
-            };
-            check_runtime_reads(declarations, &[], &emitter.runtime, &emitter.core_cells);
-            check_runtime_reads(&text.run, &text.raw, &emitter.runtime, &emitter.core_cells);
-        }
+        check_runtime_reads(&text.run, &text.raw, &emitter.runtime, &emitter.core_cells);
         let mut names = BTreeSet::new();
         let skipped = text.runtime.iter().cloned().collect::<Vec<_>>();
         for (source, skipped) in [(&text.head, &skipped), (&text.run, &text.raw)] {
@@ -508,8 +630,19 @@ pub(crate) fn emit_chunked(
                 globals[owner.0].insert(name.clone());
             }
             if owner.0 != chunk {
+                // A constant's chunk is one more import, of a chunk whose
+                // signature holds its readers'.
                 debug_assert!(
-                    owner == STARTUP || chunks.loaded[chunk][owner.0],
+                    owner == STARTUP
+                        || if constant_entry(name).is_some() {
+                            let (outer, inner) = (
+                                &plan.chunks[owner.0].signature,
+                                &plan.chunks[chunk].signature,
+                            );
+                            outer != inner && outer.is_superset(inner)
+                        } else {
+                            loaded[chunk][owner.0]
+                        },
                     "{} reads {name} of {}, which it does not import",
                     plan.chunks[chunk].name,
                     plan.chunks[owner.0].name
@@ -616,7 +749,8 @@ pub(crate) fn emit_chunked(
             let mut source = package_imports(&text.packages);
             // The chunks it imports, in the order their namespaces load in
             // the single file; a chunk of moved definitions alone, which
-            // have no effect, by the namespace of its first.
+            // have no effect, by the namespace of its first; and last a
+            // chunk of constants alone, which only its readers need.
             let mut imported = imports[chunk].iter().collect::<Vec<_>>();
             imported.sort_by_key(|(import, _)| {
                 let chunk = &plan.chunks[import.0];
@@ -625,6 +759,7 @@ pub(crate) fn emit_chunked(
                     .first()
                     .copied()
                     .or_else(|| chunk.items.first().map(|&item| plan.items[item].namespace))
+                    .map_or((1, 0), |namespace| (0, namespace))
             });
             for (import, names) in &imported {
                 let specifier = quoted(&format!("./{}", plan.chunks[import.0].name));
@@ -681,15 +816,17 @@ pub(crate) fn emit_chunked(
             if chunk == STARTUP.0 {
                 source.push_str("export default ");
             }
-            source.push_str(run.trim_end());
-            source.push_str(";\n");
+            if !run.is_empty() {
+                source.push_str(run.trim_end());
+                source.push_str(";\n");
+            }
             EmittedChunk {
                 source,
-                imports: imports[chunk].keys().copied().collect(),
+                imports: imported.iter().map(|(import, _)| **import).collect(),
             }
         })
         .collect();
-    Some(files)
+    Some((placed_plan, files))
 }
 
 /// The order of declared global names: by global, then method entry.

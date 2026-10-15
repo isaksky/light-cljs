@@ -126,8 +126,9 @@ value, the chunks loaded with `import()` the first time `light.lazy/load` asks
 for a target in them, and `chunks.json`, which lists each file with its
 imports, namespaces, moved definitions, roots, loadable sites and size.
 Chunks follow namespaces, and at `--optimize advanced` definitions without
-effects move to the chunk of the code that reads them; the runtime and
-constants stay in startup for now. It works at every
+effects move to the chunk of the code that reads them, as do the keywords,
+symbols and constant collections of the constant table; the runtime stays in
+startup for now. It works at every
 `--optimize` level, writes only the files the manifest names, takes no source
 map flags, and leaves a program without loadables one file, its `--esm` output
 ([Chunked builds](docs/compiler.md#chunked-builds),
@@ -337,8 +338,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 - **No build tooling:** no per-namespace module output; output
   is one JavaScript expression, one ES module with `--esm`, or with `--out-dir`
   one ES module per chunk of namespaces that `light.lazy/loadable` sites load
-  (at `advanced` also of definitions moved toward their readers), with the
-  runtime and every constant in the startup chunk. A dev build
+  (at `advanced` also of definitions and constants moved toward their
+  readers), with the runtime in the startup chunk. A dev build
   (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
   rewrites a saved namespace's unit, but nothing pushes it to a page yet. The release
   optimizer, `--optimize advanced`, is still being built

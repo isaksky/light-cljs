@@ -1,0 +1,8 @@
+# file	namespaces	roots	imports	imports at advanced	definitions at advanced
+app.main.js	light.lazy app.main	app.main	-	-	-
+app.editor+app.reports+app.settings.js	-	-	n/a	app.main.js	-
+app.editor+app.reports.js	app.common	-	app.main.js	app.main.js	-
+app.editor+app.settings.js	-	-	n/a	app.main.js	-
+app.editor.js	app.editor	app.editor	app.main.js app.editor+app.reports.js	app.main.js app.editor+app.reports.js app.editor+app.reports+app.settings.js app.editor+app.settings.js	-
+app.reports.js	app.reports	app.reports	app.main.js app.editor+app.reports.js	app.main.js app.editor+app.reports.js app.editor+app.reports+app.settings.js	-
+app.settings.js	app.settings	app.settings	app.main.js	app.main.js app.editor+app.reports+app.settings.js app.editor+app.settings.js	-

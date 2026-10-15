@@ -794,8 +794,8 @@ fn write_chunks(output: &ChunkedOutput) -> TempDir {
 ///
 /// - Structure: `chunks.json` describes the files (`chunks::check_manifest`):
 ///   every import edge targets a strictly larger signature, every chunk holds
-///   a namespace or a definition, and no namespace only lazy roots reach is
-///   in startup.
+///   a namespace, a definition or constants another chunk imports, and no
+///   namespace only lazy roots reach is in startup.
 /// - Property 6, startup never holds a lazy-only definition: the startup chunk
 ///   contains no sentinel of a definition of a namespace only lazy roots
 ///   reach, at any level, and at `Advanced`, unless the program calls

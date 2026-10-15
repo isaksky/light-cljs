@@ -1,0 +1,4 @@
+menu: [:menu-item]
+editor: [{:both-features "editor-map", :editor-only 1} {:both-features "shared-map"} :editor-and-settings :all-features]
+reports: [{:both-features "shared-map"} :both-features :reports-only :all-features]
+settings: [:editor-and-settings :settings-only :all-features]
