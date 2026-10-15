@@ -293,7 +293,11 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
   no DOM, Node APIs, filesystem, network or process access unless the host supplies
   them. `NamePolicy` restricts name resolution but is not a sandbox. Promises are
-  not pumped.
+  not pumped, so under `--eval` and `--repl` an `^:async` function returns a
+  Promise whose `.then` callbacks and post-`await` code never run; compiled
+  output, where `^:async` functions and
+  `await` work as upstream's ([docs/compiler.md](docs/compiler.md#async-functions-and-await)),
+  runs them in the host's event loop.
 - Some upstream behaviors differ deliberately; [docs/compiler.md](docs/compiler.md)
   documents supported forms, runtime semantics and known differences.
 

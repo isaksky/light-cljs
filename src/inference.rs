@@ -17,7 +17,8 @@
 //!   or invoke are `any` when the program extends a core protocol beyond its
 //!   own types, and every call of an operation the program may replace is.
 //! - A call of a known function (the [`Known::Function`] of its callee) has the
-//!   union of its method bodies' types; a call of a global tagged `^boolean`
+//!   union of its method bodies' types, `any` for an `^:async` method, whose
+//!   call is a Promise; `await` is `any`; a call of a global tagged `^boolean`
 //!   and every `BooleanHint` are `boolean`, as upstream trusts these tags.
 //! - A local bound by `let`, `loop` or `letfn` has the union of its
 //!   initializer and, for a loop, of every `recur` argument for it.
@@ -918,12 +919,17 @@ impl Inference {
     }
 
     /// What a call of the `Fn` expression `function` returns: the union of its
-    /// method bodies.
+    /// method bodies, or `any` for an `^:async` method, whose call returns a
+    /// Promise of its body's value.
     pub fn returns(&self, program: &Program, function: ExprId) -> Inferred {
         match &program.exprs[function.0].kind {
             ExprKind::Fn { methods, .. } => {
                 methods.iter().fold(Inferred::NEVER, |value, method| {
-                    value.union(self.value(method.body))
+                    value.union(if method.asynchronous {
+                        Inferred::ANY
+                    } else {
+                        self.value(method.body)
+                    })
                 })
             }
             _ => Inferred::ANY,
@@ -1613,6 +1619,11 @@ impl<'p> Walker<'p> {
                 self.walk(*value);
                 Inferred::NEVER
             }
+            // What a promise settles to, or the value itself, is not known.
+            K::Await(value) => {
+                self.walk(*value);
+                Inferred::ANY
+            }
             K::Try {
                 body,
                 catches,
@@ -2103,9 +2114,14 @@ impl<'p> Walker<'p> {
         match value.known {
             Known::Function(function) if callable == Type::FN => {
                 match &program.exprs[function.0].kind {
+                    // An `^:async` method returns a Promise.
                     ExprKind::Fn { methods, .. } => {
                         methods.iter().fold(Inferred::NEVER, |result, method| {
-                            result.union(self.values[method.body.0])
+                            result.union(if method.asynchronous {
+                                Inferred::ANY
+                            } else {
+                                self.values[method.body.0]
+                            })
                         })
                     }
                     _ => Inferred::ANY,

@@ -204,19 +204,26 @@
   globalThis.__lightRestoreCompilerBinding = (name, saved) => {
     if (saved[0]) overlays.set(name, saved[1]); else overlays.delete(name);
   };
+  // Whether a defonce of name keeps a value already defined, without
+  // evaluating its initializer. An ^:async function's nested defonce asks
+  // first, since its initializer may await and cannot be a thunk.
+  const keptOnce = name => {
+    const bundle = installing.at(-1);
+    if (bundle?.names.includes(name)) {
+      if (bundle.products.has(name)) return true;
+      if (bundle.group && definitionAvailable(name, bundle.previous.get(name))) return true;
+    } else if (definitionAvailable(name, slots.get(name))) {
+      return true;
+    }
+    return overlays.has(name) && overlays.get(name) !== undefined;
+  };
+  globalThis.__lightCompilerRootKept = keptOnce;
   // Nested ordinary defs are executed expressions, so their initializer is eager.
   // Defonce nevertheless preserves any previously encountered source generation.
   globalThis.__lightDefineCompilerRoot = (name, initialize, once) => {
+    if (once && keptOnce(name)) return null;
     const bundle = installing.at(-1);
     if (bundle?.names.includes(name)) {
-      if (once && bundle.products.has(name)) return null;
-      if (once && bundle.group) {
-        const previous = bundle.previous.get(name);
-        if (definitionAvailable(name, previous)) {
-          return null;
-        }
-      }
-      if (once && overlays.has(name) && overlays.get(name) !== undefined) return null;
       if (initialize === null) return undefined;
       const value = initialize();
       if (overlays.has(name)) overlays.set(name, value);
@@ -224,8 +231,6 @@
       return value;
     }
     const old = slots.get(name);
-    if (once && definitionAvailable(name, old)) return null;
-    if (once && overlays.has(name) && overlays.get(name) !== undefined) return null;
     if (initialize === null) {
       if (!old) slots.set(name, {unit: null, state: 'pending'});
       return undefined;

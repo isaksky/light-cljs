@@ -175,6 +175,19 @@ value and `ex-data`; read/analysis diagnostics become ExceptionInfo with phase a
 available source location. Success preserves `*e`. Definitions return their CLJS
 initializer value.
 
+Promises are not pumped: the embedded QuickJS runs no promise jobs between or
+after forms, and the session has no job pump. A Promise may still settle
+synchronously, as one an `^:async` function returns when its body finishes
+without waiting, but its reactions never run: `.then` callbacks, and the rest
+of an `^:async` function body after an `await` (see [Async functions and
+await](compiler.md#async-functions-and-await)). Under `--eval`, `--repl` and
+`EvalSession` a call of an `^:async` function therefore shows only its
+Promise's identity and kind (`(instance? js/Promise p)`, printed
+`#object[Promise [object Promise]]`); its value and any rejection are not
+observable from the session. `await` outside an `^:async` function body,
+including a top-level `(await x)`, is the located analysis error upstream's
+assertion gives; upstream has no top-level `await` either.
+
 | Flag | Default | Unit/behavior |
 | --- | ---: | --- |
 | `--poll-budget N` | 1000000 | Cooperative engine/compiler polls per operation |

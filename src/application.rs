@@ -913,6 +913,10 @@ impl<'p> Inert<'p> {
                         method.rest.is_none() && method.params.len() == arguments.len()
                     })?,
                 };
+                // A call of an `^:async` method returns a Promise.
+                if method.asynchronous {
+                    return None;
+                }
                 for (index, param) in method.params.iter().enumerate() {
                     self.locals[param.0] = Some(
                         arguments

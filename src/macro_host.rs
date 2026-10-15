@@ -752,8 +752,18 @@ impl MacroHost {
         }
         let mut args = vec![builder.nil(), builder.nil()];
         args.extend_from_slice(&parts[1..]);
+        // `(^:async fn ...)` keeps its metadata on the `fn*` it expands to,
+        // where analysis reads it, as upstream's `fn*` reads its symbol's.
+        let asynchronous =
+            operation == "fn" && crate::compiler_binding_macros::asynchronous(&builder, &parts[0])?;
         let expanded = if let Some(expanded) = extended {
-            Some(expanded)
+            Some(if asynchronous {
+                let data =
+                    crate::compiler_binding_macros::mark_asynchronous(&builder, &expanded.data())?;
+                Form::from_expansion(data, form, name.clone())
+            } else {
+                expanded
+            })
         } else {
             use crate::compiler_binding_macros as seed;
             let data = match String::from_utf16_lossy(name.name()).as_str() {
@@ -772,6 +782,14 @@ impl MacroHost {
                 _ => None,
             };
             data.transpose()?
+                .map(|data| {
+                    if asynchronous {
+                        seed::mark_asynchronous(&builder, &data)
+                    } else {
+                        Ok(data)
+                    }
+                })
+                .transpose()?
                 .map(|data| Form::from_expansion(data, form, name.clone()))
         };
         let expanded = match expanded {

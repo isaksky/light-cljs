@@ -229,6 +229,8 @@ fn emit_js_mode(
             field_resets: Vec::new(),
             used: HashSet::new(),
             returned_definition: None,
+            asynchronous: false,
+            boxed_return: false,
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
             site: None,
@@ -1212,6 +1214,15 @@ struct Membership<'a> {
     contains: bool,
 }
 
+/// A function [`Emitter::iife_open`] opened, which [`Emitter::iife_close`]
+/// closes.
+struct Wrapper {
+    /// An awaited async function, whose value is boxed.
+    asynchronous: bool,
+    /// Whether the function around it boxes its returned values.
+    outer_boxed: bool,
+}
+
 struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
@@ -1255,6 +1266,13 @@ struct Emitter<'a> {
     used: HashSet<ExprId>,
     // Upstream return-context def exits before its following test-property write.
     returned_definition: Option<ExprId>,
+    /// Whether the innermost function being written is an `^:async` method,
+    /// where a function the emitter wraps around expressions that `await` is
+    /// an awaited `async` one ([`Emitter::iife_open`]).
+    asynchronous: bool,
+    /// Whether the innermost function being written is such an awaited
+    /// wrapper, whose `return`s box their value ([`Emitter::return_open`]).
+    boxed_return: bool,
     raw_segments: Vec<std::ops::Range<usize>>,
     /// Every runtime name written so far, the roots of an `Advanced` slice.
     runtime: RuntimeRoots,
@@ -2758,9 +2776,12 @@ impl<'a> Emitter<'a> {
         if let Some(parts) = self.short_circuit(id, false) {
             self.indentation();
             if context == ExprContext::Return {
-                self.output.push_str("return ");
+                self.return_open();
             }
             self.short_circuit_value(parts);
+            if context == ExprContext::Return {
+                self.return_close();
+            }
             self.output.push_str(";\n");
             return;
         }
@@ -2768,9 +2789,12 @@ impl<'a> Emitter<'a> {
             ExprKind::JsTemplate { segments, args } => {
                 self.indentation();
                 if context == ExprContext::Return {
-                    self.output.push_str("return ");
+                    self.return_open();
                 }
                 self.js_template(segments, args);
+                if context == ExprContext::Return {
+                    self.return_close();
+                }
                 self.output.push_str(";\n");
             }
             ExprKind::WithOutStr(body) => {
@@ -2805,7 +2829,10 @@ impl<'a> Emitter<'a> {
                 self.output.push_str(" = savedNewline; }\n");
                 if context == ExprContext::Return {
                     self.indentation();
-                    self.output.push_str("return text;\n");
+                    self.return_open();
+                    self.output.push_str("text");
+                    self.return_close();
+                    self.output.push_str(";\n");
                 }
                 self.indent -= 1;
                 self.indentation();
@@ -3129,7 +3156,10 @@ impl<'a> Emitter<'a> {
             ExprKind::Do(exprs) => {
                 if exprs.is_empty() && context == ExprContext::Return {
                     self.indentation();
-                    self.output.push_str("return null;\n");
+                    self.return_open();
+                    self.output.push_str("null");
+                    self.return_close();
+                    self.output.push_str(";\n");
                 }
                 for (index, &expr) in exprs.iter().enumerate() {
                     self.emit(
@@ -3220,12 +3250,15 @@ impl<'a> Emitter<'a> {
             _ => {
                 self.indentation();
                 if context == ExprContext::Return {
-                    self.output.push_str("return ");
+                    self.return_open();
                 }
                 let previous = self.returned_definition;
                 self.returned_definition = (context == ExprContext::Return).then_some(id);
                 self.value(id);
                 self.returned_definition = previous;
+                if context == ExprContext::Return {
+                    self.return_close();
+                }
                 self.output.push_str(";\n");
             }
         }
@@ -3270,11 +3303,16 @@ impl<'a> Emitter<'a> {
     ) {
         self.output.push('(');
         self.function_mark();
+        if method.asynchronous {
+            self.output.push_str("async ");
+        }
         self.output.push_str("function");
         if let Some(name) = name {
             self.output.push(' ');
             self.local(name);
         }
+        let outer_asynchronous = std::mem::replace(&mut self.asynchronous, method.asynchronous);
+        let outer_boxed = std::mem::take(&mut self.boxed_return);
         self.output.push('(');
         for (index, param) in method.params.iter().chain(method.rest.iter()).enumerate() {
             if index > 0 {
@@ -3363,9 +3401,60 @@ impl<'a> Emitter<'a> {
         if capture_reset {
             self.capture_resets.pop();
         }
+        self.asynchronous = outer_asynchronous;
+        self.boxed_return = outer_boxed;
         self.indent -= 1;
         self.indentation();
         self.output.push_str("})");
+    }
+
+    /// Open a function that is called where it is written, around the
+    /// expression `id` of the function being written: `(function () {` (or
+    /// `(() => {` when `arrow`). When `id` awaits, in an `^:async` method,
+    /// the function is an awaited async one, `(await (async function () {`,
+    /// as upstream's `iife-open` writes it, so that the `await` stays legal.
+    /// Its `return`s then box their value ([`Emitter::return_open`]), which
+    /// [`Emitter::iife_close`] unboxes, `(await ...)[0]`: unlike upstream's,
+    /// such a wrapper never adopts a Promise that its expression produces,
+    /// so a value is the same whether or not `Advanced` removes the wrapper
+    /// (folding a `let`, a `do` as a comma expression). A wrapper whose
+    /// expression does not await stays a plain function.
+    fn iife_open(&mut self, id: ExprId, arrow: bool) -> Wrapper {
+        let asynchronous = self.asynchronous && crate::program_fragment::awaits(self.program, id);
+        self.output
+            .push_str(if asynchronous { "(await (async " } else { "(" });
+        self.output
+            .push_str(if arrow { "() => {" } else { "function () {" });
+        Wrapper {
+            asynchronous,
+            outer_boxed: std::mem::replace(&mut self.boxed_return, asynchronous),
+        }
+    }
+
+    /// Close and call a function [`Emitter::iife_open`] opened.
+    fn iife_close(&mut self, wrapper: Wrapper) {
+        self.output.push_str("})()");
+        if wrapper.asynchronous {
+            self.output.push_str(")[0]");
+        }
+        self.boxed_return = wrapper.outer_boxed;
+    }
+
+    /// Begin returning a value from the function being written: `return `,
+    /// or `return [` in an awaited wrapper ([`Emitter::iife_open`]).
+    fn return_open(&mut self) {
+        self.output.push_str(if self.boxed_return {
+            "return ["
+        } else {
+            "return "
+        });
+    }
+
+    /// End a value [`Emitter::return_open`] began.
+    fn return_close(&mut self) {
+        if self.boxed_return {
+            self.output.push(']');
+        }
     }
 
     fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
@@ -3410,9 +3499,15 @@ impl<'a> Emitter<'a> {
     }
 
     /// The `arguments.length` dispatcher over methods bound to `entries`:
-    /// `function(a0, a1) { switch (arguments.length) { ... } }`.
+    /// `function(a0, a1) { switch (arguments.length) { ... } }`. Over
+    /// `^:async` methods it is an `async function`, as upstream's front
+    /// function of a multi-arity or variadic `fn` is, so an arity error
+    /// rejects the call's Promise instead of throwing.
     fn dispatcher(&mut self, entries: &[String], methods: &[FnMethod], macro_function: bool) {
         self.function_mark();
+        if methods.iter().any(|method| method.asynchronous) {
+            self.output.push_str("async ");
+        }
         self.output.push_str("function(");
         let count = if macro_function {
             1
@@ -3942,11 +4037,12 @@ impl<'a> Emitter<'a> {
                 message,
                 form,
             } => {
+                let wrapper = self.iife_open(id, true);
                 if self.inference.is_some() {
-                    self.output.push_str("(() => { if (!(");
+                    self.output.push_str(" if (!(");
                     self.condition(*test);
                 } else {
-                    self.output.push_str("(() => { if (!truth(");
+                    self.output.push_str(" if (!truth(");
                     self.value(*test);
                 }
                 self.output
@@ -3958,7 +4054,12 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(") + \"\\n\" + ");
                 }
                 self.string(*form);
-                self.output.push_str("); return null; })()");
+                self.output.push_str("); ");
+                self.return_open();
+                self.output.push_str("null");
+                self.return_close();
+                self.output.push_str("; ");
+                self.iife_close(wrapper);
             }
             ExprKind::Reify {
                 metadata,
@@ -4025,7 +4126,8 @@ impl<'a> Emitter<'a> {
                 fields,
                 methods,
             } => {
-                self.output.push_str("(() => { ");
+                let wrapper = self.iife_open(id, true);
+                self.output.push(' ');
                 self.product(*global);
                 self.output.push_str(" = ");
                 self.rt(RuntimeName::export("makeType"));
@@ -4179,13 +4281,15 @@ impl<'a> Emitter<'a> {
                     self.global(*global);
                     self.output.push_str(", value); ");
                 }
-                self.output.push_str("return ");
+                self.return_open();
                 if let Some(body) = body {
                     self.value(*body);
                 } else {
                     self.product(*global);
                 }
-                self.output.push_str("; })()");
+                self.return_close();
+                self.output.push_str("; ");
+                self.iife_close(wrapper);
             }
 
             ExprKind::JsArguments => self.output.push_str("arguments"),
@@ -4572,16 +4676,43 @@ impl<'a> Emitter<'a> {
                 once,
             } => {
                 if self.demand_roots && !self.program.globals[global.0].name.contains('.') {
+                    let binding = &self.program.globals[global.0];
+                    let name = format!("{}/{}", binding.namespace, binding.name)
+                        .encode_utf16()
+                        .collect::<Vec<_>>();
+                    // An `await` cannot be in the synchronous initializer
+                    // thunk, so in an `^:async` method the thunk returns
+                    // values evaluated before the call, and a `defonce`
+                    // first asks whether it keeps an earlier value.
+                    let awaits = self.asynchronous
+                        && [*init, *test]
+                            .into_iter()
+                            .flatten()
+                            .any(|id| crate::program_fragment::awaits(self.program, id));
+                    if awaits && *once {
+                        self.output.push_str("(globalThis.__lightCompilerRootKept(");
+                        self.string_units(&name);
+                        self.output.push_str(") ? null : ");
+                    }
                     self.output
                         .push_str("globalThis.__lightDefineCompilerRoot(");
-                    let binding = &self.program.globals[global.0];
-                    self.string_units(
-                        &format!("{}/{}", binding.namespace, binding.name)
-                            .encode_utf16()
-                            .collect::<Vec<_>>(),
-                    );
+                    self.string_units(&name);
                     self.output.push_str(", ");
-                    if let Some(init) = init {
+                    if let Some(init) = init
+                        && awaits
+                    {
+                        self.output.push_str("((value, test) => () => (");
+                        if test.is_some() {
+                            self.output.push_str("value.cljs$lang$test = test, ");
+                        }
+                        self.output.push_str("value))(");
+                        self.value(*init);
+                        if let Some(test) = test {
+                            self.output.push_str(", ");
+                            self.value(*test);
+                        }
+                        self.output.push(')');
+                    } else if let Some(init) = init {
                         self.output.push_str("() => ");
                         if let Some(test) = test {
                             self.output.push_str("{ const value = ");
@@ -4598,6 +4729,9 @@ impl<'a> Emitter<'a> {
                         self.output.push_str("null");
                     }
                     write!(self.output, ", {once})").unwrap();
+                    if awaits && *once {
+                        self.output.push(')');
+                    }
                     return;
                 }
                 if let Some(init) = init
@@ -4688,12 +4822,13 @@ impl<'a> Emitter<'a> {
             ExprKind::ThisAs { .. } => {
                 // CLJS value-context this-as has an ordinary function scope;
                 // its implicit receiver is the global object, not lexical this.
-                self.output.push_str("(function () {\n");
+                let wrapper = self.iife_open(id, false);
+                self.output.push('\n');
                 self.indent += 1;
                 self.emit(id, ExprContext::Return);
                 self.indent -= 1;
                 self.indentation();
-                self.output.push_str("})()");
+                self.iife_close(wrapper);
             }
             ExprKind::Try {
                 body,
@@ -4728,12 +4863,18 @@ impl<'a> Emitter<'a> {
             | ExprKind::Try { .. }
             | ExprKind::Throw(_)
             | ExprKind::Case { .. } => {
-                self.output.push_str("(function () {\n");
+                let wrapper = self.iife_open(id, false);
+                self.output.push('\n');
                 self.indent += 1;
                 self.emit(id, ExprContext::Return);
                 self.indent -= 1;
                 self.indentation();
-                self.output.push_str("})()");
+                self.iife_close(wrapper);
+            }
+            ExprKind::Await(value) => {
+                self.output.push_str("(await ");
+                self.value(*value);
+                self.output.push(')');
             }
             ExprKind::Fn { name, methods } => {
                 let macro_function = self.program.macro_functions.contains(&id);

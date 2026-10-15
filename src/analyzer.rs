@@ -2451,6 +2451,8 @@ pub enum ExprKind {
         args: Vec<ExprId>,
     },
     Throw(ExprId),
+    /// `(await x)` inside an `^:async` function: JavaScript `await`.
+    Await(ExprId),
     Try {
         body: ExprId,
         catches: Vec<CatchClause>,
@@ -2485,6 +2487,9 @@ pub struct FnMethod {
     pub body: ExprId,
     pub target: RecurTargetId,
     pub captures: Vec<LocalId>,
+    /// A method of an `^:async` `fn`: an `async function`, whose body may
+    /// `await` and whose calls return a Promise. Type methods never are.
+    pub asynchronous: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2816,6 +2821,11 @@ struct Analyzer<'a> {
     resolving_var: bool,
     definition_name: Option<String>,
     top_level: bool,
+    /// Whether the innermost function being analyzed is `^:async`, where
+    /// `await` may appear (upstream's `:async` environment flag). Every
+    /// other function, including `delay`, `lazy-seq` and type methods,
+    /// clears it.
+    asynchronous: bool,
 }
 
 fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxTree>, Vec<NodeId>) {
@@ -3114,6 +3124,7 @@ fn analyze_input(
         resolving_var: false,
         definition_name: None,
         top_level: snapshot.is_none(),
+        asynchronous: false,
     };
     if let Some(previous) = previous {
         analyzer.program = previous.clone();
@@ -3318,6 +3329,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             resolving_var: false,
             definition_name: None,
             top_level: true,
+            asynchronous: false,
         };
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
             let runtime = if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
@@ -4396,6 +4408,7 @@ impl Analyzer<'_> {
                 )))
             }
             "this-as" => self.this_as(id, args, context).map(Some),
+            "await" => self.await_form(id, args, context).map(Some),
             "js-arguments" if args.is_empty() => {
                 Ok(Some(self.push(
                     ExprKind::JsArguments,
@@ -6611,6 +6624,37 @@ impl Analyzer<'_> {
         result
     }
 
+    /// `(await x)`, upstream's `cljs.core/await` macro, which asserts
+    /// `(:async &env)`: legal only in the body of an `^:async` function, not
+    /// in a nested plain function or at the top level.
+    fn await_form(
+        &mut self,
+        id: NodeId,
+        args: &[NodeId],
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
+        if !self.asynchronous {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::MacroExpansion(
+                    "Assert failed: await can only be used in async contexts\n(:async &env)".into(),
+                ),
+            ));
+        }
+        let &[value] = args else {
+            return Err(self.error(
+                id,
+                AnalysisErrorKind::InvalidForm("await requires one argument"),
+            ));
+        };
+        let value = self.non_tail_form(value, ExprContext::Value)?;
+        Ok(self.push(
+            ExprKind::Await(value),
+            self.syntax.nodes[id.0].span.clone(),
+            context,
+        ))
+    }
+
     fn this_as(
         &mut self,
         id: NodeId,
@@ -7429,7 +7473,7 @@ impl Analyzer<'_> {
         else {
             unreachable!()
         };
-        let method = self.fn_method_with_fields(id, &children, kind, fields)?;
+        let method = self.fn_method_with_fields(id, &children, kind, fields, false)?;
         if type_method {
             self.program.type_methods.insert(method.target);
         }
@@ -7572,6 +7616,7 @@ impl Analyzer<'_> {
                         body,
                         target,
                         captures: Vec::new(),
+                        asynchronous: false,
                     },
                 ));
                 continue;
@@ -8740,14 +8785,24 @@ impl Analyzer<'_> {
             &self.resolution.excludes,
             &self.program.globals,
         )?;
-        c.assoc(
+        let environment = c.assoc(
             &environment,
             &c.keyword(crate::compiler_data::Name::new(
                 Some("light-cljs"),
                 "unchecked-arrays",
             )),
             &c.boolean(self.unchecked_arrays),
-        )
+        )?;
+        // Upstream's `&env` has `:async` in an `^:async` function's body,
+        // which macros such as `await` read.
+        if self.asynchronous {
+            return c.assoc(
+                &environment,
+                &c.keyword(crate::compiler_data::Name::new(None, "async")),
+                &c.boolean(true),
+            );
+        }
+        Ok(environment)
     }
 
     fn needs_reader(&self, root: NodeId) -> bool {
@@ -9821,6 +9876,28 @@ impl Analyzer<'_> {
             }
             _ => (None, args),
         };
+        // Upstream's `fn*` is async when its self-name or its `fn*` symbol
+        // has `:async` metadata; `fn` and `defn` move theirs to the `fn*`
+        // symbol (`MacroHost::expand_compiler_seed`). `delay` and `lazy-seq`
+        // thunks never are.
+        let operator = match &self.syntax.nodes[id.0].kind {
+            NodeKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } => children
+                .first()
+                .copied()
+                .filter(|&operator| self.spelling(operator) == "fn*"),
+            _ => None,
+        };
+        let asynchronous = operator.into_iter().chain(name).any(|node| {
+            self.metadata_entry(node, "async").is_some_and(|value| {
+                !matches!(
+                    value.data().inspect(),
+                    DatumView::Nil | DatumView::Boolean(false)
+                )
+            })
+        });
         let methods = match args.first().map(|id| &self.syntax.nodes[id.0].kind) {
             Some(NodeKind::Collection {
                 kind: CollectionKind::Vector,
@@ -9869,7 +9946,7 @@ impl Analyzer<'_> {
             // recursive frame small enough for accepted nesting on a 2 MiB stack.
             let mut analyzed = Vec::with_capacity(methods.len());
             for method in &methods {
-                analyzed.push(self.fn_method(id, method, MethodKind::Function)?);
+                analyzed.push(self.fn_method(id, method, MethodKind::Function, asynchronous)?);
             }
             self.check_fn_overloads(id, name, &analyzed)?;
             let span = self.syntax.nodes[id.0].span.clone();
@@ -9969,16 +10046,21 @@ impl Analyzer<'_> {
         id: NodeId,
         method: &[NodeId],
         method_kind: MethodKind,
+        asynchronous: bool,
     ) -> Result<FnMethod, AnalysisError> {
-        self.fn_method_with_fields(id, method, method_kind, &[])
+        self.fn_method_with_fields(id, method, method_kind, &[], asynchronous)
     }
 
+    /// One method: a function boundary, whose body may `await` only when
+    /// `asynchronous` (upstream analyzes each `fn*` with `:async` set from
+    /// its own metadata, so a nested plain `fn` clears it).
     fn fn_method_with_fields(
         &mut self,
         id: NodeId,
         method: &[NodeId],
         method_kind: MethodKind,
         fields: &[(String, bool)],
+        asynchronous: bool,
     ) -> Result<FnMethod, AnalysisError> {
         let Some((&parameters, body)) = method.split_first() else {
             return Err(self.error(
@@ -10078,7 +10160,9 @@ impl Analyzer<'_> {
                 self.program.field_bindings.insert(local, (target, mutable));
             }
             let previous = self.recur_target.replace(target);
+            let outer_asynchronous = std::mem::replace(&mut self.asynchronous, asynchronous);
             let body = self.body(body, span, ExprContext::Return);
+            self.asynchronous = outer_asynchronous;
             self.recur_target = previous;
             let body = body?;
             let mut captures = Vec::new();
@@ -10096,6 +10180,7 @@ impl Analyzer<'_> {
                 body,
                 target,
                 captures,
+                asynchronous,
             })
         })();
         self.env.scopes.pop();

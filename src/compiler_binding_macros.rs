@@ -13,6 +13,33 @@ fn symbol(c: &DataBuilder, name: &str) -> Datum {
 fn keyword(c: &DataBuilder, name: &str) -> Datum {
     c.keyword(Name::new(None, name))
 }
+/// Whether `v` has truthy `:async` metadata, as upstream reads it from the
+/// symbols of an `^:async` `fn` or `defn`.
+pub(crate) fn asynchronous(c: &DataBuilder, v: &Datum) -> Result<bool, String> {
+    let Some(metadata) = v.metadata() else {
+        return Ok(false);
+    };
+    Ok(matches!(metadata.inspect(), DatumView::Map(_))
+        && metadata
+            .get(&keyword(c, "async"))?
+            .is_some_and(|value| truthy(&value)))
+}
+/// The list `form` with `{:async true}` metadata on its head symbol: the
+/// `fn*` of an `^:async` `fn`, or the `fn` of an `^:async` `defn`.
+pub(crate) fn mark_asynchronous(c: &DataBuilder, form: &Datum) -> Result<Datum, String> {
+    let mut forms = form.elements()?;
+    let Some(head) = forms.first_mut() else {
+        return Ok(form.clone());
+    };
+    let metadata = head.metadata().unwrap_or(c.map(&[])?);
+    let metadata = c.assoc(&metadata, &keyword(c, "async"), &c.boolean(true))?;
+    *head = c.with_meta(head, &metadata)?;
+    let result = c.list(&forms)?;
+    Ok(match form.metadata() {
+        Some(metadata) => result.with_metadata(metadata),
+        None => result,
+    })
+}
 fn named(v: &Datum, name: &str) -> bool {
     matches!(v.inspect(), DatumView::Symbol(n) if n == Name::new(None, name))
 }
@@ -577,12 +604,11 @@ fn definition(c: &DataBuilder, args: &[Datum], private: bool) -> Result<Datum, S
     for (k, v) in metadata.entries()? {
         name_metadata = c.assoc(&name_metadata, &k, &v)?;
     }
-    call(
-        c,
-        "def",
-        &[
-            c.with_meta(name, &name_metadata)?,
-            call(c, "fn", declarations)?,
-        ],
-    )
+    let name = c.with_meta(name, &name_metadata)?;
+    // Upstream's `fn*` reads `:async` from the Var name `def` passes it.
+    let mut function = call(c, "fn", declarations)?;
+    if asynchronous(c, &name)? {
+        function = mark_asynchronous(c, &function)?;
+    }
+    call(c, "def", &[name, function])
 }

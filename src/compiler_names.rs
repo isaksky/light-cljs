@@ -83,5 +83,6 @@ pub fn is_definition_macro(namespace: &str, name: &str) -> bool {
                 | "this-as"
                 | "js-arguments"
                 | "copy-arguments"
+                | "await"
         )
 }

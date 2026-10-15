@@ -25,6 +25,7 @@ mod phase_oracle;
 mod generated;
 
 mod array_settings;
+mod async_await;
 mod atom_object_equiv;
 mod bootstrap;
 mod boundary_completion;

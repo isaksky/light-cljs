@@ -579,3 +579,40 @@ fn time_prints_elapsed_milliseconds_under_eval_and_repl() {
         );
     }
 }
+
+/// `^:async` functions under `--eval` and `--repl` (light-cljs-261). The
+/// embedded QuickJS runs no promise jobs, so a call's value is a Promise
+/// whose reactions never run: only its identity and kind are observable.
+/// `await` outside an `^:async` function, at the top level included (which
+/// upstream has no more than light-cljs), is the located analysis error, after
+/// which the REPL goes on.
+#[test]
+fn async_functions_return_promises_under_eval_and_repl() {
+    let program = "(defn ^:async f [x] (inc (await x)))
+        (def p (f (js/Promise.resolve 1)))
+        [(instance? js/Promise p) (identical? p p) (= p (f 1)) p]";
+    ok(
+        run(&["--eval", "--text", program], ""),
+        "[true true false #object[Promise [object Promise]]]\n",
+    );
+    let output = run(&["--eval", "--text", "(await (js/Promise.resolve 1))"], "");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "light-cljs: <text>.cljc:1:1: macro expansion: Assert failed: await can only be used in async contexts\n(:async &env) (bytes 0..30)\n"
+    );
+    let output = run(
+        &["--repl"],
+        "(defn ^:async f [] (await (js/Promise.resolve 2)))\n(await (f))\n(instance? js/Promise (f))\n",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "#object[Function]\ntrue\n"
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "light-cljs: <stdin>.cljc:2:1: macro expansion: Assert failed: await can only be used in async contexts\n(:async &env) (bytes 0..11)\n"
+    );
+}

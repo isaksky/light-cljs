@@ -32,7 +32,8 @@
 //! call runs after it: in a later top-level form, or inside the function
 //! itself. Its argument count matches the method's fixed parameters (a
 //! variadic method may receive more, when its body never reads the rest
-//! parameter), and the call has one parent. The method captures nothing, is no
+//! parameter), and the call has one parent. The method is not `^:async` (its
+//! call is a Promise and its body may `await`), captures nothing, is no
 //! `recur` target, and its body holds only literals, local, global and host
 //! reads, `if`, `do`, `let`, `^boolean` hints, calls, collection literals,
 //! property reads, method calls, `new`, `instance?` and metadata: no nested
@@ -52,7 +53,8 @@
 //! parameter's only read ([`stable`]); and one argument with an effect moves
 //! to its parameter's only read when the body reaches that read before
 //! anything with an effect, unconditionally ([`first_read`], Closure's direct
-//! inlining). Any other argument is bound to a fresh local by a `let` around
+//! inlining), unless it awaits: other code runs while it waits and may change
+//! what the body reads first. Any other argument is bound to a fresh local by a `let` around
 //! the body, in argument order, so it is evaluated once and before the body,
 //! as the call did; arguments for an unread rest parameter are bound too when
 //! they may have an effect. A `let` in value position would be emitted as a
@@ -240,7 +242,10 @@ pub fn inline(
         let method = methods[direct.method].clone();
         let args = args.clone();
         let fixed = method.params.len();
-        if !method.captures.is_empty()
+        // A call of an `^:async` method returns a Promise and its body may
+        // `await`, which only that method can hold.
+        if method.asynchronous
+            || !method.captures.is_empty()
             || program.recur_targets[method.target.0].used
             || (method.rest.is_none() && args.len() != fixed)
             || args.len() < fixed
@@ -305,6 +310,9 @@ pub fn inline(
             .collect::<Vec<_>>()[..]
             && let Some(&parameter) = method.params.get(bound)
             && !crate::folding::scoped(program, args[bound])
+            // Other code runs while an `await` waits, and may change what
+            // the body reads before the parameter.
+            && !crate::program_fragment::awaits(program, args[bound])
             && body.reads.iter().filter(|l| **l == parameter).count() == 1
             && first_read(program, method.body, parameter) == Scan::Found
         {

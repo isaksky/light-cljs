@@ -432,6 +432,21 @@ fn is_data(kind: &ExprKind) -> bool {
     )
 }
 
+/// Whether evaluating `id` may `await`: it holds an `await` outside the
+/// functions it holds. Analysis allows one only in an `^:async` method's
+/// body, and no other method can hold one.
+pub(crate) fn awaits(program: &Program, id: ExprId) -> bool {
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        match program.exprs[id.0].kind {
+            ExprKind::Await(_) => return true,
+            ExprKind::Fn { .. } => (),
+            _ => pending.extend(children(program, id)),
+        }
+    }
+    false
+}
+
 /// Visit semantic child IDs using the same exhaustive mapping as fragment linking.
 pub(crate) fn children(program: &Program, id: ExprId) -> Vec<ExprId> {
     kind_children(program, &program.exprs[id.0].kind)
@@ -626,7 +641,7 @@ impl<F: Fn(ExprId) -> ExprId> Remap<'_, F> {
             }
             QualifiedMethod { class, .. } => self.expr(class),
             CopyArguments(id) | WithOutStr(id) | Exists(id) | BindingExists(id)
-            | BooleanHint(id) | Throw(id) => self.expr(id),
+            | BooleanHint(id) | Throw(id) | Await(id) => self.expr(id),
             DefProtocol {
                 global, methods, ..
             } => {

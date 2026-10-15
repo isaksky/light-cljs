@@ -587,6 +587,7 @@ reserved words do not change binding identity.
 | `while`, `dotimes` | Nil-returning iteration with fresh captures, one dotimes bound evaluation and nearest-target recur validation. Fractional bounds retain CLJS comparison semantics. |
 | `(fn* name? [params...] body...)` | A lexical closure with one parameter list and optional `& rest`; optional self-name supports recursion. |
 | `(fn* name? ([params...] body...) ...)` | Multiple fixed methods and at most one variadic method; fixed methods take precedence at their exact argument count. |
+| `(^:async fn ...)`, `(defn ^:async name ...)`, `(await x)` | An `async function` whose call returns a Promise; `await` only in its body. See [Async functions and await](#async-functions-and-await). |
 | `(callee args...)` | Evaluate callee first, then arguments left to right, then call. |
 | Multiple source forms | An implicit `do`; the file's result is its last value, or `nil` when empty. Top-level lexical scopes do not leak into following forms. |
 
@@ -688,6 +689,72 @@ cannot emit Ratio constants either. A safe-integer bound is not imposed.
 Unresolved symbols are errors, also in unselected branches (unless `--warnings`
 is used). JavaScript globals use `js/` qualification or an explicit namespace
 `:refer-global` declaration.
+
+### Async functions and await
+
+As in upstream since CLJS-3470 (pinned a5e94c98), `:async` metadata makes a
+function an `async function`: on the `fn` symbol, `(^:async fn [x] ...)`; on
+a `fn`'s self-name, `(fn ^:async f [x] ...)`, which is also how `letfn`'s
+`(^:async f [] ...)` reads it; and on a `defn` or `defn-` name,
+`(defn ^:async f [x] ...)`. **Dialect difference:** upstream also passes a
+`def`'s Var name to its `fn*` initializer, so `(def ^:async f (fn ...))` is
+async there; light-cljs reads only the three places above. Every arity is
+async, fixed or variadic, and so is the `arguments.length` dispatcher of a
+multi-arity or variadic function, as upstream's front function is: an arity
+error rejects the call's Promise instead of throwing. `apply` entries stay
+plain functions returning the method's Promise, as upstream's. A call returns
+a Promise of the body's value, and a throw in the body rejects it. `await` is
+upstream's `cljs.core/await` and resolves like any core macro:
+`clojure.core/await`, a `cljs.core` alias, `:refer`/`:rename`, and a macro's
+syntax quote all name it, and a local or definition named `await` shadows
+it. It emits JavaScript `(await x)`.
+
+`await` is legal only in the body of an `^:async` function. Any other
+function boundary clears that, as upstream's `fn*` sets `:async` from its own
+metadata: a plain `fn`, `#()`, the thunks of `delay`, `lazy-seq` and `for`,
+and `reify`, `deftype`, `defrecord` and `extend-type` methods. Elsewhere,
+including at the top level of a file, `--eval` and `--repl` (upstream has no
+top-level `await` either), it is upstream's failed assertion, a located
+analysis error: `Assert failed: await can only be used in async contexts`.
+A source macro expanded in an `^:async` body sees `:async true` in `&env`, as
+upstream's macros do.
+
+Inside an `^:async` method, a function the emitter wraps around expressions
+that `await` (see [Context, truthiness, and the macro
+boundary](#context-truthiness-and-the-macro-boundary)) is itself an awaited
+`async` one, as upstream's `iife-open` writes it: `let`, `letfn`, `loop`,
+`try`, `throw`, `case`, `do`, `binding`, `with-out-str`, `this-as`, `assert`
+and type definitions in value position. An `await` therefore never leaves
+the async function it is in, at any level. Each such wrapper costs a
+microtask turn or two, as upstream's do; a wrapper around expressions that
+do not await stays a plain function. **Dialect difference:** the wrapper
+returns its value boxed, `(await (async function () { ... return [v]; })())[0]`,
+so it never adopts a Promise its expressions produce:
+`(let [x (await a)] p)` is `p` itself. Upstream awaits every wrapper in an
+async function, which unwraps such a `p`, but only where its emitter happens
+to write a wrapper. In light-cljs a value is the same at every level, where
+`Advanced` folds a `let` away or writes a `do` as a comma expression.
+
+A nested `def` that awaits in an `^:async` method of a namespace the macro
+heap compiles evaluates its initializer before registering it, since that
+registration takes a synchronous thunk; a nested `defonce` first asks
+whether it keeps an earlier value, and evaluates nothing when it does.
+
+`Advanced` never inlines an `^:async` method (its call is a Promise and its
+body may `await`), types such a call as `any` instead of its body's type,
+treats it as unknown when deciding whether an unused definition is inert,
+and never moves an argument that awaits to its parameter's read inside an
+inlined body: other code runs while it waits, and could change what the body
+reads first. Folding treats `await` as an effect. Terse emission renames
+names only and keeps `async`/`await` as written.
+
+The embedded QuickJS runs no promise jobs ([evaluation](evaluation.md#script-and-repl-commands)):
+under `--eval` and `--repl` an async call's value is a Promise whose
+reactions never run. Compiled output runs in the host's event loop at every
+level and with `--esm`. `tests/compiler/async_await.rs` runs upstream's
+`async_await_test.cljs` there, with `clojure.test`'s `deftest`/`is` and
+`goog.object/equals` supplied as small sources, and its `cljs.test`
+reporting test replaced by one that awaits the failing test.
 
 ## Atoms, volatiles and state protocols
 
