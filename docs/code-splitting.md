@@ -1284,8 +1284,10 @@ runtime units toward their first readers; per-chunk runtime factories.
     its definitions listed by the features that hold them; an importer of a
     dropped chunk imports the chunk of the namespace it required, whose
     top-level effect still prints before the feature runs; a keyword the
-    features of a dropped chunk share gets a chunk of constants alone; and
-    a program that reaches reflection keeps the chunk. Two plan tests whose
+    features of a dropped chunk share gets a chunk of constants alone; a
+    chunk that only declares a Var one feature assigns and another reads is
+    kept, with the binding and its setter; and a program that reaches
+    reflection keeps the chunk. Two plan tests whose
     helper is inlined at `Advanced` changed: the diamond plan drops its
     shared chunk there, and the hashed-name test's helper prints, so its
     shared chunk keeps code at every level. The generated lazy programs'

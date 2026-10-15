@@ -1897,6 +1897,70 @@ fn a_dropped_chunk_s_importers_import_its_imports() {
     }
 }
 
+/// A chunk whose items write no code is kept when it owns a global other
+/// chunks read or assign: app.state only declares `x`, which the editor
+/// assigns through the chunk's setter and the reports read, so the shared
+/// chunk declares and exports the binding at every level.
+#[test]
+fn a_silent_chunk_owning_a_global_other_chunks_read_is_kept() {
+    let program = analyze(&[
+        ("app/main.cljs", LOADS_BOTH),
+        ("app/state.cljs", "(ns app.state)\n(declare x)\n"),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.state :as state]))\n\
+             (defn start [] (set! state/x \"edited\") (str \"editor \" state/x))\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports (:require [app.state :as state]))\n\
+             (defn start [] (str \"reports \" state/x))\n",
+        ),
+    ]);
+    let (record, outputs) = runs_as_chunks(&program);
+    assert_eq!(
+        record,
+        printed("app.main.js", r#"\"editor edited\"\n\"reports edited\"\n"#)
+    );
+    for (level, output) in &outputs {
+        // At `Advanced` the shared chunk reads nothing of startup.
+        let shared = if level.advanced() {
+            "app.editor+app.reports.js: app.state | roots  | imports "
+        } else {
+            "app.editor+app.reports.js: app.state | roots  | imports app.main.js"
+        };
+        assert_eq!(
+            files(output),
+            [
+                "app.main.js: light.lazy app.main | roots app.main | imports ",
+                shared,
+                "app.editor.js: app.editor | roots app.editor | imports app.main.js app.editor+app.reports.js",
+                "app.reports.js: app.reports | roots app.reports | imports app.main.js app.editor+app.reports.js",
+            ],
+            "{level}"
+        );
+        let shared = exported_names(&output.files[1].source);
+        let editor = imported_names(&output.files[2].source);
+        let reports = imported_names(&output.files[3].source);
+        let from_shared = |imports: &[(String, Vec<String>)]| {
+            imports
+                .iter()
+                .find(|(from, _)| from == "app.editor+app.reports.js")
+                .map(|(_, names)| names.clone())
+                .unwrap_or_default()
+        };
+        // The shared chunk exports the binding and its setter; the editor
+        // imports both, the reports the binding.
+        assert_eq!(shared.len(), 2, "{level}: {}", output.files[1].source);
+        assert_eq!(from_shared(&editor).len(), 2, "{level}");
+        assert_eq!(from_shared(&reports).len(), 1, "{level}");
+        let prepared = prepare_application(&program, ApplicationOptions::new(*level));
+        let plan = plan_of(&program, &prepared);
+        assert!(!plan.drops_chunks(), "{level}");
+        assert_eq!(plan.chunks[1].setters.len(), 1, "{level}");
+    }
+}
+
 /// A chunk the plan drops at `Advanced` stays when the program reaches
 /// reflection: its namespaces' forms write the switches of `*ns*` there,
 /// so `emit_chunks` writes the namespace plan, in which the shared chunk
