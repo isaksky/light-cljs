@@ -82,8 +82,11 @@
                 (and (fs/directory? file) (not (str/ends-with? uri "/")))
                 (redirect (str uri "/"))
                 :else
-                (let [file (if (fs/directory? file) (fs/path file "index.html") file)]
-                  (if (fs/regular-file? file)
+                (let [file (if (fs/directory? file)
+                             (fs/canonicalize (fs/path file "index.html"))
+                             file)]
+                  ;; Check again: a directory's index.html may be a symlink.
+                  (if (and (fs/regular-file? file) (fs/starts-with? file root))
                     {:status 200
                      :headers {"Content-Type" (get content-types (fs/extension file) "application/octet-stream")
                                "Cache-Control" "no-cache"}
