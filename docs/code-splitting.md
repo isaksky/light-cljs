@@ -1024,7 +1024,10 @@ runtime units toward their first readers; per-chunk runtime factories.
     a function body, could run it before the type it constructs. A chunk's
     import lines follow its imports' first namespaces, and a chunk of moved
     definitions alone, which have no effect, its first definition's
-    namespace.
+    namespace. A namespace chunk whose forms all moved, or emit nothing
+    at `Advanced`, is still written, as at Phase 2 (the `diamond`
+    fixture's shared chunk is `(()=>{})();`); light-cljs-299 drops such
+    chunks.
   - The reflection gate needs the written forms: `reach_reflection` is a
     property of the runtime names emission records. `emit_chunks` writes
     the definition-level plan; when that first write reaches reflection and
@@ -1316,8 +1319,9 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   A multimethod of a shared namespace that only features call therefore
   keeps its definition in startup, and once the runtime splits per chunk
   (light-cljs-279) the `MultiFn` units with it. Accepting `defmulti` with a keyword or `fn` dispatch
-  and the default hierarchy as inert would let it move with its readers;
-  its `defmethod`s stay pinned in their namespaces either way.
+  and the default hierarchy as inert would let it move with its readers
+  (light-cljs-300); its `defmethod`s stay pinned in their namespaces either
+  way.
 - **Granularity of the reference graph for motion.** Items are top-level
   forms; a `defn` with several methods is one item. Finer motion (per method
   entry `g3_1`) is possible with call shapes but has no measured case yet.
