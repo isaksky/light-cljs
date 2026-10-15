@@ -528,6 +528,48 @@ runtime root. Macro/bootstrap functions remain outside application IR. Deferred
 unit emission bypasses this pass, caches each generation's emitted code, and
 shares runtime operations. Applications have no deferred-unit compiler callback.
 
+### Code-splitting contract
+
+A chunked build (`--out-dir`; [Chunked builds](#chunked-builds)) is
+one compilation of the program at the chosen level, whose output is split
+into chunks that load on demand. Its deliberate semantic differences from
+the single file, stated the way the "Advanced-mode contract" in
+[advanced-optimization.md](advanced-optimization.md) states those of
+`advanced`:
+
+- A lazy namespace's top-level effects run when its chunk evaluates, not at
+  startup: `extend-type`, `defmethod`, `set!`, registry `swap!`s,
+  `enable-console-print!`, printing. Until then the program behaves as the
+  program without that chunk's code: a protocol method implemented only in a
+  feature reports no implementation (at `advanced`, the `TypeError` the
+  existing contract allows for a devirtualized call) when called on a value
+  before the feature loads.
+- `load` resolves asynchronously, after the chunk and its prerequisites have
+  evaluated, with the target Var's current value; a resident loadable
+  resolves on a later microtask with no request. `loaded?` is synchronous.
+  `@l` throws before the first successful load. Rejections carry the host's
+  error object.
+- A movable definition in a shared namespace may run later than its source
+  position, in the chunk of its first reader. This is unobservable through
+  the program: only its readers can see it, and they are in that chunk or
+  later. It is observable through reflection, so a program that reaches
+  reflection moves nothing. (Definitions move from Phase 3 of
+  docs/code-splitting.md; at namespace granularity every form stays in its
+  namespace's chunk.)
+- Eager code may be larger or less specialized because of lazy code: every
+  whole-program decision (which types exist, which methods are called, which
+  core operations the program may replace, whether printing is reachable)
+  counts the lazy chunks. It is never incorrect.
+- Globals assigned from another chunk are assigned through a setter the owner
+  exports; `set!`, `binding` and `with-redefs` semantics are unchanged, and
+  engine messages that name the binding differ as they already do between
+  levels.
+- Chunk file names are stable functions of root namespace names. A bundler
+  may rename or regroup them; the manifest describes the compiler's output.
+- `js*` raw text cannot name another chunk's bindings; it never could name
+  compiler-owned names.
+- Everything else prints what the single-file build prints, at every level.
+
 ### Source maps
 
 `PreparedApplication::emit_js_mapped` and `emit_esm_mapped` return the text of
@@ -1500,7 +1542,7 @@ file. Loading an already-Loading namespace reports the cycle path. Missing
 sources, mismatched declarations, analysis errors, and parse errors include the
 originating file/location when available. No output is emitted on failure.
 The result is one combined JavaScript expression whose value is the entry
-namespace's final form (with `--esm`, an ES module whose default export it is). There is no caching, package manager, incremental
+namespace's final form (with `--esm`, an ES module whose default export it is; with `--out-dir`, a directory of ES modules, below). There is no caching, package manager, incremental
 invalidation, or parallel scheduler.
 
 A lazy reference, `(light.lazy/loadable app.editor/start)` or
@@ -1536,7 +1578,8 @@ code names what they add, as a property, method, string or in `js*` text: the
 IDeref marker or slot, a protocol mask, `cljs$lang$type` or
 `cljs$lang$ctorStr` (`LOADABLE_MEMBERS` in `src/runtime_slice.rs`,
 light-cljs-296). Every target is resident in the one
-output file: the site emits `new Loadable(null, () => g20)` (`() => null` for a
+output file (a chunked build, `--out-dir`, loads the others; see Chunked
+builds, below): the site emits `new Loadable(null, () => g20)` (`() => null` for a
 namespace target), `@l` reads the target's current value, `loaded?` is true,
 and `load` returns a Promise that resolves with `@l` on a later microtask, as
 the load of a chunk already loaded would. The site reads the `Loadable` type
@@ -1641,6 +1684,123 @@ may expose everything only under `default`, and named imports read `undefined`.
 That is bundler behavior, not compiler behavior; bind such a package with
 `:default` and read its members from that binding.
 
+### Chunked builds
+
+Add `--out-dir DIR` to `--compile --entry NS --source-root DIR` (library:
+`PreparedApplication::emit_chunks`) to write a chunked build into `DIR`
+instead of printing one module: one ES module per chunk, which
+`light.lazy/loadable` sites load with `import()`, and `chunks.json`, which
+describes them (docs/code-splitting.md, "Phase 2"). `--out-dir` implies
+`--esm`, so packages are static imports and the startup chunk's default
+export is the entry namespace's value. It creates `DIR` when missing and
+writes only the files the manifest names, so other files there, those of an
+earlier build included, stay as they are. It works at `none`, `prepare` and
+`advanced`, with `--pseudo-names`, `--define` and `--elide-asserts`;
+`--size-report` prints the one report the single file prints (one table per
+chunk is Phase 3's); the source map flags are refused, since chunks have no
+source maps yet. Without `--out-dir` the output stays one file in which every
+loadable is resident. With `--reloadable`, `--out-dir` names the directory of
+a dev build instead (Dev builds, below).
+
+```sh
+cargo run --quiet -- --compile --optimize advanced --entry app.main \
+  --source-root examples/features --out-dir /tmp/light-features
+node -e 'import("/tmp/light-features/app.main.js").then(m => m.default())'
+# menu: Editor | Reports
+# editor: 4 documents, first Introduction, ids #{:api :faq :intro :setup}
+# reports: tags Draft, Guide, Reference; drafts FAQ, INTRO; 1050 words
+```
+
+The chunks are planned at namespace granularity (`src/chunks.rs`). A *root*
+is the entry namespace, startup, or a namespace a `loadable` site names; the
+static reach of a root is the namespaces its namespace requires,
+transitively. Each namespace goes to the chunk of the set of roots that
+reach it, except that every namespace startup reaches is startup's. The
+other chunks hold namespaces only lazy roots reach: those of one root are
+`NS.js`, and those several roots share are named by the roots' namespaces,
+sorted and joined with `+` (`app.editor+app.reports.js`), or
+`shared-<16 hex digits>.js` past 80 characters. Every top-level form stays in its namespace's chunk, in
+source order; the runtime (the whole runtime below `advanced`, the
+whole-program slice at `advanced`) and every constant stay in startup.
+Analysis and optimization run once over the whole program, so each chunk's
+code is what the single file would hold. A chunk imports statically the
+chunks holding what its namespaces require and the bindings its code reads,
+each of which therefore evaluates first; startup imports none. A loadable
+whose target's chunk has evaluated before the site's chunk runs is resident,
+as in the single file; any other imports the target's chunk when it is first
+loaded. examples/features is three files at every level, `app.main.js`,
+`app.editor.js` and `app.reports.js`: 441,976, 1,295 and 13,101 bytes at
+`none` and `prepare`, against 455,109 for the single file, and 69,587, 276
+and 832 at `advanced`, against 69,500. A program without a loadable whose
+target another chunk holds, every program without a loadable among them, is
+one file, byte for byte its `--esm` output.
+
+`chunks.json` names the startup file and lists the files in plan order:
+startup first, and every chunk after the chunks it imports. For
+examples/features at `advanced`:
+
+```json
+{
+  "startup": "app.main.js",
+  "chunks": [
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "roots": ["app.main"], "loadables": [], "bytes": 69587},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}], "bytes": 276},
+    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js"], "namespaces": ["clojure.string", "app.reports"], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}], "bytes": 832}
+  ]
+}
+```
+
+- `startup`: the file to load first, whose default export is the program's
+  value.
+- `name`: the chunk's name, its file name without `.js`.
+- `file`: the file, which the other chunks import as `./FILE`, so the files
+  stay together in one directory.
+- `imports`: the files it imports statically, which evaluate before it.
+- `namespaces`: the namespaces whose top-level forms it holds, in load order.
+- `roots`: the namespaces of the roots it holds: the entry for startup, and
+  for any other chunk the target namespaces whose loads load it.
+- `loadables`: the `light.lazy/loadable` sites of the output whose target it
+  holds, in program order, each pair once: `namespace` holds the site in its
+  top-level forms, and `target` is the target as written, `app.editor/start`
+  for a Var or `app.editor` for a namespace.
+- `bytes`: the file's size in bytes.
+
+The manifest describes the compiler's output for tools, such as a server
+that preloads chunks. The program never reads it: the files carry no module
+manager and no load markers, and a bundler that renames or regroups them
+leaves the manifest behind (docs/code-splitting.md, "Open questions").
+Library callers get the files as values: `emit_chunks` returns a
+`ChunkedOutput` whose `files` are `ChunkFile { name, source, imports,
+namespaces, roots, loadables }`, startup first (`ChunkedOutput::startup`),
+and whose `manifest()` is `chunks.json`'s text; the library writes no file.
+The playground's WebAssembly module offers the same as `compile_chunks`,
+whose result holds the file names, their sources and the manifest.
+
+The loading API is the bundled namespace `light.lazy`
+(`src/compiler_libraries/light/lazy.cljs`, docs/code-splitting.md, "The
+loading API"):
+
+- `(lazy/loadable app.editor/start)`, or `(lazy/loadable app.editor)` for a
+  namespace, is a `light.lazy/Loadable` of the target. Its argument is a
+  literal symbol, and the namespace need not be required (Namespace loading,
+  above).
+- `(lazy/load l)` is a promise of the target Var's current value (nil for a
+  namespace) once its chunk and the chunks that chunk imports have
+  evaluated. The first `load` of a chunk imports it with `import("./FILE")`;
+  a resident target, or one whose chunk has loaded, resolves on a later
+  microtask without a request. A failed import, or a chunk that throws
+  while it evaluates, rejects with the host's error.
+- `(lazy/loaded? l)` is whether the target's chunk has been loaded through a
+  loadable of it, so that `@l` returns the value; a resident loadable is
+  always loaded. Loading one target of a chunk loads every loadable of that
+  chunk. A chunk that only another chunk's static import evaluated is not
+  loaded yet (docs/code-splitting.md, "Open questions").
+- `@l` is the target's current value, and throws before the first successful
+  load.
+
+What a chunked program can observe differently from the single file is
+listed under [Code-splitting contract](#code-splitting-contract).
+
 ### Dev builds
 
 Add `--reloadable --out-dir DIR` to `--compile --entry NS --source-root DIR`
@@ -1741,8 +1901,9 @@ node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => star
 ```
 
 A dev build takes none of `--esm`, `--optimize`, `--size-report`,
-`--pseudo-names`, `--define` and the source map flags, and `--out-dir`
-requires `--reloadable`. The Node driver `tests/support/dev_execution.mjs`
+`--pseudo-names`, `--define` and the source map flags, and `--reloadable`
+requires `--out-dir` (which without `--reloadable` writes a chunked build,
+above). The Node driver `tests/support/dev_execution.mjs`
 runs a dev build or a single-file build, calls a start function, and applies
 replacement units with the hook protocol (the before-load functions in
 reverse order, the units, then the after-load functions); the dev builds of

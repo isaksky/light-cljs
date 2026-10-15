@@ -20,13 +20,18 @@ playground/
 
 ## How it works
 
-`crate/src/lib.rs` exports one function, `compile(paths, sources, entry,
-optimize, warnings, pseudo_names, size_report, esm)`. It feeds the files to
+`crate/src/lib.rs` exports `compile(paths, sources, entry, optimize,
+warnings, pseudo_names, size_report, esm)`. It feeds the files to
 `light_cljs::compiler::analyze_namespace_entry_with_provider` through an
 in-memory `SourceProvider` (namespace dots become directories, hyphens
 underscores, `.cljs` before `.cljc`), prepares the application at the chosen
 level and emits the JavaScript. Macros expand in the embedded QuickJS, which is
-compiled into the same wasm module.
+compiled into the same wasm module. `compile_chunks(paths, sources, entry,
+optimize, warnings, pseudo_names, size_report)` compiles the same way into a
+chunked build, the CLI's `--out-dir` ([docs/compiler.md, "Chunked
+builds"](../docs/compiler.md#chunked-builds)): its result holds the file
+names (`files`), their ES modules (`chunks`) and `chunks.json` (`manifest`)
+instead of `js`. The page does not call it yet.
 
 Two things differ from the native build:
 

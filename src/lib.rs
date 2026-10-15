@@ -62,7 +62,7 @@ pub use application::{
     ApplicationOptions, ApplicationStats, OptimizationLevel, PreparedApplication,
     prepare_application,
 };
-pub use chunks::{ChunkFile, ChunkedOutput};
+pub use chunks::{ChunkFile, ChunkedOutput, LoadableSite};
 pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_esm,
     compile_namespace_with_macros, compile_with_macros,

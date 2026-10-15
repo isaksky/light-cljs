@@ -582,8 +582,9 @@ fn unit_source_maps_point_node_stack_traces_at_the_sources() {
     assert_eq!(frame, format!("    at check ({}:5:12)", util.display()));
 }
 
-/// `--reloadable` and `--out-dir` go together, and a dev build takes none of
-/// the flags of a single-file build.
+/// `--reloadable` requires `--out-dir`, and a dev build takes none of the
+/// flags of a single-file build. `--out-dir` alone writes a chunked build
+/// (tests/compiler/chunks.rs).
 #[test]
 fn reloadable_flags_are_checked() {
     let dir = TempDir::new("dev-flags");
@@ -592,7 +593,6 @@ fn reloadable_flags_are_checked() {
     let base = ["--compile", "--entry", "app.main", "--source-root", EXAMPLE];
     for (extra, message) in [
         (&["--reloadable"][..], "--reloadable requires --out-dir DIR"),
-        (&["--out-dir", out][..], "--out-dir requires --reloadable"),
         (
             &["--reloadable", "--out-dir", out, "--esm"][..],
             "it excludes --esm",

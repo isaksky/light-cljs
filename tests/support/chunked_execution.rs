@@ -4,11 +4,13 @@
 //! [`run_modules`] writes the files into a fresh temporary directory and returns
 //! the driver's record in the shared outcome protocol
 //! (`tests/support/execution.js`), so checking a chunked run against its
-//! single-file oracle compares two strings. The startup file name is the
-//! record's id: give it the same name in both runs.
+//! single-file oracle compares two strings; [`run_directory`] runs files
+//! already in a directory, such as an `--out-dir` build. The startup file name
+//! is the record's id: give it the same name in both runs.
 use crate::temp_dir::TempDir;
 use std::{
     fs,
+    path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -33,10 +35,17 @@ pub fn run_modules(files: &[(&str, &str)], startup: &str) -> Result<String, Stri
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
+    run_directory(&modules, startup)
+}
+
+/// As [`run_modules`], for files already in `modules`, where the driver adds
+/// its `package.json`.
+pub fn run_directory(modules: &Path, startup: &str) -> Result<String, String> {
+    let dir = TempDir::new("cljs-chunks-run");
     let (stdout, stderr) = (dir.join("stdout.txt"), dir.join("stderr.txt"));
     let spawned = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg(DRIVER)
-        .arg(&modules)
+        .arg(modules)
         .arg(startup)
         .stdin(Stdio::null())
         .stdout(fs::File::create(&stdout).unwrap())

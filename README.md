@@ -116,6 +116,27 @@ String libspecs such as `["react" :as r]` read host-supplied packages from
 module for a bundler instead, with static package imports and the entry value as
 its default export (see [JavaScript packages](docs/compiler.md#javascript-packages)).
 
+Add `--out-dir DIR` to `--compile --entry` to split a program at its
+`light.lazy/loadable` sites: `DIR` gets one ES module per chunk (`--out-dir`
+implies `--esm`), the startup chunk `NS.js` whose default export is the entry
+value, the chunks loaded with `import()` the first time `light.lazy/load` asks
+for a target in them, and `chunks.json`, which lists each file with its
+imports, namespaces, roots, loadable sites and size. Chunks follow namespaces
+for now: the runtime and constants stay in startup. It works at every
+`--optimize` level, writes only the files the manifest names, takes no source
+map flags, and leaves a program without loadables one file, its `--esm` output
+([Chunked builds](docs/compiler.md#chunked-builds),
+[Code-splitting contract](docs/compiler.md#code-splitting-contract)).
+
+```sh
+cargo run --quiet -- --compile --optimize advanced --entry app.main \
+  --source-root examples/features --out-dir /tmp/light-features
+node -e 'import("/tmp/light-features/app.main.js").then(m => m.default())'
+# menu: Editor | Reports
+# editor: 4 documents, first Introduction, ids #{:api :faq :intro :setup}
+# reports: tags Draft, Guide, Reference; drafts FAQ, INTRO; 1050 words
+```
+
 Add `--reloadable --out-dir DIR` to `--compile --entry` to write a dev build
 into `DIR` instead: `runtime.js` (the runtime, once), one unit per namespace in
 dependency order with its source map, `manifest.json` and an `index.js` that
@@ -134,7 +155,7 @@ node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => star
 ```
 
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
-builds, with or without `--esm`) picks the optimization level. `prepare`, the
+builds, with `--esm` or `--out-dir` too) picks the optimization level. `prepare`, the
 default, removes unused definitions with inert initializers and specializes
 top-level calls; `none` emits everything as analyzed. `advanced` is the release
 mode, still being built from
@@ -244,7 +265,9 @@ let source = "(let* [x 10 f (fn* [] x)] (let* [x 20] (f)))";
 let syntax = parse(source).unwrap();
 let program = analyze(source, &syntax).unwrap();
 let javascript = emit_js(&program);
-// Or light_cljs::compile(source); compile_namespace(entry, roots) for namespaces.
+// Or light_cljs::compile(source); compile_namespace(entry, roots) for namespaces;
+// prepare_application(&program, options).emit_chunks() for a chunked build's
+// files and chunks.json, as values.
 ```
 
 Evaluate incrementally in an embedded session:
@@ -269,7 +292,7 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 | [examples/namespaces](examples/namespaces) | Two runtime namespaces (`--entry demo.main`) |
 | [examples/macros](examples/macros) | A `.cljs` macro namespace required alongside runtime code |
 | [examples/collections](examples/collections) | Several namespaces compiled to an expression returning `batch.main/run` |
-| [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features (`--entry app.main --esm`; [docs/code-splitting.md](docs/code-splitting.md)) |
+| [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features loaded on demand (`--entry app.main --out-dir DIR`; [docs/code-splitting.md](docs/code-splitting.md)) |
 | [examples/dev](examples/dev) | The dev-workflow application: `defonce` state, a macro, a record view and reload hooks (`--entry app.main --reloadable --out-dir DIR`; [docs/dev-workflow.md](docs/dev-workflow.md)) |
 | [examples/native](examples/native) | Scripts for `--eval` (data processing, macros, lazy pipelines, state, exceptions) |
 | [examples/embedding.rs](examples/embedding.rs), [examples/evaluator.rs](examples/evaluator.rs) | Rust embedding |
@@ -292,7 +315,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   compiler never reads `node_modules` or `package.json` and does no package
   resolution or CommonJS conversion.
 - **No build tooling:** no per-namespace module output; output
-  is one JavaScript expression, or one ES module with `--esm`. A dev build
+  is one JavaScript expression, one ES module with `--esm`, or with `--out-dir`
+  one ES module per chunk of namespaces that `light.lazy/loadable` sites load,
+  with the runtime and every constant in the startup chunk. A dev build
   (`--reloadable`) writes one unit per namespace for reloading, but nothing
   watches the sources or pushes a changed unit to a page yet. The release
   optimizer, `--optimize advanced`, is still being built

@@ -274,9 +274,18 @@ impl PreparedApplication {
     /// [`PreparedApplication::emit_esm`]'s is. A loadable whose target
     /// another chunk holds imports that chunk, `import("./app.editor.js")`,
     /// unless the target has evaluated before the loadable's chunk runs.
+    /// A program of one chunk, one without a loadable whose target another
+    /// chunk holds, is one file: [`PreparedApplication::emit_esm`]'s.
     pub fn emit_chunks(&self) -> crate::chunks::ChunkedOutput {
         let plan = crate::chunks::plan(&self.program, self);
-        let emitted = crate::emitter::emit_chunked(&self.program, self.application(), &plan);
+        let emitted = if plan.chunks.len() == 1 {
+            vec![crate::emitter::EmittedChunk {
+                source: self.emit_esm(),
+                imports: Vec::new(),
+            }]
+        } else {
+            crate::emitter::emit_chunked(&self.program, self.application(), &plan)
+        };
         crate::chunks::ChunkedOutput::new(&self.program, &plan, emitted)
     }
     /// [`PreparedApplication::emit_js`] (the same text) and its source map,

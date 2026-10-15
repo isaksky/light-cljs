@@ -552,7 +552,8 @@ Scope: fix the semantics and get numbers before writing compiler code.
 
 - Write the **code-splitting contract** section of this document into
   `docs/compiler.md` next to the advanced-mode contract once Phase 2 lands;
-  until then it lives here (below).
+  until then it lives here. Done in light-cljs-275: "Code-splitting
+  contract" below points to it.
 - Add `examples/features`: `app.main` (startup: logs a menu, holds two
   loadables, calls them from a `start` function the host triggers),
   `app.shared` (keyword and map helpers both features use), `app.editor`
@@ -847,6 +848,43 @@ Phase 3 splits them.
     importing every chunk statically links in Node, where a missing export
     is a link error; and each name an import line names is in the export
     lines of the chunk it names, after terse renaming too.
+- **As built (light-cljs-275): `--out-dir` and `chunks.json`.**
+  `--compile --entry NS --out-dir DIR` writes the files of `emit_chunks`
+  and `chunks.json` into `DIR` (docs/compiler.md, "Chunked builds", which
+  documents the manifest's shape and the loading API):
+  - `--out-dir` implies `--esm`, creates `DIR` and writes only the files
+    the manifest names. It works at every level; `--size-report` prints the
+    single file's one report, and the source map flags are refused. With
+    `--reloadable` it names the dev build's directory instead
+    (light-cljs-282).
+  - The manifest is a method, `ChunkedOutput::manifest()`, rather than a
+    stored field, so it always describes the files. `ChunkFile` gained
+    `loadables`, the sites whose target it holds (`LoadableSite { namespace,
+    target }`), which the planner collects while it walks the items
+    (`Chunk::sites`): the namespace is the one whose top-level form holds
+    the site, so it names the chunk that issues the import.
+  - A plan of one chunk is written by `emit_esm`: the chunk writer declares
+    globals at module level, where the single file declares them inside its
+    function, so the two texts differ. A program without a loadable whose
+    target another chunk holds is therefore one file, byte for byte its
+    `--esm` output.
+  - examples/features is the startup, editor and reports files plus
+    `chunks.json` at every level, and no shared file: at namespace
+    granularity `app.shared` is startup's, since `app.main` requires it.
+    The `app.editor+app.reports.js` of "Goal" waits for Phase 3's
+    definition-level placement.
+  - The playground's WebAssembly module gained `compile_chunks`, which
+    returns the file names, their sources and the manifest as values.
+  - Tests (`tests/compiler/chunks.rs`): the CLI writes examples/features
+    into a directory it creates, at every level, beside a file it leaves
+    alone and over a stale chunk it replaces; the file set and contents are
+    the library's, the manifest is checked in full, and the directory run
+    by the Node driver prints what the single `--esm` file prints. The
+    namespaces example, without loadables, writes one file equal to its
+    `--esm` output and the same `--size-report`. The source map flags are
+    refused before anything is written. The manifests of the sub-feature,
+    resident-target and namespace-target fixtures are checked at every
+    level.
 - **Placement, namespace level.** New module `src/chunks.rs`:
   `plan(program, prepared) -> ChunkPlan`. Roots from `lazy_targets`; static
   reach per root over `namespace_requires`; every top-level form pinned to
@@ -990,39 +1028,13 @@ independent step.
 
 ## Code-splitting contract
 
-The deliberate semantic differences between a chunked build and the single
-file, stated the way the advanced-mode contract is:
-
-- A lazy namespace's top-level effects run when its chunk evaluates, not at
-  startup: `extend-type`, `defmethod`, `set!`, registry `swap!`s,
-  `enable-console-print!`, printing. Until then the program behaves as the
-  program without that chunk's code: a protocol method implemented only in a
-  feature reports no implementation (at `advanced`, the `TypeError` the
-  existing contract allows for a devirtualized call) when called on a value
-  before the feature loads.
-- `load` resolves asynchronously, after the chunk and its prerequisites have
-  evaluated, with the target Var's current value; a resident loadable
-  resolves on a later microtask with no request. `loaded?` is synchronous.
-  `@l` throws before the first successful load. Rejections carry the host's
-  error object.
-- A movable definition in a shared namespace may run later than its source
-  position, in the chunk of its first reader. This is unobservable through
-  the program: only its readers can see it, and they are in that chunk or
-  later. It is observable through reflection, so a program that reaches
-  reflection moves nothing.
-- Eager code may be larger or less specialized because of lazy code: every
-  whole-program decision (which types exist, which methods are called, which
-  core operations the program may replace, whether printing is reachable)
-  counts the lazy chunks. It is never incorrect.
-- Globals assigned from another chunk are assigned through a setter the owner
-  exports; `set!`, `binding` and `with-redefs` semantics are unchanged, and
-  engine messages that name the binding differ as they already do between
-  levels.
-- Chunk file names are stable functions of root namespace names. A bundler
-  may rename or regroup them; the manifest describes the compiler's output.
-- `js*` raw text cannot name another chunk's bindings; it never could name
-  compiler-owned names.
-- Everything else prints what the single-file build prints, at every level.
+The contract, the deliberate semantic differences between a chunked build
+and the single file, lives in
+[docs/compiler.md, "Code-splitting contract"](compiler.md#code-splitting-contract),
+after "Application preparation", whose levels cite the advanced-mode
+contract. light-cljs-275 moved it there when `--out-dir` made chunked builds
+available; docs/compiler.md, "Chunked builds", documents `--out-dir`,
+`chunks.json` and the loading API.
 
 ## Verification
 

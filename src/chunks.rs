@@ -26,7 +26,9 @@
 use crate::analyzer::{ExprId, ExprKind, GlobalId, LazyTargetId, Program};
 use crate::application::PreparedApplication;
 use crate::program_fragment::children;
+use crate::source_map::json_string;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 
 /// The root index of startup, the entry namespace.
 pub const STARTUP_ROOT: usize = 0;
@@ -137,6 +139,17 @@ pub struct Chunk {
     /// The globals this chunk owns that another chunk assigns (`set!`,
     /// `binding`), ascending: the owner exports a setter for each.
     pub setters: Vec<GlobalId>,
+    /// The loadable sites among the items whose target the chunk holds, in
+    /// program order, each target once per namespace holding it.
+    pub sites: Vec<Site>,
+}
+
+/// A `light.lazy/loadable` site in an item of the plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Site {
+    pub target: LazyTargetId,
+    /// The source index of the namespace of the item holding the site.
+    pub namespace: usize,
 }
 
 /// Where each top-level form of a chunked build goes; see the module
@@ -160,7 +173,10 @@ pub struct ChunkPlan {
 }
 
 /// The files of a chunked build, one ES module per chunk in plan order
-/// ([`PreparedApplication::emit_chunks`]).
+/// ([`PreparedApplication::emit_chunks`]): startup first, whose default
+/// export is the program's value. The library writes no file; the CLI's
+/// `--out-dir` writes each file and [`ChunkedOutput::manifest`] as
+/// `chunks.json` into one directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkedOutput {
     pub files: Vec<ChunkFile>,
@@ -181,6 +197,19 @@ pub struct ChunkFile {
     /// The namespaces of the roots it holds: the entry for startup, and the
     /// namespaces whose loadables load it.
     pub roots: Vec<String>,
+    /// The `light.lazy/loadable` sites of the output whose target it holds,
+    /// in output order, each distinct pair of site namespace and target
+    /// once.
+    pub loadables: Vec<LoadableSite>,
+}
+
+/// A `light.lazy/loadable` site of a chunked build's output: the namespace
+/// whose code holds it, and its target as written, `app.editor/start` for a
+/// Var or `app.editor` for a namespace.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LoadableSite {
+    pub namespace: String,
+    pub target: String,
 }
 
 impl ChunkedOutput {
@@ -190,6 +219,16 @@ impl ChunkedOutput {
         emitted: Vec<crate::emitter::EmittedChunk>,
     ) -> Self {
         let namespace = |source: usize| program.namespaces[source].clone();
+        let target = |target: LazyTargetId| {
+            let target = &program.lazy_targets[target.0];
+            match target.global {
+                Some(global) => {
+                    let global = &program.globals[global.0];
+                    format!("{}/{}", global.namespace, global.name)
+                }
+                None => program.lazy_namespaces[target.namespace].clone(),
+            }
+        };
         let files = plan
             .chunks
             .iter()
@@ -212,9 +251,75 @@ impl ChunkedOutput {
                     .iter()
                     .map(|&root| namespace(plan.roots[root].namespace))
                     .collect(),
+                loadables: {
+                    let mut listed = HashSet::new();
+                    chunk
+                        .sites
+                        .iter()
+                        .map(|site| LoadableSite {
+                            namespace: namespace(site.namespace),
+                            target: target(site.target),
+                        })
+                        .filter(|site| listed.insert(site.clone()))
+                        .collect()
+                },
             })
             .collect();
         Self { files }
+    }
+
+    /// The startup file, whose default export is the program's value.
+    pub fn startup(&self) -> &ChunkFile {
+        &self.files[0]
+    }
+
+    /// `chunks.json`, the manifest of the files (docs/compiler.md, "Chunked
+    /// builds"): the startup file's name and, per file in plan order, one
+    /// line with its chunk's name (the file name without `.js`), the file,
+    /// the files it imports, its namespaces, its roots' namespaces, the
+    /// loadable sites that resolve to it and its size in bytes.
+    pub fn manifest(&self) -> String {
+        let list = |out: &mut String, items: &[String]| {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                json_string(out, item);
+            }
+            out.push(']');
+        };
+        let mut manifest = String::from("{\n  \"startup\": ");
+        json_string(&mut manifest, &self.startup().name);
+        manifest.push_str(",\n  \"chunks\": [");
+        for (index, file) in self.files.iter().enumerate() {
+            manifest.push_str(if index == 0 { "\n" } else { ",\n" });
+            manifest.push_str("    {\"name\": ");
+            let name = file.name.strip_suffix(".js").unwrap_or(&file.name);
+            json_string(&mut manifest, name);
+            manifest.push_str(", \"file\": ");
+            json_string(&mut manifest, &file.name);
+            manifest.push_str(", \"imports\": ");
+            list(&mut manifest, &file.imports);
+            manifest.push_str(", \"namespaces\": ");
+            list(&mut manifest, &file.namespaces);
+            manifest.push_str(", \"roots\": ");
+            list(&mut manifest, &file.roots);
+            manifest.push_str(", \"loadables\": [");
+            for (index, site) in file.loadables.iter().enumerate() {
+                if index > 0 {
+                    manifest.push_str(", ");
+                }
+                manifest.push_str("{\"namespace\": ");
+                json_string(&mut manifest, &site.namespace);
+                manifest.push_str(", \"target\": ");
+                json_string(&mut manifest, &site.target);
+                manifest.push('}');
+            }
+            write!(manifest, "], \"bytes\": {}}}", file.source.len()).unwrap();
+        }
+        manifest.push_str("\n  ]\n}\n");
+        manifest
     }
 }
 
@@ -306,6 +411,7 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
         items: Vec::new(),
         imports: Vec::new(),
         setters: Vec::new(),
+        sites: Vec::new(),
     }];
     chunks.extend(groups.into_iter().map(|(signature, namespaces)| {
         let roots = signature
@@ -320,6 +426,7 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
             items: Vec::new(),
             imports: Vec::new(),
             setters: Vec::new(),
+            sites: Vec::new(),
         }
     }));
     // Startup and each lazy root are named after their namespace, so their
@@ -423,6 +530,10 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
     }
     let mut walked = vec![usize::MAX; emitted.exprs.len()];
     let mut pending = Vec::new();
+    // By chunk: the loadable sites resolving to it, keyed for program order;
+    // each target once per namespace (a site copied by inlining is one).
+    let mut sites = vec![Vec::new(); chunks.len()];
+    let mut listed = HashSet::new();
     for (position, item) in items.iter().enumerate() {
         pending.push(item.expr);
         while let Some(id) = pending.pop() {
@@ -456,18 +567,33 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
                         assign(emitted, &global_chunks, item.chunk, *target, &mut setters);
                     }
                 }
+                // A site resolves to the chunk of its target's root.
+                ExprKind::Loadable { target, .. } if listed.insert((target.0, item.namespace)) => {
+                    let root = 1 + emitted.lazy_targets[target.0].namespace;
+                    sites[roots[root].chunk.0].push((
+                        (position, id.0),
+                        Site {
+                            target: *target,
+                            namespace: item.namespace,
+                        },
+                    ));
+                }
                 _ => {}
             }
             pending.extend(children(emitted, id));
         }
     }
-    for ((chunk, mut imports), mut setters) in chunks.iter_mut().zip(imports).zip(setters) {
+    let chunk_data = imports.into_iter().zip(setters).zip(sites);
+    for (chunk, ((mut imports, mut setters), mut sites)) in chunks.iter_mut().zip(chunk_data) {
         imports.sort_unstable();
         imports.dedup();
         setters.sort_unstable_by_key(|global: &GlobalId| global.0);
         setters.dedup();
+        // Program order: by item, then by expression within it.
+        sites.sort_unstable_by_key(|&(order, _)| order);
         chunk.imports = imports;
         chunk.setters = setters;
+        chunk.sites = sites.into_iter().map(|(_, site)| site).collect();
     }
     ChunkPlan {
         roots,

@@ -1,9 +1,11 @@
 //! The namespace-level chunk planner, `light_cljs::chunks::plan`
 //! (docs/code-splitting.md, "The model" and "Phase 2"), at every level, each
 //! plan checked against the invariants the chunked emitter relies on
-//! (`check`); and the chunk files `PreparedApplication::emit_chunks` writes,
-//! run in Node against the single `--esm` file (`runs_as_chunks`).
-use crate::chunked_execution::run_modules;
+//! (`check`); the chunk files `PreparedApplication::emit_chunks` writes,
+//! run in Node against the single `--esm` file (`runs_as_chunks`); their
+//! manifest, `chunks.json`; and the CLI's `--out-dir`, which writes both.
+use crate::chunked_execution::{run_directory, run_modules};
+use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::chunks::{ChunkId, ChunkPlan, ChunkedOutput, STARTUP, plan};
 use light_cljs::compiler::{analyze_namespace_entry, analyze_namespace_entry_with_provider};
@@ -12,7 +14,9 @@ use light_cljs::{
     ApplicationOptions, ExprId, ExprKind, MacroHost, OptimizationLevel, PreparedApplication,
     Program, prepare_application,
 };
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The program of entry `app.main` whose sources are `files`, by path.
 fn analyze(files: &[(&str, &str)]) -> Program {
@@ -728,6 +732,32 @@ fn the_features_example_runs_as_three_chunks_at_every_level() {
     }
 }
 
+/// `output.manifest()` without the `"bytes"` of each chunk, which must be
+/// the length of its file.
+fn unsized_manifest(output: &ChunkedOutput) -> String {
+    let mut files = output.files.iter();
+    output
+        .manifest()
+        .lines()
+        .map(|line| {
+            let (chunk, comma) = match line.strip_suffix(',') {
+                Some(chunk) => (chunk, ","),
+                None => (line, ""),
+            };
+            let Some((head, bytes)) = chunk.rsplit_once(", \"bytes\": ") else {
+                return format!("{line}\n");
+            };
+            let file = files.next().expect("a line per file");
+            assert!(
+                head.contains(&format!("\"file\": \"{}\"", file.name)),
+                "{line}"
+            );
+            assert_eq!(bytes, format!("{}}}", file.source.len()), "{}", file.name);
+            format!("{head}}}{comma}\n")
+        })
+        .collect()
+}
+
 /// The record of a run whose default export returned nil after printing
 /// `stdout`.
 fn printed(startup: &str, stdout: &str) -> String {
@@ -844,6 +874,24 @@ fn a_feature_loads_its_sub_feature_chunk() {
             "app.spell.js: app.spell | roots app.spell | imports app.main.js app.editor+app.spell.js",
         ]
     );
+    // The sub-feature's loadable is the editor's.
+    let program = analyze(CHAIN);
+    for level in OptimizationLevel::ALL {
+        let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
+        assert_eq!(
+            unsized_manifest(&output),
+            r#"{
+  "startup": "app.main.js",
+  "chunks": [
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["light.lazy", "app.main"], "roots": ["app.main"], "loadables": []},
+    {"name": "app.editor+app.spell", "file": "app.editor+app.spell.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
+    {"name": "app.spell", "file": "app.spell.js", "imports": ["app.main.js", "app.editor+app.spell.js"], "namespaces": ["app.spell"], "roots": ["app.spell"], "loadables": [{"namespace": "app.editor", "target": "app.spell/check"}]}
+  ]
+}
+"#,
+            "{level}"
+        );
+    }
 }
 
 /// A lazy target that requires the loading namespace reads startup's
@@ -895,6 +943,19 @@ fn a_feature_reads_the_namespace_that_loads_it() {
             output.files[0].source.matches("import(").count(),
             1,
             "{level}: only the editor's loadable imports"
+        );
+        // The resident loadable resolves to startup, which holds its target.
+        assert_eq!(
+            unsized_manifest(&output),
+            r#"{
+  "startup": "app.main.js",
+  "chunks": [
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "app.util", "light.lazy", "app.main"], "roots": ["app.main", "app.util"], "loadables": [{"namespace": "app.main", "target": "app.util/twice"}]},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]}
+  ]
+}
+"#,
+            "{level}"
         );
     }
 }
@@ -1034,6 +1095,18 @@ fn a_namespace_loadable_runs_its_methods_when_loaded() {
             "app.shapes.js: app.shapes | roots app.shapes | imports app.main.js",
         ]
     );
+    // A namespace target is written as its namespace.
+    let program = analyze(METHODS);
+    for level in OptimizationLevel::ALL {
+        let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
+        assert!(
+            unsized_manifest(&output).contains(
+                r#""file": "app.shapes.js", "imports": ["app.main.js"], "namespaces": ["app.shapes"], "roots": ["app.shapes"], "loadables": [{"namespace": "app.main", "target": "app.shapes"}]}"#
+            ),
+            "{level}: {}",
+            output.manifest()
+        );
+    }
 }
 
 /// Raw `js*` text in a feature: at `Advanced` the short names avoid its
@@ -1231,4 +1304,208 @@ fn a_package_only_a_feature_requires_is_imported_by_its_chunk() {
             .collect::<Vec<_>>();
         assert_eq!(importers, ["app.editor.js"], "{level}");
     }
+}
+
+/// The CLI's output for `args`: whether it succeeded, its stdout and stderr.
+fn cli(args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        output.status.success(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+/// The names of the files in `dir`, sorted.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut names = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// `--out-dir` writes the chunk files of examples/features and chunks.json
+/// into a directory it creates, at every level: the files the manifest
+/// names, which hold what the library returns, and which print in Node what
+/// the single `--esm` file prints. Files the manifest does not name stay.
+#[test]
+fn out_dir_writes_the_features_example_chunks_and_manifest_at_every_level() {
+    let dir = TempDir::new("chunks-out-dir");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/features");
+    let program = analyze_namespace_entry(
+        "app.main",
+        &[PathBuf::from(root)],
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    for level in OptimizationLevel::ALL {
+        // A directory below one that does not exist either.
+        let out = dir.join(level.name()).join("out");
+        if level == OptimizationLevel::Advanced {
+            // A file of an earlier build is overwritten; another stays.
+            fs::create_dir_all(&out).unwrap();
+            fs::write(out.join("app.editor.js"), "stale").unwrap();
+            fs::write(out.join("notes.txt"), "kept").unwrap();
+        }
+        let args = [
+            "--compile",
+            "--optimize",
+            level.name(),
+            "--entry",
+            "app.main",
+            "--source-root",
+            root,
+            "--out-dir",
+            out.to_str().unwrap(),
+        ];
+        assert_eq!(cli(&args), (true, String::new(), String::new()), "{level}");
+        let mut expected = vec![
+            "app.editor.js",
+            "app.main.js",
+            "app.reports.js",
+            "chunks.json",
+        ];
+        if level == OptimizationLevel::Advanced {
+            expected.push("notes.txt");
+            assert_eq!(fs::read_to_string(out.join("notes.txt")).unwrap(), "kept");
+        }
+        assert_eq!(listing(&out), expected, "{level}");
+        let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
+        for file in &output.files {
+            assert_eq!(
+                fs::read_to_string(out.join(&file.name)).unwrap(),
+                file.source,
+                "{level}: {}",
+                file.name
+            );
+        }
+        let manifest = fs::read_to_string(out.join("chunks.json")).unwrap();
+        assert_eq!(manifest, output.manifest(), "{level}");
+        assert_eq!(
+            unsized_manifest(&output),
+            r#"{
+  "startup": "app.main.js",
+  "chunks": [
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "roots": ["app.main"], "loadables": []},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
+    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js"], "namespaces": ["clojure.string", "app.reports"], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}]}
+  ]
+}
+"#,
+            "{level}"
+        );
+        // `node tests/support/chunked_execution.mjs OUT app.main.js` prints
+        // the single file's lines.
+        let single = crate::features_example::compile_features(level, true);
+        let oracle = run_modules(&[("app.main.js", &single)], "app.main.js")
+            .unwrap_or_else(|error| panic!("{level}: {error}"));
+        let record =
+            run_directory(&out, "app.main.js").unwrap_or_else(|error| panic!("{level}: {error}"));
+        assert_eq!(record, oracle, "{level}");
+        assert_eq!(record, crate::features_example::FEATURES_RECORD, "{level}");
+    }
+}
+
+/// `--out-dir` on a program without loadables writes one file, the `--esm`
+/// output, and its manifest, at every level; `--esm` may be given too, and
+/// `--size-report` prints the single file's report.
+#[test]
+fn out_dir_of_a_program_without_loadables_is_its_esm_file() {
+    let dir = TempDir::new("chunks-out-dir-one");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/namespaces");
+    for level in OptimizationLevel::ALL {
+        let out = dir.join(level.name());
+        let out = out.to_str().unwrap();
+        let base = [
+            "--compile",
+            "--optimize",
+            level.name(),
+            "--size-report",
+            "--entry",
+            "demo.main",
+            "--source-root",
+            root,
+        ];
+        let (success, esm, report) = cli(&[&base[..], &["--esm"]].concat());
+        assert!(
+            success && !esm.is_empty() && !report.is_empty(),
+            "{level}: {report}"
+        );
+        for extra in [&["--out-dir", out][..], &["--esm", "--out-dir", out]] {
+            assert_eq!(
+                cli(&[&base[..], extra].concat()),
+                (true, String::new(), report.clone()),
+                "{level}: {extra:?}"
+            );
+            assert_eq!(listing(Path::new(out)), ["chunks.json", "demo.main.js"]);
+            assert_eq!(
+                fs::read_to_string(Path::new(out).join("demo.main.js")).unwrap(),
+                esm,
+                "{level}"
+            );
+            assert_eq!(
+                fs::read_to_string(Path::new(out).join("chunks.json")).unwrap(),
+                format!(
+                    r#"{{
+  "startup": "demo.main.js",
+  "chunks": [
+    {{"name": "demo.main", "file": "demo.main.js", "imports": [], "namespaces": ["demo.math", "demo.main"], "roots": ["demo.main"], "loadables": [], "bytes": {}}}
+  ]
+}}
+"#,
+                    esm.len()
+                ),
+                "{level}"
+            );
+        }
+    }
+}
+
+/// `--out-dir` writes several files without source maps, and comes after
+/// `--entry`; the refused flags leave no directory behind.
+#[test]
+fn out_dir_refuses_the_source_map_flags() {
+    let dir = TempDir::new("chunks-out-dir-flags");
+    let out = dir.join("out");
+    let out = out.to_str().unwrap();
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/features");
+    let map = dir.join("app.js.map");
+    for flags in [
+        &["--source-map", map.to_str().unwrap()][..],
+        &["--source-map-inline"],
+        &["--source-map-include-sources"],
+    ] {
+        let args = [
+            &["--compile"][..],
+            flags,
+            &[
+                "--entry",
+                "app.main",
+                "--source-root",
+                root,
+                "--out-dir",
+                out,
+            ],
+        ]
+        .concat();
+        let (success, stdout, stderr) = cli(&args);
+        assert!(
+            !success
+                && stdout.is_empty()
+                && stderr.contains(
+                    "--out-dir writes one ES module per chunk without source maps; it excludes --source-map, --source-map-inline and --source-map-include-sources"
+                ),
+            "{flags:?}: {stderr}"
+        );
+    }
+    let (success, _, stderr) = cli(&["--compile", "--text", "1", "--out-dir", out]);
+    assert!(!success && stderr.contains("Usage:"), "{stderr}");
+    assert_eq!(listing(&dir), Vec::<String>::new());
 }

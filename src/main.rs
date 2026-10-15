@@ -16,7 +16,7 @@ use light_cljs::{
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level, --size-report prints the one report, and the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -273,6 +273,31 @@ fn write_dev_build(
     Ok(())
 }
 
+/// Write the chunked build `output` (`--out-dir` without `--reloadable`)
+/// into `out_dir`, created when missing: each chunk file and `chunks.json`,
+/// its manifest. Other files in `out_dir` stay as they are.
+fn write_chunks(output: &light_cljs::ChunkedOutput, out_dir: &Path) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(out_dir)
+        .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
+    let manifest = output.manifest();
+    let files = output
+        .files
+        .iter()
+        .map(|file| (file.name.as_str(), file.source.as_str()))
+        .chain([("chunks.json", manifest.as_str())]);
+    for (name, text) in files {
+        // A chunk is named after namespaces, which never hold a path
+        // separator; refuse to write anywhere but `out_dir` regardless.
+        if Path::new(name).file_name() != Some(name.as_ref()) {
+            return Err(format!("chunk file name {name:?} is not a plain file name").into());
+        }
+        let path = out_dir.join(name);
+        fs::write(&path, text)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn run_namespace(
     mut args: impl Iterator<Item = std::ffi::OsString>,
     mut options: AnalysisOptions,
@@ -311,13 +336,18 @@ fn run_namespace(
         }
     }
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
-    let out_dir = match (reloadable, out_dir) {
-        (true, Some(out_dir)) => Some(out_dir),
-        (false, None) => None,
-        (true, None) => return Err("--reloadable requires --out-dir DIR".into()),
-        (false, Some(_)) => return Err("--out-dir requires --reloadable".into()),
-    };
-    if out_dir.is_some() {
+    if reloadable && out_dir.is_none() {
+        return Err("--reloadable requires --out-dir DIR".into());
+    }
+    // Without --reloadable, --out-dir writes a chunked build, ES modules
+    // without source maps.
+    if !reloadable && out_dir.is_some() {
+        if flags.source_map.is_some() || flags.source_map_inline || flags.include_sources {
+            return Err("--out-dir writes one ES module per chunk without source maps; it excludes --source-map, --source-map-inline and --source-map-include-sources".into());
+        }
+        esm = true;
+    }
+    if reloadable {
         if esm
             || flags.optimize
             || flags.size_report
@@ -345,16 +375,20 @@ fn run_namespace(
         print_warnings(&warnings);
     }
     let (program, files) = program?;
-    if let Some(out_dir) = out_dir {
-        return write_dev_build(&program, &files, &out_dir);
+    if let (true, Some(out_dir)) = (reloadable, &out_dir) {
+        return write_dev_build(&program, &files, out_dir);
     }
     let prepared = prepare_application(&program, flags.options(&program)?);
-    let sources = files
-        .iter()
-        .map(|(path, text)| (path.as_path(), text.as_str()))
-        .collect::<Vec<_>>();
-    let output = flags.output(&prepared, esm, &sources)?;
-    io::stdout().lock().write_all(output.as_bytes())?;
+    if let Some(out_dir) = out_dir {
+        write_chunks(&prepared.emit_chunks(), &out_dir)?;
+    } else {
+        let sources = files
+            .iter()
+            .map(|(path, text)| (path.as_path(), text.as_str()))
+            .collect::<Vec<_>>();
+        let output = flags.output(&prepared, esm, &sources)?;
+        io::stdout().lock().write_all(output.as_bytes())?;
+    }
     if flags.size_report {
         print_size_report(&prepared)?;
     }

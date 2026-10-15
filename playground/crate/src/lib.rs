@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry_with_provider;
 use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput, SourceProvider};
-use light_cljs::{ApplicationOptions, MacroHost, OptimizationLevel, prepare_application};
+use light_cljs::{
+    ApplicationOptions, MacroHost, OptimizationLevel, PreparedApplication, prepare_application,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -58,13 +60,21 @@ impl SourceProvider for MemorySources {
     }
 }
 
-/// What one compilation produced. Exactly one of `js` and `error` is set.
+/// What one compilation produced. Exactly one of `error` and the output is
+/// set: `js` from [`compile`], or `manifest` with `files` and `chunks` from
+/// [`compile_chunks`].
 #[wasm_bindgen(getter_with_clone)]
 #[derive(Default)]
 pub struct CompileResult {
     /// The emitted program: an expression evaluating to the entry's last form,
     /// or an ES module when `esm` was requested.
     pub js: Option<String>,
+    /// A chunked build's file names, startup first (`app.main.js`), and,
+    /// parallel to them, each file's ES module, as `--out-dir` writes them.
+    pub files: Vec<String>,
+    pub chunks: Vec<String>,
+    /// A chunked build's manifest, `chunks.json`.
+    pub manifest: Option<String>,
     /// The diagnostic, already located (`file:line:column: message`).
     pub error: Option<String>,
     pub error_file: Option<String>,
@@ -93,9 +103,72 @@ pub fn compile(
     size_report: bool,
     esm: bool,
 ) -> CompileResult {
+    let options = Options {
+        entry,
+        optimize,
+        warnings,
+        pseudo_names,
+        size_report,
+    };
+    prepare(paths, sources, options, |prepared, result| {
+        result.js = Some(if esm {
+            prepared.emit_esm()
+        } else {
+            prepared.emit_js()
+        });
+    })
+}
+
+/// Compile `entry` as [`compile`] does, into a chunked build (`--out-dir`):
+/// one ES module per chunk, which load each other as `./NAME`, and the
+/// manifest. The files are values; the page decides where they go.
+#[wasm_bindgen]
+pub fn compile_chunks(
+    paths: Vec<String>,
+    sources: Vec<String>,
+    entry: &str,
+    optimize: &str,
+    warnings: bool,
+    pseudo_names: bool,
+    size_report: bool,
+) -> CompileResult {
+    let options = Options {
+        entry,
+        optimize,
+        warnings,
+        pseudo_names,
+        size_report,
+    };
+    prepare(paths, sources, options, |prepared, result| {
+        let output = prepared.emit_chunks();
+        result.manifest = Some(output.manifest());
+        for file in output.files {
+            result.files.push(file.name);
+            result.chunks.push(file.source);
+        }
+    })
+}
+
+/// The options [`compile`] and [`compile_chunks`] share.
+struct Options<'a> {
+    entry: &'a str,
+    optimize: &'a str,
+    warnings: bool,
+    pseudo_names: bool,
+    size_report: bool,
+}
+
+/// Analyze and prepare `options.entry` from the files given as parallel
+/// `paths` and `sources`, and let `emit` write the output into the result.
+fn prepare(
+    paths: Vec<String>,
+    sources: Vec<String>,
+    options: Options<'_>,
+    emit: impl FnOnce(&PreparedApplication, &mut CompileResult),
+) -> CompileResult {
     let started = now();
     let mut result = CompileResult::default();
-    let level = match optimize.parse::<OptimizationLevel>() {
+    let level = match options.optimize.parse::<OptimizationLevel>() {
         Ok(level) => level,
         Err(error) => {
             result.error = Some(error.to_string());
@@ -105,16 +178,16 @@ pub fn compile(
     let files = MemorySources {
         files: paths.into_iter().zip(sources).collect(),
     };
-    let options = AnalysisOptions {
-        warning_mode: warnings,
+    let analysis = AnalysisOptions {
+        warning_mode: options.warnings,
         ..AnalysisOptions::default()
     };
     let mut collected = Vec::new();
     let program = analyze_namespace_entry_with_provider(
-        entry,
+        options.entry,
         &files,
         &mut MacroHost::new(),
-        options,
+        analysis,
         &mut collected,
     );
     result.warnings = collected
@@ -134,14 +207,10 @@ pub fn compile(
     match program {
         Ok(program) => {
             let mut application = ApplicationOptions::new(level);
-            application.pseudo_names = pseudo_names;
+            application.pseudo_names = options.pseudo_names;
             let prepared = prepare_application(&program, application);
-            result.js = Some(if esm {
-                prepared.emit_esm()
-            } else {
-                prepared.emit_js()
-            });
-            if size_report {
+            emit(&prepared, &mut result);
+            if options.size_report {
                 result.size_report = prepared.retention().to_string();
             }
         }
