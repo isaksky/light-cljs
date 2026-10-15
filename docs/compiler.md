@@ -2060,7 +2060,16 @@ type instance, and a record's type, is a class private field set by
 `TypeBrand` in `src/js_runtime.js`, which copying fields or inheriting the
 prototype cannot forge. The `typeFields` and `recordTypes` stores read it, and
 `maps` and `mapKinds` answer for a record from it until an update gives the
-record entries of its own (light-cljs-258). An instance takes the brand
+record entries of its own (light-cljs-258). Below `Advanced` the runtime's
+`makeType` makes the constructor, one function for every type, around the
+emitter's assignments. At `Advanced` the emitter writes each type's
+constructor as a function of its own, `function Type(a0, a1) { this.x = a0;
+this.y = a1; new TypeBrand(this); }`, which `defineType` decorates with the
+methods, and the masks are properties of the type's prototype instead of each
+instance (light-cljs-264): V8 then keeps every type's construction
+monomorphic, where the shared constructor's inline caches go megamorphic as a
+program adds types, and a type costs about its own text (benchmarks/compiler.md,
+"Per-type output"). An instance takes the brand
 once, so calling a constructor as a plain function on an existing instance
 (`(.call T t 2)`), which upstream and earlier light-cljs allowed, throws a
 `TypeError`. A field named `__proto__` is an own field like any other. A

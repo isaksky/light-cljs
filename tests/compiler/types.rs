@@ -43,6 +43,23 @@ fn ifn_extensions_affect_existing_instances() {
     );
 }
 
+/// A field named as a protocol mask is assigned before the masks at lower
+/// levels, so the mask wins; at `Advanced` such a type keeps `makeType`'s
+/// constructor instead of one of its own, whose masks are its prototype's
+/// (light-cljs-264).
+#[test]
+fn mask_named_fields_read_as_at_none() {
+    assert_eq!(
+        run(
+            "(deftype T [cljs$lang$protocol_mask$partition0$ y]) (deftype U [x cljs$lang$protocol_mask$partition1$])
+             (defrecord R [cljs$lang$protocol_mask$partition0$])
+             (array (.-cljs$lang$protocol_mask$partition0$ (T. 7 1)) (.-cljs$lang$protocol_mask$partition1$ (U. 1 7))
+                    (.-cljs$lang$protocol_mask$partition0$ (->R 7)) (.-y (T. 7 1)) (map? (->R 7)))"
+        ),
+        "[0,0,-2064251126,1,true]\n"
+    );
+}
+
 /// Since light-cljs-258 the emitter writes each type's field assignments and
 /// `typeMasks` turns a raw type's mask map into assignments once per type.
 /// A saved factory still passes every argument to the type's current

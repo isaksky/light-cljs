@@ -5993,7 +5993,7 @@
     const protocols = "ICloneable IHash IEquiv IMeta IWithMeta ILookup ICounted ICollection IAssociative IMap ISeqable IIterable IPrintWithWriter IKVReduce".split(" ");
     return [["IRecord", 0, null], ...protocols.map(key => [key, 0, null]), ...recordMethodTable.flatMap(methods => methods(Type))];
   }
-  //@unit recordMethods.install effect: recordMethods when: makeType requires: recordMethods,
+  //@unit recordMethods.install effect: recordMethods when: decorateType requires: recordMethods,
   //@ typeHooks
   typeHooks.recordMethods = recordMethods;
   //@unit recordFieldIndex requires: equalPair, keyword
@@ -6091,12 +6091,13 @@
   // `null` for another type. Like the stores, copying fields or inheriting a
   // prototype cannot forge it, and setting it writes no WeakMap. The base
   // class returns the instance as `this`, and `TypeBrand` adds the field.
-  class TypeBrand extends (class { constructor(value) { return value; } }) {
-    #type;
-    constructor(value, type) { super(value); this.#type = type; }
+  // A binding, not a declaration, so terse output renames it.
+  const TypeBrand = class extends (class { constructor(value) { return value; } }) {
+    #t;
+    constructor(value, type = null) { super(value); this.#t = type; }
     // The brand of `value`, or `undefined` for a value without one.
-    static type(value) { if (Object(value) === value && #type in value) return value.#type; }
-  }
+    static type(value) { if (Object(value) === value && #t in value) return value.#t; }
+  };
   //@unit typeFields.brands effect: TypeBrand when: typeFields requires: TypeBrand, typeFields
   typeFields.has = value => TypeBrand.type(value) !== undefined;
   //@unit recordTypes.brands effect: recordMethods when: recordTypes requires: recordTypes,
@@ -6114,12 +6115,27 @@
   //@unit mapKinds.records effect: recordMethods when: mapKinds requires: mapKinds, recordTypes
   mapKinds.has = (has => value => has.call(mapKinds, value) || recordTypes.has(value))(mapKinds.has);
   mapKinds.get = (get => value => get.call(mapKinds, value) ?? (recordTypes.has(value) ? "record" : undefined))(mapKinds.get);
-  //@unit makeType requires: installMethods, protocolMaskNames, TypeBrand, typeHooks, typeNames
+  //@unit decorateType requires: installMethods, protocolMaskNames, typeHooks, typeNames
+  // Gives a type its methods; returns the masks its markers declare.
+  function decorateType(Type, fields, methods, record, name, currentConstructor) {
+    const masks = [0, 0];
+    Type.fieldNames = fields;
+    if (currentConstructor) Type.currentConstructor = currentConstructor;
+    if (name) typeNames.set(Type, name);
+    const implementations = record ? [...methods, ...typeHooks.recordMethods(Type)] : methods;
+    for (const [key, arity] of implementations) {
+      const index = arity === 0 ? protocolMaskNames.lastIndexOf(key) : -1;
+      if (index >= 0) masks[index >> 5] |= 1 << (index % 32);
+    }
+    installMethods(Type.prototype, implementations);
+    return masks;
+  }
+  //@unit makeType requires: decorateType, TypeBrand
   // `init`, which the emitter (or `reify`) writes, assigns the arguments to
   // the munged fields and a record's three slots; `masks` sets a raw type's
   // masks (`typeMasks`). A construction munges no name and writes no WeakMap.
   function makeType(fields, methods, record, masks, name, currentConstructor, init) {
-    const implicitMasks = [0, 0];
+    let implicitMasks;
     const Type = function () {
       init?.apply(this, arguments);
       if (masks) masks(this);
@@ -6129,15 +6145,20 @@
       }
       new TypeBrand(this, record === true ? Type : null);
     };
-    Type.fieldNames = fields;
-    if (currentConstructor) Type.currentConstructor = currentConstructor;
-    if (name) typeNames.set(Type, name);
-    const implementations = record === true ? [...methods, ...typeHooks.recordMethods(Type)] : methods;
-    for (const [key, arity] of implementations) {
-      const index = arity === 0 ? protocolMaskNames.lastIndexOf(key) : -1;
-      if (index >= 0) implicitMasks[index >> 5] |= 1 << (index % 32);
-    }
-    installMethods(Type.prototype, implementations);
+    implicitMasks = decorateType(Type, fields, methods, record === true, name, currentConstructor);
+    return Type;
+  }
+  //@unit defineType requires: decorateType
+  // At `Advanced` the emitter writes each type's constructor, which ends with
+  // `new TypeBrand(this)` (a record's `(this, Type)`); its masks are its
+  // prototype's. `names` is "ns/T field ...", or an array of them where one
+  // holds a space.
+  function defineType(Type, names, methods, record, currentConstructor) {
+    const [name, ...fields] = names.split?.(" ") ?? names;
+    decorateType(Type, fields, methods, record, name, currentConstructor)
+      .forEach((mask, i) => Type.prototype["cljs$lang$protocol_mask$partition" + i + "$"] = mask);
+    Type.cljs$lang$type = true;
+    if (!record) Type.cljs$lang$ctorStr = name;
     return Type;
   }
   //@unit typeMasks requires: maps

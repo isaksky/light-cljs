@@ -1927,6 +1927,31 @@ host-facing methods of the vector and the keyword.
     `reifyValues` are units of their own, and the `runtime_manifest` suite
     treats a top-level replacement of a store's method (`maps.has = ...`)
     like a wrapper of the store.
+  - **Per-type constructors (light-cljs-264).** At `Advanced` a `deftype`
+    or `defrecord` (one with a positional factory and no field named as a
+    mask; raw `deftype*` and `reify` keep `makeType`) is statements of the function it is in, with
+    no function of its own around them: `g2 = rt$defineType(function
+    Type(a0, a1, a2, a3, a4) { this["w"] = a0; ...; new rt$TypeBrand(this,
+    Type); }, "cljs.user/Rect w h", [[g1, 1, function() {...}]], 1); g3 =
+    (a0, a1) => new g2(a0, a1, null, null, null);`. The constructor is a
+    function of its own, so V8 keeps each type's construction monomorphic
+    where `makeType`'s one constructor for all types goes megamorphic, and
+    `defineType` (sharing `decorateType` with `makeType`) installs the
+    methods, puts the masks on the prototype and sets `cljs$lang$type`
+    and a `deftype`'s `cljs$lang$ctorStr` from the name. The rest of the
+    descriptor shrank with it: one string holds the name and the field
+    names (an array where one holds a space), a method entry names a
+    program protocol method by its dispatcher where the dispatcher is
+    defined in an earlier top-level form (`Emitter::defined_dispatcher`;
+    `installMethods` reads its key from `protocolKeys`), a method reads its
+    fields from `this` and declares its `self<n>` alias only for a function
+    inside it that reads one, and assigns its explicit receiver `this` only
+    where the output names it, a record that one top-level form defines,
+    and nothing assigns, has no `currentConstructor`, and a positional factory nothing reads is not
+    defined (`crate::rta` keeps it only where read, as map factories).
+    `size_ratchet::each_type_of_eight_records_costs_at_most_its_budget`
+    holds the `eight-records` fixture to 220 bytes per record and 200 per
+    `deftype`.
   - **One unit per core dispatcher (light-cljs-254).** The unit
     `seqProtocol` declared eight core dispatchers and
     `protocolHooks.dispatchers` installed six; each is a unit of its own now,
@@ -3228,7 +3253,11 @@ run the terse output.
   `PersistentVectorValue` and `Atom`, and local ones bound to a function or
   class, such as the `Type` that `makeType` returns), because the host
   shows them (`console.log` of a keyword prints `KeywordValue {}`) and the
-  printer writes them (`#object[...]`); protocol markers are renamed.
+  printer writes them (`#object[...]`); protocol markers are renamed, and
+  so is `TypeBrand`, bound to a class at the top level, whose instances the
+  host never sees. The constructor the emitter writes for a program type
+  is `function Type(...)` too, a name no compiler name takes
+  (light-cljs-264).
   Adjacent units join their `const` statements. `the_whole_terse_runtime_renames_without_capture`
   and `partial_slices_rename_without_capture` (unit tests of
   `src/terse.rs`) resolve the readable and the terse slice again and check
@@ -3361,7 +3390,18 @@ upstream states that advanced mode is unsafe for certain patterns.
   `kindHooks.countSeq`. How often and in which order the runtime reads a
   mask or marker property is not part of the contract either: a getter
   defined on one may run another number of times than at `optimize:
-  false`.
+  false`. A `deftype` or `defrecord` type's masks are properties of its
+  prototype rather than of each instance (light-cljs-264), so `Object.keys`
+  and `JSON.stringify` of an instance give only its fields (and a record's
+  `__meta`, `__extmap` and `__hash`); reading a mask gives what lower
+  levels give.
+- A program type's constructor is the function the emitter writes for it
+  (light-cljs-264). Its static properties (`fieldNames`, `cljs$lang$type`,
+  ...) may be in another order than at lower levels, and a record that one
+  top-level `defrecord` defines has no `currentConstructor`, the runtime's property
+  for copies of a record that the program redefines. A method that does not
+  name its receiver, when that is its only parameter, declares no parameter,
+  so the `length` of its function is 0.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the compiler renames every name it binds away from it: the
   hygiene pass gives them the `__light<n>_` prefix, which no raw text of the

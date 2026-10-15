@@ -256,8 +256,9 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// namespace registry; a pellet that stops exporting compile-time machinery
 /// lists its units here. `upstreamMembers` is the condition of the types'
 /// `.fields` effects, which only an `Advanced` program that names one of
-/// `UPSTREAM_MEMBERS` roots (light-cljs-238).
-const UNREACHABLE_FROM_EXPORTS: &[&str] = &["upstreamMembers"];
+/// `UPSTREAM_MEMBERS` roots (light-cljs-238). `defineType` decorates the
+/// constructors that only `Advanced` emission writes (light-cljs-264).
+const UNREACHABLE_FROM_EXPORTS: &[&str] = &["defineType", "upstreamMembers"];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
 /// with whether it is the first item of a method entry (`["IHash/-hash", 1,

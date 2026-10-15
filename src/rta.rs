@@ -58,8 +58,9 @@
 //! `deftype` entirely, and one only tested with `instance?` or extended keeps
 //! a bare constructor; an `extend-type` that has no method left disappears
 //! when it extends a host type name or a type defined earlier at top level,
-//! so that the error of extending a type not yet defined stays; a map factory
-//! nothing reads is not defined; a `defprotocol` defines only the protocol and
+//! so that the error of extending a type not yet defined stays; a positional
+//! or map factory nothing reads is not defined (the positional one since
+//! light-cljs-264); a `defprotocol` defines only the protocol and
 //! dispatchers something reads; and a top-level definition that preparation
 //! would remove once unread goes when only dropped methods read it. Emission
 //! gives a type its static `getBasis` only when reachable code names it, and
@@ -861,10 +862,10 @@ impl TypeAnalysis {
                             *map_constructor = None;
                         }
                     }
+                    // A factory stays where something reads it, as `read`
+                    // keeps it, and emission defines only the kept ones
+                    // (light-cljs-264).
                     keep[global.0] = true;
-                    for factory in constructor.iter().chain(map_constructor.iter()) {
-                        keep[factory.0] = true;
-                    }
                 }
                 ExprKind::Reify { methods, .. } => {
                     rewrite.dropped_methods += retain(methods, &self.kept[&id]);

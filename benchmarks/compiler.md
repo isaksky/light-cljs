@@ -3699,3 +3699,103 @@ function of its own that assigns the five fields, with the method on its
 prototype, the shape light-cljs-264 plans: then the new call shape is at
 upstream's speed (0.98×), where the old one stays at 1.5×, and in Maglev it
 halves the time a call takes (9 against 20 µs).
+
+## Per-type output — October 15, 2026
+
+light-cljs-264 writes each `deftype` and `defrecord` type at `advanced` as
+statements of the function it is in, without a function around them, and
+gives the type a constructor of its own instead of `makeType`'s one
+constructor for every type (`ExprKind::DefType` in `src/emitter.rs`,
+`defineType` in `src/js_runtime.js`). A record of `eight-records` goes from
+
+    (()=>{c=a(["a","b"],[["cljs.user/Shape/area",1,(function(ak){const B=this;
+    ak=this;return B.a+B.b})]],true,null,"cljs.user/R1",()=>c,function(C,D,E,F,
+    G){this.a=C;this.b=D;this.__meta=E;this.__extmap=F;this.__hash=G});d=(C,D)
+    =>new c(C,D,null,null,null);c.cljs$lang$type=true;return c})();
+
+to
+
+    g=b(function Type(E,F,G,H,I){this.a=E;this.b=F;this.__meta=G;this.__extmap=H;
+    this.__hash=I;new c(this,Type)},"cljs.user/R1 a b",[[f,1,function(){return
+    this.a+this.b}]],1);h=(E,F)=>new g(E,F,null,null,null);
+
+The masks moved to the prototype, `cljs$lang$type` and a `deftype`'s
+`cljs$lang$ctorStr` into `defineType`, the method entry names the protocol
+method's dispatcher, the method reads `this` without upstream's dead
+prologue, a record that one top-level form defines has no
+`currentConstructor`, and a
+positional factory nothing reads (a `deftype` built with `T.`) is not
+defined.
+
+**Per type.** `eight-records` is new: eight records and eight deftypes, each
+with two fields and one method, all constructed and passed to one function
+that calls the method and reads a field. Bytes at `advanced` that one more
+record or deftype adds, as
+`size_ratchet::each_type_of_eight_records_costs_at_most_its_budget` measures
+them (raw the same for each, gzip the mean of seven); "before" is
+light-cljs-262 on master `bdaa6a5` (`30a1bf7`), upstream the investigation's
+`:advanced` figures:
+
+| Per extra | Before | After | Upstream `:advanced` |
+| --- | ---: | ---: | ---: |
+| record (2 fields, 1 method) | 295–303 / 52 | 218 / 28 | 1,763 / 195 |
+| deftype (2 fields, 1 method) | 279–287 / 56 | 130 / 20 | 135 / 33 |
+
+The whole fixture goes from 33,689 / 10,460 to 31,803 / 9,965 bytes.
+
+**Sizes**, bytes of `--compile --optimize LEVEL` (`cargo nextest run --test
+compiler size_ratchet:: --no-capture`). Every `advanced` output with types
+shrinks and none grows; the five ceilings in the last column fall. `none`
+and `prepare` embed the whole runtime, which grew by 997 bytes
+(`decorateType`, shared by `makeType` and `defineType`, and `defineType`),
+so their ceilings rise by 1,000 bytes:
+
+| Fixture | Advanced before | Advanced after | Ceiling after (none / prepare / advanced) |
+| --- | ---: | ---: | --- |
+| record-protocol | 5,463 | 5,385 | 434,000 / 434,000 / 5,400 |
+| three-records | 5,456 | 5,380 | 436,000 / 436,000 / 5,400 |
+| pure-defs | 5,355 | 5,294 | 435,000 / 435,000 / 5,300 |
+| closed-params | 14,036 | 13,963 | 436,000 / 436,000 / 14,000 |
+| callbacks | 37,905 | 37,832 | 435,000 / 435,000 / 38,000 |
+| protocol-params | 43,103 | 42,740 | 436,000 / 436,000 / 43,000 |
+| eight-records | 33,689 | 31,803 | 445,000 / 445,000 / 32,000 |
+
+**Construction.** The pellet's acceptance command, on the 24-CPU Mac (Node
+v24.18.0, macOS 15.7.3), with another worker building and testing on it:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-protocol --output DIR
+```
+
+Microseconds per call `(f 2000)` at `advanced`, median of the run's samples,
+runs alternated (one-minute load 1.6 to 3.8); upstream is timed in the same
+rounds:
+
+| Build | Runs | Node | Upstream `:advanced` | light-cljs / upstream | QuickJS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| master `bdaa6a5` | 3 | 37.5–37.9 | 19–20 | 1.9–2.0× | 1,425–1,515 |
+| light-cljs-262 (`30a1bf7`) | 2 | 48.0–49.7 | 19 | 2.5–2.6× | 1,311–1,360 |
+| light-cljs-264 | 4 | 33.6–35.2 | 19–20 | 1.7–1.9× | 943–987 |
+
+`none` and `prepare`, which keep `makeType`, stay at 270–290 µs in Node
+and about 5,100 in QuickJS. Most of what is left is the brand: the
+constructor ends with `new TypeBrand(this, Type)`, which adds the private
+field through `TypeBrand`'s return-override base class. A Node
+microbenchmark of construction alone (an escaping instance with two fields
+and a record's three slots, each type its own factory and loop; ns per
+construction, TurboFan / `--no-turbofan`) shows what it costs and how it
+scales with the number of types:
+
+| Shape | 1 type | 4 types | 16 types |
+| --- | ---: | ---: | ---: |
+| per-type constructor, no brand | 3.7 / 6.1 | 3.7 / 6.0 | 3.7 / 5.8 |
+| per-type constructor and `new TypeBrand` (this change) | 3.8 / 26 | 4.1 / 28 | 14.8 / 30 |
+| shared constructor, `init` and `TypeBrand` (light-cljs-258) | 4.2 / 29 | 4.4 / 31 | 22.9 / 36 |
+| per-type class extending a base with the private field | 13 / 23 | 14 / 24 | 22 / 26 |
+
+A private field is defined only by a class constructor, so every brand is
+added at `TypeBrand`'s one site, which goes megamorphic past four types, and
+Maglev does not inline the return override at all. Writing the record's
+three slots there too would have saved 38 bytes a record but took 27 ns at
+16 types, so the constructor writes them.

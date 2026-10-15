@@ -48,21 +48,59 @@ fn record_printing_metadata_and_constructor_internals_are_observable() {
 
 /// Since light-cljs-258 the constructor assigns each field, under its munged
 /// name, as an own data property that `set!` updates in place, instead of an
-/// accessor over per-instance storage.
+/// accessor over per-instance storage. (The masks that follow them are the
+/// instance's own only below `Advanced`, see the next test.)
 #[test]
 fn type_instances_hold_fields_as_own_data_properties() {
     assert_eq!(
         run(
             "(defrecord R [a b?]) (deftype T [x ^:mutable y-z] Object (bump [_] (set! y-z (inc y-z)) y-z))
              (let [r (->R 1 2) t (T. 3 4)
-                   d (fn [o k] (let [p (js/Object.getOwnPropertyDescriptor o k)] (array (.-value p) (.-writable p) (.-enumerable p) (fn? (.-get p)))))]
+                   d (fn [o k] (let [p (js/Object.getOwnPropertyDescriptor o k)] (array (.-value p) (.-writable p) (.-enumerable p) (fn? (.-get p)))))
+                   fields (fn [o] (.filter (js/Object.keys o) (fn [k] (not (.startsWith k \"cljs$lang$protocol_mask\")))))]
                (.bump t)
                (array (d r \"a\") (d r \"b_QMARK_\") (d r \"__extmap\") (d t \"x\") (d t \"y_z\") (.-y-z t)
-                      (js/Object.keys r) (js/Object.keys t) (= r (->R 1 2)) (= (assoc r :a 3) (->R 3 2))))"
+                      (fields r) (fields t) (= r (->R 1 2)) (= (assoc r :a 3) (->R 3 2))))"
         ),
         "[[1,true,true,false],[2,true,true,false],[null,true,true,false],[3,true,true,false],[5,true,true,false],5,\
-         [\"a\",\"b_QMARK_\",\"__meta\",\"__extmap\",\"__hash\",\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],\
-         [\"x\",\"y_z\",\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],true,true]\n"
+         [\"a\",\"b_QMARK_\",\"__meta\",\"__extmap\",\"__hash\"],[\"x\",\"y_z\"],true,true]\n"
+    );
+}
+
+/// light-cljs-264: at `Advanced` the masks of a `deftype` or `defrecord`
+/// type are its prototype's, so an instance's own keys are its fields and a
+/// record's three slots; lower levels give every instance its masks after
+/// them, as upstream's constructor does. Reading a mask gives the same value.
+#[test]
+fn advanced_types_hold_their_masks_on_the_prototype() {
+    let source = "(defrecord R [a]) (deftype T [x] ICounted (-count [_] 1))
+                  (let [r (->R 1) t (T. 2)
+                        own (fn [o] (.hasOwnProperty o \"cljs$lang$protocol_mask$partition0$\"))]
+                    (array (js/Object.keys r) (js/Object.keys t) (.-cljs$lang$protocol_mask$partition0$ t)
+                           (own t) (own (js/Object.getPrototypeOf t)) (count t) (count r)))";
+    let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+    let json = |level| {
+        let js =
+            light_cljs::prepare_application(&program, light_cljs::ApplicationOptions::new(level))
+                .emit_js();
+        super::optimization::execute(&format!("console.log(JSON.stringify({js}));"))
+    };
+    let masks = "\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"";
+    for level in [
+        light_cljs::OptimizationLevel::None,
+        light_cljs::OptimizationLevel::Prepare,
+    ] {
+        assert_eq!(
+            json(level),
+            format!(
+                "[[\"a\",\"__meta\",\"__extmap\",\"__hash\",{masks}],[\"x\",{masks}],2,true,false,1,1]\n"
+            ),
+            "at {level}"
+        );
+    }
+    assert_eq!(
+        json(light_cljs::OptimizationLevel::Advanced),
+        "[[\"a\",\"__meta\",\"__extmap\",\"__hash\"],[\"x\"],2,false,true,1,1]\n"
     );
 }
 
@@ -220,4 +258,92 @@ mod original_record_tags {
         }
         output.flush().unwrap();
     }
+}
+
+/// light-cljs-264: at `Advanced` a type's methods read their fields from
+/// `this` and name their receiver only where they use it, a record defined
+/// twice keeps copying old instances into the current definition, and a
+/// type whose field name holds a space passes its names as an array; every
+/// level gives what `None` gives.
+#[test]
+fn per_type_constructors_keep_receivers_redefinitions_and_field_names() {
+    assert_eq!(
+        run(
+            "(defprotocol Shape (area [s]) (scale [s k]) (parts [s]))
+             (defrecord Rect [w h] Shape (area [_] (* w h)) (scale [this k] (assoc this :w (* k w)))
+               (parts [_] (mapv (fn [f] (f)) [(fn [] w) (fn [] h)])))
+             (def old (->Rect 2 3))
+             (defrecord Rect [w h d] Shape (area [_] (* w h d)) (scale [this k] this) (parts [_] [w h d]))
+             (deftype Box [^:mutable n] Shape (area [this] (set! n (inc n)) (.-n this)) (scale [_ k] (Box. (* k n)))
+               (parts [_] (let [g (fn [] n)] [(g)])))
+             (defmacro spaced [] (list 'defrecord 'Sp [(symbol \"a b\")]))
+             (spaced)
+             (let [b (Box. 1) s (->Sp 5)]
+               (array (area old) (area (scale old 2)) (= (type (scale old 2)) Rect) (into-array (parts old))
+                      (area (->Rect 1 2 3)) (area b) (area b) (.-n (scale b 3)) (into-array (parts b))
+                      (pr-str s) (get s (keyword \"a b\")) (.-fieldNames Sp)))"
+        ),
+        "[6,0,true,[2,3],6,2,3,9,[3],\"#cljs.user.Sp{:a b 5}\",5,[\"a b\"]]\n"
+    );
+}
+
+/// light-cljs-264: at `Advanced` a type's definition is statements of the
+/// function around it. Its constructor is its own function, which assigns
+/// the fields and brands the instance, one string holds the type's and the
+/// fields' names, a method entry names the protocol method's dispatcher, the
+/// method reads its fields from `this`, and a positional factory nothing
+/// reads is not defined.
+#[test]
+fn advanced_types_define_their_own_constructors() {
+    let source = "(defprotocol Area (area [s]))
+                  (defrecord Rect [w h] Area (area [_] (* w h)))
+                  (deftype T [a] Area (area [_] a))
+                  (into-array (map area [(->Rect 2 3) (T. 4)]))";
+    let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+    let js = light_cljs::prepare_application(
+        &program,
+        super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    for expected in [
+        " = rt$defineType(function Type(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
+         this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; new rt$TypeBrand(this, Type); \
+         }, \"cljs.user/Rect w h\", [[g",
+        ", 1, function() {\n    return (this[\"w\"] * this[\"h\"]);\n  }]], 1); g",
+        " = rt$defineType(function Type(a0) { this[\"a\"] = a0; new rt$TypeBrand(this); }, \
+         \"cljs.user/T a\", [[g",
+        ", 1, function() {\n    return this[\"a\"];\n  }]]); ",
+        " = (a0, a1) => new g",
+    ] {
+        assert!(js.contains(expected), "{expected}\n{js}");
+    }
+    let definitions = &js[js.find("rt$defineType(function").unwrap()..];
+    for unexpected in [
+        "(() => { g",
+        "const self",
+        "(...args) => new",
+        "cljs$lang$type",
+    ] {
+        assert!(!definitions.contains(unexpected), "{unexpected}\n{js}");
+    }
+    assert_eq!(run(source), "[6,4]\n");
+}
+
+/// A `defrecord` in a function defines a new type at each call, so a copy of
+/// an instance of an earlier one (`assoc`, `clone`, `with-meta`) is of the
+/// current type at every level: light-cljs-264 omits the record's
+/// `currentConstructor` only for a top-level definition.
+#[test]
+fn nested_record_redefinitions_copy_to_the_current_constructor() {
+    assert_eq!(
+        run(
+            "(defn make [] (defrecord R [x]) [->R R])
+             (def old ((first (make)) 1))
+             (def current (second (make)))
+             (array (identical? (type (assoc old :x 2)) current) (identical? (type (clone old)) current)
+                    (identical? (type (with-meta old {:m 1})) current) (identical? (type old) current)
+                    (:x (assoc old :x 2)))"
+        ),
+        "[true,true,true,false,2]\n"
+    );
 }

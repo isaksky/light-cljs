@@ -120,3 +120,65 @@ fn fixtures_print_identical_results_at_every_level() {
         }
     }
 }
+
+/// The `eight-records` fixture with its first `records` records and its first
+/// `deftypes` deftypes.
+fn types_program(records: usize, deftypes: usize) -> String {
+    const BODIES: [&str; 8] = [
+        "(+ a b)", "(- a b)", "(* a b)", "(+ b a)", "(- b a)", "(* b a)", "(+ a a)", "(* b b)",
+    ];
+    let mut source = String::from("(defprotocol Shape (area [s]))\n");
+    for (index, body) in BODIES.iter().enumerate().take(records) {
+        writeln!(
+            source,
+            "(defrecord R{} [a b] Shape (area [_] {body}))",
+            index + 1
+        )
+        .unwrap();
+    }
+    for (index, body) in BODIES.iter().rev().enumerate().take(deftypes) {
+        writeln!(
+            source,
+            "(deftype T{} [a b] Shape (area [_] {body}))",
+            index + 1
+        )
+        .unwrap();
+    }
+    let values: Vec<String> = (1..=records)
+        .map(|n| format!("(->R{n} {n} {})", n + 1))
+        .chain((1..=deftypes).map(|n| format!("(T{n}. {} {})", n + 8, n + 9)))
+        .collect();
+    write!(
+        source,
+        "(reduce (fn [t s] (+ t (area s) (.-a s))) 0 [{}])",
+        values.join(" ")
+    )
+    .unwrap();
+    source
+}
+
+/// light-cljs-264: at `Advanced` each record of `eight-records` past the
+/// first adds at most 220 bytes, and each deftype at most 200: a type is its
+/// constructor, method entries and factory, around the runtime's
+/// `defineType` (benchmarks/compiler.md, "Per-type output").
+#[test]
+fn each_type_of_eight_records_costs_at_most_its_budget() {
+    let fixture = FIXTURES
+        .iter()
+        .find(|fixture| fixture.name == "eight-records")
+        .unwrap();
+    assert_eq!(types_program(8, 8), fixture.source);
+    let size = |records, deftypes| {
+        let source = types_program(records, deftypes);
+        let program = analyze(&source, &parse(&source).unwrap()).unwrap();
+        emit(&program, OptimizationLevel::Advanced).len()
+    };
+    let added = |sizes: Vec<usize>| -> Vec<usize> {
+        sizes.windows(2).map(|pair| pair[1] - pair[0]).collect()
+    };
+    let records = added((1..=8).map(|records| size(records, 8)).collect());
+    let deftypes = added((1..=8).map(|deftypes| size(8, deftypes)).collect());
+    println!("bytes per extra record: {records:?}\nbytes per extra deftype: {deftypes:?}");
+    assert!(records.iter().all(|&bytes| bytes <= 220), "{records:?}");
+    assert!(deftypes.iter().all(|&bytes| bytes <= 200), "{deftypes:?}");
+}

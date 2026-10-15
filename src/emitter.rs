@@ -232,6 +232,10 @@ fn emit_js_mode(
             asynchronous: false,
             boxed_return: false,
             operands: None,
+            this_target: None,
+            self_aliases: Vec::new(),
+            receivers: Vec::new(),
+            dispatchers: None,
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
             site: None,
@@ -1222,6 +1226,9 @@ struct Wrapper {
     asynchronous: bool,
     /// Whether the function around it boxes its returned values.
     outer_boxed: bool,
+    /// The method whose receiver is `this` around it, which a `function`
+    /// wrapper rebinds ([`Emitter::this_target`]).
+    outer_this: Option<RecurTargetId>,
 }
 
 /// The locals `operand0`, `operand1`, ... of the function being written,
@@ -1293,6 +1300,19 @@ struct Emitter<'a> {
     /// emitter writes, such as a Var's), where a protocol call evaluates its
     /// operands as an applied arrow's arguments instead.
     operands: Option<Operands>,
+    /// At `Advanced`: the type or `reify` method whose receiver is the `this`
+    /// of the function being written, so that its field reads read `this`
+    /// rather than its `self<n>` alias ([`Emitter::method_body`]).
+    this_target: Option<RecurTargetId>,
+    /// The methods written with a [`Emitter::this_target`] whose `self<n>`
+    /// alias a nested function reads, so that they declare it.
+    self_aliases: Vec<RecurTargetId>,
+    /// The explicit receivers of those methods, innermost last, each with
+    /// whether the output names it, so that its method assigns it `this`.
+    receivers: Vec<(LocalId, bool)>,
+    /// At `Advanced`: the dispatcher global of each program protocol method,
+    /// by key ([`Emitter::defined_dispatcher`]), built on first use.
+    dispatchers: Option<HashMap<&'a str, GlobalId>>,
     raw_segments: Vec<std::ops::Range<usize>>,
     /// Every runtime name written so far, the roots of an `Advanced` slice.
     runtime: RuntimeRoots,
@@ -1953,11 +1973,31 @@ impl<'a> Emitter<'a> {
     }
 
     fn local(&mut self, id: LocalId) {
+        for (receiver, named) in &mut self.receivers {
+            *named |= *receiver == id;
+        }
         write!(self.output, "l{}", id.0).unwrap();
+    }
+
+    /// The receiver of the type or `reify` method `target`, whose fields the
+    /// code being written reads: `this` directly in its method's function,
+    /// else the method's `self<n>` alias of it.
+    fn receiver(&mut self, target: RecurTargetId) {
+        if self.this_target == Some(target) {
+            self.output.push_str("this");
+        } else {
+            if !self.self_aliases.contains(&target) {
+                self.self_aliases.push(target);
+            }
+            write!(self.output, "self{}", target.0).unwrap();
+        }
     }
 
     fn local_value(&mut self, id: LocalId) {
         if let Some((_, target)) = self.captures.iter().rev().find(|(local, _)| *local == id) {
+            for (receiver, named) in &mut self.receivers {
+                *named |= *receiver == id;
+            }
             write!(self.output, "captures{}.l{}", target.0, id.0).unwrap();
         } else if let Some(&(_, target)) = self
             .reify_captures
@@ -1966,7 +2006,9 @@ impl<'a> Emitter<'a> {
             .find(|(local, _)| *local == id)
         {
             self.rt(RuntimeName::export("field"));
-            write!(self.output, "(self{}, ", target.0).unwrap();
+            self.output.push('(');
+            self.receiver(target);
+            self.output.push_str(", ");
             self.string_units(
                 &self.program.locals[id.0]
                     .name
@@ -1975,7 +2017,7 @@ impl<'a> Emitter<'a> {
             );
             self.output.push(')');
         } else if let Some((target, _)) = self.program.field_bindings.get(&id) {
-            write!(self.output, "self{}", target.0).unwrap();
+            self.receiver(*target);
             self.member(&crate::analyzer::munge_js_member(
                 &self.program.locals[id.0].name,
             ));
@@ -3379,6 +3421,19 @@ impl<'a> Emitter<'a> {
                     ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Number(_) | ExprKind::String(_)
                 )
                 && self.constant_nodes(id).is_some() => {}
+            // At `Advanced` a type's definition is statements of the function
+            // it is in (light-cljs-264).
+            ExprKind::DefType { .. } if self.defines_constructor(id) => {
+                self.indentation();
+                self.defined_type(id);
+                if context == ExprContext::Return {
+                    self.return_open();
+                    self.defined_type_value(id);
+                    self.return_close();
+                    self.output.push(';');
+                }
+                self.output.push('\n');
+            }
             _ => {
                 self.indentation();
                 if context == ExprContext::Return {
@@ -3433,7 +3488,39 @@ impl<'a> Emitter<'a> {
         method: &FnMethod,
         ifn_call: bool,
     ) {
-        self.output.push('(');
+        self.method_function(name, method, ifn_call, true);
+    }
+
+    /// Whether `method`, a type or `reify` method, reads its fields from
+    /// `this` (light-cljs-264): at `Advanced`, unless its `recur` resets its
+    /// receiver or captures (see [`Emitter::method_body`]).
+    fn through_this(&self, method: &FnMethod, ifn_call: bool) -> bool {
+        let target = method.target;
+        let used = self.program.recur_targets[target.0].used;
+        let type_method = self.program.type_methods.contains(&target);
+        let field_reset = ifn_call && type_method && used;
+        let capture_reset = ifn_call && used && !method.captures.is_empty();
+        (type_method || self.reify_receivers.contains(&target))
+            && self.replaced_core.is_some()
+            && !field_reset
+            && !capture_reset
+    }
+
+    /// The function of `method`, `(function(l5) {...})`, without the
+    /// parentheses unless `parenthesized`. A type or `reify` method that reads
+    /// its fields from `this` ([`Emitter::through_this`]) assigns its explicit
+    /// receiver `this` only where the output names it, and declares no
+    /// parameter for a receiver that is its only parameter and unnamed.
+    fn method_function(
+        &mut self,
+        name: Option<LocalId>,
+        method: &FnMethod,
+        ifn_call: bool,
+        parenthesized: bool,
+    ) {
+        if parenthesized {
+            self.output.push('(');
+        }
         self.function_mark();
         if method.asynchronous {
             self.output.push_str("async ");
@@ -3445,32 +3532,72 @@ impl<'a> Emitter<'a> {
         }
         let outer_asynchronous = std::mem::replace(&mut self.asynchronous, method.asynchronous);
         let outer_boxed = std::mem::take(&mut self.boxed_return);
+        // The function has a `this` of its own.
+        let outer_this = self.this_target.take();
+        let through_this = self.through_this(method, ifn_call);
+        let receiver = method.params.first().copied().filter(|_| through_this);
+        let deferred = receiver.is_some() && method.params.len() == 1 && method.rest.is_none();
         self.output.push('(');
-        for (index, param) in method.params.iter().chain(method.rest.iter()).enumerate() {
-            if index > 0 {
-                self.output.push_str(", ");
+        let params_at = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        if !deferred {
+            for (index, param) in method.params.iter().chain(method.rest.iter()).enumerate() {
+                if index > 0 {
+                    self.output.push_str(", ");
+                }
+                self.local(*param);
             }
-            self.local(*param);
         }
         self.output.push_str(") {\n");
         self.indent += 1;
-        self.operand_scope(|emitter| emitter.method_body(method, ifn_call));
+        let body_at = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        if let Some(receiver) = receiver {
+            self.receivers.push((receiver, false));
+        }
+        self.operand_scope(|emitter| emitter.method_body(method, ifn_call, through_this));
+        if let Some(receiver) = receiver
+            && self.receivers.pop().is_some_and(|(_, named)| named)
+        {
+            let assignment = format!("{}l{} = this;\n", "  ".repeat(self.indent), receiver.0);
+            self.insert(body_at, &assignment);
+            if deferred {
+                self.insert(params_at, &format!("l{}", receiver.0));
+            }
+        }
         self.asynchronous = outer_asynchronous;
         self.boxed_return = outer_boxed;
+        self.this_target = outer_this;
         self.indent -= 1;
         self.indentation();
-        self.output.push_str("})");
+        self.output.push('}');
+        if parenthesized {
+            self.output.push(')');
+        }
     }
 
     /// The statements of `method`'s function, after its opening brace.
-    fn method_body(&mut self, method: &FnMethod, ifn_call: bool) {
+    fn method_body(&mut self, method: &FnMethod, ifn_call: bool, through_this: bool) {
         let field_reset = ifn_call
             && self.program.type_methods.contains(&method.target)
             && self.program.recur_targets[method.target.0].used;
         if field_reset {
             self.field_resets.push(method.target);
         }
-        if self.reify_receivers.contains(&method.target)
+        // In the pinned CLJS IFn .call adapter, the implicit receiver parameter
+        // aliases the hidden field-access receiver and recur sets it to nil.
+        // Captured outer-local reads then throw; the direct invoke entry keeps
+        // its receiver. Preserve this observable distinction, including reads
+        // delayed inside a returned closure.
+        let capture_reset = ifn_call
+            && self.program.recur_targets[method.target.0].used
+            && !method.captures.is_empty();
+        // A type or `reify` method that reads its fields from `this` where no
+        // function inside it rebinds `this` declares its `self<n>` alias of
+        // `this` only for such a function: upstream's prologue without its
+        // dead statements (light-cljs-264).
+        let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        if through_this {
+            self.this_target = Some(method.target);
+        } else if self.reify_receivers.contains(&method.target)
             || self.program.type_methods.contains(&method.target)
         {
             self.indentation();
@@ -3499,14 +3626,6 @@ impl<'a> Emitter<'a> {
             self.output.push_str(" = this;\n");
         }
         let previous_captures = self.captures.len();
-        // In the pinned CLJS IFn .call adapter, the implicit receiver parameter
-        // aliases the hidden field-access receiver and recur sets it to nil.
-        // Captured outer-local reads then throw; the direct invoke entry keeps
-        // its receiver. Preserve this observable distinction, including reads
-        // delayed inside a returned closure.
-        let capture_reset = ifn_call
-            && self.program.recur_targets[method.target.0].used
-            && !method.captures.is_empty();
         if capture_reset {
             self.indentation();
             write!(self.output, "let captures{} = {{", method.target.0).unwrap();
@@ -3543,14 +3662,46 @@ impl<'a> Emitter<'a> {
         if capture_reset {
             self.capture_resets.pop();
         }
+        if through_this {
+            self.this_target = None;
+            if let Some(index) = self.self_aliases.iter().position(|t| *t == method.target) {
+                self.self_aliases.swap_remove(index);
+                let alias = format!(
+                    "{}const self{} = this;\n",
+                    "  ".repeat(self.indent),
+                    method.target.0
+                );
+                self.insert(start, &alias);
+            }
+        }
+    }
+
+    /// Insert `text` into the output at `at`, the output length, marks length
+    /// and raw segments length when the text after it began, moving that
+    /// text's marks and raw segments.
+    fn insert(&mut self, (at, marks, raw): (usize, usize, usize), text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.output.insert_str(at, text);
+        for range in &mut self.raw_segments[raw..] {
+            range.start += text.len();
+            range.end += text.len();
+        }
+        if let Some(list) = &mut self.marks {
+            for mark in list.list[marks..]
+                .iter_mut()
+                .filter(|mark| mark.output >= at)
+            {
+                mark.output += text.len();
+            }
+        }
     }
 
     /// Write the statements of a function's body with `body`, declaring the
     /// operand locals ([`Operands`]) they use ahead of them.
     fn operand_scope(&mut self, body: impl FnOnce(&mut Self)) {
-        let at = self.output.len();
-        let marks = self.marks_len();
-        let raw = self.raw_segments.len();
+        let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
         let outer = self.operands.replace(Operands::default());
         body(self);
         let declared = std::mem::replace(&mut self.operands, outer).map_or(0, |o| o.declared);
@@ -3567,19 +3718,7 @@ impl<'a> Emitter<'a> {
         }
         declaration.push_str(";\n");
         // The body's marks and raw segments follow the declaration.
-        self.output.insert_str(at, &declaration);
-        for range in &mut self.raw_segments[raw..] {
-            range.start += declaration.len();
-            range.end += declaration.len();
-        }
-        if let Some(list) = &mut self.marks {
-            for mark in list.list[marks..]
-                .iter_mut()
-                .filter(|mark| mark.output >= at)
-            {
-                mark.output += declaration.len();
-            }
-        }
+        self.insert(start, &declaration);
     }
 
     /// Write `body`, which may run apart from the evaluation of the function
@@ -3610,6 +3749,11 @@ impl<'a> Emitter<'a> {
         Wrapper {
             asynchronous,
             outer_boxed: std::mem::replace(&mut self.boxed_return, asynchronous),
+            outer_this: if arrow {
+                self.this_target
+            } else {
+                self.this_target.take()
+            },
         }
     }
 
@@ -3620,6 +3764,7 @@ impl<'a> Emitter<'a> {
             self.output.push_str(")[0]");
         }
         self.boxed_return = wrapper.outer_boxed;
+        self.this_target = wrapper.outer_this;
     }
 
     /// Begin returning a value from the function being written: `return `,
@@ -4110,7 +4255,328 @@ impl<'a> Emitter<'a> {
         self.output.push(')');
     }
 
-    fn object_methods(&mut self, methods: &[(MethodDispatch, FnMethod)]) {
+    /// A record type's methods are the runtime's: `makeType` and `defineType`
+    /// read them from `typeHooks`, and a method whose slot the program names
+    /// is installed where a unit of its effect's `when:` list is kept.
+    fn record_runtime(&mut self) {
+        self.keep_runtime("recordMethods");
+        for &(unit, site) in self.record_methods {
+            self.runtime
+                .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+        }
+    }
+
+    /// `["x", "y"]`, a type's field names.
+    fn type_field_names(&mut self, fields: &[String]) {
+        self.output.push('[');
+        for (index, field) in fields.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            self.string_units(&field.encode_utf16().collect::<Vec<_>>());
+        }
+        self.output.push(']');
+    }
+
+    /// `"ns/T"`, the name of the type that `global` holds.
+    fn type_name(&mut self, global: GlobalId) {
+        let binding = &self.program.globals[global.0];
+        self.string_units(
+            &format!("{}/{}", binding.namespace, binding.name)
+                .encode_utf16()
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// The members a type's constructor assigns, in order: each field under
+    /// the name its reads use (`self["w"]`), so that the runtime munges no
+    /// name per instance, and a record's three slots.
+    fn type_members(fields: &[String], record: bool) -> Vec<String> {
+        fields
+            .iter()
+            .map(|field| crate::analyzer::munge_js_member(field))
+            .chain(
+                record
+                    .then_some(["__meta", "__extmap", "__hash"].map(String::from))
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect()
+    }
+
+    /// ` this["x"] = a0; this["y"] = a1;`: a constructor's assignments of its
+    /// positional parameters to `members`.
+    fn field_assignments(&mut self, members: &[String]) {
+        for (index, member) in members.iter().enumerate() {
+            if member == "__proto__" {
+                // An own field like any other: assigning it would set the
+                // instance's prototype.
+                write!(
+                    self.output,
+                    " Object.defineProperty(this, \"__proto__\", {{value: a{index}, writable: true, enumerable: true, configurable: true}});"
+                )
+                .unwrap();
+                continue;
+            }
+            self.output.push_str(" this");
+            self.member(member);
+            write!(self.output, " = a{index};").unwrap();
+        }
+    }
+
+    /// The positional factory `constructor` of the type `global`.
+    fn type_factory(
+        &mut self,
+        record: bool,
+        global: GlobalId,
+        constructor: GlobalId,
+        fields: &[String],
+    ) {
+        self.product(constructor);
+        if record {
+            // A record's factory passes its fields by position.
+            self.output.push_str(" = (");
+            self.positional_params(fields.len());
+            self.output.push_str(") => new ");
+            self.global(global);
+            self.output.push('(');
+            self.positional_params(fields.len());
+            if !fields.is_empty() {
+                self.output.push_str(", ");
+            }
+            self.output.push_str("null, null, null); ");
+        } else {
+            // A saved factory constructs the type's current definition, which
+            // may have more fields.
+            self.output.push_str(" = (...args) => new ");
+            self.global(global);
+            self.output.push_str("(...args); ");
+        }
+    }
+
+    /// The static `getBasis` of the type `global`, where the program has it:
+    /// at `Advanced` only a program that names `getBasis` has it
+    /// (`crate::rta`), as Closure removes unread properties.
+    fn type_basis(&mut self, global: GlobalId, fields: &[String]) {
+        if self.type_basis {
+            self.product(global);
+            self.output.push_str(".getBasis = () => ");
+            self.rt(RuntimeName::core("vector"));
+            self.output.push('(');
+            for (index, field) in fields.iter().enumerate() {
+                if index > 0 {
+                    self.output.push_str(", ");
+                }
+                self.rt(RuntimeName::export("symbol"));
+                self.output.push_str("(null, ");
+                self.string_units(&field.encode_utf16().collect::<Vec<_>>());
+                self.output.push(')');
+            }
+            self.output.push_str("); ");
+        }
+    }
+
+    /// `map->R`, the map factory `map_constructor` of the record `global`.
+    fn map_factory(&mut self, global: GlobalId, map_constructor: GlobalId) {
+        self.product(map_constructor);
+        self.output.push_str(" = value => ");
+        self.rt(RuntimeName::export("recordFromMap"));
+        self.output.push('(');
+        self.global(global);
+        self.output.push_str(", value); ");
+    }
+
+    /// At `Advanced`, the statements that define the `deftype` or `defrecord`
+    /// type `id` (light-cljs-264), without a function around them: its
+    /// constructor is a function of its own, which assigns the fields and a
+    /// record's three slots and brands the instance (`TypeBrand`), and
+    /// `defineType` decorates it, so that V8 keeps each type's construction
+    /// monomorphic and the type costs little more than its own text:
+    ///
+    /// ```text
+    /// g2 = rt$defineType(function Type(a0, a1, a2, a3, a4) { this["w"] = a0;
+    ///   ...; new rt$TypeBrand(this, Type); }, "cljs.user/Rect w h", [[g1, 1,
+    ///   function() {...}]], 1); g3 = (a0, a1) => new g2(a0, a1, null, null,
+    ///   null);
+    /// ```
+    ///
+    /// A record's `currentConstructor` is there only where the program may
+    /// define the type again ([`Emitter::sole_type`]).
+    fn defined_type(&mut self, id: ExprId) {
+        let program = self.program;
+        let ExprKind::DefType {
+            record,
+            global,
+            constructor: Some(constructor),
+            map_constructor,
+            fields,
+            methods,
+            ..
+        } = &program.exprs[id.0].kind
+        else {
+            unreachable!("a program type with a constructor")
+        };
+        let (record, global) = (*record, *global);
+        self.product(global);
+        self.output.push_str(" = ");
+        self.rt(RuntimeName::direct("defineType", None));
+        if record {
+            self.record_runtime();
+        }
+        // The function's name is the type's `name`, as at lower levels, and
+        // the binding a record brands its instances with.
+        self.output.push_str("(function Type(");
+        let members = Self::type_members(fields, record);
+        self.positional_params(members.len());
+        self.output.push_str(") {");
+        self.field_assignments(&members);
+        self.output.push_str(" new ");
+        self.rt(RuntimeName::direct("TypeBrand", None));
+        self.output.push_str(if record {
+            "(this, Type); }, "
+        } else {
+            "(this); }, "
+        });
+        // "ns/T field ...", the type's name and field names.
+        let binding = &program.globals[global.0];
+        let name = format!("{}/{}", binding.namespace, binding.name);
+        if std::iter::once(&name)
+            .chain(fields)
+            .any(|name| name.contains(' '))
+        {
+            self.output.push('[');
+            self.type_name(global);
+            for field in fields {
+                self.output.push_str(", ");
+                self.string_units(&field.encode_utf16().collect::<Vec<_>>());
+            }
+            self.output.push(']');
+        } else {
+            let names = std::iter::once(name.as_str())
+                .chain(fields.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.string_units(&names.encode_utf16().collect::<Vec<_>>());
+        }
+        self.output.push_str(", ");
+        self.object_methods(methods, Some(id));
+        if record {
+            self.output.push_str(", 1");
+            if !self.sole_type(global) {
+                self.output.push_str(", () => ");
+                self.global(global);
+            }
+        }
+        self.output.push_str("); ");
+        // `crate::rta` keeps the factory only where the program reads it.
+        if self.retained.is_none_or(|retained| retained[constructor.0]) {
+            self.type_factory(record, global, *constructor, fields);
+        }
+        self.type_basis(global, fields);
+        if let Some(map_constructor) = map_constructor {
+            self.map_factory(global, *map_constructor);
+        }
+    }
+
+    /// The value of the type definition `id` that [`Emitter::defined_type`]
+    /// writes: the type.
+    fn defined_type_value(&mut self, id: ExprId) {
+        let ExprKind::DefType { global, .. } = self.program.exprs[id.0].kind else {
+            unreachable!("a type definition")
+        };
+        self.product(global);
+    }
+
+    /// At `Advanced`, whether the type `global` is defined once: only a
+    /// top-level form defines it, which runs once, and nothing assigns it
+    /// (`crate::inference::Definition::Type`), so that the type is always the
+    /// current definition of itself. A `defrecord` in a function defines a
+    /// new type at each call.
+    fn sole_type(&self, global: GlobalId) -> bool {
+        !self.demand_roots
+            && !self.application_roots
+            && self.inference.is_some_and(|inference| {
+                let facts = inference.facts();
+                matches!(
+                    facts.definition(global),
+                    crate::inference::Definition::Type { definition, .. }
+                        if facts.top_position(definition).is_some()
+                )
+            })
+    }
+
+    /// Whether emission writes the type definition `id` with a constructor of
+    /// its own ([`Emitter::defined_type`]): at `Advanced`, a `deftype` or
+    /// `defrecord` with a positional factory, unless a field takes the name
+    /// of a mask, which `makeType`'s constructor assigns after the fields.
+    fn defines_constructor(&self, id: ExprId) -> bool {
+        let ExprKind::DefType {
+            constructor: Some(_),
+            fields,
+            ..
+        } = &self.program.exprs[id.0].kind
+        else {
+            return false;
+        };
+        self.replaced_core.is_some()
+            && !fields.iter().any(|field| {
+                crate::analyzer::munge_js_member(field)
+                    .strip_prefix("cljs$lang$protocol_mask$partition")
+                    .is_some_and(|rest| rest == "0$" || rest == "1$")
+            })
+    }
+
+    /// At `Advanced`, the dispatcher of the program protocol method `key` that
+    /// a method entry of the type definition `owner` may name instead of the
+    /// key, as `installMethods` finds the key of a dispatcher in
+    /// `protocolKeys` (light-cljs-264): only its `defprotocol` defines it,
+    /// nothing assigns it, that form still defines it (`crate::rta` removes
+    /// unread dispatchers), and it is a top-level form before `owner`, which
+    /// is one too, so the dispatcher exists when the type is defined.
+    fn defined_dispatcher(&mut self, key: &str, owner: ExprId) -> Option<GlobalId> {
+        use crate::inference::Definition;
+        let program = self.program;
+        let facts = self.inference?.facts();
+        if self.demand_roots || self.application_roots {
+            return None;
+        }
+        let owner = facts.top_position(owner)?;
+        let dispatchers = self.dispatchers.get_or_insert_with(|| {
+            program
+                .protocols
+                .values()
+                .flatten()
+                .map(|method| (method.key.as_str(), method.global))
+                .collect()
+        });
+        let global = *dispatchers.get(key)?;
+        let Definition::Protocol(protocol) = facts.definition(global) else {
+            return None;
+        };
+        let ExprKind::DefProtocol { methods, .. } = &program.exprs[protocol.0].kind else {
+            return None;
+        };
+        (methods.iter().any(|method| method.global == global)
+            && facts.top_position(protocol).is_some_and(|at| at < owner)
+            && !program.globals[global.0].name.contains('.'))
+        .then_some(global)
+    }
+
+    /// The function of a method entry; at `Advanced` one of a single fixed
+    /// method has no parentheses, as an array item needs none.
+    fn entry_function(&mut self, method: &FnMethod, ifn_call: bool) {
+        if method.rest.is_none() {
+            self.method_function(None, method, ifn_call, self.replaced_core.is_none());
+        } else {
+            self.function_with_ifn_captures(None, std::slice::from_ref(method), false, ifn_call);
+        }
+    }
+
+    /// `[["ns/P/m", 1, function(l5) {...}], ...]`, the method entries of a
+    /// type, `reify` or extension. Those of the type definition `owner` name
+    /// a protocol method by its dispatcher where they can
+    /// ([`Emitter::defined_dispatcher`]).
+    fn object_methods(&mut self, methods: &[(MethodDispatch, FnMethod)], owner: Option<ExprId>) {
         self.output.push('[');
         for (index, (dispatch, method)) in methods.iter().enumerate() {
             if index > 0 {
@@ -4119,7 +4585,10 @@ impl<'a> Emitter<'a> {
             self.output.push('[');
             let ifn = match dispatch {
                 MethodDispatch::Protocol(key) => {
-                    self.string_units(&key.encode_utf16().collect::<Vec<_>>());
+                    match owner.and_then(|owner| self.defined_dispatcher(key, owner)) {
+                        Some(dispatcher) => self.global(dispatcher),
+                        None => self.string_units(&key.encode_utf16().collect::<Vec<_>>()),
+                    }
                     false
                 }
                 MethodDispatch::Builtin(name) => {
@@ -4142,16 +4611,12 @@ impl<'a> Emitter<'a> {
                 method.params.len() + if method.rest.is_some() { 2 } else { 0 }
             )
             .unwrap();
-            if ifn {
-                // Callable adapters supply the receiver as the first argument;
-                // their rest binding still needs the ordinary fn dispatcher.
-                self.function_with_ifn_captures(None, std::slice::from_ref(method), false, true);
-            } else {
-                self.function(None, std::slice::from_ref(method), false);
-            }
+            // Callable adapters supply the receiver as the first argument;
+            // their rest binding still needs the ordinary fn dispatcher.
+            self.entry_function(method, ifn);
             if ifn {
                 self.output.push_str(", ");
-                self.function(None, std::slice::from_ref(method), false);
+                self.entry_function(method, false);
             }
             if method.rest.is_some() {
                 if ifn {
@@ -4285,7 +4750,7 @@ impl<'a> Emitter<'a> {
                     self.reify_receivers.push(method.1.target);
                     let enclosing_resets = self.captures.clone();
                     self.captures.retain(|(local, _)| !captures.contains(local));
-                    self.object_methods(std::slice::from_ref(method));
+                    self.object_methods(std::slice::from_ref(method), None);
                     self.captures = enclosing_resets;
                     self.reify_captures.truncate(old_captures);
                     self.reify_receivers.truncate(old_receivers);
@@ -4297,6 +4762,16 @@ impl<'a> Emitter<'a> {
                     self.output.push_str("null");
                 }
                 self.output.push(')');
+            }
+            ExprKind::DefType { .. } if self.defines_constructor(id) => {
+                let wrapper = self.iife_open(id, true);
+                self.output.push(' ');
+                self.defined_type(id);
+                self.return_open();
+                self.defined_type_value(id);
+                self.return_close();
+                self.output.push_str("; ");
+                self.iife_close(wrapper);
             }
             ExprKind::DefType {
                 record,
@@ -4314,28 +4789,12 @@ impl<'a> Emitter<'a> {
                 self.output.push_str(" = ");
                 self.rt(RuntimeName::export("makeType"));
                 if *record && constructor.is_some() {
-                    // `makeType` reads the record methods from `typeHooks`.
-                    self.keep_runtime("recordMethods");
-                    // A method whose slot the program names is installed
-                    // where a unit of its effect's `when:` list is kept.
-                    for &(unit, site) in self.record_methods {
-                        self.runtime.record(
-                            RuntimeName::direct(unit, None),
-                            Some(site),
-                            NameUse::Keep,
-                        );
-                    }
+                    self.record_runtime();
                 }
                 self.output.push('(');
-                self.output.push('[');
-                for (index, field) in fields.iter().enumerate() {
-                    if index > 0 {
-                        self.output.push_str(", ");
-                    }
-                    self.string_units(&field.encode_utf16().collect::<Vec<_>>());
-                }
-                self.output.push_str("], ");
-                self.object_methods(methods);
+                self.type_field_names(fields);
+                self.output.push_str(", ");
+                self.object_methods(methods, None);
                 self.output.push_str(if *record {
                     if constructor.is_some() {
                         ", true"
@@ -4355,25 +4814,8 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(", null");
                 }
                 self.output.push_str(", ");
-                let binding = &self.program.globals[global.0];
-                self.string_units(
-                    &format!("{}/{}", binding.namespace, binding.name)
-                        .encode_utf16()
-                        .collect::<Vec<_>>(),
-                );
-                // The constructor assigns each field, and a record's three
-                // slots, under the name its reads use (`self["w"]`), so the
-                // runtime munges no name per instance.
-                let members: Vec<String> = fields
-                    .iter()
-                    .map(|field| crate::analyzer::munge_js_member(field))
-                    .chain(
-                        record
-                            .then_some(["__meta", "__extmap", "__hash"].map(String::from))
-                            .into_iter()
-                            .flatten(),
-                    )
-                    .collect();
+                self.type_name(*global);
+                let members = Self::type_members(fields, *record);
                 if *record && constructor.is_some() {
                     self.output.push_str(", () => ");
                     self.global(*global);
@@ -4384,84 +4826,28 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(", function(");
                     self.positional_params(members.len());
                     self.output.push_str(") {");
-                    for (index, member) in members.iter().enumerate() {
-                        if member == "__proto__" {
-                            // An own field like any other: assigning it
-                            // would set the instance's prototype.
-                            write!(
-                                self.output,
-                                " Object.defineProperty(this, \"__proto__\", {{value: a{index}, writable: true, enumerable: true, configurable: true}});"
-                            )
-                            .unwrap();
-                            continue;
-                        }
-                        self.output.push_str(" this");
-                        self.member(member);
-                        write!(self.output, " = a{index};").unwrap();
-                    }
+                    self.field_assignments(&members);
                     self.output.push_str(" }");
                 }
                 self.output.push_str("); ");
                 if let Some(constructor) = constructor {
-                    self.product(*constructor);
-                    if *record {
-                        // A record's factory passes its fields by position.
-                        self.output.push_str(" = (");
-                        self.positional_params(fields.len());
-                        self.output.push_str(") => new ");
-                        self.global(*global);
-                        self.output.push('(');
-                        self.positional_params(fields.len());
-                        if !fields.is_empty() {
-                            self.output.push_str(", ");
-                        }
-                        self.output.push_str("null, null, null); ");
-                    } else {
-                        // A saved factory constructs the type's current
-                        // definition, which may have more fields.
-                        self.output.push_str(" = (...args) => new ");
-                        self.global(*global);
-                        self.output.push_str("(...args); ");
+                    // `crate::rta` keeps the factory only where the program
+                    // reads it.
+                    if self.retained.is_none_or(|retained| retained[constructor.0]) {
+                        self.type_factory(*record, *global, *constructor, fields);
                     }
-                    // At `Advanced` only a program that names `getBasis` has it
-                    // (`crate::rta`), as Closure removes unread properties.
-                    if self.type_basis {
-                        self.product(*global);
-                        self.output.push_str(".getBasis = () => ");
-                        self.rt(RuntimeName::core("vector"));
-                        self.output.push('(');
-                        for (index, field) in fields.iter().enumerate() {
-                            if index > 0 {
-                                self.output.push_str(", ");
-                            }
-                            self.rt(RuntimeName::export("symbol"));
-                            self.output.push_str("(null, ");
-                            self.string_units(&field.encode_utf16().collect::<Vec<_>>());
-                            self.output.push(')');
-                        }
-                        self.output.push_str("); ");
-                    }
+                    self.type_basis(*global, fields);
                     self.product(*global);
                     self.output.push_str(".cljs$lang$type = true; ");
                     if !*record {
                         self.product(*global);
                         self.output.push_str(".cljs$lang$ctorStr = ");
-                        let binding = &self.program.globals[global.0];
-                        self.string_units(
-                            &format!("{}/{}", binding.namespace, binding.name)
-                                .encode_utf16()
-                                .collect::<Vec<_>>(),
-                        );
+                        self.type_name(*global);
                         self.output.push_str("; ");
                     }
                 }
                 if let Some(map_constructor) = map_constructor {
-                    self.product(*map_constructor);
-                    self.output.push_str(" = value => ");
-                    self.rt(RuntimeName::export("recordFromMap"));
-                    self.output.push('(');
-                    self.global(*global);
-                    self.output.push_str(", value); ");
+                    self.map_factory(*global, *map_constructor);
                 }
                 self.return_open();
                 if let Some(body) = body {
@@ -4498,6 +4884,8 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("])");
             }
             ExprKind::QualifiedMethod { class, method } => {
+                // The class is read in a `function` of its own `this`.
+                let outer_this = self.this_target.take();
                 if let Some(method) = method {
                     self.output
                         .push_str("(function (x, ...args) { return Reflect.apply(");
@@ -4511,6 +4899,7 @@ impl<'a> Emitter<'a> {
                     self.without_operands(|emitter| emitter.value(*class));
                     self.output.push_str(", args); })");
                 }
+                self.this_target = outer_this;
             }
             ExprKind::CopyArguments(dest) => {
                 self.output.push_str("((dest) => { for (let i = 0; i < arguments.length; i++) dest.push(arguments[i]); return null; })(");
@@ -4623,7 +5012,7 @@ impl<'a> Emitter<'a> {
                 self.output.push('(');
                 self.value(*target);
                 self.output.push_str(", ");
-                self.object_methods(methods);
+                self.object_methods(methods, None);
                 if *instance {
                     write!(self.output, ", {return_target}").unwrap();
                 }
