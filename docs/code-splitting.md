@@ -46,7 +46,7 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,491 / 21,644 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
 | Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
@@ -722,16 +722,17 @@ output.
     site with its target in another namespace, is 578 bytes at `advanced`
     against 280 for `direct-site`, the same program reading the target
     directly: one site with the whole type and `load` costs 298 bytes, of
-    which the runtime factory and class are 277. In `examples/features` the
-    two sites cost 554 bytes against the same `start` reading both Vars
-    (`Promise.resolve` for `load`), 277 a site, and 383 bytes (192 a site)
-    with `clojure.string/join` written without `js*`, which turns terse
-    output off for the program part (light-cljs-294). Against the example
-    as it was before light-cljs-271, calling both features directly, the
-    growth is 1,060 bytes (587 without `js*`): the targets now escape as
-    functions instead of being inlined into `start`, and `start` chains two
-    promises. So the exit criterion below is met per site only by the stubs
-    in terse output.
+    which the runtime factory and class are 277. In `examples/features`
+    (ratchet `features`, 69,475 bytes) the two sites cost 383 bytes, 192 a
+    site, against `features-direct`, the same example with direct calls:
+    each target read directly from a required namespace and
+    `Promise.resolve` for each `load` (69,092 bytes). That meets the exit
+    criterion below, and
+    `size_ratchet::features_loadable_sites_cost_under_200_bytes_each_at_advanced`
+    keeps it. Against the example as it was before light-cljs-271, calling
+    both features from `start`, the growth is 587 bytes: the targets now
+    escape as functions instead of being inlined into `start`, and `start`
+    chains two promises.
 - **Preparation.** Lazy Var targets join `options.exports` as retention and
   escape roots everywhere `exports` is consulted (`retain`, `call_shapes`,
   `rta`).

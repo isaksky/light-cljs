@@ -172,6 +172,28 @@ fn fixtures_print_identical_results_at_every_level() {
     }
 }
 
+/// The Phase 1 exit criterion of docs/code-splitting.md (light-cljs-272): at
+/// `advanced`, `features` costs under 200 bytes per `light.lazy/loadable` site
+/// more than `features-direct`, the same example reading its two targets
+/// directly, the `Loadable` type and `light.lazy/load` included.
+#[test]
+fn features_loadable_sites_cost_under_200_bytes_each_at_advanced() {
+    let size = |name: &str| {
+        let fixture = NAMESPACE_FIXTURES
+            .iter()
+            .find(|fixture| fixture.name == name)
+            .unwrap();
+        emit(&namespace_program(fixture), OptimizationLevel::Advanced).len()
+    };
+    let (loadables, direct) = (size("features"), size("features-direct"));
+    let sites = 2;
+    assert!(
+        loadables < direct + 200 * sites,
+        "features is {loadables} bytes at advanced, features-direct {direct}: {} bytes a site",
+        loadables.saturating_sub(direct) / sites
+    );
+}
+
 /// The `eight-records` fixture with its first `records` records and its first
 /// `deftypes` deftypes.
 fn types_program(records: usize, deftypes: usize) -> String {

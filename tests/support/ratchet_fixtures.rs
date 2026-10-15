@@ -435,7 +435,22 @@ const GREET: (&str, &str) = (
     "(ns app.greet) (defn greet [who] (.concat \"hello \" who))",
 );
 
-/// The code-splitting example, and a loadable at its smallest beside the same
+/// The namespaces of examples/features its entry `app.main` loads.
+const FEATURES_SHARED: (&str, &str) = (
+    "app/shared.cljs",
+    include_str!("../../examples/features/app/shared.cljs"),
+);
+const FEATURES_EDITOR: (&str, &str) = (
+    "app/editor.cljs",
+    include_str!("../../examples/features/app/editor.cljs"),
+);
+const FEATURES_REPORTS: (&str, &str) = (
+    "app/reports.cljs",
+    include_str!("../../examples/features/app/reports.cljs"),
+);
+
+/// The code-splitting example and the same example calling its features
+/// directly (`features-direct`), and a loadable at its smallest beside the same
 /// program reading its target directly: the difference between the last two
 /// is the cost of one `light.lazy/loadable` site with the `Loadable` type and
 /// `light.lazy/load` (docs/code-splitting.md, "Phase 1").
@@ -448,21 +463,36 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
                 "app/main.cljs",
                 include_str!("../../examples/features/app/main.cljs"),
             ),
-            (
-                "app/shared.cljs",
-                include_str!("../../examples/features/app/shared.cljs"),
-            ),
-            (
-                "app/editor.cljs",
-                include_str!("../../examples/features/app/editor.cljs"),
-            ),
-            (
-                "app/reports.cljs",
-                include_str!("../../examples/features/app/reports.cljs"),
-            ),
+            FEATURES_SHARED,
+            FEATURES_EDITOR,
+            FEATURES_REPORTS,
         ],
-        ceilings: [456_000, 456_000, 74_000],
+        ceilings: [456_000, 456_000, 70_000],
         removed: [0, 0, 21],
+        printed: "menu: Editor | Reports\n#function\n",
+    },
+    NamespaceFixture {
+        name: "features-direct",
+        entry: "app.main",
+        files: &[
+            (
+                "app/main.cljs",
+                "(ns app.main (:require [app.shared :as shared] [app.editor] [app.reports]))
+                 (js/console.log \"menu:\" (shared/label :editor) \"|\" (shared/label :reports))
+                 (def editor app.editor/start)
+                 (def reports app.reports/start)
+                 (defn start []
+                   (-> (js/Promise.resolve editor)
+                       (.then (fn [start-editor] (start-editor) (js/Promise.resolve reports)))
+                       (.then (fn [start-reports] (start-reports) nil))))
+                 start",
+            ),
+            FEATURES_SHARED,
+            FEATURES_EDITOR,
+            FEATURES_REPORTS,
+        ],
+        ceilings: [454_000, 454_000, 70_000],
+        removed: [0, 0, 20],
         printed: "menu: Editor | Reports\n#function\n",
     },
     NamespaceFixture {

@@ -3927,7 +3927,8 @@ where the program has types of its own or looks protocols up
 (docs/code-splitting.md, Phase 1, "As built (light-cljs-272)"). Sizes, which
 do not depend on load, on the 24-CPU Mac of the
 [environment](results/environment.txt), macOS 15.7.3, one-minute load
-average 13.1:
+average 2.5, on master `965135d` (after light-cljs-294, which writes
+`clojure.string/join`'s `js*` tersely) and on this change:
 
 ```sh
 cargo nextest run --test compiler size_ratchet:: --no-capture
@@ -3938,48 +3939,55 @@ cargo run --quiet -- --compile --optimize advanced --size-report --entry app.mai
 `examples/features` with its two loadables, single-file `--esm`, raw /
 `gzip -9`:
 
-| `advanced` | light-cljs-271 (`deftype`) | light-cljs-272 (the runtime's type) |
+| `advanced` | light-cljs-271 (`deftype`), master `965135d` | light-cljs-272 (the runtime's type) |
 | --- | ---: | ---: |
-| `app.main`, the whole application | 80,407 / 24,286 | 73,546 / 22,010 |
+| `app.main`, the whole application | 76,145 / 23,900 | 69,491 / 21,644 |
 | its runtime slice | 73,760 | 67,473 |
 | without both features: startup lower bound | 5,233 / 1,923 | 4,680 / 1,753 |
 
 What a site costs, as the difference between a program and the same program
 reading its targets directly (raw bytes at `advanced`). The ratchet rows are
-`emit_js` output; the others single-file `--esm`. "Same shape" keeps `start`'s
-promise chain with `(js/Promise.resolve app.editor/start)` for each `load`;
-"before light-cljs-271" is the example calling both features directly.
-`clojure.string/join` is written with `js*`, which turns terse output off for
-the program part (light-cljs-294), so each comparison is also given with it
-written as `(apply str (interpose ...))`:
+`emit_js` output; the others single-file `--esm`. `features-direct` is
+`examples/features` with each `(lazy/loadable app.editor/start)` replaced by
+`app.editor/start`, its namespace required, and each `(lazy/load ...)` by
+`(js/Promise.resolve ...)`: the same example with direct calls, which the
+Phase 1 exit criterion compares against. "Before light-cljs-271" is the
+example as it was then, calling both features from `start`:
 
 | Comparison | Loadables | Direct | Difference | Per site |
 | --- | ---: | ---: | ---: | ---: |
 | ratchet `loadable-site` against `direct-site`, one site | 578 | 280 | 298 | 298 |
-| `examples/features` against the same shape | 73,546 | 72,992 | 554 | 277 |
-| the same without `js*` | 71,838 | 71,455 | 383 | 192 |
-| `examples/features` against before light-cljs-271 | 73,546 | 72,486 | 1,060 | 530 |
-| the same without `js*` | 71,838 | 71,251 | 587 | 294 |
+| ratchet `features` against `features-direct` | 69,475 | 69,092 | 383 | 192 |
+| `examples/features` against the same with direct calls, `--esm` | 69,491 | 69,108 | 383 | 192 |
+| `examples/features` against before light-cljs-271, `--esm` | 69,491 | 68,904 | 587 | 294 |
 
 One site carries the whole type: the runtime factory and class are 277 of
-`loadable-site`'s 298 bytes. Two sites share it, so in terse output the
-stubs of `examples/features` cost 192 bytes a site, under the 200 of the
-Phase 1 exit criterion, but not with `js*` in the program, nor against the
-example before light-cljs-271, whose `start` inlined both features where the
-loadable targets now escape as functions and `start` chains two promises.
+`loadable-site`'s 298 bytes. Two sites share it, so the stubs of
+`examples/features` cost 192 bytes a site, under the 200 of the Phase 1 exit
+criterion, which
+`size_ratchet::features_loadable_sites_cost_under_200_bytes_each_at_advanced`
+asserts. Of the 383 bytes, 326 are the runtime slice's (67,473 against
+67,147: the class, its printed names and its slot in the runtime factory);
+the program's other 57 are `light.lazy/Loadable`, `light.lazy/load` (a
+method call the inliner keeps as a function, since it is called twice and a
+method call has an effect) and the two `new` expressions, less the two
+`Promise.resolve` reads of the direct program. Against the example before light-cljs-271 the
+growth is 587 bytes: the loadable targets escape as functions where that
+`start` inlined both features, and `start` chains two promises.
 
 New ratchet rows (`NAMESPACE_FIXTURES`, programs of several namespaces), bytes
 / ceiling:
 
 | Fixture | `none` | `prepare` | `advanced` |
 | --- | ---: | ---: | ---: |
-| `features` | 455,084 / 456,000 | 455,084 / 456,000 | 73,530 / 74,000 |
+| `features` | 455,084 / 456,000 | 455,084 / 456,000 | 69,475 / 70,000 |
+| `features-direct` | 453,980 / 454,000 | 453,980 / 454,000 | 69,092 / 70,000 |
 | `loadable-site` | 435,638 / 436,000 | 435,508 / 436,000 | 578 / 600 |
 | `direct-site` | 434,855 / 435,000 | 434,855 / 435,000 | 280 / 300 |
 
-With light-cljs-271's `deftype`, `features` was 80,391 bytes at `advanced`
-and `loadable-site` 6,600. The `advanced` size of every other fixture is
-unchanged. `none` and `prepare` embed the whole runtime, which the
-`Loadable` units make 1,521 bytes longer in every fixture, so their ceilings
-rise to the new size rounded up: by 2,000 bytes for 19 fixtures and 1,000
-for 11, and one keeps its ceiling.
+With light-cljs-271's `deftype`, `loadable-site` was 6,600 bytes at
+`advanced`. The `advanced` size of every other fixture is unchanged. `none`
+and `prepare` embed the whole runtime, which the `Loadable` units make 1,521
+bytes longer in every fixture, so their ceilings rise to the new size rounded
+up: by 2,000 bytes for 19 fixtures and 1,000 for 11, and one keeps its
+ceiling.
