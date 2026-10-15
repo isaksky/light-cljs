@@ -25,6 +25,7 @@ pub mod compiler_reader;
 pub mod core_operations;
 pub mod defines;
 pub mod dev_build;
+pub mod dev_server;
 pub mod dev_session;
 pub mod emitter;
 pub mod eval_session;

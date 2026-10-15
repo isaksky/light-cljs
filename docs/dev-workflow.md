@@ -48,7 +48,7 @@ as phases land:
 
 | Measurement | Today | Target |
 |---|---|---|
-| Save to updated page, one changed namespace of the example | no path | under 100 ms on the development machine, including the recompile |
+| Save to updated page, one changed namespace of the example | Phase 3 (light-cljs-286): 29-39 ms from the save to the new render in headless Chrome, 5 saves of `app.view`, debug CLI with `--poll-ms 20` (load 1.9); the client applies the pushed unit in about 1 ms | under 100 ms on the development machine, including the recompile |
 | Application state across a reload | Phase 0: a replaced unit of the example keeps the `defonce` atom, also when `app.state`'s own unit runs again | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
 | Observable behavior of the dev build | Phase 0: prints what the `none` build prints for the example, examples/features, every phase oracle and every size ratchet fixture | prints what the `none` build prints, for the same program, before any reload |
 | Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3); Phase 2: a saved `app.view` is its correct unit on disk 3.9-4.6 ms after the poll notices it (release CLI, 15 saves, median 4.3, load 3.5-9.7; 8.9-11.1 ms from the debug test binary), and `--watch` starts in 279-290 ms | the one namespace, under 20 ms |
@@ -200,7 +200,7 @@ directory instead of one expression:
 ```text
 dev/
   runtime.js        the whole runtime, once: globalThis.__lightRuntime = (factory)();
-  client.js         the dev client (Phase 3); a stub before that
+  client.js         the dev client (Phase 3; a stub that only defined `define` before)
   app.main.js       one unit per namespace, in dependency order
   app.view.js
   ...
@@ -352,6 +352,18 @@ compile errors and warnings with file, line and column, cleared on the next
 successful step. It keeps `define` and the hooks runner; nothing else in
 the dev build depends on the server.
 
+As built (light-cljs-286; the protocol is in
+[Serve](evaluation.md#serve)), what the server keeps for a late tab is the
+build as it is now, every namespace's latest unit in load order, rather than
+the last `Load` alone, with the last step's diagnostics: a tab that missed two
+steps of different namespaces needs both. The client applies of that replay
+only the units whose text it does not already run (the source text of the
+function `define` recorded is in the unit's), so a page that loaded the
+current files does nothing, a tab running older units reloads them between
+the hooks, and a client with nothing loaded would load everything. The
+client reads the stream with `fetch` rather than `EventSource`, so one
+client runs in a page and in Node, where the test driver connects it.
+
 ### The connected REPL
 
 `--repl --connect HOST:PORT` is a thin client: it reads forms as today,
@@ -386,6 +398,13 @@ once with any tool:
 Package references read the registry at each use, so replacing a package
 object is seen by code compiled earlier. The dev server serves whatever
 directories it is given; it does not look for `node_modules`.
+
+As built (light-cljs-286): a module script runs after the page's classic
+scripts, so the page above can run a unit before the packages are set. The
+documented page ([JavaScript packages in
+dev](evaluation.md#javascript-packages-in-dev)) adds `index.js` from the
+module once they are, which headless Chrome ran with a stub package read by
+a top-level `def`.
 
 ## Phases
 
@@ -611,6 +630,49 @@ Scope: `--serve`, `client.js`, the overlay, and the reload set and hooks of
 
 Done when: the Goal row "save to updated page" is measured under 100 ms on
 the example in a real browser, by hand, and the Node test passes.
+
+Status (light-cljs-286, October 15, 2026): the server and the client are
+done; the policy item (hooks found in the retained program after each step,
+`^:dev/once` and `^:dev/always`, the reload set, `--reload-dependents`) is
+light-cljs-287's. `--watch --serve PORT [--serve-host HOST]`
+([Serve](evaluation.md#serve)) runs `dev_server::DevServer`, an HTTP/1.1
+subset on `std::net` with a thread per connection and hand-written JSON
+(`dev_server::Json` reads it): `GET` of the build directory and the source
+roots with content types and ETags, the built-in page, `GET /events` and
+`POST /reply`, loopback by default and answering only loopback `Host` names
+there. A watch step publishes its warnings, its error, or the load of every
+namespace it wrote (with those of failed steps since the last success), and
+the build for runtimes that connect later. `client.js` is src/dev_client.js,
+emitted into every dev build: `fetch`-based, it applies loads with the hooks
+as the Phase 0 driver does (a throwing hook is logged and skipped), skips
+the units of a replay it already runs, evaluates `invoke`s and posts their
+printed values (`DevServer::invoke` is the API light-cljs-288's REPL will
+call), draws the overlay and reconnects with backoff.
+`tests/dev_server.rs` runs `--watch --serve 0` with the driver's
+`--connect` mode as the runtime: a saved change reaches a runtime running
+the first build, which loads it between the hooks (`render: clicks: [2]`,
+the `defonce` state kept); a compile error is pushed located and with no
+load, and a warning with its load; a late runtime running the first build
+catches up and one running the current files loads nothing; a runtime whose
+server restarts reconnects and catches up; a failed step that loaded a new
+namespace before its error is not in a late runtime's replay, and the next
+step that succeeds loads it; the build's own warnings reach a runtime; the
+client runs a load's hooks in order, awaiting `-async` continuations and
+skipping one that throws; a replay runs again a unit that threw; `GET`
+serves files, sources at their source-map paths, ETags and the built-in page
+until the build directory has an `index.html`; and an `invoke` through the
+library's server replies with `pr-str` under the print options sent
+(`(0 1 2 ...)` for `:length 3`), the application's state and a thrown error,
+while a reply naming another runtime is refused. Checked in
+headless Chrome, driven over the DevTools protocol, on a copy of
+examples/dev served by the debug CLI with `--poll-ms 20`: the built-in page
+printed `start` and `clicks: [1]` and connected; five saves of `app.view`
+each logged `reloading`, the new render with the click count rising from 2
+to 6 and `light-cljs: reloaded app.view in 1 ms`, 29-39 ms from the save to
+the new line on the page (load 1.9); a deliberate reader error drew the
+overlay with the file, line 23, column 1 and the message, which the fixed
+save cleared while the page went on (`fixed: clicks: [7]`); and a warning
+drew the overlay while its unit loaded.
 
 ### Phase 4: connected REPL and nREPL
 

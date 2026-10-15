@@ -6,9 +6,10 @@
 //!
 //! - `runtime.js`, the whole runtime once:
 //!   `globalThis.__lightRuntime = (factory)();`;
-//! - `client.js`, a stub of the dev client that defines
+//! - `client.js`, the dev client ([`CLIENT`]), which defines
 //!   `globalThis.__lightDev.define`, which records each namespace's unit and
-//!   runs it against the runtime at once, keeping its value;
+//!   runs it against the runtime at once, keeping its value, and in a page
+//!   served by `--serve` reads the server's event stream;
 //! - one `<namespace>.js` per namespace ([`unit_file`]), in dependency
 //!   order: the namespace's forms as an interactive unit (the storage model
 //!   of the session, [`crate::emitter`]) inside a `define` call, with its
@@ -44,25 +45,10 @@ pub struct DevFile {
     pub text: String,
 }
 
-/// The stub dev client. Phase 3's client replaces it (docs/dev-workflow.md,
-/// "The server and the client").
-const CLIENT: &str = r#"// The dev client stub of a light-cljs dev build: `define` records each
-// namespace's unit and runs it against the runtime at once. A unit evaluated
-// again (a reload) replaces the record and runs again.
-globalThis.__lightDev = (() => {
-  const units = Object.create(null);
-  const values = Object.create(null);
-  return {
-    units,
-    values,
-    define(namespace, requires, unit) {
-      units[namespace] = {requires, unit};
-      values[namespace] = unit(globalThis.__lightRuntime);
-      return values[namespace];
-    },
-  };
-})();
-"#;
+/// The dev client, `client.js` (docs/dev-workflow.md, "The server and the
+/// client"): `define`, and the interpreter of a dev server's event stream
+/// ([`crate::dev_server`]), which a page served over HTTP connects to.
+pub const CLIENT: &str = include_str!("dev_client.js");
 
 /// The files of the dev build of `program`, a program analyzed from
 /// namespace sources ([`crate::compiler::analyze_namespace_entry_with_sources`]),

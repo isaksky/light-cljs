@@ -1854,7 +1854,8 @@ application can replace one at a time (docs/dev-workflow.md, "The dev build").
 ```text
 DIR/
   runtime.js           globalThis.__lightRuntime = (factory)(); the whole runtime, once
-  client.js            the dev client stub, which defines globalThis.__lightDev.define
+  client.js            the dev client: globalThis.__lightDev.define, and in a page
+                         served by --watch --serve the reader of its event stream
   app.state.js         one unit per namespace, in dependency order,
   app.state.js.map       each with its source map
   ...
@@ -1879,7 +1880,7 @@ globalThis.__lightDev.define("app.view", ["app.macros", "app.state"], (__lightIn
 //# sourceMappingURL=app.view.js.map
 ```
 
-whose second argument lists the namespace's source requires. The stub's
+whose second argument lists the namespace's source requires. The client's
 `define` records the unit by namespace in `__lightDev.units` and runs it
 against `globalThis.__lightRuntime` at once, keeping its value in
 `__lightDev.values`. Evaluating a unit again replaces its namespace's
@@ -1957,7 +1958,10 @@ rewrites a saved namespace's unit, its map and the manifest
 ([Watch](evaluation.md#watch)); a rewritten unit is
 `dev_build::namespace_unit` of the session's units of the namespace's forms,
 the same `define` call around a function that makes the namespace current
-and runs each form's unit in turn. There is no server or dev client yet.
+and runs each form's unit in turn. `--watch --serve PORT` also serves the
+build and pushes each step's units to the pages running it, which
+`client.js` (src/dev_client.js) loads between the hooks
+([Serve](evaluation.md#serve)).
 
 ### Complete collection program
 

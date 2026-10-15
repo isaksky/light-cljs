@@ -463,9 +463,10 @@ change to the files written; a failed one ends `; app.view failed and keeps
 its previous unit`, after the error. Warnings print before it as
 `--warnings` prints them (`WARNING: <file>:22:22: Use of undeclared Var
 app.view/later [undeclared-var] (bytes 653..658)`). A step changes the
-manifest's namespaces and requires, not its hook lists; nothing is pushed to
-a running page (no server yet, Phase 3), so a client applies the rewritten
-units itself, as `tests/support/dev_execution.mjs` does.
+manifest's namespaces and requires, not its hook lists. Without `--serve`,
+nothing is pushed to a running page, and a client applies the rewritten
+units itself, as `tests/support/dev_execution.mjs` does; with it, the
+[server](#serve) pushes them.
 
 | Flag | Default | Meaning |
 | --- | ---: | --- |
@@ -474,6 +475,8 @@ units itself, as `tests/support/dev_execution.mjs` does.
 | `--out-dir DIR` | required | The dev build directory, created when missing |
 | `--poll-ms N` | 100 | Milliseconds between polls, at least 1 |
 | `--elide-asserts` | off | Compile without `assert` and `fn` `:pre`/`:post` checks |
+| `--serve PORT` | off | Serve the build and push each step to connected pages ([Serve](#serve)); 0 picks a free port |
+| `--serve-host HOST` | `127.0.0.1` | The address `--serve` listens on |
 
 The watch runs until it is interrupted, and exits nonzero when the first
 build fails or a file of the build cannot be written. Startup compiles the program twice,
@@ -482,3 +485,122 @@ against. A save that keeps both a file's size and its modification time,
 possible only on a file system with coarse timestamps, is not seen.
 `tests/dev_watch.rs` runs `--watch` on a copy of `examples/dev` and applies
 the rewritten units to the running first build through the Node driver.
+
+## Serve
+
+`--watch ... --serve PORT [--serve-host HOST]` (light-cljs-286; the design is
+"The server and the client" in
+[dev-workflow.md](dev-workflow.md#the-server-and-the-client)) also serves the
+dev build over HTTP and pushes each step to the pages running it:
+
+```sh
+light-cljs --watch --entry app.main --source-root src --out-dir dev --serve 9630
+# light-cljs: serving dev at http://127.0.0.1:9630/
+# light-cljs: built app.main (4 namespaces) into dev in 281 ms; watching every 100 ms
+```
+
+Open `http://localhost:9630/`, save `src/app/view.cljs`, and the page logs
+`reloading`, the new render and `light-cljs: reloaded app.view in 1 ms` with
+its `defonce` state intact; save a file that does not compile, and an overlay
+over the page shows the error with its file, line and column until the next
+step that succeeds.
+
+The server (`light_cljs::dev_server::DevServer`) is a subset of HTTP/1.1 on
+`std::net`, one thread per connection, with JSON written and read by hand:
+
+- `GET` and `HEAD` serve the files of the build directory, then those of the
+  source roots, each at the path its source map URL resolves to from the
+  build directory (`../src/app/view.cljs` from `/app.view.js.map` is
+  `/src/app/view.cljs`), so the browser's devtools show the sources. Each
+  response carries a content type (`.js` is `text/javascript`), an ETag
+  (`If-None-Match` gets `304 Not Modified`) and `Cache-Control: no-cache`.
+  A path with a `.` or `..` segment or an encoded `/` names nothing.
+- `GET /` serves the build directory's `index.html`, or when it has none a
+  built-in page that shows console output, loads `index.js`, and calls the
+  program's value when it is a function, as a host calls an application's
+  start function (examples/dev's `start`).
+- `GET /events` is a stream of server-sent events, one JSON object with an
+  `op` field per event: `hello` with the runtime ID the server gives the
+  connection; then the build as of the last step that succeeded (a `load`
+  with `replay`) and the diagnostics of the last step, or before any step
+  the build's own warnings; then each step's `warnings` and
+  `error` (`{"message", "file", "line", "column"}`) and `load` (`units`,
+  each `{"namespace", "file", "js"}` with the text of the unit file, and the
+  `before-load` and `after-load` hooks of the manifest). A step that fails
+  pushes its error and no load, and changes no replay; the units it wrote,
+  if any (a namespace a changed `ns` form loaded before the error), go with
+  the next step that succeeds. A comment line every 15 s finds closed
+  connections.
+- `POST /reply` takes the JSON reply of a runtime to an `invoke` (a REPL
+  form's unit, `DevServer::invoke`, which the connected REPL will send:
+  light-cljs-288), `{"runtime", "id", "value"}` or `{"runtime", "id",
+  "error": {"message", "stack"}}`, and hands it to the requester when the
+  runtime named is the one asked; a reply naming another gets `409
+  Conflict` and the request still waits. Dropping a `DevServer` ends every
+  stream, and its clients connect again.
+
+`client.js` of every dev build (src/dev_client.js) is the client. In a page
+loaded over HTTP it connects to the server it came from once the build has
+loaded; elsewhere `globalThis.__lightDev.connect(url, {log, onHandled})`
+connects it, which is how Node runs it (the driver's `--connect`). It reads
+the stream with `fetch`, so the same code runs in a page and in Node, and
+
+- applies a `load` with the hook protocol: the before-load functions in
+  reverse definition order, each unit evaluated with a `sourceURL` naming its
+  file (so its `sourceMappingURL` resolves), then the after-load functions;
+  an `-async` hook gets a continuation. A hook that throws is logged and
+  skipped; a unit that throws stops the load, is logged and shown in the
+  overlay, and later units stay unloaded. One console line per load names
+  the namespaces;
+- applies of a `replay` only the units whose text it does not run already
+  (the text of the function `define` recorded is in the unit's, and the unit
+  ran to its end), so a page that loaded the current files changes nothing,
+  one that missed steps, or reconnects to a server that rebuilt, catches up,
+  and a unit that threw runs again;
+- draws the `warnings` and `error` of a step in an overlay with file, line
+  and column (and logs them), which the first message of the next step
+  clears;
+- evaluates an `invoke` in its namespace and posts the value printed by
+  `pr-str` under the print options sent (`readably`, `length`, `level`,
+  `meta`, `namespace-maps`, `dup`), or the error, with the request ID;
+- connects again when the stream ends, after 250 ms doubling up to 30 s, and
+  stops when the server has no `/events` (a 404, as from a static server).
+
+The server listens on `127.0.0.1` unless `--serve-host` says otherwise:
+`--serve-host 0.0.0.0` opens it to other machines, such as a phone, and since
+a connected page runs what the server sends it, only on a trusted network.
+While on loopback, it answers only requests whose `Host` is a loopback name
+(`localhost`, `127.0.0.1`, `[::1]`), so a page of another site cannot reach
+it through a DNS name that resolves to this machine; it sends no CORS
+headers, so the page must come from the server itself.
+
+### JavaScript packages in dev
+
+The compiler never resolves packages ([JavaScript
+packages](compiler.md#javascript-packages)), and a dev build reads them where
+every build does, from `globalThis.lightCljsPackages`, at each use. A dev page
+provides them before `index.js` runs, for example from a vendor module the
+developer builds once with any tool and keeps in the build directory, which
+the server serves:
+
+```html
+<!-- dev/index.html, which wins over the built-in page -->
+<script type="module">
+  import * as react from "./vendor/react.js";
+  globalThis.lightCljsPackages = { react };
+  const index = Object.assign(document.createElement("script"), { src: "index.js" });
+  index.onload = () => globalThis.__lightDevLoaded.then(start => start());
+  document.head.append(index);
+</script>
+```
+
+A module script runs after the classic scripts of the page, so a classic
+`<script src="index.js">` next to it could run units before the packages are
+set; the page adds `index.js` from the module instead, as a classic script,
+once they are. Replacing a package object later is seen by code compiled
+earlier. The server serves the directories it is given and does not look in
+`node_modules`.
+
+`tests/dev_server.rs` runs `--watch --serve 0` on a copy of `examples/dev`
+with Node runtimes: the driver with `--connect`, whose build's `client.js`
+reads the stream.

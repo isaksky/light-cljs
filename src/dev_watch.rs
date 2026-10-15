@@ -15,11 +15,12 @@
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler_data::Name;
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
+use light_cljs::dev_server::{Build, DevServer, Diagnostic, LoadUnit, Step};
 use light_cljs::dev_session::{Action, DevSession, Unit};
 use light_cljs::source_provider::{
     FileSourceProvider, LoadError, LoadRequest, Reload, SourceInput, SourceProvider,
 };
-use light_cljs::{EvalOptions, MacroHost};
+use light_cljs::{EvalDiagnostic, EvalOptions, LineIndex, MacroHost};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -35,7 +36,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
-             [--poll-ms N] [--elide-asserts]
+             [--poll-ms N] [--elide-asserts] [--serve PORT [--serve-host HOST]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
 and .cljc files under the source roots every N milliseconds (100), comparing
@@ -45,7 +46,16 @@ rewritten; a namespace that declares macros also recompiles the namespaces
 that require it, and a new require adds the units of the namespaces it loads.
 Each step prints one line to stderr with the namespaces recompiled and the
 time taken; a form that fails prints its error with file, line and column,
-and the namespace keeps its previous unit. Runs until interrupted.";
+and the namespace keeps its previous unit. Runs until interrupted.
+
+With --serve PORT (0 for any free port), also serve the build over HTTP on
+127.0.0.1, or on HOST with --serve-host (0.0.0.0 opens it to the network;
+a connected page runs what the server sends it): the files of DIR and of
+the source roots, a built-in page at / when DIR has no index.html, and at
+/events a stream of server-sent events that pushes each step's units, which
+the build's client.js loads into the page between the ^:dev/before-load and
+^:dev/after-load hooks, and its warnings and errors, which it draws over
+the page. A page that connects late catches up with the build.";
 
 /// The options of `--watch`.
 struct Options {
@@ -54,12 +64,17 @@ struct Options {
     out_dir: PathBuf,
     poll: Duration,
     assertions: bool,
+    /// `--serve PORT`.
+    serve: Option<u16>,
+    /// `--serve-host HOST`.
+    serve_host: Option<String>,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
     let (mut entry, mut roots, mut out_dir) = (None, Vec::new(), None);
     let mut poll = Duration::from_millis(100);
     let mut assertions = true;
+    let (mut serve, mut serve_host) = (None, None);
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         let mut value = || {
@@ -92,6 +107,22 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                 poll = Duration::from_millis(millis);
             }
             "--elide-asserts" => assertions = false,
+            "--serve" => {
+                let text = value()?;
+                serve = Some(
+                    text.to_str()
+                        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+                        .and_then(|text| text.parse::<u16>().ok())
+                        .ok_or("--serve requires a port number, 0 to 65535")?,
+                );
+            }
+            "--serve-host" => {
+                serve_host = Some(
+                    value()?
+                        .into_string()
+                        .map_err(|_| "--serve-host must be valid UTF-8")?,
+                );
+            }
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
     }
@@ -100,12 +131,17 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         return Err("--watch requires --source-root DIR".into());
     }
     let out_dir = out_dir.ok_or("--watch requires --out-dir DIR")?;
+    if serve_host.is_some() && serve.is_none() {
+        return Err("--serve-host requires --serve PORT".into());
+    }
     Ok(Some(Options {
         entry,
         roots,
         out_dir,
         poll,
         assertions,
+        serve,
+        serve_host,
     }))
 }
 
@@ -187,13 +223,23 @@ struct Watch {
     /// next change: the one that failed (perhaps over a file that does not
     /// exist yet) and those after it.
     pending: Vec<String>,
+    /// The dev server of `--serve`.
+    server: Option<DevServer>,
+    /// With a server, the text of each namespace's unit as written.
+    units: HashMap<String, String>,
+    /// The namespaces whose units failed steps wrote but did not push,
+    /// which the next step that succeeds pushes.
+    unpushed: Vec<String>,
+    /// The warnings of the step under way.
+    warnings: Vec<Diagnostic>,
 }
 
 /// Why a namespace's compile ended a step.
 enum Failure {
     /// Its source did not compile: the namespace keeps its unit and is
-    /// compiled again at the next change.
-    Source(String),
+    /// compiled again at the next change. The error as printed, and located
+    /// for the server.
+    Source(String, Diagnostic),
     /// A file of the build could not be written, which ends the watch.
     Output(Box<dyn Error>),
 }
@@ -232,6 +278,28 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     );
     crate::print_warnings(&warnings);
     let (program, sources) = program?;
+    // The build's warnings, located for the server, which shows them to the
+    // runtimes that connect before the first step.
+    let startup = warnings
+        .iter()
+        .map(|warning| {
+            let (path, text) = &sources[warning.source_index];
+            let (line, column) = LineIndex::new(text)
+                .line_column(warning.span.start)
+                .unwrap_or((1, 1));
+            Diagnostic {
+                message: format!("{} [{}]", warning.message, warning.kind),
+                file: Some(
+                    fs::canonicalize(path)
+                        .unwrap_or_else(|_| path.clone())
+                        .display()
+                        .to_string(),
+                ),
+                line: Some(line),
+                column: Some(column),
+            }
+        })
+        .collect::<Vec<_>>();
     crate::write_dev_build(&program, &sources, &options.out_dir)?;
     let manifest = DevManifest::new(&program);
     drop(program);
@@ -264,7 +332,34 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         out_dir: options.out_dir.clone(),
         base,
         pending: Vec::new(),
+        server: None,
+        units: HashMap::new(),
+        unpushed: Vec::new(),
+        warnings: Vec::new(),
     };
+    if let Some(port) = options.serve {
+        for namespace in &watch.manifest.namespaces {
+            let path = options.out_dir.join(&namespace.file);
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            watch.units.insert(namespace.name.clone(), text);
+        }
+        let host = options.serve_host.as_deref().unwrap_or("127.0.0.1");
+        let server = DevServer::start(host, port, &options.out_dir, &roots, watch.build())
+            .map_err(|error| format!("cannot serve on {host}:{port}: {error}"))?;
+        eprintln!(
+            "light-cljs: serving {} at http://{}/",
+            options.out_dir.display(),
+            server.address()
+        );
+        if !startup.is_empty() {
+            server.publish(Step {
+                warnings: startup,
+                ..Step::default()
+            });
+        }
+        watch.server = Some(server);
+    }
     eprintln!(
         "light-cljs: built {} ({} namespaces) into {} in {} ms; watching every {} ms",
         options.entry,
@@ -359,11 +454,11 @@ impl Watch {
             let namespace = queue.remove(next);
             match self.compile(&namespace, &mut recompiled, &mut queue) {
                 Ok(()) => {}
-                Err(Failure::Source(error)) => {
+                Err(Failure::Source(error, diagnostic)) => {
                     eprintln!("light-cljs: {error}");
                     queue.insert(0, namespace.clone());
                     self.pending = queue;
-                    failed = Some(namespace);
+                    failed = Some((namespace, diagnostic));
                     break;
                 }
                 Err(Failure::Output(error)) => return Err(error),
@@ -393,10 +488,36 @@ impl Watch {
         } else {
             recompiled.join(", ")
         };
+        let warnings = std::mem::take(&mut self.warnings);
+        if let Some(server) = &self.server {
+            // A failed step pushes nothing; the next one that succeeds
+            // pushes what it wrote too.
+            let mut load = Vec::new();
+            if failed.is_none() {
+                let mut pushed = std::mem::take(&mut self.unpushed);
+                pushed.extend(recompiled.iter().cloned());
+                pushed.sort_by_key(|namespace| self.manifest.position(namespace));
+                pushed.dedup();
+                load = pushed
+                    .iter()
+                    .filter_map(|namespace| self.load_unit(namespace))
+                    .collect();
+            } else {
+                self.unpushed.extend(recompiled.iter().cloned());
+            }
+            server.publish(Step {
+                load,
+                warnings,
+                error: failed.as_ref().map(|(_, diagnostic)| diagnostic.clone()),
+                // A runtime that connects after a failed step catches up
+                // with the last step that succeeded, then gets the error.
+                build: (failed.is_none() && !recompiled.is_empty()).then(|| self.build()),
+            });
+        }
         let millis = noticed.elapsed().as_secs_f64() * 1000.0;
         match failed {
             None => eprintln!("light-cljs: recompiled {names} in {millis:.1} ms"),
-            Some(namespace) => eprintln!(
+            Some((namespace, _)) => eprintln!(
                 "light-cljs: recompiled {names} in {millis:.1} ms; {namespace} failed and keeps its previous unit"
             ),
         }
@@ -427,8 +548,21 @@ impl Watch {
                 );
                 return Ok(());
             }
-            Err(LoadError::Provider(message)) => return Err(Failure::Source(message)),
-            Err(error) => return Err(Failure::Source(format!("{namespace}: {error}"))),
+            Err(LoadError::Provider(message)) => {
+                let diagnostic = Diagnostic {
+                    message: message.clone(),
+                    ..Diagnostic::default()
+                };
+                return Err(Failure::Source(message, diagnostic));
+            }
+            Err(error) => {
+                let message = format!("{namespace}: {error}");
+                let diagnostic = Diagnostic {
+                    message: message.clone(),
+                    ..Diagnostic::default()
+                };
+                return Err(Failure::Source(message, diagnostic));
+            }
         };
         let macros = self
             .manifest
@@ -464,9 +598,12 @@ impl Watch {
                 Action::Warnings(warnings) => {
                     for warning in warnings {
                         eprintln!("WARNING: {}", crate::eval_cli::diagnostic(warning));
+                        self.warnings.push(located(warning));
                     }
                 }
-                Action::Error(diagnostic) => error = Some(crate::eval_cli::diagnostic(diagnostic)),
+                Action::Error(diagnostic) => {
+                    error = Some((crate::eval_cli::diagnostic(diagnostic), located(diagnostic)));
+                }
             }
         }
         let mut seen = HashSet::new();
@@ -476,10 +613,14 @@ impl Watch {
         if error.is_none()
             && let Some(cycle) = self.cycle(namespace)
         {
-            error = Some(format!(
-                "{}: namespace dependency cycle: {}",
-                source.file,
-                cycle.join(" -> ")
+            let message = format!("namespace dependency cycle: {}", cycle.join(" -> "));
+            error = Some((
+                format!("{}: {message}", source.file),
+                Diagnostic {
+                    message,
+                    file: Some(source.file.clone()),
+                    ..Diagnostic::default()
+                },
             ));
         }
         // A namespace the file's forms loaded is new to the build; it goes
@@ -539,14 +680,17 @@ impl Watch {
             for file in &files {
                 self.write(file).map_err(Failure::Output)?;
             }
+            if self.server.is_some() {
+                self.units.insert(name.to_owned(), files[0].text.clone());
+            }
             let index = self.manifest.position(name).unwrap();
             let entry = &mut self.manifest.namespaces[index];
             entry.requires = requires;
             entry.macros = self.session.declares_macros(name);
             recompiled.push(name.to_owned());
         }
-        if let Some(error) = error {
-            return Err(Failure::Source(error));
+        if let Some((error, diagnostic)) = error {
+            return Err(Failure::Source(error, diagnostic));
         }
         // The units of the namespaces that require a macro namespace hold
         // their expansions: compile them again from their sources.
@@ -600,6 +744,29 @@ impl Watch {
         .then_some(path)
     }
 
+    /// The unit of `namespace` as a `load` message carries it.
+    fn load_unit(&self, namespace: &str) -> Option<LoadUnit> {
+        Some(LoadUnit {
+            namespace: namespace.to_owned(),
+            file: unit_file(namespace),
+            js: self.units.get(namespace)?.clone(),
+        })
+    }
+
+    /// The build as the server keeps it for runtimes that connect later.
+    fn build(&self) -> Build {
+        Build {
+            units: self
+                .manifest
+                .namespaces
+                .iter()
+                .filter_map(|namespace| self.load_unit(&namespace.name))
+                .collect(),
+            before_load: self.manifest.before_load.clone(),
+            after_load: self.manifest.after_load.clone(),
+        }
+    }
+
     /// Write `file` into the build directory, replacing the previous one at
     /// once: a reader sees the old text or the new, never a part.
     fn write(&self, file: &DevFile) -> Result<()> {
@@ -608,5 +775,32 @@ impl Watch {
         fs::write(&temporary, &file.text)
             .and_then(|()| fs::rename(&temporary, &path))
             .map_err(|error| format!("cannot write {}: {error}", path.display()).into())
+    }
+}
+
+/// `error` located for the server: its message without the location the
+/// session put in front of it, and the file, line and column.
+fn located(error: &EvalDiagnostic) -> Diagnostic {
+    let Some(span) = &error.location else {
+        return Diagnostic {
+            message: error.message.clone(),
+            ..Diagnostic::default()
+        };
+    };
+    let file = span.source().name();
+    let (line, column) = span
+        .source()
+        .line_column(span.bytes().start)
+        .unwrap_or((1, 1));
+    let prefix = format!("{file}:{line}:{column}: ");
+    Diagnostic {
+        message: error
+            .message
+            .strip_prefix(&prefix)
+            .unwrap_or(&error.message)
+            .to_owned(),
+        file: Some(file.to_owned()),
+        line: Some(line),
+        column: Some(column),
     }
 }

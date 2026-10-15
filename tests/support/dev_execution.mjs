@@ -4,6 +4,7 @@
 // through this one driver. Usage:
 //
 //   node tests/support/dev_execution.mjs BUILD [--start] [UNIT ...]
+//   node tests/support/dev_execution.mjs BUILD [--start] --connect URL --messages N
 //
 // BUILD is a dev build directory, which holds manifest.json, or a file holding
 // the JavaScript expression of a single-file build. The driver loads the
@@ -21,6 +22,16 @@
 // continuation, and the driver waits until it is called. A failing unit or
 // hook ends the run as the outcome, and later units stay unapplied.
 //
+// With --connect, the build's dev client (client.js) reads the event stream
+// of a dev server (`--watch --serve`) at URL instead, and applies its loads
+// with the same hook protocol, until it has handled N messages after `hello`.
+// A message whose handling fails (a unit that throws) counts, and the run goes
+// on, as the client does. The client's lines, and one line per message it
+// handled (`message hello 1`, `message load replay app.state app.view`,
+// `message error FILE:LINE:COLUMN: MESSAGE`, `message warnings ...`, with
+// ` failed: MESSAGE` after one that failed), go to stderr, where a test
+// follows the run.
+//
 // The driver then waits until nothing is pending (microtasks, timers) and
 // prints one record with id "program": the stdout of the whole run, the
 // `observe` trace and the outcome. Language values are read through the
@@ -37,7 +48,19 @@ if (args.length === 0) {
 }
 const build = resolve(args[0]);
 const start = args.includes("--start");
+const option = name => {
+  const at = args.indexOf(name);
+  if (at < 0) return null;
+  const value = args[at + 1];
+  if (value === undefined) throw new Error(name + " requires a value");
+  args.splice(at, 2);
+  return value;
+};
+const connect = option("--connect");
+const messages = Number(option("--messages") ?? 0);
+if (connect !== null && !(messages > 0)) throw new Error("--connect requires --messages N");
 const units = args.slice(1).filter(arg => arg !== "--start").map(unit => resolve(unit));
+if (connect !== null && units.length > 0) throw new Error("--connect applies no unit files");
 const dev = statSync(build).isDirectory();
 const manifest = dev ? JSON.parse(readFileSync(join(build, "manifest.json"), "utf8")) : null;
 if (!dev && units.length > 0) throw new Error("units apply only to a dev build");
@@ -83,6 +106,36 @@ try {
     for (const before of [...manifest["before-load"]].reverse()) await hook(before);
     for (const unit of units) script(unit);
     for (const after of manifest["after-load"]) await hook(after);
+  }
+  if (connect !== null) {
+    if (!dev) throw new Error("--connect applies only to a dev build");
+    const location = diagnostic =>
+      [diagnostic.file, diagnostic.line, diagnostic.column].filter(part => part != null).join(":");
+    const summary = message => {
+      switch (message.op) {
+        case "hello": return "hello " + message.runtime;
+        case "load":
+          return ["load", ...(message.replay ? ["replay"] : []), ...message.units.map(unit => unit.namespace)].join(" ");
+        case "error": return `error ${location(message.error)}: ${message.error.message}`;
+        case "warnings":
+          return "warnings " + message.warnings.map(warning => `${location(warning)}: ${warning.message}`).join("; ");
+        default: return message.op;
+      }
+    };
+    await new Promise(resolve => {
+      let handled = 0;
+      const connection = globalThis.__lightDev.connect(connect, {
+        log: (level, text) => process.stderr.write(text + "\n"),
+        onHandled(message, error) {
+          const failure = error ? " failed: " + (error?.message ?? error) : "";
+          process.stderr.write("message " + summary(message) + failure + "\n");
+          if (message.op !== "hello" && ++handled === messages) {
+            connection.close();
+            resolve();
+          }
+        },
+      });
+    });
   }
   result = { value: typeof value === "function" ? "#function" : value };
 } catch (error) {

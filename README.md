@@ -148,8 +148,8 @@ into `DIR` instead: `runtime.js` (the runtime, once), one unit per namespace in
 dependency order with its source map, `manifest.json` and an `index.js` that
 loads them in order (script elements in a page, `require` in Node). Definitions
 live in a registry read at each use, as in the REPL, so evaluating a namespace's
-unit again replaces its definitions while `defonce` state stays; there is no
-server yet ([Dev builds](docs/compiler.md#dev-builds),
+unit again replaces its definitions while `defonce` state stays
+([Dev builds](docs/compiler.md#dev-builds),
 [docs/dev-workflow.md](docs/dev-workflow.md)).
 
 ```sh
@@ -173,6 +173,26 @@ error and leaves the previous unit. One line per step goes to stderr
 cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev
 # light-cljs: built app.main (4 namespaces) into /tmp/light-dev in 281 ms; watching every 100 ms
 # light-cljs: recompiled app.view in 4.1 ms
+```
+
+Add `--serve PORT` to `--watch` to serve the build at `http://127.0.0.1:PORT/`
+(`--serve-host HOST` for another address; a connected page runs what the server
+sends it, so open it to a network only when you trust it): a page with the
+console output at `/` unless the build directory has an `index.html`, the
+build's files and the sources its source maps name, and an event stream that
+pushes each step to the open pages. The build's `client.js` loads the pushed
+units between the `^:dev/before-load` and `^:dev/after-load` hooks, keeping
+`defonce` state, draws compile errors and warnings over the page with file,
+line and column, catches up when it connects late, and reconnects when the
+server restarts. JavaScript packages come from a page in the build directory
+that sets `globalThis.lightCljsPackages` before it loads `index.js`
+([Serve](docs/evaluation.md#serve), [JavaScript packages in
+dev](docs/evaluation.md#javascript-packages-in-dev)).
+
+```sh
+cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev --serve 9630
+# light-cljs: serving /tmp/light-dev at http://127.0.0.1:9630/
+# light-cljs: built app.main (4 namespaces) into /tmp/light-dev in 281 ms; watching every 100 ms
 ```
 
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
@@ -341,7 +361,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   (at `advanced` also of definitions and constants moved toward their
   readers), with the runtime in the startup chunk. A dev build
   (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
-  rewrites a saved namespace's unit, but nothing pushes it to a page yet. The release
+  rewrites a saved namespace's unit, which `--serve` pushes to open pages; the
+  reload policy (which namespaces a change reloads, `^:dev/once` and
+  `^:dev/always`) and the connected REPL are still to come. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
   so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes
